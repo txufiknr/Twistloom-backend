@@ -31,6 +31,7 @@ import type { Response } from 'express';
 import { getErrorMessage, handleApiError } from '../utils/error.js';
 import { isInsufficientCreditsError } from '../config/errors.js';
 import { executeWithCredits, refundCredits, addCredits } from './credits.js';
+import { getBookModeCreditCost } from '../config/credits.js';
 import { getRefundForStep } from '../config/generation-refund.js';
 import { MAX_CHARACTER_AGE, MIN_CHARACTER_AGE } from '../config/story.js';
 import { MAX_THEME_LENGTH, MAX_THEME_LENGTH_BUFFER } from '../config/theme-validation.js';
@@ -291,6 +292,7 @@ export async function createBookCore(
     advancedOptions,
     isOriginal,
     context = 'book_creation',
+    mode = 'interactive',
   } = params;
 
   const isInternal = isOriginal || userId === process.env.SYSTEM_USER_ID;
@@ -337,11 +339,11 @@ export async function createBookCore(
       // for the atomicity guarantee to hold.
       const executeCreditsResult = await executeWithCredits<CreateBookResponse>(
         userId,
-        'STORY_GENERATION',
-        async (tx) => initializeBook({ ...initializeParams, tx }, onProgress),
+        getBookModeCreditCost(mode),
+        async (tx) => initializeBook({ ...initializeParams, mode, tx }, onProgress),
         {
           context,
-          metadata: { theme: theme.trim() }
+          metadata: { theme: theme.trim(), mode }
         }
       );
 

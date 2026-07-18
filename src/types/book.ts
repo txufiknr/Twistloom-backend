@@ -23,6 +23,19 @@ export type BookStatus = typeof bookStatuses[number];
 export const bookVisibilities = ['private', 'unlisted', 'followers', 'public'] as const;
 export type BookVisibility = typeof bookVisibilities[number];
 
+/**
+ * Book creation modes (story format / storytelling philosophy).
+ *
+ * - `novel`:      A traditional linear story with a single path and ending.
+ * - `interactive`: Readers make choices that lead to different branches and endings.
+ * - `multiverse`: Every choice creates unseen parallel timelines that continue to
+ *                  evolve, making the world feel alive beyond the reader's path.
+ *
+ * Each mode carries a different AI generation cost (see BOOK_MODE_CREDIT_COSTS).
+ */
+export const bookModes = ['novel', 'interactive', 'multiverse'] as const;
+export type BookMode = typeof bookModes[number];
+
 export const bookGenerationStatuses = [
   'pending',
   'in_progress',
@@ -144,6 +157,8 @@ export type Book = {
   topPick?: Date;
   /** Whether this book is an auto-generated original (via cron job) */
   isOriginal: boolean;
+  /** Book creation mode (story format): 'novel' | 'interactive' | 'multiverse' */
+  mode: BookMode;
   /** Credits to pay to continue reading */
   creditsPrice: number;
   /** Original theme input from user (undefined if hidden by author) */
@@ -178,6 +193,7 @@ export type EnrichedBookData = Pick<DBBook,
   | 'language'
   | 'topPick'
   | 'isOriginal'
+  | 'mode'
   | 'creditsPrice'
   | 'originalThemeInput'
   | 'createdAt'
@@ -280,9 +296,11 @@ export type InitializeBookParams = StoryPlan & {
   tx?: DBTransaction;
   /** Optional: Advanced options for writing preset, creativity, AI config overrides */
   advancedOptions?: AdvancedOptionsConfig;
+  /** Book creation mode (story format). Defaults to 'interactive' when omitted. */
+  mode?: BookMode;
 };
 
-export type CreateBookParams = Omit<InitializeBookParams, 'aiComment' | 'language' | 'bookId' | 'tx'> & { context?: string }
+export type CreateBookParams = Omit<InitializeBookParams, 'aiComment' | 'language' | 'bookId' | 'tx'> & { context?: string; mode?: BookMode }
 
 /**
  * Return type for initializeBook function

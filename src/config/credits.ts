@@ -31,6 +31,7 @@
  */
 
 import type { CreditPack } from "../types/credits.js";
+import type { BookMode } from "../types/book.js";
 
 /**
  * Credit costs for various actions
@@ -60,7 +61,42 @@ export const CREDIT_COSTS = {
   UNLOCK_ALTERNATE_ENDING: 10, // TODO: use
 } as const;
 
+/**
+ * Credit cost per book creation mode (story format).
+ *
+ * Each mode represents a different storytelling philosophy with a different AI
+ * generation cost. Multiverse is the most expensive because the engine simulates
+ * many parallel timelines; interactive adds branching; novel is a single linear
+ * story.
+ *
+ * @see `BookMode` in `src/types/book.ts`
+ */
+export const BOOK_MODE_CREDIT_COSTS = {
+  /** Traditional linear story with a single path and ending */
+  novel: 2,
+  /** Reader choices lead to different branches and endings */
+  interactive: 5,
+  /** Every choice spawns unseen parallel timelines that keep evolving */
+  multiverse: 10,
+} as const;
+
 export type CreditCostKey = keyof typeof CREDIT_COSTS;
+
+/**
+ * Returns the credit cost for creating a book in the given mode.
+ *
+ * Falls back to `interactive` (the default mode) if an unknown/undefined mode
+ * is supplied, so legacy and malformed requests still consume a sensible cost.
+ *
+ * @param mode - Book creation mode, or undefined to use the default
+ * @returns Credit cost for that mode
+ */
+export function getBookModeCreditCost(mode: BookMode | null | undefined): number {
+  if (mode && mode in BOOK_MODE_CREDIT_COSTS) {
+    return BOOK_MODE_CREDIT_COSTS[mode];
+  }
+  return BOOK_MODE_CREDIT_COSTS.interactive;
+}
 
 /** Credits bonus for first-time users */
 export const FIRST_TIME_CREDITS = 50;

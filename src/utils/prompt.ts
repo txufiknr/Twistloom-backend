@@ -3883,8 +3883,9 @@ export async function initializeBook(
     language: detectedLanguage,
     req,
     bookId: draftBookId,
-    advancedOptions,
-  } = params;
+      advancedOptions,
+      mode = 'interactive',
+    } = params;
 
   // ── Internal progress helper ─────────────────────────────────────────────
   //
@@ -4060,6 +4061,7 @@ export async function initializeBook(
         isOriginal,
         visibility: isOriginal ? 'public' : undefined,
         originalThemeInput: theme,
+        mode, // Book creation mode (story format)
         ending: viableEnding,
         advancedOptions // Persist for ongoing page generation
       };

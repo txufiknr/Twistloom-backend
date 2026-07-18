@@ -105,7 +105,7 @@ import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.
 import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookPage } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache } from "../services/cache.js";
 import type { BookCreationStatus, BookGenerationPayload, BookSortOption, BookStatus, BookVisibility, EnrichedBookData } from "../types/book.js";
-import { bookStatuses, bookVisibilities, lastUpdatedFilterOptions, storyGenerationSteps } from "../types/book.js";
+import { bookStatuses, bookVisibilities, bookModes, lastUpdatedFilterOptions, storyGenerationSteps } from "../types/book.js";
 import { createBookCore, createBookValidate, handleBookCreationError, updateBookGenerationStatus } from "../services/book-creation.js";
 import { executeWithCredits, addCredits } from "../services/credits.js";
 import { logUserActivity, updateUserLastActivity } from "../services/user.js";
@@ -131,7 +131,7 @@ import { BOOK_MIN_PAGES } from "../config/story.js";
 import type { CustomActionValidationResult, CustomActionPreviewResponse, CustomActionSubmitResponse } from "../types/custom-action.js";
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { MAX_BRANCHING_PREGENERATION_DEPTH } from "../config/story.js";
-import { CREDIT_COSTS } from "../config/credits.js";
+import { CREDIT_COSTS, getBookModeCreditCost } from "../config/credits.js";
 import { CREDIT_ERRORS } from "../config/errors.js";
 import { getRefundForStep, isAtPointOfNoReturn, BOOK_GENERATION_COST } from "../config/generation-refund.js";
 import { triggerBookGenerationWorkflow, isGenerationStale } from "../services/book-creation.js";
@@ -211,7 +211,7 @@ async function isConcurrentGenerationLimitReached(userId: string, res: Response)
  */
 router.post("/", requireAuth, async (req: Request, res: Response) => {
   try {
-    const { theme, mcCandidate, generateCoverImage, advancedOptions } = req.body;
+    const { theme, mcCandidate, generateCoverImage, advancedOptions, mode } = req.body;
     const userId = req.userId!;
 
     // Enforce concurrent generation limit
@@ -226,6 +226,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
         mcCandidate,
         generateCoverImage,
         advancedOptions,
+        mode,
         context: "book_creation",
       },
       // No progress callback for POST endpoint (synchronous response)
@@ -332,7 +333,7 @@ router.post('/workflow-webhook', async (req: Request, res: Response) => {
  */
 router.post("/stream", requireAuth, async (req: Request, res: Response) => {
   try {
-    const { theme, mcCandidate, generateCoverImage, advancedOptions } = req.body;
+    const { theme, mcCandidate, generateCoverImage, advancedOptions, mode } = req.body;
     const userId = req.userId!;
 
     // Enforce concurrent generation limit
@@ -355,6 +356,7 @@ router.post("/stream", requireAuth, async (req: Request, res: Response) => {
         mcCandidate,
         generateCoverImage,
         advancedOptions,
+        mode,
         context: "book_creation_stream",
       },
       onProgress
@@ -417,11 +419,14 @@ router.post("/stream", requireAuth, async (req: Request, res: Response) => {
  */
 router.post('/async', requireAuth, async (req: Request, res: Response) => {
   try {
-    const { theme, mcCandidate: initialMCCandidate, generateCoverImage, advancedOptions } = req.body;
+    const { theme, mcCandidate: initialMCCandidate, generateCoverImage, advancedOptions, mode: requestedMode } = req.body;
     const userId = req.userId!;
 
     // ── STEP 0: Enforce concurrent generation limit ─────────────────────────
     if (await isConcurrentGenerationLimitReached(userId, res)) return;
+
+    // ── STEP 0b: Validate + resolve book creation mode ─────────────────────
+    const mode = bookModes.includes(requestedMode) ? requestedMode : 'interactive';
 
     // ── STEP 1: Validate theme + MC candidate (structural + AI) ──────────────
     const { aiResult, normalizedAdvancedOptions } = await createBookValidate({
@@ -451,6 +456,7 @@ router.post('/async', requireAuth, async (req: Request, res: Response) => {
       language,
       totalPages: BOOK_MIN_PAGES, // Sensible default until initializeBook populates the real value
       mc,
+      mode, // Book creation mode (story format)
       status: 'draft', // Promoted to 'active' when initializeBook completes
       originalThemeInput: theme, // Preserve original user input for frontend display
     };
@@ -462,6 +468,7 @@ router.post('/async', requireAuth, async (req: Request, res: Response) => {
       language,
       titleIdea,
       aiComment,
+      mode, // Runner reads this from DB — not workflow inputs
       mcCandidate, // Runner reads this from DB — not workflow inputs
       generateCoverImage: generateCoverImage ?? false,
       advancedOptions: normalizedAdvancedOptions, // Optional — runner picks this up from the DB row
@@ -480,7 +487,7 @@ router.post('/async', requireAuth, async (req: Request, res: Response) => {
     // automatically. The runner picks up all generation params from the DB row.
     const { result: dbBook } = await executeWithCredits<DBBook>(
       userId,
-      'STORY_GENERATION',
+      getBookModeCreditCost(mode),
       async (tx) => {
         const [insertedBook] = await tx.insert(books).values(initialBookData).returning();
         await tx.insert(bookGenerations).values(initialBookGenerationData);
@@ -488,7 +495,7 @@ router.post('/async', requireAuth, async (req: Request, res: Response) => {
       },
       {
         context:  'book_creation_async',
-        metadata: { theme, bookId },
+        metadata: { theme, bookId, mode },
       }
     );
 
@@ -1036,6 +1043,7 @@ router.post('/:bookId/retry', requireAuth, async (req: Request, res: Response) =
         bookUserId:       books.userId,
         generationStatus: bookGenerations.generationStatus,
         isRefunded:       bookGenerations.isRefunded,
+        mode:             bookGenerations.mode,
       })
       .from(books)
       .leftJoin(bookGenerations, eq(books.id, bookGenerations.bookId))
@@ -1061,10 +1069,10 @@ router.post('/:bookId/retry', requireAuth, async (req: Request, res: Response) =
 
     // Consume credits atomically with resetting the generation state.
     // Credits were refunded when the generation failed or was cancelled,
-    // so retrying re-deducts them.
+    // so retrying re-deducts them. Cost matches the book's original mode.
     await executeWithCredits(
       userId,
-      BOOK_GENERATION_COST,
+      getBookModeCreditCost(data.mode),
       async (tx) => {
         await tx
           .update(bookGenerations)
@@ -1094,7 +1102,7 @@ router.post('/:bookId/retry', requireAuth, async (req: Request, res: Response) =
 
     triggerBookGenerationWorkflow(bookId, 'POST /api/books/:bookId/retry');
 
-    const message = `Book generation retry initiated. ${BOOK_GENERATION_COST} credits consumed.`;
+    const message = `Book generation retry initiated. ${getBookModeCreditCost(data.mode)} credits consumed.`;
     res.json({ success: true, message });
   } catch (error) {
     console.error('[POST /api/books/:bookId/retry] ❌ Error:', error);

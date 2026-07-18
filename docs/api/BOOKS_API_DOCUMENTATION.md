@@ -18,6 +18,25 @@ The Books API provides endpoints for managing psychological thriller books, incl
 
 ## Type Definitions
 
+### BookMode
+
+Book creation mode (story format / storytelling philosophy). Determines how the story is structured and the credit cost to generate it.
+
+```typescript
+type BookMode =
+  | 'novel'       // Traditional linear story with a single path and ending (cheapest)
+  | 'interactive'  // Reader choices lead to different branches and endings (medium)
+  | 'multiverse';  // Every choice spawns unseen parallel timelines that keep evolving (most expensive)
+```
+
+| Mode | Description | Credit Cost |
+| --- | --- | --- |
+| `novel` | A traditional linear story with a single path and ending. | 2 |
+| `interactive` | Readers make choices that lead to different branches and endings. | 5 |
+| `multiverse` | Every choice creates unseen parallel timelines that continue to evolve, making the world feel alive beyond the reader's current path. | 10 |
+
+If `mode` is omitted from a creation request it defaults to `interactive` (cost 5).
+
 ### BookStats
 
 Book engagement statistics.
@@ -53,6 +72,7 @@ interface Book {
   keywords: string[];           // Keywords for book discovery
   status: 'active' | 'archived' | 'draft';
   visibility: 'private' | 'unlisted' | 'followers' | 'public';
+  mode: 'novel' | 'interactive' | 'multiverse'; // Book creation mode (story format)
   mc: StoryMC;                  // Main character profile with name, age, gender, imageUrl, imageId
   creditsPrice: number;         // Credit cost to read this book
   isOriginal: boolean;          // Whether this book is an auto-generated original (via cron job)
@@ -357,12 +377,14 @@ Creates a new psychological thriller book with AI-generated content. Accepts a s
     "gender": "female",
     "bio": "Shy librarian with hidden past"
   },
-  "generateCoverImage": false
+  "generateCoverImage": false,
+  "mode": "interactive"
 }
 ```
 
 **Credit Consumption:**
-- Requires 5 credits to create a story (configurable via `CREDIT_COSTS.STORY_GENERATION`)
+- Credit cost depends on the requested `mode` (see `BookMode`): `novel` = 2, `interactive` = 5, `multiverse` = 10
+- Defaults to `interactive` (5 credits) if `mode` is omitted
 - Credits are deducted transactionally before book creation
 - Returns 402 Payment Required if insufficient credits
 
@@ -374,6 +396,7 @@ Creates a new psychological thriller book with AI-generated content. Accepts a s
   - `gender` (string, optional): "male" or "female"
   - `bio` (string, optional): Character's bio
 - `generateCoverImage` (boolean, optional): Whether to generate AI cover image (default: false)
+- `mode` (string, optional): Book creation mode — `novel`, `interactive`, or `multiverse` (default: `interactive`)
 
 **Response (201 Created):**
 ```json
@@ -488,7 +511,8 @@ Creates a new psychological thriller book with AI-generated content using Server
 **Request Body:** Same as `POST /api/books`
 
 **Credit Consumption:**
-- Requires 5 credits to create a story (configurable via `CREDIT_COSTS.STORY_GENERATION`)
+- Credit cost depends on the requested `mode` (see `BookMode`): `novel` = 2, `interactive` = 5, `multiverse` = 10
+- Defaults to `interactive` (5 credits) if `mode` is omitted
 - Credits are deducted transactionally before book creation
 - Returns 402 Payment Required if insufficient credits
 
@@ -902,6 +926,13 @@ Creates a new book asynchronously using GitHub Actions workflow. Returns bookId 
 
 **Request Body:** Same as `POST /api/books`
 
+**Credit Consumption:**
+- Credit cost depends on the requested `mode` (see `BookMode`): `novel` = 2, `interactive` = 5, `multiverse` = 10
+- Defaults to `interactive` (5 credits) if `mode` is omitted
+- Credits are deducted transactionally before book creation
+- Returns 402 Payment Required if insufficient credits
+- Credits are refunded if workflow trigger fails
+
 **Response (200 OK):**
 ```json
 {
@@ -1018,6 +1049,8 @@ Each book's `generationStatus` can be checked individually via `GET /api/books/:
   "message": "Book generation cancelled. 5 credits refunded."
 }
 ```
+
+*The refunded amount matches the book's `mode` cost (2 / 5 / 10).*
 
 **Response (202 Accepted) — past point of no return:**
 ```json

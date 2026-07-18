@@ -3,7 +3,7 @@ import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer
 import type { CheckinClaimType, FeedbackCategory, FeedbackStatus, Gender, Source, UserActivityType, UserTier } from "../types/user.js";
 import type { LikeTargetType } from "../types/user.js";
 import type { CharacterMemoryTranslation, CharacterPlan, HealthStatus, InjuryTranslation, InventoryItem, InventoryItemTranslation, StoryMC, StoryMCCandidate, StoryMCTranslation } from "../types/character.js";
-import type { BookGenerationStatus, StoryGenerationStep, BookStatus, BookVisibility, Book, BookStats, UploadedImageType } from "../types/book.js";
+import type { BookGenerationStatus, StoryGenerationStep, BookStatus, BookVisibility, Book, BookStats, UploadedImageType, BookMode } from "../types/book.js";
 import type { AdvancedOptionsConfig } from "../types/book-creation.js";
 import type { SessionStatus } from "../types/session.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
@@ -390,6 +390,7 @@ export const books = pgTable(
     trendingScore: real("trending_score").default(0),
     isOriginal: boolean("is_original").notNull().default(false),
     keywords: text("keywords").array().notNull().default(sql`ARRAY[]::text[]`), // e.g. ['reality-bending', 'psychological-horror', 'unreliable-narrator', 'time-loop-feel', 'paranormal', 'forgotten-trauma']
+    mode: text("mode").$type<BookMode>().notNull().default('interactive'), // Book creation mode (story format)
     status: text("status").$type<BookStatus>().notNull().default('draft'),
     visibility: text("visibility").$type<BookVisibility>().notNull().default('private'),
     mc: jsonb("mc").$type<StoryMC>().notNull(), // Main character profile with name, age, gender
@@ -512,6 +513,7 @@ export const bookGenerations = pgTable(
     aiComment: text("ai_comment"),
     language: text("language"),
     titleIdea: text("title_idea"),
+    mode: text("mode").$type<BookMode>().notNull().default('interactive'), // Book creation mode (story format)
     mcCandidate: jsonb("mc_candidate").$type<StoryMCCandidate>(),
     generateCoverImage: boolean("generate_cover_image").notNull().default(false),
     generationStatus: text("generation_status").$type<BookGenerationStatus>().default('pending'),

@@ -1722,6 +1722,7 @@ export function mapBookFromDb(dbBook: DBBook): Book {
     mc: dbBook.mc,
     topPick: dbBook.topPick || undefined,
     isOriginal: dbBook.isOriginal ?? false,
+    mode: dbBook.mode ?? 'interactive',
     creditsPrice: dbBook.creditsPrice || 0,
     originalThemeInput: dbBook.originalThemeInput || undefined,
     storyStartDate: dbBook.storyStartDate || undefined,
