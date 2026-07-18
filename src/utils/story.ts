@@ -435,7 +435,7 @@ export function calculatePsychologicalDeltas(baseState: StoryState, newState: St
   if (Object.keys(deltas).length) {
     console.log(`[calculatePsychologicalDeltas] ✅ Calculated psychological state delta:`, deltas);
   } else {
-    console.warn(`[calculatePsychologicalDeltas] ⚠️ No psychological state update`);
+    console.debug(`[calculatePsychologicalDeltas] ℹ️ No psychological state update`);
   }
 
   return deltas;
@@ -1254,9 +1254,12 @@ export function processThreadUpdates(state: StoryState, threadUpdates?: ThreadUp
 
   // Increase urgency every time the thread is introduced or touched
   // Increase urgency for threads that were introduced or touched on this page.
+  // Cap the per-page net bump and only nudge if not already near max, so a
+  // thread touched on consecutive pages can't pin to 1.0 and lose its
+  // ability to distinguish "actively developing" from "maxed-out weeks ago".
   for (const thread of state.threads) {
-    if (thread.lastUpdatedAt === state.page) {
-      thread.urgency = Math.min(1.0, thread.urgency + (thread.importance * 0.03));
+    if (thread.lastUpdatedAt === state.page && thread.urgency < 0.95) {
+      thread.urgency = Math.min(1.0, thread.urgency + (thread.importance * 0.015));
     }
   }
 }
@@ -1501,6 +1504,11 @@ export function updateWorldClock(state: StoryState, sceneType?: SceneType, minut
     }
   }
 
+  // Per-page delta: this is the minutes elapsed since the reader's last
+  // action (see WorldClock type doc). It is OVERWRITTEN each page, never
+  // accumulated — the prompt consumes it verbatim as "Time elapsed since last
+  // action" (prompt.ts). A cumulative value would contradict both the type
+  // doc and that label. Keep `=` (not `+=`).
   clock.elapsedMinutes = minutesPassed;
 }
 
@@ -1531,8 +1539,17 @@ export function derivePsychologicalProfile(state: StoryState, context: Narrative
   // Use a Set to automatically prevent duplicate traits (e.g., "curious", "curious")
   const traitSet = new Set<string>();
   
-  // 1. Determine Archetype (Same priority queue logic)
-  if (flags.curiosity === "high" && flags.fear !== "high") {
+  // 1. Determine Archetype (priority queue — strongest/rarest signals win ties)
+  // Memory corruption is the rarest, most defining signal, so it is evaluated
+  // FIRST: a corrupted-memory MC must not be mis-assigned to the_explorer /
+  // the_risk_taker just because they are also curious/fearful. Assigning the
+  // wrong archetype desyncs dominantTraits and primaryWeakness from the real state.
+  if (memoryIntegrity !== "stable" && flags.trust === "medium") {
+    archetype = "the_denier";
+    manipulationAffinity = "confusion";
+    traitSet.add("rationalizing").add("avoidant").add("conflicted");
+  }
+  else if (flags.curiosity === "high" && flags.fear !== "high") {
     archetype = "the_explorer";
     manipulationAffinity = "confusion";
     traitSet.add("curious").add("investigative");
@@ -1556,11 +1573,6 @@ export function derivePsychologicalProfile(state: StoryState, context: Narrative
     archetype = "the_avoider";
     manipulationAffinity = "control_loss";
     traitSet.add("cautious").add("hesitant").add("safety-seeking");
-  } 
-  else if (memoryIntegrity !== "stable" && flags.trust === "medium") {
-    archetype = "the_denier";
-    manipulationAffinity = "confusion";
-    traitSet.add("rationalizing").add("avoidant").add("conflicted");
   }
 
   // 2. Determine Stability Level dynamically based on Momentum
@@ -1633,19 +1645,30 @@ export function updatePsychologicalProfile(state: StoryState, context: Narrative
  * Analyzes the complete story state including psychological profile,
  * flags, hidden state, and profile shifts to recommend the most
  * appropriate ending archetype for maximum narrative impact.
+ *
+ * NOTE: This is *advisory* — it returns text for the prompt (buildEndingRules)
+ * and the post-story "psychological autopsy", and does NOT mutate `viableEnding`.
+ * The actual mutation is performed by `updateAdvancedEndingSystems` (which arms
+ * `EndingPlan`s / detects `profileShift` directly).
  * 
  * @param state - Current story state with psychological profile and flags
- * @returns A structured recommendation object detailing the target ending
+ * @returns A structured recommendation. `recommendChange` is `true` only when an
+ *   armed `EndingPlan` or a detected profile shift justifies overriding the
+ *   carried `viableEnding`; otherwise it echoes the plan (`recommendChange: false`).
  * 
  * @example
  * ```typescript
  * const ending = determineOptimalEnding(state);
- * // Returns: "false_reality" for high-curiosity explorers
+ * // recommendChange: false, type === state.viableEnding.type  (normal case)
+ * // recommendChange: true,  type === shifted ending           (profile shift / armed plan)
  * ```
  */
 export function determineOptimalEnding(state: StoryState): EndingRecommendation {
-  const { flags, psychologicalProfile, hiddenState, viableEnding } = state;
-  const { archetype, stability } = psychologicalProfile;
+  const { hiddenState, viableEnding } = state;
+  // NOTE: `psychologicalProfile` (archetype/stability) is intentionally NOT
+  // used to *guess* an ending anymore — that base-archetype heuristic was dead
+  // code that contradicted the AI-authored viableEnding (BUG-02). It is only
+  // relevant when a profile shift has already been detected (Tier 2).
 
   // ---------------------------------------------------------
   // TIER 1: Respect an Active Ending Plan (Highest Priority)
@@ -1688,6 +1711,7 @@ export function determineOptimalEnding(state: StoryState): EndingRecommendation 
     return {
       type: targetEnding,
       summary,
+      recommendChange: true,
       because: {
         tier: "ending_plan",
         planType: hiddenState.endingPlan.type,
@@ -1697,15 +1721,16 @@ export function determineOptimalEnding(state: StoryState): EndingRecommendation 
   }
 
   // ---------------------------------------------------------
-  // TIER 2: Profile Shift Mutation
+  // TIER 2: Profile Shift Mutation (a genuine recommendation to CHANGE the plan)
   // ---------------------------------------------------------
   if (hiddenState.profileShift?.detected) {
     const shiftData = getShiftedEnding(hiddenState.profileShift.shiftType, viableEnding?.type);
-    
+
     if (shiftData) {
       return {
         type: shiftData.type,
         summary: shiftData.summary,
+        recommendChange: true,
         because: {
           tier: "profile_shift",
           shiftType: hiddenState.profileShift.shiftType,
@@ -1716,54 +1741,25 @@ export function determineOptimalEnding(state: StoryState): EndingRecommendation 
   }
 
   // ---------------------------------------------------------
-  // TIER 3: Base Archetype Logic
+  // DEFAULT: Keep the AI-authored viable ending (the common case).
+  // The carried `viableEnding` is authored from page 1, so it is almost
+  // always defined. We do NOT fall through to base-archetype "guessing":
+  // those heuristics contradict the narrative the AI already built and were
+  // dead code (BUG-02). `recommendChange: false` tells buildEndingRules to
+  // OMIT the contradictory "re-determine based on…" heuristic block and just
+  // steer toward the carried plan.
   // ---------------------------------------------------------
-  const baseBecause = {
-    tier: "base_archetype" as const,
-    archetype,
-    stability,
-    curiosity: flags.curiosity,
-    fear: flags.fear
+  return {
+    type: viableEnding?.type ?? "ambiguity",
+    summary: viableEnding?.text ?? "",
+    recommendChange: false,
+    because: {
+      tier: "base_archetype",
+      // Trace only — `because.tier` is a printed label, never an input (see type doc).
+      source: "viable_ending",
+      plannedType: viableEnding?.type
+    }
   };
-
-  switch (archetype) {
-    case "the_explorer":
-      return flags.curiosity === "high"
-        ? { type: "false_reality", summary: "High curiosity leads to discovering impossible, uncomfortable truths.", because: baseBecause }
-        : { type: "fake_escape", summary: "Explorer's curiosity waned; they settled for a false exit.", because: baseBecause };
-    
-    case "the_avoider":
-      return { type: "irreversible_loss", summary: "Avoidance eventually demands a permanent, irreversible toll.", because: baseBecause };
-    
-    case "the_risk_taker":
-      return flags.fear === "low"
-        ? { type: "fake_escape", summary: "Blind bravery walks directly into an illusion of safety.", because: baseBecause }
-        : { type: "irreversible_loss", summary: "Taking risks while fearful leads to permanent, punishing consequences.", because: baseBecause };
-    
-    case "the_paranoid":
-      return stability === "unstable"
-        ? { type: "loop", summary: "Complete instability traps the paranoid mind in a familiar nightmare.", because: baseBecause }
-        : { type: "false_reality", summary: "Paranoia pays off: the world actually isn't real.", because: baseBecause };
-    
-    case "the_guilty":
-      return { type: "pyrrhic_victory", summary: "Guilt demands sacrifice; success comes at an unacceptable moral cost.", because: baseBecause };
-    
-    case "the_denier":
-      return stability === "unstable"
-        ? { type: "mental_fabrication", summary: "Denial shatters into full mental fabrication of events.", because: baseBecause }
-        : { type: "identity_twist", summary: "Denial masks the fact that the MC is not who they think they are.", because: baseBecause };
-    
-    default:
-      return {
-        type: viableEnding?.type ?? "ambiguity",
-        summary: "No strong archetype traits detected. Defaulting to viable ending or ambiguity.",
-        because: {
-          tier: "fallback",
-          archetype,
-          viableEnding: viableEnding?.type
-        }
-      };
-  }
 }
 
 /**
@@ -1813,11 +1809,27 @@ export function setupFakeToRealEnding(
  */
 export function detectProfileShift(state: StoryState): boolean {
   if (state.actionsHistory.length < 6) return false; // Need enough data
-  
+
   const profile = state.psychologicalProfile;
   const recentActions = state.actionsHistory.slice(-3);
   const earlierActions = state.actionsHistory.slice(-6, -3);
-  
+
+  // Reversal guard: if a previously-detected shift no longer holds,
+  // clear it so a later, accurate shift can take over. Without this,
+  // a single transient behavior blip (e.g. one early 'escape' after a
+  // curious opening) permanently mutates the ending via updateAdvancedEndingSystems.
+  const stillHolds = state.hiddenState.profileShift
+    ? shiftStillHolds(state.hiddenState.profileShift.shiftType, recentActions, earlierActions)
+    : false;
+  if (state.hiddenState.profileShift && !stillHolds) {
+    state.hiddenState.profileShift = undefined;
+  }
+
+  // Only lock a NEW shift once the story is late-game (past 60%),
+  // so momentary early behavior can't irreversibly change the ending.
+  const canArm = (state.page / state.maxPage) > 0.6;
+  if (!canArm && !state.hiddenState.profileShift) return false;
+
   // Detect curiosity collapse (was exploring, now avoiding)
   const wasCurious = earlierActions.some(a => a.type === "explore");
   const nowAvoiding = recentActions.some(a => a.type === "escape");
@@ -1991,6 +2003,62 @@ export function detectProfileShift(state: StoryState): boolean {
   }
   
   return false;
+}
+
+/**
+ * Re-evaluates whether a previously-detected profile shift still holds,
+ * given the reader's most recent vs earlier action windows.
+ *
+ * Mirrors the trigger conditions inside {@link detectProfileShift} for each
+ * shift type. Used by the reversal guard so a transient early blip
+ * (e.g. one 'escape' after a curious opening) can be cleared and
+ * superseded by a later, accurate shift instead of locking the ending.
+ *
+ * @param shiftType - The active shift type to re-test
+ * @param recentActions - Last 3 actions (most recent window)
+ * @param earlierActions - Prior 3 actions (baseline window)
+ * @returns True if the shift's trigger condition still matches
+ */
+function shiftStillHolds(
+  shiftType: ProfileShiftType,
+  recentActions: SelectedAction[],
+  earlierActions: SelectedAction[],
+): boolean {
+  switch (shiftType) {
+    case "curiosity_collapse":
+      return earlierActions.some(a => a.type === "explore") && recentActions.some(a => a.type === "escape");
+    case "fear_spike":
+      return earlierActions.some(a => a.type === "risk" || a.type === "attack")
+        && recentActions.some(a => a.type === "escape");
+    case "aggression_turn":
+      return earlierActions.every(a => a.type !== "attack" && a.type !== "deceive")
+        && recentActions.some(a => a.type === "attack");
+    case "deception_onset":
+      return earlierActions.every(a => a.type !== "deceive")
+        && recentActions.some(a => a.type === "deceive");
+    case "social_withdrawal":
+      return earlierActions.some(a => a.type === "social" || a.type === "protect")
+        && recentActions.every(a => a.type === "ignore" || a.type === "escape");
+    case "protective_to_aggressive":
+      return earlierActions.some(a => a.type === "protect")
+        && recentActions.some(a => a.type === "attack");
+    case "creative_to_destructive":
+      return earlierActions.some(a => a.type === "create" || a.type === "heal")
+        && recentActions.some(a => a.type === "attack");
+    case "archetype_collapse":
+      return recentActions.some(a => a.type === "escape");
+    case "reality_breakdown":
+      return recentActions.some(a => a.type === "deceive" || a.type === "ignore" || a.type === "escape");
+    case "manipulation_acceptance":
+      return earlierActions.some(a => a.type === "attack" || a.type === "risk" || a.type === "explore")
+        && recentActions.some(a => a.type === "ignore" || a.type === "deceive");
+    case "trait_inversion":
+      return recentActions.some(a => a.type === "escape" || a.type === "attack");
+    case "fear_to_aggression":
+      return recentActions.some(a => a.type === "attack");
+    default:
+      return false;
+  }
 }
 
 /**

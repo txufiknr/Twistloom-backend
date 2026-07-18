@@ -3115,7 +3115,7 @@ ${formatEndingPrompt(state, book)}`;
  */
 function buildEndingRules(state: StoryState): string {
   const { psychologicalProfile, hiddenState, viableEnding } = state;
-  const { isLastPage, isFinale, finalePhase = "EARLY" } = getStoryStateInfo(state);
+  const { isLastPage, isFinale, finalePhase = "EARLY", pageProgress } = getStoryStateInfo(state);
   const { profileShift, endingPlan } = hiddenState;
   const { type = "fake_escape", outline = [] } = viableEnding ?? {};
 
@@ -3161,14 +3161,27 @@ ENDING PRESSURE:
   // ==========================================
   const trapDirective = buildEndingTrapDirective(endingPlan);
   const optimalEnding = determineOptimalEnding(state);
+  // `optimalEnding` is the engine's heuristic OUTPUT — it never mutates the
+  // carried `viableEnding`. Only surface the "re-determine" + "Recommended
+  // ending type" block when the engine genuinely recommends a CHANGE
+  // (`recommendChange: true`, i.e. an armed EndingPlan or a detected profile
+  // shift). Otherwise we just steer toward the AI-authored viable ending and
+  // must NOT inject a contradictory base-archetype guess (that was BUG-02).
   const nextDestination = outline.find(o => !o.isDone);
 
-  return `- Gradually steer story toward viable ending plan${nextDestination ? ` (next in outline: "${nextDestination.text}")` : ''}
-- IMPORTANT: NEVER SPOIL this ending plan
-- Plant small hints across pages; don't fully explain or reveal early
-- Increase hint intensity as story progresses: early pages → very subtle, later pages → more obvious but still indirect
-${trapDirective ? `\n${trapDirective}\n` : ''}
-If the current viable ending is no longer viable, re-determine based on:
+  // Three-way ending guidance:
+  //  1. recommendChange === true  → engine has a concrete override (armed
+  //     EndingPlan or detected profile shift): show the explicit re-determine
+  //     block with the heuristic recommendation.
+  //  2. recommendChange === false BUT story is past its midpoint → the carried
+  //     viableEnding may have silently drifted out of sync (e.g. the MC's
+  //     profile intensified without tripping a discrete shift pattern). Rather
+  //     than impose a wrong engine guess (BUG-02), give the AI a NEUTRAL
+  //     permission to deviate if the narrative clearly outgrew the plan. This
+  //     closes that blind spot without ever prescribing a contradictory ending.
+  //  3. recommendChange === false and early → say nothing; the plan is fresh.
+  const recommendBlock = optimalEnding.recommendChange
+    ? `If the current viable ending is no longer viable, re-determine based on:
 - Psychological profile (archetype and stability)
 - Profile archetype: ${psychologicalProfile.archetype}
 - Profile stability: ${psychologicalProfile.stability}
@@ -3178,7 +3191,17 @@ If the current viable ending is no longer viable, re-determine based on:
 Recommended ending type (heuristic): ${optimalEnding.type}
 ${optimalEnding.summary}
 Because:
-${formatKeyValueList(optimalEnding.because)}`;
+${formatKeyValueList(optimalEnding.because)}`
+    : pageProgress > 0.5
+      ? `The planned ending is currently "${type}". You MAY deviate from it if the story has clearly outgrown this plan — but ONLY if strongly justified by the established narrative, and NEVER telegraph the change. Do not invent a replacement ending spec; let the deviation emerge naturally from the scene.`
+      : '';
+
+  return `- Gradually steer story toward viable ending plan${nextDestination ? ` (next in outline: "${nextDestination.text}")` : ''}
+- IMPORTANT: NEVER SPOIL this ending plan
+- Plant small hints across pages; don't fully explain or reveal early
+- Increase hint intensity as story progresses: early pages → very subtle, later pages → more obvious but still indirect
+${trapDirective ? `\n${trapDirective}\n` : ''}
+${recommendBlock}`;
 }
 
 /**

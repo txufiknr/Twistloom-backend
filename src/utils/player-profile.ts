@@ -100,19 +100,19 @@ function calculateBaseTraits(actionsHistory: SelectedAction[]): PsychologicalPro
     denial: 0
   };
   
-  actionsHistory.forEach(action => {
+  actionsHistory.forEach((action, idx) => {
     const influences = ACTION_INFLUENCES[action.type as keyof typeof ACTION_INFLUENCES] ?? ACTION_INFLUENCES.other;
 
-    // Uncomment to weight recent actions more heavily (EMA decay):
-    // traits.curiosity  *= 0.95;
-    // traits.fear       *= 0.95;
-    // traits.aggression *= 0.95;
-    // traits.denial     *= 0.95;
+    // Recency weighting: later actions matter more. Without this, early-game
+    // noise (e.g. a burst of `custom`/`other` free-text actions) permanently
+    // skews the profile regardless of the reader's actual later behavior.
+    // EMA-style decay — older actions are discounted toward 0.
+    const recency = Math.pow(0.95, actionsHistory.length - 1 - idx);
 
     Object.entries(influences).forEach(([trait, influence]) => {
       // Only accumulate the four declared base traits; trust/guilt are flags-authoritative
       if (trait in traits) {
-        traits[trait as keyof typeof traits] += influence as number;
+        traits[trait as keyof typeof traits] += (influence as number) * recency;
       }
     });
   });

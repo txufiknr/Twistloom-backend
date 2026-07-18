@@ -521,14 +521,43 @@ export type EndingPlan = {
 
 /**
  * Structured recommendation for the optimal story ending
+ *
+ * IMPORTANT: this object is *advisory text* for the prompt (see `buildEndingRules`)
+ * and the post-story "psychological autopsy" (see `psychological-profile.ts`). It
+ * does NOT mutate the carried `viableEnding` — that is done by `updateAdvancedEndingSystems`
+ * (which arms `EndingPlan`s / detects `profileShift` directly, never via this function).
+ *
+ * `recommendChange` distinguishes the two cases the engine can be in:
+ * - `true`  → the engine actively recommends *changing* the carried `viableEnding`
+ *             (an armed `EndingPlan` override, or a detected profile shift). The prompt
+ *             should surface the "re-determine" + "Recommended ending type" block.
+ * - `false` → keep the carried `viableEnding`. `type`/`summary` simply echo it; the
+ *             prompt must OMIT the contradictory heuristic block and just steer toward
+ *             the plan. (The AI-authored `viableEnding` is set from page 1, so this is
+ *             the common case — base-archetype "guessing" below it was dead code that
+ *             could contradict the narrative the AI built, which was BUG-02.)
  */
 export type EndingRecommendation = {
-  /** The specific ending archetype recommended */
+  /** The specific ending archetype (carried plan when `recommendChange` is false) */
   type: EndingType;
-  /** Human-readable summary of why this ending was chosen */
+  /** Human-readable summary of why this ending was chosen (or the carried plan text) */
   summary: string;
+  /**
+   * Whether the engine recommends *changing* the carried `viableEnding`.
+   * Gate the prompt's "re-determine based on…" + "Recommended ending type" block on this.
+   */
+  recommendChange: boolean;
   /** Traceable data object explaining the heuristic logic (excellent for debugging) */
   because: {
+    /**
+     * Traceability label only — describes *why* `determineOptimalEnding`
+     * returned this result. It is NOT an input to the decision; `buildEndingRules`
+     * (prompt.ts) only prints it back to the AI for transparency. Do not add a
+     * tier value expecting the engine to branch on it. When no `EndingPlan` is
+     * armed, the carried `viableEnding` is the engine's default path, so it is
+     * tagged `"base_archetype"` with `source: "viable_ending"` tracing detail
+     * rather than a separate tier.
+     */
     tier: "ending_plan" | "profile_shift" | "base_archetype" | "fallback";
     [key: string]: string | number | boolean | undefined;
   };
@@ -830,7 +859,16 @@ export type MissedEndingTeaser = {
  * Minutes are the base unit; can be formatted as "1m", "45m", "2h", etc.
  */
 export type WorldClock = {
-  /** In-fiction minutes since the reader's last action */
+  /**
+   * In-fiction minutes since the reader's last action.
+   *
+   * This is a **per-action delta**, NOT a cumulative in-fiction clock.
+   * `updateWorldClock` overwrites it with each page's `minutesPassed`
+   * (it is intentionally not accumulated). The only consumer is the prompt
+   * (`prompt.ts`), which surfaces it as "Time elapsed since last action:
+   * ~…". Keeping it a delta matches that label and the "since the reader's
+   * last action" contract above. Do not make it cumulative.
+   */
   elapsedMinutes: number;
 };
 

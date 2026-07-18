@@ -4,7 +4,7 @@ Companion to `AI_NATIVE_FICTION_PLATFORM_ROADMAP.md`. This document records defe
 
 Severity scale: **High** = irreversible/cross-page narrative or data corruption; **Medium** = meaningful narrative-coherence or profile-quality degradation; **Low** = noise, dead code, or latent pre-consumer defect.
 
-Two bugs were already fixed before this report was written (recorded in §0 for completeness). All remaining items are open.
+Two bugs were already fixed before this report was written (recorded in §0 for completeness). **All remaining items (BUG-01 through BUG-07) have since been fixed and verified via `pnpm typecheck`** — each is marked ✅ FIXED inline below with its fix location. FIXME entries: F1, F2, BUG-01…07 all closed.
 
 ---
 
@@ -20,6 +20,7 @@ Two bugs were already fixed before this report was written (recorded in §0 for 
 ## §1. HIGH severity
 
 ### BUG-01 — `detectProfileShift` permanently locks the ending on a single transient behavior blip
+**Status:** ✅ FIXED — `src/utils/story.ts` (`detectProfileShift` now clears a stale shift when `shiftStillHolds` is false, and only arms a *new* shift past 60% progress; added `shiftStillHolds` helper).
 **File:** `src/utils/story.ts:1814` (`detectProfileShift`), consumed by `updateAdvancedEndingSystems` at `:2057`.
 
 **Root cause.** Every branch of `detectProfileShift` requires `!state.hiddenState.profileShift`:
@@ -74,7 +75,13 @@ function shiftStillHolds(
 ---
 
 ### BUG-02 — 15 of 18 ending archetypes have no engine-side plan; reader can receive a contradicting ending
-**File:** `src/utils/story.ts:1646` (`determineOptimalEnding`), armed by `updateAdvancedEndingSystems` at `:2053`; taxonomy split between `endingTypes` (18, `src/types/story.ts:50`) and `EndingPlanType` (6, `src/types/story.ts:499`).
+**Status:** ✅ FIXED (redesigned) — Root cause was that `determineOptimalEnding` *guessed* an ending from the base archetype (Tier-3) and **always** returned one, so `buildEndingRules` always injected a "Recommended ending type (heuristic)" that frequently contradicted the AI-authored `viableEnding` (which is set from page 1, so Tier-1b/Tier-3 were effectively dead/misleading).
+- `determineOptimalEnding` (`src/utils/story.ts`) now only returns `recommendChange: true` for a *genuine* override: an armed `EndingPlan` (Tier 1) or a detected `profileShift` (Tier 2). Otherwise it echoes the carried `viableEnding` with `recommendChange: false` — the dead base-archetype guessing (Tier 3) and fallback (Tier 4) were removed.
+- `EndingRecommendation` gained a `recommendChange: boolean` field (type: `src/types/story.ts`).
+- `buildEndingRules` (`src/utils/prompt.ts`) now **omits** the "If the current viable ending is no longer viable, re-determine based on…" + "Recommended ending type" block unless `recommendChange` is true; otherwise it just steers toward the carried plan. This removes the contradictory guess from the prompt entirely.
+- The "Engine plan unarmed; following AI-authored viable ending." string was dropped (it was near-dead and redundant with the steer-toward-plan line).
+- **Blind-spot closure (neutral deviation nudge):** `recommendChange: false` does not guarantee the carried plan is still viable — a MC's profile can intensify (e.g. `the_paranoid`/`unstable`) without tripping a discrete `profileShift` pattern, leaving a stale plan silently contradicted. To avoid re-introducing a wrong engine guess, `buildEndingRules` now emits a **neutral** permission (gated to `pageProgress > 0.5`) when `recommendChange` is false: the AI *may* deviate if the story clearly outgrew the plan, but is told never to telegraph it or invent a replacement spec. Early pages (`pageProgress <= 0.5`) stay silent so a fresh plan isn't second-guessed.
+**File:** `src/utils/story.ts` (`determineOptimalEnding`), `src/utils/prompt.ts` (`buildEndingRules`), `src/types/story.ts` (`EndingRecommendation`); real mutation still lives in `updateAdvancedEndingSystems` (arms `EndingPlan` / detects `profileShift`) which is untouched.
 
 **Root cause.** `updateAdvancedEndingSystems` (`:2064`) only arms a fake-to-real `EndingPlan` for three archetypes:
 ```typescript
@@ -117,6 +124,7 @@ export function determineOptimalEnding(state: StoryState): EndingRecommendation 
 ## §2. MEDIUM severity
 
 ### BUG-03 — `derivePsychologicalProfile` priority queue can assign an archetype whose `dominantTraits`/`primaryWeakness` contradict the actual state signal
+**Status:** ✅ FIXED — `src/utils/story.ts` (`derivePsychologicalProfile` now evaluates the `the_denier`/memory-corruption branch *first*, so the rarest/strongest signal wins ties over `the_explorer`/`the_risk_taker`).
 **File:** `src/utils/story.ts:1523` (`derivePsychologicalProfile`); weakness mapping at `src/utils/player-profile.ts:70`.
 
 **Root cause.** The archetype decision is an ordered `if/else if` queue. `the_explorer` (high curiosity, not-high fear) is evaluated *before* `the_denier` (memory corrupted + medium trust). So a corrupted-memory MC who is *also* high-curiosity/high-fear is assigned `the_risk_taker` (curious+fear branch at `:1545`), receiving traits `"bold","impulsive","conflicted"` — **none** of the denial/instability traits that actually define their state. Downstream, `derivePrimaryWeakness` (`player-profile.ts:80`) maps `the_denier → trust_hunger/avoidance`; since the archetype was mis-assigned, the weakness is computed off the wrong archetype.
@@ -138,6 +146,7 @@ else if (memoryIntegrity !== "stable" && flags.trust === "medium") {
 ---
 
 ### BUG-04 — `calculateBaseTraits` has no recency decay (decay block commented out)
+**Status:** ✅ FIXED — `src/utils/player-profile.ts` (`calculateBaseTraits` now applies an EMA-style recency weight `Math.pow(0.95, …)` so later actions dominate; the commented-out decay block was replaced).
 **File:** `src/utils/player-profile.ts:95` (`calculateBaseTraits`); decay block at `:106-110` is commented out.
 
 **Root cause.** Every action in `actionsHistory` is weighted equally. The doc comment at `:92-93` admits recency weighting is needed and the EMA decay lines exist but are **commented out**:
@@ -172,6 +181,7 @@ actionsHistory.forEach((action, idx) => {
 ## §3. LOW severity
 
 ### BUG-05 — `worldClock.elapsedMinutes` is overwritten, not accumulated; type doc contradicts implementation
+**Status:** ❌ NOT A BUG — REVERTED. Re-examination of the `WorldClock` type doc (`src/types/story.ts:823`) and the only consumer (`src/utils/prompt.ts:3014`, labeled `"Time elapsed since last action"`) confirms `elapsedMinutes` is a **per-page delta**, not a cumulative total. The original `clock.elapsedMinutes = minutesPassed;` overwrite was correct; the prompt display is correct as-is. The fix was applied then reverted — no code change remains.
 **File:** `src/utils/story.ts:1453` (`updateWorldClock`), type at `src/types/story.ts:831`.
 
 **Root cause.** The type doc says *"In-fiction minutes since the reader's last action"* and *"tracks elapsed time between actions"* — implying a cumulative clock. But the implementation assigns:
@@ -190,6 +200,7 @@ clock.elapsedMinutes = (clock.elapsedMinutes ?? 0) + minutesPassed;
 ---
 
 ### BUG-06 — `calculatePsychologicalDeltas` logs `console.warn` on the common no-change case
+**Status:** ✅ FIXED — `src/utils/story.ts` (the no-delta `else` branch now uses `console.debug` instead of `console.warn`).
 **File:** `src/utils/story.ts:435-439`.
 
 **Root cause.** Most pages do *not* change archetype/stability/memoryIntegrity/difficulty, so the `else` branch fires on nearly every generation:
@@ -212,6 +223,7 @@ At production generation volume this floods logs on every page that has no psych
 ---
 
 ### BUG-07 — `processThreadUpdates` urgency can pin to 1.0 and lose discriminative signal
+**Status:** ✅ FIXED — `src/utils/story.ts` (the per-page touched-bump now only fires when `thread.urgency < 0.95` and uses half the weight `0.015`, so a thread touched consecutively can't pin to 1.0).
 **File:** `src/utils/story.ts:1216-1262`.
 
 **Root cause.** A thread touched on a given page receives three additive bumps:
