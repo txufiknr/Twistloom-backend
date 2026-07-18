@@ -27,6 +27,7 @@
 [ ] formatEndingPlan: if no `changeNote` (initial viable ending), use from `book.ending` instead
 [ ] on book.ending edit, evaluate with AI for security and viability score
 [ ] userComments: per paragraph comment
+[ ] always generate AI illustration for page 1
 
 ---
 

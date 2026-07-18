@@ -673,7 +673,8 @@ export type HiddenState = {
  * Affects how reliably past events are recalled and
  * whether contradictions appear in the narrative.
  */
-export type MemoryIntegrity = "stable" | "fragmented" | "corrupted";
+export const memoryIntegrities = ['stable', 'fragmented', 'corrupted'] as const;
+export type MemoryIntegrity = typeof memoryIntegrities[number];
 
 /**
  * Overall story difficulty and psychological pressure
@@ -927,7 +928,6 @@ export type PsychologicalProfileTraits = {
   denial: number;
 };
 
-// TODO: separate time-related props into new TemporalContext type
 export type StoryScene = {
   /** Current emotional atmosphere */
   mood?: Mood;
@@ -945,12 +945,6 @@ export type StoryScene = {
   momentum?: StoryMomentum;
   /** Characters physically present in the scene */
   charactersPresent?: SceneCharacter[];
-
-  // /** How much time duration of this page? */
-  // timeElapsed: { // Or ISO 8601 format: 'P1D', 'PT24H', etc
-  //   value: number;
-  //   unit: 'seconds' | 'minutes' | 'hours' | 'days' | 'months' | 'years';
-  // };
 };
 
 /**
@@ -1475,16 +1469,6 @@ export type StoryState = {
 
   /** Narrative reminders for future AI generations */
   futureNotes: FutureNote[];
-
-  // /** How much time duration until this page? */
-  // planning & concerns:
-  // - track and handle time skips (but this is a fast-paced thriller story)
-  // - if total duration >= 1 year, increment MC's age (inaccurate and not really important)
-  // - how can timeOfDay of next page generation be consistent?
-  // - but sometimes time elapsed is unknown/unreliable in mystery story
-  //
-  // timePassed: // ISO 8601 format: 'P1D', 'PT24H', etc
-  // only if `timeElapsed` implemented
 } & StoryMCState;
 
 export type StoryMCState = {
@@ -1569,8 +1553,7 @@ export type StoryStateSnapshotType = "interval" | "first" | "middle" | "last" | 
 
 export type StoryStateSource = 'original' | 'reconstructed';
 
-// TODO: should include memoryIntegrity
-export type InitialStoryState = Partial<Pick<StoryState, 'flags' | 'difficulty' | 'traumaTags' | 'plotFlags' | 'inventory'> & {
+export type InitialStoryState = Partial<Pick<StoryState, 'flags' | 'difficulty' | 'traumaTags' | 'plotFlags' | 'inventory' | 'memoryIntegrity'> & {
   injuries: InitialInjury[];
 }>;
 

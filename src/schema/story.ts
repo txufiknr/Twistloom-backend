@@ -2,7 +2,7 @@ import { FACT_KEY_FORMAT, HOOK_LENGTH, SUMMARY_LENGTH, MAX_CHARACTER_SECRETS, MA
 import { characterImportances, characterRecognitionLevels, characterStatuses, healthConditions, injuryCategories, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
 import type { NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter, CharacterRelationshipContext, CharacterUpdate, CharacterSchedule, StoryMCGeneration } from "../types/character.js";
 import { canonicalPlaceTypes, type NewPlace, type PlaceUpdate, placeWeathers, type PlaceUpdates, type PlaceConnectionUpdate, placeAccessibilities } from "../types/places.js";
-import { actionHintTypes, characterSceneRoles, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, sceneTypes, difficulties, endingTypes, storyMomentums, stabilityLevels, storyPhaseKeys, futureNoteTriggerTypes } from "../types/story.js";
+import { actionHintTypes, characterSceneRoles, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, sceneTypes, difficulties, endingTypes, storyMomentums, stabilityLevels, storyPhaseKeys, futureNoteTriggerTypes, memoryIntegrities } from "../types/story.js";
 import type { AIJsonActionFlag, AIJsonEvaluation, AIJsonEvaluationFix, AIJsonEvaluationIssue, AIJsonIntegrityFlag, AIJsonProperty, AIJsonScoreAfter, AIJsonScoreBefore, AIJsonScoreBreakdown, AIPromptOptions } from "../types/ai-chat.js";
 import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, TagItem, FutureNote, FactUpdate, StateDeltaGeneration, ActionGeneration, FutureNoteGeneration, FlagUpdate, PlotFlagType, InitialPlotFlag, TraitItem, SceneCharacter, SanityState } from "../types/story.js";
 import { threadPriorities, threadStatuses, threadTruths, type UpdateThread, type NewThread, type ThreadUpdates, type AddThreadClue, type InitialThreadClue } from "../types/story-thread.js";
@@ -989,6 +989,7 @@ export const BOOK_CREATION_SCHEMA_DEFINITION: Record<keyof BookCreationResponse,
       plotFlags: PLOT_FLAGS_SCHEMA,
       inventory: { type: 'array', items: INITIAL_INVENTORY_ITEM_SCHEMA },
       injuries: { type: 'array', items: INITIAL_INJURY_SCHEMA },
+      memoryIntegrity: { type: 'string', enum: [...memoryIntegrities] },
     } satisfies Record<keyof InitialStoryState, AIJsonProperty>,
     required: ['flags', 'difficulty', 'traumaTags', 'plotFlags'] satisfies (keyof InitialStoryState)[],
     additionalProperties: false

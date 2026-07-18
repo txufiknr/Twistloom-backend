@@ -1,7 +1,7 @@
 import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_CREATIVE, DEFAULT_MAX_OUTPUT_TOKEN } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { characterImportances, characterRecognitionLevels, characterStatuses, healthConditions, injuryCategories, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
-import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, endingTypes, finalePhases, plotFlagTypes, factTypes, flagLevels, psychologicalFlagsTypes, difficulties, sceneTypes, storyMomentums, characterSceneRoles, type StabilityLevel, storyPhaseKeys } from "../types/story.js";
+import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, endingTypes, finalePhases, plotFlagTypes, factTypes, flagLevels, psychologicalFlagsTypes, difficulties, sceneTypes, storyMomentums, characterSceneRoles, type StabilityLevel, storyPhaseKeys, memoryIntegrities } from "../types/story.js";
 import { createNonRetryableError } from "./retry.js";
 import { TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS, MAX_THREADS_CLUES, MAX_ACTION_CHOICES_FINALE, FUTURE_NOTE_LOOKAHEAD_DAYS } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
@@ -416,6 +416,7 @@ const firstBookOutputFormat: string = `{
       "guilt": "One of: low | medium | high",
       "curiosity": "One of: low | medium | high"
     },
+    "memoryIntegrity": "One of: ${formatOneOf(memoryIntegrities)}",
     "difficulty": "One of: ${formatOneOf(difficulties)}",
     "traumaTags": ["..."],
     "plotFlags": [
@@ -4101,8 +4102,8 @@ export async function initializeBook(
     const injuries = generatedInitialState.injuries?.map<Injury>((injury) => ({ ...injury, pageAcquired: 1, placeId })) || [];
     const healthStatus = calculateHealthStatus(injuries, {
       traumaTagCount:  generatedInitialState.traumaTags?.length ?? 0,
+      memoryIntegrity: generatedInitialState.memoryIntegrity ?? 'stable',
       fearLevel:       generatedInitialState.flags?.fear ?? 'low',
-      memoryIntegrity: 'stable', // TODO: shouldn't always be stable
     });
 
     // Create initial story state with generated psychological profile
@@ -4488,10 +4489,8 @@ function resolvePageDelta(params: {
   const futureNoteKeys = advancedState.futureNotes.map(note => note.key);
   const futureNoteKeysSet = new Set(futureNoteKeys);
   const duplicateKeys = futureNoteKeys.length - futureNoteKeysSet.size;
-  console.log(`[resolvePageDelta] 🔮 futureNoteKeys (${futureNoteKeys.length}):`, futureNoteKeys);
   if (duplicateKeys) {
-    // TODO: Investigate double key issue (kayanya udah)
-    console.warn(`[resolvePageDelta] ⚠️ ${duplicateKeys} duplicate futureNoteKeys found. Should be none.`);
+    console.warn(`[resolvePageDelta] ⚠️ ${duplicateKeys} duplicate futureNoteKeys found among ${futureNoteKeys.length} keys:`, futureNoteKeys);
   }
 
   const stateDelta = extractStateDelta({ generatedStoryPage, expectedPageNumber, futureNoteKeys });
