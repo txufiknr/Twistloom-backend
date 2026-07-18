@@ -16,6 +16,7 @@ import { pages, books, branches, users, userPageProgress, userCompletedBooks, us
 import type ImageKit from "@imagekit/nodejs";
 import { and, eq, asc, or, desc, ne, sql, isNull, lt } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
+import { validatePageActionsForMode } from "../utils/book-mode.js";
 import { MAX_GENERATION_DURATION_MS } from "../config/book-creation.js";
 import { getEnrichedBookSelect } from "./book-controller.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage, DBUpdateBook } from "../types/schema.js";
@@ -476,7 +477,7 @@ export async function persistPageWithState(params: {
   branchId: string;
   usedBranchIds: Set<string>; // must be passed in for within-call collision safety on retry
   context?: string;
-  book: Pick<Book, 'storyStartDate'>
+  book: Pick<Book, 'storyStartDate' | 'mode'>
 }): Promise<PersistedStoryPage> {
   const {
     userId,
@@ -492,7 +493,20 @@ export async function persistPageWithState(params: {
     book
   } = params;
 
-  const { storyStartDate } = book;
+  const { storyStartDate, mode } = book;
+
+  // ── MODE BRANCHING CONTRACT (insert-time gate) ───────────────────────────
+  // Enforce the book's creation mode before any DB write. A freshly generated
+  // page has no destinations yet (they are filled later by candidate
+  // generation), so this validates only the ACTION-COUNT rule:
+  //   novel       → exactly 1 action (linear path)
+  //   interactive → 1..MAX actions
+  //   multiverse  → 1..MAX actions
+  // The per-action destination limit is enforced later, when candidate
+  // generation writes destinations back (see enforceModeOnActionDestinations).
+  // Throws loudly if the AI produced a page that breaks its book's mode,
+  // rather than silently persisting an invalid story graph.
+  validatePageActionsForMode(mode, generatedStoryPage.actions);
 
   const { momentum: calculatedMomentum } = calculateStoryMomentum({
     state: newState,

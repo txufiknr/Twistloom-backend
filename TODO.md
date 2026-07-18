@@ -28,6 +28,7 @@
 [ ] on book.ending edit, evaluate with AI for security and viability score
 [ ] userComments: per paragraph comment
 [ ] always generate AI illustration for page 1
+[ ] before insert page, check book mode, adjust `actions` accordingly
 
 ---
 

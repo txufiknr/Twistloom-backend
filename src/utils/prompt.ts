@@ -12,6 +12,7 @@ import { calculateHealthStatus, generateRandomCharacter, getMainCharacterInfo } 
 import { getPreviousPages } from "../services/story.js";
 import { BOOK_MAX_PAGES, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/story.js";
 import { getErrorMessage } from "./error.js";
+import { validatePageActionsForMode } from "./book-mode.js";
 import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, insertBook, insertStoryPage, mapBookFromDb, getPageFromDB, getBookFromDB, persistPageWithState, mapToPersistedStoryPage, updateBook, invalidatePopularTagsCache } from "../services/book.js";
 import { dbWrite, dbRead } from "../db/client.js";
 import { bookGenerations } from "../db/schema.js";
@@ -1707,40 +1708,20 @@ function getActionRulesText(stateInfo: Partial<StoryStateInfo> & { mode?: BookMo
   const { isFirstPage, isFinale, mode } = stateInfo;
   const limit = isFirstPage || isFinale ? MAX_ACTION_CHOICES_FIRST_PAGE : MAX_ACTION_CHOICES;
 
-  // ── NOVEL: no branching actions at all ─────────────────────────────────────
-  if (mode === 'novel') {
-    return `This is a NOVEL — a strictly LINEAR story. Do NOT generate any branching actions or choices. Set "actions" to an empty array [] for every page. The narrative must flow as one continuous, inevitable path with a single ending.`;
-  }
+  const base = mode === 'novel' ? `Generate exactly 1 definitive action:
+- text: ${ACTION_TEXT_LENGTH}.
+- Make actions feel immediate, natural, and narrative-driven. Avoid over-explaining.
+- Can be physical verb (what to do) or dialogue (what to say).
+- Example: "Who are you?" / Run away, fast.` :
 
-  // ── INTERACTIVE: branching, but exactly one destination per action ────────
-  if (mode === 'interactive') {
-    return `Generate ${MIN_ACTION_CHOICES}-${limit} actions to choose:
+`Generate ${MIN_ACTION_CHOICES}-${limit} actions to choose:
 - text: ${ACTION_TEXT_LENGTH}. MUST be 100% unique (used as identifier).
 - Make actions feel immediate, natural, and narrative-driven. Avoid over-explaining.
 - Naturally mix physical verbs (what to do) and dialogue (what to say).
 - Example: A. "Who are you?" / B. Run away, fast.
-- If no action is viable or needed, generate exactly 1 choice.
+- If no action is viable or needed, generate exactly 1 choice.`;
 
-${isFinale ? `ENTROPY COLLAPSE SYSTEM (Finale mechanic):
-- Reduce the number of meaningful actions while sustaining immersion.
-- Make actions feel constrained, inevitable, or repetitive. Completely different choices MUST funnel into the exact same terrifying consequence.
-- Example: A. Open the door / B. Knock first -> (Both lead to the door opening).`
-: `BRANCHING DIVERGENCE RULES:
-- Actions must be meaningfully distinct. No two actions should lead to the same implied consequence.
-- Each action MUST resolve to exactly ONE destination page (a single chosen path) — do NOT pre-generate alternate fates or parallel timelines.
-- Provide a mix of safe, risky, and ambiguous choices.
-- Occasionally include a deceptive choice.`}`;
-  }
-
-  // ── MULTIVERSE (default): current behaviour ───────────────────────────────
-  return `Generate ${MIN_ACTION_CHOICES}-${limit} actions to choose:
-- text: ${ACTION_TEXT_LENGTH}. MUST be 100% unique (used as identifier).
-- Make actions feel immediate, natural, and narrative-driven. Avoid over-explaining.
-- Naturally mix physical verbs (what to do) and dialogue (what to say).
-- Example: A. "Who are you?" / B. Run away, fast.
-- If no action is viable or needed, generate exactly 1 choice.
-
-${isFinale ? `ENTROPY COLLAPSE SYSTEM (Finale mechanic):
+  return `${base}\n\n${isFinale ? `ENTROPY COLLAPSE SYSTEM (Finale mechanic):
 - Reduce the number of meaningful actions while sustaining immersion.
 - Make actions feel constrained, inevitable, or repetitive. Completely different choices MUST funnel into the exact same terrifying consequence.
 - Example: A. Open the door / B. Knock first -> (Both lead to the door opening).`
@@ -4029,6 +4010,19 @@ export async function initializeBook(
       throw new Error('Failed to generate book: first page text is too short');
     }
 
+    // ── Novel-mode first-page contract ───────────────────────────────────────
+    // Novel mode is a single linear path: the opening page must present exactly
+    // one action. If the AI produced multiple, randomly keep a single one so the
+    // story still opens with a meaningful (non-deterministic) choice.
+    let firstPageForBook = generatedFirstPage;
+    if (mode === 'novel' && generatedFirstPage.actions.length > 1) {
+      const [picked] = generatedFirstPage.actions
+        .slice()
+        .sort(() => Math.random() - 0.5)
+        .slice(0, 1);
+      firstPageForBook = { ...generatedFirstPage, actions: [picked] };
+    }
+
     // Normalize viable ending object
     const viableEnding: Ending | undefined = initialEnding ? { ...initialEnding, outline: initialEnding.outline.map(text => ({ text, isDone: false })) } : undefined;
 
@@ -4154,15 +4148,23 @@ export async function initializeBook(
 
     // ── 7. Persist first page ─────────────────────────────────────────────────
     const pageToInsert: StoryPage = {
-      ...generatedFirstPage,
+      ...firstPageForBook,
       stateDelta: {},
       placeId,
     };
+
+    // ── MODE BRANCHING CONTRACT (first-page gate) ────────────────────────────
+    // The first page is inserted via insertStoryPage (not persistPageWithState),
+    // so enforce the mode's action-count rule here as well. For novel mode this
+    // guarantees the story opens with exactly one action (a single linear path);
+    // interactive/multiverse permit multiple opening choices.
+    validatePageActionsForMode(mode, pageToInsert.actions);
+
     const firstPage = await insertStoryPage(userId, 1, pageToInsert, {
       bookId,
       branchId: 'main',
       aiResponseProvider: response,
-      storyStartDate: generatedFirstPage.calendarDate
+      storyStartDate: firstPageForBook.calendarDate
     }, { client });
 
     const { id: pageId, calendarDate, timeOfDay, actions } = firstPage;

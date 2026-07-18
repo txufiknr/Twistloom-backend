@@ -36,7 +36,7 @@ import { formatDuration } from './formatter.js';
 import { delay } from './time.js';
 import { isValidUuid } from './uuid.js';
 import type { DBPage } from '../types/schema.js';
-import { dedupe } from './parser.js';
+import { clampCandidateCountForMode, enforceModeOnActionDestinations } from './book-mode.js';
 
 /**
  * Performance metrics for candidate generation
@@ -394,13 +394,25 @@ export function calculateGenerationTimeout(
  * ```
  */
 export async function generateCandidatePages(params: GenerateCandidatePageParams): Promise<PersistedStoryPage[]> {
-  const { userId, action: actionCandidate, currentBook, currentPage, currentState, generateNewBranchId, candidateCount, skipIfAlreadyHasDestinations = true } = params;
+  const { userId, action: actionCandidate, currentBook, currentPage, currentState, generateNewBranchId, skipIfAlreadyHasDestinations = true } = params;
+  let { candidateCount } = params;
   
   // 1. Validate page context for candidates generation
   if (!currentPage || !currentBook) {
     throw createNonRetryableError('Missing: currentPage and currentBook are required');
   }
-  
+
+  // ── MODE BRANCHING CONTRACT (generation-time gate) ──────────────────────
+  // novel / interactive allow only ONE destination per action, so generating
+  // multiple candidate pages per action would be wasted work (and the extra
+  // destinations are dropped later by enforceModeOnActionDestinations anyway).
+  // Clamp the requested candidate count to the mode limit before any AI call.
+  const modeClampedCandidateCount = clampCandidateCountForMode(currentBook.mode, candidateCount ?? MAX_CANDIDATE_PAGE_PER_ACTION);
+  if ((candidateCount ?? MAX_CANDIDATE_PAGE_PER_ACTION) !== modeClampedCandidateCount) {
+    console.log(`[generateCandidatePage] 🔧 Mode "${currentBook.mode}" clamps candidateCount ${candidateCount} → ${modeClampedCandidateCount}`);
+  }
+  candidateCount = modeClampedCandidateCount;
+
   // 2. Check for invalid actions (will be removed)
   if (!actionCandidate.text) {
     throw createNonRetryableError(`Invalid action: no text`, 'INVALID_ACTION');
@@ -440,8 +452,10 @@ export async function generateCandidatePages(params: GenerateCandidatePageParams
       }
     } else {
       // Top-up path: generate the missing alternatives
-      const needed = limit - existing.length;
-      console.log(`[generateCandidatePage] 🔁 Topping up ${existing.length}→${limit} (generating ${needed} more)`);
+      // Clamp to the mode limit so novel/interactive never top-up beyond 1.
+      const modeLimit = clampCandidateCountForMode(currentBook.mode, limit);
+      const needed = Math.min(limit - existing.length, modeLimit);
+      console.log(`[generateCandidatePage] 🔁 Topping up ${existing.length}→${existing.length + needed} (generating ${needed} more)`);
       const topUpPages = await generateNextPages({
         userId,
         book: currentBook,
@@ -888,7 +902,17 @@ export async function ensureCandidatesForPageWithStrategy(
     ): void {
       // Use action index map for O(1) lookup and update
       const existingIndex = actionIndexMap.get(action.text);
-      const destinationPageIds = dedupe([...(action.destinationPageIds ?? []), ...candidatePages.map(p => p.id)]);
+      // ── MODE BRANCHING CONTRACT (destination-time gate) ───────────────────
+      // Cap the destinations written onto this action to the book's mode limit:
+      //   novel / interactive → exactly 1 destination per action
+      //   multiverse          → multiple (parallel timelines, no cap)
+      // Even if the AI produced extra candidate pages, the persisted
+      // destinationPageIds can never exceed the mode's branching rule.
+      const destinationPageIds = enforceModeOnActionDestinations(
+        currentBook.mode,
+        action.destinationPageIds,
+        candidatePages.map(p => p.id),
+      );
       const updatedAction: Action = { ...action, destinationPageIds };
 
       if (existingIndex !== undefined) {
