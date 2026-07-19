@@ -1,0 +1,291 @@
+/**
+ * @summary Runs periodic automated social mention discovery jobs
+ * @description Collects community posts containing "Twistloom" across open internet vectors.
+ * 
+ * Idempotency & Safety:
+ * - Safe to run continuously: relies on unique URL conflict exclusion rules (`onConflictDoNothing`).
+ * - Fault tolerant: individual source network or parsing failures will never kill the whole pipeline.
+ * - Local heuristic screening: computes context scores without hitting external semantic inference engines.
+ * 
+ * Process Environment Requirements:
+ * - `BRAVE_SEARCH_API_KEY` (Optional): Required only to unlock cross-platform broad web searching.
+ * 
+ * Schedule: Recommended to execute every 12 to 24 hours.
+ */
+import { getErrorMessage } from "../utils/error.js";
+
+// Canonical search configurations
+const SEARCH_KEYWORD = "Twistloom";
+
+interface NormalizedMention {
+  platform: string;
+  author: string;
+  authorAvatar?: string | null;
+  title?: string | null;
+  content: string;
+  url: string;
+  score: number;
+  publishedAt: Date | null;
+}
+
+/**
+ * Evaluates text parameters locally using deterministic criteria to establish content priorities
+ * @returns Object containing context heuristic evaluation scores
+ */
+function computeLocalHeuristics(textToAnalyze: string, title?: string | null): { relevance: number; sentiment: number } {
+  const combined = `${title || ""} ${textToAnalyze}`.toLowerCase();
+  let relevance = 0;
+  let sentiment = 0;
+
+  // Relevance logic
+  if (combined.includes("twistloom.com")) relevance += 50;
+  if (combined.includes(SEARCH_KEYWORD.toLowerCase())) relevance += 30;
+  
+  // Basic context keywords matching
+  const contextKeywords = ["story", "thriller", "branching", "interactive", "ai", "plot", "game", "novel"];
+  contextKeywords.forEach(kw => {
+    if (combined.includes(kw)) relevance += 5;
+  });
+
+  // Sentiment heuristics
+  const positiveWords = ["love", "amazing", "best", "good", "cool", "hooked", "impressed", "awesome", "wow", "funed"];
+  const negativeWords = ["bad", "terrible", "worst", "crash", "broken", "sucks", "hate", "trash", "buggy"];
+
+  positiveWords.forEach(word => {
+    const matches = combined.split(word).length - 1;
+    sentiment += matches * 0.2;
+  });
+  negativeWords.forEach(word => {
+    const matches = combined.split(word).length - 1;
+    sentiment -= matches * 0.3;
+    relevance -= matches * 10; // Deprioritize structural complaints or bug text on the homepage
+  });
+
+  return {
+    relevance: Math.max(0, relevance),
+    sentiment: Math.max(-1, Math.min(1, sentiment))
+  };
+}
+
+/**
+ * Collects mentions from Reddit's unauthenticated public JSON endpoints
+ */
+async function fetchRedditMentions(): Promise<NormalizedMention[]> {
+  try {
+    console.log("[social-ingest] 🟠 Querying Reddit public search standard endpoints...");
+    const response = await fetch(`https://www.reddit.com/search.json?q=${encodeURIComponent(SEARCH_KEYWORD)}&sort=new&limit=25`, {
+      headers: { "User-Agent": "TwistloomSocialProofBot/1.0.0" }
+    });
+
+    if (!response.ok) throw new Error(`HTTP error status received: ${response.status}`);
+    const data = await response.json() as any;
+
+    const items = data?.data?.children || [];
+    return items.map((item: any): NormalizedMention => {
+      const post = item.data;
+      return {
+        platform: "reddit",
+        author: `u/${post.author}`,
+        authorAvatar: null,
+        title: post.title,
+        content: post.selftext || post.title,
+        url: `https://permalink.reddit.com${post.permalink}`,
+        score: post.ups || 0,
+        publishedAt: post.created_utc ? new Date(post.created_utc * 1000) : null
+      };
+    });
+  } catch (error) {
+    console.error("[social-ingest] ❌ Failed to fetch telemetry from Reddit vector:", getErrorMessage(error));
+    return [];
+  }
+}
+
+/**
+ * Collects mentions from Hacker News via the unauthenticated Algolia search indexing API
+ */
+async function fetchHackerNewsMentions(): Promise<NormalizedMention[]> {
+  try {
+    console.log("[social-ingest] 🌐 Querying Hacker News Algolia historic indexing service...");
+    const response = await fetch(`https://hn.algolia.com/api/v1/search?query=${encodeURIComponent(SEARCH_KEYWORD)}&tags=(story,comment)`);
+    
+    if (!response.ok) throw new Error(`HTTP error status received: ${response.status}`);
+    const data = await response.json() as any;
+
+    const hits = data?.hits || [];
+    return hits.map((hit: any): NormalizedMention => {
+      const isComment = hit.title === null || typeof hit.title === "undefined";
+      return {
+        platform: "hackernews",
+        author: hit.author || "anonymous",
+        authorAvatar: null,
+        title: isComment ? `HN Comment on thread #${hit.story_id}` : hit.title,
+        content: hit.comment_text || hit.story_text || "",
+        url: `https://news.ycombinator.com/item?id=${hit.objectID}`,
+        score: hit.points || 0,
+        publishedAt: hit.created_at ? new Date(hit.created_at) : null
+      };
+    });
+  } catch (error) {
+    console.error("[social-ingest] ❌ Failed to fetch telemetry from Hacker News vector:", getErrorMessage(error));
+    return [];
+  }
+}
+
+/**
+ * Collects cross-platform web indicators using Brave Search Data API
+ * @see https://api.search.brave.com/app/dashboard to register applications and acquire token keys
+ */
+async function fetchBraveSearchMentions(apiKey?: string): Promise<NormalizedMention[]> {
+  if (!apiKey) {
+    console.log("[social-ingest] 🔍 Skipping Brave Search query string evaluation (API key absent)");
+    return [];
+  }
+
+  try {
+    console.log("[social-ingest] 🦁 Evaluating generic web indexing tables via Brave Search API...");
+    const response = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(SEARCH_KEYWORD)}&count=20`, {
+      headers: { 
+        "Accept": "application/json",
+        "X-Subscription-Token": apiKey 
+      }
+    });
+
+    if (!response.ok) throw new Error(`HTTP error status received: ${response.status}`);
+    const data = await response.json() as any;
+
+    const results = data?.web?.results || [];
+    return results.map((result: any): NormalizedMention => {
+      // Isolate root domains to stand in as generic alternative platform labels
+      let platformLabel = "web";
+      try { platformLabel = new URL(result.url).hostname.replace("www.", ""); } catch {
+        // no-op
+      }
+
+      return {
+        platform: platformLabel,
+        author: platformLabel,
+        authorAvatar: null,
+        title: result.title,
+        content: result.description || "",
+        url: result.url,
+        score: 0, // General indexing results don't have standard vote tracking configurations
+        publishedAt: result.page_age ? new Date(result.page_age) : null
+      };
+    });
+  } catch (error) {
+    console.error("[social-ingest] ❌ Failed to compile data maps from Brave Search interface:", getErrorMessage(error));
+    return [];
+  }
+}
+
+/**
+ * Execution pipeline controller managing cascading multi-source content workflows
+ */
+export async function runSocialMentionCollection(): Promise<void> {
+  const startedAt = Date.now();
+  
+  try {
+    console.log("[social-ingest] 🚀 Initiating global social commentary pipeline discovery...");
+
+    // Lazy load runtime persistence drivers
+    const { dbRead } = await import("../db/client.js");
+    const { socialMentions } = await import("../db/schema.js");
+
+    const braveKey = process.env.BRAVE_SEARCH_API_KEY;
+
+    // Parallel fetch initialization
+    const [redditResults, hnResults, braveResults] = await Promise.all([
+      fetchRedditMentions(),
+      fetchHackerNewsMentions(),
+      fetchBraveSearchMentions(braveKey)
+    ]);
+
+    // Consolidate payload structures
+    const unifiedCollection = [...redditResults, ...hnResults, ...braveResults];
+    
+    if (unifiedCollection.length === 0) {
+      console.log("[social-ingest] ✨ No indexing instances identified during this polling pass");
+      return;
+    }
+
+    console.log(`[social-ingest] 🔨 Processing ${unifiedCollection.length} raw inbound nodes for validation...`);
+    let loadedCount = 0;
+
+    for (const mention of unifiedCollection) {
+      try {
+        // Strip noise strings or HTML markers from indexing sources
+        const strippedContent = mention.content
+          .replace(/<[^>]*>/g, "")
+          .replace(/&quot;/g, '"')
+          .replace(/&#x27;/g, "'")
+          .trim();
+
+        if (!strippedContent) continue;
+
+        // Run algorithmic sorting metrics local calculations
+        const heuristics = computeLocalHeuristics(strippedContent, mention.title);
+
+        // Deduplication handled automatically during the standard writing query logic block
+        await dbRead
+          .insert(socialMentions)
+          .values({
+            platform: mention.platform,
+            author: mention.author,
+            authorAvatar: mention.authorAvatar,
+            title: mention.title,
+            content: strippedContent,
+            url: mention.url,
+            score: mention.score,
+            sentimentScore: heuristics.sentiment,
+            relevanceScore: heuristics.relevance,
+            status: "pending", // Queued for user curation
+            publishedAt: mention.publishedAt,
+          })
+          .onConflictDoNothing({ target: socialMentions.url });
+
+        loadedCount++;
+      } catch (innerError) {
+        // Shiled iterating items from general loops terminations
+        console.error(`[social-ingest] ⚠️ Encountered issues handling record point (${mention.url}):`, getErrorMessage(innerError));
+      }
+    }
+
+    const totalDuration = Date.now() - startedAt;
+    console.log(`[social-ingest] ✅ Aggregation pipeline concluded safely in ${totalDuration}ms:`, {
+      totalDiscovered: unifiedCollection.length,
+      processedWithoutExceptions: loadedCount,
+    });
+
+  } catch (error) {
+    console.error("[social-ingest] ❌ Unrecoverable failure processing data streams:", getErrorMessage(error));
+    throw error;
+  }
+}
+
+/**
+ * Main command terminal runtime invocation layer
+ */
+async function main(): Promise<void> {
+  const startedAt = Date.now();
+  try {
+    await runSocialMentionCollection();
+    console.log(`[social-ingest] ✅ Job ended safely in ${Date.now() - startedAt}ms`);
+    process.exit(0);
+  } catch (error) {
+    console.error("[social-ingest] ❌ Ingestion process terminated unexpectedly:", error);
+    process.exit(1);
+  }
+}
+
+// Global runtime termination traps mapping to structural validation expectations
+process.on("unhandledRejection", (reason) => {
+  console.error("[social-ingest] Fatal unhandled promise error caught:", reason);
+  process.exit(1);
+});
+
+process.on("uncaughtException", (error) => {
+  console.error("[social-ingest] Fatal uncaught system error context thrown:", error);
+  process.exit(1);
+});
+
+void main();

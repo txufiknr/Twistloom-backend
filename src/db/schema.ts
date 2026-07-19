@@ -1922,3 +1922,38 @@ export const clueEmbeddings = pgTable(
     unique("clue_embeddings_unique").on(t.pageId, t.threadId),
   ]
 );
+
+/**
+ * Social Mentions Table
+ * @summary Stores automatically collected community commentary, reviews, and platform mentions.
+ * @description Serves as an inbound queue for community social proof. Items are ingested as 'pending'
+ * and calculated with localized heuristic scores to prioritize administrative approval.
+ */
+export const socialMentions = pgTable(
+  "social_mentions",
+  {
+    id: id(),
+    platform: text("platform").notNull(), // 'reddit', 'hackernews', 'brave_search', etc.
+    author: text("author").notNull(),
+    authorAvatar: text("author_avatar"),
+    title: text("title"),
+    content: text("content").notNull(),
+    url: text("url").notNull(),
+    score: integer("score").default(0).notNull(), // Platform engagement metrics (upvotes/likes)
+    sentimentScore: real("sentiment_score").default(0).notNull(), // Local evaluation: -1.0 to 1.0
+    relevanceScore: real("relevance_score").default(0).notNull(), // Computed routing prioritization score
+    status: text("status").$type<'pending' | 'approved' | 'rejected'>().default('pending').notNull(),
+    publishedAt: timestamp("published_at", { withTimezone: true }),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    // Unique structural constraint ensuring an absolute lack of duplicate URLs across individual runs
+    unique("social_mentions_url_unique").on(t.url),
+    // Performance indexes for the eventual admin queue display
+    index("social_mentions_status_idx").on(t.status),
+    index("social_mentions_platform_idx").on(t.platform),
+    // Composite index optimizing curation queues by processing the high-quality items first
+    index("social_mentions_filtering_idx").on(t.status, t.relevanceScore.desc()),
+  ]
+);
