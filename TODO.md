@@ -26,7 +26,7 @@
 [ ] Place categories list di prompt aja
 [ ] formatEndingPlan: if no `changeNote` (initial viable ending), use from `book.ending` instead
 [ ] on book.ending edit, evaluate with AI for security and viability score
-[ ] userComments: per paragraph comment
+[x] userComments: per paragraph comment
 [ ] always generate AI illustration for page 1
 [ ] before insert page, check book mode, adjust `actions` accordingly
 

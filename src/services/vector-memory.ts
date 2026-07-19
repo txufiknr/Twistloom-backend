@@ -28,7 +28,7 @@
  * retrieval without a code change, if Jina misbehaves in production.
  */
 
-import { and, cosineDistance, eq, lt, sql } from 'drizzle-orm';
+import { and, cosineDistance, eq, inArray, lt, sql } from 'drizzle-orm';
 import { dbWrite, dbRead } from '../db/client.js';
 import { pages, pageEmbeddings, characterEmbeddings, placeEmbeddings, futureNoteEmbeddings, clueEmbeddings } from '../db/schema.js';
 import { embedText } from '../utils/embedding.js';
@@ -463,8 +463,8 @@ export async function retrieveRelevantFutureNotes(
     .where(and(
       eq(futureNoteEmbeddings.bookId, bookId),
       eq(futureNoteEmbeddings.branchId, branchId),
-      sql`${futureNoteEmbeddings.noteKey} = ANY(${candidateKeys})`,
-    ))
+       inArray(futureNoteEmbeddings.noteKey, candidateKeys),
+     ))
     .orderBy(distance)
     .limit(limit);
 
