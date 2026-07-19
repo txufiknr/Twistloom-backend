@@ -32,27 +32,6 @@
 
 ---
 
-social_posts
---------------
-id
-platform (typed string)
-author
-avatar
-content
-url
-likes
-featured (boolean)
-timestamps
-
-❤️ Loved by readers
-❤️ Readers are talking about Twistloom
-SELECT *
-FROM social_posts
-WHERE featured = true
-ORDER BY likes DESC;
-
----
-
 factsHistory: { 'location.apartemen.is_haunted': [Array] },
 
 ---

@@ -28,13 +28,16 @@ requester to be the **system admin user**, identified by `process.env.SYSTEM_USE
    - [System Health](#get-apiaadminsystemhealth)
 2. [Story Debugging](#story-debugging)
    - [Reconstruction Debug](#get-apiaadminbooksbookidreconstructionpageid)
-3. [Social Mentions](#social-mentions)
+3. [Social Mentions (Admin)](#social-mentions-admin)
    - [List Mentions](#get-apiaadminsocial-mentions)
    - [Get Mention](#get-apiaadminsocial-mentionsid)
    - [Create Mention](#post-apiaadminsocial-mentions)
    - [Update Mention](#patch-apiaadminsocial-mentionsid)
    - [Delete Mention](#delete-apiaadminsocial-mentionsid)
    - [Bulk Update Status](#post-apiaadminsocial-mentionsbulk-status)
+4. [Social Mentions (Public)](#social-mentions-public)
+   - [Public Wall](#get-apisocial-mentions)
+   - [Public Single Mention](#get-apisocial-mentionsid)
 
 ---
 
@@ -369,6 +372,80 @@ reject a whole page of the queue). Only the `status` field is mutated.
 
 **Note:** Only string ids are applied; invalid/empty entries in the array are
 silently filtered. `updated` reflects the number of rows actually changed.
+
+---
+
+## Social Mentions (Public)
+
+The curated social-proof wall is served by a **separate, unauthenticated** router
+mounted at `/api/social-mentions` (see `src/routes/social-mentions.ts`). These
+endpoints power the public homepage and require **no auth**. They return only
+mentions where `status = 'approved'` **and** `featured = true`.
+
+### GET /api/social-mentions
+
+Lists the featured social-proof wall. Ordered by `relevanceScore` DESC then
+`publishedAt` DESC (equivalent to the curated SQL `WHERE featured = true ORDER BY
+relevance_score DESC`).
+
+**Authentication:** None (public)
+
+**Query Parameters:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `limit` | integer | Max rows (default `20`, max `100`) |
+
+**Response (200 OK):**
+```json
+{
+  "mentions": [
+    {
+      "id": "0194f2d1-...",
+      "platform": "reddit",
+      "author": "u/bookworm",
+      "authorAvatar": null,
+      "title": "Twistloom generated the best thriller I've read",
+      "content": "I've tried AI Dungeon and NovelAI, but Twistloom...",
+      "url": "https://www.reddit.com/r/...",
+      "score": 236,
+      "sentimentScore": 0.8,
+      "relevanceScore": 95,
+      "status": "approved",
+      "featured": true,
+      "publishedAt": "2026-07-15T09:30:00.000Z",
+      "createdAt": "2026-07-19T06:00:00.000Z",
+      "updatedAt": "2026-07-19T06:00:00.000Z"
+    }
+  ]
+}
+```
+
+**Error Responses:**
+- `500 Internal Server Error`: Server error
+
+**Caching:** Intended to be cached on the client via ISR / `unstable_cache`; the
+query is read-only and cheap.
+
+### GET /api/social-mentions/:id
+
+Public single-mention lookup for the wall. Same visibility rules (approved +
+featured only).
+
+**Authentication:** None (public)
+
+**Path Parameters:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | UUID | Social mention identifier |
+
+**Response (200 OK):** A single mention object (same shape as in the list).
+
+**Error Responses:**
+- `404 Not Found`: Mention not found or not public (not approved+featured)
+  ```json
+  { "error": "Social mention not found" }
+  ```
+- `500 Internal Server Error`: Server error
 
 ---
 
