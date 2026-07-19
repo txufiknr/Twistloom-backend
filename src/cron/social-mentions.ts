@@ -6,9 +6,18 @@
  * - Safe to run continuously: relies on unique URL conflict exclusion rules (`onConflictDoNothing`).
  * - Fault tolerant: individual source network or parsing failures will never kill the whole pipeline.
  * - Local heuristic screening: computes context scores without hitting external semantic inference engines.
+ * - Per-source timeouts: a single slow or hung upstream can never block the whole pipeline.
  * 
  * Process Environment Requirements:
  * - `BRAVE_SEARCH_API_KEY` (Optional): Required only to unlock cross-platform broad web searching.
+ *   Register at https://api.search.brave.com/app/dashboard
+ * 
+ * Sources (all keyless except Brave):
+ * - Reddit (public search JSON)
+ * - Hacker News (Algolia API)
+ * - GitHub (Search API: issues/PRs/discussions)
+ * - Bluesky (public AT Protocol search)
+ * - Brave Search (optional, API key)
  * 
  * Schedule: Recommended to execute every 12 to 24 hours.
  */
@@ -16,6 +25,9 @@ import { getErrorMessage } from "../utils/error.js";
 
 // Canonical search configurations
 const SEARCH_KEYWORD = "Twistloom";
+
+/** Hard ceiling for any single upstream fetch (ms). Prevents a hung source from stalling the run. */
+const SOURCE_FETCH_TIMEOUT_MS = 15_000;
 
 interface NormalizedMention {
   platform: string;
@@ -26,6 +38,30 @@ interface NormalizedMention {
   url: string;
   score: number;
   publishedAt: Date | null;
+}
+
+/**
+ * Wraps a fetch call with an abort timeout so a single slow upstream cannot
+ * block the entire ingestion pipeline. Returns `null` on timeout/network error
+ * so the caller can treat it as "no data from this source" without crashing.
+ *
+ * @param url - Target URL
+ * @param options - Standard fetch options (headers, method, etc.)
+ * @returns Parsed JSON response, or null if the request failed or timed out
+ */
+async function fetchWithTimeout(url: string, options: RequestInit = {}): Promise<any | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SOURCE_FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    if (!response.ok) throw new Error(`HTTP error status received: ${response.status}`);
+    return await response.json();
+  } catch (error) {
+    console.error(`[social-ingest] ⚠️ Fetch failed (${url}):`, getErrorMessage(error));
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -47,16 +83,16 @@ function computeLocalHeuristics(textToAnalyze: string, title?: string | null): {
     if (combined.includes(kw)) relevance += 5;
   });
 
-  // Sentiment heuristics
-  const positiveWords = ["love", "amazing", "best", "good", "cool", "hooked", "impressed", "awesome", "wow", "funed"];
+  // Sentiment heuristics (word-boundary matches to avoid false positives like "bad" in "badge")
+  const positiveWords = ["love", "amazing", "best", "good", "cool", "hooked", "impressed", "awesome", "wow", "fun"];
   const negativeWords = ["bad", "terrible", "worst", "crash", "broken", "sucks", "hate", "trash", "buggy"];
 
   positiveWords.forEach(word => {
-    const matches = combined.split(word).length - 1;
+    const matches = (combined.match(new RegExp(`\\b${word}\\b`, "g")) || []).length;
     sentiment += matches * 0.2;
   });
   negativeWords.forEach(word => {
-    const matches = combined.split(word).length - 1;
+    const matches = (combined.match(new RegExp(`\\b${word}\\b`, "g")) || []).length;
     sentiment -= matches * 0.3;
     relevance -= matches * 10; // Deprioritize structural complaints or bug text on the homepage
   });
@@ -73,12 +109,12 @@ function computeLocalHeuristics(textToAnalyze: string, title?: string | null): {
 async function fetchRedditMentions(): Promise<NormalizedMention[]> {
   try {
     console.log("[social-ingest] 🟠 Querying Reddit public search standard endpoints...");
-    const response = await fetch(`https://www.reddit.com/search.json?q=${encodeURIComponent(SEARCH_KEYWORD)}&sort=new&limit=25`, {
-      headers: { "User-Agent": "TwistloomSocialProofBot/1.0.0" }
-    });
+    const data = await fetchWithTimeout(
+      `https://www.reddit.com/search.json?q=${encodeURIComponent(SEARCH_KEYWORD)}&sort=new&limit=25`,
+      { headers: { "User-Agent": "TwistloomSocialProofBot/1.0.0" } }
+    );
 
-    if (!response.ok) throw new Error(`HTTP error status received: ${response.status}`);
-    const data = await response.json() as any;
+    if (!data) return [];
 
     const items = data?.data?.children || [];
     return items.map((item: any): NormalizedMention => {
@@ -89,7 +125,7 @@ async function fetchRedditMentions(): Promise<NormalizedMention[]> {
         authorAvatar: null,
         title: post.title,
         content: post.selftext || post.title,
-        url: `https://permalink.reddit.com${post.permalink}`,
+        url: `https://www.reddit.com${post.permalink}`,
         score: post.ups || 0,
         publishedAt: post.created_utc ? new Date(post.created_utc * 1000) : null
       };
@@ -106,14 +142,17 @@ async function fetchRedditMentions(): Promise<NormalizedMention[]> {
 async function fetchHackerNewsMentions(): Promise<NormalizedMention[]> {
   try {
     console.log("[social-ingest] 🌐 Querying Hacker News Algolia historic indexing service...");
-    const response = await fetch(`https://hn.algolia.com/api/v1/search?query=${encodeURIComponent(SEARCH_KEYWORD)}&tags=(story,comment)`);
-    
-    if (!response.ok) throw new Error(`HTTP error status received: ${response.status}`);
-    const data = await response.json() as any;
+    const data = await fetchWithTimeout(
+      `https://hn.algolia.com/api/v1/search?query=${encodeURIComponent(SEARCH_KEYWORD)}&tags=(story,comment)`
+    );
+
+    if (!data) return [];
 
     const hits = data?.hits || [];
     return hits.map((hit: any): NormalizedMention => {
       const isComment = hit.title === null || typeof hit.title === "undefined";
+      // HN returns naive timestamps; append Z so Date parses as UTC, not local time.
+      const rawDate = hit.created_at ? `${hit.created_at}`.replace(" ", "T") : null;
       return {
         platform: "hackernews",
         author: hit.author || "anonymous",
@@ -122,7 +161,7 @@ async function fetchHackerNewsMentions(): Promise<NormalizedMention[]> {
         content: hit.comment_text || hit.story_text || "",
         url: `https://news.ycombinator.com/item?id=${hit.objectID}`,
         score: hit.points || 0,
-        publishedAt: hit.created_at ? new Date(hit.created_at) : null
+        publishedAt: rawDate ? new Date(rawDate.endsWith("Z") ? rawDate : `${rawDate}Z`) : null
       };
     });
   } catch (error) {
@@ -179,6 +218,79 @@ async function fetchBraveSearchMentions(apiKey?: string): Promise<NormalizedMent
 }
 
 /**
+ * Collects mentions from GitHub (issues, PRs, discussions) via the unauthenticated
+ * Search API. Developer-oriented and high-signal for a dev-tool-adjacent product.
+ * No API key required (10 req/min unauthenticated; the timeout guard protects the run).
+ *
+ * @see https://docs.github.com/en/rest/search
+ */
+async function fetchGitHubMentions(): Promise<NormalizedMention[]> {
+  try {
+    console.log("[social-ingest] 🐙 Querying GitHub Search indexing service...");
+    const data = await fetchWithTimeout(
+      `https://api.github.com/search/issues?q=${encodeURIComponent(SEARCH_KEYWORD)}&sort=updated&order=desc&per_page=20`,
+      { headers: { "User-Agent": "TwistloomSocialProofBot/1.0.0", "Accept": "application/vnd.github+json" } }
+    );
+
+    if (!data) return [];
+
+    const items = data?.items || [];
+    return items.map((item: any): NormalizedMention => {
+      const isPr = item.pull_request !== undefined;
+      return {
+        platform: "github",
+        author: item.user?.login || "anonymous",
+        authorAvatar: item.user?.avatar_url || null,
+        title: `[${isPr ? "PR" : "Issue"} #${item.number}] ${item.title}`,
+        content: item.body || item.title,
+        url: item.html_url,
+        score: item.reactions?.total_count || item.comments || 0,
+        publishedAt: item.created_at ? new Date(item.created_at) : null
+      };
+    });
+  } catch (error) {
+    console.error("[social-ingest] ❌ Failed to fetch telemetry from GitHub vector:", getErrorMessage(error));
+    return [];
+  }
+}
+
+/**
+ * Collects mentions from Bluesky via the public AT Protocol post search endpoint.
+ * Bluesky is the open "X replacement" and requires no API key for public search.
+ *
+ * @see https://docs.bsky.app/docs/api/app-bsky-feed-search-posts
+ */
+async function fetchBlueskyMentions(): Promise<NormalizedMention[]> {
+  try {
+    console.log("[social-ingest] 🦋 Querying Bluesky public AT Protocol search endpoint...");
+    const data = await fetchWithTimeout(
+      `https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts?q=${encodeURIComponent(SEARCH_KEYWORD)}&limit=25`
+    );
+
+    if (!data) return [];
+
+    const posts = data?.posts || [];
+    return posts.map((post: any): NormalizedMention => {
+      const author = post.author || {};
+      const record = post.record || {};
+      return {
+        platform: "bluesky",
+        author: author.handle ? `@${author.handle}` : (author.displayName || "anonymous"),
+        authorAvatar: author.avatar || null,
+        title: null,
+        content: record.text || "",
+        url: `https://bsky.app/profile/${author.handle}/post/${post.uri?.split("/").pop() || ""}`,
+        score: post.likeCount || 0,
+        publishedAt: record.createdAt ? new Date(record.createdAt) : null
+      };
+    });
+  } catch (error) {
+    console.error("[social-ingest] ❌ Failed to fetch telemetry from Bluesky vector:", getErrorMessage(error));
+    return [];
+  }
+}
+
+/**
  * Execution pipeline controller managing cascading multi-source content workflows
  */
 export async function runSocialMentionCollection(): Promise<void> {
@@ -188,20 +300,28 @@ export async function runSocialMentionCollection(): Promise<void> {
     console.log("[social-ingest] 🚀 Initiating global social commentary pipeline discovery...");
 
     // Lazy load runtime persistence drivers
-    const { dbRead } = await import("../db/client.js");
+    const { dbWrite } = await import("../db/client.js");
     const { socialMentions } = await import("../db/schema.js");
 
     const braveKey = process.env.BRAVE_SEARCH_API_KEY;
 
-    // Parallel fetch initialization
-    const [redditResults, hnResults, braveResults] = await Promise.all([
+    // Parallel fetch initialization (each source self-guards via fetchWithTimeout)
+    const [redditResults, hnResults, braveResults, githubResults, blueskyResults] = await Promise.all([
       fetchRedditMentions(),
       fetchHackerNewsMentions(),
-      fetchBraveSearchMentions(braveKey)
+      fetchBraveSearchMentions(braveKey),
+      fetchGitHubMentions(),
+      fetchBlueskyMentions(),
     ]);
 
     // Consolidate payload structures
-    const unifiedCollection = [...redditResults, ...hnResults, ...braveResults];
+    const unifiedCollection = [
+      ...redditResults,
+      ...hnResults,
+      ...braveResults,
+      ...githubResults,
+      ...blueskyResults,
+    ];
     
     if (unifiedCollection.length === 0) {
       console.log("[social-ingest] ✨ No indexing instances identified during this polling pass");
@@ -226,7 +346,7 @@ export async function runSocialMentionCollection(): Promise<void> {
         const heuristics = computeLocalHeuristics(strippedContent, mention.title);
 
         // Deduplication handled automatically during the standard writing query logic block
-        await dbRead
+        await dbWrite
           .insert(socialMentions)
           .values({
             platform: mention.platform,

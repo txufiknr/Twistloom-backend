@@ -1943,6 +1943,7 @@ export const socialMentions = pgTable(
     sentimentScore: real("sentiment_score").default(0).notNull(), // Local evaluation: -1.0 to 1.0
     relevanceScore: real("relevance_score").default(0).notNull(), // Computed routing prioritization score
     status: text("status").$type<'pending' | 'approved' | 'rejected'>().default('pending').notNull(),
+    featured: boolean("featured").default(false).notNull(), // Explicitly elevated to the public homepage wall by an admin
     publishedAt: timestamp("published_at", { withTimezone: true }),
     createdAt,
     updatedAt,
@@ -1955,5 +1956,7 @@ export const socialMentions = pgTable(
     index("social_mentions_platform_idx").on(t.platform),
     // Composite index optimizing curation queues by processing the high-quality items first
     index("social_mentions_filtering_idx").on(t.status, t.relevanceScore.desc()),
+    // Index for the public homepage wall (only featured mentions are shown)
+    index("social_mentions_featured_idx").on(t.featured, t.relevanceScore.desc()),
   ]
 );

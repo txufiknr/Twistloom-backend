@@ -1,0 +1,74 @@
+name: Weekly Social Mention Ingestion
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'   # Weekly on Monday at 6 AM UTC
+  workflow_dispatch:      # Allow manual triggering
+
+jobs:
+  social-mention-ingestion:
+    name: Ingest Social Mentions
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Setup package manager
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 10
+
+      # Setup Node.js runtime with caching
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Get pnpm cache directory for optimization
+      - name: Get pnpm store directory
+        id: pnpm-store
+        shell: bash
+        run: |
+          echo "path=$(pnpm store path --silent)" >> $GITHUB_OUTPUT
+
+      # Cache pnpm packages to speed up future runs
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      # Install project dependencies
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --prefer-offline
+
+      # Build TypeScript to JavaScript
+      - name: Build project
+        run: pnpm build
+
+      # Ensure compiled file exists before running
+      - name: Verify build
+        run: test -f dist/cron/social-mentions.js
+
+      # Execute social mention ingestion cron job
+      # Required secrets:
+      #   DATABASE_URL          - Neon write connection (required)
+      #   DATABASE_READ_URL     - Neon read replica (optional; falls back to DATABASE_URL)
+      #   BRAVE_SEARCH_API_KEY  - optional; Brave Search skipped if absent
+      # Note: SYSTEM_USER_ID / AUTH_SECRET are NOT needed here — the cron writes
+      # via dbWrite and never calls requireAuth/requireSystemAdmin.
+      - name: Run social-mentions job
+        run: node dist/cron/social-mentions.js
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_READ_URL: ${{ secrets.DATABASE_READ_URL || secrets.DATABASE_URL }}
+          BRAVE_SEARCH_API_KEY: ${{ secrets.BRAVE_SEARCH_API_KEY }}
+          NODE_ENV: production
+        timeout-minutes: 15  # Conservative timeout for multi-source ingestion
