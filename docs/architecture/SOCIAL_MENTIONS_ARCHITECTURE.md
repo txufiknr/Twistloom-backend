@@ -16,9 +16,11 @@ negative reviews, spam, or "anyone heard of Twistloom?" posts.
 
 | Component | Location | Responsibility |
 |-----------|----------|----------------|
-| `social_mentions` table | `src/db/schema.ts` | Persistent store of all discovered/created mentions |
+| `social_mentions` table | `src/db/schema.ts` | Persistent store of all discovered/created third-party mentions |
+| `book_testimonials` table | `src/db/schema.ts` | First-party reader-submitted testimonials (after book completion) |
 | `social-mentions.ts` cron | `src/cron/social-mentions.ts` | Periodic multi-source ingestion pipeline |
 | Admin CRUD routes | `src/routes/admin.ts` | Curation queue: list, approve, reject, feature, create, delete |
+| Public wall routes | `src/routes/social-mentions.ts` | Unauthenticated homepage wall (union of both streams, `source` filter) |
 | GitHub Actions workflow | `.github/workflows/social-mention-ingestion.yml` | Weekly scheduler that runs the cron on production |
 
 ## Data Model
@@ -62,15 +64,49 @@ featured  → admin explicitly elevated to the homepage wall
 ```
 
 A mention should only appear on the public homepage when
-`status = 'approved' AND featured = true`. The homepage query is therefore:
+`status = 'approved' AND featured = true`. The homepage wall query is therefore
+(union of both streams):
 
 ```sql
-SELECT *
+SELECT id, 'social' AS source, platform, author, content, url, score, NULL AS rating,
+       relevance_score, published_at, NULL AS book_id
 FROM social_mentions
 WHERE status = 'approved' AND featured = true
-ORDER BY relevance_score DESC, published_at DESC
+
+UNION ALL
+
+SELECT id, 'user' AS source, NULL, 'Twistloom Reader', content, NULL, 0, rating,
+       0, NULL, book_id
+FROM book_testimonials
+WHERE status = 'approved' AND featured = true
+
+ORDER BY relevance_score DESC, created_at DESC
 LIMIT 20;
 ```
+
+### User-Submitted Testimonials
+
+Reader testimonials (optionally submitted after finishing a book) live in a
+**dedicated `bookTestimonials` table**, not in `socialMentions` and not in
+`userCompletedBooks`. This keeps first-party user-generated content — tied to an
+internal `userId`, an optional 1–5 `rating`, and a `bookId` — cleanly separated
+from third-party scraped posts (which model a public URL, handle, and vote
+score). Both tables share the identical `pending → approved → featured` curation
+lifecycle, so the public wall can union them after admin review.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | uuid (pk) | `uuidv7()` |
+| `userId` | uuid (fk → users, cascade) | Author of the testimonial |
+| `bookId` | uuid (fk → books, cascade) | Book the testimonial is about |
+| `rating` | integer \| null | Optional 1–5 stars |
+| `content` | text | Testimonial body (required) |
+| `status` | enum | `pending` \| `approved` \| `rejected` (default `pending`) |
+| `featured` | boolean | Elevated to the public wall by an admin |
+| `createdAt` / `updatedAt` | timestamptz | Bookkeeping |
+
+> Migration is **not generated** in this change set — run `pnpm db:generate`
+> before `pnpm db:migrate` to create `book_testimonials`.
 
 ## Ingestion Pipeline
 

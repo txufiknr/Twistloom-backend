@@ -80,14 +80,22 @@
  * 
  * Utilities:
  * - GET /api/books/prompt - Generate book creation prompt via SSE (optional auth)
+ * 
+ * Book Testimonials:
+ * - GET /api/books/testimonials - Get authenticated user's own book testimonials (requires auth)
+ * - GET /api/books/:identifier/testimonials - List book testimonials (optional auth)
+ * - POST /api/books/:identifier/testimonials - Create a testimonial for a book (requires auth)
+ * - GET /api/books/:identifier/testimonials/:id - Get a single testimonial (optional auth)
+ * - PATCH /api/books/:identifier/testimonials/:id - Update a testimonial (requires auth, owner only)
+ * - DELETE /api/books/:identifier/testimonials/:id - Delete a testimonial (requires auth, owner only)
  */
 
 import type { Request, Response, Router as RouterType } from "express";
 import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
-import { books, branches, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress, userCompletedBooks, uploadedImages, userActivityLogs, pages, userSessions } from "../db/schema.js";
-import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleRateLimitError, handleUnauthorizedError, handleValidationError } from "../utils/error.js";
+import { books, branches, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress, userCompletedBooks, uploadedImages, userActivityLogs, pages, userSessions, bookTestimonials } from "../db/schema.js";
+import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleRateLimitError, handleUnauthorizedError, handleValidationError, wrapAsync } from "../utils/error.js";
 import { sanitizeTextForDB, sanitizeKeywords } from '../utils/text-processing.js';
 import { eq, and, desc, sql, ne, inArray, arrayOverlaps } from "drizzle-orm";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
@@ -5006,5 +5014,321 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (re
     handleApiError(res, 'Failed to submit custom action', error);
   }
 });
+
+/**
+ * @route GET /api/books/testimonials
+ * @description Get the authenticated user's own book testimonials
+ * @access Private (requires auth)
+ * 
+ * @returns {Object} 200 - Paginated list of the user's testimonials
+ * @returns {Error} 401 - Unauthorized
+ */
+router.get("/testimonials", requireAuth, wrapAsync(async (req: Request, res: Response) => {
+  const userId = req.userId!;
+  const { limit = DEFAULT_ITEMS_PER_PAGE, page = 1 } = extractPaginationParams(req);
+  const offset = (page - 1) * limit;
+
+  const rows = await dbRead
+    .select()
+    .from(bookTestimonials)
+    .where(eq(bookTestimonials.userId, userId))
+    .orderBy(desc(bookTestimonials.createdAt))
+    .limit(limit)
+    .offset(offset);
+
+  const [{ count }] = await dbRead
+    .select({ count: sql<number>`count(*)::int` })
+    .from(bookTestimonials)
+    .where(eq(bookTestimonials.userId, userId));
+
+  const pagination = calculatePaginationMeta(page, limit, count);
+  res.status(200).json(createPaginatedResponse(rows, pagination));
+  return;
+}));
+
+/**
+ * @route GET /api/books/:identifier/testimonials
+ * @description List testimonials for a book
+ * 
+ * When authenticated as the book owner or the testimonial author, all statuses are returned.
+ * Otherwise only `approved` testimonials are returned. Supports optional `featured` filter.
+ * 
+ * @access Optional auth
+ * 
+ * @param {string} req.params.identifier - Book slug or id
+ * @param {string} [req.query.featured] - When "true", only featured testimonials
+ * 
+ * @returns {Object} 200 - Paginated list of testimonials
+ * @returns {Error} 404 - Book not found
+ */
+router.get("/:identifier/testimonials", optionalAuth, wrapAsync(async (req: Request, res: Response) => {
+  const identifier = req.params.identifier as string;
+  const userId = req.userId;
+  const { limit = DEFAULT_ITEMS_PER_PAGE, page = 1 } = extractPaginationParams(req);
+  const offset = (page - 1) * limit;
+  const featuredOnly = req.query.featured === "true";
+
+  const book = await resolveBook(identifier);
+  if (!book) {
+    return handleNotFoundError(res, "Book not found");
+  }
+
+  const conditions = [eq(bookTestimonials.bookId, book.id)];
+
+  // Non-privileged viewers only see approved testimonials
+  const isPrivileged = userId && (userId === book.userId);
+  if (!isPrivileged) {
+    conditions.push(eq(bookTestimonials.status, "approved"));
+  }
+  if (featuredOnly) {
+    conditions.push(eq(bookTestimonials.featured, true));
+  }
+
+  const rows = await dbRead
+    .select()
+    .from(bookTestimonials)
+    .where(and(...conditions))
+    .orderBy(desc(bookTestimonials.createdAt))
+    .limit(limit)
+    .offset(offset);
+
+  const [{ count }] = await dbRead
+    .select({ count: sql<number>`count(*)::int` })
+    .from(bookTestimonials)
+    .where(and(...conditions));
+
+  const pagination = calculatePaginationMeta(page, limit, count);
+  res.status(200).json(createPaginatedResponse(rows, pagination));
+  return;
+}));
+
+/**
+ * @route POST /api/books/:identifier/testimonials
+ * @description Create a testimonial for a book
+ * 
+ * The authenticated user submits a rating (1-5, optional) and content. New testimonials
+ * default to `pending` status and are not featured until curated.
+ * 
+ * @access Private (requires auth)
+ * 
+ * @param {string} req.params.identifier - Book slug or id
+ * @param {number} [req.body.rating] - Rating from 1 to 5
+ * @param {string} req.body.content - Testimonial text (non-empty)
+ * 
+ * @returns {Object} 201 - Created testimonial
+ * @returns {Error} 400 - Validation error
+ * @returns {Error} 401 - Unauthorized
+ * @returns {Error} 404 - Book not found
+ */
+router.post("/:identifier/testimonials", requireAuth, wrapAsync(async (req: Request, res: Response) => {
+  const identifier = req.params.identifier as string;
+  const userId = req.userId!;
+  const { rating, content } = req.body as { rating?: number; content?: string };
+
+  const book = await resolveBook(identifier);
+  if (!book) {
+    return handleNotFoundError(res, "Book not found");
+  }
+
+  if (typeof content !== "string" || content.trim().length === 0) {
+    return handleValidationError(res, "Content is required");
+  }
+  if (content.trim().length > 5000) {
+    return handleValidationError(res, "Content must be at most 5000 characters");
+  }
+
+  let normalizedRating: number | null = null;
+  if (rating !== undefined && rating !== null) {
+    const numericRating = Number(rating);
+    if (!Number.isInteger(numericRating) || numericRating < 1 || numericRating > 5) {
+      return handleValidationError(res, "Rating must be an integer between 1 and 5");
+    }
+    normalizedRating = numericRating;
+  }
+
+  const [created] = await dbWrite
+    .insert(bookTestimonials)
+    .values({
+      userId,
+      bookId: book.id,
+      rating: normalizedRating,
+      content: content.trim(),
+      status: "pending",
+      featured: false,
+    })
+    .returning();
+
+  res.status(201).json({ testimonial: created });
+  return;
+}));
+
+/**
+ * @route GET /api/books/:identifier/testimonials/:id
+ * @description Get a single testimonial
+ * 
+ * Owners of the testimonial or of the book may view any status. Other viewers
+ * may only view `approved` testimonials.
+ * 
+ * @access Optional auth
+ * 
+ * @param {string} req.params.identifier - Book slug or id
+ * @param {string} req.params.id - Testimonial id
+ * 
+ * @returns {Object} 200 - The testimonial
+ * @returns {Error} 404 - Testimonial not found
+ */
+router.get("/:identifier/testimonials/:id", optionalAuth, wrapAsync(async (req: Request, res: Response) => {
+  const identifier = req.params.identifier as string;
+  const id = req.params.id as string;
+  const userId = req.userId;
+
+  const book = await resolveBook(identifier);
+  if (!book) {
+    return handleNotFoundError(res, "Book not found");
+  }
+
+  const [testimonial] = await dbRead
+    .select()
+    .from(bookTestimonials)
+    .where(and(eq(bookTestimonials.id, id), eq(bookTestimonials.bookId, book.id)))
+    .limit(1);
+
+  if (!testimonial) {
+    return handleNotFoundError(res, "Testimonial not found");
+  }
+
+  const isPrivileged = userId && (userId === testimonial.userId || userId === book.userId);
+  if (!isPrivileged && testimonial.status !== "approved") {
+    return handleNotFoundError(res, "Testimonial not found");
+  }
+
+  res.status(200).json({ testimonial });
+  return;
+}));
+
+/**
+ * @route PATCH /api/books/:identifier/testimonials/:id
+ * @description Update a testimonial
+ * 
+ * Only the testimonial author may update it. Editing resets status to `pending`
+ * and clears the featured flag so it can be re-curated.
+ * 
+ * @access Private (requires auth, owner only)
+ * 
+ * @param {string} req.params.identifier - Book slug or id
+ * @param {string} req.params.id - Testimonial id
+ * @param {number} [req.body.rating] - Rating from 1 to 5
+ * @param {string} [req.body.content] - Testimonial text (non-empty)
+ * 
+ * @returns {Object} 200 - Updated testimonial
+ * @returns {Error} 403 - Forbidden (not the owner)
+ * @returns {Error} 404 - Testimonial not found
+ */
+router.patch("/:identifier/testimonials/:id", requireAuth, wrapAsync(async (req: Request, res: Response) => {
+  const identifier = req.params.identifier as string;
+  const id = req.params.id as string;
+  const userId = req.userId!;
+  const { rating, content } = req.body as { rating?: number; content?: string };
+
+  const book = await resolveBook(identifier);
+  if (!book) {
+    return handleNotFoundError(res, "Book not found");
+  }
+
+  const [existing] = await dbRead
+    .select()
+    .from(bookTestimonials)
+    .where(and(eq(bookTestimonials.id, id), eq(bookTestimonials.bookId, book.id)))
+    .limit(1);
+
+  if (!existing) {
+    return handleNotFoundError(res, "Testimonial not found");
+  }
+  if (existing.userId !== userId) {
+    return handleForbiddenError(res, "You can only edit your own testimonial");
+  }
+
+  const updateValues: Partial<typeof bookTestimonials.$inferInsert> = {};
+  if (content !== undefined) {
+    if (typeof content !== "string" || content.trim().length === 0) {
+      return handleValidationError(res, "Content is required");
+    }
+    if (content.trim().length > 5000) {
+      return handleValidationError(res, "Content must be at most 5000 characters");
+    }
+    updateValues.content = content.trim();
+  }
+  if (rating !== undefined && rating !== null) {
+    const numericRating = Number(rating);
+    if (!Number.isInteger(numericRating) || numericRating < 1 || numericRating > 5) {
+      return handleValidationError(res, "Rating must be an integer between 1 and 5");
+    }
+    updateValues.rating = numericRating;
+  }
+
+  if (Object.keys(updateValues).length === 0) {
+    res.status(200).json({ testimonial: existing });
+    return;
+  }
+
+  // Editing requires re-curation
+  updateValues.status = "pending";
+  updateValues.featured = false;
+
+  const [updated] = await dbWrite
+    .update(bookTestimonials)
+    .set({ ...updateValues, updatedAt: new Date() })
+    .where(eq(bookTestimonials.id, id))
+    .returning();
+
+  res.status(200).json({ testimonial: updated });
+  return;
+}));
+
+/**
+ * @route DELETE /api/books/:identifier/testimonials/:id
+ * @description Delete a testimonial
+ * 
+ * Only the testimonial author may delete it.
+ * 
+ * @access Private (requires auth, owner only)
+ * 
+ * @param {string} req.params.identifier - Book slug or id
+ * @param {string} req.params.id - Testimonial id
+ * 
+ * @returns {Object} 200 - Deletion confirmation
+ * @returns {Error} 403 - Forbidden (not the owner)
+ * @returns {Error} 404 - Testimonial not found
+ */
+router.delete("/:identifier/testimonials/:id", requireAuth, wrapAsync(async (req: Request, res: Response) => {
+  const identifier = req.params.identifier as string;
+  const id = req.params.id as string;
+  const userId = req.userId!;
+
+  const book = await resolveBook(identifier);
+  if (!book) {
+    return handleNotFoundError(res, "Book not found");
+  }
+
+  const [existing] = await dbRead
+    .select()
+    .from(bookTestimonials)
+    .where(and(eq(bookTestimonials.id, id), eq(bookTestimonials.bookId, book.id)))
+    .limit(1);
+
+  if (!existing) {
+    return handleNotFoundError(res, "Testimonial not found");
+  }
+  if (existing.userId !== userId) {
+    return handleForbiddenError(res, "You can only delete your own testimonial");
+  }
+
+  await dbWrite
+    .delete(bookTestimonials)
+    .where(eq(bookTestimonials.id, id));
+
+  res.status(200).json({ message: "Testimonial deleted successfully" });
+  return;
+}));
 
 export default router;

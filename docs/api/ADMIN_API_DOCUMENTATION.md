@@ -380,27 +380,39 @@ silently filtered. `updated` reflects the number of rows actually changed.
 The curated social-proof wall is served by a **separate, unauthenticated** router
 mounted at `/api/social-mentions` (see `src/routes/social-mentions.ts`). These
 endpoints power the public homepage and require **no auth**. They return only
-mentions where `status = 'approved'` **and** `featured = true`.
+items where `status = 'approved'` **and** `featured = true`.
+
+The wall unifies two streams:
+- `social` — third-party posts scraped by the ingestion cron (`socialMentions`)
+- `user` — first-party reader testimonials (`bookTestimonials`, submitted after
+  finishing a book)
+
+Each returned row is tagged with a `source` field (`"social"` | `"user"`) so the
+frontend can render the appropriate card style.
 
 ### GET /api/social-mentions
 
-Lists the featured social-proof wall. Ordered by `relevanceScore` DESC then
-`publishedAt` DESC (equivalent to the curated SQL `WHERE featured = true ORDER BY
-relevance_score DESC`).
+Lists the featured social-proof wall. Use the `source` query param to scope the
+result (default `all`). Within each stream, ordering follows the same curation
+priority as the admin queue; the combined result is ordered by `relevanceScore`
+DESC then `createdAt` DESC.
 
 **Authentication:** None (public)
 
 **Query Parameters:**
 | Parameter | Type | Description |
 |-----------|------|-------------|
+| `source` | string | Stream scope: `all` (default) \| `social` \| `user` |
 | `limit` | integer | Max rows (default `20`, max `100`) |
 
 **Response (200 OK):**
 ```json
 {
+  "source": "all",
   "mentions": [
     {
       "id": "0194f2d1-...",
+      "source": "social",
       "platform": "reddit",
       "author": "u/bookworm",
       "authorAvatar": null,
@@ -408,17 +420,47 @@ relevance_score DESC`).
       "content": "I've tried AI Dungeon and NovelAI, but Twistloom...",
       "url": "https://www.reddit.com/r/...",
       "score": 236,
+      "rating": null,
       "sentimentScore": 0.8,
       "relevanceScore": 95,
       "status": "approved",
       "featured": true,
       "publishedAt": "2026-07-15T09:30:00.000Z",
+      "bookId": null,
       "createdAt": "2026-07-19T06:00:00.000Z",
       "updatedAt": "2026-07-19T06:00:00.000Z"
+    },
+    {
+      "id": "0194f2d2-...",
+      "source": "user",
+      "platform": null,
+      "author": "Twistloom Reader",
+      "authorAvatar": null,
+      "title": null,
+      "content": "Twistloom generated an ending I genuinely didn't expect.",
+      "url": null,
+      "score": 0,
+      "rating": 5,
+      "sentimentScore": 0,
+      "relevanceScore": 0,
+      "status": "approved",
+      "featured": true,
+      "publishedAt": null,
+      "bookId": "book-uuid",
+      "createdAt": "2026-07-19T07:00:00.000Z",
+      "updatedAt": "2026-07-19T07:00:00.000Z"
     }
   ]
 }
 ```
+
+**Response notes:**
+- `source` echoes the requested scope (`all`/`social`/`user`).
+- `social` rows carry `platform`, `url`, `score`, `sentimentScore`,
+  `relevanceScore`, `publishedAt`; `rating` and `bookId` are `null`.
+- `user` rows carry `rating` and `bookId`; `platform`, `url`, `score`,
+  `sentimentScore`, `relevanceScore`, `publishedAt` are `null`/`0`, and `author`
+  is the constant `"Twistloom Reader"`.
 
 **Error Responses:**
 - `500 Internal Server Error`: Server error
@@ -428,20 +470,22 @@ query is read-only and cheap.
 
 ### GET /api/social-mentions/:id
 
-Public single-mention lookup for the wall. Same visibility rules (approved +
-featured only).
+Public single-item lookup for the wall. Same visibility rules (approved +
+featured), across both streams. Because IDs are unique across both tables
+(uuids), the lookup tries the `social` stream first, then the `user` stream.
 
 **Authentication:** None (public)
 
 **Path Parameters:**
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `id` | UUID | Social mention identifier |
+| `id` | UUID | Item identifier (social mention or testimonial) |
 
-**Response (200 OK):** A single mention object (same shape as in the list).
+**Response (200 OK):** A single item object tagged with its `source` (same shape
+as in the list).
 
 **Error Responses:**
-- `404 Not Found`: Mention not found or not public (not approved+featured)
+- `404 Not Found`: Item not found or not public (not approved+featured)
   ```json
   { "error": "Social mention not found" }
   ```

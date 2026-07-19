@@ -204,6 +204,13 @@
       "when": 1784441403837,
       "tag": "0028_regular_scrambler",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1784449280544,
+      "tag": "0029_lyrical_falcon",
+      "breakpoints": true
     }
   ]
 }

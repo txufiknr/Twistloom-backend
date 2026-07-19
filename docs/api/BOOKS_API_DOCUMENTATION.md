@@ -341,21 +341,28 @@ type BookSortingOptions =
     - [Create Page Comment](#post-apibooksidpagespageidcomments)
     - [Create Paragraph Comment](#post-apibooksidpagespageidparagraphsparagraphnumbercomments)
     - [Update Comment](#put-apibookscommentsid)
-    - [Delete Comment](#delete-apibookscommentsid)
-9. [Exploration](#exploration)
+   - [Delete Comment](#delete-apibookscommentsid)
+ 9. [Book Testimonials](#book-testimonials)
+   - [Get My Testimonials](#get-apibookstestimonials)
+   - [List Book Testimonials](#get-apibooksidentifiertestimonials)
+   - [Create Book Testimonial](#post-apibooksidentifiertestimonials)
+   - [Get Book Testimonial](#get-apibooksidentifiertestimonialsid)
+   - [Update Book Testimonial](#patch-apibooksidentifiertestimonialsid)
+   - [Delete Book Testimonial](#delete-apibooksidentifiertestimonialsid)
+10. [Exploration](#exploration)
    - [Explore Books](#get-apibooksexplore)
    - [Get Popular Tags](#get-apibookstagspopular)
    - [Get Book Stats](#get-apibooksstats)
-10. [Utilities](#utilities)
-    - [Generate Book Prompt](#get-apibooksprompt)
-    - [Insert Book (Test)](#post-apibooksinsert)
-    - [Workflow Webhook (Internal)](#post-apibooksworkflow-webhook)
-11. [Error Handling](#error-handling)
-12. [HTTP Headers](#http-headers)
-13. [Caching Strategy](#caching-strategy)
-14. [Rate Limiting](#rate-limiting)
-15. [Authentication](#authentication)
-16. [Changelog](#changelog)
+11. [Utilities](#utilities)
+     - [Generate Book Prompt](#get-apibooksprompt)
+     - [Insert Book (Test)](#post-apibooksinsert)
+     - [Workflow Webhook (Internal)](#post-apibooksworkflow-webhook)
+12. [Error Handling](#error-handling)
+13. [HTTP Headers](#http-headers)
+14. [Caching Strategy](#caching-strategy)
+15. [Rate Limiting](#rate-limiting)
+16. [Authentication](#authentication)
+17. [Changelog](#changelog)
 
 ---
 
@@ -2259,6 +2266,241 @@ Deletes a comment. Only the comment author can delete their own comments.
 **Error Responses:**
 - `403 Forbidden`: Not the comment author
 - `404 Not Found`: Comment not found
+
+---
+
+## Book Testimonials
+
+User-submitted testimonials (ratings + written feedback) for books. These live in the dedicated `bookTestimonials` table and are curated separately from the social-mention ingestion pipeline.
+
+**Status lifecycle:** New testimonials default to `pending`. Only `approved` testimonials are visible to the public. Editing a testimonial resets it back to `pending` and clears its `featured` flag so it can be re-curated by an admin.
+
+**Visibility rules:**
+- Public (`optionalAuth`) list/get endpoints return only `approved` testimonials.
+- The book owner or the testimonial author may view any status.
+- `featured` (boolean) can be used to surface curated highlights; pass `?featured=true` to the list endpoint.
+
+### GET /api/books/testimonials
+
+Returns the authenticated user's own testimonials across all books.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Query Parameters:**
+- `page` (number, optional): 1-based page (default: 1)
+- `limit` (number, optional): Items per page (default: 20, max: configured maximum)
+
+**Response (200 OK):**
+```json
+{
+  "items": [
+    {
+      "id": "uuid",
+      "userId": "uuid",
+      "bookId": "uuid",
+      "rating": 5,
+      "content": "Couldn't put it down.",
+      "status": "approved",
+      "featured": false,
+      "createdAt": "2026-07-19T12:00:00.000Z",
+      "updatedAt": "2026-07-19T12:00:00.000Z"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 20,
+    "totalItems": 1,
+    "totalPages": 1,
+    "hasNextPage": false,
+    "hasPreviousPage": false
+  }
+}
+```
+
+**Error Responses:**
+- `401 Unauthorized`: Missing or invalid authentication
+
+### GET /api/books/:identifier/testimonials
+
+Lists testimonials for a specific book. Public viewers see only `approved` testimonials; the book owner sees all statuses.
+
+**Authentication:** Optional (via `optionalAuth`)
+
+**Path Parameters:**
+- `identifier` (string, required): Book slug or ID
+
+**Query Parameters:**
+- `page` (number, optional): 1-based page (default: 1)
+- `limit` (number, optional): Items per page (default: 20, max: configured maximum)
+- `featured` (string, optional): When `"true"`, only featured testimonials are returned
+
+**Response (200 OK):**
+```json
+{
+  "items": [
+    {
+      "id": "uuid",
+      "userId": "uuid",
+      "bookId": "uuid",
+      "rating": 4,
+      "content": "A gripping psychological thriller.",
+      "status": "approved",
+      "featured": true,
+      "createdAt": "2026-07-18T09:30:00.000Z",
+      "updatedAt": "2026-07-18T09:30:00.000Z"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 20,
+    "totalItems": 1,
+    "totalPages": 1,
+    "hasNextPage": false,
+    "hasPreviousPage": false
+  }
+}
+```
+
+**Error Responses:**
+- `404 Not Found`: Book not found
+
+### POST /api/books/:identifier/testimonials
+
+Creates a testimonial for a book. New testimonials are `pending` and not featured until curated.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Path Parameters:**
+- `identifier` (string, required): Book slug or ID
+
+**Request Body:**
+```json
+{
+  "rating": 5,
+  "content": "One of the best twist endings I've read."
+}
+```
+
+**Field Rules:**
+- `content` (string, required): Non-empty, at most 5000 characters
+- `rating` (number, optional): Integer between 1 and 5
+
+**Response (201 Created):**
+```json
+{
+  "testimonial": {
+    "id": "uuid",
+    "userId": "uuid",
+    "bookId": "uuid",
+    "rating": 5,
+    "content": "One of the best twist endings I've read.",
+    "status": "pending",
+    "featured": false,
+    "createdAt": "2026-07-19T12:00:00.000Z",
+    "updatedAt": "2026-07-19T12:00:00.000Z"
+  }
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Missing/empty `content`, or `rating` out of range
+- `401 Unauthorized`: Missing or invalid authentication
+- `404 Not Found`: Book not found
+
+### GET /api/books/:identifier/testimonials/:id
+
+Retrieves a single testimonial. Owners of the testimonial or the book may view any status; other viewers may only view `approved` testimonials.
+
+**Authentication:** Optional (via `optionalAuth`)
+
+**Path Parameters:**
+- `identifier` (string, required): Book slug or ID
+- `id` (string, required): Testimonial ID
+
+**Response (200 OK):**
+```json
+{
+  "testimonial": {
+    "id": "uuid",
+    "userId": "uuid",
+    "bookId": "uuid",
+    "rating": 4,
+    "content": "A gripping psychological thriller.",
+    "status": "approved",
+    "featured": true,
+    "createdAt": "2026-07-18T09:30:00.000Z",
+    "updatedAt": "2026-07-18T09:30:00.000Z"
+  }
+}
+```
+
+**Error Responses:**
+- `404 Not Found`: Book or testimonial not found (or testimonial not `approved` for non-privileged viewers)
+
+### PATCH /api/books/:identifier/testimonials/:id
+
+Updates a testimonial. Only the testimonial author may update it. Editing resets `status` to `pending` and clears `featured`.
+
+**Authentication:** Required (via `requireAuth`, owner only)
+
+**Path Parameters:**
+- `identifier` (string, required): Book slug or ID
+- `id` (string, required): Testimonial ID
+
+**Request Body (all fields optional):**
+```json
+{
+  "rating": 5,
+  "content": "Updated thoughts after a re-read."
+}
+```
+
+**Field Rules:**
+- `content` (string, optional): Non-empty, at most 5000 characters
+- `rating` (number, optional): Integer between 1 and 5
+
+**Response (200 OK):**
+```json
+{
+  "testimonial": {
+    "id": "uuid",
+    "userId": "uuid",
+    "bookId": "uuid",
+    "rating": 5,
+    "content": "Updated thoughts after a re-read.",
+    "status": "pending",
+    "featured": false,
+    "createdAt": "2026-07-18T09:30:00.000Z",
+    "updatedAt": "2026-07-19T12:00:00.000Z"
+  }
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Invalid `content` or `rating`
+- `403 Forbidden`: Not the testimonial author
+- `404 Not Found`: Book or testimonial not found
+
+### DELETE /api/books/:identifier/testimonials/:id
+
+Deletes a testimonial. Only the testimonial author may delete it.
+
+**Authentication:** Required (via `requireAuth`, owner only)
+
+**Path Parameters:**
+- `identifier` (string, required): Book slug or ID
+- `id` (string, required): Testimonial ID
+
+**Response (200 OK):**
+```json
+{
+  "message": "Testimonial deleted successfully"
+}
+```
+
+**Error Responses:**
+- `403 Forbidden`: Not the testimonial author
+- `404 Not Found`: Book or testimonial not found
 
 ---
 

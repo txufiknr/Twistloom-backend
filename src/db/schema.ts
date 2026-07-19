@@ -1960,3 +1960,54 @@ export const socialMentions = pgTable(
     index("social_mentions_featured_idx").on(t.featured, t.relevanceScore.desc()),
   ]
 );
+
+/**
+ * User-submitted book testimonials table
+ * @summary Stores testimonials that readers optionally submit after finishing a book.
+ *
+ * This is a dedicated stream separate from `socialMentions` (which holds externally
+ * scraped posts). Keeping it separate preserves a clean separation of concerns:
+ * `socialMentions` models third-party platform posts (URL, public handle, vote
+ * score), whereas testimonials are first-party user-generated content tied to an
+ * internal `userId` and an optional star rating.
+ *
+ * Both tables share the same curation lifecycle (`pending` → `approved` →
+ * `featured`), so the public homepage wall can union them after admin review.
+ *
+ * @example
+ * {
+ *   "id": "0194f2d1-...",
+ *   "user_id": "user-uuid",
+ *   "book_id": "book-uuid",
+ *   "rating": 5,
+ *   "content": "Twistloom generated an ending I genuinely didn't expect.",
+ *   "status": "pending",
+ *   "featured": false,
+ *   "created_at": "2026-07-19T06:00:00.000Z",
+ *   "updated_at": "2026-07-19T06:00:00.000Z"
+ * }
+ */
+export const bookTestimonials = pgTable(
+  "book_testimonials",
+  {
+    id: id(),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    bookId: bookId("cascade"), // Delete if book is deleted
+    rating: integer("rating"), // Optional 1-5 star rating
+    content: text("content").notNull(), // Testimonial body
+    status: text("status").$type<'pending' | 'approved' | 'rejected'>().default('pending').notNull(),
+    featured: boolean("featured").default(false).notNull(), // Elevated to the public homepage wall by an admin
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    // Index for admin curation queue
+    index("book_testimonials_status_idx").on(t.status),
+    // Index for the public homepage wall (only featured testimonials are shown)
+    index("book_testimonials_featured_idx").on(t.featured, t.createdAt.desc()),
+    // Index for per-book testimonial listings
+    index("book_testimonials_book_idx").on(t.bookId, t.status),
+    // Index for "my testimonials" lookups
+    index("book_testimonials_user_idx").on(t.userId, t.createdAt.desc()),
+  ]
+);
