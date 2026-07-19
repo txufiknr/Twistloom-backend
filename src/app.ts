@@ -26,6 +26,10 @@ const allowedOrigins = new Set([
 app.use("/api/payments/stripe/webhook", express.raw({ type: "application/json" }));
 
 // Configure middleware
+// Feedback submissions include a base64-encoded screenshot which can exceed 1mb.
+// Mount a higher-limit JSON parser for that path BEFORE the global 1mb parser so
+// large payloads aren't rejected with 413 PayloadTooLargeError.
+app.use("/api/user/feedbacks", express.json({ limit: "10mb" }));
 app.use(express.json({ limit: "1mb" })); // Parse JSON payloads
 app.use(cookieParser()); // Parse cookies for NextAuth authentication
 app.use(cors({
