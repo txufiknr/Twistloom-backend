@@ -5,7 +5,8 @@
   ],
   "functions": {
     "src/app.ts": {
-      "includeFiles": "models/**"
+      "runtime": "@vercel/node",
+      "maxDuration": 60
     }
   }
 }

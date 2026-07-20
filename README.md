@@ -76,6 +76,7 @@ Twistloom is not merely a branching story platform. It is a multiverse storytell
 | 5️⃣ **Groq** | Low latency |
 | 6️⃣ **Cerebras** | High performance |
 | 7️⃣ **NVIDIA** | Cost-effective |
+| 8️⃣ **Jina AI** | 1024-dim vector embedding |
 
 ## 🔥 Why Hono over Express
 
@@ -96,6 +97,18 @@ The backend was migrated from **Express.js** to **Hono.js** while keeping every 
 - Express error helpers were replaced by `c*` helpers in `src/utils/error.ts` (`cApiError`, `cValidationError`, `cNotFoundError`, etc.) that return a Hono `c.json(...)` response.
 - SSE routes (`POST /api/books/stream`, `GET /api/books/prompt`, `GET /api/books/:identifier/:pageId/candidates`) use Hono's native `streamSSE`.
 - `multer` uploads were replaced by a small `parseBody`-based middleware that exposes the file on `c.get("file")`.
+
+### Vercel deployment
+
+The app is deployed as a Vercel Node.js serverless function. `src/app.ts` ends with `export default handle(app)` (from `hono/vercel`), and `vercel.json` rewrites all traffic to that entrypoint. Two settings matter:
+
+- **Framework Preset → "Hono"** (not "Express"). Vercel's Express preset looks for `import express` at build time; with Express removed, leaving it set breaks the build.
+- **`"runtime": "@vercel/node"` is required.** Hono advertises first-class Edge support, and Vercel will happily run a `hono/vercel` handler on the Edge runtime by default. This backend, however, depends on **Node-only APIs** that do not exist on the Edge runtime:
+  - `Buffer` — used by the image-upload middleware (`src/middleware/upload.ts`) to read multipart file bytes, and by `ImageKit` uploads.
+  - `node:crypto` and other Node built-ins used across auth, Stripe signature verification, and password hashing.
+  - The `Neon` serverless driver and `@hono/node-server` dev server, which assume a Node environment.
+
+  On Edge, `Buffer` is `undefined`, so the cover-image upload and any `Buffer`-dependent path throw at runtime (`ReferenceError: Buffer is not defined`). Pinning `@vercel/node` keeps the function on the Node.js runtime where these APIs are available. `maxDuration` is raised to `60` to accommodate the long-running AI/SSE routes.
 
 ## 🚀 Features
 
