@@ -92,8 +92,17 @@ export async function verifyNextAuthToken(c: Context<AppEnv>): Promise<AuthUser 
     return null;
   }
 
-  const sessionUser = authUser?.session?.user;
-  if (!sessionUser?.email) {
+  // The decoded session exposes the user in two shapes:
+  //   - `authUser.user`  : the full AdapterUser/token subject (ALWAYS includes email)
+  //   - `authUser.session.user` : the object returned by the frontend's `session()`
+  //     callback, which may omit `email` (common with the JWT strategy + a custom
+  //     session callback that only copies name/image).
+  // Prefer `authUser.user` and fall back to `session.user` so a valid session is
+  // never rejected just because the frontend stripped email from `session.user`.
+  // This also matches how the previous @auth/express integration resolved the user.
+  const resolvedUser = authUser?.user ?? authUser?.session?.user;
+  const email = resolvedUser?.email as string | undefined;
+  if (!email) {
     console.warn(
       "[verifyNextAuthToken] ⚠️ Session present but could not be decoded — " +
         "check that AUTH_SECRET is identical on frontend and backend, and that the token has not expired.",
@@ -101,9 +110,8 @@ export async function verifyNextAuthToken(c: Context<AppEnv>): Promise<AuthUser 
     return null;
   }
 
-  const email = sessionUser.email as string;
-  const name = sessionUser.name as string | undefined;
-  const image = (sessionUser as { image?: string }).image as string | undefined;
+  const name = resolvedUser?.name as string | undefined;
+  const image = (resolvedUser as { image?: string }).image as string | undefined;
   const sessionId = (authUser?.token as { sessionId?: string } | undefined)?.sessionId;
 
   // ── Deduplicate concurrent in-flight verifications ─────────────────────
