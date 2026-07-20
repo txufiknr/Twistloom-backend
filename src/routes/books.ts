@@ -90,12 +90,15 @@
  * - DELETE /api/books/:identifier/testimonials/:id - Delete a testimonial (requires auth, owner only)
  */
 
-import type { Request, Response, Router as RouterType } from "express";
-import { Router } from "express";
+import { Hono } from "hono";
+import type { Context } from "hono";
+import type { AppEnv } from "../hono/env.js";
+import { streamSSE } from "hono/streaming";
+import { getClientIp } from "../hono/express-shim.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
 import { books, branches, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress, userCompletedBooks, uploadedImages, userActivityLogs, pages, userSessions, bookTestimonials } from "../db/schema.js";
-import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleRateLimitError, handleUnauthorizedError, handleValidationError, wrapAsync } from "../utils/error.js";
+import { getErrorMessage, cApiError, cForbiddenError, cNotFoundError, cRateLimitError, cUnauthorizedError, cValidationError } from "../utils/error.js";
 import { sanitizeTextForDB, sanitizeKeywords } from '../utils/text-processing.js';
 import { eq, and, desc, sql, ne, inArray, arrayOverlaps } from "drizzle-orm";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
@@ -103,7 +106,8 @@ import { getBook, getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPa
 import { shouldUseCache, getFreshPromptForUser, trackPromptView, savePromptToCache } from "../services/prompt-cache.js";
 import { streamCachedPrompt } from "../utils/prompt-stream.js";
 import { PROMPT_CACHE_CONFIG } from "../config/prompt-cache.js";
-import { imageUpload, deleteFileFromImageKit } from "../services/image.js";
+import { imageUploadMiddleware } from "../middleware/upload.js";
+import { deleteFileFromImageKit } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, calculatePaginationMeta } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import { validateSearchQuery, validateLanguageCode, validateAgeRange, validateGender, createRelevanceExpression } from "../utils/search.js";
@@ -123,7 +127,7 @@ import { getActionProgressEvents, clearActionProgressEvents } from "../utils/pro
 import type { DBBook, DBNewBook, DBNewBookGeneration, DBUpdateBook } from "../types/schema.js";
 import type { ActionProgressEvent, CandidateGenerationStatus } from "../types/candidate-generation.js";
 import { GITHUB_REPO_CONFIG } from "../config/env.js";
-import { initSSEHeaders, pollForCandidateGeneration, sendSSEEvent } from "../utils/sse.js";
+import { pollForCandidateGeneration, sendSSEEvent } from "../utils/sse.js";
 import type { StoryMC } from "../types/character.js";
 import { triggerCandidateGenerationWorkflow, validateAndRetrievePageForGeneration } from "../utils/candidate-generation.js";
 import { SSE_POLLING_CONFIG } from "../config/candidate-generation.js";
@@ -150,13 +154,13 @@ import type { AIChatProvider } from "../types/ai-chat.js";
 import { MAX_CONCURRENT_GENERATIONS } from "../config/book-creation.js";
 import { generateRandomCharacter } from "../utils/characters.js";
 
-const router: RouterType = Router();
+const router = new Hono<AppEnv>();
 
 /**
  * Checks whether the user has reached the concurrent generation limit.
  * If so, responds with 429 and returns true.
  */
-async function isConcurrentGenerationLimitReached(userId: string, res: Response): Promise<boolean> {
+async function isConcurrentGenerationLimitReached(userId: string, c: Context<AppEnv>): Promise<boolean> {
   const [result] = await dbRead
     .select({ count: sql<number>`COUNT(*)::int` })
     .from(bookGenerations)
@@ -168,8 +172,8 @@ async function isConcurrentGenerationLimitReached(userId: string, res: Response)
     );
 
   if (result.count >= MAX_CONCURRENT_GENERATIONS) {
-    handleRateLimitError(
-      res,
+    cRateLimitError(
+      c,
       `You can only have ${MAX_CONCURRENT_GENERATIONS} concurrent book generations. Please wait for existing generations to complete.`,
     );
     return true;
@@ -217,18 +221,18 @@ async function isConcurrentGenerationLimitReached(userId: string, res: Response)
  *   "initialState": { "page": 1, "maxPage": 120, "flags": { "trust": "medium", "fear": "low" }, "threads": [], "traumaTags": [], "psychologicalProfile": { "archetype": "investigator" } }
  * }
  */
-router.post("/", requireAuth, async (req: Request, res: Response) => {
+router.post("/", requireAuth, async (c) => {
   try {
-    const { theme, mcCandidate, generateCoverImage, advancedOptions, mode } = req.body;
-    const userId = req.userId!;
+    const { theme, mcCandidate, generateCoverImage, advancedOptions, mode } = c.get("body");
+    const userId = c.get("userId")!;
 
     // Enforce concurrent generation limit
-    if (await isConcurrentGenerationLimitReached(userId, res)) return;
+    if (await isConcurrentGenerationLimitReached(userId, c)) return;
     
     // Use shared core logic (without progress callback for synchronous response)
     const result = await createBookCore(
       {
-        req,
+        req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } as any,
         userId,
         theme,
         mcCandidate,
@@ -240,9 +244,9 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
       // No progress callback for POST endpoint (synchronous response)
     );
 
-    res.status(201).json(result);
+    c.status(201); return c.json(result);
   } catch (error) {
-    handleBookCreationError(res, error);
+    handleBookCreationError(c, error);
   }
 });
 
@@ -259,20 +263,20 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
  *
  * @route POST /api/books/workflow-webhook
  */
-router.post('/workflow-webhook', async (req: Request, res: Response) => {
+router.post('/workflow-webhook', async (c) => {
   try {
-    const secret = req.get('x-internal-secret');
+    const secret = c.req.header('x-internal-secret');
     if (!secret || secret !== process.env.INTERNAL_SECRET) {
-      return handleForbiddenError(res, 'Invalid or missing internal secret');
+      return cForbiddenError(c, 'Invalid or missing internal secret');
     }
 
-    const payload = req.body as BookGenerationPayload;
+    const payload = c.get("body") as BookGenerationPayload;
     await updateBookGenerationStatus(payload);
 
-    res.json({ ok: true });
+    return c.json({ ok: true });
   } catch (error) {
     console.error('[POST /api/books/workflow-webhook] ❌ Error:', error);
-    handleBookCreationError(res, error, 'Failed to process workflow webhook');
+    handleBookCreationError(c, error, 'Failed to process workflow webhook');
   }
 });
 
@@ -339,52 +343,40 @@ router.post('/workflow-webhook', async (req: Request, res: Response) => {
  * event: error
  * data: {"error":"Theme validation failed"}
  */
-router.post("/stream", requireAuth, async (req: Request, res: Response) => {
+router.post("/stream", requireAuth, async (c) => {
   try {
-    const { theme, mcCandidate, generateCoverImage, advancedOptions, mode } = req.body;
-    const userId = req.userId!;
+    const { theme, mcCandidate, generateCoverImage, advancedOptions, mode } = c.get("body");
+    const userId = c.get("userId")!;
 
     // Enforce concurrent generation limit
-    if (await isConcurrentGenerationLimitReached(userId, res)) return;
+    if (await isConcurrentGenerationLimitReached(userId, c)) return;
 
-    // Initialize SSE headers
-    initSSEHeaders(res);
+    return streamSSE(c, async (stream) => {
+      // Create progress callback for SSE events
+      const onProgress: ProgressCallback = (event) => {
+        sendSSEEvent(stream, event);
+      };
 
-    // Create progress callback for SSE events
-    const onProgress: ProgressCallback = (event) => {
-      sendSSEEvent(res, event);
-    };
+      // Create book with progress events
+      const result = await createBookCore(
+        {
+          req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } as any,
+          userId,
+          theme,
+          mcCandidate,
+          generateCoverImage,
+          advancedOptions,
+          mode,
+          context: "book_creation_stream",
+        },
+        onProgress
+      );
 
-    // Create book with progress events
-    const result = await createBookCore(
-      {
-        req,
-        userId,
-        theme,
-        mcCandidate,
-        generateCoverImage,
-        advancedOptions,
-        mode,
-        context: "book_creation_stream",
-      },
-      onProgress
-    );
-
-    // Send final complete event
-    sendSSEEvent(res, { type: 'complete', data: result });
-
-    // End response
-    res.end();
-  } catch (error) {
-    // Send error event if response is still writable
-    if (!res.writableEnded) {
-      initSSEHeaders(res);
-    }
-    sendSSEEvent(res, {
-      type: 'error',
-      error: getErrorMessage(error)
+      // Send final complete event
+      sendSSEEvent(stream, { type: 'complete', data: result });
     });
-    res.end();
+  } catch (error) {
+    return cApiError(c, "Failed to create book", error);
   }
 });
 
@@ -425,13 +417,13 @@ router.post("/stream", requireAuth, async (req: Request, res: Response) => {
  * // Response 202
  * { "bookId": "01912345-6789-1234-5678-123456789012", "message": "Book creation started..." }
  */
-router.post('/async', requireAuth, async (req: Request, res: Response) => {
+router.post('/async', requireAuth, async (c) => {
   try {
-    const { theme, mcCandidate: initialMCCandidate, generateCoverImage, advancedOptions, mode: requestedMode } = req.body;
-    const userId = req.userId!;
+    const { theme, mcCandidate: initialMCCandidate, generateCoverImage, advancedOptions, mode: requestedMode } = c.get("body");
+    const userId = c.get("userId")!;
 
     // ── STEP 0: Enforce concurrent generation limit ─────────────────────────
-    if (await isConcurrentGenerationLimitReached(userId, res)) return;
+    if (await isConcurrentGenerationLimitReached(userId, c)) return;
 
     // ── STEP 0b: Validate + resolve book creation mode ─────────────────────
     const mode = bookModes.includes(requestedMode) ? requestedMode : 'interactive';
@@ -529,7 +521,7 @@ router.post('/async', requireAuth, async (req: Request, res: Response) => {
     // Include the draft book object + aiComment so the frontend can render
     // title/mc/summary/hook/commentary immediately without waiting for the first
     // status poll tick.
-    res.status(202).json({
+    c.status(202); return c.json({
       bookId,
       message: 'Book creation started. Poll /api/books/:bookId/status for updates.',
       aiComment,
@@ -538,7 +530,7 @@ router.post('/async', requireAuth, async (req: Request, res: Response) => {
 
     // ── STEP 7: Log user activity (fire-and-forget AFTER response) ────────────
     //
-    // logUserActivity must be fire-and-forget after res.json() to avoid
+    // logUserActivity must be fire-and-forget after return c.json() to avoid
     // a double-response error if it throws (catch block would call res.json again
     // on an already-closed response).
     void logUserActivity({
@@ -548,12 +540,12 @@ router.post('/async', requireAuth, async (req: Request, res: Response) => {
       targetId:     bookId,
       metadata:     { theme, method: 'async' },
     },
-    { req }).catch((err) => {
+    { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } }).catch((err) => {
       console.error('[POST /api/books/async] ❌ Failed to log user activity:', err);
     });
   } catch (error) {
     console.error('[POST /api/books/async] ❌ Failed to start book creation:', error);
-    handleBookCreationError(res, error, 'Failed to start book creation');
+    handleBookCreationError(c, error, 'Failed to start book creation');
   }
 });
 
@@ -575,9 +567,9 @@ router.post('/async', requireAuth, async (req: Request, res: Response) => {
  *   { "bookId": "01912345-6789-1234-5678-123456789013", "generationStatus": "in_progress", "generationStep": "theme_validation" }
  * ]
  */
-router.get('/generations/active', requireAuth, async (req: Request, res: Response) => {
+router.get('/generations/active', requireAuth, async (c) => {
   try {
-    const userId = req.userId!;
+    const userId = c.get("userId")!;
 
     const rows = await dbRead
       .select({
@@ -593,10 +585,10 @@ router.get('/generations/active', requireAuth, async (req: Request, res: Respons
         ),
       );
 
-    res.json(rows);
+    return c.json(rows);
   } catch (error) {
     console.error('[GET /api/books/generations/active] ❌ Error:', error);
-    handleApiError(res, 'Failed to get active generations', error);
+    cApiError(c, 'Failed to get active generations', error);
   }
 });
 
@@ -651,14 +643,14 @@ router.get('/generations/active', requireAuth, async (req: Request, res: Respons
  *   ...
  * }
  */
-router.get('/:bookId/status', requireAuth, async (req: Request, res: Response) => {
+router.get('/:bookId/status', requireAuth, async (c) => {
   try {
-    const { bookId } = req.params;
-    const userId = req.userId!;
+    const { bookId } = c.req.param();
+    const userId = c.get("userId")!;
 
     // Validate bookId format
     if (!isValidUuid(bookId)) {
-      return handleValidationError(res, 'Invalid book ID format');
+      return cValidationError(c, 'Invalid book ID format');
     }
 
     // Join `books` (LEFT JOIN `bookGenerations`) so that books created via the
@@ -689,12 +681,12 @@ router.get('/:bookId/status', requireAuth, async (req: Request, res: Response) =
       .limit(1);
 
     if (!data) {
-      return handleNotFoundError(res, 'Book not found');
+      return cNotFoundError(c, 'Book not found');
     }
 
     // Verify user owns the book
     if (data.bookUserId !== userId) {
-      return handleForbiddenError(res, 'You can only view status for your own books');
+      return cForbiddenError(c, 'You can only view status for your own books');
     }
 
     // Check if generation is stale and try to dispatch a fresh workflow.
@@ -764,10 +756,10 @@ router.get('/:bookId/status', requireAuth, async (req: Request, res: Response) =
       isRefunded:               data.isRefunded,
     };
 
-    res.json(status);
+    return c.json(status);
   } catch (error) {
     console.error('[GET /api/books/:bookId/status] ❌ Error:', error);
-    handleApiError(res, 'Failed to get book status', error);
+    cApiError(c, 'Failed to get book status', error);
   }
 });
 
@@ -823,14 +815,14 @@ router.get('/:bookId/status', requireAuth, async (req: Request, res: Response) =
  * // Already refunded
  * → 400 { "error": "Book generation already refunded" }
  */
-router.post('/:bookId/cancel', requireAuth, async (req: Request, res: Response) => {
+router.post('/:bookId/cancel', requireAuth, async (c) => {
   try {
-    const { bookId } = req.params;
-    const userId = req.userId!;
+    const { bookId } = c.req.param();
+    const userId = c.get("userId")!;
 
     // Validate bookId format
     if (!isValidUuid(bookId)) {
-      return handleValidationError(res, 'Invalid book ID format');
+      return cValidationError(c, 'Invalid book ID format');
     }
 
     // Fetch book and generation data
@@ -848,22 +840,22 @@ router.post('/:bookId/cancel', requireAuth, async (req: Request, res: Response) 
       .limit(1);
 
     if (!data) {
-      return handleNotFoundError(res, 'Book not found');
+      return cNotFoundError(c, 'Book not found');
     }
 
     // Verify user owns the book
     if (data.bookUserId !== userId) {
-      return handleForbiddenError(res, 'You can only cancel your own books');
+      return cForbiddenError(c, 'You can only cancel your own books');
     }
 
     // Completed books are not cancellable — the content already exists
     if (data.bookStatus === 'active' || data.generationStatus === 'completed') {
-      return res.status(400).json({ error: 'Cannot cancel completed book' });
+      return c.status(400); return c.json({ error: 'Cannot cancel completed book' });
     }
 
     // Prevent double-refunds (idempotency guard)
     if (data.isRefunded) {
-      return res.status(400).json({ error: 'Book generation already refunded' });
+      return c.status(400); return c.json({ error: 'Book generation already refunded' });
     }
 
     // ── Point of no return ─────────────────────────────────────────────────────
@@ -882,7 +874,7 @@ router.post('/:bookId/cancel', requireAuth, async (req: Request, res: Response) 
         .where(eq(bookGenerations.bookId, bookId));
 
       console.log(`[POST /api/books/:bookId/cancel] 📌 Book ${bookId} at point of no return — archiving on completion per user request`);
-      return res.status(202).json({
+      return c.status(202); return c.json({
         success: true,
         message:
           'Generation is almost complete and will finish in the background. ' +
@@ -929,7 +921,7 @@ router.post('/:bookId/cancel', requireAuth, async (req: Request, res: Response) 
     // If no row was updated, the generation completed between our read and write
     if (!cancelledRow) {
       console.log(`[POST /api/books/:bookId/cancel] ℹ️ Book ${bookId} was already completed, skipping cancellation`);
-      return res.status(400).json({ error: 'Cannot cancel completed book' });
+      return c.status(400); return c.json({ error: 'Cannot cancel completed book' });
     }
 
     // ── Calculate stage-based refund ──────────────────────────────────────────
@@ -964,7 +956,7 @@ router.post('/:bookId/cancel', requireAuth, async (req: Request, res: Response) 
     } catch (refundError) {
       console.error(`[POST /api/books/:bookId/cancel] ❌ Failed to refund credits for book ${bookId}:`, refundError);
       // Return 500 so the client knows to retry; status is already 'cancelled'.
-      return res.status(500).json({ error: 'Failed to refund credits' });
+      return c.status(500); return c.json({ error: 'Failed to refund credits' });
     }
 
     // ── Keep the draft book for retryability ───────────────────────────────────
@@ -984,10 +976,10 @@ router.post('/:bookId/cancel', requireAuth, async (req: Request, res: Response) 
     const message = refundAmount
       ? `Book generation cancelled. ${refundAmount} credit${refundAmount === 1 ? '' : 's'} refunded.`
       : 'Book generation cancelled.';
-    res.json({ success: true, message });
+    return c.json({ success: true, message });
   } catch (error) {
     console.error('[POST /api/books/:bookId/cancel] ❌ Error:', error);
-    handleApiError(res, 'Failed to cancel book generation', error);
+    cApiError(c, 'Failed to cancel book generation', error);
   }
 });
 
@@ -1037,13 +1029,13 @@ router.post('/:bookId/cancel', requireAuth, async (req: Request, res: Response) 
  * // Not retryable
  * → 400 { "error": "Book generation is not in a retryable state (current: completed)" }
  */
-router.post('/:bookId/retry', requireAuth, async (req: Request, res: Response) => {
+router.post('/:bookId/retry', requireAuth, async (c) => {
   try {
-    const { bookId } = req.params;
-    const userId = req.userId!;
+    const { bookId } = c.req.param();
+    const userId = c.get("userId")!;
 
     if (!isValidUuid(bookId)) {
-      return handleValidationError(res, 'Invalid book ID format');
+      return cValidationError(c, 'Invalid book ID format');
     }
 
     const [data] = await dbRead
@@ -1059,21 +1051,21 @@ router.post('/:bookId/retry', requireAuth, async (req: Request, res: Response) =
       .limit(1);
 
     if (!data) {
-      return handleNotFoundError(res, 'Book not found');
+      return cNotFoundError(c, 'Book not found');
     }
 
     if (data.bookUserId !== userId) {
-      return handleForbiddenError(res, 'You can only retry your own books');
+      return cForbiddenError(c, 'You can only retry your own books');
     }
 
     if (data.generationStatus !== 'failed' && data.generationStatus !== 'cancelled') {
-      return res.status(400).json({
+      return c.status(400); return c.json({
         error: `Book generation is not in a retryable state (current: ${data.generationStatus ?? 'none'})`,
       });
     }
 
     // Enforce concurrent generation limit
-    if (await isConcurrentGenerationLimitReached(userId, res)) return;
+    if (await isConcurrentGenerationLimitReached(userId, c)) return;
 
     // Consume credits atomically with resetting the generation state.
     // Credits were refunded when the generation failed or was cancelled,
@@ -1103,7 +1095,7 @@ router.post('/:bookId/retry', requireAuth, async (req: Request, res: Response) =
     const gate = await tryAcquireWorkflowDispatchGate(bookId);
     if (!gate.shouldDispatch) {
       console.log(`[POST /api/books/:bookId/retry] ⏸️ ${gate.reason}`);
-      return res.status(409).json({
+      return c.status(409); return c.json({
         error: `Cannot retry book generation: ${gate.reason}`,
       });
     }
@@ -1111,10 +1103,10 @@ router.post('/:bookId/retry', requireAuth, async (req: Request, res: Response) =
     triggerBookGenerationWorkflow(bookId, 'POST /api/books/:bookId/retry');
 
     const message = `Book generation retry initiated. ${getBookModeCreditCost(data.mode)} credits consumed.`;
-    res.json({ success: true, message });
+    return c.json({ success: true, message });
   } catch (error) {
     console.error('[POST /api/books/:bookId/retry] ❌ Error:', error);
-    handleApiError(res, 'Failed to retry book generation', error);
+    cApiError(c, 'Failed to retry book generation', error);
   }
 });
 
@@ -1149,124 +1141,100 @@ router.post('/:bookId/retry', requireAuth, async (req: Request, res: Response) =
  * event: end
  * data: {"type":"end","provider":"gemini","model":"gemini-2.5-flash"}
  */
-router.get("/prompt", optionalAuth, async (req: Request, res: Response) => {
-  // Set SSE headers
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
+router.get("/prompt", optionalAuth, async (c) => {
+  return streamSSE(c, async (stream) => {
+    try {
+      const userId = c.get("userId") || null;
+      const language = c.get("headerLanguage") || 'en';
+      let promptContent: string | null = null;
+      let promptId: string | null = null;
 
-  // Create abort controller for client disconnection
-  const abortController = new AbortController();
-  
-  // Handle client disconnection
-  req.on('close', () => {
-    abortController.abort();
-  });
-
-  try {
-    const userId = req.userId || null;
-    const language = req.headerLanguage || 'en';
-    let promptContent: string | null = null;
-    let promptId: string | null = null;
-
-    // Check if cache should be used
-    if (PROMPT_CACHE_CONFIG.enabled && await shouldUseCache()) {
-      // Try to get fresh prompt from cache for authenticated users
-      if (userId) {
-        const cachedPrompt = await getFreshPromptForUser(userId, language);
-        if (cachedPrompt) {
-          promptContent = cachedPrompt.content;
-          promptId = cachedPrompt.id;
-        }
-      }
-      
-      if (promptContent) {
-        console.log('[GET /api/books/prompt] ✅ Serving from cache for user:', userId);
-      } else {
-        // If no user-specific prompt available, use weighted random selection
-        // For now, fallback to AI generation if cache miss
-        // TODO: could implement selectPromptByUsageWeight() here in future
-        console.log('[GET /api/books/prompt] 🍪 Cache miss, generating via AI');
-      }
-    }
-
-    // Generate via AI if cache not used or cache miss
-    if (!promptContent) {
-      const { stream, provider } = await generateBookCreationPromptStream({
-        signal: abortController.signal,
-        language,
-        userId,
-      });
-      
-      // Collect the full content from the stream
-      const chunks: Uint8Array[] = [];
-      for await (const chunk of stream) {
-        chunks.push(chunk);
-        res.write(chunk);
-      }
-      
-      // Combine chunks to get full content
-      promptContent = Buffer.concat(chunks).toString('utf-8');
-      
-      // Validate and save to cache if quality is good
-      if (PROMPT_CACHE_CONFIG.enabled && userId) {
-        // Attempt to read provider/model used from the stream's metadata promise
-        let aiProvider: AIChatProvider | 'none' = 'none';
-        let aiModel: string | undefined = undefined;
-        try {
-          const used = await provider;
-          if (used && used.provider && used.model) {
-            aiProvider = used.provider;
-            aiModel = used.model;
+      // Check if cache should be used
+      if (PROMPT_CACHE_CONFIG.enabled && await shouldUseCache()) {
+        // Try to get fresh prompt from cache for authenticated users
+        if (userId) {
+          const cachedPrompt = await getFreshPromptForUser(userId, language);
+          if (cachedPrompt) {
+            promptContent = cachedPrompt.content;
+            promptId = cachedPrompt.id;
           }
-        } catch {
-          // ignore - fall back to 'none'
         }
+        
+        if (promptContent) {
+          console.log('[GET /api/books/prompt] ✅ Serving from cache for user:', userId);
+        } else {
+          // If no user-specific prompt available, use weighted random selection
+          // For now, fallback to AI generation if cache miss
+          // TODO: could implement selectPromptByUsageWeight() here in future
+          console.log('[GET /api/books/prompt] 🍪 Cache miss, generating via AI');
+        }
+      }
 
-        promptId = await savePromptToCache({
-          content: promptContent,
-          userId,
+      // Generate via AI if cache not used or cache miss
+      if (!promptContent) {
+        const { stream: aiStream, provider } = await generateBookCreationPromptStream({
+          signal: c.req.raw.signal,
           language,
-          aiProvider,
-          aiModel
         });
-      }
-      
-      res.end();
-    } else {
-      // Stream from cache with simulated typing effect
-      const cacheStream = await streamCachedPrompt(promptContent);
-      
-      // Stream chunks to client
-      for await (const chunk of cacheStream) {
-        res.write(chunk);
-      }
-      
-      res.end();
-    }
+        
+        // Collect the full content from the stream
+        const chunks: Uint8Array[] = [];
+        for await (const chunk of aiStream) {
+          chunks.push(chunk);
+          await stream.write(chunk);
+        }
+        
+        // Combine chunks to get full content
+        promptContent = Buffer.concat(chunks).toString('utf-8');
+        
+        // Validate and save to cache if quality is good
+        if (PROMPT_CACHE_CONFIG.enabled && userId) {
+          // Attempt to read provider/model used from the stream's metadata promise
+          let aiProvider: AIChatProvider | 'none' = 'none';
+          let aiModel: string | undefined = undefined;
+          try {
+            const used = await provider;
+            if (used && used.provider && used.model) {
+              aiProvider = used.provider;
+              aiModel = used.model;
+            }
+          } catch {
+            // ignore - fall back to 'none'
+          }
 
-    // Track prompt view if user is authenticated and we have a prompt ID
-    if (userId && promptId) {
-      try {
-        await trackPromptView(userId, promptId);
-      } catch (error) {
-        console.error('[GET /api/books/prompt] ❌ Failed to track prompt view:', error);
+          promptId = await savePromptToCache({
+            content: promptContent,
+            userId,
+            language,
+            aiProvider,
+            aiModel
+          });
+        }
+      } else {
+        // Stream from cache with simulated typing effect
+        const cacheStream = await streamCachedPrompt(promptContent);
+        
+        // Stream chunks to client
+        for await (const chunk of cacheStream) {
+          await stream.write(chunk);
+        }
       }
-    }
 
-  } catch (error) {
-    console.error('[GET /api/books/prompt] ❌ Failed to generate story theme:', error);
-    
-    // Send SSE error event before closing
-    if (!res.writableEnded) {
+      // Track prompt view if user is authenticated and we have a prompt ID
+      if (userId && promptId) {
+        try {
+          await trackPromptView(userId, promptId);
+        } catch (error) {
+          console.error('[GET /api/books/prompt] ❌ Failed to track prompt view:', error);
+        }
+      }
+    } catch (error) {
+      console.error('[GET /api/books/prompt] ❌ Failed to generate story theme:', error);
       const encoder = new TextEncoder();
       const errorMessage = getErrorMessage(error, 'Failed to generate prompt');
-      res.write(encoder.encode(`event: error\ndata: ${errorMessage}\n\n`));
+      await stream.write(encoder.encode(`event: error\ndata: ${errorMessage}\n\n`));
     }
-    
-    res.end();
-  }
+  });
 });
 
 /**
@@ -1306,17 +1274,17 @@ router.get("/prompt", optionalAuth, async (req: Request, res: Response) => {
  *   }
  * }
  */
-router.post("/insert", requireAuth, async (req: Request, res: Response) => {
+router.post("/insert", requireAuth, async (c) => {
   try {
-    const bookData = req.body;
-    const userId = req.userId!;
+    const bookData = c.get("body");
+    const userId = c.get("userId")!;
 
     // Add userId to the book data
     const book = await insertBook({ ...bookData, userId });
 
-    res.status(201).json({ book });
+    c.status(201); return c.json({ book });
   } catch (error) {
-    handleApiError(res, "Failed to insert book", error);
+    cApiError(c, "Failed to insert book", error);
   }
 });
 
@@ -1338,11 +1306,11 @@ router.post("/insert", requireAuth, async (req: Request, res: Response) => {
  * @param imageFile - New cover image file from multipart upload (optional)
  * @returns Updated book information
  */
-router.put("/:id", requireAuth, imageUpload.single('imageFile'), async (req: Request, res: Response) => {
+router.put("/:id", requireAuth, imageUploadMiddleware(), async (c) => {
   try {
-    const { id } = req.params;
-    const userId = req.userId!;
-    const { title, hook, summary, keywords, visibility, status: newStatus, imageUrl, mc, ending } = req.body;
+    const { id } = c.req.param();
+    const userId = c.get("userId")!;
+    const { title, hook, summary, keywords, visibility, status: newStatus, imageUrl, mc, ending } = c.get("body");
 
     // Verify book ownership
     const [book] = await dbRead.select({ 
@@ -1362,7 +1330,7 @@ router.put("/:id", requireAuth, imageUpload.single('imageFile'), async (req: Req
     ))
     .limit(1);
 
-    if (!book) return handleNotFoundError(res, "Book not found");
+    if (!book) return cNotFoundError(c, "Book not found");
 
     let newImageUrl: string | undefined;
     let newImageId: string | undefined;
@@ -1371,9 +1339,9 @@ router.put("/:id", requireAuth, imageUpload.single('imageFile'), async (req: Req
     // Handle image upload from different sources
     let imageSource: ImageUploadSource | undefined;
 
-    if (req.file) {
+    if (c.get("file")) {
       // Multipart file upload
-      imageSource = req.file;
+      imageSource = c.get("file");
     } else if (imageUrl) {
       // URL or base64 string upload
       imageSource = imageUrl;
@@ -1400,7 +1368,7 @@ router.put("/:id", requireAuth, imageUpload.single('imageFile'), async (req: Req
           oldImageIdQueued = true;
         }
       } else {
-        return res.status(400).json({
+        return c.status(400); return c.json({
           error: "Failed to upload cover image"
         });
       }
@@ -1462,15 +1430,15 @@ router.put("/:id", requireAuth, imageUpload.single('imageFile'), async (req: Req
     // or if visibility/status changed in a way that affects explore visibility
     await invalidateExploreCache({ before: book, after: updatedBook });
 
-    res.json({
+    return c.json({
       book: updatedBook,
       imageUploaded: !!newImageUrl,
       oldImageQueuedForDeletion: oldImageIdQueued,
       mcAvatarUploaded,
-      uploadSource: req.file ? 'file' : (imageUrl?.startsWith('data:') ? 'base64' : 'url'),
+      uploadSource: c.get("file") ? 'file' : (imageUrl?.startsWith('data:') ? 'base64' : 'url'),
     });
   } catch (error) {
-    handleApiError(res, "Failed to update book", error);
+    cApiError(c, "Failed to update book", error);
   }
 });
 
@@ -1502,19 +1470,19 @@ router.put("/:id", requireAuth, imageUpload.single('imageFile'), async (req: Req
  *   "visibility": "public"
  * }
  */
-router.patch("/:id/visibility", requireAuth, async (req: Request, res: Response) => {
+router.patch("/:id/visibility", requireAuth, async (c) => {
   try {
-    const { id } = req.params;
-    const { visibility } = req.body;
-    const userId = req.userId!;
+    const { id } = c.req.param();
+    const { visibility } = c.get("body");
+    const userId = c.get("userId")!;
 
     // Validate visibility value
     if (!visibility || typeof visibility !== 'string') {
-      return handleValidationError(res, "visibility is required");
+      return cValidationError(c, "visibility is required");
     }
 
     if (!bookVisibilities.includes(visibility as BookVisibility)) {
-      return handleValidationError(res, `Invalid visibility. Must be one of: ${bookVisibilities.join(', ')}`);
+      return cValidationError(c, `Invalid visibility. Must be one of: ${bookVisibilities.join(', ')}`);
     }
 
     // Verify book ownership
@@ -1524,8 +1492,8 @@ router.patch("/:id/visibility", requireAuth, async (req: Request, res: Response)
       .where(eq(books.id, id as string))
       .limit(1);
 
-    if (!book) return handleNotFoundError(res, "Book not found");
-    if (book.userId !== userId) return handleForbiddenError(res, "You can only update visibility for your own books");
+    if (!book) return cNotFoundError(c, "Book not found");
+    if (book.userId !== userId) return cForbiddenError(c, "You can only update visibility for your own books");
 
     // Update visibility
     const updatedBook = await updateBookVisibility(id as string, visibility as BookVisibility);
@@ -1536,12 +1504,12 @@ router.patch("/:id/visibility", requireAuth, async (req: Request, res: Response)
     // (any change to/from 'public' affects whether the book appears in explore)
     await invalidateExploreCache({ before: book, after: { ...book, visibility: visibility as string } });
 
-    res.json({
+    return c.json({
       book: updatedBook,
       visibility: updatedBook.visibility,
     });
   } catch (error) {
-    handleApiError(res, "Failed to update book visibility", error);
+    cApiError(c, "Failed to update book visibility", error);
   }
 });
 
@@ -1568,24 +1536,24 @@ router.patch("/:id/visibility", requireAuth, async (req: Request, res: Response)
  *   "status": "archived"
  * }
  */
-router.patch("/:id/archive", requireAuth, async (req: Request, res: Response) => {
+router.patch("/:id/archive", requireAuth, async (c) => {
   try {
-    const { id } = req.params;
-    const { status: newStatus } = req.body;
-    const userId = req.userId!;
+    const { id } = c.req.param();
+    const { status: newStatus } = c.get("body");
+    const userId = c.get("userId")!;
 
     // Validate status value
     if (!newStatus || typeof newStatus !== 'string') {
-      return handleValidationError(res, "status is required");
+      return cValidationError(c, "status is required");
     }
 
     if (!bookStatuses.includes(newStatus as BookStatus)) {
-      return handleValidationError(res, `Invalid status. Must be one of: ${bookStatuses.join(', ')}`);
+      return cValidationError(c, `Invalid status. Must be one of: ${bookStatuses.join(', ')}`);
     }
 
     // Only allow toggling between 'active' and 'archived'
     if (newStatus !== 'active' && newStatus !== 'archived') {
-      return handleValidationError(res, "Status must be 'active' or 'archived'");
+      return cValidationError(c, "Status must be 'active' or 'archived'");
     }
 
     // Verify book ownership
@@ -1595,8 +1563,8 @@ router.patch("/:id/archive", requireAuth, async (req: Request, res: Response) =>
       .where(eq(books.id, id as string))
       .limit(1);
 
-    if (!book) return handleNotFoundError(res, "Book not found");
-    if (book.userId !== userId) return handleForbiddenError(res, "You can only archive/unarchive your own books");
+    if (!book) return cNotFoundError(c, "Book not found");
+    if (book.userId !== userId) return cForbiddenError(c, "You can only archive/unarchive your own books");
 
     // Update status
     const updatedBook = await updateBook(id as string, { status: newStatus as BookStatus });
@@ -1606,12 +1574,12 @@ router.patch("/:id/archive", requireAuth, async (req: Request, res: Response) =>
     // Invalidate explore cache if the book is public and its status changed to/from 'active'
     await invalidateExploreCache({ before: book, after: { ...book, status: newStatus as string } });
 
-    res.json({
+    return c.json({
       book: updatedBook,
       status: updatedBook.status,
     });
   } catch (error) {
-    handleApiError(res, "Failed to update book status", error);
+    cApiError(c, "Failed to update book status", error);
   }
 });
 
@@ -1648,22 +1616,22 @@ router.patch("/:id/archive", requireAuth, async (req: Request, res: Response) =>
  *   ]
  * }
  */
-router.get("/:id/similar", optionalAuth, async (req: Request, res: Response) => {
+router.get("/:id/similar", optionalAuth, async (c) => {
   try {
-    const { id } = req.params;
-    const limit = Math.min(parseInt(req.query.limit as string) || 10, 50);
-    const currentUserId = req.userId || null;
+    const { id } = c.req.param();
+    const limit = Math.min(parseInt(c.req.query().limit as string) || 10, 50);
+    const currentUserId = c.get("userId") || null;
 
     // Handle array case for id (Express can return string[])
     const bookId = Array.isArray(id) ? id[0] : id;
 
     // Resolve book by identifier (slug first, then UUID)
     const book = await resolveBook(bookId);
-    if (!book) return handleNotFoundError(res, "Book not found");
+    if (!book) return cNotFoundError(c, "Book not found");
     const targetKeywords = book.keywords;
 
     // Get similar books with enriched data
-    const similarBooksSelect = getSimilarBookSelect(targetKeywords, currentUserId, req.headerLanguage);
+    const similarBooksSelect = getSimilarBookSelect(targetKeywords, currentUserId, c.get("headerLanguage"));
     const similarBooks = await dbRead
       .select(similarBooksSelect)
       .from(books)
@@ -1686,7 +1654,7 @@ router.get("/:id/similar", optionalAuth, async (req: Request, res: Response) => 
       )
       .limit(limit);
 
-    res.json({
+    return c.json({
       similarBooks,
       targetBook: {
         id: book.id,
@@ -1695,7 +1663,7 @@ router.get("/:id/similar", optionalAuth, async (req: Request, res: Response) => 
       },
     });
   } catch (error) {
-    handleApiError(res, "Failed to retrieve similar books", error);
+    cApiError(c, "Failed to retrieve similar books", error);
   }
 });
 
@@ -1765,10 +1733,10 @@ router.get("/:id/similar", optionalAuth, async (req: Request, res: Response) => 
  *   }
  * }
  */
-router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
+router.get("/explore", optionalAuth, async (c) => {
   try {
-    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE, search, sortBy, sortOrder, lastUpdated, language, tags, ageRange, gender, mode, collection } = extractPaginationParams(req);
-    const userId = req.userId || null;
+    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE, search, sortBy, sortOrder, lastUpdated, language, tags, ageRange, gender, mode, collection } = extractPaginationParams({ query: c.req.query() } as any);
+    const userId = c.get("userId") || null;
     
     // Extract tags from query parameter (comma-separated)
     const tagsParam = tags as string;
@@ -1779,7 +1747,7 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
     if (search) {
       const validation = validateSearchQuery(search);
       if (!validation.isValid) {
-        return handleValidationError(res, validation.error || 'Invalid search query');
+        return cValidationError(c, validation.error || 'Invalid search query');
       }
       sanitizedSearch = validation.sanitized;
     }
@@ -1789,7 +1757,7 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
     if (language) {
       const langValidation = validateLanguageCode(language);
       if (!langValidation.isValid) {
-        return handleValidationError(res, langValidation.error || 'Invalid language code');
+        return cValidationError(c, langValidation.error || 'Invalid language code');
       }
       sanitizedLanguage = langValidation.sanitized;
     }
@@ -1800,7 +1768,7 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
     if (ageRange) {
       const ageValidation = validateAgeRange(ageRange);
       if (!ageValidation.isValid) {
-        return handleValidationError(res, ageValidation.error || 'Invalid age range');
+        return cValidationError(c, ageValidation.error || 'Invalid age range');
       }
       minAge = ageValidation.minAge;
       maxAge = ageValidation.maxAge;
@@ -1811,7 +1779,7 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
     if (gender) {
       const genderValidation = validateGender(gender);
       if (!genderValidation.isValid) {
-        return handleValidationError(res, genderValidation.error || 'Invalid gender');
+        return cValidationError(c, genderValidation.error || 'Invalid gender');
       }
       sanitizedGender = genderValidation.sanitized;
     }
@@ -1820,14 +1788,14 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
     let sanitizedMode: BookMode | undefined;
     if (mode) {
       if (!bookModes.includes(mode as BookMode)) {
-        return handleValidationError(res, `Invalid mode value. Must be one of: ${bookModes.join(', ')}`);
+        return cValidationError(c, `Invalid mode value. Must be one of: ${bookModes.join(', ')}`);
       }
       sanitizedMode = mode as BookMode;
     }
 
     // Validate lastUpdated filter if provided
     if (lastUpdated && !isValidLastUpdatedFilter(lastUpdated)) {
-      return handleValidationError(res, `Invalid lastUpdated value. Must be: ${lastUpdatedFilterOptions.join(', ')}`);
+      return cValidationError(c, `Invalid lastUpdated value. Must be: ${lastUpdatedFilterOptions.join(', ')}`);
     }
     
     // Validate and normalize sortBy parameter
@@ -1840,7 +1808,7 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
     if (requiresAuth && !userId) {
       const emptyBooks: EnrichedBookData[] = [];
       const pagination = calculatePaginationMeta(page, limit, 0);
-      return res.json(createPaginatedResponse(emptyBooks, pagination, 'books'));
+      return c.json(createPaginatedResponse(emptyBooks, pagination, 'books'));
     }
 
     // Determine whether these are user's created books (can apply status filtering)
@@ -1849,12 +1817,12 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
     // Extract and validate status filter (comma-separated, e.g. "active,draft")
     let statusFilter: BookStatus[] | undefined;
     if (isCreations) {
-      const statusParam = req.query.status as string | undefined;
+      const statusParam = c.req.query().status as string | undefined;
       if (statusParam) {
         const rawStatuses = statusParam.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
         statusFilter = rawStatuses.filter((s): s is BookStatus => bookStatuses.includes(s as BookStatus));
         if (statusFilter.length === 0) {
-          return handleValidationError(res, `Invalid status value. Must be one or more of: ${bookStatuses.join(', ')}`);
+          return cValidationError(c, `Invalid status value. Must be one or more of: ${bookStatuses.join(', ')}`);
         }
       }
     }
@@ -1880,7 +1848,7 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
     // Fetch function for cache
     const fetchBooks = async () => {
       // Build base query with enriched fields
-      const baseSelect = getEnrichedBookSelect(userId, req.headerLanguage);
+      const baseSelect = getEnrichedBookSelect(userId, c.get("headerLanguage"));
       const baseQuery = dbRead
         .select(sanitizedSearch
           ? { ...baseSelect, relevanceScore: createRelevanceExpression(sanitizedSearch, books) }
@@ -1927,17 +1895,17 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
     // Add HTTP cache headers for CDN/edge caching (works alongside Redis)
     if (shouldCache) {
       const httpCacheMaxAge = cacheTTL; // 5 min for trending, 30 min for newest
-      res.set('Cache-Control', `public, max-age=${httpCacheMaxAge}, s-maxage=${httpCacheMaxAge}, stale-while-revalidate=${httpCacheMaxAge / 2}`);
+      c.header('Cache-Control', `public, max-age=${httpCacheMaxAge}, s-maxage=${httpCacheMaxAge}, stale-while-revalidate=${httpCacheMaxAge / 2}`);
     }
     
-    res.json(result);
-
     // Update user activity in background for authenticated users
     if (userId) {
-      updateUserLastActivity(userId);
+      void updateUserLastActivity(userId);
     }
+
+    return c.json(result);
   } catch (error) {
-    handleApiError(res, "Failed to explore books", error);
+    cApiError(c, "Failed to explore books", error);
   }
 });
 
@@ -1959,16 +1927,16 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
  *   "tags": ["thriller", "mystery", "horror", "suspense", "detective", "psychological", "crime", "adventure"]
  * }
  */
-router.get("/tags/popular", async (req: Request, res: Response) => {
+router.get("/tags/popular", async (c) => {
   try {
-    const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
+    const limit = Math.min(parseInt(c.req.query().limit as string) || 20, 100);
     
     // Uses LRU cache internally via getPopularTags
     const tags = await getPopularTags(limit);
     
-    res.json({ tags });
+    return c.json({ tags });
   } catch (error) {
-    handleApiError(res, "Failed to fetch popular tags", error);
+    cApiError(c, "Failed to fetch popular tags", error);
   }
 });
 
@@ -1981,10 +1949,10 @@ router.get("/tags/popular", async (req: Request, res: Response) => {
  * @param id - Book ID to delete
  * @returns Success message with deletion details
  */
-router.delete("/:id", requireAuth, async (req: Request, res: Response) => {
+router.delete("/:id", requireAuth, async (c) => {
   try {
-    const { id } = req.params;
-    const userId = req.userId!;
+    const { id } = c.req.param();
+    const userId = c.get("userId")!;
 
     // Get book information before deletion
     const book = await dbRead
@@ -2003,7 +1971,7 @@ router.delete("/:id", requireAuth, async (req: Request, res: Response) => {
       .limit(1);
 
     if (!book.length) {
-      return handleNotFoundError(res, "Book not found");
+      return cNotFoundError(c, "Book not found");
     }
 
     const bookToDelete = book[0];
@@ -2035,13 +2003,13 @@ router.delete("/:id", requireAuth, async (req: Request, res: Response) => {
     // Invalidate explore cache only if the deleted book was publicly visible
     await invalidateExploreCache({ book: bookToDelete });
 
-    res.json({
+    return c.json({
       message: "Book deleted successfully",
       bookId: id,
       imageQueuedForDeletion: !!bookToDelete.imageId
     });
   } catch (error) {
-    handleApiError(res, "Failed to delete book", error);
+    cApiError(c, "Failed to delete book", error);
   }
 });
 
@@ -2065,12 +2033,12 @@ router.delete("/:id", requireAuth, async (req: Request, res: Response) => {
  *   "shadowsWeaved": 345
  * }
  */
-router.get("/stats", optionalAuth, async (req: Request, res: Response) => {
+router.get("/stats", optionalAuth, async (c) => {
   try {
     const stats = await getPublicBookStats();
-    res.json(stats);
+    return c.json(stats);
   } catch (error) {
-    handleApiError(res, "Failed to retrieve book stats", error);
+    cApiError(c, "Failed to retrieve book stats", error);
   }
 });
 
@@ -2105,11 +2073,11 @@ router.get("/stats", optionalAuth, async (req: Request, res: Response) => {
  *   "likesCount": 42
  * }
  */
-router.post("/:id/like", requireAuth, async (req: Request, res: Response) => {
+router.post("/:id/like", requireAuth, async (c) => {
   try {
-    const { id } = req.params;
-    const userId = req.userId!;
-    const { collection } = req.body;
+    const { id } = c.req.param();
+    const userId = c.get("userId")!;
+    const { collection } = c.get("body");
 
     // Use transaction for atomic like operation
     const result = await dbWrite.transaction(async (tx) => {
@@ -2207,7 +2175,8 @@ router.post("/:id/like", requireAuth, async (req: Request, res: Response) => {
       await invalidateUserProfileCache(userId);
     }
 
-    res.status(result.alreadyLiked ? 200 : 200).json({
+    c.status(result.alreadyLiked ? 200 : 200);
+    return c.json({
       message: result.alreadyLiked ? "Book already liked" : "Book liked successfully",
       liked: true,
       likesCount: result.likesCount!,
@@ -2218,9 +2187,9 @@ router.post("/:id/like", requireAuth, async (req: Request, res: Response) => {
     });
   } catch (error) {
     if (getErrorMessage(error) === 'BOOK_NOT_FOUND') {
-      return handleNotFoundError(res, "Book not found");
+      return cNotFoundError(c, "Book not found");
     }
-    handleApiError(res, "Failed to like book", error);
+    cApiError(c, "Failed to like book", error);
   }
 });
 
@@ -2250,10 +2219,10 @@ router.post("/:id/like", requireAuth, async (req: Request, res: Response) => {
  *   "likesCount": 42
  * }
  */
-router.delete("/:id/like", requireAuth, async (req: Request, res: Response) => {
+router.delete("/:id/like", requireAuth, async (c) => {
   try {
-    const { id } = req.params;
-    const userId = req.userId!;
+    const { id } = c.req.param();
+    const userId = c.get("userId")!;
 
     // Use transaction for atomic unlike operation
     const result = await dbWrite.transaction(async (tx) => {
@@ -2324,23 +2293,23 @@ router.delete("/:id/like", requireAuth, async (req: Request, res: Response) => {
     }
 
     if (result.notLiked) {
-      return res.status(404).json({
+      return c.status(404); return c.json({
         message: "Book not liked",
         liked: false,
         likesCount: result.likesCount
       });
     }
 
-    res.json({
+    return c.json({
       message: "Book unliked successfully",
       liked: false,
       likesCount: result.likesCount!
     });
   } catch (error) {
     if (getErrorMessage(error) === 'BOOK_NOT_FOUND') {
-      return handleNotFoundError(res, "Book not found");
+      return cNotFoundError(c, "Book not found");
     }
-    handleApiError(res, "Failed to unlike book", error);
+    cApiError(c, "Failed to unlike book", error);
   }
 });
 
@@ -2368,10 +2337,10 @@ router.delete("/:id/like", requireAuth, async (req: Request, res: Response) => {
  *   "favorited": true
  * }
  */
-router.post("/:id/favorite", requireAuth, async (req: Request, res: Response) => {
+router.post("/:id/favorite", requireAuth, async (c) => {
   try {
-    const { id } = req.params;
-    const userId = req.userId!;
+    const { id } = c.req.param();
+    const userId = c.get("userId")!;
 
     // Check if book exists
     const book = await dbRead
@@ -2381,7 +2350,7 @@ router.post("/:id/favorite", requireAuth, async (req: Request, res: Response) =>
       .limit(1);
 
     if (!book.length) {
-      return handleNotFoundError(res, "Book not found");
+      return cNotFoundError(c, "Book not found");
     }
 
     // Check if already favorited
@@ -2395,7 +2364,7 @@ router.post("/:id/favorite", requireAuth, async (req: Request, res: Response) =>
       .limit(1);
 
     if (existingFavorite.length > 0) {
-      return res.status(409).json({
+      return c.status(409); return c.json({
         message: "Book already in favorites",
         favorited: true
       });
@@ -2434,12 +2403,12 @@ router.post("/:id/favorite", requireAuth, async (req: Request, res: Response) =>
       await invalidateExploreCache({ book: favBook });
     }
 
-    res.status(201).json({
+    c.status(201); return c.json({
       message: "Book added to favorites",
       favorited: true
     });
   } catch (error) {
-    handleApiError(res, "Failed to favorite book", error);
+    cApiError(c, "Failed to favorite book", error);
   }
 });
 
@@ -2467,10 +2436,10 @@ router.post("/:id/favorite", requireAuth, async (req: Request, res: Response) =>
  *   "favorited": false
  * }
  */
-router.delete("/:id/favorite", requireAuth, async (req: Request, res: Response) => {
+router.delete("/:id/favorite", requireAuth, async (c) => {
   try {
-    const { id } = req.params;
-    const userId = req.userId!;
+    const { id } = c.req.param();
+    const userId = c.get("userId")!;
 
     // Check if book exists
     const book = await dbRead
@@ -2480,7 +2449,7 @@ router.delete("/:id/favorite", requireAuth, async (req: Request, res: Response) 
       .limit(1);
 
     if (!book.length) {
-      return handleNotFoundError(res, "Book not found");
+      return cNotFoundError(c, "Book not found");
     }
 
     // Check if favorited
@@ -2494,7 +2463,7 @@ router.delete("/:id/favorite", requireAuth, async (req: Request, res: Response) 
       .limit(1);
 
     if (existingFavorite.length === 0) {
-      return res.status(404).json({
+      return c.status(404); return c.json({
         message: "Book not in favorites",
         favorited: false
       });
@@ -2530,12 +2499,12 @@ router.delete("/:id/favorite", requireAuth, async (req: Request, res: Response) 
       await invalidateExploreCache({ book: unfavBook });
     }
 
-    res.json({
+    return c.json({
       message: "Book removed from favorites",
       favorited: false
     });
   } catch (error) {
-    handleApiError(res, "Failed to unfavorite book", error);
+    cApiError(c, "Failed to unfavorite book", error);
   }
 });
 
@@ -2572,21 +2541,21 @@ router.delete("/:id/favorite", requireAuth, async (req: Request, res: Response) 
  *   "message": "No favorites found with collection 'NonExistent'"
  * }
  */
-router.patch("/favorites/rename-collection", requireAuth, async (req: Request, res: Response) => {
+router.patch("/favorites/rename-collection", requireAuth, async (c) => {
   try {
-    const { oldCollection, newCollection } = req.body;
-    const userId = req.userId!;
+    const { oldCollection, newCollection } = c.get("body");
+    const userId = c.get("userId")!;
 
     if (!oldCollection || typeof oldCollection !== 'string') {
-      return handleValidationError(res, "oldCollection is required and must be a string");
+      return cValidationError(c, "oldCollection is required and must be a string");
     }
 
     if (!newCollection || typeof newCollection !== 'string') {
-      return handleValidationError(res, "newCollection is required and must be a string");
+      return cValidationError(c, "newCollection is required and must be a string");
     }
 
     if (oldCollection === newCollection) {
-      return res.json({
+      return c.json({
         updatedCount: 0,
         message: "oldCollection and newCollection are the same — no changes needed",
       });
@@ -2602,14 +2571,14 @@ router.patch("/favorites/rename-collection", requireAuth, async (req: Request, r
 
     const updatedCount = (result as { rowCount?: number })?.rowCount ?? 0;
 
-    res.json({
+    return c.json({
       updatedCount,
       message: updatedCount > 0
         ? "Collection renamed successfully"
         : `No favorites found with collection '${oldCollection}'`,
     });
   } catch (error) {
-    handleApiError(res, "Failed to rename collection", error);
+    cApiError(c, "Failed to rename collection", error);
   }
 });
 
@@ -2662,15 +2631,15 @@ router.patch("/favorites/rename-collection", requireAuth, async (req: Request, r
  *   }
  * }
  */
-router.get("/:id/comments", optionalAuth, async (req: Request, res: Response) => {
+router.get("/:id/comments", optionalAuth, async (c) => {
   try {
-    const { id } = req.params;
-    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE } = extractPaginationParams(req);
-    const { pageId, paragraphNumber } = req.query;
+    const { id } = c.req.param();
+    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE } = extractPaginationParams({ query: c.req.query() } as any);
+    const { pageId, paragraphNumber } = c.req.query();
 
     // Check if book exists
     const book = await getBookFromDB(id as string);
-    if (!book) return handleNotFoundError(res, "Book not found");
+    if (!book) return cNotFoundError(c, "Book not found");
 
     // Build filter conditions (book-scoped, optionally narrowed by page/paragraph)
     const conditions = [eq(userComments.bookId, id as string)];
@@ -2679,7 +2648,7 @@ router.get("/:id/comments", optionalAuth, async (req: Request, res: Response) =>
       if (paragraphNumber !== undefined && paragraphNumber !== null && paragraphNumber !== '') {
         const parsed = parseInt(paragraphNumber as string, 10);
         if (Number.isNaN(parsed)) {
-          return handleValidationError(res, "paragraphNumber must be an integer");
+          return cValidationError(c, "paragraphNumber must be an integer");
         }
         conditions.push(eq(userComments.paragraphNumber, parsed));
       }
@@ -2719,12 +2688,12 @@ router.get("/:id/comments", optionalAuth, async (req: Request, res: Response) =>
 
     const pagination = calculatePaginationMeta(page, limit, totalCount);
 
-    res.json({
+    return c.json({
       comments,
       pagination
     });
   } catch (error) {
-    handleApiError(res, "Failed to retrieve comments", error);
+    cApiError(c, "Failed to retrieve comments", error);
   }
 });
 
@@ -2772,32 +2741,32 @@ router.get("/:id/comments", optionalAuth, async (req: Request, res: Response) =>
  *   }
  * }
  */
-router.post("/:id/comments", requireAuth, async (req: Request, res: Response) => {
+router.post("/:id/comments", requireAuth, async (c) => {
   try {
-    const { id } = req.params;
-    const { content, parentCommentId, pageId, paragraphNumber } = req.body;
-    const userId = req.userId!;
+    const { id } = c.req.param();
+    const { content, parentCommentId, pageId, paragraphNumber } = c.get("body");
+    const userId = c.get("userId")!;
 
     const contentError = validateCommentContent(content);
-    if (contentError) return res.status(400).json({ error: contentError });
+    if (contentError) return c.status(400); return c.json({ error: contentError });
 
     // Normalize and validate optional page/paragraph scope
     let normalizedPageId: string | null = null;
     let normalizedParagraphNumber: number | null = null;
     if (pageId) {
       if (typeof pageId !== 'string') {
-        return handleValidationError(res, "pageId must be a string");
+        return cValidationError(c, "pageId must be a string");
       }
       normalizedPageId = pageId;
       if (paragraphNumber !== undefined && paragraphNumber !== null) {
         const parsed = parseInt(paragraphNumber, 10);
         if (Number.isNaN(parsed) || parsed < 1) {
-          return handleValidationError(res, "paragraphNumber must be a positive integer");
+          return cValidationError(c, "paragraphNumber must be a positive integer");
         }
         normalizedParagraphNumber = parsed;
       }
     } else if (paragraphNumber !== undefined && paragraphNumber !== null) {
-      return handleValidationError(res, "paragraphNumber requires pageId");
+      return cValidationError(c, "paragraphNumber requires pageId");
     }
 
     // Check if book exists
@@ -2808,7 +2777,7 @@ router.post("/:id/comments", requireAuth, async (req: Request, res: Response) =>
       .limit(1);
 
     if (!book.length) {
-      return handleNotFoundError(res, "Book not found");
+      return cNotFoundError(c, "Book not found");
     }
 
     // Validate pageId belongs to this book when provided
@@ -2816,15 +2785,15 @@ router.post("/:id/comments", requireAuth, async (req: Request, res: Response) =>
       const [page] = await dbRead
         .select({ id: pages.id, bookId: pages.bookId })
         .from(pages)
-        .where(eq(pages.id, normalizedPageId))
+        .where(eq(pages.id, normalizedPageId!))
         .limit(1);
 
       if (!page) {
-        return handleNotFoundError(res, "Page not found");
+        return cNotFoundError(c, "Page not found");
       }
 
       if (page.bookId !== id) {
-        return handleValidationError(res, "Page does not belong to this book");
+        return cValidationError(c, "Page does not belong to this book");
       }
     }
 
@@ -2837,26 +2806,26 @@ router.post("/:id/comments", requireAuth, async (req: Request, res: Response) =>
         .limit(1);
 
       if (!parentComment) {
-        return handleNotFoundError(res, "Parent comment not found");
+        return cNotFoundError(c, "Parent comment not found");
       }
 
       if (parentComment.bookId !== id) {
-        return handleValidationError(res, "Parent comment does not belong to this book");
+        return cValidationError(c, "Parent comment does not belong to this book");
       }
 
       // Replies must live in the same scope as the parent comment
       if ((parentComment.pageId ?? null) !== normalizedPageId) {
-        return handleValidationError(res, "Parent comment does not belong to this page");
+        return cValidationError(c, "Parent comment does not belong to this page");
       }
       if ((parentComment.paragraphNumber ?? null) !== normalizedParagraphNumber) {
-        return handleValidationError(res, "Parent comment does not belong to this paragraph");
+        return cValidationError(c, "Parent comment does not belong to this paragraph");
       }
     }
 
     // Sanitize content for DB and safety
     const cleanContent = sanitizeTextForDB(String(content).trim());
     if (!cleanContent || cleanContent.length === 0) {
-      return handleValidationError(res, 'Content is required and cannot be empty after sanitization');
+      return cValidationError(c, 'Content is required and cannot be empty after sanitization');
     }
 
     // Create comment and fetch user info in a single transaction to ensure consistency
@@ -2894,9 +2863,9 @@ router.post("/:id/comments", requireAuth, async (req: Request, res: Response) =>
       return joined;
     });
 
-    res.status(201).json({ comment: commentWithUser });
+    c.status(201); return c.json({ comment: commentWithUser });
   } catch (error) {
-    handleApiError(res, "Failed to create comment", error);
+    cApiError(c, "Failed to create comment", error);
   }
 });
 
@@ -3036,31 +3005,31 @@ async function fetchComments(
  * GET /api/books/book123/pages/page456/comments
  * GET /api/books/book123/pages/page456/comments?paragraphNumber=3
  */
-router.get("/:id/pages/:pageId/comments", optionalAuth, async (req: Request, res: Response) => {
+router.get("/:id/pages/:pageId/comments", optionalAuth, async (c) => {
   try {
-    const { id, pageId } = req.params;
-    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE } = extractPaginationParams(req);
-    const { paragraphNumber } = req.query;
+    const { id, pageId } = c.req.param();
+    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE } = extractPaginationParams({ query: c.req.query() } as any);
+    const { paragraphNumber } = c.req.query();
 
     const book = await getBookFromDB(id as string);
-    if (!book) return handleNotFoundError(res, "Book not found");
+    if (!book) return cNotFoundError(c, "Book not found");
 
     const pageRow = await findPageInBook(pageId as string, id as string);
-    if (!pageRow) return handleNotFoundError(res, "Page not found");
+    if (!pageRow) return cNotFoundError(c, "Page not found");
 
     const conditions = [eq(userComments.bookId, id as string), eq(userComments.pageId, pageId as string)];
     if (paragraphNumber !== undefined && paragraphNumber !== null && paragraphNumber !== '') {
       const parsed = parseInt(paragraphNumber as string, 10);
       if (Number.isNaN(parsed)) {
-        return handleValidationError(res, "paragraphNumber must be an integer");
+        return cValidationError(c, "paragraphNumber must be an integer");
       }
       conditions.push(eq(userComments.paragraphNumber, parsed));
     }
 
     const { comments, pagination } = await fetchComments(id as string, conditions, page, limit);
-    res.json({ comments, pagination });
+    return c.json({ comments, pagination });
   } catch (error) {
-    handleApiError(res, "Failed to retrieve page comments", error);
+    cApiError(c, "Failed to retrieve page comments", error);
   }
 });
 
@@ -3088,26 +3057,26 @@ router.get("/:id/pages/:pageId/comments", optionalAuth, async (req: Request, res
  * POST /api/books/book123/pages/page456/comments
  * Body: { "content": "This paragraph was intense", "paragraphNumber": 3 }
  */
-router.post("/:id/pages/:pageId/comments", requireAuth, async (req: Request, res: Response) => {
+router.post("/:id/pages/:pageId/comments", requireAuth, async (c) => {
   try {
-    const { id, pageId } = req.params;
-    const { content, parentCommentId, paragraphNumber } = req.body;
-    const userId = req.userId!;
+    const { id, pageId } = c.req.param();
+    const { content, parentCommentId, paragraphNumber } = c.get("body");
+    const userId = c.get("userId")!;
 
     const contentError = validateCommentContent(content);
-    if (contentError) return res.status(400).json({ error: contentError });
+    if (contentError) return c.status(400); return c.json({ error: contentError });
 
     const book = await dbRead.select({ id: books.id }).from(books).where(eq(books.id, id as string)).limit(1);
-    if (!book.length) return handleNotFoundError(res, "Book not found");
+    if (!book.length) return cNotFoundError(c, "Book not found");
 
     const pageRow = await findPageInBook(pageId as string, id as string);
-    if (!pageRow) return handleNotFoundError(res, "Page not found");
+    if (!pageRow) return cNotFoundError(c, "Page not found");
 
     let normalizedParagraphNumber: number | null = null;
     if (paragraphNumber !== undefined && paragraphNumber !== null) {
       const parsed = parseInt(paragraphNumber, 10);
       if (Number.isNaN(parsed) || parsed < 1) {
-        return handleValidationError(res, "paragraphNumber must be a positive integer");
+        return cValidationError(c, "paragraphNumber must be a positive integer");
       }
       normalizedParagraphNumber = parsed;
     }
@@ -3120,15 +3089,15 @@ router.post("/:id/pages/:pageId/comments", requireAuth, async (req: Request, res
         .where(eq(userComments.id, parentCommentId))
         .limit(1);
 
-      if (!parentComment) return handleNotFoundError(res, "Parent comment not found");
-      if (parentComment.bookId !== id) return handleValidationError(res, "Parent comment does not belong to this book");
-      if ((parentComment.pageId ?? null) !== pageId) return handleValidationError(res, "Parent comment does not belong to this page");
-      if ((parentComment.paragraphNumber ?? null) !== normalizedParagraphNumber) return handleValidationError(res, "Parent comment does not belong to this paragraph");
+      if (!parentComment) return cNotFoundError(c, "Parent comment not found");
+      if (parentComment.bookId !== id) return cValidationError(c, "Parent comment does not belong to this book");
+      if ((parentComment.pageId ?? null) !== pageId) return cValidationError(c, "Parent comment does not belong to this page");
+      if ((parentComment.paragraphNumber ?? null) !== normalizedParagraphNumber) return cValidationError(c, "Parent comment does not belong to this paragraph");
     }
 
     const cleanContent = sanitizeTextForDB(String(content).trim());
     if (!cleanContent || cleanContent.length === 0) {
-      return handleValidationError(res, "Content is required and cannot be empty after sanitization");
+      return cValidationError(c, "Content is required and cannot be empty after sanitization");
     }
 
     const comment = await createCommentInScope(userId, id as string, cleanContent, {
@@ -3136,9 +3105,9 @@ router.post("/:id/pages/:pageId/comments", requireAuth, async (req: Request, res
       paragraphNumber: normalizedParagraphNumber,
     }, parentCommentId);
 
-    res.status(201).json({ comment });
+    c.status(201); return c.json({ comment });
   } catch (error) {
-    handleApiError(res, "Failed to create page comment", error);
+    cApiError(c, "Failed to create page comment", error);
   }
 });
 
@@ -3163,20 +3132,20 @@ router.post("/:id/pages/:pageId/comments", requireAuth, async (req: Request, res
  * @example
  * GET /api/books/book123/pages/page456/paragraphs/3/comments
  */
-router.get("/:id/pages/:pageId/paragraphs/:paragraphNumber/comments", optionalAuth, async (req: Request, res: Response) => {
+router.get("/:id/pages/:pageId/paragraphs/:paragraphNumber/comments", optionalAuth, async (c) => {
   try {
-    const { id, pageId, paragraphNumber } = req.params;
-    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE } = extractPaginationParams(req);
+    const { id, pageId, paragraphNumber } = c.req.param();
+    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE } = extractPaginationParams({ query: c.req.query() } as any);
 
     const book = await getBookFromDB(id as string);
-    if (!book) return handleNotFoundError(res, "Book not found");
+    if (!book) return cNotFoundError(c, "Book not found");
 
     const pageRow = await findPageInBook(pageId as string, id as string);
-    if (!pageRow) return handleNotFoundError(res, "Page not found");
+    if (!pageRow) return cNotFoundError(c, "Page not found");
 
     const parsedParagraph = parseInt(paragraphNumber as string, 10);
     if (Number.isNaN(parsedParagraph) || parsedParagraph < 1) {
-      return handleValidationError(res, "paragraphNumber must be a positive integer");
+      return cValidationError(c, "paragraphNumber must be a positive integer");
     }
 
     const conditions = [
@@ -3186,9 +3155,9 @@ router.get("/:id/pages/:pageId/paragraphs/:paragraphNumber/comments", optionalAu
     ];
 
     const { comments, pagination } = await fetchComments(id as string, conditions, page, limit);
-    res.json({ comments, pagination });
+    return c.json({ comments, pagination });
   } catch (error) {
-    handleApiError(res, "Failed to retrieve paragraph comments", error);
+    cApiError(c, "Failed to retrieve paragraph comments", error);
   }
 });
 
@@ -3213,25 +3182,25 @@ router.get("/:id/pages/:pageId/paragraphs/:paragraphNumber/comments", optionalAu
  * POST /api/books/book123/pages/page456/paragraphs/3/comments
  * Body: { "content": "This paragraph was intense" }
  */
-router.post("/:id/pages/:pageId/paragraphs/:paragraphNumber/comments", requireAuth, async (req: Request, res: Response) => {
+router.post("/:id/pages/:pageId/paragraphs/:paragraphNumber/comments", requireAuth, async (c) => {
   try {
-    const { id, pageId, paragraphNumber } = req.params;
-    const { content, parentCommentId } = req.body;
-    const userId = req.userId!;
+    const { id, pageId, paragraphNumber } = c.req.param();
+    const { content, parentCommentId } = c.get("body");
+    const userId = c.get("userId")!;
 
     const contentError = validateCommentContent(content);
-    if (contentError) return res.status(400).json({ error: contentError });
+    if (contentError) return c.status(400); return c.json({ error: contentError });
 
     const parsedParagraph = parseInt(paragraphNumber as string, 10);
     if (Number.isNaN(parsedParagraph) || parsedParagraph < 1) {
-      return handleValidationError(res, "paragraphNumber must be a positive integer");
+      return cValidationError(c, "paragraphNumber must be a positive integer");
     }
 
     const book = await dbRead.select({ id: books.id }).from(books).where(eq(books.id, id as string)).limit(1);
-    if (!book.length) return handleNotFoundError(res, "Book not found");
+    if (!book.length) return cNotFoundError(c, "Book not found");
 
     const pageRow = await findPageInBook(pageId as string, id as string);
-    if (!pageRow) return handleNotFoundError(res, "Page not found");
+    if (!pageRow) return cNotFoundError(c, "Page not found");
 
     if (parentCommentId) {
       const [parentComment] = await dbRead
@@ -3240,15 +3209,15 @@ router.post("/:id/pages/:pageId/paragraphs/:paragraphNumber/comments", requireAu
         .where(eq(userComments.id, parentCommentId))
         .limit(1);
 
-      if (!parentComment) return handleNotFoundError(res, "Parent comment not found");
-      if (parentComment.bookId !== id) return handleValidationError(res, "Parent comment does not belong to this book");
-      if ((parentComment.pageId ?? null) !== pageId) return handleValidationError(res, "Parent comment does not belong to this page");
-      if ((parentComment.paragraphNumber ?? null) !== parsedParagraph) return handleValidationError(res, "Parent comment does not belong to this paragraph");
+      if (!parentComment) return cNotFoundError(c, "Parent comment not found");
+      if (parentComment.bookId !== id) return cValidationError(c, "Parent comment does not belong to this book");
+      if ((parentComment.pageId ?? null) !== pageId) return cValidationError(c, "Parent comment does not belong to this page");
+      if ((parentComment.paragraphNumber ?? null) !== parsedParagraph) return cValidationError(c, "Parent comment does not belong to this paragraph");
     }
 
     const cleanContent = sanitizeTextForDB(String(content).trim());
     if (!cleanContent || cleanContent.length === 0) {
-      return handleValidationError(res, "Content is required and cannot be empty after sanitization");
+      return cValidationError(c, "Content is required and cannot be empty after sanitization");
     }
 
     const comment = await createCommentInScope(userId, id as string, cleanContent, {
@@ -3256,9 +3225,9 @@ router.post("/:id/pages/:pageId/paragraphs/:paragraphNumber/comments", requireAu
       paragraphNumber: parsedParagraph,
     }, parentCommentId);
 
-    res.status(201).json({ comment });
+    c.status(201); return c.json({ comment });
   } catch (error) {
-    handleApiError(res, "Failed to create paragraph comment", error);
+    cApiError(c, "Failed to create paragraph comment", error);
   }
 });
 
@@ -3279,10 +3248,10 @@ router.post("/:id/pages/:pageId/paragraphs/:paragraphNumber/comments", requireAu
  *   "message": "Comment deleted successfully"
  * }
  */
-router.delete("/comments/:id", requireAuth, async (req: Request, res: Response) => {
+router.delete("/comments/:id", requireAuth, async (c) => {
   try {
-    const { id } = req.params;
-    const userId = req.userId!;
+    const { id } = c.req.param();
+    const userId = c.get("userId")!;
 
     // Check if comment exists and user owns it
     const comment = await dbRead
@@ -3292,11 +3261,11 @@ router.delete("/comments/:id", requireAuth, async (req: Request, res: Response) 
       .limit(1);
 
     if (!comment.length) {
-      return handleNotFoundError(res, "Comment not found");
+      return cNotFoundError(c, "Comment not found");
     }
 
     if (comment[0].userId !== userId) {
-      return handleForbiddenError(res, "You can only delete your own comments");
+      return cForbiddenError(c, "You can only delete your own comments");
     }
 
     // Delete comment
@@ -3310,11 +3279,11 @@ router.delete("/comments/:id", requireAuth, async (req: Request, res: Response) 
     //   await invalidateExploreCache();
     // }
 
-    res.json({
+    return c.json({
       message: "Comment deleted successfully"
     });
   } catch (error) {
-    handleApiError(res, "Failed to delete comment", error);
+    cApiError(c, "Failed to delete comment", error);
   }
 });
 
@@ -3346,19 +3315,19 @@ router.delete("/comments/:id", requireAuth, async (req: Request, res: Response) 
  *   }
  * }
  */
-router.put("/comments/:id", requireAuth, async (req: Request, res: Response) => {
+router.put("/comments/:id", requireAuth, async (c) => {
   try {
-    const { id } = req.params;
-    const { content } = req.body;
-    const userId = req.userId!;
+    const { id } = c.req.param();
+    const { content } = c.get("body");
+    const userId = c.get("userId")!;
 
     const contentError = validateCommentContent(content);
-    if (contentError) return res.status(400).json({ error: contentError });
+    if (contentError) return c.status(400); return c.json({ error: contentError });
 
     // Sanitize content before storing
     const cleanContent = sanitizeTextForDB(String(content).trim());
     if (!cleanContent || cleanContent.length === 0) {
-      return handleValidationError(res, "Comment content is empty after sanitization");
+      return cValidationError(c, "Comment content is empty after sanitization");
     }
 
     // Check if comment exists and belongs to user
@@ -3369,11 +3338,11 @@ router.put("/comments/:id", requireAuth, async (req: Request, res: Response) => 
       .limit(1);
 
     if (!existingComment.length) {
-      return handleNotFoundError(res, "Comment not found");
+      return cNotFoundError(c, "Comment not found");
     }
 
     if (existingComment[0].userId !== userId) {
-      return handleForbiddenError(res, "You can only edit your own comments");
+      return cForbiddenError(c, "You can only edit your own comments");
     }
 
     // Update comment
@@ -3389,9 +3358,9 @@ router.put("/comments/:id", requireAuth, async (req: Request, res: Response) => 
       ))
       .returning();
 
-    res.json({ comment });
+    return c.json({ comment });
   } catch (error) {
-    handleApiError(res, "Failed to update comment", error);
+    cApiError(c, "Failed to update comment", error);
   }
 });
 
@@ -3425,10 +3394,10 @@ router.put("/comments/:id", requireAuth, async (req: Request, res: Response) => 
  *   ]
  * }
  */
-router.get("/comments", requireAuth, async (req: Request, res: Response) => {
+router.get("/comments", requireAuth, async (c) => {
   try {
-    const userId = req.userId!;
-    const { bookId, limit = "50", offset = "0" } = req.query;
+    const userId = c.get("userId")!;
+    const { bookId, limit = "50", offset = "0" } = c.req.query();
 
     // Build base query conditions
     const baseConditions = [eq(userComments.userId, userId)];
@@ -3446,9 +3415,9 @@ router.get("/comments", requireAuth, async (req: Request, res: Response) => {
       .limit(parseInt(limit as string))
       .offset(parseInt(offset as string));
 
-    res.json({ comments });
+    return c.json({ comments });
   } catch (error) {
-    handleApiError(res, "Failed to retrieve comments", error);
+    cApiError(c, "Failed to retrieve comments", error);
   }
 });
 
@@ -3520,30 +3489,30 @@ router.get("/comments", requireAuth, async (req: Request, res: Response) => {
  *   }
  * }
  */
-router.get("/:identifier", optionalAuth, async (req: Request, res: Response) => {
+router.get("/:identifier", optionalAuth, async (c) => {
   try {
-    const { identifier } = req.params;
+    const { identifier } = c.req.param();
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
 
-    const enrichedBook = await getEnrichedBook(bookIdentifier, req.userId, req.headerLanguage);
-    if (!enrichedBook) return handleNotFoundError(res, "Book not found");
+    const enrichedBook = await getEnrichedBook(bookIdentifier, c.get("userId"), c.get("headerLanguage"));
+    if (!enrichedBook) return cNotFoundError(c, "Book not found");
 
     // Generate ETag from updatedAt + userId (user-specific columns: isMine, isLiked, isRead, lastReadAt, lastPageId, lastPageNumber, contextHistory)
     const lastModified = enrichedBook.updatedAt;
-    const etagInput = `${lastModified.getTime()}-${req.userId || 'anonymous'}`;
+    const etagInput = `${lastModified.getTime()}-${c.get("userId") || 'anonymous'}`;
     const etag = `"${etagInput}"`;
 
     // Check If-None-Match header (ETag includes userId for user-specific data)
-    if (req.get('If-None-Match') === etag) return res.status(304).end();
+    if (c.req.header('If-None-Match') === etag) return c.status(304); return c.body(null);
 
     // Set caching headers
-    res.set('Last-Modified', lastModified.toUTCString());
-    res.set('ETag', etag);
-    res.set('Cache-Control', 'public, max-age=300'); // 5 minutes
+    c.header('Last-Modified', lastModified.toUTCString());
+    c.header('ETag', etag);
+    c.header('Cache-Control', 'public, max-age=300'); // 5 minutes
 
-    res.json({ book: enrichedBook });
+    return c.json({ book: enrichedBook });
   } catch (error) {
-    handleApiError(res, "Failed to retrieve book", error);
+    cApiError(c, "Failed to retrieve book", error);
   }
 });
 
@@ -3567,9 +3536,9 @@ router.get("/:identifier", optionalAuth, async (req: Request, res: Response) => 
  *   { "branchId": "0194f2d1-xxxx-xxxx-xxxx-xxxxxxxxxxxx", "displayName": "The Dark Path" }
  * ]
  */
-router.get("/:identifier/branches", optionalAuth, async (req: Request, res: Response) => {
+router.get("/:identifier/branches", optionalAuth, async (c) => {
   try {
-    const { identifier } = req.params;
+    const { identifier } = c.req.param();
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
 
     // Resolve book ID from identifier
@@ -3582,11 +3551,11 @@ router.get("/:identifier/branches", optionalAuth, async (req: Request, res: Resp
           .limit(1)
           .then(rows => rows[0]?.id ?? null));
 
-    if (!bookId) return handleNotFoundError(res, "Book not found");
+    if (!bookId) return cNotFoundError(c, "Book not found");
 
     // Fetch book to get the title for the main branch
     const book = await getBook(bookId);
-    if (!book) return handleNotFoundError(res, "Book not found");
+    if (!book) return cNotFoundError(c, "Book not found");
 
     // Fetch non-main branches from the branches table
     const branchRows = await dbRead
@@ -3604,9 +3573,9 @@ router.get("/:identifier/branches", optionalAuth, async (req: Request, res: Resp
       ...branchRows,
     ];
 
-    res.json(result);
+    return c.json(result);
   } catch (error) {
-    handleApiError(res, "Failed to retrieve branches", error);
+    cApiError(c, "Failed to retrieve branches", error);
   }
 });
 
@@ -3624,14 +3593,14 @@ router.get("/:identifier/branches", optionalAuth, async (req: Request, res: Resp
  * @header Accept-Language - Desired language code (e.g., "en", "es", "fr")
  * @returns Page with actions and book metadata
  */
-router.get("/:identifier/:pageId", optionalAuth, async (req: Request, res: Response) => {
+router.get("/:identifier/:pageId", optionalAuth, async (c) => {
   try {
-    const { headerLanguage } = req;
-    const { identifier, pageId } = req.params;
-    const { prefetch, translate: shouldTranslate, credits, actioning } = req.query;
-    const userId = req.userId;
+    const headerLanguage = c.get("headerLanguage");
+    const { identifier, pageId } = c.req.param();
+    const { prefetch, translate: shouldTranslate, credits, actioning } = c.req.query();
+    const userId = c.get("userId");
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier; // Book slug or id (uuid v7)
-    const skipVisit = !userId || prefetch === 'true' || req.method === 'HEAD'; // Skip for non-actual user navigation
+    const skipVisit = !userId || prefetch === 'true' || c.req.method === 'HEAD'; // Skip for non-actual user navigation
     const translate = shouldTranslate === 'true'; // Should translate to Accept-Language header
     const consumeCredits = credits === 'true'; // Should consume credits
     const takeAction = !!userId && actioning === 'true'; // Should insert to user page progress
@@ -3644,15 +3613,15 @@ router.get("/:identifier/:pageId", optionalAuth, async (req: Request, res: Respo
       takeAction,
       consumeCredits,
       language: headerLanguage
-    }, { req, res });
+    }, { c });
 
     // Response already sent by `visitBookPage` internally
     if (!dbPage || !book) return;
 
     // Access control: reject if book is archived or private and user is not the owner
-    if ((book.status === 'archived' || book.visibility === 'private') && (!req.userId || req.userId !== book.userId)) {
-      if (!req.userId) return handleUnauthorizedError(res, "Authentication required to view this book");
-      return handleForbiddenError(res, "You do not have access to this book");
+    if ((book.status === 'archived' || book.visibility === 'private') && (!c.get("userId") || c.get("userId") !== book.userId)) {
+      if (!c.get("userId")) return cUnauthorizedError(c, "Authentication required to view this book");
+      return cForbiddenError(c, "You do not have access to this book");
     }
 
     // Return enriched page with only frontend-relevant fields
@@ -3666,7 +3635,7 @@ router.get("/:identifier/:pageId", optionalAuth, async (req: Request, res: Respo
       isUserTakeAction
     });
 
-    if (!page) return handleApiError(res, "Failed to get enriched page");
+    if (!page) return cApiError(c, "Failed to get enriched page");
 
     // Generate ETag from page updatedAt + userId + translation params (different content per user/language)
     const lastModified = dbPage.updatedAt;
@@ -3674,20 +3643,20 @@ router.get("/:identifier/:pageId", optionalAuth, async (req: Request, res: Respo
     const etag = `"${etagInput}"`;
 
     // Check If-None-Match header (ETag includes translation params)
-    if (req.get('If-None-Match') === etag) return res.status(304).end();
+    if (c.req.header('If-None-Match') === etag) return c.status(304); return c.body(null);
 
     // Set caching headers
-    res.set('Last-Modified', lastModified.toUTCString());
-    res.set('ETag', etag);
-    res.set('Cache-Control', 'public, max-age=60'); // 1 minute (pages update more frequently)
+    c.header('Last-Modified', lastModified.toUTCString());
+    c.header('ETag', etag);
+    c.header('Cache-Control', 'public, max-age=60'); // 1 minute (pages update more frequently)
 
-    res.json({
+    return c.json({
       page,
       book,
       visitDetails
     });
   } catch (error) {
-    handleApiError(res, "Failed to retrieve page", error);
+    cApiError(c, "Failed to retrieve page", error);
   }
 });
 
@@ -3715,18 +3684,18 @@ router.get("/:identifier/:pageId", optionalAuth, async (req: Request, res: Respo
  * Response (200):
  * { "visitDetails": { "userId": "user456", "bookId": "book123", "pageId": "page456", "lastPageNumber": 5, "isCompleted": false } }
  */
-router.post('/:identifier/:pageId/confirm-visit', requireAuth, async (req: Request, res: Response) => {
-  const { identifier: bookIdentifier, pageId } = req.params;
-  const { consumeCredits } = req.body as { actionedPageId?: string; consumeCredits?: boolean };
-  const userId = req.userId!;
+router.post('/:identifier/:pageId/confirm-visit', requireAuth, async (c) => {
+  const { identifier: bookIdentifier, pageId } = c.req.param();
+  const { consumeCredits } = c.get("body") as { actionedPageId?: string; consumeCredits?: boolean };
+  const userId = c.get("userId")!;
 
   const { visitDetails, dbPage, book } = await visitBookPage(
-    { userId, pageId: pageId as string, bookIdentifier: bookIdentifier as string, skipVisit: false, takeAction: true, consumeCredits: !!consumeCredits, language: req.headers['accept-language'] },
-    { req, res }
+    { userId, pageId: pageId as string, bookIdentifier: bookIdentifier as string, skipVisit: false, takeAction: true, consumeCredits: !!consumeCredits, language: c.req.header('accept-language') },
+    { c }
   );
   if (!dbPage || !book) return; // visitBookPage already sent the error response
 
-  res.json({ visitDetails });
+  return c.json({ visitDetails });
 });
 
 /**
@@ -3765,90 +3734,78 @@ router.post('/:identifier/:pageId/confirm-visit', requireAuth, async (req: Reque
  * event: complete
  * data: {"id": "page456", "page": 5, "text": "...", "actions": [...]}
  */
-router.get("/:identifier/:pageId/candidates", requireAuth, async (req: Request, res: Response) => {
+router.get("/:identifier/:pageId/candidates", requireAuth, async (c) => {
   try {
-    const { identifier, pageId } = req.params;
-    const userId = req.userId!;
+    const { identifier, pageId } = c.req.param();
+    const userId = c.get("userId")!;
 
-    // Handle array case for identifier and pageId
+    // Handle array case for identifier and pageId (harmless no-op on Hono string params)
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
     const pageIdStr = Array.isArray(pageId) ? pageId[0] : pageId;
 
     if (!isValidUuid(pageIdStr)) {
-      return handleValidationError(res, "Invalid pageId: must be valid uuid");
+      return cValidationError(c, "Invalid pageId: must be valid uuid");
     }
 
     // Use common validation and page retrieval
     const validationResult = await validateAndRetrievePageForGeneration(bookIdentifier, pageIdStr, userId);
     if (!validationResult) {
-      return handleNotFoundError(res, "Page not found");
+      return cNotFoundError(c, "Page not found");
     }
 
     const { dbBook, dbPage, userPage, isGenerating, isDone } = validationResult;
 
-    // Always set SSE headers first for consistent response format
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.flushHeaders();
-
-    // Check if some actions need generation
-    if (isDone) {
-      console.log(`[GET /candidates] ℹ️ No actions need generation for page ${pageIdStr}, sending SSE complete event`);
-      try {
-        if (!res.writableEnded) {
-          res.write(`event: complete\n`);
-          res.write(`data: ${JSON.stringify(userPage)}\n\n`);
-          res.end();
+    return streamSSE(c, async (stream) => {
+      // Check if some actions need generation
+      if (isDone) {
+        console.log(`[GET /candidates] ℹ️ No actions need generation for page ${pageIdStr}, sending SSE complete event`);
+        try {
+          await stream.writeSSE({ event: 'complete', data: JSON.stringify(userPage) });
+          // Clear all progress events in database since generation is complete
+          await clearActionProgressEvents(pageIdStr);
+        } catch {
+          await stream.writeSSE({ event: 'error', data: JSON.stringify({ error: 'Failed to process page data' }) });
         }
-        // Clear all progress events in database since generation is complete
-        await clearActionProgressEvents(pageIdStr);
-      } catch {
-        if (!res.writableEnded) {
-          res.write(`event: error\n`);
-          res.write(`data: ${JSON.stringify({ error: 'Failed to process page data' })}\n\n`);
-          res.end();
-        }
+        return;
       }
-      return;
-    }
 
-    // Trigger background generation via GitHub workflow if not already in progress
-    if (!isGenerating) {
-      triggerCandidateGenerationWorkflow({
-        bookTitle: dbBook.title,
-        bookId: dbPage.bookId,
+      // Trigger background generation via GitHub workflow if not already in progress
+      if (!isGenerating) {
+        triggerCandidateGenerationWorkflow({
+          bookTitle: dbBook.title,
+          bookId: dbPage.bookId,
+          pageId: pageIdStr,
+          userId,
+          maxDepth: MAX_BRANCHING_PREGENERATION_DEPTH, // Also pre-generate next-level depths
+          context: 'GET /candidates'
+        }).catch(error => {
+          console.error(`[GET /candidates] ❌ Failed to trigger GitHub workflow:`, error);
+        });
+      } else {
+        console.log(`[GET /candidates] 🛬 Generation in progress for page ${pageIdStr}, using SSE to wait (started at ${dbPage.isGeneratingStartedAt})`);
+      }
+
+      // Determine if generation is already in progress
+      const initialMessage = isGenerating
+        ? 'Candidate generation in progress...'
+        : 'Candidate generation started...';
+
+      // Use shared polling function
+      await pollForCandidateGeneration({
         pageId: pageIdStr,
         userId,
-        maxDepth: MAX_BRANCHING_PREGENERATION_DEPTH, // Also pre-generate next-level depths
-        context: 'GET /candidates'
-      }).catch(error => {
-        console.error(`[GET /candidates] ❌ Failed to trigger GitHub workflow:`, error);
+        stream,
+        initialMessage,
+        getPageFromDB: (pid) => getPageFromDB(pid, { client: dbWrite }),
+        mapToUserStoryPage,
+        getActionProgressEvents,
+        clearActionProgressEvents,
+        config: SSE_POLLING_CONFIG,
+        signal: c.req.raw.signal,
       });
-    } else {
-      console.log(`[GET /candidates] 🛬 Generation in progress for page ${pageIdStr}, using SSE to wait (started at ${dbPage.isGeneratingStartedAt})`);
-    }
-
-    // Determine if generation is already in progress
-    const initialMessage = isGenerating 
-      ? 'Candidate generation in progress...' 
-      : 'Candidate generation started...';
-
-    // Use shared polling function
-    await pollForCandidateGeneration({
-      pageId: pageIdStr,
-      userId,
-      req,
-      res,
-      initialMessage,
-      getPageFromDB: (pid) => getPageFromDB(pid, { client: dbWrite }),
-      mapToUserStoryPage,
-      getActionProgressEvents,
-      clearActionProgressEvents,
-      config: SSE_POLLING_CONFIG,
     });
   } catch (error) {
-    handleApiError(res, "Failed to generate candidates", error);
+    return cApiError(c, "Failed to generate candidates", error);
   }
 });
 
@@ -3891,23 +3848,23 @@ router.get("/:identifier/:pageId/candidates", requireAuth, async (req: Request, 
  *   "lastUpdated": "2024-01-01T00:00:10Z"
  * }
  */
-router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (req: Request, res: Response) => {
+router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => {
   try {
-    const { userId } = req;
-    const { identifier, pageId } = req.params;
+    const userId = c.get("userId");
+    const { identifier, pageId } = c.req.param();
 
     // Handle array case for identifier and pageId
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
     const pageIdStr = Array.isArray(pageId) ? pageId[0] : pageId;
 
     if (!isValidUuid(pageIdStr)) {
-      return handleValidationError(res, "Invalid pageId: must be valid uuid");
+      return cValidationError(c, "Invalid pageId: must be valid uuid");
     }
 
     // Use common validation and page retrieval
     const validationResult = await validateAndRetrievePageForGeneration(bookIdentifier, pageIdStr, userId);
     if (!validationResult) {
-      return handleNotFoundError(res, "Page not found");
+      return cNotFoundError(c, "Page not found");
     }
 
     const { dbBook, dbPage, userPage, isGenerating, isDone } = validationResult;
@@ -3951,7 +3908,7 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (req: R
       };
 
       console.log(`[GET /candidates/status] ⏰ Generation in progress for page ${pageIdStr}: ${completedActions}/${totalActions} actions completed`);
-      return res.json(response);
+      return c.json(response);
     }
 
     // Generation not in progress - check if actions are complete
@@ -3960,7 +3917,7 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (req: R
       console.log(`[GET /candidates/status] ✅ Generation complete for page ${pageIdStr} - all actions completed`);
       void clearActionProgressEvents(pageIdStr);
 
-      return res.json({
+      return c.json({
         isGenerating: false,
         completedActions: actions.length,
         totalActions: actions.length,
@@ -3988,14 +3945,14 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (req: R
     if (!workflowResult.success && !workflowResult.alreadyInProgress) {
       console.error(`[GET /candidates/status] ❌ Failed to trigger GitHub workflow for page ${pageIdStr}:`, workflowResult.error);
       // Return error response to client so they can retry
-      return res.status(503).json({
+      return c.status(503); return c.json({
         error: 'Failed to trigger generation workflow',
         details: workflowResult.error,
         isGenerating: false,
       });
     }
 
-    return res.json({
+    return c.json({
       isGenerating: true,
       completedActions,
       totalActions,
@@ -4006,7 +3963,7 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (req: R
     } satisfies CandidateGenerationStatus);
 
   } catch (error) {
-    handleApiError(res, "Failed to get candidate status", error);
+    cApiError(c, "Failed to get candidate status", error);
   }
 });
 
@@ -4036,35 +3993,35 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (req: R
  *   "alreadyPurchased": false
  * }
  */
-router.post("/:identifier/:pageId/actions/hint", requireAuth, async (req: Request, res: Response) => {
+router.post("/:identifier/:pageId/actions/hint", requireAuth, async (c) => {
   try {
-    const { identifier, pageId: pageIdParam } = req.params;
-    const { actionText } = req.body;
-    const userId = req.userId!;
+    const { identifier, pageId: pageIdParam } = c.req.param();
+    const { actionText } = c.get("body");
+    const userId = c.get("userId")!;
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
     const pageId = Array.isArray(pageIdParam) ? pageIdParam[0] : pageIdParam;
 
     // Validate actionText parameter
     if (!actionText || typeof actionText !== 'string') {
-      return handleValidationError(res, "actionText is required");
+      return cValidationError(c, "actionText is required");
     }
 
     // Validate that the page exists and belongs to the book
     const dbPage = await getPageFromDB(pageId);
     if (!dbPage) {
-      return handleNotFoundError(res, "Page not found");
+      return cNotFoundError(c, "Page not found");
     }
 
     // Verify the book identifier matches
     const book = await resolveBook(bookIdentifier);
     if (!book || book.id !== dbPage.bookId) {
-      return handleNotFoundError(res, "Book not found or page does not belong to this book");
+      return cNotFoundError(c, "Book not found or page does not belong to this book");
     }
 
     // Validate that the action exists on the page
     const actionExists = dbPage.actions.some(action => action.text === actionText);
     if (!actionExists) {
-      return handleValidationError(res, "Action not found on this page");
+      return cValidationError(c, "Action not found on this page");
     }
 
     // Check if user already purchased this hint
@@ -4079,7 +4036,7 @@ router.post("/:identifier/:pageId/actions/hint", requireAuth, async (req: Reques
       .limit(1);
 
     if (existingHint.length > 0) {
-      return res.json({
+      return c.json({
         success: true,
         actionText,
         alreadyPurchased: true,
@@ -4114,7 +4071,7 @@ router.post("/:identifier/:pageId/actions/hint", requireAuth, async (req: Reques
       targetType: 'action',
       targetId: pageId,
       metadata: { actionText, bookId: book.id }
-    }, { req });
+    }, { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } });
 
     // // Get updated user credit balance
     // const userResult = await dbRead
@@ -4127,7 +4084,7 @@ router.post("/:identifier/:pageId/actions/hint", requireAuth, async (req: Reques
 
     console.log(`[POST /actions/hint] ✅ User ${userId} purchased hint for action "${actionText}" on page ${pageId}`);
 
-    return res.json({
+    return c.json({
       success: true,
       actionText,
       alreadyPurchased: false,
@@ -4139,13 +4096,13 @@ router.post("/:identifier/:pageId/actions/hint", requireAuth, async (req: Reques
     
     // Handle insufficient credits error
     if (errorMessage.includes(CREDIT_ERRORS.INSUFFICIENT_CREDITS)) {
-      return res.status(402).json({
+      return c.status(402); return c.json({
         error: "Insufficient credits",
         message: `You need at least ${CREDIT_COSTS.SHOW_ACTION_HINT} credit to purchase an action hint`
       });
     }
 
-    handleApiError(res, "Failed to purchase action hint", error);
+    cApiError(c, "Failed to purchase action hint", error);
   }
 });
 
@@ -4174,21 +4131,21 @@ router.post("/:identifier/:pageId/actions/hint", requireAuth, async (req: Reques
  * POST /api/books/whispering-halls/page456/touch
  * → 200 { "success": true, "lastReadAt": "2026-07-17T12:00:00.000Z" }
  */
-router.post("/:identifier/:pageId/touch", requireAuth, async (req: Request, res: Response) => {
-  const { identifier: bookIdentifier, pageId } = req.params;
-  const userId = req.userId!;
+router.post("/:identifier/:pageId/touch", requireAuth, async (c) => {
+  const { identifier: bookIdentifier, pageId } = c.req.param();
+  const userId = c.get("userId")!;
   const pageIdStr = Array.isArray(pageId) ? pageId[0] : pageId;
   const bookIdentifierStr = Array.isArray(bookIdentifier) ? bookIdentifier[0] : bookIdentifier;
 
   if (!isValidUuid(pageIdStr)) {
-    return handleValidationError(res, "Invalid pageId: must be valid uuid");
+    return cValidationError(c, "Invalid pageId: must be valid uuid");
   }
 
   // Resolve book id (slug or uuid) and confirm the page belongs to it.
   const book = await resolveBook(bookIdentifierStr);
-  if (!book) return handleNotFoundError(res, "Book not found");
+  if (!book) return cNotFoundError(c, "Book not found");
   const dbPage = await getPageFromDB(pageIdStr, { bookIdentifier: book.id });
-  if (!dbPage) return handleNotFoundError(res, "Page not found");
+  if (!dbPage) return cNotFoundError(c, "Page not found");
 
   // Upsert the active session row, bumping updated_at. This is the same row
   // the `reads` sort and `getEnrichedBook` session subquery read from, so the
@@ -4214,7 +4171,7 @@ router.post("/:identifier/:pageId/touch", requireAuth, async (req: Request, res:
     })
     .returning({ updatedAt: userSessions.updatedAt });
 
-  res.json({ success: true, lastReadAt: session?.updatedAt ?? now });
+  return c.json({ success: true, lastReadAt: session?.updatedAt ?? now });
 });
 
 /**
@@ -4234,15 +4191,15 @@ router.post("/:identifier/:pageId/touch", requireAuth, async (req: Request, res:
  * POST /api/books/the-haunting/01912345-6789-1234-5678-123456789012/share
  * → 200 { "success": true }
  */
-router.post("/:identifier/:pageId/share", requireAuth, async (req: Request, res: Response) => {
-  const bookIdentifier = req.params.identifier as string;
-  const pageId = req.params.pageId as string;
-  const userId = req.userId!;
+router.post("/:identifier/:pageId/share", requireAuth, async (c) => {
+  const bookIdentifier = c.req.param().identifier as string;
+  const pageId = c.req.param().pageId as string;
+  const userId = c.get("userId")!;
 
   // Get page
   const dbPage = await getPageFromDB(pageId, { bookIdentifier });
   if (!dbPage) {
-    return handleNotFoundError(res, `Page not found`);
+    return cNotFoundError(c, `Page not found`);
   }
 
   const bookId = dbPage.bookId;
@@ -4259,7 +4216,7 @@ router.post("/:identifier/:pageId/share", requireAuth, async (req: Request, res:
     .limit(1);
 
   if (!completion) {
-    return handleNotFoundError(res, 'No completion found for this page — cannot share an ending you have not reached.');
+    return cNotFoundError(c, 'No completion found for this page — cannot share an ending you have not reached.');
   }
 
   // Log user activity
@@ -4269,9 +4226,9 @@ router.post("/:identifier/:pageId/share", requireAuth, async (req: Request, res:
     targetType: 'book',
     targetId: completion.id,
     metadata: { bookId: completion.bookId, pageId, branchId: completion.branchId },
-  }, { req });
+  }, { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } });
 
-  res.json({ success: true });
+  return c.json({ success: true });
 });
 
 /**
@@ -4304,11 +4261,11 @@ router.post("/:identifier/:pageId/share", requireAuth, async (req: Request, res:
  *     "ending": { "text": "I walked out the front door...", "percentage": 12.5 }
  *   }
  */
-router.get("/share/:username/:bookSlug/:pageId", async (req: Request, res: Response) => {
+router.get("/share/:username/:bookSlug/:pageId", async (c) => {
   try {
-    const username = req.params.username as string;
-    const bookSlug = req.params.bookSlug as string;
-    const pageId = req.params.pageId as string;
+    const username = c.req.param().username as string;
+    const bookSlug = c.req.param().bookSlug as string;
+    const pageId = c.req.param().pageId as string;
 
     // ── Lookup user by username ────────────────────────────────────────────
     const [user] = await dbRead
@@ -4316,7 +4273,7 @@ router.get("/share/:username/:bookSlug/:pageId", async (req: Request, res: Respo
       .from(users)
       .where(eq(users.username, username))
       .limit(1);
-    if (!user) return handleNotFoundError(res, 'Not found');
+    if (!user) return cNotFoundError(c, 'Not found');
 
     // ── Lookup book by slug ─────────────────────────────────────────────────
     const [book] = await dbRead
@@ -4334,10 +4291,10 @@ router.get("/share/:username/:bookSlug/:pageId", async (req: Request, res: Respo
       .from(books)
       .where(eq(books.slug, bookSlug))
       .limit(1);
-    if (!book) return handleNotFoundError(res, 'Not found');
+    if (!book) return cNotFoundError(c, 'Not found');
 
     // Gate 1: visibility — private books are never publicly reachable
-    if (book.visibility === 'private') return handleNotFoundError(res, 'Not found');
+    if (book.visibility === 'private') return cNotFoundError(c, 'Not found');
 
     // Gate 2: did this completion actually happen
     const [completion] = await dbRead
@@ -4349,7 +4306,7 @@ router.get("/share/:username/:bookSlug/:pageId", async (req: Request, res: Respo
         eq(userCompletedBooks.pageId, pageId),
       ))
       .limit(1);
-    if (!completion) return handleNotFoundError(res, 'Not found');
+    if (!completion) return cNotFoundError(c, 'Not found');
 
     // Gate 3: consent — was this specific completion ever actually shared
     const [shareLog] = await dbRead
@@ -4360,7 +4317,7 @@ router.get("/share/:username/:bookSlug/:pageId", async (req: Request, res: Respo
         eq(userActivityLogs.targetId, completion.id),
       ))
       .limit(1);
-    if (!shareLog) return handleNotFoundError(res, 'Not found');
+    if (!shareLog) return cNotFoundError(c, 'Not found');
 
     // ── Compute ending stats ───────────────────────────────────────────────
     const endingStats = await computeEndingStats(book.id, pageId, user.userId);
@@ -4368,7 +4325,7 @@ router.get("/share/:username/:bookSlug/:pageId", async (req: Request, res: Respo
     // ── Get page text ──────────────────────────────────────────────────────
     const page = await getPageFromDB(pageId);
 
-    res.json({
+    return c.json({
       sharer: { name: user.name, imageUrl: user.imageUrl },
       book: {
         title: book.title,
@@ -4384,7 +4341,7 @@ router.get("/share/:username/:bookSlug/:pageId", async (req: Request, res: Respo
     });
   } catch (error) {
     console.error('[GET /share/:username/:bookSlug/:pageId] ❌ Error:', error);
-    handleApiError(res, 'Failed to load shared ending', error);
+    cApiError(c, 'Failed to load shared ending', error);
   }
 });
 
@@ -4412,21 +4369,21 @@ router.get("/share/:username/:bookSlug/:pageId", async (req: Request, res: Respo
  *   "alreadyPurchased": false
  * }
  */
-router.post("/:identifier/purchase", requireAuth, async (req: Request, res: Response) => {
+router.post("/:identifier/purchase", requireAuth, async (c) => {
   try {
-    const { identifier } = req.params;
-    const userId = req.userId!;
+    const { identifier } = c.req.param();
+    const userId = c.get("userId")!;
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
 
     // Validate that the book exists
     const dbBook = await getBookFromDB(bookIdentifier);
     if (!dbBook) {
-      return handleNotFoundError(res, "Book not found");
+      return cNotFoundError(c, "Book not found");
     }
 
     // Validate that the book has a creditsPrice (is a paid book)
     if (!dbBook.creditsPrice || dbBook.creditsPrice <= 0) {
-      return handleValidationError(res, "This book is not available for purchase");
+      return cValidationError(c, "This book is not available for purchase");
     }
 
     // Check if user already purchased this book
@@ -4440,7 +4397,7 @@ router.post("/:identifier/purchase", requireAuth, async (req: Request, res: Resp
       .limit(1);
 
     if (existingPurchase.length > 0) {
-      return res.json({
+      return c.json({
         success: true,
         bookId: dbBook.id,
         creditsPrice: dbBook.creditsPrice,
@@ -4476,11 +4433,11 @@ router.post("/:identifier/purchase", requireAuth, async (req: Request, res: Resp
       targetType: 'book',
       targetId: dbBook.id,
       metadata: { creditsPrice: dbBook.creditsPrice }
-    }, { req });
+    }, { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } });
 
     console.log(`[POST /purchase] ✅ User ${userId} purchased book "${dbBook.title}" for ${dbBook.creditsPrice} credits`);
 
-    return res.json({
+    return c.json({
       success: true,
       bookId: dbBook.id,
       creditsPrice: dbBook.creditsPrice,
@@ -4492,13 +4449,13 @@ router.post("/:identifier/purchase", requireAuth, async (req: Request, res: Resp
     
     // Handle insufficient credits error
     if (errorMessage.includes(CREDIT_ERRORS.INSUFFICIENT_CREDITS)) {
-      return res.status(402).json({
+      return c.status(402); return c.json({
         error: "Insufficient credits",
         message: "You need more credits to purchase this book"
       });
     }
 
-    handleApiError(res, "Failed to purchase book", error);
+    cApiError(c, "Failed to purchase book", error);
   }
 });
 
@@ -4539,32 +4496,32 @@ router.post("/:identifier/purchase", requireAuth, async (req: Request, res: Resp
  *   ]
  * }
  */
-router.get("/:identifier/psychological-profile", requireAuth, async (req: Request, res: Response) => {
+router.get("/:identifier/psychological-profile", requireAuth, async (c) => {
   try {
-    const { identifier } = req.params;
+    const { identifier } = c.req.param();
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
-    const userId = req.userId!;
+    const userId = c.get("userId")!;
 
     // Fetch the book to verify ownership/access
     const book = await resolveBook(bookIdentifier);
     if (!book) {
-      return handleNotFoundError(res, "Book not found");
+      return cNotFoundError(c, "Book not found");
     }
 
     // Only the book owner can view the psychological profile
     if (book.userId !== userId) {
-      return handleForbiddenError(res, "You do not have access to this book's psychological profile");
+      return cForbiddenError(c, "You do not have access to this book's psychological profile");
     }
 
     const result = await getPsychologicalProfileResult(book.id);
     if (!result) {
-      return handleNotFoundError(res, "No psychological profile data found for this book");
+      return cNotFoundError(c, "No psychological profile data found for this book");
     }
 
-    return res.json(result);
+    return c.json(result);
   } catch (error) {
     console.error("[GET /psychological-profile] ❌ Error:", error);
-    handleApiError(res, "Failed to get psychological profile", error);
+    cApiError(c, "Failed to get psychological profile", error);
   }
 });
 
@@ -4606,27 +4563,27 @@ router.get("/:identifier/psychological-profile", requireAuth, async (req: Reques
  *   ]
  * }
  */
-router.get("/:identifier/locked-paths", requireAuth, async (req: Request, res: Response) => {
+router.get("/:identifier/locked-paths", requireAuth, async (c) => {
   try {
-    const { identifier } = req.params;
+    const { identifier } = c.req.param();
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
-    const userId = req.userId!;
+    const userId = c.get("userId")!;
 
     const book = await resolveBook(bookIdentifier);
     if (!book) {
-      return handleNotFoundError(res, "Book not found");
+      return cNotFoundError(c, "Book not found");
     }
 
     // Only the book owner can view locked paths
     if (book.userId !== userId) {
-      return handleForbiddenError(res, "You do not have access to this book's locked path data");
+      return cForbiddenError(c, "You do not have access to this book's locked path data");
     }
 
     const lockedPaths = await getLockedPaths(book.id);
-    return res.json({ lockedPaths });
+    return c.json({ lockedPaths });
   } catch (error) {
     console.error("[GET /locked-paths] ❌ Error:", error);
-    handleApiError(res, "Failed to get locked paths", error);
+    cApiError(c, "Failed to get locked paths", error);
   }
 });
 
@@ -4661,45 +4618,45 @@ router.get("/:identifier/locked-paths", requireAuth, async (req: Request, res: R
  *   "message": "That doesn't match what's true in this story so far."
  * }
  */
-router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, async (req: Request, res: Response) => {
+router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, async (c) => {
   try {
-    const { identifier, pageId: pageIdParam } = req.params;
-    const { text } = req.body;
-    const userId = req.userId!;
+    const { identifier, pageId: pageIdParam } = c.req.param();
+    const { text } = c.get("body");
+    const userId = c.get("userId")!;
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
     const pageId = Array.isArray(pageIdParam) ? pageIdParam[0] : pageIdParam;
 
     // Validate input
     if (!text || typeof text !== 'string') {
-      return handleValidationError(res, "text is required");
+      return cValidationError(c, "text is required");
     }
 
     // Validate pageId format
     if (!isValidUuid(pageId)) {
-      return handleValidationError(res, "Invalid pageId format");
+      return cValidationError(c, "Invalid pageId format");
     }
 
     // Fetch the page and book
     const dbPage = await getPageFromDB(pageId);
     if (!dbPage) {
-      return handleNotFoundError(res, "Page not found");
+      return cNotFoundError(c, "Page not found");
     }
 
     const book = await resolveBook(bookIdentifier);
     if (!book || book.id !== dbPage.bookId) {
-      return handleNotFoundError(res, "Book not found or page does not belong to this book");
+      return cNotFoundError(c, "Book not found or page does not belong to this book");
     }
 
     // Fetch story state
     const storyState = await getStoryStateFromPage(dbPage);
     if (!storyState) {
-      return handleNotFoundError(res, "Story state not found for this page");
+      return cNotFoundError(c, "Story state not found for this page");
     }
 
     // Gate 0 — Eligibility (no credit check for preview)
     const gate0Result = runGate0(storyState, userId, book.id, pageId);
     if (!gate0Result.passed) {
-      return res.json({
+      return c.json({
         outcome: 'reject',
         message: gate0Result.message,
       } satisfies CustomActionPreviewResponse);
@@ -4708,7 +4665,7 @@ router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, async (r
     // Gate 1 — Security filter
     const gate1Result = runGate1(text);
     if (!gate1Result.passed) {
-      return res.json({
+      return c.json({
         outcome: 'reject',
         message: getRejectionMessage(gate1Result.category),
       } satisfies CustomActionPreviewResponse);
@@ -4748,14 +4705,14 @@ router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, async (r
 
     if (!response.result) {
       console.error('[POST /custom-actions/preview] ❌ AI returned no result');
-      return handleApiError(res, "Failed to validate custom action");
+      return cApiError(c, "Failed to validate custom action");
     }
 
     const result = response.result;
 
     // Map outcome to response
     if (result.outcome === 'reject') {
-      return res.json({
+      return c.json({
         outcome: 'reject',
         rejectionCategory: result.rejectionCategory,
         message: getRejectionMessage(result.rejectionCategory),
@@ -4763,7 +4720,7 @@ router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, async (r
     }
 
     // allow or allow_as_attempt — return preview
-    return res.json({
+    return c.json({
       outcome: result.outcome,
       preview: {
         canonicalIntent: result.interpretedIntent,
@@ -4773,7 +4730,7 @@ router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, async (r
 
   } catch (error) {
     console.error('[POST /custom-actions/preview] ❌ Error:', error);
-    handleApiError(res, "Failed to preview custom action", error);
+    cApiError(c, "Failed to preview custom action", error);
   }
 });
 
@@ -4810,40 +4767,40 @@ router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, async (r
  *   }
  * }
  */
-router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (req: Request, res: Response) => {
+router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (c) => {
   let creditsCost: number = CREDIT_COSTS.CUSTOM_ACTION;
   try {
-    const { identifier, pageId: pageIdParam } = req.params;
-    const { text } = req.body;
-    const userId = req.userId!;
+    const { identifier, pageId: pageIdParam } = c.req.param();
+    const { text } = c.get("body");
+    const userId = c.get("userId")!;
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
     const pageId = Array.isArray(pageIdParam) ? pageIdParam[0] : pageIdParam;
 
     // Validate input
     if (!text || typeof text !== 'string') {
-      return handleValidationError(res, "text is required");
+      return cValidationError(c, "text is required");
     }
 
     // Validate pageId format
     if (!isValidUuid(pageId)) {
-      return handleValidationError(res, "Invalid pageId format");
+      return cValidationError(c, "Invalid pageId format");
     }
 
     // Fetch the page and book
     const dbPage = await getPageFromDB(pageId);
     if (!dbPage) {
-      return handleNotFoundError(res, "Page not found");
+      return cNotFoundError(c, "Page not found");
     }
 
     const book = await resolveBook(bookIdentifier);
     if (!book || book.id !== dbPage.bookId) {
-      return handleNotFoundError(res, "Book not found or page does not belong to this book");
+      return cNotFoundError(c, "Book not found or page does not belong to this book");
     }
 
     // Fetch story state
     const storyState = await getStoryStateFromPage(dbPage);
     if (!storyState) {
-      return handleNotFoundError(res, "Story state not found for this page");
+      return cNotFoundError(c, "Story state not found for this page");
     }
 
     // Check if user already chose an action on this page (higher cost)
@@ -4864,7 +4821,7 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (re
     // Gate 0 — Eligibility with credit check
     const gate0Result = runGate0(storyState, userId, book.id, pageId);
     if (!gate0Result.passed) {
-      return res.status(400).json({
+      return c.status(400); return c.json({
         message: gate0Result.message,
       });
     }
@@ -4872,7 +4829,7 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (re
     // Gate 1 — Security filter
     const gate1Result = runGate1(text);
     if (!gate1Result.passed) {
-      return res.status(400).json({
+      return c.status(400); return c.json({
         message: getRejectionMessage(gate1Result.category),
       });
     }
@@ -4896,7 +4853,7 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (re
 
     if (!aiResponse.result) {
       console.error('[POST /custom-actions/submit] ❌ AI returned no result');
-      return handleApiError(res, "Failed to validate custom action");
+      return cApiError(c, "Failed to validate custom action");
     }
 
     const result = aiResponse.result;
@@ -4924,7 +4881,7 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (re
         updatedAt: new Date(),
       });
 
-      return res.status(400).json({
+      return c.status(400); return c.json({
         message: getRejectionMessage(result.rejectionCategory),
       });
     }
@@ -4966,7 +4923,7 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (re
           outcome: result.outcome,
           actionType: result.actionType,
         },
-        req,
+        req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) },
       },
     );
 
@@ -4984,13 +4941,13 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (re
         bookId: book.id,
         outcome: result.outcome,
       },
-    }, { req });
+    }, { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } });
 
     // Return success with generation info
     // The frontend should poll for the next page using the existing candidates/status endpoint
     const pollingUrl = `/api/books/${bookIdentifier}/${pageId}/candidates/status`;
 
-    return res.status(202).json({
+    return c.status(202); return c.json({
       message: 'Custom action submitted successfully. Page generation in progress.',
       pollingInfo: {
         pollingUrl,
@@ -5004,14 +4961,14 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (re
 
     // Handle insufficient credits error
     if (errorMessage.includes(CREDIT_ERRORS.INSUFFICIENT_CREDITS)) {
-      return res.status(402).json({
+      return c.status(402); return c.json({
         error: 'Insufficient credits',
         message: `You need at least ${creditsCost} credits to submit a custom action`,
       });
     }
 
     console.error('[POST /custom-actions/submit] ❌ Error:', error);
-    handleApiError(res, 'Failed to submit custom action', error);
+    cApiError(c, 'Failed to submit custom action', error);
   }
 });
 
@@ -5023,9 +4980,9 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (re
  * @returns {Object} 200 - Paginated list of the user's testimonials
  * @returns {Error} 401 - Unauthorized
  */
-router.get("/testimonials", requireAuth, wrapAsync(async (req: Request, res: Response) => {
-  const userId = req.userId!;
-  const { limit = DEFAULT_ITEMS_PER_PAGE, page = 1 } = extractPaginationParams(req);
+router.get("/testimonials", requireAuth, async (c) => {
+  const userId = c.get("userId")!;
+  const { limit = DEFAULT_ITEMS_PER_PAGE, page = 1 } = extractPaginationParams({ query: c.req.query() } as any);
   const offset = (page - 1) * limit;
 
   const rows = await dbRead
@@ -5042,9 +4999,8 @@ router.get("/testimonials", requireAuth, wrapAsync(async (req: Request, res: Res
     .where(eq(bookTestimonials.userId, userId));
 
   const pagination = calculatePaginationMeta(page, limit, count);
-  res.status(200).json(createPaginatedResponse(rows, pagination));
-  return;
-}));
+  c.status(200); return c.json(createPaginatedResponse(rows, pagination));
+});
 
 /**
  * @route GET /api/books/:identifier/testimonials
@@ -5055,22 +5011,22 @@ router.get("/testimonials", requireAuth, wrapAsync(async (req: Request, res: Res
  * 
  * @access Optional auth
  * 
- * @param {string} req.params.identifier - Book slug or id
- * @param {string} [req.query.featured] - When "true", only featured testimonials
+ * @param {string} c.req.param().identifier - Book slug or id
+ * @param {string} [c.req.query().featured] - When "true", only featured testimonials
  * 
  * @returns {Object} 200 - Paginated list of testimonials
  * @returns {Error} 404 - Book not found
  */
-router.get("/:identifier/testimonials", optionalAuth, wrapAsync(async (req: Request, res: Response) => {
-  const identifier = req.params.identifier as string;
-  const userId = req.userId;
-  const { limit = DEFAULT_ITEMS_PER_PAGE, page = 1 } = extractPaginationParams(req);
+router.get("/:identifier/testimonials", optionalAuth, async (c) => {
+  const identifier = c.req.param().identifier as string;
+  const userId = c.get("userId");
+  const { limit = DEFAULT_ITEMS_PER_PAGE, page = 1 } = extractPaginationParams({ query: c.req.query() } as any);
   const offset = (page - 1) * limit;
-  const featuredOnly = req.query.featured === "true";
+  const featuredOnly = c.req.query().featured === "true";
 
   const book = await resolveBook(identifier);
   if (!book) {
-    return handleNotFoundError(res, "Book not found");
+    return cNotFoundError(c, "Book not found");
   }
 
   const conditions = [eq(bookTestimonials.bookId, book.id)];
@@ -5098,9 +5054,8 @@ router.get("/:identifier/testimonials", optionalAuth, wrapAsync(async (req: Requ
     .where(and(...conditions));
 
   const pagination = calculatePaginationMeta(page, limit, count);
-  res.status(200).json(createPaginatedResponse(rows, pagination));
-  return;
-}));
+  c.status(200); return c.json(createPaginatedResponse(rows, pagination));
+});
 
 /**
  * @route POST /api/books/:identifier/testimonials
@@ -5111,37 +5066,37 @@ router.get("/:identifier/testimonials", optionalAuth, wrapAsync(async (req: Requ
  * 
  * @access Private (requires auth)
  * 
- * @param {string} req.params.identifier - Book slug or id
- * @param {number} [req.body.rating] - Rating from 1 to 5
- * @param {string} req.body.content - Testimonial text (non-empty)
+ * @param {string} c.req.param().identifier - Book slug or id
+ * @param {number} [c.get("body").rating] - Rating from 1 to 5
+ * @param {string} c.get("body").content - Testimonial text (non-empty)
  * 
  * @returns {Object} 201 - Created testimonial
  * @returns {Error} 400 - Validation error
  * @returns {Error} 401 - Unauthorized
  * @returns {Error} 404 - Book not found
  */
-router.post("/:identifier/testimonials", requireAuth, wrapAsync(async (req: Request, res: Response) => {
-  const identifier = req.params.identifier as string;
-  const userId = req.userId!;
-  const { rating, content } = req.body as { rating?: number; content?: string };
+router.post("/:identifier/testimonials", requireAuth, async (c) => {
+  const identifier = c.req.param().identifier as string;
+  const userId = c.get("userId")!;
+  const { rating, content } = c.get("body") as { rating?: number; content?: string };
 
   const book = await resolveBook(identifier);
   if (!book) {
-    return handleNotFoundError(res, "Book not found");
+    return cNotFoundError(c, "Book not found");
   }
 
   if (typeof content !== "string" || content.trim().length === 0) {
-    return handleValidationError(res, "Content is required");
+    return cValidationError(c, "Content is required");
   }
   if (content.trim().length > 5000) {
-    return handleValidationError(res, "Content must be at most 5000 characters");
+    return cValidationError(c, "Content must be at most 5000 characters");
   }
 
   let normalizedRating: number | null = null;
   if (rating !== undefined && rating !== null) {
     const numericRating = Number(rating);
     if (!Number.isInteger(numericRating) || numericRating < 1 || numericRating > 5) {
-      return handleValidationError(res, "Rating must be an integer between 1 and 5");
+      return cValidationError(c, "Rating must be an integer between 1 and 5");
     }
     normalizedRating = numericRating;
   }
@@ -5158,9 +5113,8 @@ router.post("/:identifier/testimonials", requireAuth, wrapAsync(async (req: Requ
     })
     .returning();
 
-  res.status(201).json({ testimonial: created });
-  return;
-}));
+  c.status(201); return c.json({ testimonial: created });
+});
 
 /**
  * @route GET /api/books/:identifier/testimonials/:id
@@ -5171,20 +5125,20 @@ router.post("/:identifier/testimonials", requireAuth, wrapAsync(async (req: Requ
  * 
  * @access Optional auth
  * 
- * @param {string} req.params.identifier - Book slug or id
- * @param {string} req.params.id - Testimonial id
+ * @param {string} c.req.param().identifier - Book slug or id
+ * @param {string} c.req.param().id - Testimonial id
  * 
  * @returns {Object} 200 - The testimonial
  * @returns {Error} 404 - Testimonial not found
  */
-router.get("/:identifier/testimonials/:id", optionalAuth, wrapAsync(async (req: Request, res: Response) => {
-  const identifier = req.params.identifier as string;
-  const id = req.params.id as string;
-  const userId = req.userId;
+router.get("/:identifier/testimonials/:id", optionalAuth, async (c) => {
+  const identifier = c.req.param().identifier as string;
+  const id = c.req.param().id as string;
+  const userId = c.get("userId");
 
   const book = await resolveBook(identifier);
   if (!book) {
-    return handleNotFoundError(res, "Book not found");
+    return cNotFoundError(c, "Book not found");
   }
 
   const [testimonial] = await dbRead
@@ -5194,17 +5148,16 @@ router.get("/:identifier/testimonials/:id", optionalAuth, wrapAsync(async (req: 
     .limit(1);
 
   if (!testimonial) {
-    return handleNotFoundError(res, "Testimonial not found");
+    return cNotFoundError(c, "Testimonial not found");
   }
 
   const isPrivileged = userId && (userId === testimonial.userId || userId === book.userId);
   if (!isPrivileged && testimonial.status !== "approved") {
-    return handleNotFoundError(res, "Testimonial not found");
+    return cNotFoundError(c, "Testimonial not found");
   }
 
-  res.status(200).json({ testimonial });
-  return;
-}));
+  c.status(200); return c.json({ testimonial });
+});
 
 /**
  * @route PATCH /api/books/:identifier/testimonials/:id
@@ -5215,24 +5168,24 @@ router.get("/:identifier/testimonials/:id", optionalAuth, wrapAsync(async (req: 
  * 
  * @access Private (requires auth, owner only)
  * 
- * @param {string} req.params.identifier - Book slug or id
- * @param {string} req.params.id - Testimonial id
- * @param {number} [req.body.rating] - Rating from 1 to 5
- * @param {string} [req.body.content] - Testimonial text (non-empty)
+ * @param {string} c.req.param().identifier - Book slug or id
+ * @param {string} c.req.param().id - Testimonial id
+ * @param {number} [c.get("body").rating] - Rating from 1 to 5
+ * @param {string} [c.get("body").content] - Testimonial text (non-empty)
  * 
  * @returns {Object} 200 - Updated testimonial
  * @returns {Error} 403 - Forbidden (not the owner)
  * @returns {Error} 404 - Testimonial not found
  */
-router.patch("/:identifier/testimonials/:id", requireAuth, wrapAsync(async (req: Request, res: Response) => {
-  const identifier = req.params.identifier as string;
-  const id = req.params.id as string;
-  const userId = req.userId!;
-  const { rating, content } = req.body as { rating?: number; content?: string };
+router.patch("/:identifier/testimonials/:id", requireAuth, async (c) => {
+  const identifier = c.req.param().identifier as string;
+  const id = c.req.param().id as string;
+  const userId = c.get("userId")!;
+  const { rating, content } = c.get("body") as { rating?: number; content?: string };
 
   const book = await resolveBook(identifier);
   if (!book) {
-    return handleNotFoundError(res, "Book not found");
+    return cNotFoundError(c, "Book not found");
   }
 
   const [existing] = await dbRead
@@ -5242,32 +5195,32 @@ router.patch("/:identifier/testimonials/:id", requireAuth, wrapAsync(async (req:
     .limit(1);
 
   if (!existing) {
-    return handleNotFoundError(res, "Testimonial not found");
+    return cNotFoundError(c, "Testimonial not found");
   }
   if (existing.userId !== userId) {
-    return handleForbiddenError(res, "You can only edit your own testimonial");
+    return cForbiddenError(c, "You can only edit your own testimonial");
   }
 
   const updateValues: Partial<typeof bookTestimonials.$inferInsert> = {};
   if (content !== undefined) {
     if (typeof content !== "string" || content.trim().length === 0) {
-      return handleValidationError(res, "Content is required");
+      return cValidationError(c, "Content is required");
     }
     if (content.trim().length > 5000) {
-      return handleValidationError(res, "Content must be at most 5000 characters");
+      return cValidationError(c, "Content must be at most 5000 characters");
     }
     updateValues.content = content.trim();
   }
   if (rating !== undefined && rating !== null) {
     const numericRating = Number(rating);
     if (!Number.isInteger(numericRating) || numericRating < 1 || numericRating > 5) {
-      return handleValidationError(res, "Rating must be an integer between 1 and 5");
+      return cValidationError(c, "Rating must be an integer between 1 and 5");
     }
     updateValues.rating = numericRating;
   }
 
   if (Object.keys(updateValues).length === 0) {
-    res.status(200).json({ testimonial: existing });
+    c.status(200); return c.json({ testimonial: existing });
     return;
   }
 
@@ -5281,9 +5234,8 @@ router.patch("/:identifier/testimonials/:id", requireAuth, wrapAsync(async (req:
     .where(eq(bookTestimonials.id, id))
     .returning();
 
-  res.status(200).json({ testimonial: updated });
-  return;
-}));
+  c.status(200); return c.json({ testimonial: updated });
+});
 
 /**
  * @route DELETE /api/books/:identifier/testimonials/:id
@@ -5293,21 +5245,21 @@ router.patch("/:identifier/testimonials/:id", requireAuth, wrapAsync(async (req:
  * 
  * @access Private (requires auth, owner only)
  * 
- * @param {string} req.params.identifier - Book slug or id
- * @param {string} req.params.id - Testimonial id
+ * @param {string} c.req.param().identifier - Book slug or id
+ * @param {string} c.req.param().id - Testimonial id
  * 
  * @returns {Object} 200 - Deletion confirmation
  * @returns {Error} 403 - Forbidden (not the owner)
  * @returns {Error} 404 - Testimonial not found
  */
-router.delete("/:identifier/testimonials/:id", requireAuth, wrapAsync(async (req: Request, res: Response) => {
-  const identifier = req.params.identifier as string;
-  const id = req.params.id as string;
-  const userId = req.userId!;
+router.delete("/:identifier/testimonials/:id", requireAuth, async (c) => {
+  const identifier = c.req.param().identifier as string;
+  const id = c.req.param().id as string;
+  const userId = c.get("userId")!;
 
   const book = await resolveBook(identifier);
   if (!book) {
-    return handleNotFoundError(res, "Book not found");
+    return cNotFoundError(c, "Book not found");
   }
 
   const [existing] = await dbRead
@@ -5317,18 +5269,17 @@ router.delete("/:identifier/testimonials/:id", requireAuth, wrapAsync(async (req
     .limit(1);
 
   if (!existing) {
-    return handleNotFoundError(res, "Testimonial not found");
+    return cNotFoundError(c, "Testimonial not found");
   }
   if (existing.userId !== userId) {
-    return handleForbiddenError(res, "You can only delete your own testimonial");
+    return cForbiddenError(c, "You can only delete your own testimonial");
   }
 
   await dbWrite
     .delete(bookTestimonials)
     .where(eq(bookTestimonials.id, id));
 
-  res.status(200).json({ message: "Testimonial deleted successfully" });
-  return;
-}));
+  c.status(200); return c.json({ message: "Testimonial deleted successfully" });
+});
 
 export default router;

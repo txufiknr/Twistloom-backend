@@ -1,96 +1,121 @@
 /**
- * Serverless-compatible Express setup
+ * Serverless-compatible Hono setup
+ *
+ * Replaces the previous Express application. Routing, middleware, and error
+ * handling now use Hono's web-standard Context object (`c`).
  */
 
-import express, { type Express } from "express";
-import cors from "cors";
-import cookieParser from "cookie-parser";
-import { rateLimitByUser } from "./middleware/rate-limit.js";
+import { Hono } from "hono";
+import { cors } from "hono/cors";
+import { HTTPException } from "hono/http-exception";
+import { handle } from "hono/vercel";
+import { initAuthConfig } from "@hono/auth-js";
+import { parseJsonBody } from "./middleware/body.js";
 import { extractLocale } from "./middleware/locale.js";
+import { rateLimitByUser } from "./middleware/rate-limit.js";
 import routes from "./routes/index.js";
 import { APP_NAME, VERSION } from "./config/constants.js";
+import { IS_PRODUCTION } from "./config/env.js";
+import type { AppEnv } from "./hono/env.js";
 
-// Initialize Express app
-const app: Express = express();
+// Initialize Hono app with shared environment bindings
+const app = new Hono<AppEnv>();
 
 // Allow multiple origins: production frontend and local development
 const allowedOrigins = new Set([
   process.env.FRONTEND_URL,
-  'https://twistloom-web.vercel.app', // Production (Vercel deployment)
-  'https://localhost:3002', // Development (HTTPS) via `pnpm dev:ssl`
-  'http://localhost:3001', // Development via `pnpm dev`
-].filter(Boolean));
+  "https://twistloom-web.vercel.app", // Production (Vercel deployment)
+  "https://localhost:3002", // Development (HTTPS) via `pnpm dev:ssl`
+  "http://localhost:3001", // Development via `pnpm dev`
+].filter(Boolean) as string[]);
 
-// CRITICAL: Raw body middleware for Stripe webhook MUST come before express.json()
-// Stripe requires raw body for webhook signature verification
-app.use("/api/payments/stripe/webhook", express.raw({ type: "application/json" }));
+// CORS — mirrors the previous Express cors() configuration.
+// Allows requests with no origin (mobile apps, curl, server-to-server) and
+// any *.vercel.app deployment.
+app.use(
+  "*",
+  cors({
+    origin: (origin) => {
+      if (!origin) return null; // Allow no-origin requests
+      if (origin.endsWith(".vercel.app")) return origin;
+      return allowedOrigins.has(origin) ? origin : null;
+    },
+    credentials: true, // Allow cookies for NextAuth authentication
+    allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowHeaders: ["Content-Type", "Authorization", "stripe-signature"],
+    exposeHeaders: ["Retry-After", "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset"],
+  }),
+);
 
-// Configure middleware
-// Feedback submissions include a base64-encoded screenshot which can exceed 1mb.
-// Mount a higher-limit JSON parser for that path BEFORE the global 1mb parser so
-// large payloads aren't rejected with 413 PayloadTooLargeError.
-app.use("/api/user/feedbacks", express.json({ limit: "10mb" }));
-app.use(express.json({ limit: "1mb" })); // Parse JSON payloads
-app.use(cookieParser()); // Parse cookies for NextAuth authentication
-app.use(cors({
-  origin: (origin, callback) => {
-    const isAllowed = !origin || origin.endsWith('.vercel.app') || allowedOrigins.has(origin);
-    // console.log('[cors] 👉 Incoming origin:', origin);
-    // console.log('[cors] 👉 Allowed origins:', allowedOrigins);
-    // console.log('[cors] 👉 Allowed?', isAllowed ? '✅' : '❌', isAllowed);
+// Auth.js v5 configuration for @hono/auth-js (cookie verification only).
+// The backend does not run OAuth flows; it merely verifies the session cookie
+// set by the Next.js frontend. trustHost is required behind Vercel's proxy.
+app.use(
+  "*",
+  initAuthConfig(() => ({
+    secret: process.env.AUTH_SECRET,
+    trustHost: true,
+    providers: [], // Backend only verifies; it doesn't handle OAuth flows
+  })),
+);
 
-    // Allow requests with no origin (like mobile apps, curl, server-to-server)
-    if (isAllowed) return callback(null, true);
+// Parse JSON request bodies once per request (replaces express.json()).
+app.use("*", parseJsonBody);
 
-    console.log('[cors] ❌ Blocked by CORS:', origin);
-    // callback(new Error('Not allowed by CORS'));
-    return callback(null, false);
-  },
-  credentials: true, // Allow cookies for NextAuth authentication
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-}));
-app.use(extractLocale); // Extract Accept-Language header for translation
-app.use(rateLimitByUser); // Global rate limiting (100 req/min per user)
+// Extract Accept-Language header for translation lookups.
+app.use("*", extractLocale);
 
-// app.options('*', cors());
-
-// Because your Express backend is hosted on Vercel (twistloom-backend.vercel.app), it sits behind a reverse proxy/load balancer. If Express thinks the connection isn't secure (HTTPS), Auth.js will automatically ignore the cookie for security reasons.
-// You must tell Express to trust the upstream proxy headers so it registers the incoming connection as secure HTTPS:
-app.set('trust proxy', 1); // Tells Express it is behind a secure proxy
+// Global rate limiting (100 req/min per user). Skips public requests.
+app.use("/api/*", rateLimitByUser);
 
 // Handle favicon requests to prevent 404 errors
-app.get("/favicon.png", (_, res) => {
-  res.status(204).end(); // No Content response
-});
-
-app.get("/favicon.ico", (_, res) => {
-  res.status(204).end(); // No Content response
-});
+app.on("GET", "/favicon.png", (c) => c.body(null, 204));
+app.on("GET", "/favicon.ico", (c) => c.body(null, 204));
 
 // Public API routes
-app.use("/api", routes);
+app.route("/api", routes);
 
 // Root endpoint
-app.get("/", (_, res) => {
-  res.json({
+app.get("/", (c) => {
+  return c.json({
     message: `${APP_NAME} Backend`,
     version: VERSION,
     endpoints: {
       "/health": "Health check endpoint",
       "/api": "API root endpoint",
-    }
+    },
   });
 });
 
-// Backward-compatible redirects
-app.get("/user", (_, res) => res.redirect("/api/user"));
-app.get("/books", (_, res) => res.redirect("/api/books"));
-
 // Health check endpoint
-app.get("/health", (_, res) => {
-  res.json({ ok: true, uptime: process.uptime() });
+app.get("/health", (c) => {
+  return c.json({ ok: true, uptime: process.uptime() });
 });
 
-// IMPORTANT: Vercel needs this default export
-export default app;
+// Backward-compatible redirects
+app.get("/user", (c) => c.redirect("/api/user"));
+app.get("/books", (c) => c.redirect("/api/books"));
+
+// Global error handler — formats HTTPException and unexpected errors uniformly.
+app.onError((err, c) => {
+  if (err instanceof HTTPException) {
+    return c.json({ success: false, error: err.message }, err.status);
+  }
+  console.error("[app] ❌ Unhandled error:", err);
+  return c.json(
+    { success: false, error: IS_PRODUCTION ? "Internal Server Error" : getErrorMessageSafe(err) },
+    500,
+  );
+});
+
+// Not-found handler
+app.notFound((c) => {
+  return c.json({ success: false, error: "Not Found" }, 404);
+});
+
+function getErrorMessageSafe(err: unknown): string {
+  return err instanceof Error ? err.message : "Unknown error";
+}
+
+// IMPORTANT: Vercel needs this default export (Hono → Node server adapter).
+export default handle(app);

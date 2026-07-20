@@ -11,7 +11,7 @@
  * - Type-safe operations
  */
 
-import type { Request, Response } from "express";
+import type { Context } from "hono";
 import type { DBNewUser, DBNewUserActivityLog, DBUserActivityLog, DBUserForAuth } from "../types/schema.js";
 import type { CheckinClaimType, CheckinPostResponse, CheckinStatusResponse, Gender } from "../types/user.js";
 import { type DBClient, dbRead, dbWrite } from "../db/client.js";
@@ -19,7 +19,7 @@ import { users, books, userComments, userAuth, userCheckins, userCounters, userA
 import { eq, and, gt, ne, sql, desc, or, inArray } from "drizzle-orm";
 import { debounceAsync } from "../utils/debounce.js";
 import { sanitizeTextForDB } from '../utils/text-processing.js';
-import { getErrorMessage, handleConflictError, handleValidationError } from "../utils/error.js";
+import { getErrorMessage, cConflictError, cValidationError } from "../utils/error.js";
 import { DAILY_CHECKIN_BONUS, DAILY_CHECKIN_DAYS, DAILY_CHECKIN_BIG_BONUS } from "../config/credits.js";
 import { getCurrentUTCDay } from "../utils/time.js";
 import { requireEnv } from "../utils/env.js";
@@ -220,7 +220,7 @@ export async function updateUserLastActivity(userId: string, client: DBClient = 
  * - Logs errors for debugging
  * - Can be called from any route handler
  */
-export async function logUserActivity(params: DBNewUserActivityLog, options?: { req?: Pick<Request, 'ip' | 'get'>, client?: DBClient }): Promise<void> {
+export async function logUserActivity(params: DBNewUserActivityLog, options?: { req?: { ip?: string | null; get?: (header: string) => string | undefined | null }, client?: DBClient }): Promise<void> {
   const { userId } = params;
   const { req, client = dbWrite } = options ?? {};
   const isInternal = userId === process.env.SYSTEM_USER_ID;
@@ -230,9 +230,9 @@ export async function logUserActivity(params: DBNewUserActivityLog, options?: { 
     await client.insert(userActivityLogs).values({
       ...params,
       ipAddress: req?.ip,
-      userAgent: req?.get('user-agent'),
-      platform: req?.get('x-platform'),
-      appVersion: req?.get('x-app-version'),
+      userAgent: req?.get?.('user-agent'),
+      platform: req?.get?.('x-platform'),
+      appVersion: req?.get?.('x-app-version'),
     });
     await updateUserLastActivity(userId, client);
   } catch (error) {
@@ -872,13 +872,13 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
  */
 export async function sanitizeUserData(
   userData: Partial<Pick<DBNewUser, 'name' | 'email' | 'username' | 'gender' | 'imageUrl'>>,
-  options?: { res?: Response; createNew?: boolean },
+  options?: { res?: Context; createNew?: boolean },
 ): Promise<Omit<DBNewUser, 'userId'> | null> {
   const { name: providedName, email, username: providedUsername, gender, imageUrl } = userData;
   const { res, createNew = true } = options ?? {};
 
   if (!email) {
-    if (res) handleValidationError(res, 'Email is required');
+    if (res) { cValidationError(res, 'Email is required'); return null; }
     return null;
   }
 
@@ -911,7 +911,7 @@ export async function sanitizeUserData(
       .limit(1);
 
     if (emailConflict) {
-      if (res) handleConflictError(res, 'An account with this email already exists');
+      if (res) { cConflictError(res, 'An account with this email already exists'); return null; }
       return null;
     }
 
@@ -919,7 +919,7 @@ export async function sanitizeUserData(
     const uniqueUsername = await findUniqueUsername(usernameBase);
     if (!uniqueUsername) {
       // Requires 20+ collisions on the same base — practically impossible.
-      if (res) handleConflictError(res, 'Could not generate a unique username. Please choose a different name.');
+      if (res) { cConflictError(res, 'Could not generate a unique username. Please choose a different name.'); return null; }
       return null;
     }
     cleanUsername = uniqueUsername;
@@ -927,10 +927,10 @@ export async function sanitizeUserData(
 
   // ── Format validation on the final (possibly suffixed) username ───────────
   const validation = validateUsername(cleanUsername);
-  if (!validation.valid) {
-    if (res) res.status(422).json({ error: 'Invalid username', details: validation.errors });
-    return null;
-  }
+    if (!validation.valid) {
+      if (res) { cValidationError(res, 'Invalid username', validation.errors, 422); return null; }
+      return null;
+    }
 
   return {
     name:      cleanName,
@@ -1019,7 +1019,7 @@ function sanitizeFieldValue(
 export async function sanitizeProfileUpdate(
   userId: string,
   payload: Record<'name' | 'bio' | 'imageUrl' | 'gender' | 'username', unknown>,
-  res: Response
+  res: Context
 ): Promise<Partial<DBNewUser> | null> {
   const updateData: Partial<DBNewUser> = {};
 
@@ -1043,7 +1043,7 @@ export async function sanitizeProfileUpdate(
     const validation = validateUsername(cleanUsername);
 
     if (!validation.valid) {
-      res.status(422).json({ error: 'Invalid username', details: validation.errors });
+      cValidationError(res, 'Invalid username', validation.errors, 422);
       return null;
     }
 
@@ -1055,7 +1055,7 @@ export async function sanitizeProfileUpdate(
       .limit(1);
 
     if (conflict && conflict.userId !== userId) {
-      handleConflictError(res, 'That username is already taken. Please choose another.');
+      cConflictError(res, 'That username is already taken. Please choose another.');
       return null;
     }
 

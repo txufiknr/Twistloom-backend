@@ -20,15 +20,16 @@
  */
 
 import { sql, and, or, eq, desc, arrayOverlaps } from "drizzle-orm";
+import type { Context } from "hono";
 import { books, users } from '../db/schema.js';
 import { applySorting } from '../utils/pagination.js';
 import { dbRead } from "../db/client.js";
 import { createRelevanceExpression } from "../utils/search.js";
 import { getEnrichedBook, getPageActionsFromDB, getPageFromDB } from "./book.js";
-import { handleForbiddenError, handleNotFoundError } from "../utils/error.js";
+import { cNotFoundError, cForbiddenError } from "../utils/error.js";
+import { getClientIp } from "../hono/express-shim.js";
 import { computeVisitStats, mapActionToSelectedAction, markPageVisited } from "./story.js";
 import { FREE_ACTION_SELECTION_UNTIL_PAGE } from "../config/story.js";
-import type { Request, Response } from "express";
 import type { BookAuthor, BookMode, BookPageVisit, BookSortOption, BookStats, BookTranslation, EnrichedBookData, EnrichedBookFirstPage, EnrichedBookGeneration, EnrichedBookSession, VisitBookPageParams, VisitBookPageResult } from "../types/book.js";
 import type { Action, SelectedAction } from "../types/story.js";
 
@@ -837,17 +838,18 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
  */
 export async function visitBookPage(
   params: VisitBookPageParams,
-  options: { req: Request, res: Response }
+  options: { c: Context }
 ): Promise<VisitBookPageResult> {
   const { userId, pageId, bookIdentifier, skipVisit = false, takeAction = false, consumeCredits = false, language } = params;
   const isUserTakeAction = !!userId && !skipVisit && takeAction;
-  const { req, res } = options;
+  const { c } = options;
+  const res = c;
 
   // Get page
   const dbPage = await getPageFromDB(pageId, { bookIdentifier });
   if (!dbPage) {
     console.error(`[visit] ❌ Visited page not found:`, pageId);
-    handleNotFoundError(res, `Page not found`);
+    cNotFoundError(res, `Page not found`);
     return {};
   }
 
@@ -856,7 +858,7 @@ export async function visitBookPage(
   const book = await getEnrichedBook(bookId, userId, language);
   if (!book) {
     console.error(`[visit] ❌ Book not found:`, bookId);
-    handleNotFoundError(res, `Book not found`);
+    cNotFoundError(res, `Book not found`);
     return {};
   }
 
@@ -880,14 +882,14 @@ export async function visitBookPage(
     const parentDbPage = parentPageId ? await getPageFromDB(parentPageId) : null;
     if (!parentDbPage) {
       console.error(`[visit] ❌ Previous page not found:`, parentPageId);
-      handleNotFoundError(res, `Previous page not found for pageNumber ${pageNumber}`);
+      cNotFoundError(res, `Previous page not found for pageNumber ${pageNumber}`);
       return {};
     }
 
     action = parentDbPage.actions.filter(a => a.destinationPageIds?.some(p => p === pageId))[0];
     if (!action) {
       console.error(`[visit] ❌ Action for this page not found in the parent page:`, parentPageId);
-      handleNotFoundError(res, `Action for this page not found in the parent page`);
+      cNotFoundError(res, `Action for this page not found in the parent page`);
       return {};
     }
 
@@ -902,7 +904,7 @@ export async function visitBookPage(
           if (!consumeCredits) {
             // User already chose a different action on this page; can't continue except they pay credits
             console.error(`[visit] 💥 Choice made, can't make another choice`);
-            handleForbiddenError(res, "Choice made, can't make another choice");
+            cForbiddenError(res, "Choice made, can't make another choice");
             return {};
           } else {
             shouldConsumeCredits = true;
@@ -920,7 +922,7 @@ export async function visitBookPage(
     actionedPageId: parentPageId ?? undefined,
     action,
     shouldConsumeCredits
-  }, { req });
+  }, { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } });
 
   return { dbPage, book, visitDetails, sourceAction: selectedAction, isUserTakeAction };
 }

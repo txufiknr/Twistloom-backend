@@ -1,5 +1,4 @@
 import type { DBTransaction } from "../db/client.js";
-import type { Request } from 'express';
 
 export interface CreditPack {
   /** Unique identifier for the credit pack */
@@ -45,8 +44,8 @@ export interface ConsumeCreditsOptions {
   tx?: DBTransaction;
   /** Correlation ID linking a consumption record to its potential refund */
   correlationId?: string;
-  /** Express request — forwarded to `logUserActivity` for analytics */
-  req?: Request;
+  /** Incoming request context — forwarded to `logUserActivity` for analytics */
+  req?: { ip?: string | null; get?: (header: string) => string | undefined | null };
 }
 
 /**

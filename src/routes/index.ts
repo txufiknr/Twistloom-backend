@@ -1,4 +1,4 @@
-import express from "express";
+import { Hono } from "hono";
 import userRouter from "./user.js";
 import booksRouter from "./books.js";
 import adminRouter from "./admin.js";
@@ -6,12 +6,13 @@ import authRouter from "./auth.js";
 import paymentsRouter from "./payments.js";
 import socialMentionsRouter from "./social-mentions.js";
 import { APP_NAME, VERSION } from "../config/constants.js";
+import type { AppEnv } from "../hono/env.js";
 
-const router: express.Router = express.Router();
+const router = new Hono<AppEnv>();
 
 // Health check endpoint
-router.get("/", (_req, res) => {
-  res.json({
+router.get("/", (c) => {
+  return c.json({
     message: `${APP_NAME} API is running!`,
     version: VERSION,
     endpoints: {
@@ -20,17 +21,17 @@ router.get("/", (_req, res) => {
       "/admin": "Administrative tools and debugging endpoints",
       "/auth": "Authentication endpoints",
       "/payments": "Stripe checkout sessions and credit purchases",
-      "/social-mentions": "Public social-proof wall (featured mentions)"
-    }
+      "/social-mentions": "Public social-proof wall (featured mentions)",
+    },
   });
 });
 
 // Mount route modules
-router.use("/user", userRouter);
-router.use("/books", booksRouter);
-router.use("/admin", adminRouter);
-router.use("/auth", authRouter);
-router.use("/payments", paymentsRouter);
-router.use("/social-mentions", socialMentionsRouter);
+router.route("/user", userRouter);
+router.route("/books", booksRouter);
+router.route("/admin", adminRouter);
+router.route("/auth", authRouter);
+router.route("/payments", paymentsRouter);
+router.route("/social-mentions", socialMentionsRouter);
 
 export default router;

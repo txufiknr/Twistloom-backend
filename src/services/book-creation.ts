@@ -27,8 +27,8 @@ import type { ProgressCallback } from '../types/sse.js';
 import type { ThemeValidationResult } from '../types/theme-validation.js';
 import { handleThemeValidationError, validateTheme } from '../utils/theme-validation.js';
 import { initializeBook } from '../utils/prompt.js';
-import type { Response } from 'express';
-import { getErrorMessage, handleApiError } from '../utils/error.js';
+import type { Context } from 'hono';
+import { getErrorMessage, cApiError } from '../utils/error.js';
 import { isInsufficientCreditsError } from '../config/errors.js';
 import { executeWithCredits, refundCredits, addCredits } from './credits.js';
 import { getBookModeCreditCost } from '../config/credits.js';
@@ -404,19 +404,19 @@ export async function createBookCore(
  * @param defaultMessage - Fallback message for generic errors
  */
 export function handleBookCreationError(
-  res: Response,
+  res: Context,
   error: unknown,
   defaultMessage?: string
-): void {
+): Response {
   const isBookCreationError = error instanceof BookCreationError;
   const statusCode = isBookCreationError ? error.statusCode : undefined;
 
   if (isBookCreationError && error.validationResult) {
-    handleThemeValidationError(res, error.validationResult, statusCode);
+    return handleThemeValidationError(res, error.validationResult, statusCode);
   } else if (isInsufficientCreditsError(error)) {
-    handleInsufficientCreditsError(res, 'STORY_GENERATION', error);
+    return handleInsufficientCreditsError(res, 'STORY_GENERATION', error);
   } else {
-    handleApiError(res, defaultMessage ?? 'Failed to create book', error, statusCode);
+    return cApiError(res, defaultMessage ?? 'Failed to create book', error, statusCode);
   }
 }
 

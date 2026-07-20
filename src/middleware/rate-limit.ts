@@ -23,12 +23,14 @@
  * - Only applies rate limiting to requests with userId (set by NextAuth auth middleware)
  */
 
-import type { Request, Response, NextFunction } from 'express';
+import { createMiddleware } from 'hono/factory';
+import { HTTPException } from 'hono/http-exception';
 import { Ratelimit } from '@upstash/ratelimit';
 import { LRUCache } from 'lru-cache';
-import { getErrorMessage, handleRateLimitError } from '../utils/error.js';
+import { getErrorMessage } from '../utils/error.js';
 import type { RateLimitConfig } from '../types/redis.js';
 import { getRedisClient } from '../utils/redis.js';
+import type { AppEnv } from '../hono/env.js';
 
 /**
  * Default rate limit: 100 requests per minute
@@ -82,23 +84,22 @@ export function rateLimit(config: RateLimitConfig = DEFAULT_RATE_LIMIT) {
       })
     : null;
 
-  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  return createMiddleware<AppEnv>(async (c, next) => {
     // Skip rate limiting if no user ID (public endpoints)
-    if (!req.userId) {
-      next();
+    const userId = c.get('userId');
+    if (!userId) {
+      await next();
       return;
     }
 
     // If Redis is not available, allow request (fail open)
     if (!ratelimit) {
       console.warn('[rate-limit] Redis not available, skipping rate limiting');
-      next();
+      await next();
       return;
     }
 
     try {
-      const userId = req.userId;
-
       // Check rate limit (atomic operation in Redis)
       const result = await ratelimit.limit(userId);
 
@@ -106,34 +107,35 @@ export function rateLimit(config: RateLimitConfig = DEFAULT_RATE_LIMIT) {
       if (!result.success) {
         const resetTime = new Date(result.reset);
         const retryAfter = Math.ceil((resetTime.getTime() - Date.now()) / 1000);
-        
-        // Set Retry-After header for better UX
-        res.setHeader('Retry-After', retryAfter.toString());
-        res.setHeader('X-RateLimit-Limit', maxRequests.toString());
-        res.setHeader('X-RateLimit-Remaining', result.limit.toString());
-        res.setHeader('X-RateLimit-Reset', resetTime.toISOString());
 
-        handleRateLimitError(
-          res,
-          message || `Rate limit exceeded. Maximum ${maxRequests} requests per ${windowSeconds} seconds. Retry after ${retryAfter} seconds.`
-        );
-        return;
+        // Set Retry-After header for better UX
+        c.header('Retry-After', retryAfter.toString());
+        c.header('X-RateLimit-Limit', maxRequests.toString());
+        c.header('X-RateLimit-Remaining', result.limit.toString());
+        c.header('X-RateLimit-Reset', resetTime.toISOString());
+
+        throw new HTTPException(429, {
+          message:
+            message ||
+            `Rate limit exceeded. Maximum ${maxRequests} requests per ${windowSeconds} seconds. Retry after ${retryAfter} seconds.`,
+        });
       }
 
       // Set rate limit headers for successful requests
-      res.setHeader('X-RateLimit-Limit', maxRequests.toString());
-      res.setHeader('X-RateLimit-Remaining', result.limit.toString());
-      res.setHeader('X-RateLimit-Reset', new Date(result.reset).toISOString());
+      c.header('X-RateLimit-Limit', maxRequests.toString());
+      c.header('X-RateLimit-Remaining', result.limit.toString());
+      c.header('X-RateLimit-Reset', new Date(result.reset).toISOString());
 
       // Request allowed, continue
-      next();
+      await next();
     } catch (error) {
+      if (error instanceof HTTPException) throw error;
       // On error, allow request to proceed (fail open for availability)
       // Log error for monitoring but don't block legitimate users
       console.error('[rate-limit] ❌ Error checking rate limit:', getErrorMessage(error));
-      next();
+      await next();
     }
-  };
+  });
 }
 
 /**

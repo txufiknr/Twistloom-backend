@@ -16,12 +16,12 @@
 </table>
 
 [![Twistloom](https://img.shields.io/badge/🩸_Twistloom-AI_Horror_Interactive_Fiction-7c3aed?style=for-the-badge&labelColor=1a0533&logoColor=white)](https://twistloom-web.vercel.app)
-[![Stack](https://img.shields.io/badge/Stack-Next.js_16_•_Express_•_Neon_•_Upstash-a78bfa?style=for-the-badge&labelColor=0d0d1a)](https://twistloom-web.vercel.app)
+[![Stack](https://img.shields.io/badge/Stack-Next.js_16_•_Hono_•_Neon_•_Upstash-a78bfa?style=for-the-badge&labelColor=0d0d1a)](https://twistloom-web.vercel.app)
 [![AI](https://img.shields.io/badge/AI-9_LLM_Providers-6d28d9?style=for-the-badge&labelColor=0d0d1a)](https://twistloom-web.vercel.app)
 
 ![Node.js Version](https://img.shields.io/badge/node-24+-green?logo=node.js)
 ![TypeScript](https://img.shields.io/badge/typescript-blue?logo=typescript)
-![Express](https://img.shields.io/badge/express-000000?logo=express)
+![Hono](https://img.shields.io/badge/hono-E36002?logo=hono&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/postgresql-336791?logo=postgresql)
 ![Drizzle ORM](https://img.shields.io/badge/drizzle-ff6b00?logo=drizzle)
 ![pnpm](https://img.shields.io/badge/pnpm-10+-f69220?logo=pnpm)
@@ -57,7 +57,7 @@ Twistloom is not merely a branching story platform. It is a multiverse storytell
 |--------|---------|-----|
 | 💻 **TypeScript** | 6.0+ | Type safety, modern features, and excellent IDE support |
 | 🧩 **Node.js** | 24+ | Proven runtime with excellent async/await support and large ecosystem |
-| 🌐 **Express.js** | 5.2+ | Mature, lightweight, and extensive middleware ecosystem |
+| 🔥 **Hono.js** | 4.12+ | Ultra-fast, runtime-agnostic web framework with first-class TypeScript and native serverless adapters |
 | 🗄️ **Neon (Postgres)** | 18 | Serverless, auto-scaling, and excellent TypeScript support |
 | 🔧 **Drizzle ORM** | 0.45+ | Type-safe, excellent migrations, and modern query builder |
 | 🚀 **Vercel** | Serverless | Perfect for serverless TypeScript apps with zero-config deployment |
@@ -76,6 +76,26 @@ Twistloom is not merely a branching story platform. It is a multiverse storytell
 | 5️⃣ **Groq** | Low latency |
 | 6️⃣ **Cerebras** | High performance |
 | 7️⃣ **NVIDIA** | Cost-effective |
+
+## 🔥 Why Hono over Express
+
+The backend was migrated from **Express.js** to **Hono.js** while keeping every feature intact (Stripe payments, NextAuth/Auth.js session verification, Drizzle ORM, Server-Sent Events, and multipart image uploads). The migration is clean: `src/app.ts` now builds a `Hono` app and exports a Vercel serverless handler via `hono/vercel`'s `handle`, and local development runs through `@hono/node-server`'s `serve`.
+
+### Why we switched
+
+- **Runtime freedom.** Hono runs on any JavaScript runtime (Node.js, Bun, Deno, Workers, Vercel Edge) from a single codebase. Express is effectively Node-only, which locked deployment choices in.
+- **Serverless-native.** Hono ships first-class adapters (`hono/vercel`, `@hono/node-server`) so the same app serves Vercel functions and local `tsx` dev without a custom server shim. Express's monolithic `listen()` model fights the short-lived, per-request serverless model.
+- **Performance & cold starts.** Hono's tiny surface and zero-dependency core start faster and use less memory than Express + its middleware chain — critical on Vercel's cold-start-sensitive functions.
+- **First-class TypeScript.** Route params, query, body, environment, and middleware bindings are inferred through `AppEnv` (`src/hono/env.ts`), so handlers get a fully typed `c` instead of loosely-typed `req`/`res` augmentation.
+- **Batteries included.** Built-in CORS, streaming/SSE (`hono/streaming`), and `@hono/auth-js` for cookie-based Auth.js verification replaced hand-rolled Express middleware.
+- **Ergonomic helpers.** `c.json()`, `c.req.param()/query()/header()`, and typed `c.get()/c.set()` variables remove the boilerplate of `req.body`/`res.status().json()` and `wrapAsync`.
+
+### Migration notes
+
+- JSON body parsing, locale extraction, rate limiting, and upload handling are now Hono middleware (`src/middleware/*`).
+- Express error helpers were replaced by `c*` helpers in `src/utils/error.ts` (`cApiError`, `cValidationError`, `cNotFoundError`, etc.) that return a Hono `c.json(...)` response.
+- SSE routes (`POST /api/books/stream`, `GET /api/books/prompt`, `GET /api/books/:identifier/:pageId/candidates`) use Hono's native `streamSSE`.
+- `multer` uploads were replaced by a small `parseBody`-based middleware that exposes the file on `c.get("file")`.
 
 ## 🚀 Features
 

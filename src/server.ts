@@ -1,16 +1,15 @@
 /**
- * Muslim Digest API Server
- * Main entry point for the backend application
- * Robust bootstrap with full error handling
- * Local dev only (not used in Vercel)
+ * Twistloom API Server
+ * Main entry point for the backend application (local dev only — Vercel uses src/app.ts).
+ * Bootstrap with full error handling, powered by @hono/node-server.
  */
 
+import { serve, type ServerType } from "@hono/node-server";
 import app from "./app.js";
 import { PORT } from "./config/env.js";
 import { hasErrorCode } from "./utils/error.js";
 import { validateGitHubWorkflowConfig } from "./utils/github-workflow.js";
 import { registerGracefulShutdown } from "./utils/graceful-shutdown.js";
-import type http from "node:http";
 
 /* -------------------------------------------------- */
 /* Global Process Guards                              */
@@ -47,9 +46,12 @@ validateGitHubWorkflowConfig();
 /* Start Server                                       */
 /* -------------------------------------------------- */
 
-const server: http.Server = app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT} 🚀`);
-});
+const server: ServerType = serve(
+  { fetch: app, port: PORT },
+  (info) => {
+    console.log(`Server running on port ${info.port} 🚀`);
+  },
+);
 
 server.on("error", (err: unknown) => {
   if (hasErrorCode(err)) {
@@ -78,16 +80,9 @@ registerGracefulShutdown(async () => {
 
   // Close HTTP server gracefully
   await new Promise<void>((resolve, reject) => {
-    server.close((err) => {
+    server.close((err: unknown) => {
       if (err) return reject(err);
       console.log("HTTP server closed 👋");
-      // Recommended cleanup tasks:
-      // - Flush any pending logs/metrics
-      // - Release file locks
-      // - Cancel in-flight requests
-      // - Save application state if needed
-
-      // Note: Neon HTTP client doesn't require connection cleanup
       resolve();
     });
   });

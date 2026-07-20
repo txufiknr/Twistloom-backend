@@ -1,7 +1,10 @@
-import type { _Request } from "express";
-
 /**
  * NextAuth user information
+ *
+ * Previously this file augmented Express's `Request` with `userId`, `user`,
+ * `headerLanguage`, and `file`. With the migration to Hono those bindings now
+ * live on {@link AppEnv} (see `src/hono/env.ts`); this module only keeps the
+ * shared `AuthUser` type used by the auth middleware and route environment.
  */
 export interface AuthUser {
   id: string;
@@ -10,17 +13,3 @@ export interface AuthUser {
   stripeCustomerId?: string;
   sessionId?: string; // Session ID for device tracking and selective logout
 }
-
-declare module "express" {
-  interface Request {
-    /** User identifier from authentication middleware */
-    userId?: string;
-    /** NextAuth user data from cookie-based authentication */
-    user?: AuthUser;
-    /** Parsed language code from Accept-Language header (e.g., "en" from "en-US,en;q=0.9") */
-    headerLanguage?: string | null;
-    file?: Express.Multer.File;
-  }
-}
-
-export {};

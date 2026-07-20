@@ -9,7 +9,7 @@
  * - Stream transformation utilities for converting text streams to SSE-formatted streams
  * - Backpressure handling and cancellation support via AbortSignal
  * - Optimized headers for serverless and proxy environments
- * - Express response utilities for SSE endpoints
+ * - Hono-native SSE helpers via `hono/streaming` (streamSSE / SSEStreamingApi)
  * 
  * @module sse
  * @example
@@ -23,7 +23,7 @@
  * ```
  */
 
-import type { Response } from 'express';
+import type { SSEStreamingApi } from 'hono/streaming';
 import type { BookCreationProgressEvent } from '../types/sse.js';
 import { getErrorMessage } from './error.js';
 
@@ -412,91 +412,52 @@ export function streamFromGenerator(
 }
 
 /**
- * Sends SSE event to Express response
+ * Writes a book-creation progress event to a Hono SSE stream
  * 
- * Utility function for sending SSE events in Express route handlers.
- * Formats the event with both event type and data for better client-side handling.
- * Removes redundant type field from data payload since event field already conveys type.
+ * Maps a `BookCreationProgressEvent` to Hono's `SSEStreamingApi.writeSSE`
+ * call, using the event `type` as the SSE event name and the remaining
+ * fields as the JSON-encoded data payload.
  * 
- * @param res - Express response object
- * @param event - Progress event to send
+ * This is the Hono-native replacement for the former Express `sendSSEEvent`.
+ * Hono's `streamSSE` sets the SSE headers automatically, so no manual
+ * header initialization is required.
+ * 
+ * @param stream - Hono SSE stream obtained from `streamSSE(c, async (stream) => {...})`
+ * @param event - Progress event to send to the client
+ * @returns Promise that resolves once the event has been written
  * 
  * @example
  * ```typescript
- * router.get('/stream', (req, res) => {
- *   initSSEHeaders(res);
- *   sendSSEEvent(res, { type: 'theme_validation_start' });
- *   sendSSEEvent(res, { type: 'complete', data: result });
- *   res.end();
+ * return streamSSE(c, async (stream) => {
+ *   await writeSSEEvent(stream, { type: 'theme_validation_start' });
+ *   await writeSSEEvent(stream, { type: 'complete', data: result });
  * });
  * ```
  */
-export function sendSSEEvent(res: Response, event: BookCreationProgressEvent): void {
+export async function writeSSEEvent(
+  stream: SSEStreamingApi,
+  event: BookCreationProgressEvent
+): Promise<void> {
   const { type, ...data } = event;
-  res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
+  await stream.writeSSE({ event: type, data: JSON.stringify(data) });
 }
 
 /**
- * SSE response headers for Express
+ * Backward-compatible alias for {@link writeSSEEvent}.
  * 
- * Headers specifically optimized for Express.js SSE responses.
- * Different from SSE_HEADERS (serverless) - Express handles headers differently.
+ * Kept so existing callers referencing `sendSSEEvent` continue to compile
+ * while the codebase migrates to Hono. Both names accept a Hono
+ * `SSEStreamingApi` and a `BookCreationProgressEvent`.
  * 
- * @constant
- * @example
- * ```typescript
- * router.get('/stream', (req, res) => {
- *   initSSEHeaders(res);
- * });
- * ```
+ * @param stream - Hono SSE stream obtained from `streamSSE`
+ * @param event - Progress event to send to the client
+ * @returns Promise that resolves once the event has been written
  */
-export const EXPRESS_SSE_HEADERS = {
-  'Content-Type': 'text/event-stream',
-  'Cache-Control': 'no-cache',
-  'Connection': 'keep-alive',
-  'X-Accel-Buffering': 'no', // Disable nginx buffering
-} as const;
-
-/**
- * Initializes SSE response headers for Express
- * 
- * Sets the required headers for SSE streaming in Express responses.
- * These headers ensure proper SSE behavior across different proxies
- * and load balancers. Uses EXPRESS_SSE_HEADERS for consistency.
- * 
- * @param res - Express response object
- * 
- * @example
- * ```typescript
- * router.get('/stream', (req, res) => {
- *   initSSEHeaders(res);
- *   // ... stream events
- * });
- * ```
- */
-export function initSSEHeaders(res: Response): void {
-  Object.entries(EXPRESS_SSE_HEADERS).forEach(([key, value]) => {
-    res.setHeader(key, value);
-  });
-}
-
-/**
- * Sends SSE keep-alive comment
- * 
- * Sends a comment to keep the SSE connection alive during long operations.
- * This prevents timeouts in proxies and load balancers.
- * 
- * @param res - Express response object
- * 
- * @example
- * ```typescript
- * setInterval(() => {
- *   sendSSEKeepAlive(res);
- * }, 30000); // Every 30 seconds
- * ```
- */
-export function sendSSEKeepAlive(res: Response): void {
-  res.write(': keep-alive\n\n');
+export async function sendSSEEvent(
+  stream: SSEStreamingApi,
+  event: BookCreationProgressEvent
+): Promise<void> {
+  return writeSSEEvent(stream, event);
 }
 
 /**
@@ -544,10 +505,8 @@ export interface PollCandidateGenerationOptions {
   pageId: string;
   /** User ID for mapping page data */
   userId: string;
-  /** Express request object */
-  req: any;
-  /** Express response object */
-  res: Response;
+  /** Hono SSE stream obtained from `streamSSE(c, async (stream) => {...})` */
+  stream: SSEStreamingApi;
   /** Initial message to send before polling starts */
   initialMessage: string;
   /** Function to fetch page from database */
@@ -560,7 +519,7 @@ export interface PollCandidateGenerationOptions {
   clearActionProgressEvents?: (pageId: string) => Promise<void>;
   /** Polling configuration */
   config: SSEPollingConfig;
-  /** Optional AbortSignal for cancellation */
+  /** AbortSignal for client disconnect / cancellation (e.g. `c.req.signal`) */
   signal?: AbortSignal;
 }
 
@@ -577,20 +536,22 @@ export interface PollCandidateGenerationOptions {
  * 
  * @example
  * ```typescript
- * await pollForCandidateGeneration({
- *   pageId,
- *   userId,
- *   req,
- *   res,
- *   initialMessage: 'Candidate generation in progress...',
- *   getPageFromDB,
- *   mapToUserStoryPage,
- *   getActionProgressEvents,
- *   config: {
- *     pollIntervalMs: 2000,
- *     maxAttempts: 150,
- *     progressInterval: 5
- *   }
+ * return streamSSE(c, async (stream) => {
+ *   await pollForCandidateGeneration({
+ *     pageId,
+ *     userId,
+ *     stream,
+ *     signal: c.req.signal,
+ *     initialMessage: 'Candidate generation in progress...',
+ *     getPageFromDB,
+ *     mapToUserStoryPage,
+ *     getActionProgressEvents,
+ *     config: {
+ *       pollIntervalMs: 2000,
+ *       maxAttempts: 150,
+ *       progressInterval: 5
+ *     }
+ *   });
  * });
  * ```
  */
@@ -600,8 +561,7 @@ export async function pollForCandidateGeneration(
   const {
     pageId,
     userId,
-    req,
-    res,
+    stream,
     initialMessage,
     getPageFromDB,
     mapToUserStoryPage,
@@ -613,44 +573,34 @@ export async function pollForCandidateGeneration(
 
   const { pollIntervalMs: initialPollIntervalMs, maxAttempts, progressInterval, maxBackoffMs = 10000, exponentialBackoff = true } = config;
 
-  // Send initial message
-  res.write(`event: progress\n`);
-  res.write(`data: ${JSON.stringify({ status: 'waiting', message: initialMessage })}\n\n`);
-
   let attempts = 0;
-  let clientDisconnected = false;
   let backoffMs = initialPollIntervalMs;
   const startTime = Date.now();
 
-  const onClientDisconnect = () => {
-    clientDisconnected = true;
-    console.log(`[SSE Polling] ⚠️ Client disconnected while waiting for generation of page ${pageId}`);
-    try {
-      res.end();
-    } catch {
-      // Ignore errors
-    }
+  // Send initial message
+  await stream.writeSSE({
+    event: 'progress',
+    data: JSON.stringify({ status: 'waiting', message: initialMessage })
+  });
+
+  const abort = () => {
+    console.log(`[SSE Polling] 🛑 Polling aborted via signal for page ${pageId}`);
+    throw new DOMException('Polling aborted', 'AbortError');
   };
 
-  req.on('close', onClientDisconnect);
-  req.on('aborted', onClientDisconnect);
+  // Listen for client disconnect / cancellation via the provided signal
+  if (signal) {
+    if (signal.aborted) {
+      return;
+    }
+    signal.addEventListener('abort', abort, { once: true });
+  }
 
   try {
     while (attempts < maxAttempts) {
       // Check for abort signal
       if (signal?.aborted) {
-        console.log(`[SSE Polling] 🛑 Polling aborted via signal for page ${pageId}`);
-        req.off('close', onClientDisconnect);
-        req.off('aborted', onClientDisconnect);
-        throw new DOMException('Polling aborted', 'AbortError');
-      }
-
-      // Break early if client disconnected
-      if (clientDisconnected || res.writableEnded) {
-        req.off('close', onClientDisconnect);
-        req.off('aborted', onClientDisconnect);
-        console.log(`[SSE Polling] ⛔ Stopping polling for page ${pageId} due to client disconnect`);
-        return;
+        abort();
       }
 
       await new Promise(resolve => setTimeout(resolve, backoffMs));
@@ -675,30 +625,18 @@ export async function pollForCandidateGeneration(
 
         // Permanent error - fail fast
         console.error(`[SSE Polling] ❌ Permanent error, failing:`, dbError);
-        try {
-          if (!res.writableEnded) {
-            res.write(`event: error\n`);
-            res.write(`data: ${JSON.stringify({ error: 'Database error during polling' })}\n\n`);
-            res.end();
-          }
-        } finally {
-          req.off('close', onClientDisconnect);
-          req.off('aborted', onClientDisconnect);
-        }
+        await stream.writeSSE({
+          event: 'error',
+          data: JSON.stringify({ error: 'Database error during polling' })
+        });
         return;
       }
 
       if (!freshPage) {
-        try {
-          if (!res.writableEnded) {
-            res.write(`event: error\n`);
-            res.write(`data: ${JSON.stringify({ error: 'Page not found during polling' })}\n\n`);
-            res.end();
-          }
-        } finally {
-          req.off('close', onClientDisconnect);
-          req.off('aborted', onClientDisconnect);
-        }
+        await stream.writeSSE({
+          event: 'error',
+          data: JSON.stringify({ error: 'Page not found during polling' })
+        });
         return;
       }
 
@@ -707,20 +645,13 @@ export async function pollForCandidateGeneration(
         console.log(`[SSE Polling] Generation completed for page ${pageId} after ${attempts} polls`);
         try {
           const userPage = await mapToUserStoryPage(freshPage, userId);
-          if (!res.writableEnded) {
-            res.write(`event: complete\n`);
-            res.write(`data: ${JSON.stringify(userPage)}\n\n`);
-            res.end();
-          }
+          await stream.writeSSE({ event: 'complete', data: JSON.stringify(userPage) });
         } catch {
-          if (!res.writableEnded) {
-            res.write(`event: error\n`);
-            res.write(`data: ${JSON.stringify({ error: 'Failed to process page data' })}\n\n`);
-            res.end();
-          }
+          await stream.writeSSE({
+            event: 'error',
+            data: JSON.stringify({ error: 'Failed to process page data' })
+          });
         } finally {
-          req.off('close', onClientDisconnect);
-          req.off('aborted', onClientDisconnect);
           // Clear progress events after generation completes
           await clearActionProgressEvents?.(pageId);
         }
@@ -732,20 +663,21 @@ export async function pollForCandidateGeneration(
         const progressEvents = await getActionProgressEvents(pageId);
         if (progressEvents && progressEvents.length > 0) {
           for (const event of progressEvents) {
-            if (clientDisconnected || res.writableEnded) {
-              break;
+            if (signal?.aborted) {
+              return;
             }
-            res.write(`event: action_progress\n`);
-            res.write(`data: ${JSON.stringify(event)}\n\n`);
+            await stream.writeSSE({ event: 'action_progress', data: JSON.stringify(event) });
           }
         }
       }
 
       // Send progress update periodically
-      if (attempts % progressInterval === 0 && !res.writableEnded) {
+      if (attempts % progressInterval === 0) {
         const elapsedSeconds = ((Date.now() - startTime) / 1000).toFixed(1);
-        res.write(`event: progress\n`);
-        res.write(`data: ${JSON.stringify({ status: 'waiting', message: `Still generating... (${elapsedSeconds}s elapsed)` })}\n\n`);
+        await stream.writeSSE({
+          event: 'progress',
+          data: JSON.stringify({ status: 'waiting', message: `Still generating... (${elapsedSeconds}s elapsed)` })
+        });
       }
     }
 
@@ -754,21 +686,17 @@ export async function pollForCandidateGeneration(
     try {
       const freshAfterTimeout = await getPageFromDB(pageId);
       const userPage = await mapToUserStoryPage(freshAfterTimeout, userId);
-      if (!res.writableEnded) {
-        res.write(`event: timeout\n`);
-        res.write(`data: ${JSON.stringify({ ...userPage, warning: 'Generation timeout, returning current state' })}\n\n`);
-        res.end();
-      }
+      await stream.writeSSE({
+        event: 'timeout',
+        data: JSON.stringify({ ...userPage, warning: 'Generation timeout, returning current state' })
+      });
     } catch {
-      if (!res.writableEnded) {
-        res.write(`event: error\n`);
-        res.write(`data: ${JSON.stringify({ error: 'Failed to process page data' })}\n\n`);
-        res.end();
-      }
+      await stream.writeSSE({
+        event: 'error',
+        data: JSON.stringify({ error: 'Failed to process page data' })
+      });
     }
   } finally {
-    // Clean up event listeners
-    req.off('close', onClientDisconnect);
-    req.off('aborted', onClientDisconnect);
+    signal?.removeEventListener('abort', abort);
   }
 }

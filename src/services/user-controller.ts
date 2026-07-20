@@ -19,12 +19,13 @@ import { generateId } from '../utils/uuid.js';
 import { sanitizeTextForDB } from '../utils/text-processing.js';
 import { sanitizeUserData, getUserIdByEmail, logUserActivity, updateUserLastActivity, invalidateByEmail, performDailyCheckIn } from './user.js';
 import { uploadUserImage } from './image.js';
-import { handleApiError, handleNotFoundError, handleValidationError } from '../utils/error.js';
+import { cApiError, cNotFoundError, cValidationError } from '../utils/error.js';
 import { sanitizeUsername } from '../utils/username.js';
 import { invalidateUserProfileCache } from './cache.js';
 import { REFERRAL_BONUS } from '../config/credits.js';
 import { awardCredits } from './credits.js';
-import type { Request, Response } from "express";
+import type { Context } from 'hono';
+import { getClientIp } from '../hono/express-shim.js';
 import type { DBNewUser } from '../types/schema.js';
 import type { CheckinClaimType, EnrichedUserSelect } from '../types/user.js';
 import type { PgColumn } from 'drizzle-orm/pg-core';
@@ -301,8 +302,7 @@ export async function createOrUpdateOAuthUser(oAuthUser: {
  * Returns true on success, false on any validation / not-found error.
  */
 export async function setReferrerForNewUser(
-  req: Request,
-  res: Response,
+  c: Context,
   userId: string,
   referrerUsername: string,
   opts: {
@@ -311,6 +311,7 @@ export async function setReferrerForNewUser(
   } = {}
 ): Promise<boolean> {
   const { client = dbWrite, handleResponse = true } = opts;
+  const res = c;
 
   try {
     // Ensure user exists and is new
@@ -322,19 +323,19 @@ export async function setReferrerForNewUser(
 
     if (!user) {
       console.warn('[setReferrerForNewUser] ⚠️ User not found:', userId);
-      if (handleResponse) handleNotFoundError(res, 'User not found');
+      if (handleResponse) return !!cNotFoundError(res, 'User not found');
       return false;
     }
 
     if (!user.isNewUser) {
       console.warn('[setReferrerForNewUser] ⚠️ Referrer can only be set for new users, userId:', userId);
-      if (handleResponse) handleValidationError(res, 'Referrer can only be set for new users');
+      if (handleResponse) return !!cValidationError(res, 'Referrer can only be set for new users');
       return false;
     }
 
     if (user.referrerId) {
       console.warn('[setReferrerForNewUser] ⚠️ Referrer already set, userId:', userId, 'referrerId:', user.referrerId);
-      if (handleResponse) handleValidationError(res, 'Referrer already set');
+      if (handleResponse) return !!cValidationError(res, 'Referrer already set');
       return false;
     }
 
@@ -348,13 +349,13 @@ export async function setReferrerForNewUser(
 
     if (!referrer) {
       console.warn('[setReferrerForNewUser] ⚠️ Referrer user not found:', referrerUsername);
-      if (handleResponse) handleNotFoundError(res, 'Referrer user not found');
+      if (handleResponse) return !!cNotFoundError(res, 'Referrer user not found');
       return false;
     }
 
     if (referrer.userId === userId) {
       console.warn('[setReferrerForNewUser] ⚠️ Cannot refer yourself, userId:', userId);
-      if (handleResponse) handleValidationError(res, 'Cannot refer yourself');
+      if (handleResponse) return !!cValidationError(res, 'Cannot refer yourself');
       return false;
     }
 
@@ -391,7 +392,7 @@ export async function setReferrerForNewUser(
         targetId: referrer.userId,
         metadata: { referrerUsername },
       },
-      { req }
+      { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } }
     );
 
     // Invalidate caches for both users
@@ -407,7 +408,7 @@ export async function setReferrerForNewUser(
     return true;
   } catch (error) {
     console.error('[user-controller] ❌ Failed to apply referrer:', error);
-    if (handleResponse) handleApiError(res, 'Failed to apply referrer', error);
+    if (handleResponse) return !!cApiError(res, 'Failed to apply referrer', error);
     return false;
   }
 }
@@ -420,20 +421,19 @@ export async function setReferrerForNewUser(
  * @param claimType - 'regular' (default) or 'vip_2x'
  */
 export async function handleCheckIn(
-  req: Request,
-  res: Response,
+  c: Context,
   claimType: CheckinClaimType = 'regular'
-): Promise<void> {
+): Promise<Response> {
   const label = claimType === 'vip_2x' ? 'VIP double claim' : 'daily check-in';
+  const userId = c.get('userId')!;
   try {
-    const userId = req.userId!;
     const result = await performDailyCheckIn(userId, claimType);
 
     if (result.success) {
-      res.status(201).json(result);
+      c.status(201);
     } else {
       console.log(`[checkin] ❌ User ${userId} failed ${label}`);
-      res.status(400).json(result);
+      c.status(400);
     }
 
     // Invalidate user cache and update last activity
@@ -441,7 +441,9 @@ export async function handleCheckIn(
       invalidateUserProfileCache(userId),
       updateUserLastActivity(userId),
     ]);
+
+    return c.json(result);
   } catch (error) {
-    handleApiError(res, `Failed to perform ${label}`, error);
+    return cApiError(c, `Failed to perform ${label}`, error);
   }
 }

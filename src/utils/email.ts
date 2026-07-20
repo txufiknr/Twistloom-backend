@@ -30,8 +30,35 @@ import {
 // Client initialisation
 // ---------------------------------------------------------------------------
 
-/** Resend client — lazily initialised on first use to keep cold starts fast */
-const resend = new Resend(process.env.RESEND_API_KEY);
+/**
+ * Resend client singleton.
+ *
+ * Deferred until the first email is actually sent so that importing this module
+ * (or booting the server) never fails when `RESEND_API_KEY` is absent — the
+ * client is only constructed inside a request path that needs it.
+ */
+let resendClient: Resend | null = null;
+
+/**
+ * Returns the shared Resend client, creating it on first call.
+ *
+ * Throws if `RESEND_API_KEY` is not configured; callers already treat email
+ * sending as best-effort, so the throw surfaces a clear misconfiguration
+ * exactly when an email is attempted rather than at startup.
+ *
+ * @returns The initialised {@link Resend} client
+ */
+function getResendClient(): Resend {
+  if (resendClient) return resendClient;
+
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey) {
+    throw new Error("RESEND_API_KEY is not configured; unable to send email");
+  }
+
+  resendClient = new Resend(apiKey);
+  return resendClient;
+}
 
 /** Default sender address; override via RESEND_FROM_EMAIL env var */
 const DEFAULT_FROM_EMAIL = process.env.RESEND_FROM_EMAIL || 'noreply@twistloom.com';
@@ -71,7 +98,7 @@ async function sendEmail(options: SendEmailOptions): Promise<boolean> {
   const { to, subject, html, from } = options;
 
   try {
-    const { error } = await resend.emails.send({
+    const { error } = await getResendClient().emails.send({
       from: from ?? DEFAULT_FROM_EMAIL,
       to,
       subject,

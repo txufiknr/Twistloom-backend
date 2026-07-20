@@ -14,7 +14,6 @@ import { getErrorMessage } from "../utils/error.js";
 import { applyDeltaChain, appendActionsHistory } from "../utils/story.js";
 import { executeWithCredits, refundCredits } from "./credits.js";
 import { ucfirst } from "../utils/formatter.js";
-import type { Request } from "express";
 
 /**
  * Retrieves the current session for a user including both bookId, current pageId, branchId, and status
@@ -166,8 +165,8 @@ export async function getStoryProgress(userId: string, bookId?: string, pageId?:
 export async function setActiveSession(params: SetActiveSessionParams, options?: {
   /** Use dbWrite to avoid read replica stale */
   client?: DBClient;
-  /** Express request object for tracking */
-  req?: Request;
+  /** Incoming request context for tracking */
+  req?: { ip?: string | null; get?: (header: string) => string | undefined | null };
 }): Promise<DBUserSession | null> {
   const { userId, bookId, pageId, previousPageId } = params;
   const { req, client = dbWrite } = options ?? {};
@@ -308,7 +307,7 @@ async function markPageVisitedWithClient(params: {
   stats: BookStats,
   actionedPageId?: string, // previous actioned page id
   action?: Action,
-}, options: { client: DBClient, req: Request }): Promise<BookPageVisit> {
+}, options: { client: DBClient, req?: { ip?: string | null; get?: (header: string) => string | undefined | null } }): Promise<BookPageVisit> {
   const { userId, bookId, pageId, pageNumber, branchId, totalPages, visitCount, stats, actionedPageId, action } = params;
   const { client, req } = options;
 
@@ -396,7 +395,7 @@ export async function markPageVisited(params: {
   actionedPageId?: string, // Omit for page 1
   action?: Action // Omit for page 1
   shouldConsumeCredits?: boolean // Whether to consume credits for choosing a different action (only applicable for page 2 onwards)
-}, options: { req: Request }): Promise<BookPageVisit> {
+}, options: { req?: { ip?: string | null; get?: (header: string) => string | undefined | null } }): Promise<BookPageVisit> {
   const { userId, book, visitedPage, actionedPageId, action, shouldConsumeCredits = false } = params;
   const { req } = options;
 

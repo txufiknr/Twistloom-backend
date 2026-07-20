@@ -44,16 +44,15 @@
  * Note: Comment CRUD endpoints are in books.ts, not this file.
  */
 
-import type { Router as RouterType } from 'express';
-import type { Request, Response } from 'express';
+import { Hono } from "hono";
+import type { Context } from "hono";
 import type { DBNewUserFeedback, DBNewUserLike, DBNewUserFavorite } from "../types/schema.js";
 import type { FeedbackCategory, LikeTargetType, Source, User, UserAchievement, UserActivityType, UserStats } from "../types/user.js";
 import { feedbackCategories, sources } from "../types/user.js";
-import { Router } from 'express';
-import { dbRead, dbWrite } from '../db/client.js';
+import { dbRead, dbWrite } from "../db/client.js";
 import { requireAuth, optionalAuth } from "../middleware/nextauth.js";
 import { users, books, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, uploadedImages, userProviders, userFeedbacks } from "../db/schema.js";
-import { getErrorMessage, handleApiError, handleNotFoundError, handleValidationError } from "../utils/error.js";
+import { getErrorMessage, cApiError, cNotFoundError, cValidationError } from "../utils/error.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { calculatePaginationMeta } from "../utils/pagination.js";
 import { updateUserLastActivity, getCheckInStatus, logUserActivity, sanitizeProfileUpdate, enrichActivityLogs } from "../services/user.js";
@@ -66,8 +65,10 @@ import { getStoryProgressWithBranch } from '../services/story-branch.js';
 import { checkAndAwardAchievements, getUserAchievements, getUserMetrics } from '../services/achievements.js';
 import type { PaginationMeta } from '../types/api.js';
 import { ACHIEVEMENT_REGISTRY } from '../config/achievements.js';
+import type { AppEnv } from "../hono/env.js";
+import { getClientIp } from "../hono/express-shim.js";
 
-const router: RouterType = Router();
+const router = new Hono<AppEnv>();
 
 /**
  * GET /api/user
@@ -155,12 +156,12 @@ const router: RouterType = Router();
  *   }
  * }
  */
-router.get('/', requireAuth, async (req: Request, res: Response) => {
+router.get('/', requireAuth, async (c: Context<AppEnv>) => {
   try {
-    const userId = req.userId!;
+    const userId = c.get("userId")!;
     const [user] = await getEnrichedUserById(userId);
 
-    if (!user) return handleNotFoundError(res, 'User not found');
+    if (!user) return cNotFoundError(c, 'User not found');
 
     const providers = await dbRead
       .select({ provider: userProviders.provider })
@@ -171,7 +172,7 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
     // with GET /api/users/:identifier. The frontend reads user.subscription.tier
     // for VIP gating — keeping it as a single authoritative field prevents SSOT drift.
     const { tier, ...restUser } = user;
-    res.json({
+    return c.json({
       user: {
         ...restUser,
         subscription: { tier },
@@ -180,7 +181,7 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error('[GET /api/user] ❌', error);
-    handleApiError(res, 'Failed to fetch user profile', error);
+    return cApiError(c, 'Failed to fetch user profile', error);
   }
 });
 
@@ -224,9 +225,10 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
  *   "username": "johndoe"
  * }
  */
-router.post('/', requireAuth, async (req: Request, res: Response) => {
+router.post('/', requireAuth, async (c: Context<AppEnv>) => {
   try {
-    const userId = req.userId!;
+    const userId = c.get("userId")!;
+    const body = c.get("body");
 
     const [current] = await dbRead
       .select({ isNewUser: users.isNewUser, username: users.username })
@@ -234,11 +236,11 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
       .where(eq(users.userId, userId))
       .limit(1);
 
-    if (!current) return handleNotFoundError(res, 'User not found');
-    if (!current.isNewUser) return handleValidationError(res, 'Onboarding already completed');
+    if (!current) return cNotFoundError(c, 'User not found');
+    if (!current.isNewUser) return cValidationError(c, 'Onboarding already completed');
 
     // 1. Sanitize payload via SSOT
-    const updateData = await sanitizeProfileUpdate(userId, req.body, res);
+    const updateData = await sanitizeProfileUpdate(userId, body, c);
     if (!updateData) return;
 
     // 2. Append route-specific data
@@ -246,8 +248,8 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
     updateData.updatedAt = new Date();
 
     // 2.5 Handle source (always valid during onboarding since isNewUser is true)
-    if (req.body.source && typeof req.body.source === 'string' && sources.includes(req.body.source as Source)) {
-      updateData.source = req.body.source;
+    if (body.source && typeof body.source === 'string' && sources.includes(body.source as Source)) {
+      updateData.source = body.source;
     }
 
     // 3. Apply update
@@ -257,25 +259,25 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
       .where(eq(users.userId, userId));
 
     // 4. Handle Referrer
-    if (req.body.referrer && typeof req.body.referrer === 'string') {
-      await setReferrerForNewUser(req, res, userId, req.body.referrer, { handleResponse: false });
+    if (body.referrer && typeof body.referrer === 'string') {
+      await setReferrerForNewUser(c, userId, body.referrer, { handleResponse: false });
     }
 
     await invalidateUserProfileCache(userId);
     await updateUserLastActivity(userId);
     await logUserActivity(
       { userId, activityType: 'onboarding_complete', targetType: 'user', targetId: userId },
-      { req }
+      { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } }
     );
 
-    res.json({
+    return c.json({
       message:   'Onboarding complete',
       isNewUser: false,
       username:  (updateData.username as string | undefined) ?? current.username,
     });
   } catch (error) {
     console.error('[POST /api/user] ❌', error);
-    handleApiError(res, 'Failed to complete onboarding', error);
+    return cApiError(c, 'Failed to complete onboarding', error);
   }
 });
 
@@ -326,18 +328,19 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
  *   }
  * }
  */
-router.put('/', requireAuth, async (req: Request, res: Response) => {
+router.put('/', requireAuth, async (c: Context<AppEnv>) => {
   try {
-    const userId = req.userId!;
+    const userId = c.get("userId")!;
+    const body = c.get("body");
 
     // 1. Sanitize payload via SSOT
-    const updateData = await sanitizeProfileUpdate(userId, req.body, res);
+    const updateData = await sanitizeProfileUpdate(userId, body, c);
     if (!updateData) return;
 
     // Require at least one valid field to update
     if (Object.keys(updateData).length === 0) {
       console.warn('[PUT /api/user] ⚠️ At least one valid field must be provided');
-      return handleValidationError(res, 'At least one valid field must be provided');
+      return cValidationError(c, 'At least one valid field must be provided');
     }
 
     // 2. Upload profile image to ImageKit if it's base64 data
@@ -345,8 +348,7 @@ router.put('/', requireAuth, async (req: Request, res: Response) => {
       const uploadResult = await uploadUserImage(updateData.imageUrl, userId);
       if (!uploadResult?.url) {
         console.warn('[PUT /api/user] ⚠️ Failed to upload profile image - ImageKit upload returned no URL');
-        handleApiError(res, 'Failed to upload profile image', new Error('ImageKit upload returned no URL'));
-        return;
+        return cApiError(c, 'Failed to upload profile image', new Error('ImageKit upload returned no URL'));
       }
 
       // Insert into uploaded_images — DB trigger auto-sets users.image_url.
@@ -366,7 +368,7 @@ router.put('/', requireAuth, async (req: Request, res: Response) => {
     updateData.updatedAt = new Date();
 
     // 3.5 Handle source (only applicable when isNewUser is true)
-    if (req.body.source && typeof req.body.source === 'string' && sources.includes(req.body.source as Source)) {
+    if (body.source && typeof body.source === 'string' && sources.includes(body.source as Source)) {
       const [currentUser] = await dbRead
         .select({ isNewUser: users.isNewUser })
         .from(users)
@@ -374,7 +376,7 @@ router.put('/', requireAuth, async (req: Request, res: Response) => {
         .limit(1);
 
       if (currentUser?.isNewUser) {
-        updateData.source = req.body.source;
+        updateData.source = body.source;
       }
     }
 
@@ -389,17 +391,17 @@ router.put('/', requireAuth, async (req: Request, res: Response) => {
     await updateUserLastActivity(userId);
 
     // 5. Handle Referrer (only if isNewUser and referrerId is empty — enforced by setReferrerForNewUser)
-    if (req.body.referrer && typeof req.body.referrer === 'string') {
-      await setReferrerForNewUser(req, res, userId, req.body.referrer, { handleResponse: false });
+    if (body.referrer && typeof body.referrer === 'string') {
+      await setReferrerForNewUser(c, userId, body.referrer, { handleResponse: false });
     }
 
     // Rename userId → id for frontend consistency
     // Normalize: move tier into subscription sub-object (consistent with GET /api/user)
     const { userId: id, tier: putTier, ...putRest } = user;
-    res.json({ success: true, user: { id, ...putRest, subscription: { tier: putTier } } });
+    return c.json({ success: true, user: { id, ...putRest, subscription: { tier: putTier } } });
   } catch (error) {
     console.error('[PUT /api/user] ❌', error);
-    handleApiError(res, 'Failed to update profile', error);
+    return cApiError(c, 'Failed to update profile', error);
   }
 });
 
@@ -472,24 +474,24 @@ router.put('/', requireAuth, async (req: Request, res: Response) => {
  *   }
  * }
  */
-router.get("/users/:identifier", async (req: Request, res: Response) => {
+router.get("/users/:identifier", async (c: Context<AppEnv>) => {
   try {
-    const { identifier } = req.params;
-    
-    // Ensure identifier is a string (Express params can be string[])
+    const { identifier } = c.req.param();
+
+    // Ensure identifier is a string (Hono params can be string[])
     const identifierStr = Array.isArray(identifier) ? identifier[0] : identifier;
     console.log(`[GET /users/${identifierStr}] 👤 Fetching user profile (identifier: ${identifierStr})`);
-    
+
     // Determine if identifier is UUID or username
     const isUuid = isValidUuid(identifierStr);
-    
+
     // Build query based on identifier type
     const whereCondition = isUuid
       ? eq(users.userId, identifierStr)
       : eq(users.username, identifierStr);
-    
+
     const cacheKey = CACHE_KEYS.USER_PROFILE(isUuid ? identifierStr : `username:${identifierStr}`);
-    
+
     // Fetch function for cache
     const fetchUserProfile = async () => {
       const [userData] = await getEnrichedUser(whereCondition);
@@ -512,7 +514,7 @@ router.get("/users/:identifier", async (req: Request, res: Response) => {
         credits: userData.credits,
         createdAt: userData.createdAt,
         updatedAt: userData.updatedAt,
-        
+
         subscription: {
           tier: userData.tier,
         },
@@ -544,19 +546,19 @@ router.get("/users/:identifier", async (req: Request, res: Response) => {
         user: formattedUser,
       };
     };
-    
+
     // Use cache with fallback to database
     const result = await withCache(cacheKey, fetchUserProfile, CACHE_TTL.USER_PROFILE);
-    
+
     // Add HTTP cache headers for CDN/edge caching
-    res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=30');
-    
-    res.json(result);
+    c.header('Cache-Control', 'public, max-age=60, stale-while-revalidate=30');
+
+    return c.json(result);
   } catch (error) {
     if (getErrorMessage(error) === "User profile not found") {
-      return handleNotFoundError(res, "User profile not found");
+      return cNotFoundError(c, "User profile not found");
     }
-    handleApiError(res, "Failed to retrieve user profile", error);
+    return cApiError(c, "Failed to retrieve user profile", error);
   }
 });
 
@@ -596,9 +598,9 @@ router.get("/users/:identifier", async (req: Request, res: Response) => {
  *   "message": "User account deleted successfully"
  * }
  */
-router.delete("/", requireAuth, async (req: Request, res: Response) => {
+router.delete("/", requireAuth, async (c: Context<AppEnv>) => {
   try {
-    const userId = req.userId!;
+    const userId = c.get("userId")!;
 
     // Delete user - cascade delete will handle all related tables automatically
     // Tables with cascade delete on userId:
@@ -613,13 +615,13 @@ router.delete("/", requireAuth, async (req: Request, res: Response) => {
       invalidateUserProfileCache(userId),
     ]);
 
-    res.json({
+    return c.json({
       message: "User account deleted successfully",
       // imageQueuedForDeletion: !!imageToDelete.imageId,
     });
 
   } catch (error) {
-    handleApiError(res, "Failed to delete user account", error);
+    return cApiError(c, "Failed to delete user account", error);
   }
 });
 
@@ -662,24 +664,25 @@ router.delete("/", requireAuth, async (req: Request, res: Response) => {
  *   }
  * }
  */
-router.post("/likes", requireAuth, async (req: Request, res: Response) => {
+router.post("/likes", requireAuth, async (c: Context<AppEnv>) => {
   try {
-    const userId = req.userId!;
-    const { targetType, targetId } = req.body;
+    const userId = c.get("userId")!;
+    const body = c.get("body");
+    const { targetType, targetId } = body;
 
     // Validate target type
     if (!["book", "comment", "user"].includes(targetType)) {
-      return res.status(400).json({
+      return c.json({
         success: false,
         error: "Invalid target type. Must be 'book', 'comment', or 'user'",
-      });
+      }, 400);
     }
 
     if (!targetId) {
-      return res.status(400).json({
+      return c.json({
         success: false,
         error: "Target ID is required",
-      });
+      }, 400);
     }
 
     // Prepare like data for upsert
@@ -707,7 +710,8 @@ router.post("/likes", requireAuth, async (req: Request, res: Response) => {
       ))
       .limit(1);
 
-    res.status(201).json({
+    c.status(201);
+    const response = c.json({
       like,
     });
 
@@ -717,7 +721,7 @@ router.post("/likes", requireAuth, async (req: Request, res: Response) => {
       activityType: 'liked',
       targetType,
       targetId,
-    }, { req });
+    }, { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } });
 
     // Invalidate caches when liking a book (only if publicly visible)
     if (targetType === 'book') {
@@ -732,8 +736,10 @@ router.post("/likes", requireAuth, async (req: Request, res: Response) => {
       await invalidateUserBooksCache(userId); // isLiked flag changed
       await invalidateUserProfileCache(userId); // likedBooksCount changed
     }
+
+    return response;
   } catch (error) {
-    handleApiError(res, "Failed to create like", error);
+    return cApiError(c, "Failed to create like", error);
   }
 });
 
@@ -765,24 +771,24 @@ router.post("/likes", requireAuth, async (req: Request, res: Response) => {
  *   "message": "Like removed successfully"
  * }
  */
-router.delete("/likes", requireAuth, async (req: Request, res: Response) => {
+router.delete("/likes", requireAuth, async (c: Context<AppEnv>) => {
   try {
-    const userId = req.userId!;
-    const { targetType, targetId } = req.query;
+    const userId = c.get("userId")!;
+    const { targetType, targetId } = c.req.query();
 
     // Validate target type
     if (!targetType || !["book", "comment", "user"].includes(targetType as string)) {
-      return res.status(400).json({
+      return c.json({
         success: false,
         error: "Valid target type is required. Must be 'book', 'comment', or 'user'",
-      });
+      }, 400);
     }
 
     if (!targetId) {
-      return res.status(400).json({
+      return c.json({
         success: false,
         error: "Target ID is required",
-      });
+      }, 400);
     }
 
     // Delete the like
@@ -796,10 +802,10 @@ router.delete("/likes", requireAuth, async (req: Request, res: Response) => {
       .returning();
 
     if (result.length === 0) {
-      return handleNotFoundError(res, "Like not found");
+      return cNotFoundError(c, "Like not found");
     }
 
-    res.json({
+    const response = c.json({
       message: "Like removed successfully",
     });
 
@@ -819,8 +825,10 @@ router.delete("/likes", requireAuth, async (req: Request, res: Response) => {
 
     // Update user's last activity timestamp
     await updateUserLastActivity(userId);
+
+    return response;
   } catch (error) {
-    handleApiError(res, "Failed to remove like", error);
+    return cApiError(c, "Failed to remove like", error);
   }
 });
 
@@ -858,14 +866,14 @@ router.delete("/likes", requireAuth, async (req: Request, res: Response) => {
  *   ]
  * }
  */
-router.get("/likes", requireAuth, async (req: Request, res: Response) => {
+router.get("/likes", requireAuth, async (c: Context<AppEnv>) => {
   try {
-    const userId = req.userId!;
-    const { targetType, limit = "50", offset = "0" } = req.query;
+    const userId = c.get("userId")!;
+    const { targetType, limit = "50", offset = "0" } = c.req.query();
 
     // Build base query conditions
     const baseConditions = [eq(userLikes.userId, userId)];
-    
+
     // Add target type filter if provided
     if (targetType && ["book", "comment", "user"].includes(targetType as string)) {
       baseConditions.push(eq(userLikes.targetType, targetType as LikeTargetType));
@@ -879,14 +887,16 @@ router.get("/likes", requireAuth, async (req: Request, res: Response) => {
       .limit(parseInt(limit as string))
       .offset(parseInt(offset as string));
 
-    res.json({
+    const response = c.json({
       likes,
     });
 
     // Update user's last activity timestamp
     await updateUserLastActivity(userId);
+
+    return response;
   } catch (error) {
-    handleApiError(res, "Failed to retrieve likes", error);
+    return cApiError(c, "Failed to retrieve likes", error);
   }
 });
 
@@ -926,16 +936,16 @@ router.get("/likes", requireAuth, async (req: Request, res: Response) => {
  *   }
  * }
  */
-router.post("/favorites", requireAuth, async (req: Request, res: Response) => {
+router.post("/favorites", requireAuth, async (c: Context<AppEnv>) => {
   try {
-    const userId = req.userId!;
-    const { bookId } = req.body;
+    const userId = c.get("userId")!;
+    const { bookId } = c.get("body");
 
     if (!bookId) {
-      return res.status(400).json({
+      return c.json({
         success: false,
         error: "Book ID is required",
-      });
+      }, 400);
     }
 
     // Prepare favorite data for upsert
@@ -961,7 +971,8 @@ router.post("/favorites", requireAuth, async (req: Request, res: Response) => {
       ))
       .limit(1);
 
-    res.status(201).json({
+    c.status(201);
+    const response = c.json({
       favorite,
     });
 
@@ -971,12 +982,14 @@ router.post("/favorites", requireAuth, async (req: Request, res: Response) => {
       activityType: 'favorited',
       targetType: 'book',
       targetId: bookId,
-    }, { req });
+    }, { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } });
 
     // Invalidate user profile cache (savedBooksCount changed)
     await invalidateUserProfileCache(userId);
+
+    return response;
   } catch (error) {
-    handleApiError(res, "Failed to add book to favorites", error);
+    return cApiError(c, "Failed to add book to favorites", error);
   }
 });
 
@@ -1007,16 +1020,16 @@ router.post("/favorites", requireAuth, async (req: Request, res: Response) => {
  *   "message": "Book removed from favorites successfully"
  * }
  */
-router.delete("/favorites", requireAuth, async (req: Request, res: Response) => {
+router.delete("/favorites", requireAuth, async (c: Context<AppEnv>) => {
   try {
-    const userId = req.userId!;
-    const { bookId } = req.query;
+    const userId = c.get("userId")!;
+    const { bookId } = c.req.query();
 
     if (!bookId) {
-      return res.status(400).json({
+      return c.json({
         success: false,
         error: "Book ID is required",
-      });
+      }, 400);
     }
 
     // Delete the favorite
@@ -1029,10 +1042,10 @@ router.delete("/favorites", requireAuth, async (req: Request, res: Response) => 
       .returning();
 
     if (result.length === 0) {
-      return handleNotFoundError(res, "Favorite not found");
+      return cNotFoundError(c, "Favorite not found");
     }
 
-    res.json({
+    const response = c.json({
       message: "Book removed from favorites successfully",
     });
 
@@ -1041,8 +1054,10 @@ router.delete("/favorites", requireAuth, async (req: Request, res: Response) => 
 
     // Update user's last activity timestamp
     await updateUserLastActivity(userId);
+
+    return response;
   } catch (error) {
-    handleApiError(res, "Failed to remove book from favorites", error);
+    return cApiError(c, "Failed to remove book from favorites", error);
   }
 });
 
@@ -1077,12 +1092,12 @@ router.delete("/favorites", requireAuth, async (req: Request, res: Response) => 
  *   ]
  * }
  */
-router.get("/collections", optionalAuth, async (req: Request, res: Response) => {
+router.get("/collections", optionalAuth, async (c: Context<AppEnv>) => {
   try {
-    const userId = req.userId;
+    const userId = c.get("userId");
 
     // Return empty response for unauthenticated users (handles auth timing race conditions)
-    if (!userId) return res.json({ collections: [] });
+    if (!userId) return c.json({ collections: [] });
 
     // Get collections with book counts grouped by collection name
     const collections = await dbRead
@@ -1098,12 +1113,14 @@ router.get("/collections", optionalAuth, async (req: Request, res: Response) => 
       .groupBy(userFavorites.collection)
       .orderBy(userFavorites.collection);
 
-    res.json({ collections });
+    const response = c.json({ collections });
 
     // Update user's last activity timestamp
     await updateUserLastActivity(userId);
+
+    return response;
   } catch (error) {
-    handleApiError(res, "Failed to retrieve collections", error);
+    return cApiError(c, "Failed to retrieve collections", error);
   }
 });
 
@@ -1138,16 +1155,16 @@ router.get("/collections", optionalAuth, async (req: Request, res: Response) => 
  *   }
  * }
  */
-router.post("/users/:id/follow", requireAuth, async (req: Request, res: Response) => {
+router.post("/users/:id/follow", requireAuth, async (c: Context<AppEnv>) => {
   try {
-    const userId = req.userId!;
-    const { id: followingId } = req.params;
+    const userId = c.get("userId")!;
+    const { id: followingId } = c.req.param();
 
-    // Ensure followingId is a string (Express params can be string[])
+    // Ensure followingId is a string (Hono params can be string[])
     const followingIdStr = Array.isArray(followingId) ? followingId[0] : followingId;
 
     if (userId === followingIdStr) {
-      return handleValidationError(res, "You cannot follow yourself");
+      return cValidationError(c, "You cannot follow yourself");
     }
 
     // Check if user exists
@@ -1158,7 +1175,7 @@ router.post("/users/:id/follow", requireAuth, async (req: Request, res: Response
       .limit(1);
 
     if (targetUser.length === 0) {
-      return handleNotFoundError(res, "User not found");
+      return cNotFoundError(c, "User not found");
     }
 
     // Perform upsert operation (create or return existing)
@@ -1181,7 +1198,8 @@ router.post("/users/:id/follow", requireAuth, async (req: Request, res: Response
       ))
       .limit(1);
 
-    res.status(201).json({
+    c.status(201);
+    const response = c.json({
       follow,
     });
 
@@ -1191,12 +1209,14 @@ router.post("/users/:id/follow", requireAuth, async (req: Request, res: Response
       activityType: 'followed',
       targetType: 'user',
       targetId: followingIdStr,
-    }, { req });
+    }, { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } });
 
     // Invalidate user profile cache (followersCount changed)
     await invalidateUserProfileCache(followingIdStr);
+
+    return response;
   } catch (error) {
-    handleApiError(res, "Failed to follow user", error);
+    return cApiError(c, "Failed to follow user", error);
   }
 });
 
@@ -1227,12 +1247,12 @@ router.post("/users/:id/follow", requireAuth, async (req: Request, res: Response
  *   "message": "User unfollowed successfully"
  * }
  */
-router.delete("/users/:id/follow", requireAuth, async (req: Request, res: Response) => {
+router.delete("/users/:id/follow", requireAuth, async (c: Context<AppEnv>) => {
   try {
-    const userId = req.userId!;
-    const { id: followingId } = req.params;
+    const userId = c.get("userId")!;
+    const { id: followingId } = c.req.param();
 
-    // Ensure followingId is a string (Express params can be string[])
+    // Ensure followingId is a string (Hono params can be string[])
     const followingIdStr = Array.isArray(followingId) ? followingId[0] : followingId;
 
     // Delete the follow
@@ -1245,10 +1265,10 @@ router.delete("/users/:id/follow", requireAuth, async (req: Request, res: Respon
       .returning();
 
     if (result.length === 0) {
-      return handleNotFoundError(res, "Follow relationship not found");
+      return cNotFoundError(c, "Follow relationship not found");
     }
 
-    res.json({
+    const response = c.json({
       message: "User unfollowed successfully",
     });
 
@@ -1257,8 +1277,10 @@ router.delete("/users/:id/follow", requireAuth, async (req: Request, res: Respon
 
     // Update user's last activity timestamp
     await updateUserLastActivity(userId);
+
+    return response;
   } catch (error) {
-    handleApiError(res, "Failed to unfollow user", error);
+    return cApiError(c, "Failed to unfollow user", error);
   }
 });
 
@@ -1306,10 +1328,10 @@ router.delete("/users/:id/follow", requireAuth, async (req: Request, res: Respon
  *   }
  * }
  */
-router.get("/users/:id/followers", async (req: Request, res: Response) => {
+router.get("/users/:id/followers", async (c: Context<AppEnv>) => {
   try {
-    const { id } = req.params;
-    const { limit = "50", offset = "0" } = req.query;
+    const { id } = c.req.param();
+    const { limit = "50", offset = "0" } = c.req.query();
 
     // Ensure id is a string
     const idStr = Array.isArray(id) ? id[0] : id;
@@ -1322,7 +1344,7 @@ router.get("/users/:id/followers", async (req: Request, res: Response) => {
       .limit(1);
 
     if (targetUser.length === 0) {
-      return handleNotFoundError(res, "User not found");
+      return cNotFoundError(c, "User not found");
     }
 
     // Get total count using SQL COUNT(*)
@@ -1356,12 +1378,12 @@ router.get("/users/:id/followers", async (req: Request, res: Response) => {
 
     const pagination = calculatePaginationMeta(page, limitNum, totalCount);
 
-    res.json({
+    return c.json({
       followers,
       pagination
     });
   } catch (error) {
-    handleApiError(res, "Failed to retrieve followers", error);
+    return cApiError(c, "Failed to retrieve followers", error);
   }
 });
 
@@ -1409,10 +1431,10 @@ router.get("/users/:id/followers", async (req: Request, res: Response) => {
  *   }
  * }
  */
-router.get("/users/:id/following", async (req: Request, res: Response) => {
+router.get("/users/:id/following", async (c: Context<AppEnv>) => {
   try {
-    const { id } = req.params;
-    const { limit = "50", offset = "0" } = req.query;
+    const { id } = c.req.param();
+    const { limit = "50", offset = "0" } = c.req.query();
 
     // Ensure id is a string
     const idStr = Array.isArray(id) ? id[0] : id;
@@ -1425,7 +1447,7 @@ router.get("/users/:id/following", async (req: Request, res: Response) => {
       .limit(1);
 
     if (targetUser.length === 0) {
-      return handleNotFoundError(res, "User not found");
+      return cNotFoundError(c, "User not found");
     }
 
     // Get total count using SQL COUNT(*)
@@ -1459,12 +1481,12 @@ router.get("/users/:id/following", async (req: Request, res: Response) => {
 
     const pagination = calculatePaginationMeta(page, limitNum, totalCount);
 
-    res.json({
+    return c.json({
       following,
       pagination
     });
   } catch (error) {
-    handleApiError(res, "Failed to retrieve following", error);
+    return cApiError(c, "Failed to retrieve following", error);
   }
 });
 
@@ -1511,10 +1533,10 @@ router.get("/users/:id/following", async (req: Request, res: Response) => {
  *   }
  * }
  */
-router.get("/followers", requireAuth, async (req: Request, res: Response) => {
+router.get("/followers", requireAuth, async (c: Context<AppEnv>) => {
   try {
-    const userId = req.userId!;
-    const { limit = "50", offset = "0" } = req.query;
+    const userId = c.get("userId")!;
+    const { limit = "50", offset = "0" } = c.req.query();
 
     // Get total count using SQL COUNT(*)
     // Using SQL COUNT(*) is more efficient than selecting all rows and counting in JavaScript.
@@ -1547,15 +1569,17 @@ router.get("/followers", requireAuth, async (req: Request, res: Response) => {
 
     const pagination = calculatePaginationMeta(page, limitNum, totalCount);
 
-    res.json({
+    const response = c.json({
       followers,
       pagination
     });
 
     // Update user's last activity timestamp
     await updateUserLastActivity(userId);
+
+    return response;
   } catch (error) {
-    handleApiError(res, "Failed to retrieve followers", error);
+    return cApiError(c, "Failed to retrieve followers", error);
   }
 });
 
@@ -1602,10 +1626,10 @@ router.get("/followers", requireAuth, async (req: Request, res: Response) => {
  *   }
  * }
  */
-router.get("/following", requireAuth, async (req: Request, res: Response) => {
+router.get("/following", requireAuth, async (c: Context<AppEnv>) => {
   try {
-    const userId = req.userId!;
-    const { limit = "50", offset = "0" } = req.query;
+    const userId = c.get("userId")!;
+    const { limit = "50", offset = "0" } = c.req.query();
 
     // Get total count using SQL COUNT(*)
     // Using SQL COUNT(*) is more efficient than selecting all rows and counting in JavaScript.
@@ -1638,15 +1662,17 @@ router.get("/following", requireAuth, async (req: Request, res: Response) => {
 
     const pagination = calculatePaginationMeta(page, limitNum, totalCount);
 
-    res.json({
+    const response = c.json({
       following,
       pagination
     });
 
     // Update user's last activity timestamp
     await updateUserLastActivity(userId);
+
+    return response;
   } catch (error) {
-    handleApiError(res, "Failed to retrieve following", error);
+    return cApiError(c, "Failed to retrieve following", error);
   }
 });
 
@@ -1714,14 +1740,14 @@ router.get("/following", requireAuth, async (req: Request, res: Response) => {
  *   "recentCheckIns": []
  * }
  */
-router.get("/checkin/status", optionalAuth, async (req: Request, res: Response) => {
+router.get("/checkin/status", optionalAuth, async (c: Context<AppEnv>) => {
   try {
-    const userId = req.userId;
-    
+    const userId = c.get("userId");
+
     // Return null response for unauthenticated users (handles auth timing race conditions)
     if (!userId) {
       console.log(`[GET /user/checkin/status] 👀 No userId, returning null check-in status`);
-      return res.json({
+      return c.json({
         eligible: false,
         lastCheckIn: null,
         streak: 0,
@@ -1730,14 +1756,16 @@ router.get("/checkin/status", optionalAuth, async (req: Request, res: Response) 
         recentCheckIns: [],
       });
     }
-    
+
     const status = await getCheckInStatus(userId);
-    res.json(status);
+    const response = c.json(status);
 
     // Update user's last activity timestamp
     await updateUserLastActivity(userId);
+
+    return response;
   } catch (error) {
-    handleApiError(res, "Failed to get check-in status", error);
+    return cApiError(c, "Failed to get check-in status", error);
   }
 });
 
@@ -1780,7 +1808,7 @@ router.get("/checkin/status", optionalAuth, async (req: Request, res: Response) 
  *   "message": "Already checked in today"
  * }
  */
-router.post("/checkin", requireAuth, (req, res) => handleCheckIn(req, res));
+router.post("/checkin", requireAuth, (c) => handleCheckIn(c));
 
 /**
  * POST /user/checkin/double
@@ -1823,7 +1851,7 @@ router.post("/checkin", requireAuth, (req, res) => handleCheckIn(req, res));
  *   "message": "VIP 2x claim is only available to VIP subscribers"
  * }
  */
-router.post("/checkin/double", requireAuth, (req, res) => handleCheckIn(req, res, 'vip_2x'));
+router.post("/checkin/double", requireAuth, (c) => handleCheckIn(c, 'vip_2x'));
 
 /**
  * GET /user/activity-logs
@@ -1885,11 +1913,11 @@ router.post("/checkin/double", requireAuth, (req, res) => handleCheckIn(req, res
  *   }
  * }
  */
-router.get("/activity-logs", optionalAuth, async (req: Request, res: Response) => {
+router.get("/activity-logs", optionalAuth, async (c: Context<AppEnv>) => {
   try {
-    const userId = req.userId;
+    const userId = c.get("userId");
     if (!userId) {
-      return res.json({
+      return c.json({
         logs: [],
         pagination: {
           page: 1,
@@ -1902,9 +1930,9 @@ router.get("/activity-logs", optionalAuth, async (req: Request, res: Response) =
       });
     }
 
-    const { activityType, targetType } = req.query;
-    const page = Math.max(1, parseInt(req.query.page as string) || 1);
-    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 50));
+    const { activityType, targetType } = c.req.query();
+    const page = Math.max(1, parseInt(c.req.query("page") as string) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(c.req.query("limit") as string) || 50));
     const offset = (page - 1) * limit;
 
     // Build base query conditions
@@ -1912,12 +1940,12 @@ router.get("/activity-logs", optionalAuth, async (req: Request, res: Response) =
       eq(userActivityLogs.userId, userId),
       sql`${userActivityLogs.activityType} NOT IN ('credits_consumed', 'credits_added')`,
     ];
-    
+
     // Add activity type filter if provided
     if (activityType) {
       baseConditions.push(eq(userActivityLogs.activityType, activityType as UserActivityType));
     }
-    
+
     // Add target type filter if provided
     if (targetType) {
       baseConditions.push(eq(userActivityLogs.targetType, targetType as string));
@@ -1945,15 +1973,17 @@ router.get("/activity-logs", optionalAuth, async (req: Request, res: Response) =
     const enriched = await enrichActivityLogs(logs);
     const pagination = calculatePaginationMeta(page, limit, totalCount);
 
-    res.json({
+    const response = c.json({
       logs: enriched,
       pagination,
     });
 
     // Update user's last activity timestamp
     await updateUserLastActivity(userId);
+
+    return response;
   } catch (error) {
-    handleApiError(res, "Failed to retrieve activity logs", error);
+    return cApiError(c, "Failed to retrieve activity logs", error);
   }
 });
 
@@ -2066,9 +2096,9 @@ router.get("/activity-logs", optionalAuth, async (req: Request, res: Response) =
  * const alternateBranches = siblings.filter(s => s.id !== page?.id);
  * ```
  */
-router.get("/progress", optionalAuth, async (req: Request, res: Response) => {
+router.get("/progress", optionalAuth, async (c: Context<AppEnv>) => {
   try {
-    const { userId } = req;
+    const userId = c.get("userId");
     const progress = userId ? await getStoryProgressWithBranch(userId) : {
       book: null,
       page: null,
@@ -2079,9 +2109,9 @@ router.get("/progress", optionalAuth, async (req: Request, res: Response) => {
       siblings: []
     };
 
-    res.json(progress);
+    return c.json(progress);
   } catch (error) {
-    handleApiError(res, "Failed to retrieve story progress", error);
+    return cApiError(c, "Failed to retrieve story progress", error);
   }
 });
 
@@ -2089,14 +2119,14 @@ router.get("/progress", optionalAuth, async (req: Request, res: Response) => {
  * GET /api/user/achievements
  * Returns all available achievements with user progress, unfiltered.
  */
-router.get('/achievements', requireAuth, async (req: Request, res: Response) => {
+router.get('/achievements', requireAuth, async (c: Context<AppEnv>) => {
   try {
-    const userId = req.userId!;
+    const userId = c.get("userId")!;
     const badges = await getUserAchievements(userId);
 
-    res.json({ success: true, badges });
+    return c.json({ success: true, badges });
   } catch (error) {
-    handleApiError(res, 'Failed to fetch achievements layout', error);
+    return cApiError(c, 'Failed to fetch achievements layout', error);
   }
 });
 
@@ -2105,9 +2135,9 @@ router.get('/achievements', requireAuth, async (req: Request, res: Response) => 
  * Ultra-fast endpoint to check, award, and return newly unlocked badges.
  * Designed to be called by the frontend immediately after taking actions.
  */
-router.get('/achievements/unnotified', requireAuth, async (req: Request, res: Response) => {
+router.get('/achievements/unnotified', requireAuth, async (c: Context<AppEnv>) => {
   try {
-    const userId = req.userId!;
+    const userId = c.get("userId")!;
 
     // 1. Evaluate counters against the TS Registry. 
     // This will INSERT into user_achievements if thresholds are met.
@@ -2128,7 +2158,7 @@ router.get('/achievements/unnotified', requireAuth, async (req: Request, res: Re
       );
 
     if (unnotifiedRows.length === 0) {
-      return res.json({ success: true, badges: [] });
+      return c.json({ success: true, badges: [] });
     }
 
     // 3. Fetch current counter values for progress data
@@ -2155,9 +2185,9 @@ router.get('/achievements/unnotified', requireAuth, async (req: Request, res: Re
       } satisfies UserAchievement;
     }).filter((b): b is NonNullable<typeof b> => b != null);
 
-    res.json({ success: true, badges });
+    return c.json({ success: true, badges });
   } catch (error) {
-    handleApiError(res, 'Failed to fetch unnotified achievements', error);
+    return cApiError(c, 'Failed to fetch unnotified achievements', error);
   }
 });
 
@@ -2165,13 +2195,13 @@ router.get('/achievements/unnotified', requireAuth, async (req: Request, res: Re
  * POST /api/user/achievements/acknowledge
  * Updates status after frontend triggers notification toast.
  */
-router.post('/achievements/acknowledge', requireAuth, async (req: Request, res: Response) => {
+router.post('/achievements/acknowledge', requireAuth, async (c: Context<AppEnv>) => {
   try {
-    const userId = req.userId!;
-    const { achievementIds } = req.body; // Expects array string: ["gen_50"]
+    const userId = c.get("userId")!;
+    const { achievementIds } = c.get("body"); // Expects array string: ["gen_50"]
 
     if (!Array.isArray(achievementIds) || achievementIds.length === 0) {
-      return handleValidationError(res, 'Invalid payload elements');
+      return cValidationError(c, 'Invalid payload elements');
     }
 
     await dbWrite
@@ -2184,9 +2214,9 @@ router.post('/achievements/acknowledge', requireAuth, async (req: Request, res: 
         )
       );
 
-    res.json({ success: true, message: 'Badges flagged as viewed' });
+    return c.json({ success: true, message: 'Badges flagged as viewed' });
   } catch (error) {
-    handleApiError(res, 'Failed to clear banner states', error);
+    return cApiError(c, 'Failed to clear banner states', error);
   }
 });
 
@@ -2257,25 +2287,25 @@ router.post('/achievements/acknowledge', requireAuth, async (req: Request, res: 
  *   "error": "Message is required"
  * }
  */
-router.post("/feedbacks", requireAuth, async (req: Request, res: Response) => {
+router.post("/feedbacks", requireAuth, async (c: Context<AppEnv>) => {
   try {
-    const userId = req.userId!;
-    const { category, message, imageUrl } = req.body;
+    const userId = c.get("userId")!;
+    const { category, message, imageUrl } = c.get("body");
 
     // Validate category
     if (!category || !feedbackCategories.includes(category as FeedbackCategory)) {
-      return res.status(400).json({
+      return c.json({
         success: false,
         error: `Invalid category. Must be one of: ${feedbackCategories.join(', ')}`,
-      });
+      }, 400);
     }
 
     // Validate message
     if (!message || typeof message !== 'string' || message.trim().length === 0) {
-      return res.status(400).json({
+      return c.json({
         success: false,
         error: 'Message is required',
-      });
+      }, 400);
     }
 
     let imageId: string | undefined;
@@ -2312,10 +2342,11 @@ router.post("/feedbacks", requireAuth, async (req: Request, res: Response) => {
       .values(feedbackData)
       .returning();
 
-    res.status(201).json({ feedback });
+    c.status(201);
+    return c.json({ feedback });
   } catch (error) {
     console.error('[POST /user/feedbacks] ❌', error);
-    handleApiError(res, 'Failed to submit feedback', error);
+    return cApiError(c, 'Failed to submit feedback', error);
   }
 });
 

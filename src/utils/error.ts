@@ -13,6 +13,7 @@
  */
 
 import type { NextFunction, Request, Response } from "express";
+import type { Context } from "hono";
 import { IS_DEVELOPMENT } from "../config/env.js";
 import { group } from '@actions/core';
 
@@ -573,3 +574,68 @@ export function hasErrorCode(err: unknown): err is { code: string } {
  * Export the undici abort error detection function for use in other modules
  */
 export { isUndiciAbortError };
+
+// ---------------------------------------------------------------------------
+// Hono-native error helpers
+//
+// Mirror the Express-based helpers above but operate on a Hono `Context`.
+// Used by route handlers and service functions that have been migrated to Hono.
+// Each returns the `c.json(...)` response so callers can `return cApiError(...)`.
+// ---------------------------------------------------------------------------
+
+/**
+ * Handles API errors with consistent logging and JSON response on a Hono context.
+ */
+export function cApiError(
+  c: Context,
+  message: string,
+  error?: unknown,
+  statusCode?: number,
+) {
+  if (error) console.error(`[cApiError] ❌ ${message}:`, error);
+
+  const errorResponse: ErrorResponse = {
+    success: false,
+    error: getErrorMessage(error, message),
+  };
+
+  if (error && IS_DEVELOPMENT) {
+    if (typeof error === "object" && error !== null) {
+      errorResponse.details = JSON.stringify(error, null, 2);
+    } else {
+      errorResponse.details = String(error);
+    }
+  }
+
+  return c.json(errorResponse, (statusCode ?? 500) as 400 | 401 | 403 | 404 | 409 | 413 | 429 | 500);
+}
+
+/** Validation error (400) on a Hono context. */
+export function cValidationError(c: Context, message: string, error?: unknown, statusCode?: number) {
+  return cApiError(c, message, error, statusCode ?? 400);
+}
+
+/** Not found error (404) on a Hono context. */
+export function cNotFoundError(c: Context, message: string, error?: unknown) {
+  return cApiError(c, message, error, 404);
+}
+
+/** Unauthorized error (401) on a Hono context. */
+export function cUnauthorizedError(c: Context, message: string, error?: unknown) {
+  return cApiError(c, message, error, 401);
+}
+
+/** Forbidden error (403) on a Hono context. */
+export function cForbiddenError(c: Context, message: string, error?: unknown) {
+  return cApiError(c, message, error, 403);
+}
+
+/** Rate limit error (429) on a Hono context. */
+export function cRateLimitError(c: Context, message?: string, error?: unknown) {
+  return cApiError(c, message ?? "Too many attempts. Please try again later.", error, 429);
+}
+
+/** Conflict error (409) on a Hono context. */
+export function cConflictError(c: Context, message: string, error?: unknown) {
+  return cApiError(c, message, error, 409);
+}

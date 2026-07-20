@@ -26,8 +26,8 @@
  * token-reader with zero network calls.
  */
 
-import type { Router as RouterType } from "express";
-import { Router } from "express";
+import { Hono } from "hono";
+import type { Context } from "hono";
 import { OAuth2Client } from 'google-auth-library';
 import { dbRead, dbWrite } from '../db/client.js';
 import { users, userAuth, userProviders } from '../db/schema.js';
@@ -38,7 +38,7 @@ import { checkAccountLockout, recordFailedLogin, resetFailedLoginAttempts } from
 import { createPasswordResetToken, resetPassword, verifyPasswordResetToken } from '../utils/password-reset.js';
 import { sendPasswordResetEmail, sendVerificationEmail } from '../utils/email.js';
 import { createEmailVerificationToken, verifyEmailToken, isEmailVerified } from '../utils/email-verification.js';
-import { handleApiError, handleRateLimitError, handleUnauthorizedError, handleValidationError } from '../utils/error.js';
+import { cApiError, cRateLimitError, cUnauthorizedError, cValidationError } from '../utils/error.js';
 import { checkRateLimitByIP } from '../middleware/rate-limit.js';
 import { generateId } from '../utils/uuid.js';
 import { createOrUpdateOAuthUser, setReferrerForNewUser } from '../services/user-controller.js';
@@ -47,10 +47,11 @@ import { isTemp as isTemporaryEmail } from 'tempmail-checker';
 import { requireAuth } from '../middleware/nextauth.js';
 import { getUserSessions, logoutFromSpecificDevice, logoutFromAllOtherDevices, logoutFromAllDevices, deleteSessionById } from '../services/session-manager.js';
 import { sanitizeUserData, getUserForAuth, getUserIdByEmail } from '../services/user.js';
-import type { Request, Response } from "express";
+import type { AppEnv } from '../hono/env.js';
+import { getClientIp } from '../hono/express-shim.js';
 import type { DBUserForAuth } from '../types/schema.js';
 
-const router: RouterType = Router();
+const router = new Hono<AppEnv>();
 
 // Google OAuth client for ID token verification (used by both One Tap and OAuth flows)
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
@@ -59,10 +60,10 @@ const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
  * Verifies a Google ID token, upserts the user, and sends the user data
  * response. Used by both POST /google-one-tap and POST /google-oauth.
  */
-async function handleGoogleAuth(idToken: string, req: Request, res: Response): Promise<void> {
+async function handleGoogleAuth(idToken: string, c: Context<AppEnv>): Promise<Response | void> {
   // Rate limiting based on IP address
-  const ip = req.ip || req.socket.remoteAddress || 'unknown';
-  if (!checkRateLimitByIP(ip)) return handleRateLimitError(res);
+  const ip = getClientIp(c);
+  if (!checkRateLimitByIP(ip)) return cRateLimitError(c);
 
   // Verify Google ID token (works for both One Tap credentials and standard OAuth id_token)
   const ticket = await googleClient.verifyIdToken({
@@ -71,7 +72,7 @@ async function handleGoogleAuth(idToken: string, req: Request, res: Response): P
   });
 
   const payload = ticket.getPayload();
-  if (!payload?.email) return handleUnauthorizedError(res, 'Invalid token payload');
+  if (!payload?.email) return cUnauthorizedError(c, 'Invalid token payload');
 
   const { email, name, picture: image, sub } = payload;
 
@@ -95,10 +96,10 @@ async function handleGoogleAuth(idToken: string, req: Request, res: Response): P
     .limit(1);
 
   if (!user) {
-    return handleApiError(res, 'Failed to retrieve user data');
+    return cApiError(c, 'Failed to retrieve user data');
   }
 
-  res.json(user);
+  return c.json(user);
 }
 
 // ---------------------------------------------------------------------------
@@ -156,20 +157,20 @@ async function handleGoogleAuth(idToken: string, req: Request, res: Response): P
  *   "isNewUser": false
  * }
  */
-router.post('/verify-credentials', async (req, res) => {
+router.post('/verify-credentials', async (c) => {
   try {
-    const ip = req.ip || req.socket.remoteAddress || 'unknown';
-    if (!checkRateLimitByIP(ip)) return handleRateLimitError(res);
+    const ip = getClientIp(c);
+    if (!checkRateLimitByIP(ip)) return cRateLimitError(c);
 
-    const { emailOrUsername, password } = req.body;
+    const { emailOrUsername, password } = c.get("body");
 
     if (!emailOrUsername || !password) {
-      return handleValidationError(res, 'Email/username and password are required');
+      return cValidationError(c, 'Email/username and password are required');
     }
 
     const userData = await getUserForAuth(emailOrUsername);
     if (!userData) {
-      return handleUnauthorizedError(res, 'Invalid credentials');
+      return cUnauthorizedError(c, 'Invalid credentials');
     }
 
     // Check account lockout
@@ -177,28 +178,28 @@ router.post('/verify-credentials', async (req, res) => {
     if (lockoutStatus.isLocked) {
       if (lockoutStatus.remainingTime === undefined) {
         await resetFailedLoginAttempts(userData.userId);
-        return handleRateLimitError(res, 'Account lock state inconsistent. Please try again.');
+        return cRateLimitError(c, 'Account lock state inconsistent. Please try again.');
       }
       const minutesRemaining = Math.ceil(lockoutStatus.remainingTime / 60000);
-      return res.status(429).json({
+      return c.json({
         error: `Account locked. Try again in ${minutesRemaining} minutes.`,
         lockedUntil: new Date(Date.now() + lockoutStatus.remainingTime).toISOString(),
-      });
+      }, 429);
     }
 
     if (!userData.passwordHash) {
-      return handleUnauthorizedError(res, 'This account uses OAuth login. Please sign in with Google.');
+      return cUnauthorizedError(c, 'This account uses OAuth login. Please sign in with Google.');
     }
 
     const isValid = await verifyPassword(password, userData.passwordHash);
     if (!isValid) {
       await recordFailedLogin(userData.userId);
-      return handleUnauthorizedError(res, 'Invalid credentials');
+      return cUnauthorizedError(c, 'Invalid credentials');
     }
 
     await resetFailedLoginAttempts(userData.userId);
 
-    res.json({
+    return c.json({
       userId: userData.userId,
       email: userData.email,
       name: userData.name,
@@ -208,7 +209,7 @@ router.post('/verify-credentials', async (req, res) => {
     } satisfies Omit<DBUserForAuth, 'passwordHash'> & { isNewUser: boolean });
   } catch (error) {
     console.error('[POST /api/auth/verify-credentials] ❌ Credential verification error:', error);
-    handleApiError(res, 'Failed to verify credentials', error, 500);
+    return cApiError(c, 'Failed to verify credentials', error, 500);
   }
 });
 
@@ -264,35 +265,35 @@ router.post('/verify-credentials', async (req, res) => {
  *   "referralApplied": false
  * }
  */
-router.post('/signup', async (req, res) => {
+router.post('/signup', async (c) => {
   try {
     // Rate limit
-    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    const ip = getClientIp(c);
     if (!checkRateLimitByIP(ip)) {
-      return res.status(429).json({ error: 'Too many requests. Please try again later.' });
+      return c.json({ error: 'Too many requests. Please try again later.' }, 429);
     }
 
     // Sign up data validation
-    const { password, receiveEmails: _receiveEmails, agreedToTerms, referrer } = req.body;
-    if (!password) return handleValidationError(res, 'Password is required');
-    if (!agreedToTerms) return handleValidationError(res, 'You must agree to the terms');
+    const { password, receiveEmails: _receiveEmails, agreedToTerms, referrer } = c.get("body");
+    if (!password) return cValidationError(c, 'Password is required');
+    if (!agreedToTerms) return cValidationError(c, 'You must agree to the terms');
 
     // Password strength validation
     const passwordValidation = validatePasswordStrength(password);
     if (!passwordValidation.valid) {
-      return res.status(422).json({
+      return c.json({
         error: 'Password does not meet security requirements',
         details: passwordValidation.errors,
-      });
+      }, 422);
     }
 
     // User data validation
-    const userData = await sanitizeUserData(req.body, { res, createNew: true });
+    const userData = await sanitizeUserData(c.get("body"), { res: c, createNew: true });
     if (!userData) return;
 
     // Check if cleaned email is a temporary email address
     if (isTemporaryEmail(userData.email)) {
-      return handleValidationError(res, 'Temporary or disposable email addresses are not allowed.', undefined, 422);
+      return cValidationError(c, 'Temporary or disposable email addresses are not allowed.', undefined, 422);
     }
 
     const passwordHash = await hashPassword(password);
@@ -308,10 +309,10 @@ router.post('/signup', async (req, res) => {
 
     let referralApplied = false;
     if (referrer && typeof referrer === 'string') {
-      referralApplied = await setReferrerForNewUser(req, res, newUser.userId, referrer, { handleResponse: false });
+      referralApplied = await setReferrerForNewUser(c, newUser.userId, referrer, { handleResponse: false });
     }
 
-    res.status(201).json({
+    return c.json({
       userId: newUser.userId,
       message: verificationEmailSent
         ? 'Account created. Please check your email to verify your account.'
@@ -319,13 +320,13 @@ router.post('/signup', async (req, res) => {
       verificationEmailSent,
       referrer,
       referralApplied,
-    });
+    }, 201);
   } catch (error) {
     console.error('[signup] ❌ Sign up error:', error);
-    res.status(200).json({
+    return c.json({
       message: 'If account was created, please check your email to verify.',
       verificationEmailSent: false,
-    });
+    }, 200);
   }
 });
 
@@ -359,17 +360,17 @@ router.post('/signup', async (req, res) => {
  *   "emailSent": true
  * }
  */
-router.post('/forgot-password', async (req, res) => {
+router.post('/forgot-password', async (c) => {
   try {
-    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    const ip = getClientIp(c);
     if (!checkRateLimitByIP(ip)) {
-      return res.status(429).json({ error: 'Too many requests. Please try again later.' });
+      return c.json({ error: 'Too many requests. Please try again later.' }, 429);
     }
 
-    const { email } = req.body;
+    const { email } = c.get("body");
 
     if (!email) {
-      return handleValidationError(res, 'Email is required');
+      return cValidationError(c, 'Email is required');
     }
 
     let emailSent = false;
@@ -381,14 +382,14 @@ router.post('/forgot-password', async (req, res) => {
     }
 
     // Always return success — prevents email enumeration
-    res.json({
+    return c.json({
       message: 'Password reset email sent if account exists',
       emailSent,
     });
   } catch (error) {
     console.error('[forgot] ❌ Forgot password error:', error);
     // Still return success to prevent email enumeration
-    res.json({
+    return c.json({
       message: 'Password reset email sent if account exists',
       emailSent: false,
     });
@@ -421,41 +422,41 @@ router.post('/forgot-password', async (req, res) => {
  * // Response (200)
  * { "message": "Password has been reset successfully." }
  */
-router.post('/reset-password', async (req, res) => {
+router.post('/reset-password', async (c) => {
   try {
-    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    const ip = getClientIp(c);
     if (!checkRateLimitByIP(ip)) {
-      return res.status(429).json({ error: 'Too many requests. Please try again later.' });
+      return c.json({ error: 'Too many requests. Please try again later.' }, 429);
     }
 
-    const { token, password } = req.body;
+    const { token, password } = c.get("body");
 
     if (!token || !password) {
-      return handleValidationError(res, 'Token and password are required');
+      return cValidationError(c, 'Token and password are required');
     }
 
     const passwordValidation = validatePasswordStrength(password);
     if (!passwordValidation.valid) {
-      return res.status(422).json({
+      return c.json({
         error: 'Password does not meet security requirements',
         details: passwordValidation.errors,
-      });
+      }, 422);
     }
 
     const userId = await verifyPasswordResetToken(token);
     if (!userId) {
-      return handleValidationError(res, 'Invalid or expired reset token');
+      return cValidationError(c, 'Invalid or expired reset token');
     }
 
     const success = await resetPassword(token, password);
     if (!success) {
-      return handleValidationError(res, 'Failed to reset password');
+      return cValidationError(c, 'Failed to reset password');
     }
 
-    res.json({ message: 'Password reset successfully' });
+    return c.json({ message: 'Password reset successfully' });
   } catch (error) {
     console.error('[reset] ❌ Reset password error:', error);
-    handleApiError(res, 'Failed to reset password', error, 500);
+    return cApiError(c, 'Failed to reset password', error, 500);
   }
 });
 
@@ -484,29 +485,29 @@ router.post('/reset-password', async (req, res) => {
  * // Response (200)
  * { "message": "Email verified successfully" }
  */
-router.post('/verify-email', async (req, res) => {
+router.post('/verify-email', async (c) => {
   try {
-    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    const ip = getClientIp(c);
     if (!checkRateLimitByIP(ip)) {
-      return res.status(429).json({ error: 'Too many requests. Please try again later.' });
+      return c.json({ error: 'Too many requests. Please try again later.' }, 429);
     }
 
-    const { token } = req.body;
+    const { token } = c.get("body");
 
     if (!token) {
-      return handleValidationError(res, 'Token is required');
+      return cValidationError(c, 'Token is required');
     }
 
     const userId = await verifyEmailToken(token);
 
     if (!userId) {
-      return handleValidationError(res, 'Invalid or expired verification token');
+      return cValidationError(c, 'Invalid or expired verification token');
     }
 
-    res.json({ message: 'Email verified successfully' });
+    return c.json({ message: 'Email verified successfully' });
   } catch (error) {
     console.error('[verifyEmail] ❌ Verify email error:', error);
-    handleApiError(res, 'Failed to verify email', error, 500);
+    return cApiError(c, 'Failed to verify email', error, 500);
   }
 });
 
@@ -535,17 +536,17 @@ router.post('/verify-email', async (req, res) => {
  * // Response (200)
  * { "message": "If an account exists, a verification email has been sent." }
  */
-router.post('/resend-verification', async (req, res) => {
+router.post('/resend-verification', async (c) => {
   try {
-    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    const ip = getClientIp(c);
     if (!checkRateLimitByIP(ip)) {
-      return res.status(429).json({ error: 'Too many requests. Please try again later.' });
+      return c.json({ error: 'Too many requests. Please try again later.' }, 429);
     }
 
-    const { email } = req.body;
+    const { email } = c.get("body");
 
     if (!email) {
-      return handleValidationError(res, 'Email is required');
+      return cValidationError(c, 'Email is required');
     }
 
     let emailSent = false;
@@ -560,13 +561,13 @@ router.post('/resend-verification', async (req, res) => {
       }
     }
 
-    res.json({
+    return c.json({
       message: 'Verification email sent if account exists',
       emailSent,
     });
   } catch (error) {
     console.error('[resendVerification] ❌ Resend verification error:', error);
-    res.json({
+    return c.json({
       message: 'Verification email sent if account exists',
       emailSent: false,
     });
@@ -593,12 +594,12 @@ router.post('/resend-verification', async (req, res) => {
  * // Response (200)
  * { "message": "Logged out successfully" }
  */
-router.post('/logout', async (req, res) => {
+router.post('/logout', async (c) => {
   try {
     // Add backend cleanup if needed (invalidate refresh tokens, analytics, etc.)
-    res.json({ message: 'Logged out successfully' });
+    return c.json({ message: 'Logged out successfully' });
   } catch (error) {
-    handleApiError(res, 'Failed to logout', error, 500);
+    return cApiError(c, 'Failed to logout', error, 500);
   }
 });
 
@@ -639,15 +640,16 @@ router.post('/logout', async (req, res) => {
  *   "isNewUser": false
  * }
  */
-router.post('/google-one-tap', async (req: Request, res: Response) => {
+router.post('/google-one-tap', async (c) => {
   try {
-    const { idToken } = req.body;
-    if (!idToken) return handleValidationError(res, 'ID token is required');
+    const { idToken } = c.get("body");
+    if (!idToken) return cValidationError(c, 'ID token is required');
 
-    await handleGoogleAuth(idToken, req, res);
+    const result = await handleGoogleAuth(idToken, c);
+    if (result) return result;
   } catch (error) {
     console.error('[POST /api/auth/google-one-tap] ❌ Google One Tap error:', error);
-    handleApiError(res, 'Failed to authenticate with Google One Tap', error);
+    return cApiError(c, 'Failed to authenticate with Google One Tap', error);
   }
 });
 
@@ -724,15 +726,16 @@ router.post('/google-one-tap', async (req: Request, res: Response) => {
  *   token.isNewUser = backendUser.isNewUser;
  * }
  */
-router.post('/google-oauth', async (req: Request, res: Response) => {
+router.post('/google-oauth', async (c) => {
   try {
-    const { idToken } = req.body;
-    if (!idToken) return handleValidationError(res, 'ID token is required');
+    const { idToken } = c.get("body");
+    if (!idToken) return cValidationError(c, 'ID token is required');
 
-    await handleGoogleAuth(idToken, req, res);
+    const result = await handleGoogleAuth(idToken, c);
+    if (result) return result;
   } catch (error) {
     console.error('[POST /api/auth/google-oauth] ❌ Google OAuth error:', error);
-    handleApiError(res, 'Failed to authenticate with Google OAuth', error);
+    return cApiError(c, 'Failed to authenticate with Google OAuth', error);
   }
 });
 
@@ -773,15 +776,15 @@ router.post('/google-oauth', async (req: Request, res: Response) => {
  *   "count": 3
  * }
  */
-router.get('/sessions', requireAuth, async (req: Request, res: Response) => {
+router.get('/sessions', requireAuth, async (c) => {
   try {
-    const userId = req.userId!;
-    const currentSessionId = req.user?.sessionId;
+    const userId = c.get("userId")!;
+    const currentSessionId = c.get("user")?.sessionId;
     const sessions = await getUserSessions(userId, currentSessionId);
-    res.json({ sessions, count: sessions.length });
+    return c.json({ sessions, count: sessions.length });
   } catch (error) {
     console.error('[GET /api/auth/sessions] ❌ Error fetching sessions:', error);
-    handleApiError(res, 'Failed to fetch sessions', error, 500);
+    return cApiError(c, 'Failed to fetch sessions', error, 500);
   }
 });
 
@@ -814,24 +817,24 @@ router.get('/sessions', requireAuth, async (req: Request, res: Response) => {
  *   "deletedCount": 2
  * }
  */
-router.post('/logout-all', requireAuth, async (req: Request, res: Response) => {
+router.post('/logout-all', requireAuth, async (c) => {
   try {
-    const userId = req.userId!;
-    const currentSessionId = req.user?.sessionId;
+    const userId = c.get("userId")!;
+    const currentSessionId = c.get("user")?.sessionId;
 
     if (!currentSessionId) {
-      return res.status(400).json({ error: 'No session ID found' });
+      return c.json({ error: 'No session ID found' }, 400);
     }
 
     const deletedCount = await logoutFromAllOtherDevices(userId, currentSessionId);
 
-    res.json({
+    return c.json({
       message: `Logged out from ${deletedCount} other device(s)`,
       deletedCount,
     });
   } catch (error) {
     console.error('[POST /api/auth/logout-all] ❌ Error logging out from all devices:', error);
-    handleApiError(res, 'Failed to logout from all devices', error, 500);
+    return cApiError(c, 'Failed to logout from all devices', error, 500);
   }
 });
 
@@ -865,18 +868,18 @@ router.post('/logout-all', requireAuth, async (req: Request, res: Response) => {
  *   "deletedCount": 3
  * }
  */
-router.post('/logout-all-devices', requireAuth, async (req: Request, res: Response) => {
+router.post('/logout-all-devices', requireAuth, async (c) => {
   try {
-    const userId = req.userId!;
+    const userId = c.get("userId")!;
     const deletedCount = await logoutFromAllDevices(userId);
 
-    res.json({
+    return c.json({
       message: `Logged out from ${deletedCount} device(s) — all sessions revoked`,
       deletedCount,
     });
   } catch (error) {
     console.error('[POST /api/auth/logout-all-devices] ❌ Error logging out from all devices:', error);
-    handleApiError(res, 'Failed to logout from all devices', error, 500);
+    return cApiError(c, 'Failed to logout from all devices', error, 500);
   }
 });
 
@@ -906,25 +909,25 @@ router.post('/logout-all-devices', requireAuth, async (req: Request, res: Respon
  * // Response (200)
  * { "message": "Logged out from device", "deletedCount": 1 }
  */
-router.post('/logout-session', requireAuth, async (req: Request, res: Response) => {
+router.post('/logout-session', requireAuth, async (c) => {
   try {
-    const userId = req.userId!;
-    const { sessionId } = req.body;
+    const userId = c.get("userId")!;
+    const { sessionId } = c.get("body");
 
     if (!sessionId) {
-      return res.status(400).json({ error: 'sessionId is required' });
+      return c.json({ error: 'sessionId is required' }, 400);
     }
 
     const deletedCount = await logoutFromSpecificDevice(userId, sessionId);
 
     if (deletedCount === 0) {
-      return res.status(404).json({ error: 'Session not found' });
+      return c.json({ error: 'Session not found' }, 404);
     }
 
-    res.json({ message: 'Logged out from device', deletedCount });
+    return c.json({ message: 'Logged out from device', deletedCount });
   } catch (error) {
     console.error('[POST /api/auth/logout-session] ❌ Error logging out from session:', error);
-    handleApiError(res, 'Failed to logout from session', error, 500);
+    return cApiError(c, 'Failed to logout from session', error, 500);
   }
 });
 
@@ -954,30 +957,31 @@ router.post('/logout-session', requireAuth, async (req: Request, res: Response) 
  *
  * // Response (204) - No Content
  */
-router.delete('/sessions/:id', requireAuth, async (req: Request, res: Response) => {
+router.delete('/sessions/:id', requireAuth, async (c) => {
   try {
-    const userId = req.userId!;
-    const sessionId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-    const currentSessionId = req.user?.sessionId;
+    const userId = c.get("userId")!;
+    const { id: sessionId } = c.req.param();
+    const currentSessionId = c.get("user")?.sessionId;
 
     if (!sessionId) {
-      return res.status(400).json({ error: 'Session ID is required' });
+      return c.json({ error: 'Session ID is required' }, 400);
     }
 
     if (sessionId === currentSessionId) {
-      return res.status(403).json({ error: 'Cannot delete current session' });
+      return c.json({ error: 'Cannot delete current session' }, 403);
     }
 
     const deleted = await deleteSessionById(userId, sessionId, currentSessionId!);
 
     if (!deleted) {
-      return res.status(404).json({ error: 'Session not found' });
+      return c.json({ error: 'Session not found' }, 404);
     }
 
-    res.status(204).send();
+    c.status(204);
+    return c.body(null);
   } catch (error) {
     console.error('[DELETE /api/auth/sessions/:id] ❌ Error deleting session:', error);
-    handleApiError(res, 'Failed to delete session', error, 500);
+    return cApiError(c, 'Failed to delete session', error, 500);
   }
 });
 
@@ -1006,21 +1010,21 @@ router.delete('/sessions/:id', requireAuth, async (req: Request, res: Response) 
  * @throws 409 - New email already in use
  * @throws 429 - Rate limit exceeded
  */
-router.put('/email', requireAuth, async (req: Request, res: Response) => {
+router.put('/email', requireAuth, async (c) => {
   try {
-    const ip = req.ip || req.socket.remoteAddress || 'unknown';
-    if (!checkRateLimitByIP(ip)) return handleRateLimitError(res);
+    const ip = getClientIp(c);
+    if (!checkRateLimitByIP(ip)) return cRateLimitError(c);
 
-    const userId = req.userId!;
-    const { newEmail, currentPassword } = req.body;
+    const userId = c.get("userId")!;
+    const { newEmail, currentPassword } = c.get("body");
 
     if (!newEmail || !currentPassword) {
-      return handleValidationError(res, 'New email and current password are required');
+      return cValidationError(c, 'New email and current password are required');
     }
 
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(newEmail)) {
-      return handleValidationError(res, 'Invalid email format');
+      return cValidationError(c, 'Invalid email format');
     }
 
     const [user] = await dbRead
@@ -1029,10 +1033,10 @@ router.put('/email', requireAuth, async (req: Request, res: Response) => {
       .where(eq(users.userId, userId))
       .limit(1);
 
-    if (!user) return handleUnauthorizedError(res, 'User not found');
+    if (!user) return cUnauthorizedError(c, 'User not found');
 
     if (!user.passwordHash) {
-      return handleUnauthorizedError(res, 'This account uses OAuth login. Cannot change email.');
+      return cUnauthorizedError(c, 'This account uses OAuth login. Cannot change email.');
     }
 
     // Block email change if Google account is linked (prevents OAuth matching breakage)
@@ -1046,14 +1050,14 @@ router.put('/email', requireAuth, async (req: Request, res: Response) => {
       .limit(1);
 
     if (googleLinked) {
-      return res.status(403).json({
+      return c.json({
         error: 'Cannot change email while Google account is linked. Unlink Google first.',
-      });
+      }, 403);
     }
 
     const isValid = await verifyPassword(currentPassword, user.passwordHash);
     if (!isValid) {
-      return handleUnauthorizedError(res, 'Current password is incorrect');
+      return cUnauthorizedError(c, 'Current password is incorrect');
     }
 
     const sanitizedEmail = newEmail.toLowerCase().trim();
@@ -1065,7 +1069,7 @@ router.put('/email', requireAuth, async (req: Request, res: Response) => {
       .limit(1);
 
     if (emailConflict) {
-      return res.status(409).json({ error: 'Email already in use' });
+      return c.json({ error: 'Email already in use' }, 409);
     }
 
     const now = new Date();
@@ -1079,10 +1083,10 @@ router.put('/email', requireAuth, async (req: Request, res: Response) => {
       .set({ emailVerified: null, updatedAt: now })
       .where(eq(userAuth.userId, userId));
 
-    res.json({ message: 'Email updated successfully' });
+    return c.json({ message: 'Email updated successfully' });
   } catch (error) {
     console.error('[PUT /api/auth/email] ❌', error);
-    handleApiError(res, 'Failed to update email', error);
+    return cApiError(c, 'Failed to update email', error);
   }
 });
 
@@ -1111,24 +1115,24 @@ router.put('/email', requireAuth, async (req: Request, res: Response) => {
  * @throws 422 - New password does not meet security requirements
  * @throws 429 - Rate limit exceeded
  */
-router.put('/password', requireAuth, async (req: Request, res: Response) => {
+router.put('/password', requireAuth, async (c) => {
   try {
-    const ip = req.ip || req.socket.remoteAddress || 'unknown';
-    if (!checkRateLimitByIP(ip)) return handleRateLimitError(res);
+    const ip = getClientIp(c);
+    if (!checkRateLimitByIP(ip)) return cRateLimitError(c);
 
-    const userId = req.userId!;
-    const { currentPassword, newPassword } = req.body;
+    const userId = c.get("userId")!;
+    const { currentPassword, newPassword } = c.get("body");
 
     if (!currentPassword || !newPassword) {
-      return handleValidationError(res, 'Current password and new password are required');
+      return cValidationError(c, 'Current password and new password are required');
     }
 
     const passwordValidation = validatePasswordStrength(newPassword);
     if (!passwordValidation.valid) {
-      return res.status(422).json({
+      return c.json({
         error: 'Password does not meet security requirements',
         details: passwordValidation.errors,
-      });
+      }, 422);
     }
 
     const [user] = await dbRead
@@ -1137,15 +1141,15 @@ router.put('/password', requireAuth, async (req: Request, res: Response) => {
       .where(eq(users.userId, userId))
       .limit(1);
 
-    if (!user) return handleUnauthorizedError(res, 'User not found');
+    if (!user) return cUnauthorizedError(c, 'User not found');
 
     if (!user.passwordHash) {
-      return handleUnauthorizedError(res, 'This account uses OAuth login. Cannot change password.');
+      return cUnauthorizedError(c, 'This account uses OAuth login. Cannot change password.');
     }
 
     const isValid = await verifyPassword(currentPassword, user.passwordHash);
     if (!isValid) {
-      return handleUnauthorizedError(res, 'Current password is incorrect');
+      return cUnauthorizedError(c, 'Current password is incorrect');
     }
 
     const newPasswordHash = await hashPassword(newPassword);
@@ -1161,10 +1165,10 @@ router.put('/password', requireAuth, async (req: Request, res: Response) => {
       .set({ failedLoginAttempts: 0, lockUntil: null, updatedAt: now })
       .where(eq(userAuth.userId, userId));
 
-    res.json({ message: 'Password updated successfully' });
+    return c.json({ message: 'Password updated successfully' });
   } catch (error) {
     console.error('[PUT /api/auth/password] ❌', error);
-    handleApiError(res, 'Failed to update password', error);
+    return cApiError(c, 'Failed to update password', error);
   }
 });
 
@@ -1190,26 +1194,26 @@ router.put('/password', requireAuth, async (req: Request, res: Response) => {
  * @throws 409 - Username already taken
  * @throws 429 - Rate limit exceeded
  */
-router.put('/username', requireAuth, async (req: Request, res: Response) => {
+router.put('/username', requireAuth, async (c) => {
   try {
-    const ip = req.ip || req.socket.remoteAddress || 'unknown';
-    if (!checkRateLimitByIP(ip)) return handleRateLimitError(res);
+    const ip = getClientIp(c);
+    if (!checkRateLimitByIP(ip)) return cRateLimitError(c);
 
-    const userId = req.userId!;
-    const { newUsername } = req.body;
+    const userId = c.get("userId")!;
+    const { newUsername } = c.get("body");
 
     if (!newUsername) {
-      return handleValidationError(res, 'New username is required');
+      return cValidationError(c, 'New username is required');
     }
 
     const sanitized = (typeof newUsername === 'string' ? newUsername.trim().toLowerCase() : '');
 
     const validation = validateUsername(sanitized);
     if (!validation.valid) {
-      return res.status(422).json({
+      return c.json({
         error: 'Invalid username',
         details: validation.errors,
-      });
+      }, 422);
     }
 
     const [usernameConflict] = await dbRead
@@ -1219,7 +1223,7 @@ router.put('/username', requireAuth, async (req: Request, res: Response) => {
       .limit(1);
 
     if (usernameConflict) {
-      return res.status(409).json({ error: 'Username already taken' });
+      return c.json({ error: 'Username already taken' }, 409);
     }
 
     const now = new Date();
@@ -1228,10 +1232,10 @@ router.put('/username', requireAuth, async (req: Request, res: Response) => {
       .set({ username: sanitized, updatedAt: now })
       .where(eq(users.userId, userId));
 
-    res.json({ message: 'Username updated successfully' });
+    return c.json({ message: 'Username updated successfully' });
   } catch (error) {
     console.error('[PUT /api/auth/username] ❌', error);
-    handleApiError(res, 'Failed to update username', error);
+    return cApiError(c, 'Failed to update username', error);
   }
 });
 
@@ -1260,12 +1264,12 @@ router.put('/username', requireAuth, async (req: Request, res: Response) => {
  * @throws 401 - Token verification failed
  * @throws 409 - Google account already linked to another user
  */
-router.post('/link/google', requireAuth, async (req: Request, res: Response) => {
+router.post('/link/google', requireAuth, async (c) => {
   try {
-    const userId = req.userId!;
-    const { idToken } = req.body;
+    const userId = c.get("userId")!;
+    const { idToken } = c.get("body");
 
-    if (!idToken) return handleValidationError(res, 'ID token is required');
+    if (!idToken) return cValidationError(c, 'ID token is required');
 
     const ticket = await googleClient.verifyIdToken({
       idToken,
@@ -1273,7 +1277,7 @@ router.post('/link/google', requireAuth, async (req: Request, res: Response) => 
     });
 
     const payload = ticket.getPayload();
-    if (!payload?.sub) return handleUnauthorizedError(res, 'Invalid token payload');
+    if (!payload?.sub) return cUnauthorizedError(c, 'Invalid token payload');
 
     const { sub } = payload;
 
@@ -1289,7 +1293,7 @@ router.post('/link/google', requireAuth, async (req: Request, res: Response) => 
       .limit(1);
 
     if (existing) {
-      return res.status(409).json({ error: 'This Google account is already linked to another user' });
+      return c.json({ error: 'This Google account is already linked to another user' }, 409);
     }
 
     // Insert the provider link
@@ -1304,13 +1308,13 @@ router.post('/link/google', requireAuth, async (req: Request, res: Response) => 
       .from(userProviders)
       .where(eq(userProviders.userId, userId));
 
-    res.json({
+    return c.json({
       message: 'Google account linked',
       linkedMethods: providers.map(p => p.provider),
     });
   } catch (error) {
     console.error('[POST /api/auth/link/google] ❌', error);
-    handleApiError(res, 'Failed to link Google account', error);
+    return cApiError(c, 'Failed to link Google account', error);
   }
 });
 
@@ -1334,9 +1338,9 @@ router.post('/link/google', requireAuth, async (req: Request, res: Response) => 
  *
  * @throws 400 - Cannot unlink last remaining method
  */
-router.post('/unlink/google', requireAuth, async (req: Request, res: Response) => {
+router.post('/unlink/google', requireAuth, async (c) => {
   try {
-    const userId = req.userId!;
+    const userId = c.get("userId")!;
 
     // Check user has more than one provider
     const providers = await dbRead
@@ -1345,9 +1349,9 @@ router.post('/unlink/google', requireAuth, async (req: Request, res: Response) =
       .where(eq(userProviders.userId, userId));
 
     if (providers.length <= 1) {
-      return res.status(400).json({
+      return c.json({
         error: 'Cannot remove last sign-in method',
-      });
+      }, 400);
     }
 
     await dbWrite
@@ -1359,13 +1363,13 @@ router.post('/unlink/google', requireAuth, async (req: Request, res: Response) =
 
     const remaining = providers.filter(p => p.provider !== 'google').map(p => p.provider);
 
-    res.json({
+    return c.json({
       message: 'Google account unlinked',
       linkedMethods: remaining,
     });
   } catch (error) {
     console.error('[POST /api/auth/unlink/google] ❌', error);
-    handleApiError(res, 'Failed to unlink Google account', error);
+    return cApiError(c, 'Failed to unlink Google account', error);
   }
 });
 
@@ -1392,19 +1396,19 @@ router.post('/unlink/google', requireAuth, async (req: Request, res: Response) =
  * @throws 400 - Weak password, missing fields
  * @throws 409 - Credentials already linked
  */
-router.post('/link/credentials', requireAuth, async (req: Request, res: Response) => {
+router.post('/link/credentials', requireAuth, async (c) => {
   try {
-    const userId = req.userId!;
-    const { password } = req.body;
+    const userId = c.get("userId")!;
+    const { password } = c.get("body");
 
-    if (!password) return handleValidationError(res, 'Password is required');
+    if (!password) return cValidationError(c, 'Password is required');
 
     const passwordValidation = validatePasswordStrength(password);
     if (!passwordValidation.valid) {
-      return res.status(422).json({
+      return c.json({
         error: 'Password does not meet security requirements',
         details: passwordValidation.errors,
-      });
+      }, 422);
     }
 
     // Check credentials not already linked
@@ -1418,7 +1422,7 @@ router.post('/link/credentials', requireAuth, async (req: Request, res: Response
       .limit(1);
 
     if (existingCredentials) {
-      return res.status(409).json({ error: 'Credentials method already linked' });
+      return c.json({ error: 'Credentials method already linked' }, 409);
     }
 
     const passwordHash = await hashPassword(password);
@@ -1439,13 +1443,13 @@ router.post('/link/credentials', requireAuth, async (req: Request, res: Response
       .from(userProviders)
       .where(eq(userProviders.userId, userId));
 
-    res.json({
+    return c.json({
       message: 'Password set, credentials method linked',
       linkedMethods: providers.map(p => p.provider),
     });
   } catch (error) {
     console.error('[POST /api/auth/link/credentials] ❌', error);
-    handleApiError(res, 'Failed to link credentials', error);
+    return cApiError(c, 'Failed to link credentials', error);
   }
 });
 
@@ -1473,12 +1477,12 @@ router.post('/link/credentials', requireAuth, async (req: Request, res: Response
  * @throws 400 - Cannot unlink last remaining method
  * @throws 401 - Wrong password
  */
-router.post('/unlink/credentials', requireAuth, async (req: Request, res: Response) => {
+router.post('/unlink/credentials', requireAuth, async (c) => {
   try {
-    const userId = req.userId!;
-    const { currentPassword } = req.body;
+    const userId = c.get("userId")!;
+    const { currentPassword } = c.get("body");
 
-    if (!currentPassword) return handleValidationError(res, 'Current password is required');
+    if (!currentPassword) return cValidationError(c, 'Current password is required');
 
     // Verify the password
     const [user] = await dbRead
@@ -1488,12 +1492,12 @@ router.post('/unlink/credentials', requireAuth, async (req: Request, res: Respon
       .limit(1);
 
     if (!user?.passwordHash) {
-      return handleUnauthorizedError(res, 'No password set for this account');
+      return cUnauthorizedError(c, 'No password set for this account');
     }
 
     const isValid = await verifyPassword(currentPassword, user.passwordHash);
     if (!isValid) {
-      return handleUnauthorizedError(res, 'Current password is incorrect');
+      return cUnauthorizedError(c, 'Current password is incorrect');
     }
 
     // Check user has more than one provider
@@ -1503,9 +1507,9 @@ router.post('/unlink/credentials', requireAuth, async (req: Request, res: Respon
       .where(eq(userProviders.userId, userId));
 
     if (providers.length <= 1) {
-      return res.status(400).json({
+      return c.json({
         error: 'Cannot remove last sign-in method',
-      });
+      }, 400);
     }
 
     const now = new Date();
@@ -1523,13 +1527,13 @@ router.post('/unlink/credentials', requireAuth, async (req: Request, res: Respon
 
     const remaining = providers.filter(p => p.provider !== 'credentials').map(p => p.provider);
 
-    res.json({
+    return c.json({
       message: 'Credentials method unlinked',
       linkedMethods: remaining,
     });
   } catch (error) {
     console.error('[POST /api/auth/unlink/credentials] ❌', error);
-    handleApiError(res, 'Failed to unlink credentials', error);
+    return cApiError(c, 'Failed to unlink credentials', error);
   }
 });
 

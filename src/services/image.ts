@@ -6,45 +6,10 @@ import { getErrorMessage } from "../utils/error.js";
 import { APP_NAME_SLUG } from "../config/constants.js";
 import { deletedImages, uploadedImages } from "../db/schema.js";
 import { dbRead } from "../db/client.js";
-import multer, { type FileFilterCallback } from "multer";
-import { MAX_IMAGE_UPLOAD_SIZE } from "../config/image.js";
 import type { ImageUploadObject, ImageUploadOptions, ImageUploadSource } from "../types/image.js";
 import type { Book } from "../types/book.js";
 
 let imageKitClient: ImageKit | null = null;
-
-/**
- * @overview Default multer configuration for image uploads
- * 
- * Provides centralized multer configuration for file uploads across the application.
- * Supports image uploads with size limits and file type validation.
- * 
- * Features:
- * - Image file type validation
- * - Reusable configuration across routes
- * - Type-safe middleware setup
- * - Uses memory storage for serverless compatibility
- * - 2MB file size limit
- * - Provides file filtering callback
- */
-export const imageUpload = multer({
-  storage: multer.memoryStorage(),
-  limits: {
-    fileSize: MAX_IMAGE_UPLOAD_SIZE, // 2MB limit
-  },
-  fileFilter: (
-    req: Express.Request,
-    file: Express.Multer.File,
-    callback: FileFilterCallback,
-  ) => {
-    // Accept only image files
-    if (file.mimetype?.startsWith('image/')) {
-      callback(null, true);
-    } else {
-      callback(new Error('Only image files are allowed'));
-    }
-  },
-});
 
 /**
  * Format keywords array for URL encoding

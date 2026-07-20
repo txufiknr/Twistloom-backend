@@ -18,7 +18,7 @@ import { executePromptForJSON } from './prompt.js';
 import { formatOneOf, hasKeywords } from './text-processing.js';
 import type { HeuristicValidationResult, AIValidationResult, ThemeValidationResult, ThemeValidationErrorDetails, ThemeValidationCategory } from '../types/theme-validation.js';
 import type { ProgressCallback } from '../types/sse.js';
-import type { Response } from "express";
+import type { Context } from "hono";
 import type { ErrorResponse } from './error.js';
 
 /**
@@ -369,7 +369,7 @@ export async function validateTheme(
  * ```
  */
 export function handleThemeValidationError(
-  res: Response,
+  res: Context,
   validationResult: ThemeValidationResult,
   statusCode: number = 400
 ): Response {
@@ -426,5 +426,5 @@ export function handleThemeValidationError(
 
   // Log validation failure for monitoring
   console.warn(`[handleThemeValidationError] 🙅‍♀️ ${message}`, details);
-  return res.status(statusCode).json(errorResponse);
+  return res.json(errorResponse, statusCode as 400 | 422);
 }

@@ -19,11 +19,12 @@
  * - GET /admin/system/health - System health status
  */
 
-import type { Request, Response, Router as RouterType } from "express";
-import { Router } from "express";
+import { Hono } from "hono";
+import { createMiddleware } from "hono/factory";
+import { HTTPException } from "hono/http-exception";
 import { eq, desc, and, inArray, sql } from "drizzle-orm";
 import { requireAuth } from "../middleware/nextauth.js";
-import { handleApiError, handleValidationError, handleNotFoundError, wrapAsync } from "../utils/error.js";
+import { cApiError, cValidationError, cNotFoundError } from "../utils/error.js";
 // import { getUserBookSnapshots, getLatestMajorCheckpoint, deleteAllSnapshots, getSnapshotStatistics } from "../services/snapshots.bak.js";
 import { reconstructStoryState } from "../utils/branch-traversal.js";
 import { getBookFromDB, getPageFromDB } from "../services/book.js";
@@ -31,6 +32,7 @@ import { getBookFromDB, getPageFromDB } from "../services/book.js";
 import { getStoryState } from "../services/story.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { socialMentions } from "../db/schema.js";
+import type { AppEnv } from "../hono/env.js";
 
 /**
  * Middleware guard that restricts access to the system admin user only.
@@ -39,22 +41,16 @@ import { socialMentions } from "../db/schema.js";
  * from any other authenticated user are rejected with 403 Forbidden. This is
  * a defense-in-depth layer on top of `requireAuth` for privileged operations
  * such as social mention curation.
- *
- * @param req - Express request (must already have `req.userId` from requireAuth)
- * @param res - Express response
- * @param next - Express next function
  */
-function requireSystemAdmin(req: Request, res: Response, next: () => void): Promise<void> {
+const requireSystemAdmin = createMiddleware<AppEnv>(async (c, next) => {
   const systemUserId = process.env.SYSTEM_USER_ID;
-  if (!systemUserId || req.userId !== systemUserId) {
-    res.status(403).json({ error: "Forbidden: admin access required" });
-    return Promise.resolve();
+  if (!systemUserId || c.get("userId") !== systemUserId) {
+    throw new HTTPException(403, { message: "Forbidden: admin access required" });
   }
-  next();
-  return Promise.resolve();
-}
+  await next();
+});
 
-const router: RouterType = Router();
+const router = new Hono<AppEnv>();
 
 // /**
 //  * GET /admin/books/:bookId/snapshots
@@ -124,20 +120,16 @@ const router: RouterType = Router();
  * @param pageId - Page identifier to reconstruct
  * @returns Reconstruction analysis and performance data
  */
-router.get("/books/:bookId/reconstruction/:pageId", requireAuth, async (req: Request, res: Response) => {
+router.get("/books/:bookId/reconstruction/:pageId", requireAuth, async (c) => {
   try {
-    const { bookId, pageId } = req.params;
+    const { bookId, pageId } = c.req.param();
 
     if (!bookId || !pageId) {
-      return handleValidationError(res, "Missing required fields: bookId and pageId are required");
+      return cValidationError(c, "Missing required fields: bookId and pageId are required");
     }
 
-    // Ensure params are strings (Express params can be string arrays)
-    const bookIdStr = Array.isArray(bookId) ? bookId[0] : bookId;
-    const pageIdStr = Array.isArray(pageId) ? pageId[0] : pageId;
-
     // Test reconstruction
-    const reconstructionResult = await reconstructStoryState(pageIdStr, {
+    const reconstructionResult = await reconstructStoryState(pageId, {
       getPageById: async (id: string) => await getPageFromDB(id),
       getBook: async (bookId: string) => await getBookFromDB(bookId),
       getStoryState: async (id: string) => await getStoryState(id)
@@ -147,11 +139,11 @@ router.get("/books/:bookId/reconstruction/:pageId", requireAuth, async (req: Req
     });
 
     // // Get latest major checkpoint for comparison
-    // const majorCheckpoint = await getLatestMajorCheckpoint(userId, bookIdStr);
+    // const majorCheckpoint = await getLatestMajorCheckpoint(userId, bookId);
 
-    res.json({
-      bookId: bookIdStr,
-      pageId: pageIdStr,
+    return c.json({
+      bookId,
+      pageId,
       reconstruction: reconstructionResult,
       // latestMajorCheckpoint: majorCheckpoint ? {
       //   pageId: majorCheckpoint.pageId,
@@ -161,7 +153,7 @@ router.get("/books/:bookId/reconstruction/:pageId", requireAuth, async (req: Req
       // } : null
     });
   } catch (error) {
-    handleApiError(res, "Failed to debug reconstruction", error);
+    return cApiError(c, "Failed to debug reconstruction", error);
   }
 });
 
@@ -173,7 +165,7 @@ router.get("/books/:bookId/reconstruction/:pageId", requireAuth, async (req: Req
  * 
  * @returns System health status and metrics
  */
-router.get("/system/health", requireAuth, async (req: Request, res: Response) => {
+router.get("/system/health", requireAuth, async (c) => {
   try {
     // Basic health metrics
     const health = {
@@ -191,9 +183,9 @@ router.get("/system/health", requireAuth, async (req: Request, res: Response) =>
       }
     };
 
-    res.json(health);
+    return c.json(health);
   } catch (error) {
-    handleApiError(res, "Failed to get system health", error);
+    return cApiError(c, "Failed to get system health", error);
   }
 });
 
@@ -225,11 +217,11 @@ function isSocialMentionStatus(value: unknown): value is "pending" | "approved" 
  * @returns Array of social mentions and a total count for the applied filter
  */
 router.get("/social-mentions",
-  wrapAsync(requireAuth),
-  wrapAsync(requireSystemAdmin),
-  wrapAsync(async (req: Request, res: Response) => {
+  requireAuth,
+  requireSystemAdmin,
+  async (c) => {
     try {
-      const { status, platform, limit = "50", offset = "0" } = req.query;
+      const { status, platform, limit = "50", offset = "0" } = c.req.query();
 
       const limitNum = Math.min(Math.max(Number(limit) || 50, 1), 200);
       const offsetNum = Math.max(Number(offset) || 0, 0);
@@ -255,11 +247,11 @@ router.get("/social-mentions",
         .from(socialMentions)
         .where(conditions.length > 0 ? and(...conditions) : undefined);
 
-      res.json({ total: Number(count), limit: limitNum, offset: offsetNum, mentions: rows });
+      return c.json({ total: Number(count), limit: limitNum, offset: offsetNum, mentions: rows });
     } catch (error) {
-      handleApiError(res, "Failed to list social mentions", error);
+      return cApiError(c, "Failed to list social mentions", error);
     }
-  })
+  }
 );
 
 /**
@@ -271,28 +263,27 @@ router.get("/social-mentions",
  * @returns The social mention row
  */
 router.get("/social-mentions/:id",
-  wrapAsync(requireAuth),
-  wrapAsync(requireSystemAdmin),
-  wrapAsync(async (req: Request, res: Response) => {
+  requireAuth,
+  requireSystemAdmin,
+  async (c) => {
     try {
-      const { id } = req.params;
-      const mentionId = Array.isArray(id) ? id[0] : id;
+      const { id } = c.req.param();
 
       const [mention] = await dbRead
         .select()
         .from(socialMentions)
-        .where(eq(socialMentions.id, mentionId))
+        .where(eq(socialMentions.id, id))
         .limit(1);
 
       if (!mention) {
-        return handleNotFoundError(res, "Social mention not found");
+        return cNotFoundError(c, "Social mention not found");
       }
 
-      res.json(mention);
+      return c.json(mention);
     } catch (error) {
-      handleApiError(res, "Failed to retrieve social mention", error);
+      return cApiError(c, "Failed to retrieve social mention", error);
     }
-  })
+  }
 );
 
 /**
@@ -311,26 +302,25 @@ router.get("/social-mentions/:id",
  * @returns The updated social mention row
  */
 router.patch("/social-mentions/:id",
-  wrapAsync(requireAuth),
-  wrapAsync(requireSystemAdmin),
-  wrapAsync(async (req: Request, res: Response) => {
+  requireAuth,
+  requireSystemAdmin,
+  async (c) => {
     try {
-      const { id } = req.params;
-      const mentionId = Array.isArray(id) ? id[0] : id;
-      const { status, featured, relevanceScore, sentimentScore, title, content } = req.body;
+      const { id } = c.req.param();
+      const { status, featured, relevanceScore, sentimentScore, title, content } = c.get("body");
 
       if (status !== undefined && !isSocialMentionStatus(status)) {
-        return handleValidationError(res, "Invalid status. Must be 'pending', 'approved', or 'rejected'");
+        return cValidationError(c, "Invalid status. Must be 'pending', 'approved', or 'rejected'");
       }
 
       const [existing] = await dbRead
         .select({ id: socialMentions.id })
         .from(socialMentions)
-        .where(eq(socialMentions.id, mentionId))
+        .where(eq(socialMentions.id, id))
         .limit(1);
 
       if (!existing) {
-        return handleNotFoundError(res, "Social mention not found");
+        return cNotFoundError(c, "Social mention not found");
       }
 
       const updates: Partial<typeof socialMentions.$inferInsert> = {};
@@ -344,14 +334,14 @@ router.patch("/social-mentions/:id",
       const [updated] = await dbWrite
         .update(socialMentions)
         .set(updates)
-        .where(eq(socialMentions.id, mentionId))
+        .where(eq(socialMentions.id, id))
         .returning();
 
-      res.json(updated);
+      return c.json(updated);
     } catch (error) {
-      handleApiError(res, "Failed to update social mention", error);
+      return cApiError(c, "Failed to update social mention", error);
     }
-  })
+  }
 );
 
 /**
@@ -376,20 +366,20 @@ router.patch("/social-mentions/:id",
  * @returns The newly created social mention row
  */
 router.post("/social-mentions",
-  wrapAsync(requireAuth),
-  wrapAsync(requireSystemAdmin),
-  wrapAsync(async (req: Request, res: Response) => {
+  requireAuth,
+  requireSystemAdmin,
+  async (c) => {
     try {
       const {
         platform, author, content, url, title, authorAvatar,
         score, sentimentScore, relevanceScore, status, featured, publishedAt,
-      } = req.body;
+      } = c.get("body");
 
       if (!platform || !author || !content || !url) {
-        return handleValidationError(res, "Missing required fields: platform, author, content, and url are required");
+        return cValidationError(c, "Missing required fields: platform, author, content, and url are required");
       }
       if (status !== undefined && !isSocialMentionStatus(status)) {
-        return handleValidationError(res, "Invalid status. Must be 'pending', 'approved', or 'rejected'");
+        return cValidationError(c, "Invalid status. Must be 'pending', 'approved', or 'rejected'");
       }
 
       const [created] = await dbWrite
@@ -412,14 +402,14 @@ router.post("/social-mentions",
         .returning();
 
       if (!created) {
-        return handleValidationError(res, "A social mention with this URL already exists");
+        return cValidationError(c, "A social mention with this URL already exists");
       }
 
-      res.status(201).json(created);
+      return c.json(created, 201);
     } catch (error) {
-      handleApiError(res, "Failed to create social mention", error);
+      return cApiError(c, "Failed to create social mention", error);
     }
-  })
+  }
 );
 
 /**
@@ -432,27 +422,26 @@ router.post("/social-mentions",
  * @returns Success confirmation
  */
 router.delete("/social-mentions/:id",
-  wrapAsync(requireAuth),
-  wrapAsync(requireSystemAdmin),
-  wrapAsync(async (req: Request, res: Response) => {
+  requireAuth,
+  requireSystemAdmin,
+  async (c) => {
     try {
-      const { id } = req.params;
-      const mentionId = Array.isArray(id) ? id[0] : id;
+      const { id } = c.req.param();
 
       const [deleted] = await dbWrite
         .delete(socialMentions)
-        .where(eq(socialMentions.id, mentionId))
+        .where(eq(socialMentions.id, id))
         .returning({ id: socialMentions.id });
 
       if (!deleted) {
-        return handleNotFoundError(res, "Social mention not found");
+        return cNotFoundError(c, "Social mention not found");
       }
 
-      res.json({ success: true, id: deleted.id });
+      return c.json({ success: true, id: deleted.id });
     } catch (error) {
-      handleApiError(res, "Failed to delete social mention", error);
+      return cApiError(c, "Failed to delete social mention", error);
     }
-  })
+  }
 );
 
 /**
@@ -467,17 +456,17 @@ router.delete("/social-mentions/:id",
  * @returns Count of updated rows
  */
 router.post("/social-mentions/bulk-status",
-  wrapAsync(requireAuth),
-  wrapAsync(requireSystemAdmin),
-  wrapAsync(async (req: Request, res: Response) => {
+  requireAuth,
+  requireSystemAdmin,
+  async (c) => {
     try {
-      const { ids, status } = req.body;
+      const { ids, status } = c.get("body");
 
       if (!Array.isArray(ids) || ids.length === 0) {
-        return handleValidationError(res, "ids must be a non-empty array");
+        return cValidationError(c, "ids must be a non-empty array");
       }
       if (!isSocialMentionStatus(status)) {
-        return handleValidationError(res, "Invalid status. Must be 'pending', 'approved', or 'rejected'");
+        return cValidationError(c, "Invalid status. Must be 'pending', 'approved', or 'rejected'");
       }
 
       const validIds = ids.filter((value): value is string => typeof value === "string" && value.length > 0);
@@ -488,11 +477,11 @@ router.post("/social-mentions/bulk-status",
         .where(inArray(socialMentions.id, validIds))
         .returning({ id: socialMentions.id });
 
-      res.json({ success: true, updated: result.length });
+      return c.json({ success: true, updated: result.length });
     } catch (error) {
-      handleApiError(res, "Failed to bulk update social mentions", error);
+      return cApiError(c, "Failed to bulk update social mentions", error);
     }
-  })
+  }
 );
 
 // ============================================================================
