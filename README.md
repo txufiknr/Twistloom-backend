@@ -103,12 +103,12 @@ The backend was migrated from **Express.js** to **Hono.js** while keeping every 
 The app is deployed as a Vercel Node.js serverless function. `src/app.ts` ends with `export default handle(app)` (from `hono/vercel`), and `vercel.json` rewrites all traffic to that entrypoint. Two settings matter:
 
 - **Framework Preset → "Hono"** (not "Express"). Vercel's Express preset looks for `import express` at build time; with Express removed, leaving it set breaks the build.
-- **`"runtime": "@vercel/node"` is required.** Hono advertises first-class Edge support, and Vercel will happily run a `hono/vercel` handler on the Edge runtime by default. This backend, however, depends on **Node-only APIs** that do not exist on the Edge runtime:
+- **Run on the Node.js runtime (not Edge).** Hono advertises first-class Edge support, and Vercel can run a `hono/vercel` handler on the Edge runtime. This backend, however, depends on **Node-only APIs** that do not exist on the Edge runtime:
   - `Buffer` — used by the image-upload middleware (`src/middleware/upload.ts`) to read multipart file bytes, and by `ImageKit` uploads.
   - `node:crypto` and other Node built-ins used across auth, Stripe signature verification, and password hashing.
   - The `Neon` serverless driver and `@hono/node-server` dev server, which assume a Node environment.
 
-  On Edge, `Buffer` is `undefined`, so the cover-image upload and any `Buffer`-dependent path throw at runtime (`ReferenceError: Buffer is not defined`). Pinning `@vercel/node` keeps the function on the Node.js runtime where these APIs are available. `maxDuration` is raised to `60` to accommodate the long-running AI/SSE routes.
+  On Edge, `Buffer` is `undefined`, so the cover-image upload and any `Buffer`-dependent path throw at runtime (`ReferenceError: Buffer is not defined`). Vercel infers the Node.js runtime automatically for the `.ts` entrypoint (it no longer accepts an explicit `@vercel/node` runtime string in `vercel.json` — doing so throws `Function Runtimes must have a valid version`). To guarantee Node, pin the version via `package.json`'s `engines.node` (set to `"20.x"` here); Vercel reads it from Project Settings → General → Node.js Version. `maxDuration` is raised to `60` to accommodate the long-running AI/SSE routes.
 
 ## 🚀 Features
 
