@@ -80,12 +80,12 @@ Twistloom is not merely a branching story platform. It is a multiverse storytell
 
 ## 🔥 Why Hono over Express
 
-The backend was migrated from **Express.js** to **Hono.js** while keeping every feature intact (Stripe payments, NextAuth/Auth.js session verification, Drizzle ORM, Server-Sent Events, and multipart image uploads). The migration is clean: `src/app.ts` now builds a `Hono` app and exports a Vercel serverless handler via `hono/vercel`'s `handle`, and local development runs through `@hono/node-server`'s `serve`.
+The backend was migrated from **Express.js** to **Hono.js** while keeping every feature intact (Stripe payments, NextAuth/Auth.js session verification, Drizzle ORM, Server-Sent Events, and multipart image uploads). The migration is clean: `src/app.ts` now builds a `Hono` app and exports a Vercel serverless handler via `@hono/node-server`'s `getRequestListener` (Node runtime adapter), and local development runs through `@hono/node-server`'s `serve`.
 
 ### Why we switched
 
 - **Runtime freedom.** Hono runs on any JavaScript runtime (Node.js, Bun, Deno, Workers, Vercel Edge) from a single codebase. Express is effectively Node-only, which locked deployment choices in.
-- **Serverless-native.** Hono ships first-class adapters (`hono/vercel`, `@hono/node-server`) so the same app serves Vercel functions and local `tsx` dev without a custom server shim. Express's monolithic `listen()` model fights the short-lived, per-request serverless model.
+- **Serverless-native.** Hono ships first-class adapters so the same app serves Vercel functions and local `tsx` dev without a custom server shim. We use `@hono/node-server`'s `getRequestListener` (not the Edge `hono/vercel` handler) so the Node runtime's requests are converted into standards-compliant `Request` objects. Express's monolithic `listen()` model fights the short-lived, per-request serverless model.
 - **Performance & cold starts.** Hono's tiny surface and zero-dependency core start faster and use less memory than Express + its middleware chain — critical on Vercel's cold-start-sensitive functions.
 - **First-class TypeScript.** Route params, query, body, environment, and middleware bindings are inferred through `AppEnv` (`src/hono/env.ts`), so handlers get a fully typed `c` instead of loosely-typed `req`/`res` augmentation.
 - **Batteries included.** Built-in CORS, streaming/SSE (`hono/streaming`), and `@hono/auth-js` for cookie-based Auth.js verification replaced hand-rolled Express middleware.
@@ -100,7 +100,7 @@ The backend was migrated from **Express.js** to **Hono.js** while keeping every 
 
 ### Vercel deployment
 
-The app is deployed as a Vercel Node.js serverless function. `src/app.ts` ends with `export default handle(app)` (from `hono/vercel`), and `vercel.json` rewrites all traffic to that entrypoint. Two settings matter:
+The app is deployed as a Vercel Node.js serverless function. `src/app.ts` ends with `export default getRequestListener(app.fetch)` (from `@hono/node-server`), and `vercel.json` rewrites all traffic to that entrypoint. Two settings matter:
 
 - **Framework Preset → "Hono"** (not "Express"). Vercel's Express preset looks for `import express` at build time; with Express removed, leaving it set breaks the build.
 - **Run on the Node.js runtime (not Edge).** Hono advertises first-class Edge support, and Vercel can run a `hono/vercel` handler on the Edge runtime. This backend, however, depends on **Node-only APIs** that do not exist on the Edge runtime:

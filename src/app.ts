@@ -8,7 +8,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
-import { handle } from "hono/vercel";
+import { getRequestListener } from "@hono/node-server";
 import { initAuthConfig } from "@hono/auth-js";
 import { parseJsonBody } from "./middleware/body.js";
 import { extractLocale } from "./middleware/locale.js";
@@ -117,5 +117,14 @@ function getErrorMessageSafe(err: unknown): string {
   return err instanceof Error ? err.message : "Unknown error";
 }
 
-// IMPORTANT: Vercel needs this default export (Hono → Node server adapter).
-export default handle(app);
+// Local dev entry imports the Hono instance directly (see src/server.ts).
+export { app };
+
+// IMPORTANT: Vercel (Node.js runtime) invokes the default export as a Node
+// `(req, res)` serverless handler. `getRequestListener` converts the Node
+// IncomingMessage into a proper Web `Request` before handing it to Hono, which
+// is what makes `c.req.header()` (and therefore the CORS middleware) work.
+// Using `hono/vercel`'s Edge adapter here instead throws
+// "this.raw.headers.get is not a function" because the Node runtime does not
+// supply a standards-compliant `Headers` instance.
+export default getRequestListener(app.fetch);

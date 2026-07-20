@@ -5,7 +5,7 @@
  */
 
 import { serve, type ServerType } from "@hono/node-server";
-import app from "./app.js";
+import { app } from "./app.js";
 import { PORT } from "./config/env.js";
 import { hasErrorCode } from "./utils/error.js";
 import { validateGitHubWorkflowConfig } from "./utils/github-workflow.js";
@@ -47,7 +47,7 @@ validateGitHubWorkflowConfig();
 /* -------------------------------------------------- */
 
 const server: ServerType = serve(
-  { fetch: app, port: PORT },
+  { fetch: app.fetch, port: PORT },
   (info) => {
     console.log(`Server running on port ${info.port} 🚀`);
   },
