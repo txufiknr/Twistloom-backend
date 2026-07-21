@@ -211,6 +211,13 @@
       "when": 1784449280544,
       "tag": "0029_lyrical_falcon",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1784593587495,
+      "tag": "0030_pink_screwball",
+      "breakpoints": true
     }
   ]
 }
