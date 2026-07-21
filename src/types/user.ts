@@ -67,7 +67,7 @@ export interface UserSubscription {
 
 export interface User {
   id: string;
-  email: string;
+  email?: string;
   username: string;
   name: string;
   bio: string | null;

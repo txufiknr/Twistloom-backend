@@ -35,7 +35,7 @@ import { eq, and, ne } from 'drizzle-orm';
 import { hashPassword, verifyPassword } from '../utils/password.js';
 import { validatePasswordStrength } from '../utils/password-validation.js';
 import { checkAccountLockout, recordFailedLogin, resetFailedLoginAttempts } from '../utils/account-lockout.js';
-import { createPasswordResetToken, resetPassword, verifyPasswordResetToken } from '../utils/password-reset.js';
+import { createPasswordResetToken, resetPassword, verifyPasswordResetToken, revokePasswordResetTokens } from '../utils/password-reset.js';
 import { sendPasswordResetEmail, sendVerificationEmail } from '../utils/email.js';
 import { createEmailVerificationToken, verifyEmailToken, isEmailVerified } from '../utils/email-verification.js';
 import { cApiError, cRateLimitError, cUnauthorizedError, cValidationError } from '../utils/error.js';
@@ -198,6 +198,13 @@ router.post('/verify-credentials', async (c) => {
     }
 
     await resetFailedLoginAttempts(userData.userId);
+
+    // Revoke any outstanding password-reset tokens — a successful login means
+    // the user already has access, so pending reset links become unnecessary
+    // and would only be useful to an attacker who also controls the email inbox.
+    await revokePasswordResetTokens(userData.userId).catch(() => {
+      // Non-critical: token cleanup failure shouldn't block login.
+    });
 
     return c.json({
       userId: userData.userId,

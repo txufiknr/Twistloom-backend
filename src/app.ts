@@ -23,6 +23,20 @@ import type { AppEnv } from "./hono/env.js";
 // Initialize Hono app with shared environment bindings
 const app = new Hono<AppEnv>();
 
+// Security headers — defence-in-depth against common web vulnerabilities.
+// Applied before CORS so they're present on every response including preflight
+// and error responses. These headers should also be set at the reverse proxy
+// (Vercel Edge, Cloudflare) but are duplicated here as a safety net for
+// direct serverless-function invocations.
+app.use("*", async (c, next) => {
+  c.header("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload");
+  c.header("X-Content-Type-Options", "nosniff");
+  c.header("X-Frame-Options", "DENY");
+  c.header("Referrer-Policy", "strict-origin-when-cross-origin");
+  c.header("X-XSS-Protection", "0");
+  await next();
+});
+
 // Allow multiple origins: production frontend and local development
 const allowedOrigins = new Set([
   process.env.FRONTEND_URL,
@@ -33,13 +47,13 @@ const allowedOrigins = new Set([
 
 // CORS — mirrors the previous Express cors() configuration.
 // Allows requests with no origin (mobile apps, curl, server-to-server) and
-// any *.vercel.app deployment.
+// explicit origins from the allowedOrigins set. Preview deployments must be
+// added via the FRONTEND_URL env var.
 app.use(
   "*",
   cors({
     origin: (origin) => {
       if (!origin) return null; // Allow no-origin requests
-      if (origin.endsWith(".vercel.app")) return origin;
       return allowedOrigins.has(origin) ? origin : null;
     },
     credentials: true, // Allow cookies for NextAuth authentication
@@ -57,8 +71,7 @@ app.use(
 app.use("/api/*", csrf({
   origin: (origin) => {
     if (!origin) return true; // Allow no-origin (server-to-server, mobile, CLI, webhooks)
-    if (origin.endsWith(".vercel.app")) return true; // Allow Vercel deployments
-    return allowedOrigins.has(origin); // Allow explicit origins
+    return allowedOrigins.has(origin); // Only allow explicit origins
   },
 }));
 

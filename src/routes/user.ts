@@ -503,7 +503,6 @@ router.get("/users/:identifier", async (c: Context<AppEnv>) => {
       const formattedUser: User = {
         id: userData.id,
         username: userData.username,
-        email: userData.email,
         name: userData.name,
         bio: userData.bio,
         gender: userData.gender,
