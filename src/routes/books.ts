@@ -4997,10 +4997,10 @@ const testimonialWithAuthorSelect = {
 
 /**
  * @route GET /api/books/testimonials
- * @description Get the authenticated user's own book testimonials
+ * @description Get the authenticated user's own book testimonials, enriched with book title and cover image
  * @access Private (requires auth)
  * 
- * @returns {Object} 200 - Paginated list of the user's testimonials
+ * @returns {Object} 200 - Paginated list of the user's testimonials with book info
  * @returns {Error} 401 - Unauthorized
  */
 router.get("/testimonials", requireAuth, async (c) => {
@@ -5009,9 +5009,15 @@ router.get("/testimonials", requireAuth, async (c) => {
   const offset = (page - 1) * limit;
 
   const rows = await dbRead
-    .select(testimonialWithAuthorSelect)
+    .select({
+      ...testimonialWithAuthorSelect,
+      bookTitle: books.title,
+      bookImageUrl: uploadedImages.imageUrl,
+    })
     .from(bookTestimonials)
     .leftJoin(users, eq(bookTestimonials.userId, users.userId))
+    .leftJoin(books, eq(bookTestimonials.bookId, books.id))
+    .leftJoin(uploadedImages, eq(books.imageId, uploadedImages.imageId))
     .where(eq(bookTestimonials.userId, userId))
     .orderBy(desc(bookTestimonials.createdAt))
     .limit(limit)
@@ -5022,8 +5028,16 @@ router.get("/testimonials", requireAuth, async (c) => {
     .from(bookTestimonials)
     .where(eq(bookTestimonials.userId, userId));
 
+  const testimonials = rows.map(({ bookTitle, bookImageUrl, ...testimonial }) => ({
+    ...testimonial,
+    book: {
+      title: bookTitle,
+      imageUrl: bookImageUrl,
+    },
+  }));
+
   const pagination = calculatePaginationMeta(page, limit, count);
-  c.status(200); return c.json(createPaginatedResponse(rows, pagination, 'testimonials'));
+  c.status(200); return c.json(createPaginatedResponse(testimonials, pagination, 'testimonials'));
 });
 
 /**
