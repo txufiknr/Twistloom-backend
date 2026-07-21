@@ -109,34 +109,24 @@ export async function verifyNextAuthToken(c: Context<AppEnv>): Promise<AuthUser 
   const resolvedUser = authUser?.user ?? authUser?.session?.user;
   const email = resolvedUser?.email as string | undefined;
   if (!email) {
-    // ── Why this warning fires ──────────────────────────────────────────────
-    //
-    // getAuthUser succeeded (found a cookie, ran it through Auth.js's JWE
-    // decryption), but the resulting session object has no `email` field.
-    // Two causes — the first is far more common after a migration:
-    //
-    // 1. AUTH_SECRET mismatch (most likely)
-    //    The frontend (Next.js) encrypted the session cookie with secret A,
-    //    but this backend is trying to decrypt with secret B. Auth.js will
-    //    "succeed" (no crash) but produce corrupted output where user fields
-    //    like email are missing/garbled.
-    //    → Happens on EVERY request, not just idle ones.
-    //    → Fix: ensure AUTH_SECRET env var is identical on both deployments.
-    //
-    // 2. Expired session token
-    //    The session JWT exceeded its maxAge. Auth.js returns a session
-    //    object but without user data.
-    //    → Happens only after the user has been idle beyond maxAge.
-    //    → The frontend should redirect to sign-in on 401.
-    //    → Not a backend bug.
-    //
-    // The frontend's session() callback may also strip `email` from
-    // session.user, but that path is handled by authUser.user fallback above.
-    // If both are null, something is wrong at the JWE level.
-    console.warn(
-      "[verifyNextAuthToken] ⚠️ Session present but could not be decoded — " +
-        "check that AUTH_SECRET is identical on frontend and backend, and that the token has not expired.",
-    );
+    // Only clear the stale cookie if one was actually sent (otherwise every
+    // unauthenticated request would spuriously clear a non-existent cookie).
+    const cookieHeader = c.req.header("cookie") ?? "";
+    if (cookieHeader.includes("authjs.session-token")) {
+      // Cookie present but unreadable — expired token or secret mismatch.
+      // Tell the browser to delete it so this warning stops repeating.
+      const isSecure =
+        c.req.header("x-forwarded-proto") === "https" ||
+        c.req.url.startsWith("https");
+      const cookieName = isSecure
+        ? "__Secure-authjs.session-token"
+        : "authjs.session-token";
+      c.header(
+        "Set-Cookie",
+        `${cookieName}=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=Lax${isSecure ? "; Secure" : ""}`,
+      );
+      console.info("[nextauth] 🍪 Cleared stale session cookie (token expired or unreadable)");
+    }
     return null;
   }
 

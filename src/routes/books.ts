@@ -588,7 +588,7 @@ router.get('/generations/active', requireAuth, async (c) => {
     return c.json(rows);
   } catch (error) {
     console.error('[GET /api/books/generations/active] ❌ Error:', error);
-    cApiError(c, 'Failed to get active generations', error);
+    return cApiError(c, 'Failed to get active generations', error);
   }
 });
 
@@ -759,7 +759,7 @@ router.get('/:bookId/status', requireAuth, async (c) => {
     return c.json(status);
   } catch (error) {
     console.error('[GET /api/books/:bookId/status] ❌ Error:', error);
-    cApiError(c, 'Failed to get book status', error);
+    return cApiError(c, 'Failed to get book status', error);
   }
 });
 
@@ -850,12 +850,12 @@ router.post('/:bookId/cancel', requireAuth, async (c) => {
 
     // Completed books are not cancellable — the content already exists
     if (data.bookStatus === 'active' || data.generationStatus === 'completed') {
-      return c.status(400); return c.json({ error: 'Cannot cancel completed book' });
+      return c.json({ error: 'Cannot cancel completed book' }, 400);
     }
 
     // Prevent double-refunds (idempotency guard)
     if (data.isRefunded) {
-      return c.status(400); return c.json({ error: 'Book generation already refunded' });
+      return c.json({ error: 'Book generation already refunded' }, 400);
     }
 
     // ── Point of no return ─────────────────────────────────────────────────────
@@ -874,12 +874,12 @@ router.post('/:bookId/cancel', requireAuth, async (c) => {
         .where(eq(bookGenerations.bookId, bookId));
 
       console.log(`[POST /api/books/:bookId/cancel] 📌 Book ${bookId} at point of no return — archiving on completion per user request`);
-      return c.status(202); return c.json({
+      return c.json({
         success: true,
         message:
           'Generation is almost complete and will finish in the background. ' +
           'The book will be archived instead of published.',
-      });
+      }, 202);
     }
 
     // ── Cancel any running GitHub Actions workflow (best-effort) ─────────────
@@ -921,7 +921,7 @@ router.post('/:bookId/cancel', requireAuth, async (c) => {
     // If no row was updated, the generation completed between our read and write
     if (!cancelledRow) {
       console.log(`[POST /api/books/:bookId/cancel] ℹ️ Book ${bookId} was already completed, skipping cancellation`);
-      return c.status(400); return c.json({ error: 'Cannot cancel completed book' });
+      return c.json({ error: 'Cannot cancel completed book' }, 400);
     }
 
     // ── Calculate stage-based refund ──────────────────────────────────────────
@@ -956,7 +956,7 @@ router.post('/:bookId/cancel', requireAuth, async (c) => {
     } catch (refundError) {
       console.error(`[POST /api/books/:bookId/cancel] ❌ Failed to refund credits for book ${bookId}:`, refundError);
       // Return 500 so the client knows to retry; status is already 'cancelled'.
-      return c.status(500); return c.json({ error: 'Failed to refund credits' });
+      return c.json({ error: 'Failed to refund credits' }, 500);
     }
 
     // ── Keep the draft book for retryability ───────────────────────────────────
@@ -979,7 +979,7 @@ router.post('/:bookId/cancel', requireAuth, async (c) => {
     return c.json({ success: true, message });
   } catch (error) {
     console.error('[POST /api/books/:bookId/cancel] ❌ Error:', error);
-    cApiError(c, 'Failed to cancel book generation', error);
+    return cApiError(c, 'Failed to cancel book generation', error);
   }
 });
 
@@ -1059,9 +1059,9 @@ router.post('/:bookId/retry', requireAuth, async (c) => {
     }
 
     if (data.generationStatus !== 'failed' && data.generationStatus !== 'cancelled') {
-      return c.status(400); return c.json({
+      return c.json({
         error: `Book generation is not in a retryable state (current: ${data.generationStatus ?? 'none'})`,
-      });
+      }, 400);
     }
 
     // Enforce concurrent generation limit
@@ -1095,9 +1095,9 @@ router.post('/:bookId/retry', requireAuth, async (c) => {
     const gate = await tryAcquireWorkflowDispatchGate(bookId);
     if (!gate.shouldDispatch) {
       console.log(`[POST /api/books/:bookId/retry] ⏸️ ${gate.reason}`);
-      return c.status(409); return c.json({
+      return c.json({
         error: `Cannot retry book generation: ${gate.reason}`,
-      });
+      }, 409);
     }
 
     triggerBookGenerationWorkflow(bookId, 'POST /api/books/:bookId/retry');
@@ -1106,7 +1106,7 @@ router.post('/:bookId/retry', requireAuth, async (c) => {
     return c.json({ success: true, message });
   } catch (error) {
     console.error('[POST /api/books/:bookId/retry] ❌ Error:', error);
-    cApiError(c, 'Failed to retry book generation', error);
+    return cApiError(c, 'Failed to retry book generation', error);
   }
 });
 
@@ -1284,7 +1284,7 @@ router.post("/insert", requireAuth, async (c) => {
 
     c.status(201); return c.json({ book });
   } catch (error) {
-    cApiError(c, "Failed to insert book", error);
+    return cApiError(c, "Failed to insert book", error);
   }
 });
 
@@ -1368,9 +1368,9 @@ router.put("/:id", requireAuth, imageUploadMiddleware(), async (c) => {
           oldImageIdQueued = true;
         }
       } else {
-        return c.status(400); return c.json({
+        return c.json({
           error: "Failed to upload cover image"
-        });
+        }, 400);
       }
     }
 
@@ -1438,7 +1438,7 @@ router.put("/:id", requireAuth, imageUploadMiddleware(), async (c) => {
       uploadSource: c.get("file") ? 'file' : (imageUrl?.startsWith('data:') ? 'base64' : 'url'),
     });
   } catch (error) {
-    cApiError(c, "Failed to update book", error);
+    return cApiError(c, "Failed to update book", error);
   }
 });
 
@@ -1509,7 +1509,7 @@ router.patch("/:id/visibility", requireAuth, async (c) => {
       visibility: updatedBook.visibility,
     });
   } catch (error) {
-    cApiError(c, "Failed to update book visibility", error);
+    return cApiError(c, "Failed to update book visibility", error);
   }
 });
 
@@ -1579,7 +1579,7 @@ router.patch("/:id/archive", requireAuth, async (c) => {
       status: updatedBook.status,
     });
   } catch (error) {
-    cApiError(c, "Failed to update book status", error);
+    return cApiError(c, "Failed to update book status", error);
   }
 });
 
@@ -1663,7 +1663,7 @@ router.get("/:id/similar", optionalAuth, async (c) => {
       },
     });
   } catch (error) {
-    cApiError(c, "Failed to retrieve similar books", error);
+    return cApiError(c, "Failed to retrieve similar books", error);
   }
 });
 
@@ -1905,7 +1905,7 @@ router.get("/explore", optionalAuth, async (c) => {
 
     return c.json(result);
   } catch (error) {
-    cApiError(c, "Failed to explore books", error);
+    return cApiError(c, "Failed to explore books", error);
   }
 });
 
@@ -1936,7 +1936,7 @@ router.get("/tags/popular", async (c) => {
     
     return c.json({ tags });
   } catch (error) {
-    cApiError(c, "Failed to fetch popular tags", error);
+    return cApiError(c, "Failed to fetch popular tags", error);
   }
 });
 
@@ -2009,7 +2009,7 @@ router.delete("/:id", requireAuth, async (c) => {
       imageQueuedForDeletion: !!bookToDelete.imageId
     });
   } catch (error) {
-    cApiError(c, "Failed to delete book", error);
+    return cApiError(c, "Failed to delete book", error);
   }
 });
 
@@ -2038,7 +2038,7 @@ router.get("/stats", optionalAuth, async (c) => {
     const stats = await getPublicBookStats();
     return c.json(stats);
   } catch (error) {
-    cApiError(c, "Failed to retrieve book stats", error);
+    return cApiError(c, "Failed to retrieve book stats", error);
   }
 });
 
@@ -2189,7 +2189,7 @@ router.post("/:id/like", requireAuth, async (c) => {
     if (getErrorMessage(error) === 'BOOK_NOT_FOUND') {
       return cNotFoundError(c, "Book not found");
     }
-    cApiError(c, "Failed to like book", error);
+    return cApiError(c, "Failed to like book", error);
   }
 });
 
@@ -2293,7 +2293,7 @@ router.delete("/:id/like", requireAuth, async (c) => {
     }
 
     if (result.notLiked) {
-      return c.status(404); return c.json({
+      return c.json({
         message: "Book not liked",
         liked: false,
         likesCount: result.likesCount
@@ -2309,7 +2309,7 @@ router.delete("/:id/like", requireAuth, async (c) => {
     if (getErrorMessage(error) === 'BOOK_NOT_FOUND') {
       return cNotFoundError(c, "Book not found");
     }
-    cApiError(c, "Failed to unlike book", error);
+    return cApiError(c, "Failed to unlike book", error);
   }
 });
 
@@ -2364,10 +2364,10 @@ router.post("/:id/favorite", requireAuth, async (c) => {
       .limit(1);
 
     if (existingFavorite.length > 0) {
-      return c.status(409); return c.json({
+      return c.json({
         message: "Book already in favorites",
         favorited: true
-      });
+      }, 409);
     }
 
     // Add favorite and increment trending score
@@ -2408,7 +2408,7 @@ router.post("/:id/favorite", requireAuth, async (c) => {
       favorited: true
     });
   } catch (error) {
-    cApiError(c, "Failed to favorite book", error);
+    return cApiError(c, "Failed to favorite book", error);
   }
 });
 
@@ -2463,10 +2463,10 @@ router.delete("/:id/favorite", requireAuth, async (c) => {
       .limit(1);
 
     if (existingFavorite.length === 0) {
-      return c.status(404); return c.json({
+      return c.json({
         message: "Book not in favorites",
         favorited: false
-      });
+      }, 404);
     }
 
     // Remove favorite and decrement trending score
@@ -2504,7 +2504,7 @@ router.delete("/:id/favorite", requireAuth, async (c) => {
       favorited: false
     });
   } catch (error) {
-    cApiError(c, "Failed to unfavorite book", error);
+    return cApiError(c, "Failed to unfavorite book", error);
   }
 });
 
@@ -2578,7 +2578,7 @@ router.patch("/favorites/rename-collection", requireAuth, async (c) => {
         : `No favorites found with collection '${oldCollection}'`,
     });
   } catch (error) {
-    cApiError(c, "Failed to rename collection", error);
+    return cApiError(c, "Failed to rename collection", error);
   }
 });
 
@@ -2693,7 +2693,7 @@ router.get("/:id/comments", optionalAuth, async (c) => {
       pagination
     });
   } catch (error) {
-    cApiError(c, "Failed to retrieve comments", error);
+    return cApiError(c, "Failed to retrieve comments", error);
   }
 });
 
@@ -2748,7 +2748,7 @@ router.post("/:id/comments", requireAuth, async (c) => {
     const userId = c.get("userId")!;
 
     const contentError = validateCommentContent(content);
-    if (contentError) return c.status(400); return c.json({ error: contentError });
+    if (contentError) return c.json({ error: contentError }, 400);
 
     // Normalize and validate optional page/paragraph scope
     let normalizedPageId: string | null = null;
@@ -2865,7 +2865,7 @@ router.post("/:id/comments", requireAuth, async (c) => {
 
     c.status(201); return c.json({ comment: commentWithUser });
   } catch (error) {
-    cApiError(c, "Failed to create comment", error);
+    return cApiError(c, "Failed to create comment", error);
   }
 });
 
@@ -3029,7 +3029,7 @@ router.get("/:id/pages/:pageId/comments", optionalAuth, async (c) => {
     const { comments, pagination } = await fetchComments(id as string, conditions, page, limit);
     return c.json({ comments, pagination });
   } catch (error) {
-    cApiError(c, "Failed to retrieve page comments", error);
+    return cApiError(c, "Failed to retrieve page comments", error);
   }
 });
 
@@ -3064,7 +3064,7 @@ router.post("/:id/pages/:pageId/comments", requireAuth, async (c) => {
     const userId = c.get("userId")!;
 
     const contentError = validateCommentContent(content);
-    if (contentError) return c.status(400); return c.json({ error: contentError });
+    if (contentError) return c.json({ error: contentError }, 400);
 
     const book = await dbRead.select({ id: books.id }).from(books).where(eq(books.id, id as string)).limit(1);
     if (!book.length) return cNotFoundError(c, "Book not found");
@@ -3107,7 +3107,7 @@ router.post("/:id/pages/:pageId/comments", requireAuth, async (c) => {
 
     c.status(201); return c.json({ comment });
   } catch (error) {
-    cApiError(c, "Failed to create page comment", error);
+    return cApiError(c, "Failed to create page comment", error);
   }
 });
 
@@ -3157,7 +3157,7 @@ router.get("/:id/pages/:pageId/paragraphs/:paragraphNumber/comments", optionalAu
     const { comments, pagination } = await fetchComments(id as string, conditions, page, limit);
     return c.json({ comments, pagination });
   } catch (error) {
-    cApiError(c, "Failed to retrieve paragraph comments", error);
+    return cApiError(c, "Failed to retrieve paragraph comments", error);
   }
 });
 
@@ -3189,7 +3189,7 @@ router.post("/:id/pages/:pageId/paragraphs/:paragraphNumber/comments", requireAu
     const userId = c.get("userId")!;
 
     const contentError = validateCommentContent(content);
-    if (contentError) return c.status(400); return c.json({ error: contentError });
+    if (contentError) return c.json({ error: contentError }, 400);
 
     const parsedParagraph = parseInt(paragraphNumber as string, 10);
     if (Number.isNaN(parsedParagraph) || parsedParagraph < 1) {
@@ -3227,7 +3227,7 @@ router.post("/:id/pages/:pageId/paragraphs/:paragraphNumber/comments", requireAu
 
     c.status(201); return c.json({ comment });
   } catch (error) {
-    cApiError(c, "Failed to create paragraph comment", error);
+    return cApiError(c, "Failed to create paragraph comment", error);
   }
 });
 
@@ -3283,7 +3283,7 @@ router.delete("/comments/:id", requireAuth, async (c) => {
       message: "Comment deleted successfully"
     });
   } catch (error) {
-    cApiError(c, "Failed to delete comment", error);
+    return cApiError(c, "Failed to delete comment", error);
   }
 });
 
@@ -3322,7 +3322,7 @@ router.put("/comments/:id", requireAuth, async (c) => {
     const userId = c.get("userId")!;
 
     const contentError = validateCommentContent(content);
-    if (contentError) return c.status(400); return c.json({ error: contentError });
+    if (contentError) return c.json({ error: contentError }, 400);
 
     // Sanitize content before storing
     const cleanContent = sanitizeTextForDB(String(content).trim());
@@ -3360,7 +3360,7 @@ router.put("/comments/:id", requireAuth, async (c) => {
 
     return c.json({ comment });
   } catch (error) {
-    cApiError(c, "Failed to update comment", error);
+    return cApiError(c, "Failed to update comment", error);
   }
 });
 
@@ -3417,7 +3417,7 @@ router.get("/comments", requireAuth, async (c) => {
 
     return c.json({ comments });
   } catch (error) {
-    cApiError(c, "Failed to retrieve comments", error);
+    return cApiError(c, "Failed to retrieve comments", error);
   }
 });
 
@@ -3503,7 +3503,7 @@ router.get("/:identifier", optionalAuth, async (c) => {
     const etag = `"${etagInput}"`;
 
     // Check If-None-Match header (ETag includes userId for user-specific data)
-    if (c.req.header('If-None-Match') === etag) return c.status(304); return c.body(null);
+    if (c.req.header('If-None-Match') === etag) return c.body(null, 304);
 
     // Set caching headers
     c.header('Last-Modified', lastModified.toUTCString());
@@ -3512,7 +3512,7 @@ router.get("/:identifier", optionalAuth, async (c) => {
 
     return c.json({ book: enrichedBook });
   } catch (error) {
-    cApiError(c, "Failed to retrieve book", error);
+    return cApiError(c, "Failed to retrieve book", error);
   }
 });
 
@@ -3575,7 +3575,7 @@ router.get("/:identifier/branches", optionalAuth, async (c) => {
 
     return c.json(result);
   } catch (error) {
-    cApiError(c, "Failed to retrieve branches", error);
+    return cApiError(c, "Failed to retrieve branches", error);
   }
 });
 
@@ -3643,7 +3643,7 @@ router.get("/:identifier/:pageId", optionalAuth, async (c) => {
     const etag = `"${etagInput}"`;
 
     // Check If-None-Match header (ETag includes translation params)
-    if (c.req.header('If-None-Match') === etag) return c.status(304); return c.body(null);
+    if (c.req.header('If-None-Match') === etag) return c.body(null, 304);
 
     // Set caching headers
     c.header('Last-Modified', lastModified.toUTCString());
@@ -3656,7 +3656,7 @@ router.get("/:identifier/:pageId", optionalAuth, async (c) => {
       visitDetails
     });
   } catch (error) {
-    cApiError(c, "Failed to retrieve page", error);
+    return cApiError(c, "Failed to retrieve page", error);
   }
 });
 
@@ -3945,11 +3945,11 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
     if (!workflowResult.success && !workflowResult.alreadyInProgress) {
       console.error(`[GET /candidates/status] ❌ Failed to trigger GitHub workflow for page ${pageIdStr}:`, workflowResult.error);
       // Return error response to client so they can retry
-      return c.status(503); return c.json({
+      return c.json({
         error: 'Failed to trigger generation workflow',
         details: workflowResult.error,
         isGenerating: false,
-      });
+      }, 503);
     }
 
     return c.json({
@@ -3963,7 +3963,7 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
     } satisfies CandidateGenerationStatus);
 
   } catch (error) {
-    cApiError(c, "Failed to get candidate status", error);
+    return cApiError(c, "Failed to get candidate status", error);
   }
 });
 
@@ -4096,13 +4096,13 @@ router.post("/:identifier/:pageId/actions/hint", requireAuth, async (c) => {
     
     // Handle insufficient credits error
     if (errorMessage.includes(CREDIT_ERRORS.INSUFFICIENT_CREDITS)) {
-      return c.status(402); return c.json({
+      return c.json({
         error: "Insufficient credits",
         message: `You need at least ${CREDIT_COSTS.SHOW_ACTION_HINT} credit to purchase an action hint`
-      });
+      }, 402);
     }
 
-    cApiError(c, "Failed to purchase action hint", error);
+    return cApiError(c, "Failed to purchase action hint", error);
   }
 });
 
@@ -4439,13 +4439,13 @@ router.post("/:identifier/purchase", requireAuth, async (c) => {
     
     // Handle insufficient credits error
     if (errorMessage.includes(CREDIT_ERRORS.INSUFFICIENT_CREDITS)) {
-      return c.status(402); return c.json({
+      return c.json({
         error: "Insufficient credits",
         message: "You need more credits to purchase this book"
-      });
+      }, 402);
     }
 
-    cApiError(c, "Failed to purchase book", error);
+    return cApiError(c, "Failed to purchase book", error);
   }
 });
 
@@ -4811,17 +4811,17 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (c)
     // Gate 0 — Eligibility with credit check
     const gate0Result = runGate0(storyState, userId, book.id, pageId);
     if (!gate0Result.passed) {
-      return c.status(400); return c.json({
+      return c.json({
         message: gate0Result.message,
-      });
+      }, 400);
     }
 
     // Gate 1 — Security filter
     const gate1Result = runGate1(text);
     if (!gate1Result.passed) {
-      return c.status(400); return c.json({
+      return c.json({
         message: getRejectionMessage(gate1Result.category),
-      });
+      }, 400);
     }
 
     // Gate 2 — AI validation
@@ -4871,9 +4871,9 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (c)
         updatedAt: new Date(),
       });
 
-      return c.status(400); return c.json({
+      return c.json({
         message: getRejectionMessage(result.rejectionCategory),
-      });
+      }, 400);
     }
 
     // Construct canonical Action
@@ -4937,28 +4937,28 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (c)
     // The frontend should poll for the next page using the existing candidates/status endpoint
     const pollingUrl = `/api/books/${bookIdentifier}/${pageId}/candidates/status`;
 
-    return c.status(202); return c.json({
+    return c.json({
       message: 'Custom action submitted successfully. Page generation in progress.',
       pollingInfo: {
         pollingUrl,
         pollingIntervalMs: 2000,
         maxPollingTimeMs: 80000,
       },
-    } satisfies CustomActionSubmitResponse);
+    } satisfies CustomActionSubmitResponse, 202);
 
   } catch (error) {
     const errorMessage = getErrorMessage(error);
 
     // Handle insufficient credits error
     if (errorMessage.includes(CREDIT_ERRORS.INSUFFICIENT_CREDITS)) {
-      return c.status(402); return c.json({
+      return c.json({
         error: 'Insufficient credits',
         message: `You need at least ${creditsCost} credits to submit a custom action`,
-      });
+      }, 402);
     }
 
     console.error('[POST /custom-actions/submit] ❌ Error:', error);
-    cApiError(c, 'Failed to submit custom action', error);
+    return cApiError(c, 'Failed to submit custom action', error);
   }
 });
 
