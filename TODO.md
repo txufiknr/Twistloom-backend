@@ -17,19 +17,13 @@
 - [ ] search jaccard similarity (by book keywords & title)
 - [ ] need change to cursor pagination?
 
-[@] claude payment review: src\app.ts (later check)
-[@] GET /api/payments/stripe/webhook (404)
 [@] sync sampling formula with ai-sampling.ts
-[@] result mistral medium kepotong
 [ ] implement trust and safety enforcement system (TODO-trust-safety.md & TRUST_AND_SAFETY_ENFORCEMENT_SYSTEM.md)
 [ ] Before insert page, correct futureNote keys
 [ ] Place categories list di prompt aja
 [ ] formatEndingPlan: if no `changeNote` (initial viable ending), use from `book.ending` instead
 [ ] on book.ending edit, evaluate with AI for security and viability score
-[x] userComments: per paragraph comment
 [ ] always generate AI illustration for page 1
-[ ] before insert page, check book mode, adjust `actions` accordingly
-[ ] action destination book type novel not updated
 
 ---
 

@@ -10,6 +10,45 @@
  * - Triggers deeper-level pre-generation for successfully generated candidate pages
  * - Handles stuck-generation detection and reset
  *
+ * ── Book Mode Branching Contracts ─────────────────────────────────────────
+ * The book's `mode` field controls how many actions a page may carry and how
+ * many destination pages each action may link to.  Enforcement is layered
+ * across prompt instructions, pre-AI candidate-count clamping, and post-AI
+ * destination-write capping — all defined in `book-mode.ts`.
+ *
+ * Novel (linear, single-path)
+ *   Action count  : EXACTLY 1 action per page.
+ *   Destination   : The one action has exactly 1 `destinationPageId`.
+ *   Rationale     : A strictly linear story that reads as one continuous,
+ *                   inevitable progression. No branching choices.
+ *   Enforcement   : `sanitizeActionsForMode` truncates excess actions at
+ *                   page-insert time; novel-mode guard in
+ *                   `ensureCandidatesForPageWithStrategy` forces the parent
+ *                   page to 1 action before any candidate generation runs.
+ *
+ * Interactive (reader-choice, single-path per choice)
+ *   Action count  : 2–3 branching actions per page (AI decides, capped at
+ *                   `MAX_ACTIONS_PER_PAGE`).
+ *   Destination   : EVERY action has exactly 1 `destinationPageId` — each
+ *                   choice leads to exactly one next page.
+ *   Rationale     : The reader shapes ONE path through the book. Choices are
+ *                   meaningful but never fork into parallel timelines.
+ *   Enforcement   : `clampCandidateCountForMode` requests only 1 candidate
+ *                   per action; `enforceModeOnActionDestinations` ensures
+ *                   only 1 destination is persisted.
+ *
+ * Multiverse (parallel timelines, multiple fates)
+ *   Action count  : 2–3 branching actions per page (AI decides, capped at
+ *                   `MAX_ACTIONS_PER_PAGE`).
+ *   Destination   : Unlimited `destinationPageIds` per action (practical cap:
+ *                   `MAX_CANDIDATE_PAGE_PER_ACTION = 3`).
+ *   Rationale     : Each action unfolds into multiple alternate-fate
+ *                   continuations — parallel timelines that diverge into
+ *                   distinct, unexpected outcomes.
+ *   Enforcement   : `maxDestinationsPerActionForMode` returns `Infinity`;
+ *                   only the caller-configured `candidateCount` limits the
+ *                   actual number generated.
+ *
  * Key design: write-chain serialisation
  * In parallel mode multiple AI calls complete concurrently. `onActionProgress` uses a
  * shared promise chain to serialise DB writes so no completed action is lost to a

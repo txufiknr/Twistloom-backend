@@ -196,14 +196,13 @@ export async function createOrUpdateOAuthUser(oAuthUser: {
     const { image: imageUrl, ...oAuthUserData } = oAuthUser;
     const { name: updateName, imageUrl: updateImage } = await sanitizeUserData({ ...oAuthUserData, imageUrl }, { createNew: false }) ?? {};
     if (updateName) updateData.name = updateName;
-    if (updateImage) updateData.imageUrl = updateImage;
 
-    // if (oAuthUser.name) {
-    //   updateData.name = sanitizeTextForDB(String(oAuthUser.name).trim());
-    // }
-    // if (oAuthUser.image !== undefined) {
-    //   updateData.image = oAuthUser.image ? sanitizeTextForDB(String(oAuthUser.image)) : null;
-    // }
+    // The OAuth profile picture is intentionally NOT uploaded to ImageKit for
+    // returning users. The image was already uploaded once during first-time
+    // sign-in (see new-user path below). On subsequent logins we skip the
+    // upload to avoid overwriting the user's custom avatar they may have set
+    // via the platform's profile editor. Users who want to update their
+    // profile picture are encouraged to do so inside Twistloom.
 
     if (Object.keys(updateData).length) {
       await dbWrite
