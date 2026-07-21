@@ -7,6 +7,7 @@
 
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { csrf } from "hono/csrf";
 import { HTTPException } from "hono/http-exception";
 import { getRequestListener } from "@hono/node-server";
 import { initAuthConfig } from "@hono/auth-js";
@@ -47,6 +48,19 @@ app.use(
     exposeHeaders: ["Retry-After", "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset"],
   }),
 );
+
+// CSRF protection — blocks cross-origin mutation requests from malicious sites.
+// Runs before body parsing and auth so malicious requests are rejected early.
+// The Origin header is forwarded through Next.js's rewrite proxy, so this
+// validates the browser's actual origin. No-origin requests (server-to-server
+// calls via fetchWithLogs, mobile apps, CLI tools, Stripe webhooks) pass.
+app.use("/api/*", csrf({
+  origin: (origin) => {
+    if (!origin) return true; // Allow no-origin (server-to-server, mobile, CLI, webhooks)
+    if (origin.endsWith(".vercel.app")) return true; // Allow Vercel deployments
+    return allowedOrigins.has(origin); // Allow explicit origins
+  },
+}));
 
 // Auth.js v5 configuration for @hono/auth-js (cookie verification only).
 // The backend does not run OAuth flows; it merely verifies the session cookie
