@@ -194,7 +194,7 @@ export async function createOrUpdateOAuthUser(oAuthUser: {
     const updateData: Partial<Pick<DBNewUser, 'name' | 'imageUrl'>> = {};
 
     const { image: imageUrl, ...oAuthUserData } = oAuthUser;
-    const { name: updateName, imageUrl: updateImage } = await sanitizeUserData({ ...oAuthUserData, imageUrl }, { createNew: false }) ?? {};
+    const { name: updateName } = await sanitizeUserData({ ...oAuthUserData, imageUrl }, { createNew: false }) ?? {};
     if (updateName) updateData.name = updateName;
 
     // The OAuth profile picture is intentionally NOT uploaded to ImageKit for

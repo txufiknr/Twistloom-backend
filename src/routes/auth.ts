@@ -45,7 +45,7 @@ import { createOrUpdateOAuthUser, setReferrerForNewUser } from '../services/user
 import { validateUsername } from '../utils/username.js';
 import { isTemp as isTemporaryEmail } from 'tempmail-checker';
 import { requireAuth } from '../middleware/nextauth.js';
-import { getUserSessions, logoutFromSpecificDevice, logoutFromAllOtherDevices, logoutFromAllDevices, deleteSessionById } from '../services/session-manager.js';
+import { createSession, getUserSessions, logoutFromSpecificDevice, logoutFromAllOtherDevices, logoutFromAllDevices, deleteSessionById } from '../services/session-manager.js';
 import { sanitizeUserData, getUserForAuth, getUserIdByEmail } from '../services/user.js';
 import type { AppEnv } from '../hono/env.js';
 import { getClientIp } from '../hono/express-shim.js';
@@ -79,6 +79,12 @@ async function handleGoogleAuth(idToken: string, c: Context<AppEnv>): Promise<Re
   // Create user if new, or update profile fields if existing
   const userId = await createOrUpdateOAuthUser({email, name, image, sub});
 
+  // Create a session record for device tracking. The session ID is returned
+  // to the frontend's jwt() callback and embedded in the JWT so subsequent
+  // authenticated requests can update session metadata (user-agent, IP) via
+  // the verifyNextAuthToken middleware.
+  const sessionId = await createSession(userId);
+
   // Fetch full user record including isNewUser.
   // isNewUser reflects the canonical database state — true for brand-new users,
   // false once onboarding has been completed (set by the onboarding endpoint).
@@ -99,7 +105,7 @@ async function handleGoogleAuth(idToken: string, c: Context<AppEnv>): Promise<Re
     return cApiError(c, 'Failed to retrieve user data');
   }
 
-  return c.json(user);
+  return c.json({ ...user, sessionId });
 }
 
 // ---------------------------------------------------------------------------
@@ -199,6 +205,11 @@ router.post('/verify-credentials', async (c) => {
 
     await resetFailedLoginAttempts(userData.userId);
 
+    // Create a session record for device tracking. The session ID is embedded
+    // in the JWT by the frontend's jwt() callback so subsequent requests can
+    // be attributed to this device and selectively revoked.
+    const sessionId = await createSession(userData.userId);
+
     // Revoke any outstanding password-reset tokens — a successful login means
     // the user already has access, so pending reset links become unnecessary
     // and would only be useful to an attacker who also controls the email inbox.
@@ -213,7 +224,8 @@ router.post('/verify-credentials', async (c) => {
       username: userData.username,
       imageUrl: userData.imageUrl,
       isNewUser: userData.isNewUser,
-    } satisfies Omit<DBUserForAuth, 'passwordHash'> & { isNewUser: boolean });
+      sessionId,
+    } satisfies Omit<DBUserForAuth, 'passwordHash'> & { isNewUser: boolean; sessionId: string });
   } catch (error) {
     console.error('[POST /api/auth/verify-credentials] ❌ Credential verification error:', error);
     return cApiError(c, 'Failed to verify credentials', error, 500);

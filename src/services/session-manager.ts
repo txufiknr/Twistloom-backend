@@ -24,6 +24,7 @@ import { authSessions, users } from '../db/schema.js';
 import { eq, and, desc, ne, sql } from 'drizzle-orm';
 import { LRUCache } from 'lru-cache';
 import { UAParser } from 'ua-parser-js';
+import { generateId } from '../utils/uuid.js';
 
 /**
  * LRU cache for session ID existence checks
@@ -73,6 +74,31 @@ export async function sessionExists(sessionId: string): Promise<boolean> {
   sessionCache.set(sessionId, exists);
 
   return exists;
+}
+
+/**
+ * Create a new session for a user, issued on every new sign-in.
+ *
+ * The session row is inserted with a bare minimum of fields (id, userId, timestamps).
+ * Device metadata (user agent, IP, device name) is populated lazily by the
+ * verifyNextAuthToken middleware on the first authenticated request via
+ * updateSessionMetadata — at sign-in time the backend receives server-to-server
+ * requests from NextAuth's jwt() callback, not the end-client's request, so the
+ * user-agent and IP at that point would be NextAuth's, not the user's.
+ *
+ * @param userId - The user to create a session for
+ * @returns The generated session ID
+ */
+export async function createSession(userId: string): Promise<string> {
+  const sessionId = generateId();
+
+  await db.insert(authSessions).values({
+    id: sessionId,
+    userId,
+    lastActiveAt: new Date(),
+  });
+
+  return sessionId;
 }
 
 /**
