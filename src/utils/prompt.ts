@@ -2680,7 +2680,7 @@ function formatNextPageTaskPrompt(state: StoryState, candidateCount: number, lan
   // ── NOVEL: strictly linear. Never offer branching choices. ──────────────
   if (mode === 'novel') {
     return `${base}
-This is a NOVEL — a strictly LINEAR story with a single path and a single ending. Do NOT write any branching actions or choices. Leave "actions" as an empty array []. The page must read as one continuous, inevitable progression of the narrative.`;
+This is a NOVEL — a strictly LINEAR story with a single path and a single ending. Generate exactly 1 definitive action (no branching, just 1 choice to continue). The page must read as one continuous, inevitable progression of the narrative.`;
   }
 
   // ── INTERACTIVE: single chosen path per action. ───────────────────────

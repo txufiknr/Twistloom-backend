@@ -1021,6 +1021,36 @@ export async function ensureCandidatesForPageWithStrategy(
       onProgress?.(action, status, candidatePages, error);
     };
     
+    // ── MODE BRANCHING CONTRACT (parent-page enforcement) ─────────────────
+    // For novel mode the parent page must have EXACTLY 1 action.  If the DB
+    // page already has more (e.g. it was generated before the contract was in
+    // place) we truncate here so candidate generation only processes the first
+    // action and the excess actions are removed from the persisted array.
+    if (currentBook.mode === 'novel' && updatedDBActions.length > 1) {
+      const excess = updatedDBActions.slice(1).map(a => a.text);
+      const firstAction = updatedDBActions[0];
+      console.warn(
+        `[ensureCandidatesForPageWithStrategy] ⚠️ Novel mode page ${page.id} has ` +
+        `${updatedDBActions.length} actions; truncating to 1. Dropping: "${excess.join('", "')}"`,
+      );
+      // Mark excess actions for removal
+      for (const text of excess) removedActionTexts.add(text);
+      // Keep only the first action
+      updatedDBActions = [firstAction];
+      // Rebuild action index map with single entry
+      actionIndexMap.clear();
+      actionIndexMap.set(firstAction.text, 0);
+      // Re-derive pending list from the trimmed array
+      recheckedPendingDBActions.length = 0;
+      if (!firstAction.destinationPageIds?.length) {
+        recheckedPendingDBActions.push(firstAction);
+      }
+      console.log(
+        `[ensureCandidatesForPageWithStrategy] 📋 After novel truncation: ` +
+        `${updatedDBActions.length} action(s), ${recheckedPendingDBActions.length} pending`,
+      );
+    }
+    
     // Choose generation strategy based on context
     if (strategy.useParallel) {
       // Parallel generation (for Vercel and cron)

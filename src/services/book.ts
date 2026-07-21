@@ -16,7 +16,7 @@ import { pages, books, branches, users, userPageProgress, userCompletedBooks, us
 import type ImageKit from "@imagekit/nodejs";
 import { and, eq, asc, or, desc, ne, sql, isNull, lt } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
-import { validatePageActionsForMode } from "../utils/book-mode.js";
+import { sanitizeActionsForMode } from "../utils/book-mode.js";
 import { MAX_GENERATION_DURATION_MS } from "../config/book-creation.js";
 import { getEnrichedBookSelect } from "./book-controller.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage, DBUpdateBook } from "../types/schema.js";
@@ -510,7 +510,7 @@ export async function persistPageWithState(params: {
   // generation writes destinations back (see enforceModeOnActionDestinations).
   // Throws loudly if the AI produced a page that breaks its book's mode,
   // rather than silently persisting an invalid story graph.
-  validatePageActionsForMode(mode, generatedStoryPage.actions);
+  generatedStoryPage.actions = sanitizeActionsForMode(mode, generatedStoryPage.actions);
 
   const { momentum: calculatedMomentum } = calculateStoryMomentum({
     state: newState,

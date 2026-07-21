@@ -124,6 +124,35 @@ export function validatePageActionsForMode(mode: BookMode, actions: Action[]): v
 }
 
 /**
+ * Sanitizes a page's actions to conform to its book's mode.
+ *
+ * Unlike `validatePageActionsForMode` which throws on violation, this function
+ * gracefully truncates excess actions so the caller can proceed without error.
+ * This is the **defence-in-depth** layer for candidate generation: if the AI
+ * over-generates, the extra actions are silently dropped and only the first
+ * action is kept.
+ *
+ * Mode rules:
+ *   - novel       : exactly 1 action (excess are dropped with a warning)
+ *   - interactive : 1..MAX_ACTIONS_PER_PAGE actions (unchanged)
+ *   - multiverse  : 1..MAX_ACTIONS_PER_PAGE actions (unchanged)
+ *
+ * @param mode - The book's creation mode
+ * @param actions - The actions to sanitize
+ * @returns A new actions array that conforms to the mode's contract
+ */
+export function sanitizeActionsForMode(mode: BookMode, actions: Action[]): Action[] {
+  if (mode === 'novel' && actions.length > 1) {
+    console.warn(
+      `[sanitizeActionsForMode] ⚠️ Mode "${mode}" requires exactly 1 action; ` +
+      `truncating from ${actions.length} to 1. Keeping: "${actions[0].text}"`,
+    );
+    return [actions[0]];
+  }
+  return actions;
+}
+
+/**
  * Enforces the per-action destination limit for the book's mode.
  *
  * Called from candidate generation whenever destinations are about to be
