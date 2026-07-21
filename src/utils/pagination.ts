@@ -98,6 +98,7 @@ export function extractPaginationParams(
   const gender = first(query.gender);
   const mode = first(query.mode);
   const collection = (first(query.collection) || '').trim() || undefined;
+  const queryUserId = first(query.userId) || undefined;
   const profileUserId = first(query.profileUserId) || undefined;
 
   return {
@@ -114,7 +115,8 @@ export function extractPaginationParams(
     gender,
     mode,
     collection,
-    profileUserId,
+    /** Target user ID for viewing another user's books. Read from `userId` or `profileUserId` query param. */
+    profileUserId: queryUserId || profileUserId,
   };
 }
 

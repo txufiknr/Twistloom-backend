@@ -1804,10 +1804,13 @@ router.get("/explore", optionalAuth, async (c) => {
       : 'newest';
 
     // Check if authentication is required for this sort option.
-    // When profileUserId is provided for 'reads' or 'favorites', we are viewing
-    // another user's list — no auth needed since the target user is explicit.
+    // When profileUserId is provided for 'creations', 'reads', or 'favorites',
+    // we are viewing another user's list — no auth needed since the target user
+    // is explicit. 'recommendations' and 'for-you' still require auth because
+    // they use the viewer's own reading history.
     const sortNeedsAuth = ['creations', 'reads', 'recommendations', 'favorites', 'for-you'].includes(bookSortBy);
-    const requiresAuth = sortNeedsAuth && !profileUserId;
+    const profileUserIdBypasses = ['creations', 'reads', 'favorites'];
+    const requiresAuth = sortNeedsAuth && !(profileUserId && profileUserIdBypasses.includes(bookSortBy));
     if (requiresAuth && !userId) {
       const emptyBooks: EnrichedBookData[] = [];
       const pagination = calculatePaginationMeta(page, limit, 0);
@@ -1831,16 +1834,22 @@ router.get("/explore", optionalAuth, async (c) => {
     }
 
     // Determine base condition based on sort option.
-    // For creations, use profileUserId when viewing another user's created books.
+    // When profileUserId is provided (from ?userId=X), we are viewing books
+    // by/for a specific user:
+    //   - 'creations' → that user's own books (any status)
+    //   - 'favorites'/'reads' → public books, filtered by that user's list (handled in sort)
+    //   - other sorts → public books authored by that user
     const targetUserId = profileUserId || userId;
     const baseCondition: ReturnType<typeof sql> = isCreations
       ? statusFilter
         ? and(eq(books.userId, targetUserId!), inArray(books.status, statusFilter))!
         : eq(books.userId, targetUserId!) // User's own books regardless of status
-      : and(eq(books.status, 'active'), eq(books.visibility, 'public'))!; // Only active & public books in explore
+      : profileUserId && bookSortBy !== 'favorites' && bookSortBy !== 'reads'
+        ? and(eq(books.status, 'active'), eq(books.visibility, 'public'), eq(books.userId, profileUserId))!
+        : and(eq(books.status, 'active'), eq(books.visibility, 'public'))!;
 
     // Cache strategy: don't cache user-specific or filtered queries
-    const shouldCache = page === 1 && !isCreations && !search && tagsArray.length === 0 && !language && !lastUpdated && !ageRange && !gender && !mode && !statusFilter && bookSortBy !== 'reads' && bookSortBy !== 'favorites' && bookSortBy !== 'recommendations' && bookSortBy !== 'for-you';
+    const shouldCache = page === 1 && !profileUserId && !isCreations && !search && tagsArray.length === 0 && !language && !lastUpdated && !ageRange && !gender && !mode && !statusFilter && bookSortBy !== 'reads' && bookSortBy !== 'favorites' && bookSortBy !== 'recommendations' && bookSortBy !== 'for-you';
     const cacheKey = isCreations
       ? `books:user:${targetUserId}:page:${page}`
       : bookSortBy === 'trending'
