@@ -298,10 +298,10 @@ type BookSortingOptions =
   | 'trending'       // Sorts by pre-calculated trendingScore (hybrid: cron-based with time decay + incremental updates on likes/favorites)
   | 'top-picks'      // Sorts by latest topPick timestamp (only books marked as editor's picks)
   | 'originals'      // Filters by isOriginal: true (auto-generated books via cron job), sorts by createdAt (newest first)
-  | 'reads'          // Shows books the user has read, sorted by lastReadAt (requires authentication)
-  | 'recommendations' // Recommends books based on user likes (requires authentication)
-  | 'creations'      // Shows user's own created books (requires authentication)
-  | 'favorites'      // Shows user's saved/favorited books (requires authentication)
+  | 'reads'          // Shows books the user has read, sorted by lastReadAt (requires auth, or set profileUserId to view another user's reads)
+  | 'recommendations' // Recommends books based on user likes (requires authentication — not scoped by profileUserId)
+  | 'creations'      // Shows user's own created books (requires auth, or set profileUserId to view another user's creations)
+  | 'favorites'      // Shows user's saved/favorited books (requires auth, or set profileUserId to view another user's favorites)
   | 'for-you';       // Personalized recommendations based on user preferences (requires authentication)
 ```
 
@@ -2560,11 +2560,13 @@ Retrieves books for exploration or user's own creations. Supports both authentic
 - `language` (string, optional): Filter by language code (e.g., "en", "es")
 - `tags` (string, optional): Comma-separated tags for filtering (e.g., "thriller,mystery,horror"). Books matching ANY tag will be included (OR logic)
 - `ageRange` (string, optional): Filter by main character age range (format: n-m, e.g. 18-30)
-- `sortBy` (string, optional): Field to sort by (default: newest). Options: newest, popular, trending, top-picks, originals, reads, recommendations, creations
+- `sortBy` (string, optional): Field to sort by (default: newest). Options: newest, popular, trending, top-picks, originals, reads, recommendations, creations, favorites
 - `sortOrder` (string, optional): Sort direction (default: desc)
 - `lastUpdated` (string, optional): Filter by last update time: anytime|today|this-week|this-month|this-year
 - `status` (string, optional): Filter by comma-separated statuses (only applies with `sortBy=creations`). Values: active, draft, archived. E.g., "active,draft"
 - `mode` (string, optional): Filter by book creation mode (story format). Values: `novel`, `interactive`, `multiverse`. E.g., "multiverse"
+- `profileUserId` (string, optional): User ID to scope books to — used with `sortBy=creations`, `sortBy=reads`, or `sortBy=favorites` to view another user's authored/read/favorited books. When set, authentication is not required for those sort options. Cache is skipped when `profileUserId` is used.
+- `userId` (string, optional): Alias for `profileUserId`. When set, filters books by the given user's authorship (works with any `sortBy`, not just `creations`).
 
 **Shared Implementation:**
 - Uses same filter building helpers as GET /api/books (buildSearchCondition, buildTagsFilterCondition, combineFilterConditions)
@@ -2574,7 +2576,31 @@ Retrieves books for exploration or user's own creations. Supports both authentic
 
 **Behavior by `sortBy`:**
 - `creations`: Shows the authenticated user's own books (requires auth). Use `status` query param to filter by book status — `status=draft` includes pending, generating, failed, and cancelled generations. Check each book's `generationStatus` via `GET /api/books/:bookId/status` to see its exact state.
-- All other sort options: Show published books only (optional auth, status filter ignored)
+- `reads`: Shows books the authenticated user has read, sorted by `lastReadAt` (requires auth unless `profileUserId` is set).
+- `favorites`: Shows books the authenticated user has favorited/saved (requires auth unless `profileUserId` is set).
+- `recommendations` / `for-you`: Always require authentication — not scoped by `profileUserId`.
+- All other sort options: Show published books only (optional auth, status filter ignored).
+
+**`profileUserId` / `userId` behavior:**
+- When `profileUserId` is set with `sortBy=creations`, shows books authored by that user (no auth required). Equivalent to filtering by `books.userId`.
+- When `profileUserId` is set with `sortBy=reads`, shows books read by that user (no auth required).
+- When `profileUserId` is set with `sortBy=favorites`, shows books favorited by that user (no auth required).
+- `userId` acts as a generic author filter that works with any `sortBy`.
+
+**Example — View another user's creations:**
+```
+GET /api/books/explore?sortBy=creations&profileUserId=user456
+```
+
+**Example — View another user's reads:**
+```
+GET /api/books/explore?sortBy=reads&profileUserId=user456
+```
+
+**Example — View another user's favorites:**
+```
+GET /api/books/explore?sortBy=favorites&profileUserId=user456
+```
 
 **Example — Find all draft books (cancelled, failed, pending):**
 ```
@@ -3186,6 +3212,7 @@ curl https://api.twistloom.com/api/books \
 - Explore page 1: Cached with TTL of 1 minute (EXPLORE_PAGE_1)
 - Cache is invalidated on book creation, updates, and deletions
 - Public explore endpoint uses CDN/edge caching with stale-while-revalidate
+- Cache is skipped when `profileUserId` or `userId` query param is used (always fetches fresh data)
 
 ---
 
@@ -3200,6 +3227,12 @@ Rate limits are enforced on a per-user basis to prevent abuse:
 ---
 
 ## Version History
+
+### v1.5.0 (2026-07-21)
+- Added `profileUserId` and `userId` query params to GET /api/books/explore for viewing another user's creations, reads, and favorites
+- Updated `sortBy=creations`, `sortBy=reads`, `sortBy=favorites` to work without auth when `profileUserId` is set
+- Added `favorites` to the documented `sortBy` options list
+- Cache is skipped when `profileUserId` or `userId` is used to ensure fresh data for profile views
 
 ### v1.4.0 (2026-05-05)
 - Added lastUpdated query parameter to GET /api/books for time-based filtering (anytime|today|this-week|this-month|this-year)

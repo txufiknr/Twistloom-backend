@@ -6,7 +6,7 @@ The Users API provides endpoints for managing user profiles, social interactions
 
 **Base URL:** `/api/user` for authenticated user operations, `/api/users` for public user operations
 
-**Authentication:** Most endpoints require authentication via NextAuth JWT cookies (`requireAuth`). Some read-only endpoints use `optionalAuth` (returns data for authenticated users, empty/null for guests). Public profile viewing requires no auth.
+**Authentication:** Most endpoints require authentication via NextAuth JWT cookies (`requireAuth`). Some read-only endpoints use `optionalAuth` (returns data for authenticated users, empty/null for guests). Public endpoints require no auth.
 
 **Response Pattern:**
 - GET endpoints: Return resources directly wrapped in descriptive keys (e.g., `{ user: {...} }`, `{ likes: [...] }`)
@@ -57,10 +57,11 @@ The Users API provides endpoints for managing user profiles, social interactions
  10. [Reading Progress](#reading-progress)
      - [Get Story Progress](#get-userprogress)
  11. [Achievements](#achievements)
-     - [Get Achievements](#get-userachievements)
-     - [Get Unnotified Achievements](#get-userachievementsunnotified)
-     - [Acknowledge Achievement](#post-userachievementsacknowledge)
-12. [User Feedback](#user-feedback)
+      - [Get Achievements](#get-userachievements)
+      - [Get Unnotified Achievements](#get-userachievementsunnotified)
+      - [Acknowledge Achievement](#post-userachievementsacknowledge)
+      - [Get User Public Achievements](#get-usersidachievements)
+ 12. [User Feedback](#user-feedback)
      - [Submit Feedback](#post-userfeedbacks)
 13. [Error Handling](#error-handling)
 14. [HTTP Headers](#http-headers)
@@ -94,6 +95,7 @@ interface User {
   subscription: {                      // Subscription information (SSOT for VIP gating)
     tier: string | null;               // User's tier — the authoritative VIP gate field
   };
+  isFollowing?: boolean;               // Whether the requesting user follows this user (only present for public profile endpoint GET /users/:identifier when viewer is authenticated)
   stats: UserStats;                    // Engagement statistics
   createdAt: string;                   // Account creation timestamp (ISO 8601)
   updatedAt: string;                   // Last update timestamp (ISO 8601)
@@ -389,12 +391,12 @@ Retrieves the authenticated user's full enriched profile with engagement statist
 
 Fetch user profile by identifier (UUID or username). Industry standard implementation (Twitter/X, Instagram, GitHub) that accepts both UUID and username in a single endpoint.
 
-**Authentication:** Not required (public — no middleware)
+**Authentication:** Optional (via `optionalAuth`) — returns `isFollowing` when viewer is authenticated
 
 **Path Parameters:**
 - `identifier` (string, required): User UUID or username
 
-**Response (200 OK):**
+**Response (200 OK) — Authenticated viewer:**
 ```json
 {
   "user": {
@@ -411,6 +413,7 @@ Fetch user profile by identifier (UUID or username). Industry standard implement
     "subscription": {
       "tier": null
     },
+    "isFollowing": true,
     "stats": {
       "readsCount": 150,
       "likedBooksCount": 25,
@@ -437,7 +440,51 @@ Fetch user profile by identifier (UUID or username). Industry standard implement
 }
 ```
 
-**Cache:** HTTP `Cache-Control: public, max-age=60, stale-while-revalidate=30`
+**Response (200 OK) — Guest viewer:**
+```json
+{
+  "user": {
+    "id": "user-uuid",
+    "username": "johndoe",
+    "name": "John Doe",
+    "email": "john@example.com",
+    "bio": "User bio",
+    "gender": "male",
+    "imageUrl": "https://ik.imagekit.io/abc123/profile.jpg",
+    "credits": 500,
+    "isNewUser": false,
+    "lastActive": "2024-01-15T10:30:00.000Z",
+    "subscription": {
+      "tier": null
+    },
+    "isFollowing": false,
+    "stats": {
+      "readsCount": 150,
+      "likedBooksCount": 25,
+      "savedBooksCount": 8,
+      "likesReceived": 156,
+      "accountDaysOld": 380,
+      "emailVerified": "2024-01-01T00:00:00.000Z",
+      "havePurchased": false,
+      "booksGenerated": 5,
+      "booksCompleted": 12,
+      "pagesRead": 350,
+      "pagesGenerated": 80,
+      "branchesOpened": 15,
+      "topupCredits": 200,
+      "referredUsers": 3,
+      "followersCount": 42,
+      "activeCheckinStreak": 3,
+      "maxCheckinStreak": 10,
+      "customActionsWritten": 1
+    },
+    "createdAt": "2024-01-01T00:00:00Z",
+    "updatedAt": "2024-01-15T10:30:00Z"
+  }
+}
+```
+
+**Cache:** HTTP `Cache-Control: public, max-age=60, stale-while-revalidate=30` (cache is skipped when viewer is authenticated to ensure fresh `isFollowing` data)
 
 **Error Responses:**
 - `404 Not Found`: User profile not found
@@ -1528,6 +1575,54 @@ Marks achievement notifications as viewed/acknowledged by the authenticated user
 
 ---
 
+### GET /users/:id/achievements
+
+Returns a public user's achievements/badges for profile display. Unlike `GET /user/achievements`, this endpoint requires no authentication and returns only unlocked badges for the specified user.
+
+**Authentication:** Not required (public)
+
+**Path Parameters:**
+- `id` (string, required): User ID (UUID)
+
+**Query Parameters:**
+- `page` (number, optional): Page number for pagination (default: 1)
+- `limit` (number, optional): Number of badges per page (default: 50)
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "badges": [
+    {
+      "id": "gen_50",
+      "title": "Storyteller",
+      "description": "Generate 50 books",
+      "badgeImageUrl": "https://example.com/badges/gen_50.png",
+      "tier": "gold",
+      "currentProgress": 50,
+      "threshold": 50,
+      "progressPercent": 100,
+      "isUnlocked": true,
+      "unlockedAt": "2026-05-01T00:00:00.000Z",
+      "isNotified": true
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 50,
+    "totalCount": 12,
+    "totalPages": 1,
+    "hasNext": false,
+    "hasPrevious": false
+  }
+}
+```
+
+**Error Responses:**
+- `404 Not Found`: User not found
+
+---
+
 ## User Feedback
 
 ### POST /user/feedbacks
@@ -1628,7 +1723,7 @@ All endpoints follow consistent error response formats:
 
 - `Cache-Control`: Varies by endpoint
   - `private` for authenticated user data
-  - `public, max-age=60, stale-while-revalidate=30` for public user profiles (`GET /users/:identifier`)
+  - `public, max-age=60, stale-while-revalidate=30` for public user profiles (`GET /users/:identifier`) — cache is only applied for guest viewers; skipped when authenticated
 
 ---
 
@@ -1641,6 +1736,10 @@ The API implements multi-level caching for performance:
 
 **Cache TTLs:**
 - User profile: 5 minutes (configurable via `CACHE_TTL.USER_PROFILE`)
+
+**Notes:**
+- `GET /users/:identifier` now uses `optionalAuth` (was no middleware). When the viewer is authenticated, the cache is skipped to return fresh `isFollowing` data.
+- `GET /users/:id/achievements` is not cached (always fetches fresh).
 
 **Invalidation Triggers:**
 - Profile update (PUT /user): Invalidates `user:{userId}:profile`
@@ -1658,7 +1757,7 @@ Endpoints use three middleware types:
 
 - `requireAuth`: Requires valid authentication — returns 401 if not authenticated
 - `optionalAuth`: Attaches user info if cookie is present, continues silently for guests
-- No middleware: Public access (user profile viewing, follower lists)
+- No middleware: Public access (follower lists, public achievements)
 
 ---
 
@@ -1926,6 +2025,13 @@ curl -X POST https://api.twistloom.com/api/user/feedbacks \
 ---
 
 ## Changelog
+
+### v3.4.0 (2026-07-21)
+- Changed `GET /users/:identifier` auth from no middleware to `optionalAuth` — returns `isFollowing` field when viewer is authenticated
+- Added `isFollowing` field to `User` type (optional boolean)
+- Added `GET /users/:id/achievements` public endpoint for viewing another user's unlocked badges
+- Updated caching: cache is skipped for `GET /users/:identifier` when viewer is authenticated
+- Updated authentication section: `GET /users/:identifier` moved to `optionalAuth`
 
 ### v3.3.0 (2026-07-10)
 - Added POST /user/feedbacks endpoint (submit user feedback with optional screenshot)
