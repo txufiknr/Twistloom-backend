@@ -144,6 +144,9 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
             'lastReadAt', us.updated_at,
             'lastPageId', us.page_id,
             'lastPageNumber', p.page,
+            'frontierPageId', us.frontier_page_id,
+            'frontierPageNumber', us.frontier_page_number,
+            'frontierAncestorIds', us.frontier_ancestor_ids,
             'contextHistory', COALESCE(ss.context_history, '')
           )
           FROM user_sessions us
@@ -799,9 +802,7 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
  * @param params.consumeCredits   - Allow spending credits to override a
  *                                  prior choice
  * @param params.language         - Accept-Language header value
- * @param options.req             - Express request object
- * @param options.res             - Express response object (used for early
- *                                  error responses)
+ * @param options.c               - Hono context
  * @returns Promise resolving to visit details, book, page, sourceAction,
  *          and isUserTakeAction flag. Returns `{}` when the response has
  *          already been sent (error / not-found paths).
@@ -820,7 +821,7 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
  * const { visitDetails, book, dbPage, sourceAction, isUserTakeAction } =
  *   await visitBookPage(
  *     { userId, pageId, bookIdentifier, skipVisit, takeAction, consumeCredits, language },
- *     { req, res }
+ *     { c }
  *   );
  *
  * // Response already sent by visitBookPage on error paths

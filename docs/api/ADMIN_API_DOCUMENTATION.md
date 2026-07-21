@@ -403,7 +403,8 @@ DESC then `createdAt` DESC.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `source` | string | Stream scope: `all` (default) \| `social` \| `user` |
-| `limit` | integer | Max rows (default `20`, max `100`) |
+| `page` | integer | 1-based page (default `1`) — enables lazy loading |
+| `limit` | integer | Max rows per page (default `20`, max `100`) |
 
 **Response (200 OK):**
 ```json
@@ -450,12 +451,23 @@ DESC then `createdAt` DESC.
       "createdAt": "2026-07-19T07:00:00.000Z",
       "updatedAt": "2026-07-19T07:00:00.000Z"
     }
-  ]
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 20,
+    "totalCount": 42,
+    "totalPages": 3,
+    "hasNext": true,
+    "hasPrevious": false
+  }
 }
 ```
 
 **Response notes:**
 - `source` echoes the requested scope (`all`/`social`/`user`).
+- `mentions` carries the page slice; `pagination` mirrors the standard paginated
+  shape used by book comments and testimonials. Use `page` + `limit` for lazy
+  loading and check `pagination.hasNext` to decide whether to fetch the next page.
 - `social` rows carry `platform`, `url`, `score`, `sentimentScore`,
   `relevanceScore`, `publishedAt`; `rating` and `bookId` are `null`.
 - `user` rows carry `rating` and `bookId`; `platform`, `url`, `score`,

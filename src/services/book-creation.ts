@@ -399,7 +399,7 @@ export async function createBookCore(
  * 2. `InsufficientCreditsError`                    → credit purchase prompt
  * 3. Everything else                               → generic API error
  *
- * @param res            - Express response object
+ * @param res            - Hono context
  * @param error          - Error from book creation
  * @param defaultMessage - Fallback message for generic errors
  */

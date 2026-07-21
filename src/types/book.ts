@@ -3,7 +3,6 @@ import type { NewPlace, PlaceMemoryTranslation } from "./places.js";
 import type { ActionTranslation, PersistedStoryPage, StoryPage, StoryState, InitialStoryState, InitialFact, SelectedAction, InitialStoryPageGeneration, StoryPlan, Ending, InitialEnding, FutureNoteGeneration } from "./story.js";
 import type { DBBook, DBPage, DBUserSession } from "./schema.js";
 import type { User } from "./user.js";
-import type { Request } from "express";
 import type { DBTransaction } from "../db/client.js";
 import type { AIResponse } from "./ai-chat.js";
 import type { NewThread, StoryThreadTranslation } from "./story-thread.js";
@@ -217,7 +216,7 @@ export type EnrichedBookData = Pick<DBBook,
 }
 
 export type EnrichedBookFirstPage = { id: string; text: string };
-export type EnrichedBookSession = { lastReadAt: Date; lastPageId: string; lastPageNumber: number; contextHistory: string };
+export type EnrichedBookSession = { lastReadAt: Date; lastPageId: string; lastPageNumber: number; frontierPageId: string | null; frontierPageNumber: number; frontierAncestorIds: string[]; contextHistory: string };
 export type EnrichedBookGeneration = {
   generationStatus?: BookGenerationStatus;
   generationStep?: StoryGenerationStep;
@@ -277,6 +276,18 @@ export type BookCreationResponse = {
  * Defines the input parameters required to initialize a new book
  * with AI-generated content and setup.
  */
+/**
+ * Minimal request context passed for activity-log metadata.
+ * Mirrors the small subset of a Hono `Context` that book creation needs
+ * (client IP and a header getter), keeping services framework-agnostic.
+ */
+export interface ActivityRequestContext {
+  /** Client IP address (e.g. from {@link getClientIp}) */
+  ip?: string;
+  /** Reads a request header by name (e.g. `c.req.header(name)`) */
+  get?(header: string): string | null | undefined;
+}
+
 export type InitializeBookParams = StoryPlan & {
   /** User ID who owns the book */
   userId: string;
@@ -288,8 +299,8 @@ export type InitializeBookParams = StoryPlan & {
   isOriginal?: boolean;
   /** Complimentary comment from AI */
   aiComment?: string | null;
-  /** Express request object for activity log */
-  req?: Request;
+  /** Hono request context for activity-log metadata (IP, accept-language) */
+  req?: ActivityRequestContext;
   /** Optional: Update existing book by ID instead of inserting new (for async book creation) */
   bookId?: string;
   /** Optional: Database client / transaction to run all DB operations within (for atomicity) */

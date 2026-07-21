@@ -779,7 +779,7 @@ router.get("/transactions", requireAuth, async (c) => {
 
 router.get("/subscription-plans", async (c) => {
   try {
-    return c.json({ plans: [{ ...VIP_SUBSCRIPTION, benefits: ["VIP badge", "2x check-in bonus", "+50 monthly credits"] }] });
+    return c.json({ plans: [{ ...VIP_SUBSCRIPTION, benefits: ["VIP badge", "2x check-in bonus", `+${VIP_BENEFITS.monthlyCredits} monthly credits`] }] });
   } catch (error) {
     return cApiError(c, "Failed to fetch subscription plans", error);
   }

@@ -1,5 +1,5 @@
 import type { AIChatProvider, AIResponseProvider } from "./ai-chat.js";
-import type { ResourceAIProvider, ResourceTimestamp } from "./api.js";
+import type { ResourceAIProvider, ResourceAIScore, ResourceTimestamp } from "./api.js";
 import type { Book, PageTranslation } from "./book.js";
 import type { CharacterMemory, CharacterUpdates, HealthStatus, Injury, InitialInjury, InventoryItem, RelationshipUpdate, StoryMCCandidate, CharacterPlan, HealthCondition } from "./character.js";
 import type { PlaceConnectionUpdate, PlaceMemory, PlaceUpdates, PlaceWeather } from "./places.js";
@@ -1238,7 +1238,7 @@ export type StoryGeneration = StoryPageGeneration & StateDeltaGeneration & {
 };
 export type InitialStoryPageGeneration = Omit<StoryPageGeneration, 'placeId'> & Pick<StoryPage, 'momentum'>;
 
-export type PersistedStoryPage = StoryPage & Pick<DBPage, 'id' | 'bookId' | 'branchId' | 'parentId' | 'page' | 'elapsedDays' | ResourceAIProvider | ResourceTimestamp>;
+export type PersistedStoryPage = StoryPage & Pick<DBPage, 'id' | 'bookId' | 'branchId' | 'parentId' | 'page' | 'elapsedDays' | ResourceAIProvider | ResourceAIScore | ResourceTimestamp>;
 export type UserStoryPage = PersistedStoryPage & { selectedActions: SelectedAction[] };
 export type ActionedStoryPage = PersistedStoryPage & { selectedAction: SelectedAction };
 export interface CommunityAction {
@@ -1824,8 +1824,10 @@ export type SetActiveSessionParams = {
   bookId: string;
   /** Current page ID in the session */
   pageId: string;
+  /** Page number (1-based) of `pageId`, used to maintain the frontier cursor */
+  pageNumber: number;
   /** Previous page ID (optional, for tracking navigation) */
-  previousPageId?: string;
+  previousPageId?: string | null;
 };
 
 /**

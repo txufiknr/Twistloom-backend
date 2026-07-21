@@ -49,6 +49,10 @@ export interface AIResponse<T> {
   evalProvider?: AIChatProvider | 'none';
   /** Specific model used to evaluate the response (e.g., 'gpt-4o', 'gemini-2.5-flash') */
   evalModel?: string;
+  /** Evaluator's total quality score (0-100) of the raw model output before any corrections (present only when an evaluation pass ran) */
+  scoreBefore?: number;
+  /** Evaluator's total quality score (0-100) of the output after corrections (present only when an evaluation pass ran) */
+  scoreAfter?: number;
   /** The generated text content from the AI */
   output: string;
   /** The parsed content into expected type */
@@ -61,7 +65,7 @@ export interface AIResponse<T> {
   finishReason?: string;
 }
 
-export type AIResponseProvider = Pick<AIResponse<unknown>, 'model' | 'provider' | 'evalModel' | 'evalProvider'>;
+export type AIResponseProvider = Pick<AIResponse<unknown>, 'model' | 'provider' | 'evalModel' | 'evalProvider' | 'scoreBefore' | 'scoreAfter'>;
 
 export type AIModelSelection = Partial<Record<AIChatProvider, string[]>>;
 

@@ -17,7 +17,8 @@ export type ResourceName =
   | 'comments'       // Collection of comments
   | 'items'          // Generic collection (fallback)
   | 'users'          // Collection of users
-  | 'transactions';  // Collection of transactions
+  | 'transactions'   // Collection of transactions
+  | 'testimonials';  // Collection of testimonials
 
 export type ResourceTranslatorType = 'ai' | 'translator';
 export type ResourceTranslatorProvider = 'providerType' | 'providerName' | 'aiModel';
@@ -27,6 +28,15 @@ export type ResourceAIProvider =
   | 'aiModel'
   | 'aiEvalProvider'
   | 'aiEvalModel';
+
+/**
+ * AI evaluation quality scores persisted alongside a generated page.
+ *
+ * `scoreBefore` is the evaluator's quality score of the raw model output
+ * (before any corrections); `scoreAfter` is the score after corrections.
+ * Both are nullable — they are only present when an evaluation pass ran.
+ */
+export type ResourceAIScore = 'scoreBefore' | 'scoreAfter';
 
 /**
  * Pagination metadata interface

@@ -416,8 +416,7 @@ export async function setReferrerForNewUser(
 /**
  * Shared request handler for daily check-in and VIP double claim.
  *
- * @param req - Express request
- * @param res - Express response
+ * @param c - Hono context
  * @param claimType - 'regular' (default) or 'vip_2x'
  */
 export async function handleCheckIn(

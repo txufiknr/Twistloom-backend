@@ -11,8 +11,9 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import { union } from "drizzle-orm/pg-core";
 import { cApiError, cValidationError } from "../utils/error.js";
 import { dbRead } from "../db/client.js";
-import { socialMentions, bookTestimonials } from "../db/schema.js";
+import { socialMentions, bookTestimonials, users } from "../db/schema.js";
 import type { AppEnv } from "../hono/env.js";
+import { extractPaginationParams, calculatePaginationMeta } from "../utils/pagination.js";
 
 const router = new Hono<AppEnv>();
 
@@ -57,8 +58,8 @@ function userWallQuery() {
       id: bookTestimonials.id,
       source: sql<string>`'user'`.as("source"),
       platform: sql<string | null>`NULL`.as("platform"),
-      author: sql<string>`'Twistloom Reader'`.as("author"),
-      authorAvatar: sql<string | null>`NULL`.as("author_avatar"),
+      author: sql<string>`COALESCE(${users.name}, 'Twistloom Reader')`.as("author"),
+      authorAvatar: users.imageUrl,
       title: sql<string | null>`NULL`.as("title"),
       content: bookTestimonials.content,
       url: sql<string | null>`NULL`.as("url"),
@@ -74,6 +75,7 @@ function userWallQuery() {
       updatedAt: bookTestimonials.updatedAt,
     })
     .from(bookTestimonials)
+    .leftJoin(users, eq(bookTestimonials.userId, users.userId))
     .where(and(
       eq(bookTestimonials.status, "approved"),
       eq(bookTestimonials.featured, true),
@@ -82,10 +84,11 @@ function userWallQuery() {
 
 router.get("/social-mentions", async (c) => {
   try {
-    const { source = "all", limit = "20" } = c.req.query();
-    const limitNum = Math.min(Math.max(Number(limit) || 20, 1), 100);
-
+    const { limit = 20, page = 1 } = extractPaginationParams(c.req.query(), 20);
+    const source = c.req.query().source ?? "all";
     const validSource = source === "social" || source === "user" ? source : "all";
+
+    const offset = (page - 1) * limit;
 
     let query;
     if (validSource === "social") {
@@ -98,9 +101,40 @@ router.get("/social-mentions", async (c) => {
 
     const rows = await query
       .orderBy(desc(sql`relevance_score`), desc(sql`created_at`))
-      .limit(limitNum);
+      .limit(limit)
+      .offset(offset);
 
-    return c.json({ source: validSource, mentions: rows });
+    // Total count for the requested source, used to build pagination metadata.
+    // Social and user mentions come from disjoint tables, so the "all" total is
+    // the sum of the two independent counts.
+    let totalCount: number;
+    if (validSource === "social") {
+      const [row] = await dbRead
+        .select({ count: sql<number>`count(*)::int` })
+        .from(socialMentions)
+        .where(and(eq(socialMentions.status, "approved"), eq(socialMentions.featured, true)));
+      totalCount = row.count;
+    } else if (validSource === "user") {
+      const [row] = await dbRead
+        .select({ count: sql<number>`count(*)::int` })
+        .from(bookTestimonials)
+        .where(and(eq(bookTestimonials.status, "approved"), eq(bookTestimonials.featured, true)));
+      totalCount = row.count;
+    } else {
+      const [socialRow] = await dbRead
+        .select({ count: sql<number>`count(*)::int` })
+        .from(socialMentions)
+        .where(and(eq(socialMentions.status, "approved"), eq(socialMentions.featured, true)));
+      const [userRow] = await dbRead
+        .select({ count: sql<number>`count(*)::int` })
+        .from(bookTestimonials)
+        .where(and(eq(bookTestimonials.status, "approved"), eq(bookTestimonials.featured, true)));
+      totalCount = socialRow.count + userRow.count;
+    }
+
+    const pagination = calculatePaginationMeta(page, limit, totalCount);
+
+    return c.json({ source: validSource, mentions: rows, pagination });
   } catch (error) {
     return cApiError(c, "Failed to retrieve social mentions", error);
   }
@@ -149,8 +183,8 @@ router.get("/social-mentions/:id", async (c) => {
         id: bookTestimonials.id,
         source: sql<string>`'user'`.as("source"),
         platform: sql<string | null>`NULL`.as("platform"),
-        author: sql<string>`'Twistloom Reader'`.as("author"),
-        authorAvatar: sql<string | null>`NULL`.as("author_avatar"),
+        author: sql<string>`COALESCE(${users.name}, 'Twistloom Reader')`.as("author"),
+        authorAvatar: users.imageUrl,
         title: sql<string | null>`NULL`.as("title"),
         content: bookTestimonials.content,
         url: sql<string | null>`NULL`.as("url"),
@@ -166,6 +200,7 @@ router.get("/social-mentions/:id", async (c) => {
         updatedAt: bookTestimonials.updatedAt,
       })
       .from(bookTestimonials)
+      .leftJoin(users, eq(bookTestimonials.userId, users.userId))
       .where(and(
         eq(bookTestimonials.id, itemId),
         eq(bookTestimonials.status, "approved"),

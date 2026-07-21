@@ -97,7 +97,7 @@ import { streamSSE } from "hono/streaming";
 import { getClientIp } from "../hono/express-shim.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
-import { books, branches, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress, userCompletedBooks, uploadedImages, userActivityLogs, pages, userSessions, bookTestimonials } from "../db/schema.js";
+import { books, branches, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress, userCompletedBooks, uploadedImages, userActivityLogs, pages, bookTestimonials } from "../db/schema.js";
 import { getErrorMessage, cApiError, cForbiddenError, cNotFoundError, cRateLimitError, cUnauthorizedError, cValidationError } from "../utils/error.js";
 import { sanitizeTextForDB, sanitizeKeywords } from '../utils/text-processing.js';
 import { eq, and, desc, sql, ne, inArray, arrayOverlaps } from "drizzle-orm";
@@ -135,7 +135,7 @@ import { getPsychologicalProfileResult } from "../services/psychological-profile
 import { getLockedPaths } from "../services/locked-paths.js";
 import { runGate0, runGate1, buildCustomActionValidationPrompt, buildCanonicalAction, getRejectionMessage, CUSTOM_ACTION_VALIDATION_SCHEMA_DEFINITION, CUSTOM_ACTION_VALIDATION_REQUIRED_FIELDS } from "../services/custom-actions.js";
 import { customActions } from "../db/schema.js";
-import { getStoryStateFromPage, computeEndingStats } from "../services/story.js";
+import { getStoryStateFromPage, computeEndingStats, setActiveSession } from "../services/story.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 import { createAIOptionsWithSchema, aiPrompt } from "../utils/ai-chat.js";
 import { AI_CHAT_MODELS_THEME } from "../config/ai-clients.js";
@@ -1622,7 +1622,7 @@ router.get("/:id/similar", optionalAuth, async (c) => {
     const limit = Math.min(parseInt(c.req.query().limit as string) || 10, 50);
     const currentUserId = c.get("userId") || null;
 
-    // Handle array case for id (Express can return string[])
+    // Handle array case for id (route params may be string[])
     const bookId = Array.isArray(id) ? id[0] : id;
 
     // Resolve book by identifier (slug first, then UUID)
@@ -1735,7 +1735,7 @@ router.get("/:id/similar", optionalAuth, async (c) => {
  */
 router.get("/explore", optionalAuth, async (c) => {
   try {
-    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE, search, sortBy, sortOrder, lastUpdated, language, tags, ageRange, gender, mode, collection } = extractPaginationParams({ query: c.req.query() } as any);
+    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE, search, sortBy, sortOrder, lastUpdated, language, tags, ageRange, gender, mode, collection } = extractPaginationParams(c.req.query());
     const userId = c.get("userId") || null;
     
     // Extract tags from query parameter (comma-separated)
@@ -2634,7 +2634,7 @@ router.patch("/favorites/rename-collection", requireAuth, async (c) => {
 router.get("/:id/comments", optionalAuth, async (c) => {
   try {
     const { id } = c.req.param();
-    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE } = extractPaginationParams({ query: c.req.query() } as any);
+    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE } = extractPaginationParams(c.req.query());
     const { pageId, paragraphNumber } = c.req.query();
 
     // Check if book exists
@@ -3008,7 +3008,7 @@ async function fetchComments(
 router.get("/:id/pages/:pageId/comments", optionalAuth, async (c) => {
   try {
     const { id, pageId } = c.req.param();
-    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE } = extractPaginationParams({ query: c.req.query() } as any);
+    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE } = extractPaginationParams(c.req.query());
     const { paragraphNumber } = c.req.query();
 
     const book = await getBookFromDB(id as string);
@@ -3135,7 +3135,7 @@ router.post("/:id/pages/:pageId/comments", requireAuth, async (c) => {
 router.get("/:id/pages/:pageId/paragraphs/:paragraphNumber/comments", optionalAuth, async (c) => {
   try {
     const { id, pageId, paragraphNumber } = c.req.param();
-    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE } = extractPaginationParams({ query: c.req.query() } as any);
+    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE } = extractPaginationParams(c.req.query());
 
     const book = await getBookFromDB(id as string);
     if (!book) return cNotFoundError(c, "Book not found");
@@ -4147,29 +4147,19 @@ router.post("/:identifier/:pageId/touch", requireAuth, async (c) => {
   const dbPage = await getPageFromDB(pageIdStr, { bookIdentifier: book.id });
   if (!dbPage) return cNotFoundError(c, "Page not found");
 
-  // Upsert the active session row, bumping updated_at. This is the same row
-  // the `reads` sort and `getEnrichedBook` session subquery read from, so the
-  // dashboard reorders immediately — without any visit/progress/credit side effects.
+  // Upsert the active session row via setActiveSession, which applies the
+  // branch-aware frontier rule (active-tip, preserved on back-navigation) and
+  // bumps updated_at. This is the same row the `reads` sort and
+  // `getEnrichedBook` session subquery read from, so the dashboard reorders
+  // immediately — without any visit/progress/credit side effects.
   const now = new Date();
-  const [session] = await dbWrite
-    .insert(userSessions)
-    .values({
-      userId,
-      bookId: book.id,
-      pageId: pageIdStr,
-      previousPageId: dbPage.parentId,
-      status: 'active',
-    })
-    .onConflictDoUpdate({
-      target: [userSessions.userId, userSessions.bookId],
-      set: {
-        pageId: pageIdStr,
-        previousPageId: dbPage.parentId,
-        status: 'active',
-        updatedAt: now,
-      },
-    })
-    .returning({ updatedAt: userSessions.updatedAt });
+  const session = await setActiveSession({
+    userId,
+    bookId: book.id,
+    pageId: pageIdStr,
+    pageNumber: dbPage.page,
+    previousPageId: dbPage.parentId ?? undefined,
+  });
 
   return c.json({ success: true, lastReadAt: session?.updatedAt ?? now });
 });
@@ -4973,6 +4963,25 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (c)
 });
 
 /**
+ * Shared select shape that joins each testimonial with its author's public
+ * profile fields (name + avatar) so the frontend can render testimonials the
+ * same way it renders comments.
+ */
+const testimonialWithAuthorSelect = {
+  id: bookTestimonials.id,
+  userId: bookTestimonials.userId,
+  bookId: bookTestimonials.bookId,
+  rating: bookTestimonials.rating,
+  content: bookTestimonials.content,
+  status: bookTestimonials.status,
+  featured: bookTestimonials.featured,
+  createdAt: bookTestimonials.createdAt,
+  updatedAt: bookTestimonials.updatedAt,
+  name: users.name,
+  imageUrl: users.imageUrl,
+};
+
+/**
  * @route GET /api/books/testimonials
  * @description Get the authenticated user's own book testimonials
  * @access Private (requires auth)
@@ -4982,12 +4991,13 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (c)
  */
 router.get("/testimonials", requireAuth, async (c) => {
   const userId = c.get("userId")!;
-  const { limit = DEFAULT_ITEMS_PER_PAGE, page = 1 } = extractPaginationParams({ query: c.req.query() } as any);
+  const { limit = DEFAULT_ITEMS_PER_PAGE, page = 1 } = extractPaginationParams(c.req.query());
   const offset = (page - 1) * limit;
 
   const rows = await dbRead
-    .select()
+    .select(testimonialWithAuthorSelect)
     .from(bookTestimonials)
+    .leftJoin(users, eq(bookTestimonials.userId, users.userId))
     .where(eq(bookTestimonials.userId, userId))
     .orderBy(desc(bookTestimonials.createdAt))
     .limit(limit)
@@ -4999,7 +5009,7 @@ router.get("/testimonials", requireAuth, async (c) => {
     .where(eq(bookTestimonials.userId, userId));
 
   const pagination = calculatePaginationMeta(page, limit, count);
-  c.status(200); return c.json(createPaginatedResponse(rows, pagination));
+  c.status(200); return c.json(createPaginatedResponse(rows, pagination, 'testimonials'));
 });
 
 /**
@@ -5020,7 +5030,7 @@ router.get("/testimonials", requireAuth, async (c) => {
 router.get("/:identifier/testimonials", optionalAuth, async (c) => {
   const identifier = c.req.param().identifier as string;
   const userId = c.get("userId");
-  const { limit = DEFAULT_ITEMS_PER_PAGE, page = 1 } = extractPaginationParams({ query: c.req.query() } as any);
+  const { limit = DEFAULT_ITEMS_PER_PAGE, page = 1 } = extractPaginationParams(c.req.query());
   const offset = (page - 1) * limit;
   const featuredOnly = c.req.query().featured === "true";
 
@@ -5041,8 +5051,9 @@ router.get("/:identifier/testimonials", optionalAuth, async (c) => {
   }
 
   const rows = await dbRead
-    .select()
+    .select(testimonialWithAuthorSelect)
     .from(bookTestimonials)
+    .leftJoin(users, eq(bookTestimonials.userId, users.userId))
     .where(and(...conditions))
     .orderBy(desc(bookTestimonials.createdAt))
     .limit(limit)
@@ -5054,7 +5065,7 @@ router.get("/:identifier/testimonials", optionalAuth, async (c) => {
     .where(and(...conditions));
 
   const pagination = calculatePaginationMeta(page, limit, count);
-  c.status(200); return c.json(createPaginatedResponse(rows, pagination));
+  c.status(200); return c.json(createPaginatedResponse(rows, pagination, 'testimonials'));
 });
 
 /**
@@ -5111,9 +5122,16 @@ router.post("/:identifier/testimonials", requireAuth, async (c) => {
       status: "pending",
       featured: false,
     })
-    .returning();
+    .returning({ id: bookTestimonials.id });
 
-  c.status(201); return c.json({ testimonial: created });
+  const [testimonial] = await dbRead
+    .select(testimonialWithAuthorSelect)
+    .from(bookTestimonials)
+    .leftJoin(users, eq(bookTestimonials.userId, users.userId))
+    .where(eq(bookTestimonials.id, created.id))
+    .limit(1);
+
+  c.status(201); return c.json({ testimonial });
 });
 
 /**
@@ -5142,8 +5160,9 @@ router.get("/:identifier/testimonials/:id", optionalAuth, async (c) => {
   }
 
   const [testimonial] = await dbRead
-    .select()
+    .select(testimonialWithAuthorSelect)
     .from(bookTestimonials)
+    .leftJoin(users, eq(bookTestimonials.userId, users.userId))
     .where(and(eq(bookTestimonials.id, id), eq(bookTestimonials.bookId, book.id)))
     .limit(1);
 
@@ -5228,11 +5247,17 @@ router.patch("/:identifier/testimonials/:id", requireAuth, async (c) => {
   updateValues.status = "pending";
   updateValues.featured = false;
 
-  const [updated] = await dbWrite
+  await dbWrite
     .update(bookTestimonials)
     .set({ ...updateValues, updatedAt: new Date() })
+    .where(eq(bookTestimonials.id, id));
+
+  const [updated] = await dbRead
+    .select(testimonialWithAuthorSelect)
+    .from(bookTestimonials)
+    .leftJoin(users, eq(bookTestimonials.userId, users.userId))
     .where(eq(bookTestimonials.id, id))
-    .returning();
+    .limit(1);
 
   c.status(200); return c.json({ testimonial: updated });
 });

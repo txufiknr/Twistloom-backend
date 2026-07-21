@@ -271,6 +271,8 @@ export async function insertStoryPage(
     model: aiModel,
     evalProvider: aiEvalProvider,
     evalModel: aiEvalModel,
+    scoreBefore,
+    scoreAfter,
   } = aiResponseProvider;
 
   const elapsedDays = storyStartDate && calendarDate ? daysBetween(storyStartDate, calendarDate) : undefined;
@@ -298,6 +300,8 @@ export async function insertStoryPage(
     aiModel,
     aiEvalProvider,
     aiEvalModel,
+    scoreBefore,
+    scoreAfter,
     createdAt: new Date(),
     updatedAt: new Date()
   } satisfies Record<keyof Omit<DBNewPage, 'id' | 'isGeneratingStartedAt' | 'visitCount'>, unknown>;
@@ -1214,6 +1218,8 @@ export function mapToPersistedStoryPage(dbPage: DBPage): PersistedStoryPage {
     aiModel: dbPage.aiModel || 'none',
     aiEvalProvider: dbPage.aiEvalProvider || 'none',
     aiEvalModel: dbPage.aiEvalModel || 'none',
+    scoreBefore: dbPage.scoreBefore ?? null,
+    scoreAfter: dbPage.scoreAfter ?? null,
     createdAt: dbPage.createdAt,
     updatedAt: dbPage.updatedAt,
   } satisfies PersistedStoryPage;
@@ -1277,10 +1283,10 @@ export function mapToStoryPage(dbPage: DBPage): StoryPage {
  * ```typescript
  * const translatedPage = await mapToTranslatedPage(dbPage, {
  *   bookLanguage: book.language,
- *   headerLanguage: req.headers['accept-language'],
+ *   headerLanguage: c.req.header('accept-language'),
  *   translate: true,
  * });
- * res.json(enrichedPage);
+ * c.json(enrichedPage);
  * ```
  */
 export async function mapToTranslatedPage(

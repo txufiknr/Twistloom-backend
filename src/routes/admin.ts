@@ -68,7 +68,7 @@ const router = new Hono<AppEnv>();
 //     const { bookId } = req.params;
 //     const { limit = 50 } = req.query;
 
-//     // Ensure bookId is a string (Express params can be string array)
+//     // Ensure bookId is a string (route params can be string arrays)
 //     const bookIdStr = Array.isArray(bookId) ? bookId[0] : bookId;
 //     const snapshots = await getUserBookSnapshots(userId, bookIdStr, Number(limit));
     
@@ -504,7 +504,7 @@ router.post("/social-mentions/bulk-status",
 //       });
 //     }
 
-//     // Ensure bookId is string (Express params can be string arrays)
+//     // Ensure bookId is string (route params can be string arrays)
 //     const bookIdStr = Array.isArray(bookId) ? bookId[0] : bookId;
 
 //     const stats = await getSnapshotStatistics(userId, bookIdStr);
@@ -536,7 +536,7 @@ router.post("/social-mentions/bulk-status",
 //       });
 //     }
 
-//     // Ensure bookId is string (Express params can be string arrays)
+//     // Ensure bookId is string (route params can be string arrays)
 //     const bookIdStr = Array.isArray(bookId) ? bookId[0] : bookId;
 
 //     // Get statistics before deletion for confirmation

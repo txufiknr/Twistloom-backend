@@ -281,7 +281,7 @@ export function validatePageForJobEnqueue(page: UserStoryPage, currentBook: Book
  * @returns Generation strategy configuration which is optimized for specific
  * use cases and environments:
  * 
- * 'vercel': User-facing API requests with immediate response requirements (Express API Route)
+ * 'vercel': User-facing API requests with immediate response requirements (Hono route)
  * - Timeout: 4.5 minutes (Vercel limits enforced)
  * - Parallel: ✅ Yes (for performance)
  * - Use Case: Real-time user interactions via SSE
@@ -1232,7 +1232,7 @@ export async function ensureCandidatesForPageWithStrategy(
  * This function dispatches the retry-pending-generations workflow via GitHub REST API,
  * which runs in GitHub Actions with extended timeout (30 minutes) and full environment access.
  * 
- * This is the recommended approach for Express.js deployments where Vercel's waitUntil is unavailable.
+ * This is the recommended approach for Node server deployments where Vercel's waitUntil is unavailable.
  * 
  * **Idempotency**: This function is idempotent per pageId - it checks if generation is already
  * in progress (isGeneratingStartedAt not null) and returns early if so. It sets isGeneratingStartedAt

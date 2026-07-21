@@ -15,7 +15,7 @@ import type { StoryThread, StoryThreadTranslation } from "../types/story-thread.
 import type { CustomActionOutcome, CustomActionRejectionCategory } from "../types/custom-action.js";
 import type { TransactionType } from "../types/credits.js";
 import type { SubscriptionStatus, SubscriptionTransactionType } from "../types/subscription.js";
-import type { ResourceAIProvider, ResourceTimestamp, ResourceTranslatorType } from "../types/api.js";
+import type { ResourceAIProvider, ResourceAIScore, ResourceTimestamp, ResourceTranslatorType } from "../types/api.js";
 import { BOOK_MIN_PAGES } from "../config/story.js";
 import { FIRST_TIME_CREDITS } from "../config/credits.js";
 
@@ -77,6 +77,8 @@ export const pages = pgTable(
     aiModel: text("ai_model"),
     aiEvalProvider: text("ai_eval_provider").$type<AIChatProvider | 'none'>(),
     aiEvalModel: text("ai_eval_model"),
+    scoreBefore: integer("score_before"), // Evaluation score (0-100)
+    scoreAfter: integer("score_after"), // Refinement score (0-100)
     pendingGenerationCount: integer("pending_generation_count").notNull().generatedAlwaysAs(
       // Count of actions without pre-generated destinations
       sql`(
@@ -93,7 +95,7 @@ export const pages = pgTable(
     visitCount: integer("visit_count").notNull().default(0), // Count of times this page has been visited (denormalized for performance)
     createdAt,
     updatedAt,
-  } satisfies Record<keyof StoryPage | 'id' | 'userId' | 'parentId' | 'branchId' | 'bookId' | 'page' | 'pendingGenerationCount' | 'isGeneratingStartedAt' | 'visitCount' | 'elapsedDays' | ResourceAIProvider | ResourceTimestamp, unknown>,
+  } satisfies Record<keyof StoryPage | 'id' | 'userId' | 'parentId' | 'branchId' | 'bookId' | 'page' | 'pendingGenerationCount' | 'isGeneratingStartedAt' | 'visitCount' | 'elapsedDays' | ResourceAIProvider | ResourceAIScore | ResourceTimestamp, unknown>,
   (t) => [
     // Index for book pagination
     index("pages_book_page_idx").on(t.bookId, t.page),
@@ -830,6 +832,13 @@ export const userSessions = pgTable(
     bookId: bookId("cascade"), // Delete if book is deleted
     pageId: pageId("set null"), // Reset to page 1 when page is deleted, but if possible, should revert this into previous page (from userPageProgress)
     previousPageId: uuid("previous_page_id"), // For navigation history
+    // Branch-aware "active-tip" frontier: the page the reader is currently progressing
+    // through (forward progress OR a different branch), preserved on back-navigation.
+    // `frontierAncestorIds` holds the frontier page's own id plus the page ids in
+    // its actionsHistory, enabling the ancestry rule without re-deriving history.
+    frontierPageId: pageId("set null"), // Active-tip page id (branch-aware frontier)
+    frontierPageNumber: integer("frontier_page_number").notNull().default(1), // Display hint only — NOT used for gating
+    frontierAncestorIds: uuid("frontier_ancestor_ids").array().notNull().default(sql`ARRAY[]::uuid[]`), // frontier page id + its actionsHistory pageIds
     status: text("status").$type<SessionStatus>().notNull().default("active"),
     createdAt,
     updatedAt,

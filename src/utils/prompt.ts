@@ -3840,7 +3840,7 @@ aiFinalComment:
  * @param params.userId - The user's unique identifier for ownership and session
  * @param params.theme - User's desired story theme or concept
  * @param params.mcCandidate - Partial character profile to customize the main character
- * @param params.req - Optional Express request object for activity logging
+ * @param params.req - Optional Hono context for activity-log metadata
  * @returns Promise resolving to complete book setup with all components
  * 
  * @example

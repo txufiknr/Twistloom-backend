@@ -102,6 +102,17 @@ export function getBookModeCreditCost(mode: BookMode | null | undefined): number
 export const FIRST_TIME_CREDITS = 50;
 
 /**
+ * Monthly credit bonus granted to VIP subscribers.
+ *
+ * Awarded automatically on every subscription activation (trial or paid) and on
+ * every subsequent monthly renewal via the Stripe webhook flow. This is the
+ * single source of truth for the VIP monthly credit amount; `VIP_BENEFITS`
+ * in `config/subscription.ts` falls back to this value unless overridden by the
+ * `VIP_MONTHLY_CREDITS` environment variable.
+ */
+export const VIP_MONTHLY_CREDITS = 200;
+
+/**
  * Daily check-in rewards
  * @overview Defines free credits awarded for daily user check-ins
  */

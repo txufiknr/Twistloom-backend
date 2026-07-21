@@ -256,6 +256,22 @@ interface Session {
 }
 ```
 
+### EnrichedBookSession
+
+Enriched reading session for the authenticated user on a specific book, returned in the `session` field of book endpoints. `last*` fields reflect the **current** cursor (`lastPageId` is the resume target and updates on every open, including back-navigation). `frontier*` fields form the **branch-aware active-tip** frontier used to gate per-paragraph commenting: the frontier is the reader's current tip of progress, advanced on forward progress or a different branch, and **preserved** on back-navigation.
+
+```typescript
+interface EnrichedBookSession {
+  lastReadAt: Date;            // When the user last touched this book's session (== user_sessions.updated_at)
+  lastPageId: string;          // Current page ID the reader is on (resume target)
+  lastPageNumber: number;      // Current page number (1-based); decreases when navigating back
+  frontierPageId: string | null;     // Active-tip page id (branch-aware; NOT a numeric max)
+  frontierPageNumber: number;  // Display hint only — do NOT use for gating (branches share/cross numbers)
+  frontierAncestorIds: string[];     // Frontier page's own id + its actionsHistory pageIds (for the ancestry rule)
+  contextHistory: string;      // Persisted context/history snapshot for the session
+}
+```
+
 ### PaginationMeta
 
 Pagination metadata.
@@ -691,7 +707,15 @@ Retrieves a book by slug or UUID v7 identifier. Returns complete book informatio
     "isSaved": false,
     "isCompleted": false,
     "isPurchased": false,
-    "session": null,
+    "session": {
+      "lastReadAt": "2023-01-15T10:30:00.000Z",
+      "lastPageId": "page789",
+      "lastPageNumber": 5,
+      "frontierPageId": "page812",
+      "frontierPageNumber": 12,
+      "frontierAncestorIds": ["page1", "page30", "page812"],
+      "contextHistory": "The MC followed a stranger into the cellar…"
+    },
     "collection": null
   }
 }
@@ -2273,6 +2297,11 @@ Deletes a comment. Only the comment author can delete their own comments.
 
 User-submitted testimonials (ratings + written feedback) for books. These live in the dedicated `bookTestimonials` table and are curated separately from the social-mention ingestion pipeline.
 
+**Author fields:** Every testimonial response includes the author's public profile fields, joined from the `users` table — exactly like book comments:
+
+- `name` (string): The author's display name.
+- `imageUrl` (string | null): The author's avatar URL (null if the user has no avatar or was deleted).
+
 **Status lifecycle:** New testimonials default to `pending`. Only `approved` testimonials are visible to the public. Editing a testimonial resets it back to `pending` and clears its `featured` flag so it can be re-curated by an admin.
 
 **Visibility rules:**
@@ -2280,24 +2309,28 @@ User-submitted testimonials (ratings + written feedback) for books. These live i
 - The book owner or the testimonial author may view any status.
 - `featured` (boolean) can be used to surface curated highlights; pass `?featured=true` to the list endpoint.
 
+**List pagination:** Both list endpoints (`GET /api/books/testimonials` and `GET /api/books/:identifier/testimonials`) support cursor-free page/limit pagination and return a wrapped `{ testimonials: [...], pagination }` shape — identical to the book comments endpoints. Use the `page` and `limit` query params for lazy loading and check `pagination.hasNext` to decide whether to fetch the next page.
+
 ### GET /api/books/testimonials
 
-Returns the authenticated user's own testimonials across all books.
+Returns the authenticated user's own testimonials across all books. Supports pagination for lazy loading (returns the same wrapped shape as book comments).
 
 **Authentication:** Required (via `requireAuth`)
 
 **Query Parameters:**
 - `page` (number, optional): 1-based page (default: 1)
-- `limit` (number, optional): Items per page (default: 20, max: configured maximum)
+- `limit` (number, optional): Testimonials per page (default: 20, max: configured maximum)
 
 **Response (200 OK):**
 ```json
 {
-  "items": [
+  "testimonials": [
     {
       "id": "uuid",
       "userId": "uuid",
       "bookId": "uuid",
+      "name": "John Doe",
+      "imageUrl": "https://example.com/avatar.jpg",
       "rating": 5,
       "content": "Couldn't put it down.",
       "status": "approved",
@@ -2309,10 +2342,10 @@ Returns the authenticated user's own testimonials across all books.
   "pagination": {
     "page": 1,
     "limit": 20,
-    "totalItems": 1,
+    "totalCount": 1,
     "totalPages": 1,
-    "hasNextPage": false,
-    "hasPreviousPage": false
+    "hasNext": false,
+    "hasPrevious": false
   }
 }
 ```
@@ -2322,7 +2355,7 @@ Returns the authenticated user's own testimonials across all books.
 
 ### GET /api/books/:identifier/testimonials
 
-Lists testimonials for a specific book. Public viewers see only `approved` testimonials; the book owner sees all statuses.
+Lists testimonials for a specific book. Public viewers see only `approved` testimonials; the book owner sees all statuses. Supports pagination for lazy loading (returns the same wrapped shape as book comments).
 
 **Authentication:** Optional (via `optionalAuth`)
 
@@ -2331,17 +2364,19 @@ Lists testimonials for a specific book. Public viewers see only `approved` testi
 
 **Query Parameters:**
 - `page` (number, optional): 1-based page (default: 1)
-- `limit` (number, optional): Items per page (default: 20, max: configured maximum)
+- `limit` (number, optional): Testimonials per page (default: 20, max: configured maximum)
 - `featured` (string, optional): When `"true"`, only featured testimonials are returned
 
 **Response (200 OK):**
 ```json
 {
-  "items": [
+  "testimonials": [
     {
       "id": "uuid",
       "userId": "uuid",
       "bookId": "uuid",
+      "name": "Jane Doe",
+      "imageUrl": "https://example.com/avatar2.jpg",
       "rating": 4,
       "content": "A gripping psychological thriller.",
       "status": "approved",
@@ -2353,10 +2388,10 @@ Lists testimonials for a specific book. Public viewers see only `approved` testi
   "pagination": {
     "page": 1,
     "limit": 20,
-    "totalItems": 1,
+    "totalCount": 1,
     "totalPages": 1,
-    "hasNextPage": false,
-    "hasPreviousPage": false
+    "hasNext": false,
+    "hasPrevious": false
   }
 }
 ```
@@ -2389,11 +2424,13 @@ Creates a testimonial for a book. New testimonials are `pending` and not feature
 ```json
 {
   "testimonial": {
-    "id": "uuid",
-    "userId": "uuid",
-    "bookId": "uuid",
-    "rating": 5,
-    "content": "One of the best twist endings I've read.",
+      "id": "uuid",
+      "userId": "uuid",
+      "bookId": "uuid",
+      "name": "John Doe",
+      "imageUrl": "https://example.com/avatar.jpg",
+      "rating": 5,
+      "content": "One of the best twist endings I've read.",
     "status": "pending",
     "featured": false,
     "createdAt": "2026-07-19T12:00:00.000Z",
@@ -2421,15 +2458,17 @@ Retrieves a single testimonial. Owners of the testimonial or the book may view a
 ```json
 {
   "testimonial": {
-    "id": "uuid",
-    "userId": "uuid",
-    "bookId": "uuid",
-    "rating": 4,
-    "content": "A gripping psychological thriller.",
-    "status": "approved",
-    "featured": true,
-    "createdAt": "2026-07-18T09:30:00.000Z",
-    "updatedAt": "2026-07-18T09:30:00.000Z"
+      "id": "uuid",
+      "userId": "uuid",
+      "bookId": "uuid",
+      "name": "Jane Doe",
+      "imageUrl": "https://example.com/avatar2.jpg",
+      "rating": 4,
+      "content": "A gripping psychological thriller.",
+      "status": "approved",
+      "featured": true,
+      "createdAt": "2026-07-18T09:30:00.000Z",
+      "updatedAt": "2026-07-18T09:30:00.000Z"
   }
 }
 ```
@@ -2463,11 +2502,13 @@ Updates a testimonial. Only the testimonial author may update it. Editing resets
 ```json
 {
   "testimonial": {
-    "id": "uuid",
-    "userId": "uuid",
-    "bookId": "uuid",
-    "rating": 5,
-    "content": "Updated thoughts after a re-read.",
+      "id": "uuid",
+      "userId": "uuid",
+      "bookId": "uuid",
+      "name": "John Doe",
+      "imageUrl": "https://example.com/avatar.jpg",
+      "rating": 5,
+      "content": "Updated thoughts after a re-read.",
     "status": "pending",
     "featured": false,
     "createdAt": "2026-07-18T09:30:00.000Z",
@@ -3170,6 +3211,11 @@ Rate limits are enforced on a per-user basis to prevent abuse:
 - Unified query building logic across book list endpoints for maintainability
 
 ### v1.3.0 (2026-04-24)
+- Added `EnrichedBookSession` type definition (previously referenced but undocumented)
+- Replaced the numeric-max `furthestPage*` cursor with a **branch-aware active-tip frontier** (`frontierPageId`, `frontierPageNumber`, `frontierAncestorIds`). The frontier advances on forward progress or a different branch and is preserved on back-navigation — correct for interactive/multiverse branching stories.
+- `setActiveSession` now applies the frontier rule (touched page's `actionsHistory` pageIds + own id) on every session update, and the `POST /.../:pageId/touch` heartbeat routes through it as the single source of truth
+- `frontierPageNumber` is documented as a **display hint only** (not for comment gating); `lastPageId` remains the resume target
+- Updated `GET /api/books/:identifier` example to show a populated `session` object with the frontier fields
 - Updated Action type to use nested destination object with branchId and pageId
 - Added isUserChosen field to EnrichedAction for user-specific action tracking
 - Added POST /api/books/:identifier/:branchId/:page/visit endpoint for tracking user navigation

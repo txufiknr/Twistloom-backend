@@ -13,6 +13,7 @@ import { initAuthConfig } from "@hono/auth-js";
 import { parseJsonBody } from "./middleware/body.js";
 import { extractLocale } from "./middleware/locale.js";
 import { rateLimitByUser } from "./middleware/rate-limit.js";
+import { verifyNextAuthToken } from "./middleware/nextauth.js";
 import routes from "./routes/index.js";
 import { APP_NAME, VERSION } from "./config/constants.js";
 import { IS_PRODUCTION } from "./config/env.js";
@@ -58,6 +59,20 @@ app.use(
     providers: [], // Backend only verifies; it doesn't handle OAuth flows
   })),
 );
+
+// Authenticate user session before body parsing.
+// @hono/auth-js getAuthUser wraps c.req.raw in a new Request, which throws
+// "Response body object should not be disturbed or locked" when the body
+// stream has already been consumed (e.g., by parseJsonBody). Running auth
+// first keeps the raw body pristine for getAuthUser.
+app.use("/api/*", async (c, next) => {
+  const user = await verifyNextAuthToken(c);
+  if (user) {
+    c.set("user", user);
+    c.set("userId", user.id);
+  }
+  await next();
+});
 
 // Parse JSON request bodies once per request (replaces express.json()).
 app.use("*", parseJsonBody);

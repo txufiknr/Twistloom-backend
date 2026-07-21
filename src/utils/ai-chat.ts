@@ -1053,6 +1053,8 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
                 ...result,
                 evalProvider,
                 evalModel,
+                scoreBefore: scoreBefore.total,
+                scoreAfter: scoreAfter.total,
                 result: evaluationResult.output
               } satisfies AIResponse<T>;
             } else if (logEvaluationResult) {

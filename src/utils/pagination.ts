@@ -12,7 +12,6 @@
  * - DRY pagination logic across routes
  */
 
-import type { Request } from "express";
 import { DEFAULT_ITEMS_PER_PAGE, MAX_ITEMS_PER_PAGE } from "../config/pagination.js";
 import type { PaginationMeta, ResourceName } from "../types/api.js";
 
@@ -57,35 +56,46 @@ export interface PaginatedResponse<T> {
 }
 
 /**
- * Extracts pagination parameters from Express request
- * 
- * @param req - Express request object
+ * Extracts pagination parameters from a Hono request query record.
+ *
+ * Accepts the plain query object returned by `c.req.query()` — a record keyed
+ * by query-parameter name whose values are strings (or arrays, for repeated
+ * keys). This keeps the helper framework-agnostic and removes the need for the
+ * Express `Request` shape or `as any` casts.
+ *
+ * @param query - Query parameters from `c.req.query()`
  * @param defaultLimit - Default items per page (uses config default if not provided)
  * @returns Normalized pagination parameters
- * 
+ *
  * @example
  * ```typescript
- * const params = extractPaginationParams(req, 20);
+ * const params = extractPaginationParams(c.req.query(), 20);
  * // Returns: { page: 1, limit: 20, search: "thriller" }
  * ```
  */
-export function extractPaginationParams(req: Request, defaultLimit: number = DEFAULT_ITEMS_PER_PAGE): PaginationParams {
-  const page = Math.max(1, parseInt(req.query.page as string) || 1);
+export function extractPaginationParams(
+  query: Record<string, string | string[] | undefined>,
+  defaultLimit: number = DEFAULT_ITEMS_PER_PAGE
+): PaginationParams {
+  const first = (value: string | string[] | undefined): string | undefined =>
+    Array.isArray(value) ? value[0] : value;
+
+  const page = Math.max(1, parseInt(first(query.page) ?? "") || 1);
   const limit = Math.min(
-    MAX_ITEMS_PER_PAGE, 
-    Math.max(1, parseInt(req.query.limit as string) || defaultLimit)
+    MAX_ITEMS_PER_PAGE,
+    Math.max(1, parseInt(first(query.limit) ?? "") || defaultLimit)
   );
-  const cursor = req.query.cursor as string;
-  const search = (req.query.search as string || '').trim();
-  const sortBy = req.query.sortBy as string;
-  const sortOrder = (req.query.sortOrder as 'asc' | 'desc') || 'desc';
-  const lastUpdated = req.query.lastUpdated as string | undefined;
-  const language = req.query.language as string | undefined;
-  const tags = req.query.tags as string | undefined;
-  const ageRange = req.query.ageRange as string | undefined;
-  const gender = req.query.gender as string | undefined;
-  const mode = req.query.mode as string | undefined;
-  const collection = (req.query.collection as string || '').trim() || undefined;
+  const cursor = first(query.cursor);
+  const search = (first(query.search) || '').trim();
+  const sortBy = first(query.sortBy);
+  const sortOrder = (first(query.sortOrder) as 'asc' | 'desc') || 'desc';
+  const lastUpdated = first(query.lastUpdated);
+  const language = first(query.language);
+  const tags = first(query.tags);
+  const ageRange = first(query.ageRange);
+  const gender = first(query.gender);
+  const mode = first(query.mode);
+  const collection = (first(query.collection) || '').trim() || undefined;
 
   return {
     page,

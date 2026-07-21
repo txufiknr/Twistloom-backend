@@ -1,4 +1,5 @@
 import type { SubscriptionConfig } from "../types/subscription.js";
+import { VIP_MONTHLY_CREDITS } from "./credits.js";
 
 /**
  * VIP Subscription Configuration
@@ -8,7 +9,7 @@ import type { SubscriptionConfig } from "../types/subscription.js";
  * Users with active VIP subscriptions receive:
  * - VIP badge on profile
  * - 2x daily check-in bonus (separate claim button)
- * - +50 monthly credits automatically added
+ * - +200 monthly credits automatically added
  */
 export const VIP_SUBSCRIPTION: SubscriptionConfig = {
   id: "vip_monthly",
@@ -17,7 +18,7 @@ export const VIP_SUBSCRIPTION: SubscriptionConfig = {
   priceUSD: 9.99,
   priceId: process.env.STRIPE_VIP_PRICE_ID || "",
   productId: process.env.STRIPE_VIP_PRODUCT_ID || "",
-  monthlyCredits: 50,
+  monthlyCredits: VIP_MONTHLY_CREDITS,
   checkInMultiplier: 2,
 };
 
@@ -26,9 +27,10 @@ export const VIP_SUBSCRIPTION: SubscriptionConfig = {
  * @overview Environment-based configuration for VIP benefits
  * 
  * These values can be overridden via environment variables for flexibility.
+ * `monthlyCredits` defaults to the exported `VIP_MONTHLY_CREDITS` const.
  */
 export const VIP_BENEFITS = {
-  monthlyCredits: parseInt(process.env.VIP_MONTHLY_CREDITS || "50"),
+  monthlyCredits: parseInt(process.env.VIP_MONTHLY_CREDITS || String(VIP_MONTHLY_CREDITS)),
   checkInMultiplier: parseInt(process.env.VIP_CHECKIN_MULTIPLIER || "2"),
 } as const;
 

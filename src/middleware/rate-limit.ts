@@ -51,7 +51,7 @@ const DEFAULT_RATE_LIMIT: RateLimitConfig = {
  * - Ultra-fast (<1ms latency vs 10-50ms for database)
  * 
  * @param config - Rate limit configuration (defaults to 100 req/min)
- * @returns Express middleware function
+ * @returns Hono middleware function
  * 
  * @example
  * ```typescript
@@ -146,7 +146,7 @@ export function rateLimit(config: RateLimitConfig = DEFAULT_RATE_LIMIT) {
  * ```typescript
  * import { rateLimitByUser } from './middleware/rate-limit.js';
  * 
- * app.use(express.json());
+ * // JSON body parsing is handled by Hono's body middleware
  * app.use(cors());
  * app.use(rateLimitByUser); // Apply globally
  * app.use("/api", routes);
@@ -191,10 +191,10 @@ export const rateLimitByUser = rateLimit(DEFAULT_RATE_LIMIT);
  * ```typescript
  * import { checkRateLimitByIP } from '../middleware/rate-limit.js';
  * 
- * router.post('/api/auth/login', async (req, res) => {
- *   const ip = req.ip || req.socket.remoteAddress || 'unknown';
+ * app.post('/api/auth/login', async (c) => {
+ *   const ip = getClientIp(c) || 'unknown';
  *   if (!checkRateLimitByIP(ip)) {
- *     return res.status(429).json({ error: 'Too many attempts' });
+ *     return c.json({ error: 'Too many attempts' }, 429);
  *   }
  *   // ... rest of handler
  * });

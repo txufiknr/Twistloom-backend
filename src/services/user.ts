@@ -1007,7 +1007,7 @@ function sanitizeFieldValue(
  *
  * @param userId - The authenticated user's ID (used for username conflict exclusion)
  * @param payload - Raw request body containing any subset of updatable fields
- * @param res - Express Response (used to send validation error responses)
+ * @param res - Hono context (used to send validation error responses)
  * @returns Sanitized update object, or null if a validation error response was sent.
  *
  * @example

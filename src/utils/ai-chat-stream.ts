@@ -72,7 +72,7 @@ import { convertToGeminiSchema, getOrCreateGeminiCache } from "./gemini.js";
  *   modelSelection: AI_CHAT_MODELS_WRITING,
  * }, abortController.signal);
  *
- * // In an Express route:
+ * // In a Hono route:
  * res.setHeader('Content-Type', 'text/event-stream');
  * for await (const chunk of stream) {
  *   res.write(chunk);

@@ -168,8 +168,33 @@ export async function setActiveSession(params: SetActiveSessionParams, options?:
   /** Incoming request context for tracking */
   req?: { ip?: string | null; get?: (header: string) => string | undefined | null };
 }): Promise<DBUserSession | null> {
-  const { userId, bookId, pageId, previousPageId } = params;
+  const { userId, bookId, pageId, pageNumber, previousPageId } = params;
   const { req, client = dbWrite } = options ?? {};
+
+  // Build the touched page's ancestor id list (page's own id + every page id in
+  // its actionsHistory). This is the branch-aware "active-tip" frontier signal.
+  const touchedState = await getStoryStateFromDB(pageId, { client });
+  const touchedAncestorIds = buildFrontierAncestorIds(touchedState, pageId);
+
+  // Load the current frontier to decide whether this touch is back-navigation.
+  const [existing] = await client
+    .select({
+      frontierPageId: userSessions.frontierPageId,
+      frontierPageNumber: userSessions.frontierPageNumber,
+      frontierAncestorIds: userSessions.frontierAncestorIds,
+    })
+    .from(userSessions)
+    .where(and(eq(userSessions.userId, userId), eq(userSessions.bookId, bookId)))
+    .limit(1);
+
+  // Back-navigation test: if the touched page is already an ancestor of the
+  // current tip, this is a re-read / back-track → KEEP the existing frontier.
+  // Otherwise it is forward progress or a different branch → ADVANCE the tip.
+  const currentAncestorIds = existing?.frontierAncestorIds ?? [];
+  const isBackNavigation = currentAncestorIds.includes(pageId);
+  const frontierPageId = isBackNavigation ? (existing!.frontierPageId ?? pageId) : pageId;
+  const frontierPageNumber = isBackNavigation ? (existing!.frontierPageNumber ?? pageNumber) : pageNumber;
+  const frontierAncestorIds = isBackNavigation ? currentAncestorIds : touchedAncestorIds;
 
   const [result] = await client
     .insert(userSessions)
@@ -178,6 +203,9 @@ export async function setActiveSession(params: SetActiveSessionParams, options?:
       bookId,
       pageId,
       previousPageId,
+      frontierPageId: pageId,
+      frontierPageNumber: pageNumber,
+      frontierAncestorIds: touchedAncestorIds,
       status: 'active',
     })
     .onConflictDoUpdate({
@@ -186,6 +214,9 @@ export async function setActiveSession(params: SetActiveSessionParams, options?:
         pageId,
         previousPageId,
         status: 'active',
+        frontierPageId,
+        frontierPageNumber,
+        frontierAncestorIds,
         updatedAt: new Date(),
       }
     }).returning();
@@ -201,6 +232,26 @@ export async function setActiveSession(params: SetActiveSessionParams, options?:
   
   console.log(`[setActiveSession] 🌟 Session activated:`, { userId, bookId, pageId, previousPageId });
   return result;
+}
+
+/**
+ * Builds the ancestor id list for a touched page's branch-aware frontier.
+ *
+ * The frontier is the active tip of the reader's path. Its ancestor ids are the
+ * touched page's own id plus every page id recorded in its story-state
+ * `actionsHistory` (the chain of pages from page 1 to the touched page). This
+ * mirrors the frontend `getAncestorIds` helper so the backend rule never
+ * diverges from the client-side comment-gating logic.
+ *
+ * @param state - The touched page's story state (may be null for pages without one yet)
+ * @param pageId - The touched page's id
+ * @returns Ordered list of ancestor page ids ending with `pageId`
+ */
+function buildFrontierAncestorIds(state: DBStoryState | null, pageId: string): string[] {
+  const ids = (state?.actionsHistory ?? [])
+    .map((action) => action.pageId)
+    .filter((id): id is string => Boolean(id));
+  return ids.includes(pageId) ? ids : [...ids, pageId];
 }
 
 /**
@@ -313,7 +364,7 @@ async function markPageVisitedWithClient(params: {
 
   // Update active session to point to the new page
   // Trigger on user_sessions will automatically increment visitCount for all pages including page 1
-  const session = await setActiveSession({ userId, bookId, pageId, previousPageId: actionedPageId }, { client, req });
+  const session = await setActiveSession({ userId, bookId, pageId, pageNumber, previousPageId: actionedPageId }, { client, req });
 
   // Insert user page progress for pages > 1 (for branch reconstruction)
   if (pageNumber > 1) {

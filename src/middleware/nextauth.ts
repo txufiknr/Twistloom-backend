@@ -62,9 +62,14 @@ const inFlightRequests = new Map<string, Promise<AuthUser | null>>();
  * Verifies the Auth.js session cookie via @hono/auth-js and resolves the
  * authenticated backend user.
  *
+ * @remarks Auth.js v5 + Hono Compatibility
+ * This function is safe to call before or after body-parsing middleware.
+ * The global auth middleware in `app.ts` runs **before** `parseJsonBody`,
+ * so `getAuthUser` always receives a pristine, unconsumed request body.
+ *
  * Flow:
  *   1. Verify the session cookie through @hono/auth-js getAuthUser() (which
- *      delegates to @auth/core getSession — handling secure/plain cookie names).
+ *      delegates to @auth/core getSession).
  *   2. Extract email from the verified session.
  *   3. Deduplicate concurrent requests for the same email.
  *   4. Look up userId in the DB (LRU-cached via getUserIdByEmail).
@@ -84,8 +89,9 @@ export async function verifyNextAuthToken(c: Context<AppEnv>): Promise<AuthUser 
 
   let authUser: AuthJsUser | null;
   try {
-    // Relies on `initAuthConfig` having been mounted in app.ts, which sets the
-    // Auth.js config (secret + trustHost) on the context as `authConfig`.
+    // The global auth middleware in app.ts runs before parseJsonBody, so the
+    // request body is still pristine when getAuthUser wraps it. No workaround
+    // for the "disturbed or locked" body error is needed here.
     authUser = await getAuthUser(c);
   } catch (error) {
     console.error("[nextauth] ❌ getAuthUser error:", error);
@@ -153,30 +159,34 @@ export async function verifyNextAuthToken(c: Context<AppEnv>): Promise<AuthUser 
 // ---------------------------------------------------------------------------
 
 /**
- * Requires a valid Auth.js session. Attaches userId / user to the context.
- * Throws 401 if the cookie is absent, expired, or invalid.
+ * Requires a valid Auth.js session.
+ *
+ * @remarks
+ * The user/session is already verified by the global auth middleware in
+ * `app.ts` (which runs before body parsing). This middleware only guards
+ * the route — if no userId was resolved, it throws 401.
+ *
+ * Attaching user / userId on the context was already done by the global
+ * auth middleware, so this middleware avoids calling getAuthUser again.
+ *
+ * Throws 401 if authentication is not present.
  */
 export const requireAuth = createMiddleware<AppEnv>(async (c, next) => {
-  const user = await verifyNextAuthToken(c);
-  if (!user) {
+  if (!c.get("userId")) {
     throw new HTTPException(401, { message: "Authentication required" });
   }
-
-  c.set("user", user);
-  c.set("userId", user.id);
   await next();
 });
 
 /**
- * Optionally verifies the session. Attaches user / userId to the context when
- * valid, but always proceeds. Use for endpoints that serve both guests and
- * authenticated users with different response shapes.
+ * Pass-through that preserves backward compatibility.
+ *
+ * @remarks
+ * The global auth middleware in `app.ts` already resolves the session and
+ * sets userId on the context if valid. Route handlers that called
+ * `optionalAuth` to detect guest vs. authenticated users work identically
+ * because `c.get("userId")` was already populated upstream.
  */
 export const optionalAuth = createMiddleware<AppEnv>(async (c, next) => {
-  const user = await verifyNextAuthToken(c);
-  if (user) {
-    c.set("user", user);
-    c.set("userId", user.id);
-  }
   await next();
 });

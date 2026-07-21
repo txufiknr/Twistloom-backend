@@ -356,9 +356,9 @@ export async function validateTheme(
  * Returns error response matching frontend specification for validation errors.
  * Includes detected words, patterns, AI explanations, and suggestions.
  * 
- * @param res - Express response object
+ * @param res - Hono context
  * @param validationResult - Validation result from theme validation
- * @returns Express response with 400 status and structured error body
+ * @returns Web Response with 400 status and structured error body
  * 
  * @example
  * ```typescript
