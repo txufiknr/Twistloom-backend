@@ -90,6 +90,7 @@ The backend was migrated from **Express.js** to **Hono.js** while keeping every 
 - **First-class TypeScript.** Route params, query, body, environment, and middleware bindings are inferred through `AppEnv` (`src/hono/env.ts`), so handlers get a fully typed `c` instead of loosely-typed `req`/`res` augmentation.
 - **Batteries included.** Built-in CORS, streaming/SSE (`hono/streaming`), and `@hono/auth-js` for cookie-based Auth.js verification replaced hand-rolled Express middleware.
 - **Ergonomic helpers.** `c.json()`, `c.req.param()/query()/header()`, and typed `c.get()/c.set()` variables remove the boilerplate of `req.body`/`res.status().json()` and `wrapAsync`.
+- Read more on https://solodevstack.com/blog/hono-vs-expressjs-solo-developers
 
 ### Migration notes
 
@@ -107,6 +108,7 @@ The app is deployed as a Vercel Node.js serverless function. `src/app.ts` ends w
   - `Buffer` — used by the image-upload middleware (`src/middleware/upload.ts`) to read multipart file bytes, and by `ImageKit` uploads.
   - `node:crypto` and other Node built-ins used across auth, Stripe signature verification, and password hashing.
   - The `Neon` serverless driver and `@hono/node-server` dev server, which assume a Node environment.
+  - See more on `docs\roadmap\EDGE_RUNTIME_MIGRATION_BLOCKERS.md`
 
   On Edge, `Buffer` is `undefined`, so the cover-image upload and any `Buffer`-dependent path throw at runtime (`ReferenceError: Buffer is not defined`). Vercel infers the Node.js runtime automatically for the `.ts` entrypoint (it no longer accepts an explicit `@vercel/node` runtime string in `vercel.json` — doing so throws `Function Runtimes must have a valid version`). To guarantee Node, pin the version via `package.json`'s `engines.node` (set to `"20.x"` here); Vercel reads it from Project Settings → General → Node.js Version. `maxDuration` is raised to `60` to accommodate the long-running AI/SSE routes.
 

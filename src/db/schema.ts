@@ -836,7 +836,7 @@ export const userSessions = pgTable(
     // through (forward progress OR a different branch), preserved on back-navigation.
     // `frontierAncestorIds` holds the frontier page's own id plus the page ids in
     // its actionsHistory, enabling the ancestry rule without re-deriving history.
-    frontierPageId: pageId("set null"), // Active-tip page id (branch-aware frontier)
+    frontierPageId: uuid("frontier_page_id").references(() => pages.id, { onDelete: "set null" }), // Active-tip page id (branch-aware frontier)
     frontierPageNumber: integer("frontier_page_number").notNull().default(1), // Display hint only — NOT used for gating
     frontierAncestorIds: uuid("frontier_ancestor_ids").array().notNull().default(sql`ARRAY[]::uuid[]`), // frontier page id + its actionsHistory pageIds
     status: text("status").$type<SessionStatus>().notNull().default("active"),

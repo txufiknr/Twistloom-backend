@@ -1,0 +1,2 @@
+ALTER TABLE "user_sessions" ADD COLUMN "frontier_page_id" uuid;--> statement-breakpoint
+ALTER TABLE "user_sessions" ADD CONSTRAINT "user_sessions_frontier_page_id_pages_id_fk" FOREIGN KEY ("frontier_page_id") REFERENCES "public"."pages"("id") ON DELETE set null ON UPDATE no action;
