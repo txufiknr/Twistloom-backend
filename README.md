@@ -383,6 +383,12 @@ The Branch Traversal Algorithm transforms story state reconstruction from a perf
 
 This algorithm enables **instantaneous story navigation** and **enterprise-scale performance** while maintaining data integrity and system reliability.
 
+## 🌐 API Examples
+
+https://twistloom-backend.vercel.app/api/books/explore?sortBy=trending&limit=10
+https://twistloom-backend.vercel.app/api/books/stats
+https://twistloom-backend.vercel.app/api/user/users/txufiknr
+
 ## 🏛️ API Architecture
 
 ### **Authentication API** (`/api/auth`)

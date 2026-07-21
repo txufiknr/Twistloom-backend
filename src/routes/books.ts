@@ -1735,7 +1735,7 @@ router.get("/:id/similar", optionalAuth, async (c) => {
  */
 router.get("/explore", optionalAuth, async (c) => {
   try {
-    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE, search, sortBy, sortOrder, lastUpdated, language, tags, ageRange, gender, mode, collection } = extractPaginationParams(c.req.query());
+    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE, search, sortBy, sortOrder, lastUpdated, language, tags, ageRange, gender, mode, collection, profileUserId } = extractPaginationParams(c.req.query());
     const userId = c.get("userId") || null;
     
     // Extract tags from query parameter (comma-separated)
@@ -1803,8 +1803,11 @@ router.get("/explore", optionalAuth, async (c) => {
       ? (sortBy as BookSortOption)
       : 'newest';
 
-    // Check if authentication is required for this sort option
-    const requiresAuth = ['creations', 'reads', 'recommendations', 'favorites', 'for-you'].includes(bookSortBy);
+    // Check if authentication is required for this sort option.
+    // When profileUserId is provided for 'reads' or 'favorites', we are viewing
+    // another user's list — no auth needed since the target user is explicit.
+    const sortNeedsAuth = ['creations', 'reads', 'recommendations', 'favorites', 'for-you'].includes(bookSortBy);
+    const requiresAuth = sortNeedsAuth && !profileUserId;
     if (requiresAuth && !userId) {
       const emptyBooks: EnrichedBookData[] = [];
       const pagination = calculatePaginationMeta(page, limit, 0);
@@ -1827,17 +1830,19 @@ router.get("/explore", optionalAuth, async (c) => {
       }
     }
 
-    // Determine base condition based on sort option
+    // Determine base condition based on sort option.
+    // For creations, use profileUserId when viewing another user's created books.
+    const targetUserId = profileUserId || userId;
     const baseCondition: ReturnType<typeof sql> = isCreations
       ? statusFilter
-        ? and(eq(books.userId, userId!), inArray(books.status, statusFilter))!
-        : eq(books.userId, userId!) // User's own books regardless of status
+        ? and(eq(books.userId, targetUserId!), inArray(books.status, statusFilter))!
+        : eq(books.userId, targetUserId!) // User's own books regardless of status
       : and(eq(books.status, 'active'), eq(books.visibility, 'public'))!; // Only active & public books in explore
 
     // Cache strategy: don't cache user-specific or filtered queries
     const shouldCache = page === 1 && !isCreations && !search && tagsArray.length === 0 && !language && !lastUpdated && !ageRange && !gender && !mode && !statusFilter && bookSortBy !== 'reads' && bookSortBy !== 'favorites' && bookSortBy !== 'recommendations' && bookSortBy !== 'for-you';
     const cacheKey = isCreations
-      ? `books:user:${userId}:page:${page}`
+      ? `books:user:${targetUserId}:page:${page}`
       : bookSortBy === 'trending'
       ? CACHE_KEYS.EXPLORE_PAGE_1_TRENDING
       : CACHE_KEYS.EXPLORE_PAGE_1;
@@ -1872,7 +1877,7 @@ router.get("/explore", optionalAuth, async (c) => {
         maxAge,
         gender: sanitizedGender,
         mode: sanitizedMode,
-        currentUserId: userId, // Pass userId for user-specific sorting (reads, recommendations)
+        currentUserId: profileUserId || userId, // Use profileUserId for viewing another user's list
         collection, // Filter favorites by collection name
       });
 

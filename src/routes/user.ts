@@ -474,8 +474,9 @@ router.put('/', requireAuth, async (c: Context<AppEnv>) => {
  *   }
  * }
  */
-router.get("/users/:identifier", async (c: Context<AppEnv>) => {
+router.get("/users/:identifier", optionalAuth, async (c: Context<AppEnv>) => {
   try {
+    const viewerId = c.get("userId") || null;
     const { identifier } = c.req.param();
 
     // Ensure identifier is a string (Hono params can be string[])
@@ -539,6 +540,21 @@ router.get("/users/:identifier", async (c: Context<AppEnv>) => {
           customActionsWritten: userData.customActionsWritten,
         } satisfies UserStats,
       };
+
+      // Check if the viewer follows this user
+      let isFollowing = false;
+      if (viewerId && viewerId !== formattedUser.id) {
+        const [followRow] = await dbRead
+          .select({ id: userFollows.followerId })
+          .from(userFollows)
+          .where(and(
+            eq(userFollows.followerId, viewerId),
+            eq(userFollows.followingId, formattedUser.id)
+          ))
+          .limit(1);
+        isFollowing = !!followRow;
+      }
+      formattedUser.isFollowing = isFollowing;
 
       console.log(`[GET /users/${identifierStr}] ✅ Fetched user profile from DB:`, formattedUser);
       return {
@@ -2126,6 +2142,24 @@ router.get('/achievements', requireAuth, async (c: Context<AppEnv>) => {
     return c.json({ success: true, badges });
   } catch (error) {
     return cApiError(c, 'Failed to fetch achievements layout', error);
+  }
+});
+
+/**
+ * GET /api/users/:id/achievements
+ * Returns public achievements for a given user (profile view).
+ * Unauthenticated — any visitor can see another user's badges.
+ */
+router.get('/users/:id/achievements', async (c: Context<AppEnv>) => {
+  try {
+    const { id } = c.req.param();
+    const userIdStr = Array.isArray(id) ? id[0] : id;
+
+    const badges = await getUserAchievements(userIdStr);
+
+    return c.json({ success: true, badges });
+  } catch (error) {
+    return cApiError(c, 'Failed to fetch user achievements', error);
   }
 });
 

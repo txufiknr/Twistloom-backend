@@ -81,6 +81,8 @@ export interface User {
   credits: number;
   createdAt: Date;
   updatedAt: Date;
+  /** Whether the authenticated viewer follows this user (only set on public profile view) */
+  isFollowing?: boolean;
 }
 
 export type UserActivityType =
@@ -159,4 +161,4 @@ export type UserAchievement = {
   isNotified: boolean;
 };
 
-export type EnrichedUserSelect = Omit<User, 'stats' | 'subscription'> & UserStats & UserSubscription;
+export type EnrichedUserSelect = Omit<User, 'stats' | 'subscription' | 'isFollowing'> & UserStats & UserSubscription;

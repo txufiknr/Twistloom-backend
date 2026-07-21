@@ -45,6 +45,8 @@ export interface PaginationParams {
   mode?: string;
   /** Collection name to filter favorites */
   collection?: string;
+  /** Target user ID for viewing another user's favorites/reads */
+  profileUserId?: string;
 }
 
 /**
@@ -96,6 +98,7 @@ export function extractPaginationParams(
   const gender = first(query.gender);
   const mode = first(query.mode);
   const collection = (first(query.collection) || '').trim() || undefined;
+  const profileUserId = first(query.profileUserId) || undefined;
 
   return {
     page,
@@ -111,6 +114,7 @@ export function extractPaginationParams(
     gender,
     mode,
     collection,
+    profileUserId,
   };
 }
 
