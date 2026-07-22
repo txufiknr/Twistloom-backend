@@ -7,8 +7,5 @@
     "src/app.ts": {
       "maxDuration": 60
     }
-  },
-  "env": {
-    "NODEJS_HELPERS": "0"
   }
 }

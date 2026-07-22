@@ -10,7 +10,6 @@ import { cors } from "hono/cors";
 import { csrf } from "hono/csrf";
 import { HTTPException } from "hono/http-exception";
 import { initAuthConfig } from "@hono/auth-js";
-import { handle } from "hono/vercel";
 import { parseJsonBody } from "./middleware/body.js";
 import { extractLocale } from "./middleware/locale.js";
 import { rateLimitByUser } from "./middleware/rate-limit.js";
@@ -165,48 +164,109 @@ export { app };
 // ---------------------------------------------------------------------------
 // Vercel serverless function handler
 // ---------------------------------------------------------------------------
-// export default getRequestListener(app.fetch);
 //
-// KNOWN BUG — @hono/node-server's getRequestListener hangs on POST requests
-// ==========================================================================
-// When the default export wraps app.fetch with `getRequestListener` from
-// `@hono/node-server`, POST requests never resolve on Vercel's Node.js
-// runtime (GET works fine). The adapter uses `Readable.toWeb()` to wrap the
-// Node.js IncomingMessage stream, but Vercel pre-buffers the request body
-// before calling the handler, so the stream's `end`/`data` events never
-// fire — the promise in `readBodyDirect` hangs indefinitely until the 300s
-// platform timeout kills the function.
+// WHY NOT getRequestListener?
+// ===========================
+// `getRequestListener` from `@hono/node-server` wraps the Node.js
+// IncomingMessage in a ReadableStream via `Readable.toWeb()`. On Vercel's
+// Node.js runtime the request body is already pre-buffered, so the stream's
+// `end`/`data` events never fire — the body-read promise hangs indefinitely
+// until Vercel's 300s platform timeout kills the function.
 //
-//   → https://github.com/honojs/node-server/issues/306
-//   → https://github.com/honojs/node-server/issues/84
-//     (classic body-disturbed error variant)
+// WHY NOT hono/vercel?
+// ====================
+// `hono/vercel` is designed for Vercel's Edge Runtime. Importing it causes
+// Vercel's build system to expect an Edge function, creating a runtime
+// conflict that manifests as MIDDLEWARE_INVOCATION_TIMEOUT.
 //
-// FIX
-// ===
-// We use `handle` from `hono/vercel` — the framework's official Vercel
-// adapter. It returns a plain `(request: Request) => Response` function
-// matching Vercel's Web-standard handler signature, which the Node.js
-// runtime auto-detects (1-arg function = Web handler, 2-arg = classic
-// (req, res)). This avoids the complex stream-wrapping in @hono/node-server
-// entirely.
+// THIS APPROACH
+// =============
+// A plain Node.js (IncomingMessage, ServerResponse) handler that:
+//   1. Reads the body via for await...of (reliable on all runtimes)
+//   2. Creates a standard Web API Request from the buffered body
+//   3. Passes it to app.fetch
+//   4. Writes the Response back to the ServerResponse
 //
-// PREREQUISITE — Vercel environment variables
-// ============================================
-// Vercel's Node.js helpers pre-consume the request body for `req.body`,
-// which can still cause a "body disturbed" error. To disable them:
-//
-//   NODEJS_HELPERS=0
-//
-// Set this in your Vercel project dashboard (Settings → Environment
-// Variables) or via `vercel env add`.
+// References
+//   - https://github.com/honojs/node-server/issues/306
+//   - https://github.com/honojs/node-server/issues/84
 // ---------------------------------------------------------------------------
 
-// Use the official Hono Vercel adapter
-export default handle(app);
+import type { IncomingMessage, ServerResponse } from "node:http";
 
-// Indicate that this function uses the Node.js runtime (the default for
-// serverless functions on Vercel). This is explicit rather than relying
-// on auto-detection.
-export const config = {
-  runtime: "nodejs",
-};
+export default async function vercelHandler(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  try {
+    // Reconstruct the absolute URL from headers
+    const protocol =
+      (req.headers["x-forwarded-proto"] as string) ||
+      ((req.socket as { encrypted?: boolean } | undefined)?.encrypted
+        ? "https"
+        : "http");
+    const host =
+      (req.headers["x-forwarded-host"] as string) ||
+      (req.headers["host"] as string) ||
+      "localhost";
+    const url = `${protocol}://${host}${req.url ?? "/"}`;
+
+    // Read the full request body using for await...of on the raw stream.
+    // This is the key fix — getRequestListener's Readable.toWeb() hangs.
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    const bodyBuffer =
+      req.method !== "GET" && req.method !== "HEAD" && chunks.length > 0
+        ? Buffer.concat(chunks)
+        : null;
+
+    // Build headers, skipping HTTP/2 pseudo-headers
+    const headers: Record<string, string> = {};
+    const rawHeaders = req.rawHeaders;
+    for (let i = 0; i < rawHeaders.length; i += 2) {
+      const key = rawHeaders[i];
+      if (key.charCodeAt(0) !== 58) headers[key] = rawHeaders[i + 1];
+    }
+
+    // Create a standard Web API Request and pass to Hono
+    const request = new Request(url, {
+      method: req.method,
+      headers,
+      body: bodyBuffer,
+    });
+    const response = await app.fetch(request);
+
+    // Write response status and headers
+    res.statusCode = response.status;
+    response.headers.forEach((value, key) => {
+      if (key.toLowerCase() === "set-cookie") {
+        const cookies = response.headers.getSetCookie?.() ?? [value];
+        for (const cookie of cookies) res.setHeader("Set-Cookie", cookie);
+      } else {
+        res.setHeader(key, value);
+      }
+    });
+
+    // Stream the response body
+    if (response.body) {
+      const reader = response.body.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        res.write(value);
+      }
+    }
+    res.end();
+  } catch (error) {
+    console.error("[vercel-handler] ❌ Unhandled error:", error);
+    if (!res.headersSent) {
+      res.statusCode = 500;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ success: false, error: "Internal Server Error" }));
+    } else {
+      res.end();
+    }
+  }
+}
