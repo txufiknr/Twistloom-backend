@@ -15,6 +15,7 @@
 import { sql, and, or } from "drizzle-orm";
 import { sanitizeText } from "./text-processing.js";
 import type { KnownGender } from "../types/user.js";
+import type { SQL } from "drizzle-orm";
 
 /**
  * Maximum search query length to prevent abuse
@@ -604,6 +605,44 @@ export function calculateRelevance(
 }
 
 /**
+ * Tokenizes a search query into individual words and builds an AND-combined
+ * condition where each word must match at least one of the given SQL field
+ * expressions via ILIKE.
+ *
+ * This enables cross-word-boundary matching: searching "whisper hollow"
+ * will match a title of "Whispers of Black Hollow" because "whisper" matches
+ * "Whispers" and "hollow" matches "Hollow" independently.
+ *
+ * @param search - Sanitized search query
+ * @param fields - SQL column or expression references to search against
+ * @returns Combined AND of per-token OR conditions, or null if empty search
+ *
+ * @example
+ * ```typescript
+ * const condition = buildTokenizedSearchCondition(sanitizedSearch, [
+ *   books.title,
+ *   books.hook,
+ * ]);
+ * // Produces: (title ILIKE '%whisper%' OR hook ILIKE '%whisper%') AND
+ * //           (title ILIKE '%hollow%'  OR hook ILIKE '%hollow%')
+ * ```
+ */
+export function buildTokenizedSearchCondition(
+  search: string,
+  fields: any[],
+): SQL | null {
+  const tokens = search.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return null;
+
+  const tokenConditions = tokens.map(token => {
+    const pattern = `%${token}%`;
+    return or(...fields.map((field: any) => sql`${field} ILIKE ${pattern}`));
+  });
+
+  return and(...tokenConditions) ?? null;
+}
+
+/**
  * Creates SQL expression for relevance scoring in database query
  * Enables database-level sorting by relevance instead of in-memory sorting
  * 
@@ -626,35 +665,45 @@ export function createRelevanceExpression(
 ): any {
   if (!query) return sql`0`;
 
-  const queryLower = query.toLowerCase();
+  const tokens = query.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return sql`0`;
 
-  // Calculate relevance using CASE statements in SQL
-  // Uses word boundary matching for better precision
-  return sql`
-    CASE
-      WHEN LOWER(${booksTable.title}) = ${queryLower} THEN 0.35
-      WHEN ${booksTable.title} ILIKE ${'%' + queryLower + '%'} THEN 0.20
-      ELSE 0
-    END::real +
-    CASE
-      WHEN LOWER(${booksTable.hook}) = ${queryLower} THEN 0.15
-      WHEN ${booksTable.hook} ILIKE ${'%' + queryLower + '%'} THEN 0.10
-      ELSE 0
-    END::real +
-    CASE
-      WHEN EXISTS (
-        SELECT 1 FROM unnest(${booksTable.keywords}) AS kw
-        WHERE LOWER(kw) = ${queryLower}
-      ) THEN 0.12
-      WHEN EXISTS (
-        SELECT 1 FROM unnest(${booksTable.keywords}) AS kw
-        WHERE kw ILIKE ${'%' + queryLower + '%'}
-      ) THEN 0.08
-      ELSE 0
-    END::real +
-    CASE
-      WHEN ${booksTable.summary} ILIKE ${'%' + queryLower + '%'} THEN 0.08
-      ELSE 0
-    END::real
-  `;
+  const numTokens = tokens.length;
+
+  // Build per-token scoring expressions, then sum across all tokens.
+  // Each token independently scores against title/hook/keywords/summary,
+  // weighted by 1/numTokens so that single-token queries remain backward
+  // compatible and multi-token queries reward partial matches proportionally.
+  const tokenExpressions = tokens.map(token => {
+    const lowerToken = token.toLowerCase();
+    return sql`
+      CASE
+        WHEN LOWER(${booksTable.title}) = ${lowerToken} THEN ${(0.35 / numTokens)}::real
+        WHEN ${booksTable.title} ILIKE ${'%' + token + '%'} THEN ${(0.20 / numTokens)}::real
+        ELSE 0::real
+      END +
+      CASE
+        WHEN LOWER(${booksTable.hook}) = ${lowerToken} THEN ${(0.15 / numTokens)}::real
+        WHEN ${booksTable.hook} ILIKE ${'%' + token + '%'} THEN ${(0.10 / numTokens)}::real
+        ELSE 0::real
+      END +
+      CASE
+        WHEN EXISTS (
+          SELECT 1 FROM unnest(${booksTable.keywords}) AS kw
+          WHERE LOWER(kw) = ${lowerToken}
+        ) THEN ${(0.12 / numTokens)}::real
+        WHEN EXISTS (
+          SELECT 1 FROM unnest(${booksTable.keywords}) AS kw
+          WHERE kw ILIKE ${'%' + token + '%'}
+        ) THEN ${(0.08 / numTokens)}::real
+        ELSE 0::real
+      END +
+      CASE
+        WHEN ${booksTable.summary} ILIKE ${'%' + token + '%'} THEN ${(0.08 / numTokens)}::real
+        ELSE 0::real
+      END
+    `;
+  });
+
+  return sql`${sql.join(tokenExpressions, sql` + `)}`;
 }

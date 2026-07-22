@@ -19,12 +19,12 @@
  * - Avoids N+1 query problem
  */
 
-import { sql, and, or, eq, desc, arrayOverlaps } from "drizzle-orm";
+import { sql, and, eq, desc, arrayOverlaps } from "drizzle-orm";
 import type { Context } from "hono";
 import { books, users } from '../db/schema.js';
 import { applySorting } from '../utils/pagination.js';
 import { dbRead } from "../db/client.js";
-import { createRelevanceExpression } from "../utils/search.js";
+import { createRelevanceExpression, buildTokenizedSearchCondition } from "../utils/search.js";
 import { getEnrichedBook, getPageActionsFromDB, getPageFromDB } from "./book.js";
 import { cNotFoundError, cForbiddenError } from "../utils/error.js";
 import { getClientIp } from "../hono/express-shim.js";
@@ -442,20 +442,14 @@ export function buildModeFilterCondition(mode?: BookMode) {
  * @returns SQL condition or null if no search
  */
 export function buildSearchCondition(search?: string) {
-  if (!search) {
-    return null;
-  }
+  if (!search) return null;
 
-  const searchPattern = `%${search}%`;
-  const searchConditions = [
-    sql`${books.title}   ILIKE ${searchPattern}`,
-    sql`${books.hook}    ILIKE ${searchPattern}`,
-    sql`${books.summary} ILIKE ${searchPattern}`,
-    // FIX: books.keywords is text[] — cast to text before ILIKE
-    sql`array_to_string(${books.keywords}, ' ') ILIKE ${searchPattern}`,
-  ];
-
-  return or(...searchConditions);
+  return buildTokenizedSearchCondition(search, [
+    books.title,
+    books.hook,
+    books.summary,
+    sql`array_to_string(${books.keywords}, ' ')`,
+  ]);
 }
 
 /**

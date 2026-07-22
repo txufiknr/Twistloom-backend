@@ -110,7 +110,7 @@ import { imageUploadMiddleware } from "../middleware/upload.js";
 import { deleteFileFromImageKit } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, calculatePaginationMeta } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
-import { validateSearchQuery, validateLanguageCode, validateAgeRange, validateGender, createRelevanceExpression } from "../utils/search.js";
+import { validateSearchQuery, validateLanguageCode, validateAgeRange, validateGender, createRelevanceExpression, buildTokenizedSearchCondition } from "../utils/search.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { updateBook, updateBookVisibility, insertBook, uploadBookCoverImage, uploadBookCharacterAvatarImage, sanitizeBookTextField, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage, mapBookFromDb, invalidatePopularTagsCache, invalidateBookCache, invalidateEnrichedBookCache } from "../services/book.js";
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
@@ -3436,101 +3436,6 @@ router.get("/comments", requireAuth, async (c) => {
 });
 
 /**
- * GET /api/books/:identifier
- * 
- * Retrieves a book by slug or UUID v7 identifier.
- * Returns complete book information including metadata, author details,
- * engagement statistics, and user-specific engagement flags.
- *
- * @route GET /api/books/:identifier
- * @description Retrieve a book by slug or UUID
- * @auth Optional (optionalAuth)
- * 
- * @param identifier - Book slug or UUID v7
- * @returns Object with enriched book metadata including author, stats, and user flags
- * 
- * @example
- * GET /api/books/whispering-halls
- * 
- * Response (200):
- * {
- *   "book": {
- *     "id": "book123",
- *     "userId": "user456",
- *     "slug": "whispering-halls",
- *     "title": "The Whispering Halls",
- *     "totalPages": 120,
- *     "language": "en",
- *     "hook": "Sarah never believed in ghosts until she found the diary",
- *     "summary": "A psychological thriller about a librarian who discovers dark secrets",
- *     "imageUrl": "https://example.com/cover.jpg",
- *     "keywords": ["mystery", "thriller", "haunted"],
- *     "status": "active",
- *     "trendingScore": 0.85,
- *     "topPick": null,
- *     "isOriginal": false,
- *     "branchesCount": 12,
- *     "firstPageId": "page456",
- *     "mc": {
- *       "name": "Sarah",
- *       "age": 28,
- *       "gender": "female",
- *       "bio": "Shy librarian with hidden past"
- *     },
- *     "author": {
- *       "id": "user456",
- *       "name": "John Doe",
- *       "username": "johndoe",
- *       "imageUrl": "https://example.com/avatar.jpg"
- *     },
- *     "stats": {
- *       "likesCount": 42,
- *       "readCount": 156,
- *       "completeCount": 23,
- *       "commentsCount": 25,
- *       "branchesCount": 12
- *     },
- *     "isLiked": false,
- *     "isRead": true,
- *     "isMine": false,
- *     "isSaved": false,
- *     "isCompleted": false,
- *     "isPurchased": false,
- *     "session": null,
- *     "collection": null,
- *     "createdAt": "2023-01-01T00:00:00.000Z",
- *     "updatedAt": "2023-01-15T10:30:00.000Z"
- *   }
- * }
- */
-router.get("/:identifier", optionalAuth, async (c) => {
-  try {
-    const { identifier } = c.req.param();
-    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
-
-    const enrichedBook = await getEnrichedBook(bookIdentifier, c.get("userId"), c.get("headerLanguage"));
-    if (!enrichedBook) return cNotFoundError(c, "Book not found");
-
-    // Generate ETag from updatedAt + userId (user-specific columns: isMine, isLiked, isRead, lastReadAt, lastPageId, lastPageNumber, contextHistory)
-    const lastModified = enrichedBook.updatedAt;
-    const etagInput = `${lastModified.getTime()}-${c.get("userId") || 'anonymous'}`;
-    const etag = `"${etagInput}"`;
-
-    // Check If-None-Match header (ETag includes userId for user-specific data)
-    if (c.req.header('If-None-Match') === etag) return c.body(null, 304);
-
-    // Set caching headers
-    c.header('Last-Modified', lastModified.toUTCString());
-    c.header('ETag', etag);
-    c.header('Cache-Control', 'public, max-age=300'); // 5 minutes
-
-    return c.json({ book: enrichedBook });
-  } catch (error) {
-    return cApiError(c, "Failed to retrieve book", error);
-  }
-});
-
-/**
  * GET /api/books/:identifier/branches
  *
  * Retrieves all branches (id & display name) for a book.
@@ -4997,8 +4902,11 @@ const testimonialWithAuthorSelect = {
 
 /**
  * @route GET /api/books/testimonials
- * @description Get the authenticated user's own book testimonials, enriched with book title and cover image
+ * @description Get the authenticated user's own book testimonials, enriched with book title and cover image.
+ *              Supports optional `search` query parameter to filter by book title and/or testimonial content.
  * @access Private (requires auth)
+ * 
+ * @param {string} [c.req.query().search] - Search query to filter by book title or testimonial content (min 2 chars)
  * 
  * @returns {Object} 200 - Paginated list of the user's testimonials with book info
  * @returns {Error} 401 - Unauthorized
@@ -5007,6 +4915,23 @@ router.get("/testimonials", requireAuth, async (c) => {
   const userId = c.get("userId")!;
   const { limit = DEFAULT_ITEMS_PER_PAGE, page = 1 } = extractPaginationParams(c.req.query());
   const offset = (page - 1) * limit;
+  const search = c.req.query().search as string | undefined;
+
+  const conditions = [eq(bookTestimonials.userId, userId)];
+
+  if (search) {
+    const validation = validateSearchQuery(search);
+    if (!validation.isValid) {
+      return cValidationError(c, `Invalid search: ${validation.error}`);
+    }
+    const searchCondition = buildTokenizedSearchCondition(validation.sanitized!, [
+      books.title,
+      bookTestimonials.content,
+    ]);
+    if (searchCondition) {
+      conditions.push(searchCondition);
+    }
+  }
 
   const rows = await dbRead
     .select({
@@ -5018,7 +4943,7 @@ router.get("/testimonials", requireAuth, async (c) => {
     .leftJoin(users, eq(bookTestimonials.userId, users.userId))
     .leftJoin(books, eq(bookTestimonials.bookId, books.id))
     .leftJoin(uploadedImages, eq(books.imageId, uploadedImages.imageId))
-    .where(eq(bookTestimonials.userId, userId))
+    .where(and(...conditions))
     .orderBy(desc(bookTestimonials.createdAt))
     .limit(limit)
     .offset(offset);
@@ -5026,7 +4951,8 @@ router.get("/testimonials", requireAuth, async (c) => {
   const [{ count }] = await dbRead
     .select({ count: sql<number>`count(*)::int` })
     .from(bookTestimonials)
-    .where(eq(bookTestimonials.userId, userId));
+    .leftJoin(books, eq(bookTestimonials.bookId, books.id))
+    .where(and(...conditions));
 
   const testimonials = rows.map(({ bookTitle, bookImageUrl, ...testimonial }) => ({
     ...testimonial,
@@ -5333,6 +5259,101 @@ router.delete("/:identifier/testimonials/:id", requireAuth, async (c) => {
     .where(eq(bookTestimonials.id, id));
 
   c.status(200); return c.json({ message: "Testimonial deleted successfully" });
+});
+
+/**
+ * GET /api/books/:identifier
+ * 
+ * Retrieves a book by slug or UUID v7 identifier.
+ * Returns complete book information including metadata, author details,
+ * engagement statistics, and user-specific engagement flags.
+ *
+ * @route GET /api/books/:identifier
+ * @description Retrieve a book by slug or UUID
+ * @auth Optional (optionalAuth)
+ * 
+ * @param identifier - Book slug or UUID v7
+ * @returns Object with enriched book metadata including author, stats, and user flags
+ * 
+ * @example
+ * GET /api/books/whispering-halls
+ * 
+ * Response (200):
+ * {
+ *   "book": {
+ *     "id": "book123",
+ *     "userId": "user456",
+ *     "slug": "whispering-halls",
+ *     "title": "The Whispering Halls",
+ *     "totalPages": 120,
+ *     "language": "en",
+ *     "hook": "Sarah never believed in ghosts until she found the diary",
+ *     "summary": "A psychological thriller about a librarian who discovers dark secrets",
+ *     "imageUrl": "https://example.com/cover.jpg",
+ *     "keywords": ["mystery", "thriller", "haunted"],
+ *     "status": "active",
+ *     "trendingScore": 0.85,
+ *     "topPick": null,
+ *     "isOriginal": false,
+ *     "branchesCount": 12,
+ *     "firstPageId": "page456",
+ *     "mc": {
+ *       "name": "Sarah",
+ *       "age": 28,
+ *       "gender": "female",
+ *       "bio": "Shy librarian with hidden past"
+ *     },
+ *     "author": {
+ *       "id": "user456",
+ *       "name": "John Doe",
+ *       "username": "johndoe",
+ *       "imageUrl": "https://example.com/avatar.jpg"
+ *     },
+ *     "stats": {
+ *       "likesCount": 42,
+ *       "readCount": 156,
+ *       "completeCount": 23,
+ *       "commentsCount": 25,
+ *       "branchesCount": 12
+ *     },
+ *     "isLiked": false,
+ *     "isRead": true,
+ *     "isMine": false,
+ *     "isSaved": false,
+ *     "isCompleted": false,
+ *     "isPurchased": false,
+ *     "session": null,
+ *     "collection": null,
+ *     "createdAt": "2023-01-01T00:00:00.000Z",
+ *     "updatedAt": "2023-01-15T10:30:00.000Z"
+ *   }
+ * }
+ */
+router.get("/:identifier", optionalAuth, async (c) => {
+  try {
+    const { identifier } = c.req.param();
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+
+    const enrichedBook = await getEnrichedBook(bookIdentifier, c.get("userId"), c.get("headerLanguage"));
+    if (!enrichedBook) return cNotFoundError(c, "Book not found");
+
+    // Generate ETag from updatedAt + userId (user-specific columns: isMine, isLiked, isRead, lastReadAt, lastPageId, lastPageNumber, contextHistory)
+    const lastModified = enrichedBook.updatedAt;
+    const etagInput = `${lastModified.getTime()}-${c.get("userId") || 'anonymous'}`;
+    const etag = `"${etagInput}"`;
+
+    // Check If-None-Match header (ETag includes userId for user-specific data)
+    if (c.req.header('If-None-Match') === etag) return c.body(null, 304);
+
+    // Set caching headers
+    c.header('Last-Modified', lastModified.toUTCString());
+    c.header('ETag', etag);
+    c.header('Cache-Control', 'public, max-age=300'); // 5 minutes
+
+    return c.json({ book: enrichedBook });
+  } catch (error) {
+    return cApiError(c, "Failed to retrieve book", error);
+  }
 });
 
 export default router;
