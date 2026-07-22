@@ -9,8 +9,8 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { csrf } from "hono/csrf";
 import { HTTPException } from "hono/http-exception";
-import { getRequestListener } from "@hono/node-server";
 import { initAuthConfig } from "@hono/auth-js";
+import { handle } from "hono/vercel";
 import { parseJsonBody } from "./middleware/body.js";
 import { extractLocale } from "./middleware/locale.js";
 import { rateLimitByUser } from "./middleware/rate-limit.js";
@@ -162,11 +162,51 @@ function getErrorMessageSafe(err: unknown): string {
 // Local dev entry imports the Hono instance directly (see src/server.ts).
 export { app };
 
-// IMPORTANT: Vercel (Node.js runtime) invokes the default export as a Node
-// `(req, res)` serverless handler. `getRequestListener` converts the Node
-// IncomingMessage into a proper Web `Request` before handing it to Hono, which
-// is what makes `c.req.header()` (and therefore the CORS middleware) work.
-// Using `hono/vercel`'s Edge adapter here instead throws
-// "this.raw.headers.get is not a function" because the Node runtime does not
-// supply a standards-compliant `Headers` instance.
-export default getRequestListener(app.fetch);
+// ---------------------------------------------------------------------------
+// Vercel serverless function handler
+// ---------------------------------------------------------------------------
+// export default getRequestListener(app.fetch);
+//
+// KNOWN BUG — @hono/node-server's getRequestListener hangs on POST requests
+// ==========================================================================
+// When the default export wraps app.fetch with `getRequestListener` from
+// `@hono/node-server`, POST requests never resolve on Vercel's Node.js
+// runtime (GET works fine). The adapter uses `Readable.toWeb()` to wrap the
+// Node.js IncomingMessage stream, but Vercel pre-buffers the request body
+// before calling the handler, so the stream's `end`/`data` events never
+// fire — the promise in `readBodyDirect` hangs indefinitely until the 300s
+// platform timeout kills the function.
+//
+//   → https://github.com/honojs/node-server/issues/306
+//   → https://github.com/honojs/node-server/issues/84
+//     (classic body-disturbed error variant)
+//
+// FIX
+// ===
+// We use `handle` from `hono/vercel` — the framework's official Vercel
+// adapter. It returns a plain `(request: Request) => Response` function
+// matching Vercel's Web-standard handler signature, which the Node.js
+// runtime auto-detects (1-arg function = Web handler, 2-arg = classic
+// (req, res)). This avoids the complex stream-wrapping in @hono/node-server
+// entirely.
+//
+// PREREQUISITE — Vercel environment variables
+// ============================================
+// Vercel's Node.js helpers pre-consume the request body for `req.body`,
+// which can still cause a "body disturbed" error. To disable them:
+//
+//   NODEJS_HELPERS=0
+//
+// Set this in your Vercel project dashboard (Settings → Environment
+// Variables) or via `vercel env add`.
+// ---------------------------------------------------------------------------
+
+// Use the official Hono Vercel adapter
+export default handle(app);
+
+// Indicate that this function uses the Node.js runtime (the default for
+// serverless functions on Vercel). This is explicit rather than relying
+// on auto-detection.
+export const config = {
+  runtime: "nodejs",
+};

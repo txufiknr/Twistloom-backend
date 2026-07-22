@@ -1,0 +1,1 @@
+ALTER TABLE "book_generations" ADD COLUMN "ai_validation_completed" boolean DEFAULT false NOT NULL;

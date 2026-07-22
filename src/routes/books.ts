@@ -151,7 +151,7 @@ import { cancelGitHubWorkflowRuns } from "../utils/github-workflow.js";
 import { requireEnv } from "../utils/env.js";
 import type { UserComment } from "../types/user.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
-import { MAX_CONCURRENT_GENERATIONS } from "../config/book-creation.js";
+import { MAX_CONCURRENT_GENERATIONS, AI_VALIDATION_TIMEOUT_MS } from "../config/book-creation.js";
 import { generateRandomCharacter } from "../utils/characters.js";
 
 const router = new Hono<AppEnv>();
@@ -387,14 +387,22 @@ router.post("/stream", requireAuth, async (c) => {
  * 5-minute function timeout.
  *
  * Flow:
- * 1. Validate theme + MC candidate (structural + AI)
+ * 1. Structural + heuristic validation, then AI validation with a 15 s timeout
  * 2. Atomically consume credits and insert draft `books` + `bookGenerations` rows
  * 3. Dispatch the `on-demand-book-creation.yml` GitHub workflow (fire-and-forget)
  * 4. Return `bookId` immediately with HTTP 202
  *
+ * **AI validation** is raced against `AI_VALIDATION_TIMEOUT_MS` (15 s) so a
+ * hanging provider cannot block the Vercel serverless limit. If the AI call
+ * completes in time, the `bookGenerations` row is stamped
+ * `aiValidationCompleted: true` and the GitHub Actions runner skips re-validation.
+ * If the AI call times out or fails the runner performs full AI validation
+ * (with no timeout) before the expensive book generation — failing fast on
+ * content violations.
+ *
  * The GitHub Actions runner reads all generation params (`theme`, `mcCandidate`,
- * `generateCoverImage`) from the `bookGenerations` row, so no sensitive data is
- * passed as workflow inputs.
+ * `language`, `titleIdea`, `aiComment`, `advancedOptions`) from the
+ * `bookGenerations` row, so no sensitive data is passed as workflow inputs.
  *
  * If the workflow dispatch fails silently, the stale-detection logic in
  * `GET /api/books/:bookId/status` will re-trigger it after `PENDING_TIMEOUT_MS`.
@@ -421,6 +429,10 @@ router.post('/async', requireAuth, async (c) => {
   try {
     const { theme, mcCandidate: initialMCCandidate, generateCoverImage, advancedOptions, mode: requestedMode } = c.get("body");
     const userId = c.get("userId")!;
+    const themePreview = theme?.length > 80 ? theme.slice(0, 80) + '…' : theme;
+
+    const startTime = Date.now();
+    console.log(`[POST /api/books/async] 🚀 Starting async book creation for user ${userId}: "${themePreview}"`);
 
     // ── STEP 0: Enforce concurrent generation limit ─────────────────────────
     if (await isConcurrentGenerationLimitReached(userId, c)) return;
@@ -428,17 +440,38 @@ router.post('/async', requireAuth, async (c) => {
     // ── STEP 0b: Validate + resolve book creation mode ─────────────────────
     const mode = bookModes.includes(requestedMode) ? requestedMode : 'interactive';
 
-    // ── STEP 1: Validate theme + MC candidate (structural + AI) ──────────────
+    // ── STEP 1: Validate theme + MC candidate with timed AI ──────────────────
+    //
+    // 1a. Structural + heuristic checks run unconditionally (<1 ms).
+    // 1b. AI validation (`validateThemeWithAI`) is raced against
+    //     `AI_VALIDATION_TIMEOUT_MS` so a hanging provider cannot block Vercel's
+    //     300 s serverless limit.
+    //
+    // If the AI call completes in time → aiResult carries content-safety
+    // verification + metadata (title, hook, summary, MC candidate, language)
+    // and is persisted as `aiValidationCompleted: true` in the generation row.
+    //
+    // If the AI call times out or fails → aiResult is undefined, the runner
+    // performs AI validation (without timeout) before the expensive generation.
     const { aiResult, normalizedAdvancedOptions } = await createBookValidate({
       theme,
       mcCandidate: initialMCCandidate,
       generateCoverImage,
       advancedOptions,
       isOriginal: false,
+      aiValidationTimeout: AI_VALIDATION_TIMEOUT_MS,
       onProgress: undefined // No SSE progress callback for async route
     });
 
+    console.log(`[POST /api/books/async] ✅ Structural + heuristic validation passed`);
+
     const { comment: aiComment, language = 'en', titleIdea, hook, summary, mcCandidate } = aiResult || {};
+
+    if (aiResult) {
+      console.log(`[POST /api/books/async] ✅ AI validation completed within ${AI_VALIDATION_TIMEOUT_MS}ms limit`);
+    } else {
+      console.log(`[POST /api/books/async] ⏰ AI validation did not complete within ${AI_VALIDATION_TIMEOUT_MS}ms — runner will re-validate`);
+    }
 
     // ── STEP 2: Generate deterministic book ID ────────────────────────────────
     const bookId = generateId();
@@ -468,6 +501,7 @@ router.post('/async', requireAuth, async (c) => {
       language,
       titleIdea,
       aiComment,
+      aiValidationCompleted: !!aiResult,
       mode, // Runner reads this from DB — not workflow inputs
       mcCandidate, // Runner reads this from DB — not workflow inputs
       generateCoverImage: generateCoverImage ?? false,
@@ -500,6 +534,7 @@ router.post('/async', requireAuth, async (c) => {
     );
 
     // Map DB row to frontend-facing Book shape for the response.
+    console.log(`[POST /api/books/async] 💰 Credits consumed, draft rows inserted for book ${bookId}`);
     const book = mapBookFromDb(dbBook);
 
     // ── STEP 5: Acquire workflow dispatch gate & dispatch ──────────────────
@@ -508,27 +543,15 @@ router.post('/async', requireAuth, async (c) => {
     // atomic mutex (only one process claims the right to dispatch).
     const gate = await tryAcquireWorkflowDispatchGate(bookId);
     if (!gate.shouldDispatch) {
-      console.log(`[POST /api/books/async] ⏸️ ${gate.reason}`);
+      console.log(`[POST /api/books/async] ⏸️ Workflow dispatch blocked for book ${bookId}: ${gate.reason}`);
     } else {
+      console.log(`[POST /api/books/async] 🔧 Dispatching on-demand-book-creation.yml for book ${bookId}`);
       // Fire-and-forget — response is sent before any long-running dispatch logic.
       // Dispatch failures are logged and handled by stale-detection.
       triggerBookGenerationWorkflow(bookId, 'POST /api/books/async');
     }
 
-    // ── STEP 6: Respond immediately with 202 Accepted ─────────────────────────
-    //
-    // HTTP 202 is the correct semantic: "request accepted for background processing."
-    // Include the draft book object + aiComment so the frontend can render
-    // title/mc/summary/hook/commentary immediately without waiting for the first
-    // status poll tick.
-    c.status(202); return c.json({
-      bookId,
-      message: 'Book creation started. Poll /api/books/:bookId/status for updates.',
-      aiComment,
-      book,
-    });
-
-    // ── STEP 7: Log user activity (fire-and-forget AFTER response) ────────────
+    // ── STEP 6: Log user activity (fire-and-forget AFTER response) ────────────
     //
     // logUserActivity must be fire-and-forget after return c.json() to avoid
     // a double-response error if it throws (catch block would call res.json again
@@ -543,6 +566,20 @@ router.post('/async', requireAuth, async (c) => {
     { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } }).catch((err) => {
       console.error('[POST /api/books/async] ❌ Failed to log user activity:', err);
     });
+
+    // ── STEP 7: Respond immediately with 202 Accepted ─────────────────────────
+    //
+    // HTTP 202 is the correct semantic: "request accepted for background processing."
+    // Include the draft book object + aiComment so the frontend can render
+    // title/mc/summary/hook/commentary immediately without waiting for the first
+    // status poll tick.
+    console.log(`[POST /api/books/async] ✅ Creation started (202) for book ${bookId} (${(Date.now() - startTime).toFixed(0)} ms)`);
+    return c.json({
+      bookId,
+      message: 'Book creation started. Poll /api/books/:bookId/status for updates.',
+      aiComment,
+      book,
+    }, 202);
   } catch (error) {
     console.error('[POST /api/books/async] ❌ Failed to start book creation:', error);
     handleBookCreationError(c, error, 'Failed to start book creation');

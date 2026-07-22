@@ -19,7 +19,7 @@ import { formatOneOf, hasKeywords } from './text-processing.js';
 import type { HeuristicValidationResult, AIValidationResult, ThemeValidationResult, ThemeValidationErrorDetails, ThemeValidationCategory } from '../types/theme-validation.js';
 import type { ProgressCallback } from '../types/sse.js';
 import type { Context } from "hono";
-import type { ErrorResponse } from './error.js';
+import { getErrorMessage, type ErrorResponse } from './error.js';
 
 /**
  * Performs heuristic validation on theme input
@@ -301,29 +301,43 @@ Comment structure (only if theme is valid):
  * 
  * Orchestrates the two-layer validation approach:
  * 1. Fast heuristic validation (blacklist + patterns)
- * 2. Smart AI validation (contextual analysis)
+ * 2. Smart AI validation (contextual analysis) — skipped when `skipAI` is true
  * 
  * If heuristic validation fails, returns immediately without AI validation.
- * If heuristic validation passes, proceeds to AI validation.
+ * If heuristic validation passes, proceeds to AI validation (unless skipped).
  * 
- * @param theme - Theme string to validate
- * @param onProgress - Optional callback for progress events (SSE)
- * @returns Complete validation result
+ * When `aiTimeoutMs` is provided, `validateThemeWithAI` is raced against this
+ * timeout. If the AI call completes in time the full result (with `aiResult`)
+ * is returned. If the call hangs or exceeds the timeout a heuristic-only
+ * result (without `aiResult`) is returned instead — the caller checks
+ * `aiResult` presence to decide whether to defer AI work to a background job.
+ * 
+ * @param theme       - Theme string to validate
+ * @param onProgress  - Optional callback for progress events (SSE)
+ * @param skipAI      - When true, skip `validateThemeWithAI` entirely and return
+ *                      heuristic-only result.
+ * @param aiTimeoutMs - When set (>0), race the AI validation against this many
+ *                      milliseconds. On timeout the result has no `aiResult`.
+ *                      Ignored when `skipAI` is true.
+ * @returns Complete validation result. `aiResult` is present only when the AI
+ *          call completed (or was never attempted when `skipAI` is true).
  * 
  * @example
  * ```typescript
- * // Without progress callback (POST endpoint)
- * const result = await validateTheme("A magical adventure in an enchanted forest");
- * 
- * // With progress callback (SSE endpoint)
- * const result = await validateTheme(theme, (event) => {
- *   res.write(`data: ${JSON.stringify(event)}\n\n`);
- * });
+ * // With AI timeout (async route — best-effort AI)
+ * const result = await validateTheme(theme, undefined, false, 15_000);
+ * if (result.aiResult) {
+ *   // AI validated, use metadata
+ * } else {
+ *   // AI timed out, fall through to background job
+ * }
  * ```
  */
 export async function validateTheme(
   theme: string,
-  onProgress?: ProgressCallback
+  onProgress?: ProgressCallback,
+  skipAI?: boolean,
+  aiTimeoutMs?: number
 ): Promise<ThemeValidationResult> {
   // Emit validation start event
   await onProgress?.({ type: 'theme_validation_start' });
@@ -332,17 +346,39 @@ export async function validateTheme(
   const heuristicResult = validateThemeHeuristic(theme);
 
   let result: ThemeValidationResult;
-  if (heuristicResult.isValid) {
-    // 2. AI validation (smart)
-    const aiResult = await validateThemeWithAI(theme);
+  if (heuristicResult.isValid && !skipAI) {
+    // 2. AI validation (smart) — with optional timeout race
+    let aiResult: AIValidationResult;
+    if (aiTimeoutMs && aiTimeoutMs > 0) {
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('AI_VALIDATION_TIMEOUT')), aiTimeoutMs),
+      );
+      try {
+        aiResult = await Promise.race([validateThemeWithAI(theme), timeoutPromise]);
+      } catch (error) {
+        const errMsg = getErrorMessage(error);
+        if (errMsg === 'AI_VALIDATION_TIMEOUT') {
+          console.log(`[validateTheme] ⏰ AI validation timed out after ${aiTimeoutMs}ms, returning heuristic-only`);
+        } else {
+          console.log(`[validateTheme] ⚠️ AI validation failed (${errMsg}), returning heuristic-only`);
+        }
+        result = { isValid: heuristicResult.isValid, heuristicResult };
+        return result;
+      }
+    } else {
+      aiResult = await validateThemeWithAI(theme);
+    }
     result = {
       isValid: !aiResult.isViolating,
       heuristicResult,
       aiResult,
     };
   } else {
-    // Heuristic failed - return immediately with validation complete event
-    result = { isValid: false, heuristicResult };
+    if (skipAI && heuristicResult.isValid) {
+      console.log(`[validateTheme] ✅ AI validation skipped (skipAI=true), heuristic-only result: valid`);
+    }
+    // Heuristic failed, or AI was explicitly skipped — return heuristic-only result
+    result = { isValid: heuristicResult.isValid, heuristicResult };
   }
 
   // Emit validation complete event

@@ -120,13 +120,26 @@ export function normalizeAdvancedOptions(advancedOptions?: AdvancedOptionsConfig
  *
  * Performs two distinct validation passes:
  * 1. Synchronous structural validation (theme string, MC fields, flags)
- * 2. Async AI theme validation via `validateTheme`
+ * 2. Async AI theme validation via `validateTheme` (heuristic only when `skipAI` is true)
+ *
+ * When `skipAI` is true, only the fast heuristic check (blacklist, POV, gibberish) runs.
+ * The AI call (`validateThemeWithAI`) is skipped — it would block Vercel's 300 s timeout
+ * on the async route. The GitHub Actions runner's `initializeBook` generates all metadata
+ * (title, hook, summary, MC) from scratch without a separate validation step.
  *
  * @param theme              - Raw theme string from request body
  * @param mcCandidate        - Optional MC overrides (name, age, gender, bio)
  * @param generateCoverImage - Optional boolean flag
- * @param onProgress         - Optional SSE callback (forwarded to the AI validation step)
- * @returns Validated `ThemeValidationResult` (always `isValid === true` on success)
+ * @param advancedOptions    - Optional advanced options (writing preset, developer config)
+ * @param isOriginal         - Whether this is an AI-originated theme (relaxes length cap)
+ * @param onProgress          - Optional SSE callback (forwarded to the AI validation step)
+ * @param skipAI              - When true, skip `validateThemeWithAI` and run heuristic only.
+ * @param aiValidationTimeout - When set (>0), pass as `aiTimeoutMs` to `validateTheme` so the AI
+ *                              call is raced against this timeout. On timeout the result has no
+ *                              `aiResult`, signaling the caller to defer full AI validation to a
+ *                              background worker (GitHub Actions runner).
+ * @returns Validated `ThemeValidationResult` (always `isValid === true` on success).
+ *          `aiResult` is present only when AI validation completed (not skipped, not timed out).
  * @throws `BookCreationError` on any validation failure
  */
 export async function createBookValidate(params: {
@@ -135,9 +148,11 @@ export async function createBookValidate(params: {
   generateCoverImage?: boolean,
   advancedOptions?: AdvancedOptionsConfig;
   isOriginal?: boolean,
-  onProgress?: ProgressCallback
+  onProgress?: ProgressCallback,
+  skipAI?: boolean,
+  aiValidationTimeout?: number
 }): Promise<ThemeValidationResult> {
-  const { mcCandidate, generateCoverImage, advancedOptions, isOriginal = false, onProgress } = params;
+  const { mcCandidate, generateCoverImage, advancedOptions, isOriginal = false, onProgress, skipAI = false, aiValidationTimeout } = params;
   let { theme } = params;
 
   // ── 1. Theme structural validation ───────────────────────────────────────
@@ -209,14 +224,25 @@ export async function createBookValidate(params: {
     throw new BookCreationError('Invalid generateCoverImage: must be a boolean');
   }
 
-  // ── 4. AI theme validation ───────────────────────────────────────────────
-  const validationResult = await validateTheme(theme, onProgress);
+  // ── 4. Advanced options validation ─────────────────────────────────────
+  const normalizedAdvancedOptions = normalizeAdvancedOptions(advancedOptions);
+
+  // ── 5. Theme validation (heuristic + optional AI) ─────────────────────────
+  //
+  // Heuristic validation (blacklisted words, POV violations, gibberish) runs
+  // unconditionally — it's fast (<1 ms) and catches genuinely invalid input.
+  //
+  // The `skipAI` flag skips `validateThemeWithAI` entirely (heuristic only).
+  //
+  // When `aiValidationTimeout` is provided the AI call is raced against this
+  // many milliseconds. If the AI completes in time its result (with metadata
+  // like titleIdea, summary, hook) is available via `aiResult`. If the AI call
+  // times out or fails the result has no `aiResult` — the caller should defer
+  // full AI validation to the background worker (GitHub Actions runner).
+  const validationResult = await validateTheme(theme, onProgress, skipAI, aiValidationTimeout);
   if (!validationResult.isValid) {
     throw new BookCreationError('Theme validation failed', validationResult);
   }
-
-  // ── 5. Advanced options validation ─────────────────────────────────────
-  const normalizedAdvancedOptions = normalizeAdvancedOptions(advancedOptions);
 
   return { ...validationResult, theme, normalizedAdvancedOptions };
 }
@@ -232,7 +258,7 @@ export async function createBookValidate(params: {
  * optional HTTP `statusCode` override so that `handleBookCreationError` can
  * produce the right response without inspecting the message string.
  */
-class BookCreationError extends Error {
+export class BookCreationError extends Error {
   constructor(
     message: string,
     public validationResult?: ThemeValidationResult,

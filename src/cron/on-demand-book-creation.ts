@@ -39,6 +39,7 @@
 
 import { initializeBook } from '../utils/prompt.js';
 import { getErrorMessage } from '../utils/error.js';
+import { validateThemeWithAI } from '../utils/theme-validation.js';
 import { bookGenerations } from '../db/schema.js';
 import { dbRead, dbWrite } from '../db/client.js';
 import { eq, and, or, lt, isNull } from 'drizzle-orm';
@@ -101,6 +102,7 @@ async function processBookGeneration(bookId: string): Promise<void> {
         language: bookGenerations.language,
         titleIdea: bookGenerations.titleIdea,
         aiComment: bookGenerations.aiComment,
+        aiValidationCompleted: bookGenerations.aiValidationCompleted,
         advancedOptions: bookGenerations.advancedOptions,
       })
       .from(bookGenerations)
@@ -114,6 +116,35 @@ async function processBookGeneration(bookId: string): Promise<void> {
     const { userId, theme } = generationData;
     if (!userId || !theme) {
       throw new Error(`Missing required fields in bookGenerations: userId=${userId}, theme=${theme}`);
+    }
+
+    // ── AI content-safety validation (unless already done in the API route) ──
+    //
+    // When aiValidationCompleted is false (AI timed out in POST /api/books/async),
+    // we run validateThemeWithAI here where there's no serverless timeout limit.
+    // If the theme is violating, we fail early before the expensive generation.
+    if (!generationData.aiValidationCompleted) {
+      console.log(`[book-creation] 🧪 AI theme validation not completed in API route, running in runner for book ${bookId}`);
+      const aiValidationResult = await validateThemeWithAI(theme);
+
+      if (aiValidationResult.isViolating) {
+        throw new Error(`Theme validation failed: ${aiValidationResult.comment || 'Content violates guidelines'}`);
+      }
+
+      // Merge AI metadata into generation params where the route's defaults were used
+      if (aiValidationResult.language) generationData.language = aiValidationResult.language;
+      if (aiValidationResult.titleIdea) generationData.titleIdea = aiValidationResult.titleIdea;
+      if (aiValidationResult.mcCandidate) generationData.mcCandidate = aiValidationResult.mcCandidate;
+
+      // Persist the flag so hourly cron retries don't re-validate
+      await dbWrite
+        .update(bookGenerations)
+        .set({ aiValidationCompleted: true })
+        .where(eq(bookGenerations.bookId, bookId));
+
+      console.log(`[book-creation] ✅ AI theme validation passed in runner for book ${bookId}`);
+    } else {
+      console.log(`[book-creation] ✅ AI theme validation was already completed in API route for book ${bookId}`);
     }
 
     const params: InitializeBookParams = {

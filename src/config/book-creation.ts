@@ -23,6 +23,20 @@ export const HOURLY_RETRY_BATCH_SIZE = 5;
 /** Timeout thresholds for stale generation detection */
 export const PENDING_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes for pending status
 
+/**
+ * Maximum time to wait for AI theme validation in the async route.
+ *
+ * The async route races `validateThemeWithAI` against this timeout. If the AI
+ * call completes in time we get content-safety verification + metadata (title,
+ * hook, summary, MC, language). If it hangs or exceeds this limit we fall
+ * through cleanly and the GitHub Actions runner generates everything from
+ * scratch via `initializeBook` (no separate AI validation step in the runner).
+ *
+ * Set to 15 seconds — enough for most fast AI providers to respond, short
+ * enough to stay well within Vercel's 300 s serverless function limit.
+ */
+export const AI_VALIDATION_TIMEOUT_MS = 15_000;
+
 // ============================================================================
 // SHARED DRY CONSTANTS (Prompt Anchors)
 // ============================================================================
