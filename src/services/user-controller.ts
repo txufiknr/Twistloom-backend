@@ -23,6 +23,7 @@ import { cApiError, cNotFoundError, cValidationError } from '../utils/error.js';
 import { sanitizeUsername } from '../utils/username.js';
 import { invalidateUserProfileCache } from './cache.js';
 import { REFERRAL_BONUS } from '../config/credits.js';
+import { CURRENT_TERMS_VERSION } from '../config/legal.js';
 import { awardCredits } from './credits.js';
 import type { Context } from 'hono';
 import { getClientIp } from '../hono/express-shim.js';
@@ -70,6 +71,8 @@ export function getEnrichedUserSelect() {
     createdAt: users.createdAt,
     updatedAt: users.updatedAt,
     source: users.source,
+    termsAcceptedAt: users.termsAcceptedAt,
+    termsVersion: users.termsVersion,
     emailVerified: userAuth.emailVerified,
     isNewUser: users.isNewUser,
     // Expose the rest of the `user_counters` columns as SSOT-backed fields.
@@ -268,6 +271,9 @@ export async function createOrUpdateOAuthUser(oAuthUser: {
         userId: newUserId,
         ...newUserData,
         isNewUser: true,
+        termsAcceptedAt: new Date(),
+        termsVersion: CURRENT_TERMS_VERSION,
+        ageConfirmedAt: new Date(),
         createdAt: new Date(),
         updatedAt: new Date(),
         lastActive: new Date(),

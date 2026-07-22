@@ -39,6 +39,7 @@ import { createPasswordResetToken, resetPassword, verifyPasswordResetToken, revo
 import { sendPasswordResetEmail, sendVerificationEmail } from '../utils/email.js';
 import { createEmailVerificationToken, verifyEmailToken, isEmailVerified } from '../utils/email-verification.js';
 import { cApiError, cRateLimitError, cUnauthorizedError, cValidationError } from '../utils/error.js';
+import { CURRENT_TERMS_VERSION } from '../config/legal.js';
 import { checkRateLimitByIP } from '../middleware/rate-limit.js';
 import { generateId } from '../utils/uuid.js';
 import { createOrUpdateOAuthUser, setReferrerForNewUser } from '../services/user-controller.js';
@@ -293,9 +294,10 @@ router.post('/signup', async (c) => {
     }
 
     // Sign up data validation
-    const { password, receiveEmails: _receiveEmails, agreedToTerms, referrer } = c.get("body");
+    const { password, receiveEmails: _receiveEmails, agreedToTerms, ageConfirmed, referrer } = c.get("body");
     if (!password) return cValidationError(c, 'Password is required');
     if (!agreedToTerms) return cValidationError(c, 'You must agree to the terms');
+    if (!ageConfirmed) return cValidationError(c, 'You must confirm you are at least 13 years old');
 
     // Password strength validation
     const passwordValidation = validatePasswordStrength(password);
@@ -317,7 +319,14 @@ router.post('/signup', async (c) => {
 
     const passwordHash = await hashPassword(password);
     const newUser = await dbWrite.transaction(async (tx) => {
-      const [user] = await tx.insert(users).values({ userId: generateId(), ...userData, passwordHash, }).returning();
+      const [user] = await tx.insert(users).values({
+        userId: generateId(),
+        ...userData,
+        passwordHash,
+        termsAcceptedAt: new Date(),
+        termsVersion: CURRENT_TERMS_VERSION,
+        ageConfirmedAt: new Date(),
+      }).returning();
       await tx.insert(userAuth).values({ userId: user.userId });
       return user;
     });

@@ -79,6 +79,10 @@ export interface User {
   stats: UserStats;
   subscription: UserSubscription;
   credits: number;
+  /** GDPR: timestamp of when the user accepted the Terms of Service */
+  termsAcceptedAt: Date | null;
+  /** GDPR: version of Terms of Service that was accepted (e.g. "2025-01-15") */
+  termsVersion: string | null;
   createdAt: Date;
   updatedAt: Date;
   /** Whether the authenticated viewer follows this user (only set on public profile view) */

@@ -226,6 +226,11 @@ export const users = pgTable(
     // deleted/cancelled/refunded. This is what enforces one-trial-per-user, independent of
     // whatever happens to the underlying Stripe subscription record. See VIP_FREE_TRIAL_ROADMAP.md.
     vipTrialUsedAt: timestamp("vip_trial_used_at", { withTimezone: true }),
+    // GDPR compliance: audit trail for terms of service acceptance
+    termsAcceptedAt: timestamp("terms_accepted_at", { withTimezone: true }),
+    termsVersion: text("terms_version"),
+    // COPPA/GDPR: age confirmation timestamp
+    ageConfirmedAt: timestamp("age_confirmed_at", { withTimezone: true }),
     tokenVersion: integer("token_version").notNull().default(0), // Session version for JWT revocation
     lastActive,
     createdAt,

@@ -51,7 +51,7 @@ import type { FeedbackCategory, LikeTargetType, Source, User, UserAchievement, U
 import { feedbackCategories, sources } from "../types/user.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { requireAuth, optionalAuth } from "../middleware/nextauth.js";
-import { users, books, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, uploadedImages, userProviders, userFeedbacks } from "../db/schema.js";
+import { users, books, userAuth, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, userSessions, userCompletedBooks, userComments, transactions, uploadedImages, userProviders, userFeedbacks } from "../db/schema.js";
 import { getErrorMessage, cApiError, cNotFoundError, cValidationError } from "../utils/error.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { calculatePaginationMeta } from "../utils/pagination.js";
@@ -182,6 +182,102 @@ router.get('/', requireAuth, async (c: Context<AppEnv>) => {
   } catch (error) {
     console.error('[GET /api/user] ❌', error);
     return cApiError(c, 'Failed to fetch user profile', error);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/user/export
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/user/export
+ *
+ * Exports all of the authenticated user's personal data in a structured JSON
+ * format. Fulfils GDPR Art. 20 (right to data portability) and CCPA (right
+ * to know / right to request disclosure).
+ *
+ * @route GET /api/user/export
+ * @description Export all user data for GDPR portability
+ * @auth Required
+ *
+ * @returns {Object} JSON object containing all user data
+ * @returns {string} exportedAt - ISO timestamp of when the export was generated
+ * @returns {Object} profile - User profile record
+ * @returns {Object|null} auth - Auth metadata (emailVerified, createdAt)
+ * @returns {Array} books - Books authored by the user
+ * @returns {Array} sessions - Reading sessions
+ * @returns {Array} completedBooks - Books the user completed
+ * @returns {Array} comments - Comments the user made
+ * @returns {Array} likes - Likes the user made
+ * @returns {Array} favorites - Books the user favorited
+ * @returns {Array} transactions - Credit transactions
+ * @returns {Array} activityLogs - User activity log (last 1000 entries)
+ * @returns {Array} achievements - Unlocked achievements
+ *
+ * @example
+ * // Request
+ * GET /api/user/export
+ *
+ * // Response (200)
+ * {
+ *   "exportedAt": "2026-07-22T12:00:00.000Z",
+ *   "profile": { "userId": "...", "name": "John Doe", ... },
+ *   "auth": { "emailVerified": "2026-01-01T00:00:00.000Z", "createdAt": "2026-01-01T00:00:00.000Z" },
+ *   "books": [...],
+ *   ...
+ * }
+ */
+router.get('/export', requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get("userId")!;
+
+    // Fetch all user data in parallel for performance
+    const [
+      profileResult,
+      authResult,
+      booksResult,
+      sessionsResult,
+      completedBooksResult,
+      commentsResult,
+      likesResult,
+      favoritesResult,
+      transactionsResult,
+      activityLogsResult,
+      achievementsResult,
+    ] = await Promise.all([
+      dbRead.select().from(users).where(eq(users.userId, userId)),
+      dbRead.select().from(userAuth).where(eq(userAuth.userId, userId)),
+      dbRead.select().from(books).where(eq(books.userId, userId)),
+      dbRead.select().from(userSessions).where(eq(userSessions.userId, userId)),
+      dbRead.select().from(userCompletedBooks).where(eq(userCompletedBooks.userId, userId)),
+      dbRead.select().from(userComments).where(eq(userComments.userId, userId)),
+      dbRead.select().from(userLikes).where(eq(userLikes.userId, userId)),
+      dbRead.select().from(userFavorites).where(eq(userFavorites.userId, userId)),
+      dbRead.select().from(transactions).where(eq(transactions.userId, userId)),
+      dbRead.select().from(userActivityLogs).where(eq(userActivityLogs.userId, userId)).limit(1000),
+      dbRead.select().from(userAchievements).where(eq(userAchievements.userId, userId)),
+    ]);
+
+    const profile = profileResult[0] ?? null;
+    const auth = authResult[0] ?? null;
+
+    return c.json({
+      exportedAt: new Date().toISOString(),
+      profile,
+      auth: auth ? { emailVerified: auth.emailVerified, createdAt: auth.createdAt } : null,
+      books: booksResult,
+      sessions: sessionsResult,
+      completedBooks: completedBooksResult,
+      comments: commentsResult,
+      likes: likesResult,
+      favorites: favoritesResult,
+      transactions: transactionsResult,
+      activityLogs: activityLogsResult,
+      achievements: achievementsResult,
+    });
+  } catch (error) {
+    console.error('[GET /api/user/export] ❌', error);
+    return cApiError(c, 'Failed to export user data', error);
   }
 });
 
@@ -512,6 +608,8 @@ router.get("/users/:identifier", optionalAuth, async (c: Context<AppEnv>) => {
         isNewUser: userData.isNewUser,
         imageUrl: userData.imageUrl,
         credits: userData.credits,
+        termsAcceptedAt: userData.termsAcceptedAt,
+        termsVersion: userData.termsVersion,
         createdAt: userData.createdAt,
         updatedAt: userData.updatedAt,
 
