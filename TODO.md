@@ -27,6 +27,12 @@
 
 ---
 
+@src/utils/ai-chat.ts @src/types/ai-chat.ts in my multi-provider fallback, is it good idea to have timeout config param to limit duration per model? if exceeds, then fail and fallback to next model/provider
+if yes, please implement
+also ensure `maxRetries` be customized too via config param (defaults to: AI_CHAT_MODEL_RETRY_COUNT)
+
+---
+
 2026-07-21T11:26:04.2343652Z [classifyGenAIError] ❓ Bad request (other): ApiError: {"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}
 2026-07-21T11:26:04.2353100Z     at async generateNextPage (file:///home/runner/work/Twistloom-backend/Twistloom-backend/dist/utils/prompt.js:4243:22) {
 

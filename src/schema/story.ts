@@ -713,6 +713,8 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
  * 
  * This is the single source of truth for StoryGeneration schema.
  * All helper functions reference this to avoid duplication.
+ * 
+ * @todo ApiError: {"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}
  */
 export const STORY_GENERATION_SCHEMA_DEFINITION = {
   ...STORY_PAGE_GENERATION_SCHEMA, // Page

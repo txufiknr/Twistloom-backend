@@ -82,7 +82,7 @@ function userWallQuery() {
     ));
 }
 
-router.get("/social-mentions", async (c) => {
+router.get("/", async (c) => {
   try {
     const { limit = 20, page = 1 } = extractPaginationParams(c.req.query(), 20);
     const source = c.req.query().source ?? "all";
@@ -140,7 +140,7 @@ router.get("/social-mentions", async (c) => {
   }
 });
 
-router.get("/social-mentions/:id", async (c) => {
+router.get("/:id", async (c) => {
   try {
     const { id } = c.req.param();
     const itemId = Array.isArray(id) ? id[0] : id;
