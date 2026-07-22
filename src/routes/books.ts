@@ -387,12 +387,12 @@ router.post("/stream", requireAuth, async (c) => {
  * 5-minute function timeout.
  *
  * Flow:
- * 1. Structural + heuristic validation, then AI validation with a 15 s timeout
+ * 1. Structural + heuristic validation, then AI validation with a 15s timeout
  * 2. Atomically consume credits and insert draft `books` + `bookGenerations` rows
  * 3. Dispatch the `on-demand-book-creation.yml` GitHub workflow (fire-and-forget)
  * 4. Return `bookId` immediately with HTTP 202
  *
- * **AI validation** is raced against `AI_VALIDATION_TIMEOUT_MS` (15 s) so a
+ * **AI validation** is raced against `AI_VALIDATION_TIMEOUT_MS` (15s) so a
  * hanging provider cannot block the Vercel serverless limit. If the AI call
  * completes in time, the `bookGenerations` row is stamped
  * `aiValidationCompleted: true` and the GitHub Actions runner skips re-validation.
@@ -551,11 +551,7 @@ router.post('/async', requireAuth, async (c) => {
       triggerBookGenerationWorkflow(bookId, 'POST /api/books/async');
     }
 
-    // ── STEP 6: Log user activity (fire-and-forget AFTER response) ────────────
-    //
-    // logUserActivity must be fire-and-forget after return c.json() to avoid
-    // a double-response error if it throws (catch block would call res.json again
-    // on an already-closed response).
+    // ── STEP 6: Log user activity (fire-and-forget) ────────────
     void logUserActivity({
       userId,
       activityType: 'book_creation_started',

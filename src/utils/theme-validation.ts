@@ -301,7 +301,7 @@ Comment structure (only if theme is valid):
  * 
  * Orchestrates the two-layer validation approach:
  * 1. Fast heuristic validation (blacklist + patterns)
- * 2. Smart AI validation (contextual analysis) — skipped when `skipAI` is true
+ * 2. Smart AI validation (contextual analysis)
  * 
  * If heuristic validation fails, returns immediately without AI validation.
  * If heuristic validation passes, proceeds to AI validation (unless skipped).
@@ -314,13 +314,10 @@ Comment structure (only if theme is valid):
  * 
  * @param theme       - Theme string to validate
  * @param onProgress  - Optional callback for progress events (SSE)
- * @param skipAI      - When true, skip `validateThemeWithAI` entirely and return
- *                      heuristic-only result.
  * @param aiTimeoutMs - When set (>0), race the AI validation against this many
  *                      milliseconds. On timeout the result has no `aiResult`.
- *                      Ignored when `skipAI` is true.
  * @returns Complete validation result. `aiResult` is present only when the AI
- *          call completed (or was never attempted when `skipAI` is true).
+ *          call completed.
  * 
  * @example
  * ```typescript
@@ -336,7 +333,6 @@ Comment structure (only if theme is valid):
 export async function validateTheme(
   theme: string,
   onProgress?: ProgressCallback,
-  skipAI?: boolean,
   aiTimeoutMs?: number
 ): Promise<ThemeValidationResult> {
   // Emit validation start event
@@ -346,7 +342,7 @@ export async function validateTheme(
   const heuristicResult = validateThemeHeuristic(theme);
 
   let result: ThemeValidationResult;
-  if (heuristicResult.isValid && !skipAI) {
+  if (heuristicResult.isValid) {
     // 2. AI validation (smart) — with optional timeout race
     let aiResult: AIValidationResult;
     if (aiTimeoutMs && aiTimeoutMs > 0) {
@@ -374,11 +370,8 @@ export async function validateTheme(
       aiResult,
     };
   } else {
-    if (skipAI && heuristicResult.isValid) {
-      console.log(`[validateTheme] ✅ AI validation skipped (skipAI=true), heuristic-only result: valid`);
-    }
     // Heuristic failed, or AI was explicitly skipped — return heuristic-only result
-    result = { isValid: heuristicResult.isValid, heuristicResult };
+    result = { isValid: false, heuristicResult };
   }
 
   // Emit validation complete event

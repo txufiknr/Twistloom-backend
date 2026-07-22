@@ -33,7 +33,7 @@ export const PENDING_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes for pending status
  * scratch via `initializeBook` (no separate AI validation step in the runner).
  *
  * Set to 15 seconds — enough for most fast AI providers to respond, short
- * enough to stay well within Vercel's 300 s serverless function limit.
+ * enough to stay well within Vercel's 300s serverless function limit.
  */
 export const AI_VALIDATION_TIMEOUT_MS = 15_000;
 
