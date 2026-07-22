@@ -519,6 +519,8 @@ export const bookGenerations = pgTable(
     theme: text("theme"),
     aiComment: text("ai_comment"),
     aiValidationCompleted: boolean("ai_validation_completed").notNull().default(false),
+    aiProvider: text("ai_provider").$type<AIChatProvider | 'none'>(),
+    aiModel: text("ai_model"),
     language: text("language"),
     titleIdea: text("title_idea"),
     mode: text("mode").$type<BookMode>().notNull().default('interactive'), // Book creation mode (story format)

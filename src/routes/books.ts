@@ -502,6 +502,8 @@ router.post('/async', requireAuth, async (c) => {
       titleIdea,
       aiComment,
       aiValidationCompleted: !!aiResult,
+      aiProvider: aiResult?.aiProvider,
+      aiModel: aiResult?.aiModel,
       mode, // Runner reads this from DB — not workflow inputs
       mcCandidate, // Runner reads this from DB — not workflow inputs
       generateCoverImage: generateCoverImage ?? false,

@@ -910,7 +910,7 @@ export const MAIN_CHARACTER_SCHEMA: AIJsonProperty = {
 export const THEME_VALIDATION_CATEGORIES: ThemeValidationCategory[] = ['INAPPROPRIATE_CONTENT', 'SUSPICIOUS_PATTERN', 'INVALID_THEME', 'POLICY_VIOLATION', 'OTHER', 'NONE'];
 export const THEME_VALIDATION_DETECTED_ITEM_TYPES: AIDetectedItemType[] = ['word', 'pattern', 'pov_instruction', 'invalid_format', 'other'];
 
-export const THEME_VALIDATION_SCHEMA: Record<keyof AIValidationResult, AIJsonProperty> = {
+export const THEME_VALIDATION_SCHEMA: Record<keyof Omit<AIValidationResult, 'aiProvider' | 'aiModel'>, AIJsonProperty> = {
   language: { type: 'string', description: 'Detected language code (ISO 639-1)' },
   isViolating: { type: 'boolean', description: 'If theme is valid and safe, output false' },
   category: { type: 'string', enum: THEME_VALIDATION_CATEGORIES, description: 'If theme is valid and safe, output "NONE"' },

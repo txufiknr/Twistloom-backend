@@ -8,6 +8,7 @@
  * across the application.
  */
 
+import type { AIChatProvider } from "./ai-chat.js";
 import type { AdvancedOptionsConfig } from "./book-creation.js";
 import type { StoryPlan } from "./story.js";
 
@@ -154,6 +155,10 @@ export type AIValidationResult = {
   suggestion?: string;
   /** Complimentary comment about the theme idea using creative & thriller-themed wording in the same language as the input */
   comment?: string;
+  /** AI provider that performed the validation (populated by validateThemeWithAI, not from AI output) */
+  aiProvider?: AIChatProvider | 'none';
+  /** AI model that performed the validation (populated by validateThemeWithAI, not from AI output) */
+  aiModel?: string;
 } & StoryPlan;
 
 /**

@@ -40,7 +40,7 @@
 import { initializeBook } from '../utils/prompt.js';
 import { getErrorMessage } from '../utils/error.js';
 import { validateThemeWithAI } from '../utils/theme-validation.js';
-import { bookGenerations } from '../db/schema.js';
+import { books, bookGenerations } from '../db/schema.js';
 import { dbRead, dbWrite } from '../db/client.js';
 import { eq, and, or, lt, isNull } from 'drizzle-orm';
 import { updateBookGenerationStatus, triggerBookGenerationWorkflow } from '../services/book-creation.js';
@@ -103,6 +103,8 @@ async function processBookGeneration(bookId: string): Promise<void> {
         titleIdea: bookGenerations.titleIdea,
         aiComment: bookGenerations.aiComment,
         aiValidationCompleted: bookGenerations.aiValidationCompleted,
+        aiProvider: bookGenerations.aiProvider,
+        aiModel: bookGenerations.aiModel,
         advancedOptions: bookGenerations.advancedOptions,
       })
       .from(bookGenerations)
@@ -131,16 +133,36 @@ async function processBookGeneration(bookId: string): Promise<void> {
         throw new Error(`Theme validation failed: ${aiValidationResult.comment || 'Content violates guidelines'}`);
       }
 
-      // Merge AI metadata into generation params where the route's defaults were used
-      if (aiValidationResult.language) generationData.language = aiValidationResult.language;
-      if (aiValidationResult.titleIdea) generationData.titleIdea = aiValidationResult.titleIdea;
-      if (aiValidationResult.mcCandidate) generationData.mcCandidate = aiValidationResult.mcCandidate;
-
-      // Persist the flag so hourly cron retries don't re-validate
+      // Persist AI validation metadata to bookGenerations for status polling / retries
       await dbWrite
         .update(bookGenerations)
-        .set({ aiValidationCompleted: true })
+        .set({
+          aiValidationCompleted: true,
+          aiProvider: aiValidationResult.aiProvider,
+          aiModel: aiValidationResult.aiModel,
+          language: aiValidationResult.language,
+          titleIdea: aiValidationResult.titleIdea,
+          aiComment: aiValidationResult.comment,
+          mcCandidate: aiValidationResult.mcCandidate,
+        })
         .where(eq(bookGenerations.bookId, bookId));
+
+      // Persist hook & summary to the draft book row (they live on books, not bookGenerations)
+      if (aiValidationResult.hook || aiValidationResult.summary) {
+        await dbWrite
+          .update(books)
+          .set({
+            ...(aiValidationResult.hook && { hook: aiValidationResult.hook }),
+            ...(aiValidationResult.summary && { summary: aiValidationResult.summary }),
+          })
+          .where(eq(books.id, bookId));
+      }
+
+      // Merge AI metadata into in-memory generationData for downstream use
+      if (aiValidationResult.language) generationData.language = aiValidationResult.language;
+      if (aiValidationResult.titleIdea) generationData.titleIdea = aiValidationResult.titleIdea;
+      if (aiValidationResult.comment) generationData.aiComment = aiValidationResult.comment;
+      if (aiValidationResult.mcCandidate) generationData.mcCandidate = aiValidationResult.mcCandidate;
 
       console.log(`[book-creation] ✅ AI theme validation passed in runner for book ${bookId}`);
     } else {
@@ -152,6 +174,7 @@ async function processBookGeneration(bookId: string): Promise<void> {
       language: generationData.language || 'en',
       titleIdea: generationData.titleIdea || undefined,
       mcCandidate: generationData.mcCandidate || undefined,
+      aiComment: generationData.aiComment || undefined,
       advancedOptions: generationData.advancedOptions ?? undefined,
       bookId, // IMPORTANT: Pass bookId to update existing draft
       theme

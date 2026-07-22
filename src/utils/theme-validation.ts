@@ -288,6 +288,10 @@ Comment structure (only if theme is valid):
       return failSafeResult;
     }
 
+    // Attach provider/model metadata from the AI response
+    response.result.aiProvider = response.provider;
+    response.result.aiModel = response.model;
+
     return response.result;
   } catch (error) {
     console.error('[validateThemeWithAI] ❌ AI validation failed:', error);
