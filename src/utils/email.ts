@@ -161,11 +161,11 @@ export async function sendPasswordResetEmail(email: string, resetUrl: string): P
  * const sent = await sendVerificationEmail('user@example.com', 'https://app.com/verify-email?token=abc123');
  * ```
  */
-export async function sendVerificationEmail(email: string, verificationUrl: string): Promise<boolean> {
+export async function sendVerificationEmail(email: string, verificationUrl: string, otpCode?: string): Promise<boolean> {
   return sendEmail({
     to: email,
     subject: `Verify Your ${APP_NAME} Email`,
-    html: getVerificationTemplate(APP_NAME, verificationUrl),
+    html: getVerificationTemplate(APP_NAME, verificationUrl, otpCode),
   });
 }
 

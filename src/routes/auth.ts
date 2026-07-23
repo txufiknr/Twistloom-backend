@@ -74,6 +74,7 @@ async function handleGoogleAuth(idToken: string, c: Context<AppEnv>): Promise<Re
 
   const payload = ticket.getPayload();
   if (!payload?.email) return cUnauthorizedError(c, 'Invalid token payload');
+  if (!payload.email_verified) return cUnauthorizedError(c, 'Google email address is not verified');
 
   const { email, name, picture: image, sub } = payload;
 
@@ -333,7 +334,7 @@ router.post('/signup', async (c) => {
 
     const verificationToken = await createEmailVerificationToken(newUser.userId);
     const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`;
-    const verificationEmailSent = await sendVerificationEmail(newUser.email, verificationUrl);
+    const verificationEmailSent = await sendVerificationEmail(newUser.email, verificationUrl, verificationToken);
 
     let referralApplied = false;
     if (referrer && typeof referrer === 'string') {
@@ -585,7 +586,7 @@ router.post('/resend-verification', async (c) => {
       if (!verified) {
         const verificationToken = await createEmailVerificationToken(userId);
         const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`;
-        emailSent = await sendVerificationEmail(email, verificationUrl);
+        emailSent = await sendVerificationEmail(email, verificationUrl, verificationToken);
       }
     }
 

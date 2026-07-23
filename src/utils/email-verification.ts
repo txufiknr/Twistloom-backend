@@ -26,7 +26,6 @@
 import { dbRead, dbWrite } from '../db/client.js';
 import { userAuth } from '../db/schema.js';
 import { eq, and } from 'drizzle-orm';
-import { generateId } from '../utils/uuid.js';
 
 /**
  * Creates an email verification token for a user
@@ -41,7 +40,8 @@ import { generateId } from '../utils/uuid.js';
  * ```
  */
 export async function createEmailVerificationToken(userId: string): Promise<string> {
-  const token = generateId();
+  // Generate a 6-digit numeric OTP code for easy manual entry or link clicking
+  const token = Math.floor(100000 + Math.random() * 900000).toString();
   const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours expiry
 
   // Create or update user_auth record

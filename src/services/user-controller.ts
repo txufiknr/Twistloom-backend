@@ -231,6 +231,24 @@ export async function createOrUpdateOAuthUser(oAuthUser: {
         .onConflictDoNothing({ target: [userProviders.userId, userProviders.provider] });
     }
 
+    // Ensure emailVerified is set for existing user signing in via verified Google OAuth
+    await dbWrite
+      .insert(userAuth)
+      .values({
+        userId: existingUserId,
+        emailVerified: new Date(),
+        updatedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: userAuth.userId,
+        set: {
+          emailVerified: sql`COALESCE(${userAuth.emailVerified}, NOW())`,
+          emailVerificationToken: null,
+          emailVerificationExpires: null,
+          updatedAt: new Date(),
+        },
+      });
+
     return existingUserId;
   }
 
@@ -280,7 +298,10 @@ export async function createOrUpdateOAuthUser(oAuthUser: {
       })
       .returning();
 
-    await tx.insert(userAuth).values({ userId: user.userId });
+    await tx.insert(userAuth).values({
+      userId: user.userId,
+      emailVerified: new Date(),
+    });
 
     await tx.insert(userProviders).values({
       userId: user.userId,
