@@ -919,10 +919,21 @@ export async function visitBookPage(
     shouldConsumeCredits
   }, { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } });
 
-  // Re-fetch book after session update so the response carries the fresh
-  // session (updated frontierPageId, etc.) rather than the pre-update one.
-  // The cache was invalidated inside setActiveSession, so this is a DB read.
-  const refreshedBook = await getEnrichedBook(bookId, userId, language);
+  // The `book` object was freshly fetched (enriched book cache was
+  // invalidated by the previous session upsert) so mutating it is safe.
+  // Patch the session in-place with the updated DB values rather than
+  // re-fetching the entire enriched book.
+  if (book.session && visitDetails.session) {
+    book.session = {
+      ...book.session,
+      lastPageId: pageId,
+      lastPageNumber: pageNumber,
+      lastReadAt: new Date(),
+      frontierPageId: visitDetails.session.frontierPageId ?? pageId,
+      frontierPageNumber: visitDetails.session.frontierPageNumber ?? pageNumber,
+      frontierAncestorIds: visitDetails.session.frontierAncestorIds ?? [],
+    };
+  }
 
-  return { dbPage, book: refreshedBook ?? book, visitDetails, sourceAction: selectedAction, isUserTakeAction };
+  return { dbPage, book, visitDetails, sourceAction: selectedAction, isUserTakeAction };
 }
