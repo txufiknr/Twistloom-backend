@@ -95,6 +95,17 @@ export interface BookCreationStatus {
   /** Date when credits were refunded (null if not yet refunded).
    *  Populated after auto-refund on failure or manual cancel. */
   isRefunded: Date | null;
+  /**
+   * Full enriched book payload, populated only on terminal `completed` poll.
+   *
+   * Eliminates the extra `GET /api/books/:bookId` round-trip after generation
+   * finishes — the frontend can immediately render the book with `firstPage`,
+   * `title`, `summary`, `hook`, `totalPages`, `mc`, etc. without a follow-up
+   * request.
+   *
+   * @see {{BACKEND_GENERATION.md | Book Generation Data Consistency}}
+   */
+  book?: EnrichedBookData | null;
 }
 
 /**

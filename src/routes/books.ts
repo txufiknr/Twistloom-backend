@@ -775,6 +775,27 @@ router.get('/:bookId/status', requireAuth, async (c) => {
         generationStepDescription = undefined;
     }
 
+    // ── Terminal payload: include full enriched book ───────────────────────────
+    //
+    // When generation completes, fetch the enriched book (with firstPage, author
+    // info, stats, user-specific flags) so the frontend can render immediately
+    // without an extra GET /api/books/:bookId round-trip. This eliminates the
+    // cross-request race window entirely — the book data travels in the same
+    // response that signals completion.
+    //
+    // The enriched book is only fetched on the terminal 'completed' state to keep
+    // in-progress polls lightweight (no joins on users, pages, subqueries, etc.).
+    let enrichedBook: EnrichedBookData | null = null;
+    if (data.generationStatus === 'completed') {
+      try {
+        enrichedBook = await getEnrichedBook(bookId, userId, undefined);
+      } catch {
+        // Non-fatal: the frontend can fall back to GET /api/books/:bookId.
+        // The generation status is already persisted — a stale-book fallback
+        // is better than failing the poll response entirely.
+      }
+    }
+
     const status: BookCreationStatus = {
       bookId:                   data.bookId,
       status:                   data.bookStatus ?? 'draft',
@@ -789,6 +810,7 @@ router.get('/:bookId/status', requireAuth, async (c) => {
       createdAt:                data.bookCreatedAt,
       updatedAt:                data.bookUpdatedAt,
       isRefunded:               data.isRefunded,
+      book: enrichedBook,
     };
 
     return c.json(status);
