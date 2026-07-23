@@ -4,7 +4,7 @@ import { books, storyStates, userSessions, userPageProgress, pages, userComplete
 import type { StoryProgress, Action, SetActiveSessionParams, UserStoryPage, UserSession, StoryState, StoryStateSource, SelectedAction, PersistedStoryPage } from "../types/story.js";
 import type { DBNewUserPageProgress, DBPage, DBStoryState, DBUserPageProgress, DBUserSession } from "../types/schema.js";
 import { getDeletedState, getStoryStateCache, setStoryStateCache } from "./story-state-cache.js";
-import { getBook, getPageActionsFromDB, getPageFromDB, getStoryPageById, insertUserCompletedBook, mapToPersistedStoryPage, mapToUserStoryPage } from "./book.js";
+import { getBook, getPageActionsFromDB, getPageFromDB, getStoryPageById, insertUserCompletedBook, invalidateEnrichedBookCache, mapToPersistedStoryPage, mapToUserStoryPage } from "./book.js";
 import { getStoryStateWithBranch } from "./story-branch.js";
 import { logUserActivity } from "./user.js";
 import { cleanupStoryStatesWithStrategy } from "./story-branch.js";
@@ -220,6 +220,10 @@ export async function setActiveSession(params: SetActiveSessionParams, options?:
         updatedAt: new Date(),
       }
     }).returning();
+
+  // Invalidate enriched book cache so subsequent reads get the updated
+  // session (frontierPageId, etc.) rather than the stale cached version.
+  invalidateEnrichedBookCache(bookId);
 
   // Log user activity (session update)
   await logUserActivity({

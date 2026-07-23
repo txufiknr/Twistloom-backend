@@ -216,7 +216,67 @@ export type EnrichedBookData = Pick<DBBook,
 }
 
 export type EnrichedBookFirstPage = { id: string; text: string };
-export type EnrichedBookSession = { lastReadAt: Date; lastPageId: string; lastPageNumber: number; frontierPageId: string | null; frontierPageNumber: number; frontierAncestorIds: string[]; contextHistory: string };
+
+/**
+ * User reading session with branch-aware "active-tip" frontier tracking.
+ *
+ * **Frontier (branch-aware active tip):**
+ * `frontierPageId` tracks the furthest page the reader has reached across
+ * **any** branch. It is the page where the reader has not yet chosen an
+ * action — because choosing an action navigates forward to the next page,
+ * which then becomes the new frontier.
+ *
+ * **Back-navigation rule (preserved on revisit):**
+ * When the reader revisits an ancestor page (detected via
+ * `frontierAncestorIds`), the frontier stays put. It advances only on
+ * forward progress or cross-branch navigation — moving to a page whose
+ * id is NOT in the current frontier's ancestry.
+ *
+ * **Invariant:** `frontierPageId` always points to the page where the
+ * reader last landed after choosing an action, which is the page where
+ * they have not yet made their next choice.
+ *
+ * @example
+ * ```typescript
+ * // Reader goes p1 → p2 → p3 (ancestors: [p1, p2, p3])
+ * // frontier = p3, frontierAncestorIds = [p1_id, p2_id, p3_id]
+ *
+ * // Goes back to p2, chooses a different action → p4
+ * // p4 NOT in [p1, p2, p3] → forward progress → frontier advances to p4
+ * // frontier = p4, frontierAncestorIds = [p1_id, p2_id, p4_id]
+ *
+ * // Revisits p3 — p3 NOT in [p1, p2, p4] → cross-branch → frontier moves to p3
+ * // frontier = p3
+ * ```
+ */
+export type EnrichedBookSession = {
+  /** Timestamp of the reader's last activity in this book */
+  lastReadAt: Date;
+  /** The reader's current page id (updates on every navigation) */
+  lastPageId: string;
+  /** The reader's current page number (display hint only) */
+  lastPageNumber: number;
+  /**
+   * Active-tip frontier: the furthest page the reader has reached on
+   * any branch. Preserved on back-navigation. Always points to the
+   * page where an action has not yet been selected.
+   */
+  frontierPageId: string | null;
+  /**
+   * Display hint for the frontier page number (NOT used for gating).
+   * Mirrors the page number of `frontierPageId`.
+   */
+  frontierPageNumber: number;
+  /**
+   * Ancestor chain of the frontier page: the frontier's own page id
+   * plus every page id in its `actionsHistory`. Used by the back-
+   * navigation test: if a visited page id is found in this list, the
+   * frontier is kept; otherwise it advances.
+   */
+  frontierAncestorIds: string[];
+  /** AI-summarized story context from page 1 to frontier page */
+  contextHistory: string;
+};
 export type EnrichedBookGeneration = {
   generationStatus?: BookGenerationStatus;
   generationStep?: StoryGenerationStep;

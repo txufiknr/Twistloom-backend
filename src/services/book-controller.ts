@@ -919,5 +919,10 @@ export async function visitBookPage(
     shouldConsumeCredits
   }, { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } });
 
-  return { dbPage, book, visitDetails, sourceAction: selectedAction, isUserTakeAction };
+  // Re-fetch book after session update so the response carries the fresh
+  // session (updated frontierPageId, etc.) rather than the pre-update one.
+  // The cache was invalidated inside setActiveSession, so this is a DB read.
+  const refreshedBook = await getEnrichedBook(bookId, userId, language);
+
+  return { dbPage, book: refreshedBook ?? book, visitDetails, sourceAction: selectedAction, isUserTakeAction };
 }
