@@ -151,7 +151,7 @@ export const AI_MAX_PROMPT_LENGTH: Record<AIChatProvider, number> = {
   github:     30_000,    // 8K tokens   - Standard GPT-4o free tier context limit.
   groq:       24_000,    // 6K tokens   - FREE TIER TPM CAP. Exceeding this triggers a 429.
 
-  // If you pin a large-context free model (e.g. meta-llama/llama-4-maverick:free
+  // If you pin a large-context free model (e.g. meta-llama/llama-4-maverick
   // with a 1M context), raise this — but remember the 20 RPM cap makes huge
   // prompts a poor fit regardless.
   openrouter: 60_000,    // ~15K tokens - Conservative default for most :free model variants.
@@ -208,9 +208,9 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
     'qwen/qwen3-30b-a3b', // 256K+ tokens. Excellent JSON. Toggleable Reasoning. Creative and imaginative with good character voice variety.
     'google/gemini-2.5-flash', // 1,048,576 (1M) Tokens. Excellent JSON. Hybrid reasoning. Extremely strong prose quality, pacing, emotion, and instruction-following.
     'z-ai/glm-4.5-air', // 128K tokens. Excellent JSON. Toggleable Reasoning. Clean, coherent, reliable storyteller with natural dialogue.
-    'meta-llama/llama-4-maverick:free', // 1,048,576 (1M) Tokens. Excellent JSON. Toggleable reasoning. Strong narrative fluidity and voice, benefiting from a massive, rich dataset of human social interactions.
-    'nvidia/nemotron-3-super:free', // 1,000,000 (1M) tokens. Excellent JSON. Toggleable Reasoning. Replaces Mixtral. Massive MoE model, exceptional atmospheric tension.
-    'deepseek/deepseek-r1:free', // 128K+ tokens. Superior JSON. Native Reasoning. Strong analytical/reasoning prose. Phenomenal at mapping out the underlying logic of a scene before outputting final text.
+    'meta-llama/llama-4-maverick', // 1,048,576 (1M) Tokens. Excellent JSON. Toggleable reasoning. Strong narrative fluidity and voice, benefiting from a massive, rich dataset of human social interactions.
+    'nvidia/nemotron-3-super-120b-a12b:free', // 1,000,000 (1M) tokens. Excellent JSON. Toggleable Reasoning. Replaces Mixtral. Massive MoE model, exceptional atmospheric tension.
+    'deepseek/deepseek-r1', // 128K+ tokens. Superior JSON. Native Reasoning. Strong analytical/reasoning prose. Phenomenal at mapping out the underlying logic of a scene before outputting final text.
     'meta-llama/llama-3.3-70b-instruct:free', // 128K tokens (~131K tokens). Fair JSON. Standard Model. Very fluid, natural vocabulary. Excellent at keeping character dialogue sounding organic and culturally nuanced.
   ],
   cerebras: [
@@ -354,9 +354,9 @@ export const AI_CHAT_MODELS_TRANSLATION: AIModelSelection = {
     'google/gemini-2.5-flash', // Extremely strong prose quality, pacing, emotion, and instruction-following
     'qwen/qwen3-30b-a3b', // Creative and imaginative with good character voice variety
     'z-ai/glm-4.5-air', // Clean, coherent, reliable storyteller with natural dialogue
-    'meta-llama/llama-4-maverick:free', // Large context, broad fallback
-    'nvidia/nemotron-3-super:free', // MoE architecture handles multilingual subtext very well.
-    'deepseek/deepseek-r1:free', // Strong analytical/reasoning prose. Phenomenal at mapping out the underlying logic of a scene before outputting final text.
+    'meta-llama/llama-4-maverick', // Large context, broad fallback
+    'nvidia/nemotron-3-super-120b-a12b:free', // MoE architecture handles multilingual subtext very well.
+    'deepseek/deepseek-r1', // Strong analytical/reasoning prose. Phenomenal at mapping out the underlying logic of a scene before outputting final text.
     'meta-llama/llama-3.3-70b-instruct:free', // High-octane cinematic action and dialogue.
   ],
   cloudflare: [
@@ -397,9 +397,9 @@ export const AI_CHAT_MODELS_EVALUATION: AIModelSelection = {
     'qwen/qwen3-30b-a3b', // Has known tokenization bias during constrained JSON decoding. Creative and imaginative with good character voice variety.
     'google/gemini-2.5-flash', // Extremely strong prose quality, pacing, emotion, and instruction-following.
     'z-ai/glm-4.5-air', // Clean, coherent, reliable storyteller with natural dialogue.
-    'meta-llama/llama-4-maverick:free', // Large context, broad fallback.
-    'nvidia/nemotron-3-super:free', // 1M context easily handles parsing massive full-story payloads.
-    'deepseek/deepseek-r1:free', // Strong analytical/reasoning prose. Phenomenal at mapping out the underlying logic of a scene before outputting final text. Incredible at analyzing strict JSON constraints and finding errors.
+    'meta-llama/llama-4-maverick', // Large context, broad fallback.
+    'nvidia/nemotron-3-super-120b-a12b:free', // 1M context easily handles parsing massive full-story payloads.
+    'deepseek/deepseek-r1', // Strong analytical/reasoning prose. Phenomenal at mapping out the underlying logic of a scene before outputting final text. Incredible at analyzing strict JSON constraints and finding errors.
     'meta-llama/llama-3.3-70b-instruct:free', // High-octane cinematic action and dialogue.
   ],
   cohere: [

@@ -450,7 +450,7 @@ function createOpenAICompatibleStreamGenerator(
  * GitHub streaming generator that yields chunks
  */
 const githubStreamGenerator = createOpenAICompatibleStreamGenerator('github', getGitHubClient, 'gpt-4o');
-const openrouterStreamGenerator = createOpenAICompatibleStreamGenerator('openrouter', getOpenRouterClient, 'deepseek/deepseek-r1:free');
+const openrouterStreamGenerator = createOpenAICompatibleStreamGenerator('openrouter', getOpenRouterClient, 'deepseek/deepseek-r1');
 const cloudflareStreamGenerator = createOpenAICompatibleStreamGenerator('cloudflare', getCloudflareClient, '@cf/meta/llama-3.1-8b-instruct');
 
 /**

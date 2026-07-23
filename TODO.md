@@ -24,14 +24,9 @@
 [ ] formatEndingPlan: if no `changeNote` (initial viable ending), use from `book.ending` instead
 [ ] on book.ending edit, evaluate with AI for security and viability score
 [ ] always generate AI illustration for page 1
+[ ] can you apply requireVerifiedEmail middleware on "Profile & account management routes" routes first, sequentially?
 
-[openrouter] 🔄 Retry 1/3 for model deepseek/deepseek-r1:free: SERVICE_UNAVAILABLE
-NotFoundError: 404 This model is unavailable for free. The paid version is available now - use this slug instead: deepseek/deepseek-r1
-
-[openrouter] 💥 Model meta-llama/llama-4-maverick:free failed (retries exhausted), trying next model: SERVICE_UNAVAILABLE
-NotFoundError: 404 This model is unavailable for free. The paid version is available now - use this slug instead: meta-llama/llama-4-maverick
-
-BadRequestError: 400 nvidia/nemotron-3-super:free is not a valid model ID
+---
 
 APIError: 402 This request requires more credits, or fewer max_tokens. You requested up to 4000 tokens, but can only afford 1538. To increase, visit https://openrouter.ai/settings/credits and upgrade to a paid account
 

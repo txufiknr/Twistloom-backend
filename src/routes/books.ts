@@ -3788,12 +3788,26 @@ router.get("/:identifier/:pageId/candidates", requireAuth, async (c) => {
 /**
  * GET /api/books/:identifier/:pageId/candidates/status
  * 
- * Polling endpoint for candidate generation status
+ * Polling endpoint for candidate generation status.
  * 
- * Returns current generation status without SSE overhead.
- * Designed for short-lived polling requests (no timeout risk).
+ * Returns current `CandidateGenerationStatus` as a plain JSON response (no SSE).
+ * Designed for short-lived polling requests from the frontend (no timeout risk).
  * 
- * **Authentication:** Required (via `requireAuth`)
+ * **Authentication:** Optional (via `optionalAuth`)
+ * 
+ * **Three-state machine:**
+ * 
+ * | `isGenerating` | `isDone` | Behaviour |
+ * |:---:|:---:|---|
+ * | `true` | `false` | Workflow is running. Returns `isGenerating: true` with `completedActions`/`totalActions` from page actions, plus live `actionProgress` events from the `actionProgress` DB table (falling back to synthetic events). |
+ * | `false` | `true` | All actions have `destinationPageIds`. Returns `isGenerating: false` with all actions completed. Clears stale progress events. |
+ * | `false` | `false` | No workflow running and actions are pending. Triggers the GitHub workflow via `triggerCandidateGenerationWorkflow`, then returns `isGenerating: true` with current progress. |
+ * 
+ * **State derivation:**
+ * - `isGenerating` is derived from `dbPage.isGeneratingStartedAt` — if set and not stale (within `MAX_GENERATION_DURATION_MS`), the workflow is considered active.
+ * - `isDone` is derived from `pendingGenerationCount` (or count of actions without `destinationPageIds`). When zero, all actions have destinations.
+ * - `completedActions` counts actions that already have `destinationPageIds` (source of truth from the page data).
+ * - `actionProgress` is fetched live from the `actionProgress` DB table via `getActionProgressEvents`, falling back to synthetic events derived from the page's actions when no DB events exist.
  * 
  * Response:
  * {
@@ -3823,6 +3837,18 @@ router.get("/:identifier/:pageId/candidates", requireAuth, async (c) => {
  *   "startedAt": "2024-01-01T00:00:00Z",
  *   "lastUpdated": "2024-01-01T00:00:10Z"
  * }
+ * 
+ * @todo When `userId` is undefined (unauthenticated request), the fallback on
+ *       line 3915 uses `requireEnv("SYSTEM_USER_ID")` to trigger the workflow.
+ *       However, `validateAndRetrievePageForGeneration` on line 3841 passes
+ *       `userId` (which may be `undefined`), causing `mapToPersistedStoryPage`
+ *       to be used instead of `mapToUserStoryPage`. This means the `actions`
+ *       array in the response won't include user-specific flags like
+ *       `isSelected`. This is acceptable for a status endpoint, but if
+ *       user-specific action metadata is needed in the future, consider
+ *       passing a resolved user ID (e.g. from a session token or the
+ *       `SYSTEM_USER_ID` fallback) to `validateAndRetrievePageForGeneration`
+ *       so that `mapToUserStoryPage` is used consistently.
  */
 router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => {
   try {
