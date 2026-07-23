@@ -5383,7 +5383,15 @@ router.get("/:identifier", optionalAuth, async (c) => {
     // Set caching headers
     c.header('Last-Modified', lastModified.toUTCString());
     c.header('ETag', etag);
-    c.header('Cache-Control', 'public, max-age=300'); // 5 minutes
+
+    // Active books: private cache so Vercel edge doesn't serve stale user-specific data
+    // Non-active (draft/archived) books: no cache — these change frequently during generation
+    // and must never be served stale from the edge
+    if (enrichedBook.status === 'active') {
+      c.header('Cache-Control', 'private, max-age=300, stale-while-revalidate=150');
+    } else {
+      c.header('Cache-Control', 'private, no-cache');
+    }
 
     return c.json({ book: enrichedBook });
   } catch (error) {
