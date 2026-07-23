@@ -40,6 +40,10 @@ import { createOrUpdateOAuthUser } from "../services/user-controller.js";
 import { updateSessionMetadata } from "../services/session-manager.js";
 import { getUserIdByEmail, invalidateByEmail } from "../services/user.js";
 import { getClientIp } from "../hono/express-shim.js";
+import { isEmailVerified } from "../utils/email-verification.js";
+import { dbRead } from "../db/client.js";
+import { users } from "../db/schema.js";
+import { eq } from "drizzle-orm";
 import type { AppEnv } from "../hono/env.js";
 
 // @auth/express is no longer imported; @hono/auth-js (built on @auth/core) is
@@ -204,3 +208,53 @@ export const requireAuth = createMiddleware<AppEnv>(async (c, next) => {
 export const optionalAuth = createMiddleware<AppEnv>(async (c, next) => {
   await next();
 });
+
+/**
+ * Requires the authenticated user's email to be verified.
+ *
+ * @remarks
+ * Must be placed **after** `requireAuth` (or used alongside it) because it
+ * depends on `c.get("userId")` being populated by the global auth middleware.
+ *
+ * Unverified users within a 72-hour grace period from account creation are
+ * allowed through so onboarding is not blocked. After the grace period, a
+ * 403 is returned.
+ *
+ * Throws 403 if the user's email is not verified and the grace period has
+ * expired.
+ *
+ * @example
+ * ```typescript
+ * import { requireAuth, requireVerifiedEmail } from "../middleware/nextauth.js";
+ *
+ * router.post("/checkin", requireAuth, requireVerifiedEmail, (c) => handleCheckIn(c));
+ * ```
+ */
+export const requireVerifiedEmail = createMiddleware<AppEnv>(async (c, next) => {
+  const userId = c.get("userId");
+  if (!userId) {
+    // Let requireAuth handle this — no userId means no authentication
+    return await next();
+  }
+
+  const verified = await isEmailVerified(userId);
+  if (verified) return await next();
+
+  // Grace period: 72 hours from account creation
+  const [userRow] = await dbRead
+    .select({ createdAt: users.createdAt })
+    .from(users)
+    .where(eq(users.userId, userId))
+    .limit(1);
+
+  if (userRow?.createdAt) {
+    const msSinceCreation = Date.now() - new Date(userRow.createdAt).getTime();
+    if (msSinceCreation < GRACE_PERIOD_MS) return await next();
+  }
+
+  throw new HTTPException(403, {
+    message: "Email verification required. Please verify your email address before performing this action.",
+  });
+});
+
+const GRACE_PERIOD_MS = 72 * 60 * 60 * 1000; // 72 hours

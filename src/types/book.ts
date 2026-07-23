@@ -102,8 +102,6 @@ export interface BookCreationStatus {
    * finishes — the frontend can immediately render the book with `firstPage`,
    * `title`, `summary`, `hook`, `totalPages`, `mc`, etc. without a follow-up
    * request.
-   *
-   * @see {{BACKEND_GENERATION.md | Book Generation Data Consistency}}
    */
   book?: EnrichedBookData | null;
 }
