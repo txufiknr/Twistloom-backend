@@ -14,6 +14,7 @@ import { BOOK_MAX_PAGES, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from
 import { getErrorMessage } from "./error.js";
 import { validatePageActionsForMode } from "./book-mode.js";
 import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, insertBook, insertStoryPage, mapBookFromDb, getPageFromDB, getBookFromDB, persistPageWithState, mapToPersistedStoryPage, updateBook, invalidatePopularTagsCache } from "../services/book.js";
+import { runCanonValidationPass, insertCanonValidationAudit } from "../services/canon-validation.js";
 import { dbWrite, dbRead } from "../db/client.js";
 import { bookGenerations } from "../db/schema.js";
 import { eq } from "drizzle-orm";
@@ -4681,12 +4682,21 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
     throw new Error('Failed to generate page: no result');
   }
 
-  // 5. Apply state updates
-  const generatedStoryPage: StoryGeneration = {
+  // 5. Canon/consistency validation (roadmap 1.1) — after eval, before delta/persist
+  let generatedStoryPage: StoryGeneration = {
     ...response.result,
     calendarDate: response.result.calendarDate ?? actionedPage.calendarDate,
   };
 
+  const canonPass = await runCanonValidationPass({
+    state: advancedState,
+    generatedPage: generatedStoryPage,
+    bookId: book.id,
+    logContext: context,
+  });
+  generatedStoryPage = canonPass.page;
+
+  // 6. Apply state updates
   const { newState, fullStateDelta } = resolvePageDelta({
     generatedStoryPage,
     advancedState,
@@ -4695,7 +4705,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
     context
   });
 
-  // 6. Determine Branch ID
+  // 7. Determine Branch ID
   const parentBranchId = actionedPage.branchId ?? "main";
   const usedBranchIds = new Set<string>();
 
@@ -4711,7 +4721,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
   console.log(`[${context}] 🌳 branchId: ${branchId} (${branchId === parentBranchId ? "inherited from parent" : "new branch"})`);
   usedBranchIds.add(branchId);
 
-  // 7. Persist page and its state atomically
+  // 8. Persist page and its state atomically
   const newPage = await persistPageWithState({
     userId,
     expectedPageNumber,
@@ -4727,7 +4737,16 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
     book,
   });
 
-  // 8. Fire-and-forget pgvector semantic memory embedding. Deliberately NOT
+  // Fire-and-forget canon audit (needs pageId)
+  if (canonPass.audit) {
+    void insertCanonValidationAudit({
+      bookId: book.id,
+      pageId: newPage.id,
+      audit: canonPass.audit,
+    });
+  }
+
+  // 9. Fire-and-forget pgvector semantic memory embedding. Deliberately NOT
   // awaited — page text is already safely persisted above, and a failed or
   // slow embed should never delay the response or fail the request. Reads
   // newPage.stateDelta internally (same object just persisted), so nothing
@@ -4821,10 +4840,20 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
   // 5. Per-page state processing and persistence
   for (const [index, generatedStoryPageResult] of generatedStoryPages.entries()) {
     const isFirstAlternative = index === 0;
-    const generatedStoryPage: StoryGeneration = {
+    let generatedStoryPage: StoryGeneration = {
       ...generatedStoryPageResult,
       calendarDate: generatedStoryPageResult.calendarDate ?? actionedPage.calendarDate,
     };
+
+    // Canon/consistency validation per multiverse candidate (roadmap 1.1)
+    const fateLogContext = `${context}:fate-${index + 1}`;
+    const canonPass = await runCanonValidationPass({
+      state: advancedState,
+      generatedPage: generatedStoryPage,
+      bookId: book.id,
+      logContext: fateLogContext,
+    });
+    generatedStoryPage = canonPass.page;
 
     // Resolve state updates using the helper
     const { newState, fullStateDelta } = resolvePageDelta({
@@ -4875,6 +4904,14 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
 
       newPages.push(newPage);
       console.log(`[${context}] 🌌 Persisted alternative fate ${index + 1}/${generatedStoryPages.length} — page ${newPage.id}`);
+
+      if (canonPass.audit) {
+        void insertCanonValidationAudit({
+          bookId: book.id,
+          pageId: newPage.id,
+          audit: canonPass.audit,
+        });
+      }
 
       // Fire-and-forget pgvector semantic memory embedding — same rationale
       // as the single-page path in generateNextPage above. Per-candidate,

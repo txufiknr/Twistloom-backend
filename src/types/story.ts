@@ -5,6 +5,7 @@ import type { CharacterMemory, CharacterUpdates, HealthStatus, Injury, InitialIn
 import type { PlaceConnectionUpdate, PlaceMemory, PlaceUpdates, PlaceWeather } from "./places.js";
 import type { DBNewPage, DBPage, DBUserSession } from "./schema.js";
 import type { StoryThread, ThreadUpdates } from "./story-thread.js";
+import type { CanonValidationSummary } from "./canon-validation.js";
 
 /**
  * Available moods for story pages
@@ -1266,6 +1267,8 @@ export type EnrichedStoryPage = Partial<Omit<UserStoryPage, 'stateDelta'>> & {
    * Only paragraphs with at least one comment are included. Page-level
    * comments (no paragraph scope) are reported under the key `0`. */
   paragraphCommentCounts?: Record<number, number>;
+  /** Latest generation-time canon validation summary (roadmap 1.1), if any */
+  canonValidation?: CanonValidationSummary;
 };
 
 // export type StoryPageNav = Record<number, StoryPageNavItem>;

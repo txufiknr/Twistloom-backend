@@ -246,6 +246,13 @@
       "when": 1784726007079,
       "tag": "0034_chief_rogue",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1784895295532,
+      "tag": "0035_bitter_omega_sentinel",
+      "breakpoints": true
     }
   ]
 }

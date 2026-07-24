@@ -12,7 +12,7 @@
  */
 
 import { type DBClient, dbRead, dbWrite, isTransaction } from "../db/client.js";
-import { pages, books, branches, users, userPageProgress, userCompletedBooks, userActionHints, customActions, bookGenerations, uploadedImages, userComments } from "../db/schema.js";
+import { pages, books, branches, users, userPageProgress, userCompletedBooks, userActionHints, customActions, bookGenerations, uploadedImages, userComments, canonValidations } from "../db/schema.js";
 import type { ImageKitUploadResponse } from "../types/image.js";
 import { and, eq, asc, or, desc, ne, sql, isNull, lt } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
@@ -23,6 +23,7 @@ import type { DBBook, DBNewBook, DBNewPage, DBPage, DBUpdateBook } from "../type
 import type { Book, BookSlugGenerationResult, BookStatus, BookVisibility, EnrichedBookData, EnrichedPageOptions, PublicStats } from "../types/book.js";
 import { bookVisibilities } from "../types/book.js";
 import type { StoryPage, PersistedStoryPage, UserStoryPage, StoryState, StoryPageMeta, EnrichedStoryPage, StateDelta, StoryGeneration, SelectedAction, Action, EnrichedStoryPageContext, TranslatedStoryPage, EnrichedStoryPagePlace, EnrichedStoryPageCharacter } from "../types/story.js";
+import type { CanonValidationSummary } from "../types/canon-validation.js";
 import { getStoryStateFromPage, insertStoryState } from "./story.js";
 import { formatPlacesForPrompt } from "../utils/places.js";
 import { formatBookMetaForPrompt } from "../utils/books.js";
@@ -1450,7 +1451,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
         .then(rows => rows[0]?.displayName ?? book?.title ?? null);
 
   // Parallelize independent database queries and API calls
-  const [selectedActions, storyState, translation, shownActionHint, communityActions, branchName, paragraphCommentCountsRows] = await Promise.all([
+  const [selectedActions, storyState, translation, shownActionHint, communityActions, branchName, paragraphCommentCountsRows, latestCanonValidation] = await Promise.all([
     // Query user's chosen action for this page (if authenticated)
     userId ? getPageActionsFromDB(userId, bookId, pageId) : Promise.resolve([]),
 
@@ -1503,6 +1504,20 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
         eq(userComments.pageId, pageId),
       ))
       .groupBy(sql`COALESCE(${userComments.paragraphNumber}, 0)`),
+
+    // Latest canon validation audit for this page (roadmap 1.1)
+    dbRead
+      .select({
+        outcome: canonValidations.outcome,
+        violationType: canonValidations.violationType,
+        severityScore: canonValidations.severityScore,
+        wasRevised: canonValidations.wasRevised,
+      })
+      .from(canonValidations)
+      .where(eq(canonValidations.pageId, pageId))
+      .orderBy(desc(canonValidations.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null),
   ]);
 
   if (targetLanguage && translation) {
@@ -1596,6 +1611,16 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
     aiModel: dbPage.aiModel || undefined,
     aiEvalProvider: dbPage.aiEvalProvider || undefined,
     aiEvalModel: dbPage.aiEvalModel || undefined,
+
+    // Canon validation summary (roadmap 1.1)
+    canonValidation: latestCanonValidation
+      ? ({
+          outcome: latestCanonValidation.outcome,
+          violationType: latestCanonValidation.violationType ?? undefined,
+          severityScore: latestCanonValidation.severityScore ?? undefined,
+          wasRevised: latestCanonValidation.wasRevised,
+        } satisfies CanonValidationSummary)
+      : undefined,
   // } satisfies Record<keyof EnrichedStoryPage, unknown>;
   };
 

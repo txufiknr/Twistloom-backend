@@ -13,6 +13,7 @@ import type { PlaceMemory, PlaceMemoryTranslation, PlaceWeather } from "../types
 import type { ActionProgressStatus } from "../types/candidate-generation.js";
 import type { StoryThread, StoryThreadTranslation } from "../types/story-thread.js";
 import type { CustomActionOutcome, CustomActionRejectionCategory } from "../types/custom-action.js";
+import type { CanonValidationOutcome, CanonViolation, CanonViolationType } from "../types/canon-validation.js";
 import type { TransactionType } from "../types/credits.js";
 import type { SubscriptionStatus, SubscriptionTransactionType } from "../types/subscription.js";
 import type { ResourceAIProvider, ResourceAIScore, ResourceTimestamp, ResourceTranslatorType } from "../types/api.js";
@@ -1637,6 +1638,47 @@ export const customActions = pgTable(
     index("custom_actions_book_idx").on(t.bookId),
     index("custom_actions_user_idx").on(t.userId),
     index("custom_actions_outcome_idx").on(t.outcome),
+  ]
+);
+
+/**
+ * Canon validations audit table (roadmap 1.1)
+ * @summary Generation-time continuity check outcomes, beside pages/storyStates
+ * @example
+ * {
+ *   "id": "cv123",
+ *   "book_id": "book456",
+ *   "page_id": "page789",
+ *   "outcome": "revised",
+ *   "violation_type": "established_fact",
+ *   "description": "Page claimed the locket was gold; fact says silver",
+ *   "severity_score": 0.72,
+ *   "was_revised": true,
+ *   "rewrite_attempts": 0,
+ *   "created_at": "2026-07-24T00:00:00.000Z"
+ * }
+ */
+export const canonValidations = pgTable(
+  "canon_validations",
+  {
+    id: id(),
+    bookId: bookId("cascade"),
+    pageId: pageId("cascade"),
+
+    outcome: text("outcome").$type<CanonValidationOutcome>().notNull(),
+    violationType: text("violation_type").$type<CanonViolationType>(),
+    description: text("description").notNull().default(""),
+    severityScore: real("severity_score"),
+    violations: jsonb("violations").$type<CanonViolation[]>().notNull().default(sql`'[]'::jsonb`),
+    wasRevised: boolean("was_revised").notNull().default(false),
+    rewriteAttempts: integer("rewrite_attempts").notNull().default(0),
+
+    createdAt,
+  },
+  (t) => [
+    index("canon_validations_book_idx").on(t.bookId),
+    index("canon_validations_page_idx").on(t.pageId),
+    index("canon_validations_outcome_idx").on(t.outcome),
   ]
 );
 
