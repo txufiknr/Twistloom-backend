@@ -27,20 +27,20 @@ The Vercel Edge Runtime (web-standard APIs only: `fetch`, `Request`, `Response`,
 
 ## Blocker Summary Table
 
-| # | Blocker | Severity | Files Affected | Effort |
-|---|---------|----------|----------------|--------|
-| 1 | `@imagekit/nodejs` SDK | **CRITICAL** | `services/image.ts`, `services/book.ts`, `middleware/upload.ts` | High |
-| 2 | `bcrypt` native addon | **CRITICAL** | `utils/password.ts` | Low (drop-in) |
-| 3 | `Buffer` (9+ usages) | **CRITICAL** | `middleware/upload.ts`, `services/image.ts`, `utils/ai-image.ts`, `routes/books.ts` | Medium |
-| 4 | Neon Pool WebSocket wiring | **HIGH** | `db/client.ts` | Low (+ testing) |
-| 5 | `crypto.createHash` (Node `crypto`) | **HIGH** | `utils/cache.ts` | Medium (async ripple) |
-| 6 | Entrypoint adapter | **HIGH** | `src/app.ts` | Low |
-| 7 | Stripe fetch client config | **HIGH** | `utils/stripe.ts` | Low (1 line) |
-| 8 | `fs` / `path` in constants | **LOW** | `config/constants.ts` | Low (remove fallback) |
-| 9 | `fs` / `path` in ai-image.ts | **LOW** | `utils/ai-image.ts` | Low (skip branch) |
-| 10 | `@actions/core` (`group()`) | **LOW** | `utils/error.ts`, `utils/ai-logger.ts`, `utils/ai-chat.ts` | Low (console.group) |
-| 11 | `process.*` in admin route | **LOW** | `routes/admin.ts`, `app.ts` | Low (guard/remove) |
-| 12 | SSE route durations | **NONE** (legacy) | `routes/books.ts` (3 SS routes) | — |
+| # | Blocker | Severity | Files Affected | Effort | Status |
+|---|---------|----------|----------------|--------|--------|
+| 1 | `@imagekit/nodejs` SDK | **CRITICAL** | `services/image.ts`, `services/book.ts`, `middleware/upload.ts` | High | ✅ Done |
+| 2 | `bcrypt` native addon | **CRITICAL** | `utils/password.ts` | Low (drop-in) | ⬜ |
+| 3 | `Buffer` (9+ usages) | **CRITICAL** | `middleware/upload.ts`, `routes/books.ts`, `utils/ai-image.ts` | Medium | ⬜ |
+| 4 | Neon Pool WebSocket wiring | **HIGH** | `db/client.ts` | Low (+ testing) | ⬜ |
+| 5 | `crypto.createHash` (Node `crypto`) | **HIGH** | `utils/cache.ts` | Medium (async ripple) | ⬜ |
+| 6 | Entrypoint adapter | **HIGH** | `src/app.ts` | Low | ⬜ |
+| 7 | Stripe fetch client config | **HIGH** | `utils/stripe.ts` | Low (1 line) | ⬜ |
+| 8 | `fs` / `path` in constants | **LOW** | `config/constants.ts` | Low (remove fallback) | ⬜ |
+| 9 | `fs` / `path` in ai-image.ts | **LOW** | `utils/ai-image.ts` | Low (skip branch) | ⬜ |
+| 10 | `@actions/core` (`group()`) | **LOW** | `utils/error.ts`, `utils/ai-logger.ts`, `utils/ai-chat.ts` | Low (console.group) | ⬜ |
+| 11 | `process.*` in admin route | **LOW** | `routes/admin.ts`, `app.ts` | Low (guard/remove) | ⬜ |
+| 12 | SSE route durations | **NONE** (legacy) | `routes/books.ts` (3 SS routes) | — | ⬜ |
 
 ---
 
@@ -477,9 +477,9 @@ These are used in the codebase but **do not require changes**:
 
 ### Phase 1 — Critical blockers (estimated: 3–5 days)
 
-1. **Replace `@imagekit/nodejs` with REST API** — rewrite `services/image.ts`
+1. ✅ **Replace `@imagekit/nodejs` with REST API** — `services/image.ts` rewritten; `services/book.ts` type import updated
 2. **Replace `bcrypt` with `bcryptjs`** — one-line change
-3. **Systematic `Buffer` → `Uint8Array`/`ArrayBuffer` replacement** — 4 files
+3. **Systematic `Buffer` → `Uint8Array`/`ArrayBuffer` replacement** — `services/image.ts` done; remaining in `middleware/upload.ts`, `routes/books.ts`, `utils/ai-image.ts`
 
 ### Phase 2 — High blockers (estimated: 1–2 days)
 

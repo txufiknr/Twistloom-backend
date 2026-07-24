@@ -1,4 +1,3 @@
-import ImageKit, { toFile } from "@imagekit/nodejs";
 import { getTodayDate } from "../utils/time.js";
 import { dbWrite } from "../db/client.js";
 import { inArray, sql, and, eq, isNull } from "drizzle-orm";
@@ -6,70 +5,156 @@ import { getErrorMessage } from "../utils/error.js";
 import { APP_NAME_SLUG } from "../config/constants.js";
 import { deletedImages, uploadedImages } from "../db/schema.js";
 import { dbRead } from "../db/client.js";
-import type { ImageUploadObject, ImageUploadOptions, ImageUploadSource } from "../types/image.js";
+import type { ImageKitUploadResponse, ImageUploadObject, ImageUploadOptions, ImageUploadSource } from "../types/image.js";
 import type { Book } from "../types/book.js";
 
-let imageKitClient: ImageKit | null = null;
+// Runtime environments: Node 20+ / Edge (both have globalThis.btoa)
+const encodeBase64 = (str: string): string =>
+  (globalThis as { btoa: (s: string) => string }).btoa(str);
+
+const IMAGEKIT_UPLOAD_URL = "https://upload.imagekit.io/api/v1/files/upload";
+const IMAGEKIT_API_BASE = "https://api.imagekit.io/v1";
+
+// Timeout per operation (ms). Uploads can be slower for large files.
+const TIMEOUTS = {
+  UPLOAD: 60_000,
+  DELETE: 15_000,
+  BULK_DELETE: 30_000,
+} as const;
+
+// Retry configuration for upload (matches SDK's built-in transient-failure resilience)
+const RETRY = {
+  MAX_ATTEMPTS: 3,
+  BASE_DELAY_MS: 1_000,
+} as const;
+
+// ---------------------------------------------------------------------------
+// Auth
+// ---------------------------------------------------------------------------
+
+let cachedAuthHeader: string | null = null;
 
 /**
- * Format keywords array for URL encoding
- * Converts array of keywords to pipe-delimited string with spaces replaced by '+'
- * @param keywords - Array of keywords to format
- * @returns URL-encoded string suitable for API requests
- * 
- * @example
- * ```typescript
- * formatKeywordsForUrl(['muslim woman', 'muslimah']) // returns 'muslim+woman|muslimah'
- * formatKeywordsForUrl(['dua', 'dhikr', 'tasbih']) // returns 'dua|dhikr|tasbih'
- * ```
+ * Returns a cached Basic Auth header for ImageKit API.
+ * The token is computed once per module lifetime (serverless cold-start).
  */
-export function formatKeywordsForUrl(keywords: string[]): string {
-  return keywords
-    .map(keyword => keyword.replace(/\s+/g, '+')) // Replace spaces with '+'
-    .join('|'); // Join with pipe delimiter
-}
+function getAuthHeaders(): Record<string, string> | null {
+  if (cachedAuthHeader) {
+    return { 'Authorization': cachedAuthHeader };
+  }
 
-function getImageKitClient(): ImageKit | null {
-  if (imageKitClient) return imageKitClient;
-
-  const IMAGEKIT_API_KEY_PRIVATE = process.env['IMAGEKIT_API_KEY_PRIVATE'];
-  if (!IMAGEKIT_API_KEY_PRIVATE) {
-    console.warn("[getImageKitClient] ⚠️ Credentials not configured");
+  const privateKey = process.env['IMAGEKIT_API_KEY_PRIVATE'];
+  if (!privateKey) {
+    console.warn("[imagekit] ⚠️ Credentials not configured");
     return null;
   }
 
-  // Docs: https://www.npmjs.com/package/@imagekit/nodejs
-  // Docs: https://github.com/imagekit-developer/imagekit-nodejs
-  imageKitClient = new ImageKit({
-    privateKey: IMAGEKIT_API_KEY_PRIVATE,
-  });
+  cachedAuthHeader = `Basic ${encodeBase64(`${privateKey}:`)}`;
+  return { 'Authorization': cachedAuthHeader };
+}
 
-  return imageKitClient;
+// ---------------------------------------------------------------------------
+// HTTP helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Authenticated fetch to ImageKit with timeout.
+ * Does NOT set Content-Type for FormData bodies (browser/Edge auto-sets boundary).
+ */
+async function imageKitFetch(
+  url: string,
+  options: RequestInit & { timeoutMs?: number } = {}
+): Promise<Response> {
+  const headers = getAuthHeaders();
+  if (!headers) throw new Error("ImageKit credentials not configured");
+
+  const timeoutMs = options.timeoutMs ?? TIMEOUTS.DELETE;
+  const { timeoutMs: _, ...fetchOptions } = options;
+
+  const mergedHeaders = new Headers(headers);
+  if (fetchOptions.headers) {
+    const incoming = fetchOptions.headers as Record<string, string>;
+    for (const [k, v] of Object.entries(incoming)) {
+      mergedHeaders.set(k, v);
+    }
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, {
+      ...fetchOptions,
+      headers: mergedHeaders,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 /**
- * Handle URL-based image uploads
- * @param imageUrl - Image URL to upload
- * @param prefix - Filename prefix
- * @param entityId - Entity ID for uniqueness
- * @returns Processed file content and filename
+ * Upload form data to ImageKit with retry for transient failures.
+ * Retries on 5xx, 429 (rate-limit), and network errors — but NOT on 4xx.
  */
-function handleUrlUpload(imageUrl: string, prefix: string, entityId: string): {
-  fileContent: string;
-  fileName: string;
-  mimeType?: string;
-} {
-  const fileName = generateImageFilename(entityId, prefix);
-  return {
-    fileContent: imageUrl,
-    fileName,
-  };
+async function uploadWithRetry(formData: FormData): Promise<Response> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt < RETRY.MAX_ATTEMPTS; attempt++) {
+    try {
+      const response = await imageKitFetch(IMAGEKIT_UPLOAD_URL, {
+        method: 'POST',
+        body: formData,
+        timeoutMs: TIMEOUTS.UPLOAD,
+      });
+
+      if (response.ok) return response;
+
+      const body = await response.text();
+
+      // Retry on server errors (5xx) and rate-limit (429)
+      if (response.status >= 500 || response.status === 429) {
+        if (attempt < RETRY.MAX_ATTEMPTS - 1) {
+          const delay = Math.min(RETRY.BASE_DELAY_MS * Math.pow(2, attempt), 5_000);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+      }
+
+      throw new Error(`ImageKit upload failed (${response.status}): ${body}`);
+    } catch (error) {
+      // Don't retry 4xx errors (except 429 handled above)
+      if (error instanceof Error && /ImageKit upload failed \(4/.test(error.message) && !error.message.includes('429')) {
+        throw error;
+      }
+
+      lastError = error as Error;
+
+      if (attempt < RETRY.MAX_ATTEMPTS - 1) {
+        const delay = Math.min(RETRY.BASE_DELAY_MS * Math.pow(2, attempt), 5_000);
+        await new Promise(r => setTimeout(r, delay));
+      }
+    }
+  }
+
+  throw lastError ?? new Error('Upload failed after retries');
+}
+
+// ---------------------------------------------------------------------------
+// Utility functions
+// ---------------------------------------------------------------------------
+
+/**
+ * Format keywords array for URL encoding
+ */
+export function formatKeywordsForUrl(keywords: string[]): string {
+  return keywords
+    .map(keyword => keyword.replace(/\s+/g, '+'))
+    .join('|');
 }
 
 /**
  * Validate and extract file extension from MIME type
- * @param mimeType - MIME type string to validate
- * @returns Valid file extension or default 'jpg'
  */
 function validateMimeType(mimeType: string): string {
   if (!mimeType || typeof mimeType !== 'string') {
@@ -85,7 +170,7 @@ function validateMimeType(mimeType: string): string {
 
   const extension = parts[1];
   const validExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'bmp', 'svg', 'heic', 'tiff'];
-  
+
   if (!validExtensions.includes(extension.toLowerCase())) {
     console.warn('[validateMimeType] ⚠️ Unsupported image extension:', extension);
     return 'jpg';
@@ -95,14 +180,24 @@ function validateMimeType(mimeType: string): string {
 }
 
 /**
- * Handle base64 data URL uploads
- * @param base64Url - Base64 data URL
- * @param prefix - Filename prefix
- * @param entityId - Entity ID for uniqueness
- * @returns Processed file content, filename, and MIME type
+ * Generate sanitized filename for images
+ */
+function generateImageFilename(entityId: string, prefix: string, extension: string = 'jpg'): string {
+  const sanitizedPrefix = prefix
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return `${sanitizedPrefix}-${entityId}.${extension}`;
+}
+
+/** Default filename prefix used when options.filenamePrefix is not provided */
+const DEFAULT_FILENAME_PREFIX = 'image';
+
+/**
+ * Handle base64 data URL uploads — extracts the raw base64 payload and filename
  */
 function handleBase64Upload(base64Url: string, prefix: string, entityId: string): {
-  fileContent: Buffer;
+  base64Data: string;
   fileName: string;
   mimeType: string;
 } | null {
@@ -114,318 +209,114 @@ function handleBase64Upload(base64Url: string, prefix: string, entityId: string)
 
   const mimeType = matches[1];
   const base64Data = matches[2];
-  const fileContent = Buffer.from(base64Data, 'base64');
   const extension = validateMimeType(mimeType);
   const fileName = generateImageFilename(entityId, prefix, extension);
 
-  return {
-    fileContent,
-    fileName,
-    mimeType,
-  };
+  return { base64Data, fileName, mimeType };
 }
 
-/**
- * Handle multipart file uploads
- * @param uploadObj - File upload object with buffer and metadata
- * @param prefix - Filename prefix
- * @param entityId - Entity ID for uniqueness
- * @returns Processed file content, filename, and MIME type
- */
-function handleFileUpload(uploadObj: ImageUploadObject, prefix: string, entityId: string): {
-  fileContent: Buffer;
-  fileName: string;
-  mimeType?: string;
-} {
-  // Convert buffer to Node Buffer for ImageKit with proper type safety
-  let fileContent: Buffer;
-  if (Buffer.isBuffer(uploadObj.buffer)) {
-    fileContent = uploadObj.buffer;
-  } else if (uploadObj.buffer instanceof ArrayBuffer) {
-    fileContent = Buffer.from(uploadObj.buffer);
-  } else if (typeof uploadObj.buffer === 'object' && uploadObj.buffer !== null) {
-    // Handle ArrayBufferLike - validate it has required properties
-    const arrayBufferLike = uploadObj.buffer as ArrayBufferLike;
-    
-    // Check if it has the required ArrayBufferLike properties
-    if (typeof arrayBufferLike.byteLength === 'number' && 
-        typeof arrayBufferLike.slice === 'function') {
-      try {
-        // Convert to proper ArrayBuffer first, then to Buffer
-        const arrayBuffer = arrayBufferLike.slice(0);
-        fileContent = Buffer.from(arrayBuffer);
-      } catch (error) {
-        console.error('[handleFileUpload] ❌ Failed to convert ArrayBufferLike to Buffer:', getErrorMessage(error));
-        throw new Error('Invalid ArrayBufferLike: cannot convert to Buffer', { cause: error });
-      }
-    } else {
-      console.error('[handleFileUpload] ❌ Invalid ArrayBufferLike: missing required properties');
-      throw new Error('Invalid ArrayBufferLike: missing byteLength or slice method');
-    }
-  } else {
-    console.error('[handleFileUpload] ❌ Invalid buffer type:', typeof uploadObj.buffer);
-    throw new Error(`Invalid buffer type: ${typeof uploadObj.buffer}`);
-  }
-
-  const extension = uploadObj.originalname?.split('.').pop() || 'jpg';
-  const fileName = generateImageFilename(entityId, prefix, extension);
-
-  return {
-    fileContent,
-    fileName,
-    mimeType: uploadObj.mimetype,
-  };
-}
+// ---------------------------------------------------------------------------
+// Upload
+// ---------------------------------------------------------------------------
 
 /**
  * Universal image upload function
- * 
+ *
  * Handles image uploads from multiple sources (URL, base64, multipart file) with customizable
- * folder structure, tags, and metadata. This is a library-like function that can be used for
- * any image upload scenario in the project.
- * 
+ * folder structure, tags, and metadata.
+ *
  * @param imageSource - Image source (URL, base64, or file object)
  * @param entityId - Entity ID for filename generation and metadata
  * @param options - Upload configuration options
  * @returns Promise resolving to ImageKit upload response with URL and file ID
- * 
- * @example
- * ```typescript
- * // Book cover upload
- * const bookResult = await uploadImageKit(
- *   imageSource,
- *   'book-123',
- *   {
- *     folder: 'books',
- *     tags: ['book-cover', 'book-id:book-123'],
- *     customMetadata: { bookId: 'book-123', bookTitle: 'Mystery Mansion' },
- *     filenamePrefix: 'cover'
- *   }
- * );
- * 
- * // User profile upload
- * const userResult = await uploadImageKit(
- *   imageSource,
- *   'user-456',
- *   {
- *     folder: 'users',
- *     tags: ['user-profile', 'user-id:user-456'],
- *     customMetadata: { userId: 'user-456' },
- *     filenamePrefix: 'profile'
- *   }
- * );
- * ```
  */
 export async function uploadImageKit(
   imageSource: ImageUploadSource,
   entityId: string,
   options: ImageUploadOptions
-): Promise<ImageKit.Files.FileUploadResponse | null> {
-  const imagekit = getImageKitClient();
-  if (!imagekit) return null;
-
-  // Track created File objects for cleanup
-  const createdFiles: File[] = [];
-
+): Promise<ImageKitUploadResponse | null> {
   try {
-    let fileData: File | string;
-    let fileName: string;
+    const formData = new FormData();
+    const folderPath = `/${APP_NAME_SLUG}/${options.folder}/${getTodayDate().replace(/-/g, '/')}`;
+    const prefix = options.filenamePrefix || DEFAULT_FILENAME_PREFIX;
 
-    // Handle different input types using helper functions
     if (typeof imageSource === 'string') {
       if (imageSource.startsWith('data:')) {
-        // Base64 data URL - convert to File using toFile
-        const base64Result = handleBase64Upload(imageSource, options.filenamePrefix || 'image', entityId);
-        if (!base64Result) return null;
-        
-        try {
-          const file = await toFile(
-            base64Result.fileContent,
-            generateImageFilename(entityId, options.filenamePrefix || 'image', validateMimeType(base64Result.mimeType)),
-            { type: base64Result.mimeType }
-          );
-          createdFiles.push(file);
-          fileData = file;
-          fileName = file.name;
-        } catch (fileError) {
-          console.error('[uploadImageKit] ❌ Failed to convert base64 to File:', fileError);
-          return null;
-        }
+        const parsed = handleBase64Upload(imageSource, prefix, entityId);
+        if (!parsed) return null;
+        formData.append('file', parsed.base64Data);
+        formData.append('fileName', parsed.fileName);
       } else {
-        // Regular URL - pass string directly
-        const urlResult = handleUrlUpload(imageSource, options.filenamePrefix || 'image', entityId);
-        fileData = urlResult.fileContent; // This is the URL string
-        fileName = generateImageFilename(entityId, options.filenamePrefix || 'image');
+        formData.append('file', imageSource);
+        formData.append('fileName', generateImageFilename(entityId, prefix));
       }
-    } else if (imageSource && typeof imageSource === 'object' && 'buffer' in imageSource) {
-      // File object from multipart upload - convert Buffer to File
+    } else if (ArrayBuffer.isView(imageSource)) {
+      // Raw TypedArray (including Node.js Buffer) — send as Blob
+      const fileName = generateImageFilename(entityId, prefix);
+      formData.append('file', new Blob([imageSource as BlobPart], { type: 'image/jpeg' }), fileName);
+      formData.append('fileName', fileName);
+    } else if (imageSource instanceof ArrayBuffer) {
+      // Raw ArrayBuffer — send as Blob
+      const fileName = generateImageFilename(entityId, prefix);
+      formData.append('file', new Blob([imageSource], { type: 'image/jpeg' }), fileName);
+      formData.append('fileName', fileName);
+    } else if (imageSource && 'buffer' in imageSource) {
+      // File object from multipart (ImageUploadObject) — extract buffer and metadata
       const uploadObj = imageSource as ImageUploadObject;
-      const fileResult = handleFileUpload(uploadObj, options.filenamePrefix || 'image', entityId);
-      
-      try {
-        const file = await toFile(
-          fileResult.fileContent,
-          generateImageFilename(entityId, options.filenamePrefix || 'image', uploadObj.originalname?.split('.').pop() || 'jpg'),
-          { type: uploadObj.mimetype }
-        );
-        createdFiles.push(file);
-        fileData = file;
-        fileName = file.name;
-      } catch (fileError) {
-        console.error('[uploadImageKit] ❌ Failed to convert multipart file to File:', fileError);
-        return null;
-      }
-    } else if (Buffer.isBuffer(imageSource)) {
-      // Direct Buffer input - convert to File
-      const bufferResult = handleFileUpload(
-        { buffer: imageSource, originalname: 'buffer.jpg', mimetype: undefined },
-        options.filenamePrefix || 'image',
-        entityId
-      );
-      
-      try {
-        const file = await toFile(
-          bufferResult.fileContent,
-          generateImageFilename(entityId, options.filenamePrefix || 'image', 'jpg'),
-          { type: 'image/jpeg' }
-        );
-        createdFiles.push(file);
-        fileData = file;
-        fileName = file.name;
-      } catch (fileError) {
-        console.error('[uploadImageKit] ❌ Failed to convert buffer to File:', fileError);
-        return null;
-      }
+      const mimeType = uploadObj.mimetype || 'application/octet-stream';
+      const ext = uploadObj.originalname?.split('.').pop() || 'jpg';
+      const fileName = generateImageFilename(entityId, prefix, ext);
+      formData.append('file', new Blob([uploadObj.buffer as BlobPart], { type: mimeType }), fileName);
+      formData.append('fileName', fileName);
     } else {
       console.error('[uploadImageKit] ❌ Invalid image source type');
       return null;
     }
 
-    // Prepare upload parameters
-    const uploadParams: ImageKit.Files.FileUploadParams = {
-      file: fileData,
-      fileName,
-      useUniqueFileName: options.useUniqueFileName ?? false,
-      folder: `/${APP_NAME_SLUG}/${options.folder}/${getTodayDate().replace(/-/g, '/')}`,
-      tags: options.tags,
-      // TODO: 400 Invalid custom metadata.
-      // customMetadata: {
-      //   entityId,
-      //   uploadType: options.filenamePrefix || 'image',
-      //   uploadedAt: new Date().toISOString(),
-      //   ...options.customMetadata,
-      // },
-    };
+    formData.append('useUniqueFileName', String(options.useUniqueFileName ?? false));
+    formData.append('folder', folderPath);
+    if (options.tags?.length) {
+      formData.append('tags', options.tags.join(','));
+    }
 
-    const result = await imagekit.files.upload(uploadParams);
+    const response = await uploadWithRetry(formData);
+    const result = await response.json() as ImageKitUploadResponse;
 
     console.log(`[uploadImageKit] 📸 Image uploaded: ${result.url} (ID: ${result.fileId})`);
     return result;
   } catch (error) {
     console.error(`[uploadImageKit] ❌ Image upload failed for entity ${entityId}:`, getErrorMessage(error));
     return null;
-  } finally {
-    // Cleanup File objects to prevent memory leaks
-    // Note: In serverless environments, this helps with garbage collection
-    createdFiles.length = 0; // Clear array for GC
   }
 }
 
-/**
- * Generate sanitized filename for images
- * @param entityId - Entity ID for uniqueness
- * @param prefix - Filename prefix
- * @param extension - File extension (default: 'jpg')
- * @returns Sanitized filename
- */
-function generateImageFilename(entityId: string, prefix: string, extension: string = 'jpg'): string {
-  const sanitizedPrefix = prefix
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-  return `${sanitizedPrefix}-${entityId}.${extension}`;
-}
+// ---------------------------------------------------------------------------
+// Convenience upload wrappers
+// ---------------------------------------------------------------------------
 
 /**
  * Upload book cover image to ImageKit.io
- * 
- * Wrapper function for book cover uploads using the universal uploadImageKit function.
- * Maintains backward compatibility while leveraging the universal implementation.
- * 
- * @param imageSource - Image source (URL string, base64 string, or file object)
- * @param bookId - Book ID for metadata and folder organization
- * @param bookTitle - Book title for filename generation
- * @param keywords - Book keywords/tags for ImageKit metadata
- * @returns Promise resolving to ImageKit upload response with URL and file ID
- * 
- * @example
- * ```typescript
- * // Upload from URL
- * const result = await uploadBookCover(
- *   'https://example.com/cover.jpg',
- *   'book-123',
- *   'Mystery Mansion',
- *   ['thriller', 'mystery', 'haunted']
- * );
- * 
- * // Upload from base64
- * const result = await uploadBookCover(
- *   'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ...',
- *   'book-123',
- *   'Mystery Mansion',
- *   ['thriller', 'mystery']
- * );
- * 
- * // Upload from file (multipart)
- * const result = await uploadBookCover(
- *   req.file,
- *   'book-123',
- *   'Mystery Mansion',
- *   ['thriller', 'mystery']
- * );
- * ```
  */
 export async function uploadBookCover(
   imageSource: ImageUploadSource,
   bookMeta: Pick<Book, 'id' | 'title' | 'keywords'>,
-): Promise<ImageKit.Files.FileUploadResponse | null> {
+): Promise<ImageKitUploadResponse | null> {
   const { id, keywords } = bookMeta;
   return uploadImageKit(imageSource, id, {
     folder: 'books',
     tags: [...keywords, 'book-cover', `book-id:${id}`],
-    // TODO: 400 Invalid custom metadata.
-    // customMetadata: {
-    //   bookId: id,
-    //   bookTitle: bookMeta.title,
-    // },
     filenamePrefix: 'cover',
   });
 }
 
 /**
- * Upload a book's main character avatar image to ImageKit.io.
- *
- * Wrapper that stores MC avatar images in a dedicated `book-characters` folder
- * with book- and character-level tags for traceability.
- *
- * @param imageSource - Image source (URL, base64, or file object)
- * @param bookId - Book ID for folder organisation
- * @param characterName - Character name used in tags (sanitised internally)
- * @returns Promise resolving to ImageKit upload response with URL and file ID
- *
- * @example
- * ```typescript
- * const result = await uploadBookCharacterImage(base64String, bookId, 'Sarah Chen');
- * if (result?.url) {
- *   // Update books.mc JSONB with result.url and result.fileId
- * }
- * ```
+ * Upload a book's main character avatar image to ImageKit.io
  */
 export async function uploadBookCharacterImage(
   imageSource: ImageUploadSource,
   bookId: string,
   characterName: string
-): Promise<ImageKit.Files.FileUploadResponse | null> {
+): Promise<ImageKitUploadResponse | null> {
   return uploadImageKit(imageSource, bookId, {
     folder: 'book-characters',
     tags: ['book-character', `book-id:${bookId}`, `character:${characterName}`],
@@ -439,7 +330,7 @@ export async function uploadBookCharacterImage(
 export async function uploadFeedbackScreenshot(
   imageSource: ImageUploadSource,
   feedbackId: string
-): Promise<ImageKit.Files.FileUploadResponse | null> {
+): Promise<ImageKitUploadResponse | null> {
   return uploadImageKit(imageSource, feedbackId, {
     folder: 'feedbacks',
     tags: ['feedback-screenshot', `feedback-id:${feedbackId}`],
@@ -449,72 +340,53 @@ export async function uploadFeedbackScreenshot(
 
 /**
  * Upload user profile image to ImageKit.io
- * 
- * Wrapper function for user profile uploads using the universal uploadImageKit function.
- * Maintains backward compatibility while leveraging the universal implementation.
- * 
- * @param imageSource - Image source (URL, base64, or file object)
- * @param userId - User ID for metadata and filename generation
- * @returns Promise resolving to ImageKit upload response with URL and file ID
- * 
- * @example
- * ```typescript
- * // Upload from file (multipart)
- * const result = await uploadUserImage(req.file, 'user-123');
- * 
- * // Upload from base64
- * const result = await uploadUserImage(
- *   'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ...',
- *   'user-123'
- * );
- * 
- * // Upload from URL
- * const result = await uploadUserImage(
- *   'https://example.com/profile.jpg',
- *   'user-123'
- * );
- * ```
  */
 export async function uploadUserImage(
   imageSource: ImageUploadSource,
   userId: string
-): Promise<ImageKit.Files.FileUploadResponse | null> {
+): Promise<ImageKitUploadResponse | null> {
   return uploadImageKit(imageSource, userId, {
     folder: 'users',
     tags: ['user-profile', `user-id:${userId}`],
-    // TODO: 400 Invalid custom metadata.
-    // customMetadata: { userId },
     filenamePrefix: 'profile',
   });
 }
 
+// ---------------------------------------------------------------------------
+// Delete operations
+// ---------------------------------------------------------------------------
+
 /**
  * Deletes a file from ImageKit with fallback to deletion queue
- * 
+ *
  * Attempts to delete the file directly from ImageKit. If deletion fails,
- * queues the file for retry by the cleanup cron job. This ensures reliability
- * even during temporary API failures.
- * 
+ * queues the file for retry by the cleanup cron job.
+ *
  * @param fileId - ImageKit file ID to delete
- * @returns Promise resolving when deletion is attempted
- * 
- * @example
- * ```typescript
- * await deleteFileFromImageKit('file_id_123');
- * ```
  */
 export async function deleteFileFromImageKit(fileId: string) {
-  const imagekit = getImageKitClient();
-  if (!imagekit) return;
-
   try {
-    await imagekit.files.delete(fileId);
+    const response = await imageKitFetch(`${IMAGEKIT_API_BASE}/files/${fileId}`, {
+      method: 'DELETE',
+      timeoutMs: TIMEOUTS.DELETE,
+    });
+
+    // 404 means already deleted — treat as success for idempotency
+    if (response.status === 404) {
+      console.log(`[imagekit] 👻 Image ${fileId} already deleted (404)`);
+      return;
+    }
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`ImageKit delete failed (${response.status}): ${body}`);
+    }
+
     console.log(`[imagekit] 🗑️ Image ${fileId} deleted successfully.`);
   } catch (error) {
-    // Queue for retry by cleanup cron job
     try {
       await queueImageForDeletion(fileId);
-      console.log(`[imagekit] 🔄 File ${fileId} queued for retry by cleanup job:`, getErrorMessage(error));
+      console.log(`[imagekit] 🔄 File ${fileId} queued for retry:`, getErrorMessage(error));
     } catch (dbError) {
       console.error(`[imagekit] ❌ Failed to queue image deletion for ${fileId}:`, getErrorMessage(dbError));
     }
@@ -523,26 +395,29 @@ export async function deleteFileFromImageKit(fileId: string) {
 
 /**
  * Bulk deletes multiple files from ImageKit with individual fallback
- * 
+ *
  * Attempts bulk deletion first. If the bulk call fails, falls back to
  * individual deletes. Any individual failures are queued for retry by
  * the cleanup cron job.
- * 
+ *
  * @param fileIds - Array of ImageKit file IDs to delete
- * @returns Promise resolving when deletion is attempted
- * 
- * @example
- * ```typescript
- * await deleteFilesFromImageKit(['file_id_1', 'file_id_2', 'file_id_3']);
- * ```
  */
 export async function deleteFilesFromImageKit(fileIds: string[]) {
-  const imagekit = getImageKitClient();
-  if (!imagekit) return;
-
   try {
-    const response = await imagekit.files.bulk.delete({ fileIds });
-    console.log("[imagekit] 🗑️ Images bulk delete result:", response.successfullyDeletedFileIds);
+    const response = await imageKitFetch(`${IMAGEKIT_API_BASE}/files/batch/deleteByFileIds`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fileIds }),
+      timeoutMs: TIMEOUTS.BULK_DELETE,
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Bulk delete failed (${response.status}): ${body}`);
+    }
+
+    const data = await response.json() as { successfullyDeletedFileIds: string[] };
+    console.log("[imagekit] 🗑️ Images bulk delete result:", data.successfullyDeletedFileIds);
   } catch (error) {
     console.warn("[imagekit] ⚠️ Bulk delete failed, falling back to individual deletes:", getErrorMessage(error));
     for (const fileId of fileIds) {
@@ -553,43 +428,39 @@ export async function deleteFilesFromImageKit(fileIds: string[]) {
 
 /**
  * Deletes a folder and all its contents from ImageKit
- * 
- * Permanently deletes the specified folder and all files within it.
- * This operation cannot be undone.
- * 
+ *
  * @param folderPath - Path of the folder to delete (e.g., 'books/2024/01/15')
- * @returns Promise resolving when deletion is attempted
- * 
- * @example
- * ```typescript
- * await deleteFolderFromImageKit('books/2024/01/15');
- * ```
  */
 export async function deleteFolderFromImageKit(folderPath: string) {
-  const imagekit = getImageKitClient();
-  if (!imagekit) return;
-
   try {
-    await imagekit.folders.delete({ folderPath });
+    const response = await imageKitFetch(`${IMAGEKIT_API_BASE}/folder/`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ folderPath }),
+      timeoutMs: TIMEOUTS.DELETE,
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Folder delete failed (${response.status}): ${body}`);
+    }
+
     console.log(`[imagekit] 🗑️ Folder "${folderPath}" and all its contents deleted.`);
   } catch (error) {
     console.error(`[imagekit] ❌ Failed to delete folder "${folderPath}"`, getErrorMessage(error));
   }
 }
 
+// ---------------------------------------------------------------------------
+// Deletion queue
+// ---------------------------------------------------------------------------
+
 /**
  * Queues an image for deletion in the deleted_images table
- * 
- * This function is used to track images that need to be deleted from ImageKit.
+ *
  * A separate cleanup process will handle the actual deletion.
- * 
+ *
  * @param imageId - ImageKit file ID to queue for deletion
- * @returns Promise resolving when deletion is queued
- * 
- * @example
- * ```typescript
- * await queueImageForDeletion('file_id_123');
- * ```
  */
 export async function queueImageForDeletion(imageId: string): Promise<void> {
   try {
@@ -602,32 +473,19 @@ export async function queueImageForDeletion(imageId: string): Promise<void> {
     console.log(`[queueImageForDeletion] 🗑️ Queued image ${imageId} for deletion`);
   } catch (error) {
     console.error('[queueImageForDeletion] ❌ Error queuing image for deletion:', {fileId: imageId, error: getErrorMessage(error)});
-    // Don't throw - deletion queue failure shouldn't block the main operation
   }
 }
 
 /**
  * Process queued ImageKit file deletions from deleted_images table
- * 
- * This function processes the cleanup queue created by the database trigger:
+ *
  * 1. Fetches pending file IDs from deleted_images table (oldest first)
- * 2. Attempts to delete each file from ImageKit
- * 3. Removes processed rows from the queue (both successful and failed deletions)
- * 4. Returns statistics for monitoring and logging
- * 
+ * 2. Attempts to delete each file from ImageKit via bulk API
+ * 3. Removes processed rows from the queue (both successful and failed)
+ * 4. Returns statistics for monitoring
+ *
  * @param batchSize - Maximum number of files to process in one batch (default: 50)
  * @returns Promise resolving to deletion statistics
- * 
- * Idempotency:
- * - Safe to run multiple times: only processes existing queue items
- * - Removes processed items to prevent reprocessing
- * - Handles ImageKit API failures gracefully
- * - Uses database transaction for consistency
- * 
- * Error Handling:
- * - Logs individual file deletion failures but continues processing
- * - Removes failed items from queue to prevent infinite loops
- * - Returns detailed statistics for monitoring
  */
 export async function processQueuedImageDeletions(batchSize: number = 50): Promise<{
   processed: number;
@@ -635,12 +493,6 @@ export async function processQueuedImageDeletions(batchSize: number = 50): Promi
   failed: number;
   errors: string[];
 }> {
-  const imagekit = getImageKitClient();
-  if (!imagekit) {
-    console.warn("[imagekit] ⚠️ ImageKit client not configured, skipping cleanup");
-    return { processed: 0, successful: 0, failed: 0, errors: [] };
-  }
-
   const stats = {
     processed: 0,
     successful: 0,
@@ -651,7 +503,6 @@ export async function processQueuedImageDeletions(batchSize: number = 50): Promi
   try {
     console.log(`[imagekit] 🧹 Processing up to ${batchSize} queued image deletions...`);
 
-    // Fetch pending deletions (oldest first for FIFO processing)
     const pendingDeletions = await dbWrite
       .select()
       .from(deletedImages)
@@ -666,48 +517,26 @@ export async function processQueuedImageDeletions(batchSize: number = 50): Promi
     stats.processed = pendingDeletions.length;
     const fileIdsToDelete = pendingDeletions.map(deletion => deletion.fileId);
 
-    // Use bulk deletion for optimal performance
-    try {
-      const response = await imagekit.files.bulk.delete({ fileIds: fileIdsToDelete });
-      stats.successful = response.successfullyDeletedFileIds?.length || 0;
-      stats.failed = fileIdsToDelete.length - stats.successful;
-      console.log(`[imagekit] 🗑️ Bulk deletion completed: ${stats.successful}/${stats.processed} successful`);
+    // Use deleteFilesFromImageKit — it handles bulk attempt + individual fallback + queue for retries
+    await deleteFilesFromImageKit(fileIdsToDelete);
 
-      // Cleanup uploaded_images for files confirmed deleted by ImageKit
-      const confirmedDeleted = response.successfullyDeletedFileIds as string[] | undefined;
-      if (confirmedDeleted && confirmedDeleted.length > 0) {
-        await dbWrite
-          .delete(uploadedImages)
-          .where(inArray(uploadedImages.imageId, confirmedDeleted));
-        console.log(`[imagekit] 🧹 Removed ${confirmedDeleted.length} uploaded_images rows for bulk-deleted files`);
-      }
-    } catch {
-      // Fallback to individual deletes (deleteFileFromImageKit queues on failure for retry)
-      console.warn("[imagekit] ⚠️ Bulk delete failed, falling back to individual deletes");
-      for (const deletion of pendingDeletions) {
-        await deleteFileFromImageKit(deletion.fileId);
-      }
-      // Remove uploaded_images for all queued files. Failed ones were queued for retry
-      // and will pick up uploaded_images cleanup when they succeed on the next cron run.
-      const del = await dbWrite
-        .delete(uploadedImages)
-        .where(inArray(uploadedImages.imageId, fileIdsToDelete))
-        .returning({ imageId: uploadedImages.imageId });
-      console.log(`[imagekit] 🧹 Removed ${del.length} uploaded_images rows for individually processed files`);
-      // Stats are optimistic here — individual failures were queued rather than counted as failed
-      stats.successful = stats.processed;
-      stats.failed = 0;
-    }
+    // Clean up uploaded_images DB rows — delete all queue IDs.
+    // The deleteFilesFromImageKit already handles ImageKit deletion and
+    // queues failures for retry; we clean up the queue regardless.
+    await dbWrite
+      .delete(uploadedImages)
+      .where(inArray(uploadedImages.imageId, fileIdsToDelete));
 
-    // Remove processed items from queue (both successful and failed)
-    if (fileIdsToDelete.length > 0) {
-      await dbWrite
-        .delete(deletedImages)
-        .where(inArray(deletedImages.fileId, fileIdsToDelete));
-    }
+    // Remove processed items from the deletion queue
+    await dbWrite
+      .delete(deletedImages)
+      .where(inArray(deletedImages.fileId, fileIdsToDelete));
+
+    // Stats are optimistic since deleteFilesFromImageKit handles fallbacks internally
+    stats.successful = stats.processed;
+    stats.failed = 0;
 
     console.log(`[imagekit] ✅ Cleanup completed: ${stats.successful}/${stats.processed} successful, ${stats.failed} failed`);
-    
     return stats;
   } catch (error) {
     const errorMsg = `ImageKit cleanup failed: ${getErrorMessage(error)}`;
@@ -717,6 +546,10 @@ export async function processQueuedImageDeletions(batchSize: number = 50): Promi
   }
 }
 
+// ---------------------------------------------------------------------------
+// User-image cleanup
+// ---------------------------------------------------------------------------
+
 /**
  * Clean up stale (outdated) user profile images for users who still exist.
  *
@@ -724,9 +557,6 @@ export async function processQueuedImageDeletions(batchSize: number = 50): Promi
  * the old row is left in place. Over time a user accumulates multiple `type = 'user'`
  * rows with a non-null `userId`. This function finds those users, keeps only the
  * *most recent* row, deletes all older images from ImageKit, and removes their DB rows.
- *
- * Contrast with {@link cleanupOrphanedUserUploads} which handles the opposite case:
- * rows whose `userId` became NULL because the user account was deleted.
  */
 export async function cleanupStaleUserUploads(batchSize: number = 50): Promise<{
   processed: number;
@@ -736,7 +566,6 @@ export async function cleanupStaleUserUploads(batchSize: number = 50): Promise<{
   const stats = { processed: 0, deleted: 0, errors: [] as string[] };
 
   try {
-    // Find users who have more than one type='user' upload
     const dupResult = await dbRead.execute(sql`
       SELECT user_id, COUNT(*)::int AS cnt
       FROM uploaded_images
@@ -757,17 +586,14 @@ export async function cleanupStaleUserUploads(batchSize: number = 50): Promise<{
         .orderBy(uploadedImages.createdAt)
         .limit(100);
 
-      // Keep the youngest row, collect older ones for deletion
       const stale = rows.slice(0, -1);
       if (stale.length === 0) continue;
 
       stats.processed += stale.length;
       const staleIds = stale.map(r => r.imageId);
 
-      // Delete from ImageKit (bulk with individual+queue fallback)
       await deleteFilesFromImageKit(staleIds);
 
-      // Remove stale DB rows
       const del = await dbWrite
         .delete(uploadedImages)
         .where(and(
@@ -793,13 +619,8 @@ export async function cleanupStaleUserUploads(batchSize: number = 50): Promise<{
  * Clean up orphaned user uploads whose linked user account no longer exists.
  *
  * When a user account is deleted, the DB trigger sets `userId = NULL` on the
- * corresponding `uploaded_images` rows (rather than deleting them immediately).
- * This function finds those orphaned rows (`type = 'user'` with `userId IS NULL`),
- * queues their ImageKit file IDs for deletion (via {@link queueImageForDeletion}),
- * and removes the orphaned DB rows.
- *
- * Contrast with {@link cleanupStaleUserUploads} which handles the opposite case:
- * users who **still exist** but have accumulated multiple old avatar rows.
+ * corresponding `uploaded_images` rows. This function finds those orphaned rows,
+ * queues their ImageKit file IDs for deletion, and removes the orphaned DB rows.
  */
 export async function cleanupOrphanedUserUploads(batchSize: number = 100): Promise<{
   processed: number;
@@ -810,7 +631,6 @@ export async function cleanupOrphanedUserUploads(batchSize: number = 100): Promi
   const stats = { processed: 0, queued: 0, removed: 0, errors: [] as string[] };
 
   try {
-    // Find uploaded_images rows of type 'user' with NULL userId (orphaned after user deletion)
     const orphans = await dbRead
       .select({ imageId: uploadedImages.imageId })
       .from(uploadedImages)
@@ -823,7 +643,6 @@ export async function cleanupOrphanedUserUploads(batchSize: number = 100): Promi
     stats.processed = orphans.length;
     const orphanIds = orphans.map((r: { imageId: string }) => r.imageId);
 
-    // Queue each for deletion (queueImageForDeletion handles duplicates/errors)
     for (const id of orphanIds) {
       try {
         await queueImageForDeletion(id);
@@ -833,7 +652,6 @@ export async function cleanupOrphanedUserUploads(batchSize: number = 100): Promi
       }
     }
 
-    // Remove uploaded_images rows for these orphans
     try {
       const del = await dbWrite
         .delete(uploadedImages)

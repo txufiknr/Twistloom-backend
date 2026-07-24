@@ -13,7 +13,7 @@
 
 import { type DBClient, dbRead, dbWrite, isTransaction } from "../db/client.js";
 import { pages, books, branches, users, userPageProgress, userCompletedBooks, userActionHints, customActions, bookGenerations, uploadedImages, userComments } from "../db/schema.js";
-import type ImageKit from "@imagekit/nodejs";
+import type { ImageKitUploadResponse } from "../types/image.js";
 import { and, eq, asc, or, desc, ne, sql, isNull, lt } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
 import { sanitizeActionsForMode } from "../utils/book-mode.js";
@@ -1688,7 +1688,7 @@ export async function uploadBookCharacterAvatarImage(
   bookMeta: Pick<Book, 'id' | 'title' | 'keywords'>,
   image: ImageUploadSource,
   userId: string
-): Promise<ImageKit.Files.FileUploadResponse | null> {
+): Promise<ImageKitUploadResponse | null> {
   try {
     const characterName = bookMeta.title ? `avatar-${bookMeta.title}` : 'avatar';
     const uploadResult = await uploadBookCharacterImage(image, bookMeta.id, characterName);
@@ -1933,7 +1933,7 @@ export async function generateCoverImages(book: Book, state?: StoryState, total?
 export async function uploadBookCoverImage(
   bookMeta: Pick<Book, 'id' | 'title' | 'keywords'>,
   image: ImageUploadSource
-): Promise<ImageKit.Files.FileUploadResponse | null> {
+): Promise<ImageKitUploadResponse | null> {
   try {
     const uploadResult = await uploadBookCover(image, bookMeta);
     
