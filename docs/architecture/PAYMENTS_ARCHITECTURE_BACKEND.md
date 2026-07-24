@@ -617,4 +617,41 @@ All three open questions from the initial audit were resolved on 2026-07-12:
 
 ---
 
-*Last updated: July 12, 2026 (Added §12 Issues & Enhancements, §13 Open Questions; ERD schema corrections; resolved Q1-Q3)*
+---
+
+## 14. Gateway-agnostic payments (Stripe + Xendit) — 2026-07-24
+
+**Status:** Backend Phase 0–2 implemented in code; **DB migration still required** before deploy.
+
+### Column renames (Drizzle `schema.ts`)
+
+| Table | Old | New |
+|-------|-----|-----|
+| `users` | `stripe_customer_id` | `customer_id` |
+| `subscriptions` | `stripe_*` | `gateway` + `provider_subscription_id` / `provider_customer_id` / `provider_price_id` |
+| `transactions` | `payment_intent_id`, `stripe_event_id` | `gateway` + `provider_payment_id` / `provider_event_id` |
+| `subscription_transactions` | `stripe_invoice_id`, `stripe_event_id` | `gateway` + `provider_invoice_id` / `provider_event_id` |
+| `webhook_deliveries` | unique on `event_id` | `gateway` + unique `(gateway, event_id)` |
+
+Shared type: `PaymentGateway` / `PAYMENT_GATEWAY` in `src/types/payment.ts`.
+
+### Xendit credit packs (v1)
+
+- Config: `src/config/xendit.ts`
+- Invoice client: `src/utils/xendit.ts` (raw `fetch`, no SDK)
+- Service: `src/services/xendit.ts`
+- Routes: `GET /credit-packs?gateway=`, `POST /create-checkout-session` body `{ gateway }`, `POST /xendit/webhook` (`x-callback-token`)
+- Env: `XENDIT_ENABLED`, `XENDIT_SECRET_KEY`, `XENDIT_WEBHOOK_TOKEN`, `XENDIT_USD_TO_IDR_RATE`
+- VIP subscriptions remain **Stripe-only** until Phase 2b
+
+### Critical fixes shipped with this work
+
+- `awardCredits()` persists `gateway` / `providerPaymentId` / `providerEventId` (idempotency)
+- `subscriptionTransactions.providerEventId` written on create/renew
+- Invoice subscription ID via shared `getInvoiceSubscriptionId()` (payment_succeeded + payment_failed)
+
+Full plan: [STRIPE_AND_XENDIT_GATEWAY_AGNOSTIC_ROADMAP.md](../roadmap/STRIPE_AND_XENDIT_GATEWAY_AGNOSTIC_ROADMAP.md)
+
+---
+
+*Last updated: July 24, 2026 (gateway-agnostic schema + Xendit credit packs; see §14)*

@@ -1,4 +1,5 @@
 import type Stripe from "stripe";
+import type { PaymentGateway } from "./payment.js";
 
 /**
  * Subscription transaction type for tracking subscription-related credit allocations
@@ -27,7 +28,7 @@ export const subscriptionStatuses = [
 ] satisfies Stripe.Subscription.Status[];
 
 export type SubscriptionStatus = typeof subscriptionStatuses[number];
-  
+
 /**
  * Subscription configuration for VIP plans
  */
@@ -38,11 +39,17 @@ export interface SubscriptionConfig {
   name: string;
   /** Description of the subscription benefits */
   description: string;
-  /** Monthly price in USD */
+  /** Monthly price in USD (Stripe) */
   priceUSD: number;
-  /** Stripe Price ID for checkout */
+  /** Monthly price in IDR (Xendit) — optional until Phase 2b */
+  priceIdr?: number;
+  /** Display currency for this plan config */
+  currency?: "USD" | "IDR";
+  /** Payment gateway this plan config targets */
+  gateway?: PaymentGateway;
+  /** Stripe Price ID for checkout (Stripe gateway) */
   priceId: string;
-  /** Stripe Product ID for reference */
+  /** Stripe Product ID for reference (Stripe gateway) */
   productId: string;
   /** Number of credits awarded monthly */
   monthlyCredits: number;

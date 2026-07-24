@@ -246,6 +246,24 @@ async function handleSubscriptionDeleted(event: Stripe.Event) {
 }
 
 /**
+ * Resolves the Stripe subscription ID from an Invoice payload.
+ *
+ * Prefers the top-level `subscription` field (standard API), with a fallback to
+ * `parent.subscription_details.subscription` for newer Invoice shapes.
+ */
+function getInvoiceSubscriptionId(
+  invoice: StripeInvoiceWithSubscription | Stripe.Invoice
+): string | null {
+  const withSub = invoice as StripeInvoiceWithSubscription;
+  const raw =
+    withSub.subscription ??
+    invoice.parent?.subscription_details?.subscription ??
+    null;
+  if (!raw) return null;
+  return typeof raw === "object" ? raw.id ?? null : raw;
+}
+
+/**
  * Handles `invoice.payment_succeeded` webhook events from Stripe.
  *
  * Extracts the subscription ID from the invoice (via the raw API `subscription`
@@ -266,8 +284,7 @@ async function handleSubscriptionDeleted(event: Stripe.Event) {
  */
 async function handleInvoicePaymentSucceeded(event: Stripe.Event) {
   const invoice = event.data.object as StripeInvoiceWithSubscription;
-  const rawSubscription = invoice.subscription ?? invoice.parent?.subscription_details?.subscription;
-  const subscriptionId = typeof rawSubscription === 'object' ? rawSubscription?.id : rawSubscription;
+  const subscriptionId = getInvoiceSubscriptionId(invoice);
   if (!subscriptionId) {
     return console.error("[subscription] ❌ Missing subscriptionId in invoice");
   }
@@ -292,9 +309,9 @@ async function handleInvoicePaymentSucceeded(event: Stripe.Event) {
 /**
  * Handles `invoice.payment_failed` webhook events from Stripe.
  *
- * Extracts the subscription ID from the invoice's `parent.subscription_details`,
- * then updates the local subscription status to `past_due` so downstream
- * logic (e.g. dunning emails, access revocation) can react.
+ * Extracts the subscription ID (same accessor as payment_succeeded), then
+ * updates the local subscription status to `past_due` so downstream logic
+ * (e.g. dunning emails, access revocation) can react.
  *
  * @param event - The Stripe webhook event with a failed invoice
  *
@@ -306,10 +323,11 @@ async function handleInvoicePaymentSucceeded(event: Stripe.Event) {
  * ```
  */
 async function handleInvoicePaymentFailed(event: Stripe.Event) {
-  const invoice = event.data.object as Stripe.Invoice;
-  const subscriptionData = invoice.parent?.subscription_details?.subscription;
-  const subscriptionId = typeof subscriptionData === 'string' ? subscriptionData : subscriptionData?.id;
-  if (!subscriptionId) return;
+  const invoice = event.data.object as StripeInvoiceWithSubscription;
+  const subscriptionId = getInvoiceSubscriptionId(invoice);
+  if (!subscriptionId) {
+    return console.error("[subscription] ❌ Missing subscriptionId in failed invoice");
+  }
   await updateSubscription({
     gateway: PAYMENT_GATEWAY.stripe,
     providerSubscriptionId: subscriptionId,
@@ -491,27 +509,27 @@ router.post("/create-checkout-session", requireAuth, async (c) => {
 /**
  * POST /create-subscription-checkout
  *
- * Creates a Stripe Checkout Session for a recurring VIP subscription.
- * Verifies the user does not already have an active subscription, creates a
- * Stripe customer if none exists, and configures the session in `subscription`
- * mode with the VIP price ID. Enforces a 10-second rate limit.
+ * Creates a VIP subscription checkout. v1 supports Stripe only; `gateway: xendit`
+ * is rejected until Phase 2b. Accepts optional `gateway` for forward-compatible clients.
  *
  * @route POST /api/payments/create-subscription-checkout
  * @auth required
+ * @body {string} [gateway=stripe] - `stripe` | `xendit` (xendit not available yet)
  * @body {string} [successPath] - Fallback success redirect path
  * @body {string} [cancelPath] - Fallback cancel redirect path
  * @body {string} [returnUrl] - Fully-qualified return URL (cross-origin rejected)
- * @returns {{ url: string, sessionId: string }} Stripe Checkout Session URL
- *
- * @example
- * ```typescript
- * // Response: { url: "https://checkout.stripe.com/...", sessionId: "cs_test_..." }
- * ```
+ * @returns {{ url: string, sessionId: string, gateway: string }} Hosted checkout URL
  */
 router.post("/create-subscription-checkout", requireAuth, async (c) => {
   try {
-    const { successPath, cancelPath, returnUrl } = c.get("body");
+    const { successPath, cancelPath, returnUrl, gateway: gatewayBody } = c.get("body");
     const userId = c.get("user")!.id;
+
+    const gateway = parseGateway(gatewayBody ?? PAYMENT_GATEWAY.stripe);
+    if (!gateway) return cValidationError(c, "Invalid gateway (use stripe or xendit)");
+    if (gateway === PAYMENT_GATEWAY.xendit) {
+      return cValidationError(c, "Xendit VIP subscriptions are not available yet. Use gateway=stripe or buy credit packs with Xendit.");
+    }
 
     const rateLimitResult = await checkRateLimit(`subscription-checkout-${userId}`, { maxRequests: 1, windowSeconds: 10 });
     if (!rateLimitResult.allowed) {
@@ -574,7 +592,7 @@ router.post("/create-subscription-checkout", requireAuth, async (c) => {
       subscription_data: { metadata: { userId, isTrial: "false" } },
     });
 
-    return c.json({ url: session.url, sessionId: session.id });
+    return c.json({ url: session.url, sessionId: session.id, gateway: PAYMENT_GATEWAY.stripe });
   } catch (error) {
     return cApiError(c, "Failed to create subscription checkout session", error);
   }
@@ -1246,7 +1264,15 @@ router.get("/transactions", requireAuth, async (c) => {
     const page = Math.floor(offsetNum / limitNum) + 1;
 
     const userTransactions = await dbRead.select().from(transactions).where(and(...conditions)).orderBy(desc(transactions.createdAt)).limit(limitNum).offset(offsetNum);
-    const formattedTransactions = userTransactions.map(tx => ({ ...tx, amountUsd: tx.amountCents != null ? tx.amountCents / 100 : null }));
+    // Stripe stores USD cents in amountCents; Xendit credit packs store whole IDR in amountCents.
+    const formattedTransactions = userTransactions.map((tx) => {
+      const isXendit = tx.gateway === PAYMENT_GATEWAY.xendit;
+      return {
+        ...tx,
+        amountUsd: !isXendit && tx.amountCents != null ? tx.amountCents / 100 : null,
+        amountIdr: isXendit && tx.amountCents != null ? tx.amountCents : null,
+      };
+    });
 
     const summary = await dbRead
       .select({
@@ -1280,20 +1306,55 @@ router.get("/transactions", requireAuth, async (c) => {
 /**
  * GET /subscription-plans
  *
- * Returns the available subscription plan(s) with their benefits.
- * Currently exposes a single VIP plan configured via `VIP_SUBSCRIPTION`.
+ * Returns VIP plan metadata. Optional `gateway` selects currency (Stripe USD today;
+ * Xendit IDR reserved for Phase 2b and marked `available: false`).
  *
  * @route GET /api/payments/subscription-plans
- * @returns {{ plans: Array<{ priceId: string, benefits: string[], ... }> }}
- *
- * @example
- * ```typescript
- * // Response: { plans: [{ priceId: "price_xxx", benefits: ["VIP badge", ...] }] }
- * ```
+ * @query {string} [gateway=stripe] - `stripe` | `xendit`
+ * @returns {{ plans: Array<{ currency, gateway, benefits, available?, ... }> }}
  */
 router.get("/subscription-plans", async (c) => {
   try {
-    return c.json({ plans: [{ ...VIP_SUBSCRIPTION, benefits: ["VIP badge", "2x check-in bonus", `+${VIP_BENEFITS.monthlyCredits} monthly credits`] }] });
+    const gatewayParam = parseGateway(c.req.query("gateway") || PAYMENT_GATEWAY.stripe);
+    if (!gatewayParam) return cValidationError(c, "Invalid gateway (use stripe or xendit)");
+
+    const benefits = [
+      "VIP badge",
+      "2x check-in bonus",
+      `+${VIP_BENEFITS.monthlyCredits} monthly credits`,
+    ];
+
+    if (gatewayParam === PAYMENT_GATEWAY.xendit) {
+      return c.json({
+        plans: [
+          {
+            id: VIP_SUBSCRIPTION.id,
+            name: VIP_SUBSCRIPTION.name,
+            description: VIP_SUBSCRIPTION.description,
+            priceIdr: XENDIT_CONFIG.subscription.amountIdr,
+            currency: "IDR" as const,
+            gateway: PAYMENT_GATEWAY.xendit,
+            monthlyCredits: VIP_SUBSCRIPTION.monthlyCredits,
+            checkInMultiplier: VIP_SUBSCRIPTION.checkInMultiplier,
+            benefits,
+            available: false,
+            message: "Xendit VIP subscriptions are not available yet",
+          },
+        ],
+      });
+    }
+
+    return c.json({
+      plans: [
+        {
+          ...VIP_SUBSCRIPTION,
+          currency: "USD" as const,
+          gateway: PAYMENT_GATEWAY.stripe,
+          benefits,
+          available: true,
+        },
+      ],
+    });
   } catch (error) {
     return cApiError(c, "Failed to fetch subscription plans", error);
   }

@@ -1,6 +1,6 @@
 # Stripe + Xendit Gateway-Agnostic Payment Architecture — Implementation Roadmap
 
-**Status:** 🚧 In progress — Phase 0–2 backend (credit packs) done in code; DB migrate (1.1) + deploy (1.5) still pending
+**Status:** 🚧 In progress — Phase 0–2 backend done (+ subscription gateway param, plans API, invoice helper, tx amountIdr); DB migrate (1.1) + deploy (1.5) + frontend Phases 4–5 still pending
 **Scope:** Both `twistloom-web` (Next.js frontend) and `twistloom-backend` (Hono.js/Express backend)
 **Stack:** Stripe Node SDK · Xendit Node SDK · PostgreSQL (Neon) · Drizzle ORM · TypeScript
 
@@ -1318,6 +1318,17 @@ It may hit the timeout. The Stripe webhook handler already has this concern, but
 | 2.5 | Update `GET /payments/credit-packs` for gateway-aware response | Backend | ✅ Done |
 | 2.6 | Add Xendit env vars to `.env.local.example` | Backend | ✅ Done |
 
+### Phase 2 extras (backend polish, 2026-07-24)
+
+| Step | What | Status |
+|------|------|--------|
+| 2.x.1 | `POST /create-subscription-checkout` accepts `gateway` (Xendit rejected until 2b) | ✅ Done |
+| 2.x.2 | `GET /subscription-plans?gateway=` returns currency/gateway (+ Xendit stub `available: false`) | ✅ Done |
+| 2.x.3 | Shared `getInvoiceSubscriptionId()` for payment_succeeded + payment_failed | ✅ Done |
+| 2.x.4 | `GET /transactions` returns `amountUsd` / `amountIdr` by gateway | ✅ Done |
+| 2.x.5 | `PaymentGateway` type in `src/types/payment.ts` used project-wide | ✅ Done |
+| 2.x.6 | Architecture doc §14 gateway notes | ✅ Done |
+
 ### Phase 2b: Xendit Backend — Subscriptions (Days 5-8, deferred per Q11)
 
 | Step | What | Who | Notes |
@@ -1427,4 +1438,4 @@ Subscription webhook handlers (`handleXenditPlanActivated`, `handleXenditCycleSu
 
 ---
 
-*Generated: 2026-07-24 · Last updated: 2026-07-24 — Phase 0.2–0.4, 1.2–1.4, and Phase 2.1–2.6 (Xendit credit packs) implemented. Still need: DB migrate (1.1), deploy (1.5), frontend Phases 4–5, optional 2b subscriptions.*
+*Generated: 2026-07-24 · Last updated: 2026-07-24 — Backend Phase 0–2 (+ polish) complete in code. Still need: DB migrate (1.1), deploy (1.5), frontend Phases 4–5, optional 2b Xendit subscriptions. Phase 2b deferred per Q11.*
