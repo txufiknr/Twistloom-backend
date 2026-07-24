@@ -19,9 +19,6 @@ import { APP_NAME, VERSION } from "./config/constants.js";
 import { IS_PRODUCTION } from "./config/env.js";
 import type { AppEnv } from "./hono/env.js";
 
-// Vercel scans the entry file for this flag.
-export const runtime = "edge";
-
 // Initialize Hono app with shared environment bindings.
 const app = new Hono<AppEnv>();
 
@@ -167,63 +164,125 @@ function getErrorMessageSafe(err: unknown): string {
 export { app };
 
 // ---------------------------------------------------------------------------
-// Vercel handler — supports both Edge Runtime and Node.js Serverless
+// Vercel handler — Node.js runtime (recommended by Vercel)
 // ---------------------------------------------------------------------------
 //
-// On Edge Runtime, Vercel passes a standard Web API Request directly.
-// On Node.js Serverless, `export const runtime = "edge"` may be ignored
-// (particularly for non-Next.js apps), so we detect the request type and
-// convert IncomingMessage to a Web Request as a fallback.
+// Vercel now recommends the Node.js runtime over Edge — both run on Fluid
+// Compute with Active CPU pricing, but Node.js has no 30s timeout cap and
+// full Node.js API support. See https://vercel.com/docs/functions/runtimes/edge
 //
-// Edge:   (req: Request, ctx: VercelContext) => Response
-// Node.js Serverless: (req: IncomingMessage, res: ServerResponse) => void
+// Fluid Compute passes a Web API Request directly (fast path). Legacy
+// Node.js Serverless wrappers pass IncomingMessage (conversion path).
+//
+// WHY NOT hono/vercel handle()?
+//   `handle(app)` is just (req) => app.fetch(req) — it passes the raw
+//   request with no conversion. On legacy Node.js Serverless, that means
+//   IncomingMessage reaches Hono as c.req.raw, and c.req.raw.headers.get()
+//   throws because IncomingMessage.headers is a plain object, not a Headers
+//   instance. This was the original deployment error.
+//
+// WHY NOT @hono/node-server getRequestListener?
+//   It wraps IncomingMessage in a ReadableStream via Readable.toWeb(). On
+//   Vercel's Node.js runtime the body is already pre-buffered, so the
+//   stream's end/data events never fire — the body-read promise hangs
+//   indefinitely until Vercel's 300s platform timeout.
 //
 // References
-//   - https://hono.dev/docs/getting-started/vercel
+//   - https://vercel.com/docs/functions/runtimes/edge
+//   - https://github.com/honojs/node-server/issues/306
+//   - https://github.com/honojs/node-server/issues/84
 // ---------------------------------------------------------------------------
 
-import type { IncomingMessage, ServerResponse } from "http";
+import type { IncomingMessage, ServerResponse } from "node:http";
 
 export default async function vercelHandler(
   req: Request | IncomingMessage,
   maybeRes?: ServerResponse,
 ): Promise<Response | void> {
+  // Fast path — Fluid Compute passes a standard Web API Request
   if (req instanceof Request) {
     return app.fetch(req);
   }
 
-  // Node.js Serverless fallback — convert IncomingMessage → Web Request
-  const url = new URL(req.url || "/", `https://${req.headers.host || "localhost"}`);
-  const headers = new Headers();
-  for (const [key, value] of Object.entries(req.headers)) {
-    if (value) {
-      headers.set(key, Array.isArray(value) ? value.join(", ") : value);
+  // ------------------------------------------------------------------
+  // Legacy Node.js Serverless path — convert IncomingMessage → Request
+  // ------------------------------------------------------------------
+  try {
+    // Reconstruct the absolute URL from proxy-forwarded headers
+    const protocol =
+      (req.headers["x-forwarded-proto"] as string) ||
+      ((req.socket as { encrypted?: boolean } | undefined)?.encrypted ? "https" : "http");
+    const host =
+      (req.headers["x-forwarded-host"] as string) ||
+      (req.headers["host"] as string) ||
+      "localhost";
+    const url = `${protocol}://${host}${req.url ?? "/"}`;
+
+    // Read the full request body using for await...of on the raw stream.
+    // This avoids the getRequestListener hang (see comment above).
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     }
-  }
+    const bodyBuffer =
+      req.method !== "GET" && req.method !== "HEAD" && chunks.length > 0
+        ? Buffer.concat(chunks)
+        : null;
 
-  const method = req.method || "GET";
-  let body: BodyInit | undefined;
-  if (method !== "GET" && method !== "HEAD") {
-    const rawBody: Buffer = await new Promise((resolve, reject) => {
-      const chunks: Buffer[] = [];
-      req.on("data", (chunk: Buffer) => chunks.push(chunk));
-      req.on("end", () => resolve(Buffer.concat(chunks)));
-      req.on("error", reject);
-    });
-    body = rawBody.length > 0 ? (rawBody as BodyInit) : undefined;
-  }
-
-  const response = await app.fetch(new Request(url.toString(), { method, headers, body }));
-
-  // Write response to ServerResponse when running on Node.js Serverless
-  if (maybeRes && typeof maybeRes.statusCode === "number") {
-    maybeRes.statusCode = response.status;
-    for (const [key, value] of response.headers.entries()) {
-      maybeRes.setHeader(key, value);
+    // Build headers from rawHeaders (preserves original casing, skips
+    // HTTP/2 pseudo-headers like :method, :path, :scheme, :authority)
+    const headers: Record<string, string> = {};
+    const rawHeaders = req.rawHeaders;
+    for (let i = 0; i < rawHeaders.length; i += 2) {
+      const key = rawHeaders[i];
+      if (key.charCodeAt(0) !== 58) headers[key] = rawHeaders[i + 1];
     }
-    maybeRes.end(await response.text());
-    return;
-  }
 
-  return response;
+    const response = await app.fetch(
+      new Request(url, {
+        method: req.method,
+        headers,
+        body: bodyBuffer,
+      }),
+    );
+
+    // Write response to ServerResponse when on legacy Node.js
+    if (maybeRes && typeof maybeRes.statusCode === "number") {
+      maybeRes.statusCode = response.status;
+      const hasSetCookie = response.headers.getSetCookie?.();
+      response.headers.forEach((value, key) => {
+        if (key.toLowerCase() === "set-cookie" && hasSetCookie?.length) {
+          // Multiple Set-Cookie values must be set individually (comma-
+          // merging is illegal for Set-Cookie)
+          for (const cookie of hasSetCookie) maybeRes.setHeader("Set-Cookie", cookie);
+        } else {
+          maybeRes.setHeader(key, value);
+        }
+      });
+
+      // Stream the response body for SSE and large payloads
+      if (response.body) {
+        const reader = response.body.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          maybeRes.write(value);
+        }
+      }
+      maybeRes.end();
+      return;
+    }
+
+    return response;
+  } catch (error) {
+    console.error("[vercel-handler] Unhandled error:", error);
+    if (maybeRes && typeof maybeRes.statusCode === "number" && !maybeRes.headersSent) {
+      maybeRes.statusCode = 500;
+      maybeRes.setHeader("Content-Type", "application/json");
+      maybeRes.end(JSON.stringify({ success: false, error: "Internal Server Error" }));
+      return;
+    }
+    // If we got here, it's the Fluid Compute path and we must throw
+    throw error;
+  }
 }

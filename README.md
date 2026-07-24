@@ -101,14 +101,16 @@ The backend was migrated from **Express.js** to **Hono.js** while keeping every 
 
 ### Vercel deployment
 
-The app is deployed as a **Vercel Edge Function** — the fastest cold-start option on the platform. `src/app.ts` exports `handle(app)` from `hono/vercel` with `export const runtime = "edge"`, and `vercel.json` rewrites all traffic to that entrypoint.
+The app is deployed on the **Node.js runtime**. Vercel's Fluid Compute architecture makes the Node.js runtime the superior choice over Edge, offering identical performance and pricing while eliminating cold starts and offering full Node.js API support. See https://vercel.com/docs/functions/runtimes/edge
 
-#### Edge Runtime migration
+`src/app.ts` exports a custom handler that works on both Vercel's Fluid Compute (passes Web API `Request`) and legacy Node.js Serverless (passes `IncomingMessage`). `vercel.json` rewrites all traffic to that entrypoint.
 
-The codebase previously relied on several Node.js-only APIs (`Buffer`, `crypto`, `fs`/`path`, `bcrypt` native addon, `@actions/core`) that blocked Edge Runtime deployment. All 11 blockers have been systematically replaced:
+#### Web API migration
 
-| Blockers Replaced | Edge-Compatible Alternative |
-|-------------------|----------------------------|
+The codebase was originally migrated to be Edge Runtime-compatible, systematically replacing Node.js-only APIs. This work was not wasted — the app is now fully Web API compliant, which means the `hono/vercel` adapter maps requests seamlessly regardless of the underlying runtime:
+
+| Blockers Replaced | Web API-Compatible Alternative |
+|-------------------|-------------------------------|
 | `@imagekit/nodejs` SDK | ImageKit REST API via `fetch` |
 | `bcrypt` native addon | `bcryptjs` (pure JS, identical API) |
 | `Buffer` (9+ usages) | `Uint8Array`, `TextEncoder`/`TextDecoder`, Web `atob()` |
@@ -123,7 +125,7 @@ The codebase previously relied on several Node.js-only APIs (`Buffer`, `crypto`,
 #### Configuration
 
 - **Framework Preset → "Hono"** (not "Express"). Vercel's Express preset looks for `import express` at build time; with Express removed, leaving it set breaks the build.
-- **No Node.js version pinning needed** — Edge Runtime uses its own V8 isolate, not Node.js. The `maxDuration: 300` (5 min) in `vercel.json` is set explicitly, matching the Fluid Compute default. The active SSE prompt route (`GET /api/books/prompt`) uses streaming for sessions longer than 300s.
+- **`maxDuration: 300`** (5 min) in `vercel.json`. The active SSE prompt route (`GET /api/books/prompt`) uses streaming for sessions longer than 300s.
 - Local development still runs via `@hono/node-server` (`src/server.ts`) — no changes to the dev workflow.
 
 ## 🚀 Features
