@@ -128,9 +128,11 @@ app.get("/", (c) => {
   });
 });
 
+const startedAt = Date.now();
+
 // Health check endpoint
 app.get("/health", (c) => {
-  return c.json({ ok: true, uptime: process.uptime() });
+  return c.json({ ok: true, uptime: (Date.now() - startedAt) / 1000 });
 });
 
 // Backward-compatible redirects
@@ -162,111 +164,34 @@ function getErrorMessageSafe(err: unknown): string {
 export { app };
 
 // ---------------------------------------------------------------------------
-// Vercel serverless function handler
+// Vercel Edge function handler
 // ---------------------------------------------------------------------------
 //
-// WHY NOT getRequestListener?
-// ===========================
-// `getRequestListener` from `@hono/node-server` wraps the Node.js
-// IncomingMessage in a ReadableStream via `Readable.toWeb()`. On Vercel's
-// Node.js runtime the request body is already pre-buffered, so the stream's
-// `end`/`data` events never fire — the body-read promise hangs indefinitely
-// until Vercel's 300s platform timeout kills the function.
+// The hono/vercel adapter converts the Hono app into a Vercel Edge Function
+// handler. On Edge Runtime, Vercel provides a standard Web API Request —
+// no manual body buffering or Node.js adapter needed.
 //
-// WHY NOT hono/vercel?
-// ====================
-// `hono/vercel` is designed for Vercel's Edge Runtime. Importing it causes
-// Vercel's build system to expect an Edge function, creating a runtime
-// conflict that manifests as MIDDLEWARE_INVOCATION_TIMEOUT.
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║  BEHAVIORAL DIFFERENCES vs previous Node.js serverless deployment       ║
+// ╠═══════════════════════════════════════════════════════════════════════════╣
+// ║  Runtime       Edge (fast cold starts)       Node.js 22 (slower)        ║
+// ║  Duration cap  30s (Edge)                    60s (Node.js)              ║
+// ║  Node APIs     No (Buffer, fs, path, …)      Yes                        ║
+// ║  Body parsing  Automatic (hono/vercel)        Manual (for await…of)     ║
+// ║  Env vars      process.env works             process.env works          ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
 //
-// THIS APPROACH
-// =============
-// A plain Node.js (IncomingMessage, ServerResponse) handler that:
-//   1. Reads the body via for await...of (reliable on all runtimes)
-//   2. Creates a standard Web API Request from the buffered body
-//   3. Passes it to app.fetch
-//   4. Writes the Response back to the ServerResponse
+// RECOMMENDATION: Routes that stream or run heavy computation should stay
+// within 30s. The active SSE route (GET /api/books/prompt) is lightweight
+// and well under both limits. The three legacy SSE routes were already unused.
+//
+// Local development still uses @hono/node-server via src/server.ts.
 //
 // References
-//   - https://github.com/honojs/node-server/issues/306
-//   - https://github.com/honojs/node-server/issues/84
+//   - https://hono.dev/docs/getting-started/vercel
 // ---------------------------------------------------------------------------
 
-import type { IncomingMessage, ServerResponse } from "node:http";
+import { handle } from "hono/vercel";
 
-export default async function vercelHandler(
-  req: IncomingMessage,
-  res: ServerResponse,
-): Promise<void> {
-  try {
-    // Reconstruct the absolute URL from headers
-    const protocol =
-      (req.headers["x-forwarded-proto"] as string) ||
-      ((req.socket as { encrypted?: boolean } | undefined)?.encrypted
-        ? "https"
-        : "http");
-    const host =
-      (req.headers["x-forwarded-host"] as string) ||
-      (req.headers["host"] as string) ||
-      "localhost";
-    const url = `${protocol}://${host}${req.url ?? "/"}`;
-
-    // Read the full request body using for await...of on the raw stream.
-    // This is the key fix — getRequestListener's Readable.toWeb() hangs.
-    const chunks: Buffer[] = [];
-    for await (const chunk of req) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    }
-    const bodyBuffer =
-      req.method !== "GET" && req.method !== "HEAD" && chunks.length > 0
-        ? Buffer.concat(chunks)
-        : null;
-
-    // Build headers, skipping HTTP/2 pseudo-headers
-    const headers: Record<string, string> = {};
-    const rawHeaders = req.rawHeaders;
-    for (let i = 0; i < rawHeaders.length; i += 2) {
-      const key = rawHeaders[i];
-      if (key.charCodeAt(0) !== 58) headers[key] = rawHeaders[i + 1];
-    }
-
-    // Create a standard Web API Request and pass to Hono
-    const request = new Request(url, {
-      method: req.method,
-      headers,
-      body: bodyBuffer,
-    });
-    const response = await app.fetch(request);
-
-    // Write response status and headers
-    res.statusCode = response.status;
-    response.headers.forEach((value, key) => {
-      if (key.toLowerCase() === "set-cookie") {
-        const cookies = response.headers.getSetCookie?.() ?? [value];
-        for (const cookie of cookies) res.setHeader("Set-Cookie", cookie);
-      } else {
-        res.setHeader(key, value);
-      }
-    });
-
-    // Stream the response body
-    if (response.body) {
-      const reader = response.body.getReader();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        res.write(value);
-      }
-    }
-    res.end();
-  } catch (error) {
-    console.error("[vercel-handler] ❌ Unhandled error:", error);
-    if (!res.headersSent) {
-      res.statusCode = 500;
-      res.setHeader("Content-Type", "application/json");
-      res.end(JSON.stringify({ success: false, error: "Internal Server Error" }));
-    } else {
-      res.end();
-    }
-  }
-}
+export const runtime = "edge";
+export default handle(app);

@@ -14,7 +14,7 @@
 
 import type { Context } from "hono";
 import { IS_DEVELOPMENT } from "../config/env.js";
-import { group } from '@actions/core';
+import { edgeGroup } from './edge-group.js';
 
 /**
  * Standardized error response interface
@@ -143,7 +143,7 @@ function getDeepErrorStringForClassification(err: unknown): string {
 export function classifyGenAIError(err: unknown): GenAIErrorCode {
   // Use deep string extraction to ensure we catch deeply nested raw JSON payloads
   const msg = getDeepErrorStringForClassification(err);
-  group(`[classifyGenAIError] 🕵️‍♂️ See error:`, async () => {
+  edgeGroup.wrap(`[classifyGenAIError] 🕵️‍♂️ See error:`, async () => {
     console.log(err);
   });
 

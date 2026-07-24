@@ -11,7 +11,7 @@ import { retryWithBackoff } from "./retry.js";
 import { AI_CHAT_MODEL_RETRY_COUNT } from "../config/ai-chat.js";
 import { parseAISafely } from "./ai-parser.js";
 import { buildEvaluationSchemaDefinition, EVALUATION_REQUIRED_FIELDS } from "../schema/story.js";
-import { group } from '@actions/core';
+import { edgeGroup } from './edge-group.js';
 import { convertToGeminiSchema, getOrCreateGeminiCache } from "./gemini.js";
 import type Groq from 'groq-sdk';
 import type OpenAI from 'openai/resources/chat/completions.js';
@@ -1042,7 +1042,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
             if (evaluationResult) {
               const { scoreBefore, scoreAfter, actionFlags, integrityFlags } = evaluationResult;
               if (logEvaluationResult) {
-                group(`[${evaluationContext}] 🕵️‍♂️ Evaluation result (score: ${scoreBefore.total} → ${scoreAfter.total}):`, async () => {
+                edgeGroup.wrap(`[${evaluationContext}] 🕵️‍♂️ Evaluation result (score: ${scoreBefore.total} → ${scoreAfter.total}):`, async () => {
                   console.log("Score before:", scoreBefore);
                   console.log("Score after:", scoreAfter);
                   console.log("Action flags:", actionFlags);
@@ -1229,7 +1229,7 @@ export function formatSystemPromptWithDocuments(provider: AIChatProvider, option
 export function logPromptWithSeparators(provider: AIChatProvider, message: string, content: string, shouldLog: boolean): void {
   if (!shouldLog) return;
   
-  group(`[${provider}] ${message} (${content.length} chars):`, async () => {
+  edgeGroup.wrap(`[${provider}] ${message} (${content.length} chars):`, async () => {
     console.log(content);
   });
 }

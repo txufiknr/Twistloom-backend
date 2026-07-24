@@ -26,7 +26,7 @@
  */
 
 import { drizzle } from "drizzle-orm/neon-serverless";
-import { Pool } from "@neondatabase/serverless";
+import { Pool, neonConfig } from "@neondatabase/serverless";
 import type { NeonDatabase } from "drizzle-orm/neon-serverless";
 import * as schema from "./schema.js";
 import { IS_DEVELOPMENT, IS_PRODUCTION, IS_TEST } from "../config/env.js";
@@ -45,6 +45,9 @@ const DATABASE_LOGGING = getEnv('DATABASE_LOGGING', 'false') === "true";
 if (IS_PRODUCTION && DATABASE_URL.includes("localhost")) {
   throw new Error("💀 Production cannot use localhost database");
 }
+
+// Configure Neon to use global WebSocket (required on Edge Runtime)
+neonConfig.webSocketConstructor = globalThis.WebSocket;
 
 // Create connection pools
 const writePool = new Pool({ connectionString: DATABASE_URL });

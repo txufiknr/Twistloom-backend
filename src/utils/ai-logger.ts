@@ -4,7 +4,7 @@
  */
 
 import type { AIResponse } from "../types/ai-chat.js";
-import { group } from '@actions/core';
+import { edgeGroup } from './edge-group.js';
 
 /**
  * Logs successful AI provider response with standardized format
@@ -15,7 +15,7 @@ export function logAISuccess(response: AIResponse<unknown>, requestStartAt?: num
   const { provider, model, output, finishReason = 'unknown', usage } = response;
   const elapsedMs = requestStartAt ? Date.now() - requestStartAt : undefined;
 
-  group(`[${provider}] ✅ ${model} succeeded (${output.length} chars, finish: ${finishReason}${elapsedMs ? `, duration: ${elapsedMs}ms` : ''})`, async () => {
+  edgeGroup.wrap(`[${provider}] ✅ ${model} succeeded (${output.length} chars, finish: ${finishReason}${elapsedMs ? `, duration: ${elapsedMs}ms` : ''})`, async () => {
     // Log success with output
     console.log(`"""\n${output}\n"""`);
     

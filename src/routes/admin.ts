@@ -177,9 +177,9 @@ router.get("/system/health", requireAuth, async (c) => {
         reconstruction: "functional"
       },
       metrics: {
-        uptime: process.uptime(),
-        memoryUsage: process.memoryUsage(),
-        nodeVersion: process.version
+        uptime: typeof process.uptime === "function" ? process.uptime() : null,
+        memoryUsage: typeof process.memoryUsage === "function" ? process.memoryUsage() : null,
+        nodeVersion: process.version ?? null
       }
     };
 

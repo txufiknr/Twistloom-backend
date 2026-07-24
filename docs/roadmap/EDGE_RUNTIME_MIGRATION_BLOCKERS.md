@@ -32,14 +32,14 @@ The Vercel Edge Runtime (web-standard APIs only: `fetch`, `Request`, `Response`,
 | 1 | `@imagekit/nodejs` SDK | **CRITICAL** | `services/image.ts`, `services/book.ts` | High (removed) | ✅ Done |
 | 2 | `bcrypt` → `bcryptjs` | **CRITICAL** | `utils/password.ts` | Low (drop-in) | ✅ Done |
 | 3 | `Buffer` (9+ usages) | **CRITICAL** | `middleware/upload.ts`, `routes/books.ts`, `utils/ai-image.ts` | Medium | ⬜ |
-| 4 | Neon Pool WebSocket wiring | **HIGH** | `db/client.ts` | Low (+ testing) | ⬜ |
+| 4 | Neon Pool WebSocket wiring | **HIGH** | `db/client.ts` | Low (+ testing) | ✅ Done |
 | 5 | `crypto.createHash` (Node `crypto`) | **HIGH** | `utils/cache.ts` | Medium (async ripple) | ⬜ |
-| 6 | Entrypoint adapter | **HIGH** | `src/app.ts` | Low | ⬜ |
+| 6 | Entrypoint adapter | **HIGH** | `src/app.ts` | Low | ✅ Done |
 | 7 | Stripe fetch client config | **HIGH** | `utils/stripe.ts` | Low (1 line) | ✅ Done |
 | 8 | `fs` / `path` in constants | **LOW** | `config/constants.ts` | Low (remove fallback) | ✅ Done |
-| 9 | `fs` / `path` in ai-image.ts | **LOW** | `utils/ai-image.ts` | Low (skip branch) | ⬜ |
-| 10 | `@actions/core` (`group()`) | **LOW** | `utils/error.ts`, `utils/ai-logger.ts`, `utils/ai-chat.ts` | Low (console.group) | ⬜ |
-| 11 | `process.*` in admin route | **LOW** | `routes/admin.ts`, `app.ts` | Low (guard/remove) | ⬜ |
+| 9 | `fs` / `path` in ai-image.ts | **LOW** | `utils/ai-image.ts` | Low (skip branch) | ✅ Done |
+| 10 | `@actions/core` (`group()`) | **LOW** | `utils/error.ts`, `utils/ai-logger.ts`, `utils/ai-chat.ts` | Low (console.group) | ✅ Done |
+| 11 | `process.*` in admin route | **LOW** | `routes/admin.ts`, `app.ts` | Low (guard/remove) | ✅ Done |
 | 12 | SSE route durations | **NONE** (legacy) | `routes/books.ts` (3 SS routes) | — | ⬜ |
 
 ---
@@ -192,6 +192,11 @@ This is documented by Neon for Vercel Edge Functions. Drizzle's `drizzle-orm/neo
 - Verify prepared statements (used heavily in this codebase)
 - Verify connection reconnection behavior under Edge's ephemeral execution model
 
+**Completion notes:**
+- Added `neonConfig` to import from `@neondatabase/serverless`
+- Added `neonConfig.webSocketConstructor = globalThis.WebSocket` before Pool creation
+- Safe on Node.js 20+ (has `globalThis.WebSocket`); no existing behavior change
+
 ---
 
 ### 5. `crypto.createHash` (Node `crypto`) — HIGH
@@ -254,6 +259,12 @@ The current entrypoint `export default getRequestListener(app.fetch)` uses `@hon
 Note: `@hono/node-server` should remain as a `devDependency` for local development (used by `src/server.ts`).
 
 **Potential gotcha:** The `hono/vercel` adapter's `handle()` accepts the app instance, not `app.fetch`. If you've attached middleware or context generics to the app, they carry over automatically.
+
+**Completion notes:**
+- Replaced the custom `vercelHandler` (Node.js IncomingMessage → Request adapter) with `handle(app)` from `hono/vercel`
+- Added `export const runtime = "edge"` to signal Vercel's Edge Runtime
+- This also removes 4 `Buffer` usages from the old handler (body buffering)
+- Local dev (`src/server.ts`) unchanged — still uses `@hono/node-server`
 
 ---
 
@@ -358,6 +369,11 @@ if (outputDir) {
 
 This way the imports never execute on Edge (where `outputDir` is never set).
 
+**Completion notes:**
+- Removed top-level `import * as fs` / `import * as path`
+- Made `processAndSaveImages` async with dynamic `await import("fs")` / `await import("path")` inside `if (outputDir)` branches
+- Only the non-outputDir code path (returning buffers only) is used on Edge
+
 ---
 
 ### 10. `@actions/core` (`group()`) — LOW
@@ -409,6 +425,11 @@ async function group<T>(label: string, fn: () => Promise<T>): Promise<T> {
 }
 ```
 
+**Completion notes:**
+- Created `src/utils/edge-group.ts` with `edgeGroup.wrap<T>(title, callback)` using `::group::`/`::endgroup::` markers
+- Replaced all 4 usages across `error.ts`, `ai-logger.ts`, `ai-chat.ts`
+- `::group::` markers produce expandable groups in GitHub Actions runner logs; degrade to plain text in Vercel/terminal
+
 ---
 
 ### 11. `process.*` in Admin Route — LOW
@@ -444,6 +465,10 @@ const startedAt = Date.now();
 // later in health route:
 uptime: (Date.now() - startedAt) / 1000,
 ```
+
+**Completion notes:**
+- `routes/admin.ts` — guarded `process.uptime()`, `process.memoryUsage()`, `process.version` with `typeof`/`??` null fallbacks
+- `app.ts` — replaced `process.uptime()` with `(Date.now() - startedAt) / 1000` (always meaningful)
 
 ---
 
@@ -493,15 +518,17 @@ These are used in the codebase but **do not require changes**:
 
 ### Phase 2 — High blockers (estimated: 1–2 days)
 
-4. **Configure Neon WebSocket for Edge** — `db/client.ts`
+4. ✅ **Configure Neon WebSocket for Edge** — `db/client.ts`
 5. **Refactor `createHash` → Web Crypto** — `utils/cache.ts` (async ripple)
-6. **Switch entrypoint to `hono/vercel`** — `app.ts`
+6. ✅ **Switch entrypoint to `hono/vercel`** — `app.ts`
 7. ✅ **Configure Stripe fetch client** — `utils/stripe.ts`
 
 ### Phase 3 — Low blockers (estimated: half day)
 
 8. ✅ Remove `fs`/`path` fallback — `config/constants.ts`
-9–11. Guard admin `process.*`, replace `@actions/core`, etc.
+9. ✅ Dynamic `import("fs")`/`import("path")` in ai-image.ts — `utils/ai-image.ts`
+10. ✅ Replace `@actions/core` `group()` with `edgeGroup` wrapper — `utils/error.ts`, `utils/ai-logger.ts`, `utils/ai-chat.ts`
+11. ✅ Guard admin `process.*` — `routes/admin.ts`, `app.ts`
 
 ### Phase 4 — Verification (estimated: 1–2 days)
 

@@ -23,8 +23,6 @@
  * 3. Core Helper: `generateImageWithFallback()` - Unified retry logic which iterates each model
  */
 
-import * as fs from "fs";
-import * as path from "path";
 import { getGeminiClient } from "./ai-clients.js";
 import { getGeminiLimiter } from "./ai-limiters.js";
 import { AI_IMAGE_CONFIG, AI_IMAGE_MODEL_GEMINI, AI_IMAGE_MODEL_IMAGEN } from "../config/ai-images.js";
@@ -107,7 +105,7 @@ async function generateImageWithFallback<T>(
       // Success handling: Process valid response and return result
       if (imageDataArray && imageDataArray.length > 0) {
         console.log(`[${provider}] ✅ Model ${model} generated ${imageDataArray.length} image(s)`);
-        return processAndSaveImages(imageDataArray, options.outputDir, options.filename, provider);
+        return await processAndSaveImages(imageDataArray, options.outputDir, options.filename, provider);
       }
 
       // Empty response handling: Log when no images are generated
@@ -147,19 +145,22 @@ async function generateImageWithFallback<T>(
  * const result = await processAndSaveImages(imageData, "./output", "my-image", "ai-image");
  * ```
  */
-function processAndSaveImages(
+async function processAndSaveImages(
   imageDataArray: AIImageData[],
   outputDir: string | undefined,
   filename?: string,
   context: string = "ai-image"
-): AIImageResult {
+): Promise<AIImageResult> {
   const savedPaths: string[] = [];
   const buffers: Buffer[] = [];
   const mimeTypes: string[] = [];
 
   // Ensure output directory exists (only if outputDir is provided)
-  if (outputDir && !fs.existsSync(outputDir)) {
-    fs.mkdirSync(outputDir, { recursive: true });
+  if (outputDir) {
+    const { existsSync, mkdirSync } = await import("fs");
+    if (!existsSync(outputDir)) {
+      mkdirSync(outputDir, { recursive: true });
+    }
   }
 
   for (const imageData of imageDataArray) {
@@ -189,12 +190,14 @@ function processAndSaveImages(
         ? sanitizeFilename(`${filename}${imageData.index > 0 ? `_${imageData.index}` : ""}`)
         : sanitizeFilename(`image_${Date.now()}_${imageData.index + 1}`);
 
-      const filepath = path.join(outputDir, `${baseName}.${ext}`);
+      const { join, resolve } = await import("path");
+      const filepath = join(outputDir, `${baseName}.${ext}`);
       
       // Save image to disk
-      fs.writeFileSync(filepath, buffer);
+      const { writeFileSync } = await import("fs");
+      writeFileSync(filepath, buffer);
       console.log(`[${context}] ✅ Saved: ${filepath}`);
-      savedPaths.push(path.resolve(filepath));
+      savedPaths.push(resolve(filepath));
     } else {
       console.log(`[${context}] 🖼️ Processed image ${imageData.index + 1} (memory only)`);
     }
