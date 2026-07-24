@@ -63,7 +63,21 @@ export async function consumeCredits(
   }
 
   const cost = CREDIT_COSTS[costKey];
-  if (cost <= 0) throw new Error(`Invalid credit cost: ${costKey} must be greater than 0`);
+  if (cost < 0) throw new Error(`Invalid credit cost: ${costKey} must be greater than or equal to 0`);
+
+  // Free demo / zero-cost actions — no balance change or usage row
+  if (cost === 0) {
+    console.log(`[consumeCredits] ⏩ Free action (cost 0): ${costKey}`);
+    const [userRow] = await dbRead
+      .select({ credits: users.credits })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1);
+    return {
+      remainingCredits: userRow?.credits ?? 0,
+      transactionId: generateId(),
+    };
+  }
 
   const { context, correlationId, metadata, tx: trx, req } = options;
 
@@ -173,7 +187,8 @@ export async function hasSufficientCredits(
   costKey: CreditCostKey
 ): Promise<boolean> {
   const cost = CREDIT_COSTS[costKey];
-  if (cost <= 0) throw new Error(`Invalid credit cost: ${costKey} must be greater than 0`);
+  if (cost < 0) throw new Error(`Invalid credit cost: ${costKey} must be greater than or equal to 0`);
+  if (cost === 0) return true;
 
   const [user] = await dbRead
     .select({ credits: users.credits })
@@ -295,7 +310,18 @@ export async function refundCredits(
   options: ConsumeCreditsOptions = {}
 ): Promise<number> {
   const amount = CREDIT_COSTS[costKey];
-  if (amount <= 0) throw new Error(`Invalid credit cost: ${costKey} must be greater than 0`);
+  if (amount < 0) throw new Error(`Invalid credit cost: ${costKey} must be greater than or equal to 0`);
+
+  // Nothing was charged (free demo / zero-cost) — no refund needed
+  if (amount === 0) {
+    const [userRow] = await dbRead
+      .select({ credits: users.credits })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1);
+    if (!userRow) throw new Error(`User not found: ${userId}`);
+    return userRow.credits;
+  }
 
   // Generate correlation ID for this refund
   const correlationId = options.correlationId || generateId();
@@ -349,7 +375,18 @@ export async function refundCreditsIdempotent(
   options: ConsumeCreditsOptions = {}
 ): Promise<number> {
   const amount = CREDIT_COSTS[costKey];
-  if (amount <= 0) throw new Error(`Invalid credit cost: ${costKey} must be greater than 0`);
+  if (amount < 0) throw new Error(`Invalid credit cost: ${costKey} must be greater than or equal to 0`);
+
+  // Nothing was charged (free demo / zero-cost) — no refund needed
+  if (amount === 0) {
+    const [userRow] = await dbWrite
+      .select({ credits: users.credits })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1);
+    if (!userRow) throw new Error(`User not found: ${userId}`);
+    return userRow.credits;
+  }
 
   // Check for an existing refund record with this correlation ID
   const existingRefund = await dbWrite
@@ -444,9 +481,18 @@ export async function executeWithCredits<T>(
   options: ConsumeCreditsOptions = {}
 ): Promise<ConsumeCreditsResult<T>> {
   const cost = typeof costKey === 'number' ? costKey : CREDIT_COSTS[costKey];
-  if (cost <= 0) throw new Error(`Invalid credit cost: ${costKey} must be greater than 0`);
+  if (cost < 0) throw new Error(`Invalid credit cost: ${costKey} must be greater than or equal to 0`);
 
   const correlationId = options.correlationId || generateId();
+
+  // Free demo / zero-cost — run the operation without charging
+  if (cost === 0) {
+    console.log(`[executeWithCredits] ⏩ Free action (cost 0): ${costKey}`);
+    return dbWrite.transaction(async (tx) => {
+      const result = await operation(tx);
+      return { result, correlationId, transactionId: generateId() };
+    });
+  }
 
   // Execute everything in a single transaction for atomicity
   return dbWrite.transaction(async (tx) => {

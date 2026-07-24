@@ -34,13 +34,36 @@ import type { CreditPack } from "../types/credits.js";
 import type { BookMode } from "../types/book.js";
 
 /**
- * Credit costs for various actions
- * @overview Defines credit costs for different features and operations
- * 
- * These costs are configurable and can be adjusted based on business requirements.
- * All costs should be positive integers.
+ * Free demo phase flag.
+ *
+ * When `true` (default), the platform is still in demo phase and all credit
+ * costs resolve to zero so every action is free of charge. Set
+ * `FEATURE_FREE_DEMO=false` to enable normal paid credit pricing.
+ *
+ * Unset or any value other than the string `"false"` keeps demo mode on.
  */
-export const CREDIT_COSTS = {
+export const FEATURE_FREE_DEMO = process.env.FEATURE_FREE_DEMO !== "false";
+
+/**
+ * Applies free-demo pricing: zeros every cost when {@link FEATURE_FREE_DEMO} is on.
+ *
+ * @param costs - Base (paid) credit cost map
+ * @returns Zeroed map in free demo, otherwise the original costs
+ */
+function applyFreeDemoPricing<T extends Record<string, number>>(costs: T): { [K in keyof T]: number } {
+  if (!FEATURE_FREE_DEMO) return costs;
+  return Object.fromEntries(Object.keys(costs).map((key) => [key, 0])) as { [K in keyof T]: number };
+}
+
+/**
+ * Base credit costs for various actions (paid pricing).
+ * @overview Defines credit costs for different features and operations
+ *
+ * These costs are configurable and can be adjusted based on business requirements.
+ * All base costs should be positive integers. When {@link FEATURE_FREE_DEMO} is
+ * true, the exported {@link CREDIT_COSTS} map zeros every entry.
+ */
+const CREDIT_COSTS_BASE = {
   /** Cost to generate a new story/book */
   STORY_GENERATION: 5,
   /** Cost to generate additional pages in an existing story */
@@ -62,7 +85,15 @@ export const CREDIT_COSTS = {
 } as const;
 
 /**
- * Credit cost per book creation mode (story format).
+ * Credit costs for various actions.
+ *
+ * Equals {@link CREDIT_COSTS_BASE} normally; all values are `0` when
+ * {@link FEATURE_FREE_DEMO} is enabled.
+ */
+export const CREDIT_COSTS = applyFreeDemoPricing(CREDIT_COSTS_BASE);
+
+/**
+ * Base credit cost per book creation mode (story format).
  *
  * Each mode represents a different storytelling philosophy with a different AI
  * generation cost. Multiverse is the most expensive because the engine simulates
@@ -71,7 +102,7 @@ export const CREDIT_COSTS = {
  *
  * @see `BookMode` in `src/types/book.ts`
  */
-export const BOOK_MODE_CREDIT_COSTS = {
+const BOOK_MODE_CREDIT_COSTS_BASE = {
   /** Traditional linear story with a single path and ending */
   novel: 2,
   /** Reader choices lead to different branches and endings */
@@ -80,20 +111,29 @@ export const BOOK_MODE_CREDIT_COSTS = {
   multiverse: 10,
 } as const;
 
-export type CreditCostKey = keyof typeof CREDIT_COSTS;
+/**
+ * Credit cost per book creation mode.
+ *
+ * Equals {@link BOOK_MODE_CREDIT_COSTS_BASE} normally; all values are `0` when
+ * {@link FEATURE_FREE_DEMO} is enabled.
+ */
+export const BOOK_MODE_CREDIT_COSTS = applyFreeDemoPricing(BOOK_MODE_CREDIT_COSTS_BASE);
+
+export type CreditCostKey = keyof typeof CREDIT_COSTS_BASE;
 
 /**
  * Returns the credit cost for creating a book in the given mode.
  *
  * Falls back to `interactive` (the default mode) if an unknown/undefined mode
  * is supplied, so legacy and malformed requests still consume a sensible cost.
+ * Returns `0` for every mode when {@link FEATURE_FREE_DEMO} is enabled.
  *
  * @param mode - Book creation mode, or undefined to use the default
  * @returns Credit cost for that mode
  */
 export function getBookModeCreditCost(mode: BookMode | null | undefined): number {
   if (mode && mode in BOOK_MODE_CREDIT_COSTS) {
-    return BOOK_MODE_CREDIT_COSTS[mode];
+    return BOOK_MODE_CREDIT_COSTS[mode as BookMode];
   }
   return BOOK_MODE_CREDIT_COSTS.interactive;
 }
