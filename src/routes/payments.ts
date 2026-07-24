@@ -26,15 +26,48 @@ import { getClientIp } from "../hono/express-shim.js";
 
 /**
  * Extended Stripe Subscription interface with properties that exist in the API
- * but are missing from the TypeScript definition
+ * but are missing from the TypeScript definition (stripe@22.2.0).
+ *
+ * The Stripe SDK's `Subscription` type omits `current_period_start` and
+ * `current_period_end` as top-level fields. This interface restores them
+ * for type-safe access in webhook handlers.
  */
 interface StripeSubscriptionWithPeriods extends Stripe.Subscription {
+  /** Unix timestamp (seconds) of the current billing period start */
   current_period_start: number;
+  /** Unix timestamp (seconds) of the current billing period end */
   current_period_end: number;
 }
 
 /**
- * Type guard to validate Stripe subscription object has required period properties
+ * Extended Stripe Invoice interface with properties that exist in the API
+ * but are missing from the TypeScript definition (stripe@22.2.0).
+ *
+ * `subscription` is a top-level field in Stripe's raw Invoice JSON response,
+ * but the SDK's Invoice type only exposes it through `parent.subscription_details`.
+ * This extended interface makes it accessible directly without `any`.
+ */
+interface StripeInvoiceWithSubscription extends Stripe.Invoice {
+  /** Subscription ID or expanded Subscription object (raw API field) */
+  subscription?: string | Stripe.Subscription;
+}
+
+/**
+ * Type guard that validates a Stripe subscription object contains the required
+ * period properties (`current_period_start`, `current_period_end`) missing from
+ * the base SDK type.
+ *
+ * @param obj - The raw event data object from a Stripe webhook
+ * @returns `true` if the object has valid numeric period properties
+ *
+ * @example
+ * ```typescript
+ * const sub = event.data.object;
+ * if (!isSubscriptionWithPeriods(sub)) {
+ *   return console.error("Invalid subscription object");
+ * }
+ * // sub is now typed as StripeSubscriptionWithPeriods
+ * ```
  */
 function isSubscriptionWithPeriods(obj: any): obj is StripeSubscriptionWithPeriods {
   return obj &&
@@ -43,7 +76,20 @@ function isSubscriptionWithPeriods(obj: any): obj is StripeSubscriptionWithPerio
 }
 
 /**
- * Helper function to handle insufficient credits errors consistently
+ * Returns a 402 response for insufficient-credits errors with the required
+ * credit amount, ensuring a consistent error shape across all endpoints.
+ *
+ * @param res - Hono response context
+ * @param costKey - The credit cost key that was attempted
+ * @param error - Optional original error for contextual message fallback
+ * @returns 402 JSON response with `error` and `required` fields
+ *
+ * @example
+ * ```typescript
+ * if (isInsufficientCreditsError(error)) {
+ *   return handleInsufficientCreditsError(c, costKey);
+ * }
+ * ```
  */
 export function handleInsufficientCreditsError(
   res: Context,
@@ -60,12 +106,45 @@ export function handleInsufficientCreditsError(
 const router = new Hono<AppEnv>();
 
 /**
- * Detects a Postgres unique-constraint violation (SQLSTATE 23505).
+ * Detects a Postgres unique-constraint violation by checking for SQLSTATE 23505.
+ * Used to handle concurrent webhook delivery races where duplicate INSERTs may
+ * collide on the same `stripeEventId` or `eventId`.
+ *
+ * @param error - The error object thrown by a database operation
+ * @returns `true` if the error is a Postgres unique violation
+ *
+ * @example
+ * ```typescript
+ * try { await dbWrite.insert(...).values(...); }
+ * catch (err) {
+ *   if (isUniqueViolation(err)) {
+ *     // concurrent duplicate
+ *   }
+ * }
+ * ```
  */
 function isUniqueViolation(error: unknown): boolean {
   return typeof error === 'object' && error !== null && (error as { code?: string }).code === '23505';
 }
 
+/**
+ * Handles `customer.subscription.created` webhook events from Stripe.
+ *
+ * Validates the subscription object shape, extracts userId from metadata,
+ * resolves price ID from the first line item, and persists the subscription
+ * via {@link createSubscription}. Supports both regular and trial subscriptions.
+ *
+ * @param event - The Stripe webhook event. `event.data.object` is expected to
+ *                include `current_period_start` and `current_period_end`.
+ *
+ * @example
+ * ```typescript
+ * // Dispatched from webhook handler:
+ * if (event.type === "customer.subscription.created") {
+ *   await handleSubscriptionCreated(event);
+ * }
+ * ```
+ */
 async function handleSubscriptionCreated(event: Stripe.Event) {
   const subscription = event.data.object;
   if (!isSubscriptionWithPeriods(subscription)) {
@@ -87,10 +166,28 @@ async function handleSubscriptionCreated(event: Stripe.Event) {
     currentPeriodEnd: new Date(subscription.current_period_end * 1000),
     isTrial,
     trialEnd,
+    stripeEventId: event.id,
   });
   console.log(`[subscription] ✅ Created subscription for user ${userId}${isTrial ? " (trial)" : ""}`);
 }
 
+/**
+ * Handles `customer.subscription.updated` webhook events from Stripe.
+ *
+ * Updates the local subscription record's status, period end, and
+ * cancel-at-period-end flag. Used to sync status changes (e.g. active → past_due)
+ * and billing anchor shifts.
+ *
+ * @param event - The Stripe webhook event. `event.data.object` must include
+ *                `current_period_start` and `current_period_end`.
+ *
+ * @example
+ * ```typescript
+ * if (event.type === "customer.subscription.updated") {
+ *   await handleSubscriptionUpdated(event);
+ * }
+ * ```
+ */
 async function handleSubscriptionUpdated(event: Stripe.Event) {
   const subscription = event.data.object;
   if (!isSubscriptionWithPeriods(subscription)) {
@@ -105,21 +202,56 @@ async function handleSubscriptionUpdated(event: Stripe.Event) {
   console.log(`[subscription] 🔄 Updated subscription ${subscription.id}`);
 }
 
+/**
+ * Handles `customer.subscription.deleted` webhook events from Stripe.
+ *
+ * Cancels the local subscription record, recording the cancellation timestamp.
+ * This fires when a subscription ends (either immediately or at period end
+ * after `cancel_at_period_end` was set).
+ *
+ * @param event - The Stripe webhook event. `event.data.object` is cast to
+ *                `Stripe.Subscription` (no extended properties needed).
+ *
+ * @example
+ * ```typescript
+ * if (event.type === "customer.subscription.deleted") {
+ *   await handleSubscriptionDeleted(event);
+ * }
+ * ```
+ */
 async function handleSubscriptionDeleted(event: Stripe.Event) {
   const subscription = event.data.object as Stripe.Subscription;
   await cancelSubscription({
     stripeSubscriptionId: subscription.id,
     canceledAt: subscription.canceled_at ? new Date(subscription.canceled_at * 1000) : new Date(),
+    stripeEventId: event.id,
   });
   console.log(`[subscription] ❌ Canceled subscription ${subscription.id}`);
 }
 
+/**
+ * Handles `invoice.payment_succeeded` webhook events from Stripe.
+ *
+ * Extracts the subscription ID from the invoice (via the raw API `subscription`
+ * field or `parent.subscription_details.subscription`), filters to
+ * `billing_reason === 'subscription_cycle'` only (skipping trials, prorations,
+ * and invoice corrections), and renews the subscription via {@link renewSubscription}.
+ *
+ * @param event - The Stripe webhook event. `event.data.object` is cast to
+ *                {@link StripeInvoiceWithSubscription} for type-safe access to
+ *                the raw `subscription` field.
+ *
+ * @example
+ * ```typescript
+ * if (event.type === "invoice.payment_succeeded") {
+ *   await handleInvoicePaymentSucceeded(event);
+ * }
+ * ```
+ */
 async function handleInvoicePaymentSucceeded(event: Stripe.Event) {
-  const invoice = event.data.object as Stripe.Invoice;
-  const subscriptionData = invoice.parent?.subscription_details?.subscription;
-  const subscriptionId = typeof subscriptionData === 'string'
-    ? subscriptionData
-    : subscriptionData?.id;
+  const invoice = event.data.object as StripeInvoiceWithSubscription;
+  const rawSubscription = invoice.subscription ?? invoice.parent?.subscription_details?.subscription;
+  const subscriptionId = typeof rawSubscription === 'object' ? rawSubscription?.id : rawSubscription;
   if (!subscriptionId) {
     return console.error("[subscription] ❌ Missing subscriptionId in invoice");
   }
@@ -135,10 +267,27 @@ async function handleInvoicePaymentSucceeded(event: Stripe.Event) {
     stripeSubscriptionId: subscriptionId,
     stripeInvoiceId: invoice.id,
     currentPeriodEnd: new Date(periodEnd * 1000),
+    stripeEventId: event.id,
   });
   console.log(`[subscription] 💳 Renewed subscription ${subscriptionId}`);
 }
 
+/**
+ * Handles `invoice.payment_failed` webhook events from Stripe.
+ *
+ * Extracts the subscription ID from the invoice's `parent.subscription_details`,
+ * then updates the local subscription status to `past_due` so downstream
+ * logic (e.g. dunning emails, access revocation) can react.
+ *
+ * @param event - The Stripe webhook event with a failed invoice
+ *
+ * @example
+ * ```typescript
+ * if (event.type === "invoice.payment_failed") {
+ *   await handleInvoicePaymentFailed(event);
+ * }
+ * ```
+ */
 async function handleInvoicePaymentFailed(event: Stripe.Event) {
   const invoice = event.data.object as Stripe.Invoice;
   const subscriptionData = invoice.parent?.subscription_details?.subscription;
@@ -151,12 +300,43 @@ async function handleInvoicePaymentFailed(event: Stripe.Event) {
   console.log(`[subscription] ❌ Payment failed for subscription ${subscriptionId}`);
 }
 
+/**
+ * Handles `customer.subscription.trial_will_end` webhook events from Stripe.
+ *
+ * Delegates to {@link handleTrialWillEnd} which handles trial-expiry notifications
+ * (e.g. sending reminders). Stripe fires this 3 days before the trial ends.
+ *
+ * @param event - The Stripe webhook event. `event.data.object` is cast to
+ *                `Stripe.Subscription`.
+ *
+ * @example
+ * ```typescript
+ * if (event.type === "customer.subscription.trial_will_end") {
+ *   await handleTrialWillEndEvent(event);
+ * }
+ * ```
+ */
 async function handleTrialWillEndEvent(event: Stripe.Event) {
   const subscription = event.data.object as Stripe.Subscription;
   await handleTrialWillEnd(subscription.id);
   console.log(`[subscription] ⏰ Trial ending soon for subscription ${subscription.id}`);
 }
 
+/**
+ * GET /credit-packs
+ *
+ * Returns the list of available credit packs for purchase. Strips internal
+ * fields (e.g. Stripe API keys) and exposes only frontend-safe metadata.
+ *
+ * @route GET /api/payments/credit-packs
+ * @returns {Object[]} Array of credit packs with id, title, credits, priceUSD, etc.
+ *
+ * @example
+ * ```typescript
+ * // Response:
+ * [{ id: "basic", title: "Basic Pack", credits: 100, priceUSD: 9.99, ... }]
+ * ```
+ */
 router.get("/credit-packs", async (c) => {
   try {
     const safeCreditPacks = CREDIT_PACKS.map(pack => ({
@@ -177,6 +357,28 @@ router.get("/credit-packs", async (c) => {
   }
 });
 
+/**
+ * POST /create-checkout-session
+ *
+ * Creates a Stripe Checkout Session for a one-time credit pack purchase.
+ * Validates the pack ID, enforces a 10-second rate limit per user, constructs
+ * safe return URLs (with origin validation for `returnUrl`), and returns the
+ * checkout URL to the frontend.
+ *
+ * @route POST /api/payments/create-checkout-session
+ * @auth required
+ * @body {string} packId - ID of the credit pack to purchase
+ * @body {string} [successPath] - Fallback success redirect path
+ * @body {string} [cancelPath] - Fallback cancel redirect path
+ * @body {string} [returnUrl] - Fully-qualified return URL (cross-origin rejected)
+ * @returns {{ url: string, sessionId: string }} Stripe Checkout Session URL
+ *
+ * @example
+ * ```typescript
+ * // Request body: { packId: "premium_1000", returnUrl: "https://app.example.com/pricing" }
+ * // Response: { url: "https://checkout.stripe.com/...", sessionId: "cs_test_..." }
+ * ```
+ */
 router.post("/create-checkout-session", requireAuth, async (c) => {
   try {
     const { packId, successPath, cancelPath, returnUrl } = c.get("body");
@@ -235,6 +437,26 @@ router.post("/create-checkout-session", requireAuth, async (c) => {
   }
 });
 
+/**
+ * POST /create-subscription-checkout
+ *
+ * Creates a Stripe Checkout Session for a recurring VIP subscription.
+ * Verifies the user does not already have an active subscription, creates a
+ * Stripe customer if none exists, and configures the session in `subscription`
+ * mode with the VIP price ID. Enforces a 10-second rate limit.
+ *
+ * @route POST /api/payments/create-subscription-checkout
+ * @auth required
+ * @body {string} [successPath] - Fallback success redirect path
+ * @body {string} [cancelPath] - Fallback cancel redirect path
+ * @body {string} [returnUrl] - Fully-qualified return URL (cross-origin rejected)
+ * @returns {{ url: string, sessionId: string }} Stripe Checkout Session URL
+ *
+ * @example
+ * ```typescript
+ * // Response: { url: "https://checkout.stripe.com/...", sessionId: "cs_test_..." }
+ * ```
+ */
 router.post("/create-subscription-checkout", requireAuth, async (c) => {
   try {
     const { successPath, cancelPath, returnUrl } = c.get("body");
@@ -307,6 +529,21 @@ router.post("/create-subscription-checkout", requireAuth, async (c) => {
   }
 });
 
+/**
+ * GET /subscription/trial-eligibility
+ *
+ * Checks whether the authenticated user is eligible for a free trial
+ * based on past subscription and trial history.
+ *
+ * @route GET /api/payments/subscription/trial-eligibility
+ * @auth required
+ * @returns {{ eligible: boolean }} Whether the user can start a trial
+ *
+ * @example
+ * ```typescript
+ * // Response: { eligible: true }
+ * ```
+ */
 router.get("/subscription/trial-eligibility", requireAuth, async (c) => {
   try {
     const userId = c.get("user")!.id;
@@ -317,6 +554,27 @@ router.get("/subscription/trial-eligibility", requireAuth, async (c) => {
   }
 });
 
+/**
+ * POST /create-trial-checkout-session
+ *
+ * Creates a Stripe Checkout Session for a free-trial VIP subscription.
+ * Validates that trials are globally enabled, the user is eligible, and
+ * enforces a 10-second rate limit. Creates a Stripe customer if needed
+ * and configures the session with `trial_period_days` and
+ * `trial_settings.end_behavior`.
+ *
+ * @route POST /api/payments/create-trial-checkout-session
+ * @auth required
+ * @body {string} [successPath] - Fallback success redirect path
+ * @body {string} [cancelPath] - Fallback cancel redirect path
+ * @body {string} [returnUrl] - Fully-qualified return URL (cross-origin rejected)
+ * @returns {{ url: string, sessionId: string }} Stripe Checkout Session URL
+ *
+ * @example
+ * ```typescript
+ * // Response: { url: "https://checkout.stripe.com/...", sessionId: "cs_test_..." }
+ * ```
+ */
 router.post("/create-trial-checkout-session", requireAuth, async (c) => {
   const LOG_TAG = '[trial-checkout]';
   try {
@@ -432,6 +690,26 @@ router.post("/create-trial-checkout-session", requireAuth, async (c) => {
   }
 });
 
+/**
+ * GET /subscription
+ *
+ * Returns the authenticated user's active subscription details (if any).
+ * Joins `subscriptions` with `users` to fetch the current subscription record.
+ * Only returns data for `active` or `trialing` statuses. If the user is not
+ * authenticated, returns a null subscription (no error).
+ *
+ * @route GET /api/payments/subscription
+ * @auth optional
+ * @returns {{ hasActiveSubscription: boolean, subscription: Object|null }}
+ *
+ * @example
+ * ```typescript
+ * // Response (authenticated, active):
+ * { hasActiveSubscription: true, subscription: { id: 1, status: "active", ... } }
+ * // Response (no auth or no active sub):
+ * { hasActiveSubscription: false, subscription: null }
+ * ```
+ */
 router.get("/subscription", optionalAuth, async (c) => {
   try {
     const userId = c.get("userId");
@@ -480,6 +758,32 @@ router.get("/subscription", optionalAuth, async (c) => {
   }
 });
 
+/**
+ * POST /stripe/webhook
+ *
+ * Main Stripe webhook endpoint. Verifies the signature, deduplicates via
+ * `webhookDeliveries` table, and dispatches to typed handler functions:
+ *
+ * - `checkout.session.completed` (payment mode) → awards purchased credits + optional first-purchase bonus
+ * - `charge.refunded` → prorates credit clawback
+ * - `customer.subscription.created` → persists new subscription
+ * - `customer.subscription.updated` → syncs subscription status
+ * - `customer.subscription.deleted` → marks subscription canceled
+ * - `customer.subscription.trial_will_end` → triggers trial-end notification
+ * - `invoice.payment_succeeded` → renews subscription, grants monthly credits
+ * - `invoice.payment_failed` → marks subscription past_due
+ *
+ * Applies a global rate limit of 300 requests per 60 seconds.
+ *
+ * @route POST /api/payments/stripe/webhook
+ * @returns {{ received: boolean, duplicate?: boolean }}
+ *
+ * @example
+ * ```typescript
+ * // Response: { received: true }
+ * // Duplicate: { received: true, duplicate: true }
+ * ```
+ */
 router.post("/stripe/webhook", async (c) => {
   const webhookRateLimit = await checkRateLimit('stripe-webhook-global', { maxRequests: 300, windowSeconds: 60 });
   if (!webhookRateLimit.allowed) {
@@ -678,6 +982,28 @@ router.post("/stripe/webhook", async (c) => {
   }
 });
 
+/**
+ * POST /consume-credits
+ *
+ * Consumes credits from the authenticated user's balance for a paid action.
+ * Supports idempotency keys to prevent duplicate charges. Validates the
+ * `costKey` against the configured `CREDIT_COSTS` map. Applies a rate limit
+ * of 60 requests per 60 seconds per user.
+ *
+ * @route POST /api/payments/consume-credits
+ * @auth required
+ * @body {string} costKey - The credit cost key (must exist in CREDIT_COSTS)
+ * @body {string} [idempotencyKey] - Unique key to prevent duplicate consumption
+ * @body {string} [context] - Context string for the credit usage record
+ * @body {Object} [metadata] - Arbitrary metadata attached to the transaction
+ * @returns {{ success: boolean, creditsConsumed: number, remainingCredits: number }}
+ *
+ * @example
+ * ```typescript
+ * // Request: { costKey: "image_generation", idempotencyKey: "uuid-123" }
+ * // Response: { success: true, creditsConsumed: 10, remainingCredits: 90 }
+ * ```
+ */
 router.post("/consume-credits", requireAuth, async (c) => {
   try {
     const { costKey, idempotencyKey, context, metadata } = c.get("body");
@@ -727,6 +1053,34 @@ router.post("/consume-credits", requireAuth, async (c) => {
   }
 });
 
+/**
+ * GET /transactions
+ *
+ * Returns the authenticated user's transaction history with pagination,
+ * optional type/date filtering, and a summary aggregating totals.
+ *
+ * Filters: `type` (purchase|usage|refund|reward), `startDate`, `endDate`.
+ * Pagination: `limit` (default 50) and `offset` (default 0).
+ *
+ * @route GET /api/payments/transactions
+ * @auth required
+ * @query {string} [limit=50] - Maximum number of transactions per page
+ * @query {string} [offset=0] - Pagination offset
+ * @query {string} [type] - Filter by transaction type
+ * @query {string} [startDate] - Filter by start date (ISO string)
+ * @query {string} [endDate] - Filter by end date (ISO string)
+ * @returns {Object} Paginated response with `transactions` array and `summary`
+ *
+ * @example
+ * ```typescript
+ * // Response:
+ * {
+ *   transactions: [{ id: 1, type: "purchase", credits: 100, ... }],
+ *   pagination: { page: 1, limit: 50, total: 1 },
+ *   summary: { totalCreditsPurchased: 100, currentBalance: 200, ... }
+ * }
+ * ```
+ */
 router.get("/transactions", requireAuth, async (c) => {
   try {
     const userId = c.get("userId")!;
@@ -777,6 +1131,20 @@ router.get("/transactions", requireAuth, async (c) => {
   }
 });
 
+/**
+ * GET /subscription-plans
+ *
+ * Returns the available subscription plan(s) with their benefits.
+ * Currently exposes a single VIP plan configured via `VIP_SUBSCRIPTION`.
+ *
+ * @route GET /api/payments/subscription-plans
+ * @returns {{ plans: Array<{ priceId: string, benefits: string[], ... }> }}
+ *
+ * @example
+ * ```typescript
+ * // Response: { plans: [{ priceId: "price_xxx", benefits: ["VIP badge", ...] }] }
+ * ```
+ */
 router.get("/subscription-plans", async (c) => {
   try {
     return c.json({ plans: [{ ...VIP_SUBSCRIPTION, benefits: ["VIP badge", "2x check-in bonus", `+${VIP_BENEFITS.monthlyCredits} monthly credits`] }] });
@@ -785,6 +1153,23 @@ router.get("/subscription-plans", async (c) => {
   }
 });
 
+/**
+ * POST /subscription/cancel
+ *
+ * Cancels an active or trialing VIP subscription at period end.
+ * Updates Stripe (sets `cancel_at_period_end`) and syncs the local database.
+ * Does NOT immediately revoke access — the subscription remains active until
+ * the current period ends.
+ *
+ * @route POST /api/payments/subscription/cancel
+ * @auth required
+ * @returns {{ success: boolean, message: string }}
+ *
+ * @example
+ * ```typescript
+ * // Response: { success: true, message: "Subscription will be canceled at period end" }
+ * ```
+ */
 router.post("/subscription/cancel", requireAuth, async (c) => {
   try {
     const userId = c.get("user")!.id;
@@ -805,6 +1190,24 @@ router.post("/subscription/cancel", requireAuth, async (c) => {
   }
 });
 
+/**
+ * GET /subscription/portal
+ *
+ * Creates a Stripe Customer Portal session so the user can manage their
+ * subscription (upgrade, cancel, update payment method) directly in Stripe's
+ * hosted UI. Looks up the Stripe customer ID from the subscription table
+ * first, falling back to the user record.
+ *
+ * @route GET /api/payments/subscription/portal
+ * @auth required
+ * @query {string} [returnUrl] - Custom return URL after portal (must be same origin)
+ * @returns {{ url: string }} Stripe Customer Portal URL
+ *
+ * @example
+ * ```typescript
+ * // Response: { url: "https://billing.stripe.com/..." }
+ * ```
+ */
 router.get("/subscription/portal", requireAuth, async (c) => {
   try {
     const userId = c.get("user")!.id;

@@ -86,6 +86,8 @@ export async function createSubscription(params: {
   isTrial?: boolean;
   /** Trial end date — required when isTrial is true. See VIP_FREE_TRIAL_ROADMAP.md */
   trialEnd?: Date | null;
+  /** Stripe event ID for webhook idempotency tracking */
+  stripeEventId?: string;
 }): Promise<void> {
   const isTrial = params.isTrial ?? false;
 
@@ -138,6 +140,7 @@ export async function createSubscription(params: {
         userId: params.userId,
         type: isTrial ? 'trial_started' : 'activation',
         creditsAllocated: VIP_BENEFITS.monthlyCredits,
+        stripeEventId: params.stripeEventId ?? null,
       });
     });
   } catch (error) {
@@ -227,6 +230,7 @@ export async function renewSubscription(params: {
   stripeSubscriptionId: string;
   stripeInvoiceId: string;
   currentPeriodEnd: Date;
+  stripeEventId?: string;
 }): Promise<void> {
   try {
     await dbWrite.transaction(async (tx) => {
@@ -272,6 +276,7 @@ export async function renewSubscription(params: {
         type: 'renewal',
         creditsAllocated: VIP_BENEFITS.monthlyCredits,
         stripeInvoiceId: params.stripeInvoiceId,
+        stripeEventId: params.stripeEventId ?? null,
       });
     });
   } catch (error) {
@@ -326,6 +331,7 @@ export async function renewSubscription(params: {
 export async function cancelSubscription(params: {
   stripeSubscriptionId: string;
   canceledAt: Date;
+  stripeEventId?: string;
 }): Promise<void> {
   await dbWrite.transaction(async (tx) => {
     // Get subscription
@@ -373,7 +379,8 @@ export async function cancelSubscription(params: {
         subscriptionId: subscription.id,
         userId: subscription.userId,
         type: 'trial_expired',
-        creditsAllocated: 0, // no credits granted by this event — see metadata for the balance snapshot
+        creditsAllocated: 0,
+        stripeEventId: params.stripeEventId ?? null,
         metadata: {
           creditsRemainingAtCancellation: user?.credits ?? null,
           trialEnd: subscription.trialEnd,

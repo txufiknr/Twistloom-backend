@@ -34,7 +34,7 @@
 - Xendit's hosted Checkout UI and Invoice API follow the same **server-generates-URL → client-redirects → webhook** flow as Stripe Checkout, so the frontend redirect/return-url contract (`?payment=success` / `?subscription=success`) works unchanged.
 
 **What makes it non-trivial:**
-- **One thing this document doesn't address, worth resolving before anything else here**: whether Twistloom's business entity is registered in a country Stripe fully supports. Stripe has Indonesia in a restricted "Preview" access tier, not full support (limited Connect/subscription functionality, gated onboarding) — this came up earlier reviewing the payment strategy generally. If the entity is Indonesia-registered, this isn't just a reason to add Xendit alongside Stripe — Stripe's own side of this architecture might have its own constraints worth confirming don't already exist today, independent of anything Xendit-related.
+- **Pre-requisite: Xendit requires an Indonesian-registered business entity.** Xendit operates under Indonesia's payment system regulations (PBI/BI licensing) and onboards merchants against an Indonesian business license (NIB/SIUP/Akta). If Twistloom's entity is not Indonesia-registered, Xendit will not approve the account — this is a hard blocker, not an architectural decision. Resolve this before any implementation work. Separately, Stripe has Indonesia in a restricted "Preview" access tier (limited Connect/subscription functionality, gated onboarding) — if the entity is Indonesia-registered, Stripe's own side of this also needs current-accuracy confirmation before assuming the existing Stripe integration is fully viable going forward.
 - **Schema renaming:** Current column names (`stripeCustomerId`, `stripeSubscriptionId`, etc.) are hardcoded across the entire backend. A migration is needed to make them gateway-agnostic + a `gateway` discriminator column.
 - **Service layer refactor:** `createSubscription()` / `renewSubscription()` / `cancelSubscription()` in `src/services/subscription.ts` take Stripe-specific parameters. These need a gateway abstraction layer — either strategy pattern or a thin switch.
 - **Idempotency needs provider scoping.** `stripeEventId` uniqueness works because Stripe event IDs are globally unique. Xendit event IDs are also unique *per provider*, but a Stripe event ID could theoretically collide with a Xendit one. The unique constraint must become `(provider, provider_event_id)` composite.
@@ -110,7 +110,7 @@ graph TD
 | `transactions` | `payment_intent_id` | ✅ Named after Stripe concept | UNIQUE — idempotency + refund lookup |
 | `transactions` | `stripe_event_id` | ✅ Named after Stripe | UNIQUE — idempotency |
 | `subscriptionTransactions` | `stripe_invoice_id` | ✅ Named after Stripe | UNIQUE — renewal idempotency |
-| `subscriptionTransactions` | `stripe_event_id` | ✅ Named after Stripe | UNIQUE — subscription event idempotency |
+| `subscriptionTransactions` | `stripe_event_id` | ✅ Named after Stripe | ⚠️ **UNIQUE but never written** — see §3.10 |
 | `webhookDeliveries` | `event_id` | ⚠️ Generic name | Already gateway-agnostic by name |
 | (missing) | No `gateway` column | ❌ No discriminator | Can't tell which provider a row came from |
 
@@ -179,6 +179,30 @@ These don't need to change. The webhook is what writes to the DB, regardless of 
 **Severity: Critical** — documented in `PAYMENTS_ARCHITECTURE_BACKEND.md` §12.1. The `paymentIntentId` and `stripeEventId` fields are passed as options but **never written into the SQL insert**. This means the unique-constraint idempotency backstop (Layer 3) is non-functional for credit-pack purchases. Need to read the relevant code to confirm the exact state.
 
 This must be fixed during the gateway-agnostic migration since we'll be touching the same code paths.
+
+### 3.9 Backend issue: `handleInvoicePaymentSucceeded()` uses invalid `invoice.parent` property
+
+**Severity: Critical** — `src/routes/payments.ts:119-122` reads:
+```typescript
+const subscriptionData = invoice.parent?.subscription_details?.subscription;
+```
+
+`invoice.parent` is **not a valid Stripe Invoice property**. This means every `invoice.payment_succeeded` webhook fails to find the subscription ID and logs `"[subscription] ❌ Missing subscriptionId in invoice"`. The correct accessor is `invoice.subscription` (a string containing the subscription ID).
+
+This is a **pre-existing bug** in the Stripe-only code. It must be fixed before or during Phase 1 regardless of the Xendit work — without it, `renewSubscription()` (and the monthly credit grant it triggers) never fires for any subscription.
+
+**Fix:** Replace with:
+```typescript
+const subscriptionId = invoice.subscription;
+```
+
+### 3.10 Backend issue: `subscriptionTransactions.stripeEventId` never written
+
+**Severity: Medium** — The column `stripe_event_id` exists in the `subscription_transactions` schema (schema.ts:1452) with a `UNIQUE` constraint, but no code writes to it. `createSubscription()`, `renewSubscription()`, and `cancelSubscription()` in `src/services/subscription.ts` all skip this field during insert. This means:
+- The `UNIQUE` constraint on `stripeEventId` (soon `providerEventId`) is always `NULL`-to-`NULL`, which Postgres considers distinct for uniqueness purposes — so it's not preventing anything, but it's also silently violating the intended design.
+- Any future code that expects this column to be populated for idempotency (e.g., deduping `customer.subscription.created` redeliveries) has a false sense of security.
+
+Either write to it or drop it. Recommended: write `event.id` from the Stripe webhook event into this column on `createSubscription()` and `renewSubscription()` to match the original design intent.
 
 ---
 
@@ -266,11 +290,26 @@ gateway: text("gateway").notNull().default('stripe'),
 
 ### 4.4 Migration Script (Drizzle)
 
+⚠ **Constraint ordering:** Before adding new columns, the old unique constraints must be dropped. Postgres will not allow two columns named `stripe_subscription_id` and `provider_subscription_id` if they target the same conceptual uniqueness. Also, any Drizzle migration tool must be told about the constraint name changes — Drizzle Kit may try to drop-and-recreate the table if unique constraint names change unexpectedly.
+
 ```typescript
 // drizzle/stripe-xendit-migration.ts
 import { sql } from 'drizzle-orm';
 
-// Phase 1: Add new columns
+// Phase 1: Drop old unique constraints (required before dual-write)
+await dbWrite.execute(sql`
+  -- subscriptions
+  ALTER TABLE subscriptions DROP CONSTRAINT IF EXISTS subscriptions_stripe_subscription_unique;
+  -- transactions
+  ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_payment_intent_unique;
+  ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_stripe_event_unique;
+  -- subscription_transactions
+  ALTER TABLE subscription_transactions DROP CONSTRAINT IF EXISTS subscription_transactions_invoice_unique;
+  -- webhook_deliveries
+  ALTER TABLE webhook_deliveries DROP CONSTRAINT IF EXISTS webhook_deliveries_event_unique;
+`);
+
+// Phase 1: Add new columns + backfill
 await dbWrite.execute(sql`
   ALTER TABLE users ADD COLUMN IF NOT EXISTS customer_id text;
   UPDATE users SET customer_id = stripe_customer_id WHERE stripe_customer_id IS NOT NULL;
@@ -288,8 +327,24 @@ await dbWrite.execute(sql`
     provider_price_id = stripe_price_id;
 `);
 
+// Phase 1: Add new composite unique constraints
+await dbWrite.execute(sql`
+  CREATE UNIQUE INDEX IF NOT EXISTS subscriptions_provider_unique
+    ON subscriptions (gateway, provider_subscription_id);
+  CREATE UNIQUE INDEX IF NOT EXISTS transactions_provider_payment_unique
+    ON transactions (gateway, provider_payment_id) WHERE provider_payment_id IS NOT NULL;
+  CREATE UNIQUE INDEX IF NOT EXISTS transactions_provider_event_unique
+    ON transactions (gateway, provider_event_id) WHERE provider_event_id IS NOT NULL;
+  CREATE UNIQUE INDEX IF NOT EXISTS sub_tx_provider_invoice_unique
+    ON subscription_transactions (gateway, provider_invoice_id) WHERE provider_invoice_id IS NOT NULL;
+  CREATE UNIQUE INDEX IF NOT EXISTS webhook_deliveries_gateway_event_unique
+    ON webhook_deliveries (gateway, event_id);
+`);
+
 // ... same pattern for other tables
 ```
+
+**Note:** Partial unique indexes (with `WHERE provider_payment_id IS NOT NULL`) are used because the nullable columns need to allow multiple NULLs — Postgres' standard unique constraint treats NULLs as distinct, so `(gateway, NULL)` rows won't collide, but a partial unique index makes the intent explicit and avoids edge cases with older Postgres versions.
 
 ---
 
@@ -674,7 +729,21 @@ Stripe webhook `customer.subscription.created` → `handleSubscriptionCreated()`
 
 ### 7.2 Target Flow (Gateway-Agnostic)
 
-Both Stripe and Xendit webhook handlers call the same **abstracted** `createSubscription()` with `gateway` field:
+**First, fix the pre-existing `invoice.parent` bug** in `handleInvoicePaymentSucceeded()` (src/routes/payments.ts:119-122). The current code reads `invoice.parent?.subscription_details?.subscription` which is not a valid Stripe API property. Replace with the standard accessor:
+
+```typescript
+// BEFORE (broken):
+const subscriptionData = invoice.parent?.subscription_details?.subscription;
+
+// AFTER (fixed):
+const subscriptionId = invoice.subscription as string;
+if (!subscriptionId) {
+  return console.error("[subscription] ❌ Missing subscriptionId in invoice");
+}
+// Remove the two-step extraction — just use invoice.subscription directly
+```
+
+Both Stripe and Xendit webhook handlers then call the same **abstracted** `createSubscription()` with `gateway` field:
 
 ```typescript
 // Stripe webhook handler maps to generic params
@@ -1136,9 +1205,97 @@ The official Xendit Node.js SDK (`xendit-node`) is well-maintained but research 
 
 **Recommendation:** Use `xendit-node` SDK for subscription management (complex API), raw `fetch()` for simpler Invoice API calls. Or use raw `fetch()` for everything to minimize dependencies. Both work.
 
+### Q9: Must-fix pre-existing bugs
+
+Confirmed by reading the codebase:
+
+- **`invoice.parent` bug** (`src/routes/payments.ts:119-122`): `handleInvoicePaymentSucceeded()` reads `invoice.parent?.subscription_details?.subscription` which is not a valid Stripe Invoice property. This silently breaks every renewal credit grant. Fix: use `invoice.subscription` directly. This bug exists today in production (Stripe-only) — it is NOT introduced by the Xendit work and should be fixed independent of this roadmap.
+- **`awardCredits()` drops `paymentIntentId`/`stripeEventId`** (`src/services/credits.ts:545`): Confirmed. The fields are destructured at line 559 but never included in the `transactions` insert at lines 576-584. The unique-constraint idempotency backstop for credit-pack purchases is non-functional as a result.
+- **`subscriptionTransactions.stripeEventId` never written** (`src/db/schema.ts:1452`): Column exists with a `UNIQUE` constraint but no code populates it. Either write the Stripe event ID on `createSubscription()`/`renewSubscription()` (recommended) or drop the column.
+
+### Q10: Xendit business registration prerequisite
+
+Xendit operates under Indonesia's payment system regulations and can only onboard merchants that have an Indonesian-registered business entity. This is not an architectural decision — it is a binary gate.
+
+#### Scenario A: Twistloom already has an Indonesian entity (PT/CV with NIB and Akta)
+
+- **Timeline impact:** Minimal. Xendit merchant onboarding takes 1-3 business days for standard KYC/AML checks, provided the entity documents are ready (NIB, NPWP, Akta Pendirian, director KTP/Paspor).
+- **Next step:** Start Xendit sandbox account immediately. Production approval is separate but can run in parallel.
+- **Stripe side:** Still confirm that Stripe's current Indonesia "Preview" tier does not limit your existing flows (checkout, subscriptions, webhooks). If it does, consider whether Stripe or Xendit becomes the primary gateway going forward.
+
+#### Scenario B: Twistloom does NOT have an Indonesian entity but plans to register one
+
+- **Timeline impact:** +6-12 weeks minimum. Indonesian company registration (PT) involves:
+  - Name reservation & Deed of Establishment (Akta) via notary — 1-2 weeks
+  - Ministry of Law & Human Rights approval — 1-3 weeks
+  - NIB (Business Identification Number) via OSS — 1 week
+  - NPWP, bank account, domicile letter — 1-2 weeks
+  - Xendit merchant onboarding — 1-3 days after entity docs ready
+- **Recommendation:** Start entity registration now, design the architecture and begin coding the gateway-agnostic schema/service layer in parallel (Phases 0-1 don't need Xendit). Only Phase 2 (Xendit API integration) blocks on the entity.
+- **Risk:** If registration fails or is delayed, you have the gateway-agnostic foundation deployed for free — Stripe works exactly as before.
+
+#### Scenario C: Twistloom does NOT have an Indonesian entity and does not plan to register one
+
+- **Xendit is not an option.** The entire Xendit side of this roadmap is non-viable.
+- **Fallback:** Offer Indonesian users USD pricing via Stripe (which works globally). Accept that:
+  - Users pay in USD (with possible FX fees from their bank/card issuer)
+  - No local payment methods (GoPay, OVO, QRIS, Virtual Accounts)
+  - Stripe's Indonesia "Preview" tier constraints still apply on your side
+- **Alternative fallback:** If Stripe's Indonesia Preview tier blocks your existing flows, consider a different payment aggregator that serves Indonesia cross-border (e.g., Paddle, Lemon Squeezy) as a Stripe complement instead of Xendit.
+
+### Q11: Xendit subscription architecture — how to handle the 2-step tokenization flow
+
+Xendit subscriptions are architecturally different from Stripe's. Stripe gives you a single Checkout URL that handles everything (payment method collection, trial, conversion, recurring charges). Xendit requires a **two-step flow**: tokenize a payment method first, then create a recurring plan that references that token. No single redirect URL exists.
+
+#### Scenario A (Recommended): Defer Xendit subscriptions entirely — credit packs only in v1
+
+- **What ships:** Xendit Invoice API for one-time credit pack purchases (Observer, Investigator, Mastermind). Works with ALL Xendit payment channels (Virtual Accounts, e-wallets, QRIS, cards) because Invoice API handles everything in one redirect.
+- **What does NOT ship:** Xendit recurring subscriptions. VIP subscriptions remain Stripe-only.
+- **UX impact:** Indonesian users buy credit packs via GoPay/OVO/BCA etc., but must use Stripe (card only) for VIP subscription. This is slightly fragmented but functional.
+- **Code impact:** Only need `POST /v2/invoices` (one API call) and `invoice.paid` webhook handler. No tokenization, no recurring plan management, no two-step flow.
+- **Timeline impact:** Saves ~3-5 days of backend work and eliminates the highest-risk integration point.
+- **When to revisit:** After credit packs are live and stable, design Xendit subscriptions properly against the confirmed live API (not search results). Add as a v2 milestone.
+
+#### Scenario B: Build Xendit subscriptions v1 with card-only auto-debit
+
+- **What it means:** Xendit subscriptions only offered for channels that support recurring auto-debit: `CREDIT_CARD` and some e-wallets (OVO/DANA have limited recurring support). Virtual Accounts, QRIS, and retail outlets are excluded from subscription payment.
+- **Architecture:** One-step Payment Method page (Xendit's hosted page that tokenizes a card), then backend creates a recurring plan on callback. Closer to Stripe's flow but with a separate tokenization redirect.
+- **UX:** User clicks "Subscribe with Xendit" → enters card on Xendit-hosted page → redirected back → subscription active. No second redirect needed since the card tokenization and plan creation happen sequentially.
+- **Trade-off:** Significant portion of Indonesian users prefer VA/QRIS for subscriptions. Card-only excludes them. Users who want non-card channels must use Stripe (card) or buy credit packs instead.
+- **Timeline impact:** +4-6 days over Scenario A for the tokenization flow + recurring plan management + webhook handlers.
+- **Risk:** Xendit's recurring API is less documented than Invoice API. Plan for 2-3 days of buffer for debugging webhook event names and plan lifecycle quirks (the roadmap §6.2 flags this honestly — event names are not yet confirmed).
+
+#### Scenario C: Build Xendit subscriptions v1 with full channel support (including non-auto-debit)
+
+- **What it means:** Allow Virtual Accounts, QRIS, and retail channels for subscriptions. Since these can't auto-debit, Xendit sends a new payment link each billing cycle. The user must manually pay each month.
+- **Architecture:** No recurring plan at all (since non-auto-debit channels can't use them). Instead, a cron job or webhook-triggered flow generates a new Xendit Invoice each billing period and notifies the user to pay.
+- **UX:** This is NOT a true subscription. It's a manual-recurring invoice. Users get a notification/email each month saying "Your VIP subscription invoice is ready — click to pay." If they don't pay within the invoice duration (default 24h-48h), the invoice expires and VIP lapses.
+- **Trade-off:** Works with all payment channels but is significantly worse UX than Stripe's set-and-forget model. Cancelation risk is high (users forget to pay).
+- **Timeline impact:** +8-12 days over Scenario A. You're essentially building a subscription-like layer on top of a one-time invoicing system.
+- **Recommendation:** Do NOT do this for v1. The UX is poor and the engineering effort is high. If there is strong demand for non-card subscriptions, revisit in v2 with a better approach (e.g., mandatory auto-debit via card/ewallet only, or partner with a local payment gateway that supports VA mandates).
+
+### Q12: Vercel serverless timeout for Xendit webhook processing
+
+On Vercel's serverless plan (default 10s timeout, max 60s on Pro), the Xendit webhook handler must be efficient. The Invoice API webhook is lightweight (just verify → credit grant), but if the handler ever needs to:
+- Make follow-up API calls to Xendit (e.g., fetch invoice details not in the webhook payload)
+- Retry failed credit allocations synchronously
+
+It may hit the timeout. The Stripe webhook handler already has this concern, but the Xendit handler should follow the same pattern: **quick ack, async processing** via an internal job queue if needed.
+
+**Recommendation:** Keep the Xendit webhook handler stateless and fast — same pattern as the existing Stripe handler. If processing becomes complex, move the work to a background job.
+
 ---
 
 ## 12. Implementation Sequencing
+
+### Phase 0: Pre-requisite & Bugfix Sprint (Days 0-1)
+
+| Step | What | Who |
+|------|------|-----|
+| 0.1 | Confirm Xendit business registration (Indonesia entity/NIB) — blocker | Product |
+| 0.2 | Fix `handleInvoicePaymentSucceeded()` `invoice.parent` → `invoice.subscription` | Backend |
+| 0.3 | Fix `awardCredits()` to actually write `paymentIntentId`/`stripeEventId` (or renamed equivalents) | Backend |
+| 0.4 | Fix `subscriptionTransactions.stripeEventId` to be written on create/renew, or drop column | Backend |
 
 ### Phase 1: Foundation (Days 1-3)
 
@@ -1146,31 +1303,33 @@ The official Xendit Node.js SDK (`xendit-node`) is well-maintained but research 
 |------|------|-----|
 | 1.1 | Database migration: add `gateway` column + rename columns | Backend |
 | 1.2 | Update Drizzle ORM schema (`schema.ts`) | Backend |
-| 1.3 | Fix `awardCredits()` paymentIntentId/stripeEventId write bug | Backend |
-| 1.4 | Rename all service function params (subscription.ts, credits.ts) | Backend |
-| 1.5 | Update all route references to use renamed columns | Backend |
+| 1.3 | Rename all service function params (subscription.ts, credits.ts) | Backend |
+| 1.4 | Update all route references to use renamed columns | Backend |
+| 1.5 | Deploy Phase 0 bugfixes and Phase 1 migration to production before any Xendit code | Backend |
 
-### Phase 2: Xendit Backend Integration (Days 3-7)
+### Phase 2: Xendit Backend Integration — Credit Packs Only (Days 3-5)
 
 | Step | What | Who |
 |------|------|-----|
 | 2.1 | Create `src/config/xendit.ts` | Backend |
-| 2.2 | Implement Xendit Invoice API service (credit packs) | Backend |
-| 2.3 | Implement Xendit Subscription API service (subscriptions) | Backend |
-| 2.4 | Implement Xendit webhook handler (`POST /payments/xendit/webhook`) | Backend |
-| 2.5 | Add gateway parameter to checkout route dispatchers | Backend |
-| 2.6 | Update `GET /payments/credit-packs` for gateway-aware response | Backend |
-| 2.7 | Update `GET /payments/subscription` and cancel routes | Backend |
-| 2.8 | Add Xendit env vars to `.env.example` | Backend |
+| 2.2 | Implement Xendit Invoice API service (credit packs — one-time purchase only) | Backend |
+| 2.3 | Implement Xendit webhook handler for `invoice.paid` (`POST /payments/xendit/webhook`) | Backend |
+| 2.4 | Add gateway parameter to `POST /payments/create-checkout-session` dispatcher | Backend |
+| 2.5 | Update `GET /payments/credit-packs` for gateway-aware response | Backend |
+| 2.6 | Add Xendit env vars to `.env.example` | Backend |
 
-### Phase 3: Xendit Backend — Subscription Services (Days 5-8, overlaps P2)
+### Phase 2b: Xendit Backend — Subscriptions (Days 5-8, deferred per Q11)
 
-| Step | What | Who |
-|------|------|-----|
-| 3.1 | `handleXenditPlanActivated()` → calls `createSubscription()` with `gateway: 'xendit'` | Backend |
-| 3.2 | `handleXenditCycleSucceeded()` → calls `renewSubscription()` with `gateway: 'xendit'` | Backend |
-| 3.3 | `handleXenditPlanInactivated()` → calls `cancelSubscription()` with `gateway: 'xendit'` | Backend |
-| 3.4 | `handleXenditInvoicePaid()` → calls `awardCredits()` with `gateway: 'xendit'` | Backend |
+| Step | What | Who | Notes |
+|------|------|-----|-------|
+| 2b.1 | Research and design Xendit 2-step subscription flow (tokenization → recurring plan) | Backend | **Blocking prerequisite** — do not start until the exact API shape is confirmed against Xendit's live docs |
+| 2b.2 | Implement Xendit Subscription API service | Backend | Only after 2b.1 is resolved |
+| 2b.3 | Implement Xendit webhook handlers for plan lifecycle | Backend | Only after 2b.1 is resolved |
+| 2b.4 | Defer to v2 if complexity is too high | — | Alternative per Q11 recommendation |
+
+### Phase 3 (merged into 2b above — removed)
+
+Subscription webhook handlers (`handleXenditPlanActivated`, `handleXenditCycleSucceeded`, etc.) are now part of Phase 2b since the Xendit subscription approach requires a separate design phase. The `handleXenditInvoicePaid()` handler is covered in Phase 2.2 (one-time Invoice API).
 
 ### Phase 4: Frontend Types & API (Days 8-10)
 
@@ -1182,7 +1341,7 @@ The official Xendit Node.js SDK (`xendit-node`) is well-maintained but research 
 | 4.4 | Add `gateway` param to `payments-api.ts` methods | Frontend |
 | 4.5 | Add `gateway` param to `subscription-api.ts` methods | Frontend |
 
-### Phase 5: Frontend Gateway Selector & Pricing (Days 10-14)
+### Phase 5: Frontend Gateway Selector & Pricing (Days 8-12)
 
 | Step | What | Who |
 |------|------|-----|
@@ -1193,19 +1352,21 @@ The official Xendit Node.js SDK (`xendit-node`) is well-maintained but research 
 | 5.5 | Update `DashboardActivitiesClient` — gateway-agnostic amount display | Frontend |
 | 5.6 | Update `VipPricingCard` — gateway-aware price display | Frontend |
 
-### Phase 6: Testing & Polish (Days 14-17)
+### Phase 6: Testing & Polish (Days 12-15)
 
 | Step | What | Who |
 |------|------|-----|
-| 6.1 | Stripe Credit Pack: test with Xendit test mode | Both |
-| 6.2 | Xendit Credit Pack: test Invoice API + webhook | Both |
-| 6.3 | Stripe subscription: regression test | Both |
-| 6.4 | Xendit subscription: test plan creation + cycle | Both |
-| 6.5 | Test gateway selector on frontend with both locales | Frontend |
-| 6.6 | Security review: Xendit webhook validation | Backend |
-| 6.7 | Update architecture docs | Both |
+| 6.1 | Regression: Stripe webhook `invoice.payment_succeeded` with fixed `invoice.subscription` | Backend |
+| 6.2 | Regression: Stripe credit pack purchase idempotency after `awardCredits()` fix | Backend |
+| 6.3 | Stripe Credit Pack: test with Xendit test mode | Both |
+| 6.4 | Xendit Credit Pack: test Invoice API + webhook | Both |
+| 6.5 | Stripe subscription: regression test (including trial → conversion → renewal → cancel) | Both |
+| 6.6 | Xendit subscription: test plan creation + cycle (if Phase 2b is included) | Both |
+| 6.7 | Test gateway selector on frontend with both locales | Frontend |
+| 6.8 | Security review: Xendit webhook validation | Backend |
+| 6.9 | Update architecture docs | Both |
 
-### Phase 7: Soft Launch (Days 17-19)
+### Phase 7: Soft Launch (Days 15-17)
 
 | Step | What |
 |------|------|
@@ -1231,8 +1392,8 @@ The official Xendit Node.js SDK (`xendit-node`) is well-maintained but research 
 | File | Changes |
 |------|---------|
 | `src/db/schema.ts` | Rename columns + `gateway` discriminator |
-| `src/routes/payments.ts` | Gateway parameter in checkout routes, new Xendit webhook route |
-| `src/services/subscription.ts` | Generic param names, `gateway` field |
+| `src/routes/payments.ts` | Fix `invoice.parent` bug; gateway parameter in checkout routes; new Xendit webhook route |
+| `src/services/subscription.ts` | Generic param names, `gateway` field; write `stripeEventId` on create/renew |
 | `src/services/credits.ts` | Fix `awardCredits()` insert (write `paymentIntentId`/`stripeEventId`), add `gateway` |
 | `src/types/subscription.ts` | Generic param types |
 | `src/types/credits.ts` | `CreditPack.gateway`, `AwardCreditsOptions.gateway` |

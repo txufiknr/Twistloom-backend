@@ -556,6 +556,8 @@ export async function awardCredits(
     metadata = {},
     amountCents = null,
     context,
+    paymentIntentId,
+    stripeEventId,
     tx: trx
   } = options;
 
@@ -578,6 +580,8 @@ export async function awardCredits(
       type,
       credits: creditsAmount,
       amountCents,
+      paymentIntentId,
+      stripeEventId,
       context: context ?? notificationType,
       metadata: Object.keys(metadata).length > 0 ? metadata : null,
       createdAt: new Date()

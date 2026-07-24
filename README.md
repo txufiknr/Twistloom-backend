@@ -80,13 +80,13 @@ Twistloom is not merely a branching story platform. It is a multiverse storytell
 
 ## 🔥 Why Hono over Express
 
-The backend was migrated from **Express.js** to **Hono.js** while keeping every feature intact (Stripe payments, NextAuth/Auth.js session verification, Drizzle ORM, Server-Sent Events, and multipart image uploads). The migration is clean: `src/app.ts` now builds a `Hono` app and exports a Vercel serverless handler via `@hono/node-server`'s `getRequestListener` (Node runtime adapter), and local development runs through `@hono/node-server`'s `serve`.
+The backend was migrated from **Express.js** to **Hono.js** while keeping every feature intact (Stripe payments, NextAuth/Auth.js session verification, Drizzle ORM, Server-Sent Events, and multipart image uploads). The app runs on the **Vercel Edge Runtime** via `hono/vercel`'s `handle()` adapter — no Node.js-specific server shim needed in production. Local development uses `@hono/node-server`'s `serve`.
 
 ### Why we switched
 
 - **Runtime freedom.** Hono runs on any JavaScript runtime (Node.js, Bun, Deno, Workers, Vercel Edge) from a single codebase. Express is effectively Node-only, which locked deployment choices in.
-- **Serverless-native.** Hono ships first-class adapters so the same app serves Vercel functions and local `tsx` dev without a custom server shim. We use `@hono/node-server`'s `getRequestListener` (not the Edge `hono/vercel` handler) so the Node runtime's requests are converted into standards-compliant `Request` objects. Express's monolithic `listen()` model fights the short-lived, per-request serverless model.
-- **Performance & cold starts.** Hono's tiny surface and zero-dependency core start faster and use less memory than Express + its middleware chain — critical on Vercel's cold-start-sensitive functions.
+- **Serverless-native.** Hono ships first-class adapters. The same app serves as a Vercel Edge Function (`hono/vercel`) and a local dev server (`@hono/node-server`) without custom shims. Express's monolithic `listen()` model fights the short-lived, per-request serverless model.
+- **Performance & cold starts.** Hono's tiny surface and zero-dependency core start faster and use less memory than Express + its middleware chain — critical on Vercel's cold-start-sensitive Edge Functions.
 - **First-class TypeScript.** Route params, query, body, environment, and middleware bindings are inferred through `AppEnv` (`src/hono/env.ts`), so handlers get a fully typed `c` instead of loosely-typed `req`/`res` augmentation.
 - **Batteries included.** Built-in CORS, streaming/SSE (`hono/streaming`), and `@hono/auth-js` for cookie-based Auth.js verification replaced hand-rolled Express middleware.
 - **Ergonomic helpers.** `c.json()`, `c.req.param()/query()/header()`, and typed `c.get()/c.set()` variables remove the boilerplate of `req.body`/`res.status().json()` and `wrapAsync`.
@@ -101,16 +101,30 @@ The backend was migrated from **Express.js** to **Hono.js** while keeping every 
 
 ### Vercel deployment
 
-The app is deployed as a Vercel Node.js serverless function. `src/app.ts` ends with `export default getRequestListener(app.fetch)` (from `@hono/node-server`), and `vercel.json` rewrites all traffic to that entrypoint. Two settings matter:
+The app is deployed as a **Vercel Edge Function** — the fastest cold-start option on the platform. `src/app.ts` exports `handle(app)` from `hono/vercel` with `export const runtime = "edge"`, and `vercel.json` rewrites all traffic to that entrypoint.
+
+#### Edge Runtime migration
+
+The codebase previously relied on several Node.js-only APIs (`Buffer`, `crypto`, `fs`/`path`, `bcrypt` native addon, `@actions/core`) that blocked Edge Runtime deployment. All 11 blockers have been systematically replaced:
+
+| Blockers Replaced | Edge-Compatible Alternative |
+|-------------------|----------------------------|
+| `@imagekit/nodejs` SDK | ImageKit REST API via `fetch` |
+| `bcrypt` native addon | `bcryptjs` (pure JS, identical API) |
+| `Buffer` (9+ usages) | `Uint8Array`, `TextEncoder`/`TextDecoder`, Web `atob()` |
+| `crypto.createHash` | `crypto.subtle.digest("SHA-256")` (Web Crypto) |
+| `fs`/`path` (constants + ai-image) | `process.env['npm_package_version']`; dynamic `import()` |
+| `@actions/core` `group()` | `edgeGroup.wrap()` with `::group::` markers |
+| `process.uptime()` / `.memoryUsage()` / `.version` | `typeof` guards + `Date.now()` startup timestamp |
+| Stripe default HTTP client | `Stripe.createFetchHttpClient()` |
+| Neon WebSocket (`ws` package) | `neonConfig.webSocketConstructor = globalThis.WebSocket` |
+| `@hono/node-server` entrypoint | `hono/vercel` `handle()` adapter |
+
+#### Configuration
 
 - **Framework Preset → "Hono"** (not "Express"). Vercel's Express preset looks for `import express` at build time; with Express removed, leaving it set breaks the build.
-- **Run on the Node.js runtime (not Edge).** Hono advertises first-class Edge support, and Vercel can run a `hono/vercel` handler on the Edge runtime. This backend, however, depends on **Node-only APIs** that do not exist on the Edge runtime:
-  - `Buffer` — used by the image-upload middleware (`src/middleware/upload.ts`) to read multipart file bytes, and by `ImageKit` uploads.
-  - `node:crypto` and other Node built-ins used across auth, Stripe signature verification, and password hashing.
-  - The `Neon` serverless driver and `@hono/node-server` dev server, which assume a Node environment.
-  - See more on `docs\roadmap\EDGE_RUNTIME_MIGRATION_BLOCKERS.md`
-
-  On Edge, `Buffer` is `undefined`, so the cover-image upload and any `Buffer`-dependent path throw at runtime (`ReferenceError: Buffer is not defined`). Vercel infers the Node.js runtime automatically for the `.ts` entrypoint (it no longer accepts an explicit `@vercel/node` runtime string in `vercel.json` — doing so throws `Function Runtimes must have a valid version`). To guarantee Node, pin the version via `package.json`'s `engines.node` (set to `"20.x"` here); Vercel reads it from Project Settings → General → Node.js Version. `maxDuration` is raised to `60` to accommodate the long-running AI/SSE routes.
+- **No Node.js version pinning needed** — Edge Runtime uses its own V8 isolate, not Node.js. The `maxDuration: 300` (5 min) in `vercel.json` is set explicitly, matching the Fluid Compute default. The active SSE prompt route (`GET /api/books/prompt`) uses streaming for sessions longer than 300s.
+- Local development still runs via `@hono/node-server` (`src/server.ts`) — no changes to the dev workflow.
 
 ## 🚀 Features
 
