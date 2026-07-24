@@ -108,7 +108,7 @@ const router = new Hono<AppEnv>();
 /**
  * Detects a Postgres unique-constraint violation by checking for SQLSTATE 23505.
  * Used to handle concurrent webhook delivery races where duplicate INSERTs may
- * collide on the same `stripeEventId` or `eventId`.
+  * collide on the same `providerEventId` or `eventId`.
  *
  * @param error - The error object thrown by a database operation
  * @returns `true` if the error is a Postgres unique violation
@@ -159,14 +159,15 @@ async function handleSubscriptionCreated(event: Stripe.Event) {
   const priceId = subscription.items.data[0].price.id;
   await createSubscription({
     userId,
-    stripeSubscriptionId: subscription.id,
-    stripeCustomerId: subscription.customer as string,
-    stripePriceId: priceId,
+    gateway: "stripe",
+    providerSubscriptionId: subscription.id,
+    providerCustomerId: subscription.customer as string,
+    providerPriceId: priceId,
     currentPeriodStart: new Date(subscription.current_period_start * 1000),
     currentPeriodEnd: new Date(subscription.current_period_end * 1000),
     isTrial,
     trialEnd,
-    stripeEventId: event.id,
+    providerEventId: event.id,
   });
   console.log(`[subscription] ✅ Created subscription for user ${userId}${isTrial ? " (trial)" : ""}`);
 }
@@ -194,7 +195,8 @@ async function handleSubscriptionUpdated(event: Stripe.Event) {
     return console.error("[subscription] ❌ Invalid subscription object: missing period properties");
   }
   await updateSubscription({
-    stripeSubscriptionId: subscription.id,
+    gateway: "stripe",
+    providerSubscriptionId: subscription.id,
     status: subscription.status,
     currentPeriodEnd: new Date(subscription.current_period_end * 1000),
     cancelAtPeriodEnd: subscription.cancel_at_period_end,
@@ -222,9 +224,10 @@ async function handleSubscriptionUpdated(event: Stripe.Event) {
 async function handleSubscriptionDeleted(event: Stripe.Event) {
   const subscription = event.data.object as Stripe.Subscription;
   await cancelSubscription({
-    stripeSubscriptionId: subscription.id,
+    gateway: "stripe",
+    providerSubscriptionId: subscription.id,
     canceledAt: subscription.canceled_at ? new Date(subscription.canceled_at * 1000) : new Date(),
-    stripeEventId: event.id,
+    providerEventId: event.id,
   });
   console.log(`[subscription] ❌ Canceled subscription ${subscription.id}`);
 }
@@ -264,10 +267,11 @@ async function handleInvoicePaymentSucceeded(event: Stripe.Event) {
     return console.error("[subscription] ❌ Could not determine period end from invoice");
   }
   await renewSubscription({
-    stripeSubscriptionId: subscriptionId,
-    stripeInvoiceId: invoice.id,
+    gateway: "stripe",
+    providerSubscriptionId: subscriptionId,
+    providerInvoiceId: invoice.id,
     currentPeriodEnd: new Date(periodEnd * 1000),
-    stripeEventId: event.id,
+    providerEventId: event.id,
   });
   console.log(`[subscription] 💳 Renewed subscription ${subscriptionId}`);
 }
@@ -294,7 +298,8 @@ async function handleInvoicePaymentFailed(event: Stripe.Event) {
   const subscriptionId = typeof subscriptionData === 'string' ? subscriptionData : subscriptionData?.id;
   if (!subscriptionId) return;
   await updateSubscription({
-    stripeSubscriptionId: subscriptionId,
+    gateway: "stripe",
+    providerSubscriptionId: subscriptionId,
     status: 'past_due',
   });
   console.log(`[subscription] ❌ Payment failed for subscription ${subscriptionId}`);
@@ -498,8 +503,8 @@ router.post("/create-subscription-checkout", requireAuth, async (c) => {
 
     if (!VIP_SUBSCRIPTION.priceId) return cApiError(c, "VIP subscription not configured");
 
-    const [user] = await dbRead.select({ stripeCustomerId: users.stripeCustomerId, email: users.email }).from(users).where(eq(users.userId, userId)).limit(1);
-    let customerId = user?.stripeCustomerId;
+    const [user] = await dbRead.select({ customerId: users.customerId, email: users.email }).from(users).where(eq(users.userId, userId)).limit(1);
+    let customerId = user?.customerId;
     const userEmail = user?.email;
 
     if (!customerId) {
@@ -508,7 +513,7 @@ router.post("/create-subscription-checkout", requireAuth, async (c) => {
         metadata: { userId },
       });
       customerId = customer.id;
-      await dbWrite.update(users).set({ stripeCustomerId: customerId }).where(eq(users.userId, userId));
+      await dbWrite.update(users).set({ customerId }).where(eq(users.userId, userId));
     }
 
     const session = await getStripe().checkout.sessions.create({
@@ -646,21 +651,21 @@ router.post("/create-trial-checkout-session", requireAuth, async (c) => {
     }
     console.log(`${LOG_TAG} ✅ VIP_SUBSCRIPTION.priceId=${VIP_SUBSCRIPTION.priceId}`);
 
-    const [user] = await dbRead.select({ stripeCustomerId: users.stripeCustomerId, email: users.email }).from(users).where(eq(users.userId, userId)).limit(1);
-    let customerId = user?.stripeCustomerId;
+    const [user] = await dbRead.select({ customerId: users.customerId, email: users.email }).from(users).where(eq(users.userId, userId)).limit(1);
+    let customerId = user?.customerId;
     const userEmail = user?.email;
-    console.log(`${LOG_TAG} 📡 User lookup: stripeCustomerId=${customerId || 'null (will create)'}, email=${userEmail}`);
+    console.log(`${LOG_TAG} 📡 User lookup: customerId=${customerId || 'null (will create)'}, email=${userEmail}`);
 
     if (!customerId) {
-      console.log(`${LOG_TAG} 🏦 Creating new Stripe customer for userId=${userId}`);
+      console.log(`${LOG_TAG} 👤 Creating new Stripe customer for userId=${userId}`);
       const customer = await getStripe().customers.create({
         email: userEmail ?? c.get("user")!.email,
         metadata: { userId },
       });
       customerId = customer.id;
       console.log(`${LOG_TAG} ✅ Stripe customer created: id=${customerId}`);
-      await dbWrite.update(users).set({ stripeCustomerId: customerId }).where(eq(users.userId, userId));
-      console.log(`${LOG_TAG} ✅ User updated with stripeCustomerId`);
+      await dbWrite.update(users).set({ customerId }).where(eq(users.userId, userId));
+      console.log(`${LOG_TAG} ✅ User updated with customerId`);
     }
 
     console.log(`${LOG_TAG} 💳 Creating Stripe checkout session...`);
@@ -720,7 +725,8 @@ router.get("/subscription", optionalAuth, async (c) => {
     const subscription = await dbRead
       .select({
         id: subscriptions.id,
-        stripeSubscriptionId: subscriptions.stripeSubscriptionId,
+        gateway: subscriptions.gateway,
+        providerSubscriptionId: subscriptions.providerSubscriptionId,
         status: subscriptions.status,
         currentPeriodStart: subscriptions.currentPeriodStart,
         currentPeriodEnd: subscriptions.currentPeriodEnd,
@@ -743,7 +749,8 @@ router.get("/subscription", optionalAuth, async (c) => {
       hasActiveSubscription: true,
       subscription: {
         id: sub.id,
-        stripeSubscriptionId: sub.stripeSubscriptionId,
+        gateway: sub.gateway,
+        providerSubscriptionId: sub.providerSubscriptionId,
         status: sub.status,
         currentPeriodStart: sub.currentPeriodStart.toISOString(),
         currentPeriodEnd: sub.currentPeriodEnd.toISOString(),
@@ -802,7 +809,7 @@ router.post("/stripe/webhook", async (c) => {
     const rawBody = await c.req.text();
     const event = getStripe().webhooks.constructEvent(rawBody, sig, webhookSecret);
 
-    const existingDelivery = await dbRead.select().from(webhookDeliveries).where(eq(webhookDeliveries.eventId, event.id)).limit(1);
+    const existingDelivery = await dbRead.select().from(webhookDeliveries).where(and(eq(webhookDeliveries.gateway, "stripe"), eq(webhookDeliveries.eventId, event.id))).limit(1);
     if (existingDelivery.length > 0 && existingDelivery[0].status === 'success') {
       console.log(`[stripe] 🔄 Webhook already processed successfully: ${event.id}`);
       return c.json({ received: true, duplicate: true });
@@ -811,6 +818,7 @@ router.post("/stripe/webhook", async (c) => {
     if (existingDelivery.length === 0) {
       try {
         const [deliveryRecord] = await dbWrite.insert(webhookDeliveries).values({
+          gateway: "stripe",
           eventId: event.id,
           eventType: event.type,
           status: 'retrying',
@@ -818,7 +826,7 @@ router.post("/stripe/webhook", async (c) => {
         webhookDeliveryId = deliveryRecord.id;
       } catch (insertError) {
         if (isUniqueViolation(insertError)) {
-          const [dupRecord] = await dbRead.select().from(webhookDeliveries).where(eq(webhookDeliveries.eventId, event.id)).limit(1);
+          const [dupRecord] = await dbRead.select().from(webhookDeliveries).where(and(eq(webhookDeliveries.gateway, "stripe"), eq(webhookDeliveries.eventId, event.id))).limit(1);
           webhookDeliveryId = dupRecord?.id ?? null;
           console.log(`[stripe] 🔄 Concurrent delivery race resolved at webhookDelivery INSERT: ${event.id}`);
         } else {
@@ -833,9 +841,9 @@ router.post("/stripe/webhook", async (c) => {
 
     if (event.type === "checkout.session.completed" && (event.data.object as Stripe.Checkout.Session).mode === "payment") {
       const session = event.data.object as Stripe.Checkout.Session;
-      const stripeEventId = event.id;
-      const paymentIntentId = session.payment_intent as string;
-      if (!paymentIntentId) return cValidationError(c, "Missing payment intent");
+      const providerEventId = event.id;
+      const providerPaymentId = session.payment_intent as string;
+      if (!providerPaymentId) return cValidationError(c, "Missing payment intent");
 
       const userId = session.metadata?.userId;
       const credits = session.metadata?.credits;
@@ -851,7 +859,7 @@ router.post("/stripe/webhook", async (c) => {
 
       try {
         await dbWrite.transaction(async (tx) => {
-          const existingTransaction = await tx.select().from(transactions).where(eq(transactions.stripeEventId, stripeEventId)).limit(1);
+          const existingTransaction = await tx.select().from(transactions).where(and(eq(transactions.gateway, "stripe"), eq(transactions.providerEventId, providerEventId))).limit(1);
           if (existingTransaction.length > 0) {
             isDuplicateTx = true;
             return;
@@ -859,26 +867,28 @@ router.post("/stripe/webhook", async (c) => {
           const priorPurchase = await tx.select().from(transactions).where(and(eq(transactions.userId, userId), eq(transactions.type, 'purchase'))).limit(1);
           await awardCredits(userId, creditsAmount, {
             type: "purchase",
+            gateway: "stripe",
             notificationType: "payment_success",
             notificationTitle: "Payment Successful",
             notificationMessage: `Your purchase of ${creditsAmount} credits (${pack.title}) was successful`,
-            notificationData: { amountCents: session.amount_total, paymentIntentId, packId },
-            metadata: { paymentIntentId, stripeEventId, amountCents: session.amount_total, packId },
+            notificationData: { amountCents: session.amount_total, providerPaymentId, packId },
+            metadata: { providerPaymentId, providerEventId, amountCents: session.amount_total, packId },
             amountCents: session.amount_total ?? undefined,
             context: 'credit_pack_purchase',
-            paymentIntentId,
-            stripeEventId,
+            providerPaymentId,
+            providerEventId,
             tx,
           });
           if (priorPurchase.length === 0 && FIRST_PURCHASE_BONUS > 0) {
             try {
               await awardCredits(userId, FIRST_PURCHASE_BONUS, {
                 type: 'reward',
+                gateway: "stripe",
                 notificationType: 'first_purchase_bonus',
                 notificationTitle: 'First Purchase Bonus',
                 notificationMessage: `You received ${FIRST_PURCHASE_BONUS} credits for your first purchase`,
-                notificationData: { amountCents: session.amount_total, packId, paymentIntentId },
-                metadata: { stripeEventId, paymentIntentId, packId },
+                notificationData: { amountCents: session.amount_total, packId, providerPaymentId },
+                metadata: { providerEventId, providerPaymentId, packId },
                 tx,
               });
               console.log(`[stripe] 🎁 Awarded first-purchase bonus (${FIRST_PURCHASE_BONUS} credits) to user ${userId}`);
@@ -890,7 +900,7 @@ router.post("/stripe/webhook", async (c) => {
         });
       } catch (txError) {
         if (isUniqueViolation(txError)) {
-          console.log(`[stripe] 🔄 Concurrent duplicate delivery detected via unique constraint: ${stripeEventId}`);
+          console.log(`[stripe] 🔄 Concurrent duplicate delivery detected via unique constraint: ${providerEventId}`);
           isDuplicateTx = true;
         } else {
           throw txError;
@@ -905,20 +915,20 @@ router.post("/stripe/webhook", async (c) => {
       }
     } else if (event.type === "charge.refunded") {
       const charge = event.data.object as Stripe.Charge;
-      const paymentIntentId = charge.payment_intent as string;
-      const stripeEventId = event.id;
-      if (!paymentIntentId) return cValidationError(c, 'Missing payment intent');
+      const providerPaymentId = charge.payment_intent as string;
+      const providerEventId = event.id;
+      if (!providerPaymentId) return cValidationError(c, 'Missing payment intent');
 
       try {
         await dbWrite.transaction(async (tx) => {
-          const existingRefund = await tx.select().from(transactions).where(eq(transactions.stripeEventId, stripeEventId)).limit(1);
+          const existingRefund = await tx.select().from(transactions).where(and(eq(transactions.gateway, "stripe"), eq(transactions.providerEventId, providerEventId))).limit(1);
           if (existingRefund.length > 0) {
             isDuplicateTx = true;
             return;
           }
-          const originalTransaction = await tx.select().from(transactions).where(eq(transactions.paymentIntentId, paymentIntentId)).limit(1);
+          const originalTransaction = await tx.select().from(transactions).where(and(eq(transactions.gateway, "stripe"), eq(transactions.providerPaymentId, providerPaymentId))).limit(1);
           if (!originalTransaction.length) {
-            console.warn(`[stripe] ⚠️ charge.refunded for paymentIntent ${paymentIntentId} has no matching credit-pack transaction — likely a subscription charge. Skipping credit clawback.`);
+            console.warn(`[stripe] ⚠️ charge.refunded for paymentIntent ${providerPaymentId} has no matching credit-pack transaction — likely a subscription charge. Skipping credit clawback.`);
             await tx.update(webhookDeliveries).set({ status: 'success', processedAt: new Date(), updatedAt: new Date() }).where(eq(webhookDeliveries.id, webhookDeliveryId!));
             return;
           }
@@ -933,22 +943,23 @@ router.post("/stripe/webhook", async (c) => {
               type: 'refund',
               credits: -creditsToDeduct,
               amountCents: -refundCents,
-              paymentIntentId,
-              stripeEventId: event.id,
+              gateway: "stripe",
+              providerPaymentId,
+              providerEventId: event.id,
             });
             await tx.insert(userNotifications).values({
               userId: transaction.userId,
               type: 'refund',
               title: 'Refund Processed',
               message: `${creditsToDeduct} credits have been deducted from your account due to a refund`,
-              data: { creditsDeducted: creditsToDeduct, refundCents, refundAmount: refundCents / 100, originalPaymentId: paymentIntentId },
+              data: { creditsDeducted: creditsToDeduct, refundCents, refundAmount: refundCents / 100, originalPaymentId: providerPaymentId },
             });
           }
           await tx.update(webhookDeliveries).set({ status: 'success', processedAt: new Date(), updatedAt: new Date() }).where(eq(webhookDeliveries.id, webhookDeliveryId!));
         });
       } catch (txError) {
         if (isUniqueViolation(txError)) {
-          console.log(`[stripe] 🔄 Concurrent duplicate refund delivery detected via unique constraint: ${stripeEventId}`);
+          console.log(`[stripe] 🔄 Concurrent duplicate refund delivery detected via unique constraint: ${providerEventId}`);
           isDuplicateTx = true;
         } else {
           throw txError;
@@ -1174,7 +1185,12 @@ router.post("/subscription/cancel", requireAuth, async (c) => {
   try {
     const userId = c.get("user")!.id;
     const subscription = await dbRead
-      .select({ id: subscriptions.id, stripeSubscriptionId: subscriptions.stripeSubscriptionId, status: subscriptions.status })
+      .select({
+        id: subscriptions.id,
+        gateway: subscriptions.gateway,
+        providerSubscriptionId: subscriptions.providerSubscriptionId,
+        status: subscriptions.status,
+      })
       .from(subscriptions)
       .innerJoin(users, eq(users.subscriptionId, subscriptions.id))
       .where(and(eq(users.userId, userId), inArray(subscriptions.status, ['active', 'trialing'])))
@@ -1182,8 +1198,12 @@ router.post("/subscription/cancel", requireAuth, async (c) => {
 
     if (subscription.length === 0) return cNotFoundError(c, "No active subscription found");
 
-    await getStripe().subscriptions.update(subscription[0].stripeSubscriptionId, { cancel_at_period_end: true });
-    await dbWrite.update(subscriptions).set({ cancelAtPeriodEnd: true }).where(eq(subscriptions.id, subscription[0].id));
+    const sub = subscription[0];
+    // Stripe only for now; Xendit cancel path lands with Phase 2b
+    if (sub.gateway === "stripe") {
+      await getStripe().subscriptions.update(sub.providerSubscriptionId, { cancel_at_period_end: true });
+    }
+    await dbWrite.update(subscriptions).set({ cancelAtPeriodEnd: true }).where(eq(subscriptions.id, sub.id));
     return c.json({ success: true, message: "Subscription will be canceled at period end" });
   } catch (error) {
     return cApiError(c, "Failed to cancel subscription", error);
@@ -1231,12 +1251,12 @@ router.get("/subscription/portal", requireAuth, async (c) => {
     }
 
     let customerId: string | null = null;
-    const subscription = await dbRead.select({ stripeCustomerId: subscriptions.stripeCustomerId }).from(subscriptions).where(eq(subscriptions.userId, userId)).orderBy(desc(subscriptions.createdAt)).limit(1);
-    if (subscription.length > 0 && subscription[0].stripeCustomerId) {
-      customerId = subscription[0].stripeCustomerId;
+    const subscription = await dbRead.select({ providerCustomerId: subscriptions.providerCustomerId }).from(subscriptions).where(eq(subscriptions.userId, userId)).orderBy(desc(subscriptions.createdAt)).limit(1);
+    if (subscription.length > 0 && subscription[0].providerCustomerId) {
+      customerId = subscription[0].providerCustomerId;
     } else {
-      const [user] = await dbRead.select({ stripeCustomerId: users.stripeCustomerId }).from(users).where(eq(users.userId, userId)).limit(1);
-      customerId = user?.stripeCustomerId ?? null;
+      const [user] = await dbRead.select({ customerId: users.customerId }).from(users).where(eq(users.userId, userId)).limit(1);
+      customerId = user?.customerId ?? null;
     }
 
     if (!customerId) return cNotFoundError(c, "No subscription found");

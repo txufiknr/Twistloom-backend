@@ -1,6 +1,6 @@
 # Stripe + Xendit Gateway-Agnostic Payment Architecture — Implementation Roadmap
 
-**Status:** ⏳ Proposed — not yet implemented
+**Status:** 🚧 In progress — Phase 0 bugfixes + Phase 1 schema/service renames done in code (DB migration still pending)
 **Scope:** Both `twistloom-web` (Next.js frontend) and `twistloom-backend` (Hono.js/Express backend)
 **Stack:** Stripe Node SDK · Xendit Node SDK · PostgreSQL (Neon) · Drizzle ORM · TypeScript
 
@@ -1290,22 +1290,22 @@ It may hit the timeout. The Stripe webhook handler already has this concern, but
 
 ### Phase 0: Pre-requisite & Bugfix Sprint (Days 0-1)
 
-| Step | What | Who |
-|------|------|-----|
-| 0.1 | Confirm Xendit business registration (Indonesia entity/NIB) — blocker | Product |
-| 0.2 | Fix `handleInvoicePaymentSucceeded()` `invoice.parent` → `invoice.subscription` | Backend |
-| 0.3 | Fix `awardCredits()` to actually write `paymentIntentId`/`stripeEventId` (or renamed equivalents) | Backend |
-| 0.4 | Fix `subscriptionTransactions.stripeEventId` to be written on create/renew, or drop column | Backend |
+| Step | What | Who | Status |
+|------|------|-----|--------|
+| 0.1 | Confirm Xendit business registration (Indonesia entity/NIB) — blocker | Product | ⏳ Pending |
+| 0.2 | Fix `handleInvoicePaymentSucceeded()` `invoice.parent` → `invoice.subscription` | Backend | ✅ Done — uses `invoice.subscription` with `parent` fallback |
+| 0.3 | Fix `awardCredits()` to actually write `providerPaymentId`/`providerEventId` (renamed equivalents) | Backend | ✅ Done |
+| 0.4 | Fix `subscriptionTransactions.providerEventId` to be written on create/renew | Backend | ✅ Done |
 
 ### Phase 1: Foundation (Days 1-3)
 
-| Step | What | Who |
-|------|------|-----|
-| 1.1 | Database migration: add `gateway` column + rename columns | Backend |
-| 1.2 | Update Drizzle ORM schema (`schema.ts`) | Backend |
-| 1.3 | Rename all service function params (subscription.ts, credits.ts) | Backend |
-| 1.4 | Update all route references to use renamed columns | Backend |
-| 1.5 | Deploy Phase 0 bugfixes and Phase 1 migration to production before any Xendit code | Backend |
+| Step | What | Who | Status |
+|------|------|-----|--------|
+| 1.1 | Database migration: add `gateway` column + rename columns | Backend | ⏳ Pending — run `pnpm db:generate` / `pnpm db:migrate` (schema source already updated) |
+| 1.2 | Update Drizzle ORM schema (`schema.ts`) | Backend | ✅ Done |
+| 1.3 | Rename all service function params (subscription.ts, credits.ts) | Backend | ✅ Done |
+| 1.4 | Update all route references to use renamed columns | Backend | ✅ Done |
+| 1.5 | Deploy Phase 0 bugfixes and Phase 1 migration to production before any Xendit code | Backend | ⏳ Pending |
 
 ### Phase 2: Xendit Backend Integration — Credit Packs Only (Days 3-5)
 
@@ -1389,17 +1389,18 @@ Subscription webhook handlers (`handleXenditPlanActivated`, `handleXenditCycleSu
 
 ### Backend (`twistloom-backend`) — Modified Files
 
-| File | Changes |
-|------|---------|
-| `src/db/schema.ts` | Rename columns + `gateway` discriminator |
-| `src/routes/payments.ts` | Fix `invoice.parent` bug; gateway parameter in checkout routes; new Xendit webhook route |
-| `src/services/subscription.ts` | Generic param names, `gateway` field; write `stripeEventId` on create/renew |
-| `src/services/credits.ts` | Fix `awardCredits()` insert (write `paymentIntentId`/`stripeEventId`), add `gateway` |
-| `src/types/subscription.ts` | Generic param types |
-| `src/types/credits.ts` | `CreditPack.gateway`, `AwardCreditsOptions.gateway` |
-| `src/config/credits.ts` | Optional `priceIdr` field on packs |
-| `src/config/subscription.ts` | `SubscriptionConfig` gains `currency` option |
-| `.env.example` | Xendit env vars |
+| File | Changes | Status |
+|------|---------|--------|
+| `src/db/schema.ts` | Rename columns + `gateway` discriminator | ✅ Done |
+| `src/routes/payments.ts` | Gateway-agnostic field names; Stripe paths set `gateway: 'stripe'`; cancel/portal use provider IDs | ✅ Done (Xendit routes still pending Phase 2) |
+| `src/services/subscription.ts` | Generic params (`providerSubscriptionId`, etc.), `gateway` field; write `providerEventId` on create/renew | ✅ Done |
+| `src/services/credits.ts` | `awardCredits()` writes `gateway` / `providerPaymentId` / `providerEventId` | ✅ Done |
+| `src/types/express.d.ts` | `AuthUser.stripeCustomerId` → `customerId` | ✅ Done |
+| `src/types/subscription.ts` | Generic param types | ⏳ Pending (optional; service interfaces live in subscription service) |
+| `src/types/credits.ts` | `CreditPack.gateway`, `AwardCreditsOptions.gateway` | ⏳ Pending (AwardCreditsOptions is private in credits service) |
+| `src/config/credits.ts` | Optional `priceIdr` field on packs | ⏳ Pending (Phase 2) |
+| `src/config/subscription.ts` | `SubscriptionConfig` gains `currency` option | ⏳ Pending (Phase 2) |
+| `.env.example` | Xendit env vars | ⏳ Pending (Phase 2) |
 
 ### Frontend (`twistloom-web`) — Modified Files
 
@@ -1426,4 +1427,4 @@ Subscription webhook handlers (`handleXenditPlanActivated`, `handleXenditCycleSu
 
 ---
 
-*Generated: 2026-07-24 · This is a draft roadmap. Review the [Open Questions](#11-open-questions--recommendations) section and provide decisions before implementation begins.*
+*Generated: 2026-07-24 · Last updated: 2026-07-24 — Phase 0.2–0.4 and Phase 1.2–1.4 implemented in backend code. Run DB generate/migrate (1.1) before deploy (1.5). Review [Open Questions](#11-open-questions--recommendations) before Phase 2.*

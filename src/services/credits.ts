@@ -556,6 +556,8 @@ export async function executeWithCredits<T>(
 interface AwardCreditsOptions {
   /** Transaction type recorded in the `transactions` table */
   type: TransactionType;
+  /** Payment gateway for this award (`stripe` | `xendit`); defaults to `stripe` */
+  gateway?: "stripe" | "xendit";
   /** Notification type identifier */
   notificationType: string;
   /** Notification title shown to the user */
@@ -570,9 +572,10 @@ interface AwardCreditsOptions {
   amountCents?: number | null;
   /** Human-readable context label for the transaction */
   context?: string;
-  /** Persisted to the real unique-constrained columns */
-  paymentIntentId?: string;
-  stripeEventId?: string;
+  /** Gateway payment ID (Stripe `pi_xxx`, Xendit payment/invoice ID) — unique per gateway */
+  providerPaymentId?: string;
+  /** Gateway webhook event ID — unique per gateway */
+  providerEventId?: string;
   /** Existing DB transaction to join */
   tx?: DBTransaction;
 }
@@ -580,8 +583,11 @@ interface AwardCreditsOptions {
 /**
  * Awards credits with a transaction record and an in-app notification.
  *
- * Used for Stripe purchases, referral bonuses, achievement rewards, etc.
+ * Used for payment-gateway purchases, referral bonuses, achievement rewards, etc.
  * Wraps in its own transaction when `tx` is not provided.
+ *
+ * Provider IDs (`providerPaymentId`, `providerEventId`) are written to the unique-
+ * constrained columns for webhook idempotency.
  *
  * @param userId        - Recipient
  * @param creditsAmount - Credits to award (must be > 0)
@@ -595,6 +601,7 @@ export async function awardCredits(
 ): Promise<number> {
   const {
     type,
+    gateway = "stripe",
     notificationType,
     notificationTitle,
     notificationMessage,
@@ -602,8 +609,8 @@ export async function awardCredits(
     metadata = {},
     amountCents = null,
     context,
-    paymentIntentId,
-    stripeEventId,
+    providerPaymentId,
+    providerEventId,
     tx: trx
   } = options;
 
@@ -620,14 +627,15 @@ export async function awardCredits(
 
     const newBalance = updateResult[0].credits;
 
-    // Create transaction record
+    // Create transaction record (provider IDs written for idempotency)
     await tx.insert(transactions).values({
       userId,
       type,
       credits: creditsAmount,
       amountCents,
-      paymentIntentId,
-      stripeEventId,
+      gateway,
+      providerPaymentId: providerPaymentId ?? null,
+      providerEventId: providerEventId ?? null,
       context: context ?? notificationType,
       metadata: Object.keys(metadata).length > 0 ? metadata : null,
       createdAt: new Date()

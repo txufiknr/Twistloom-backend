@@ -211,7 +211,8 @@ export const users = pgTable(
     username: text("username").notNull().unique("users_username_unique"), // Unique constraint for login
     email: text("email").notNull().unique("users_email_unique"), // Unique constraint for login
     passwordHash: text("password_hash"), // Hashed password for email/password authentication
-    stripeCustomerId: text("stripe_customer_id").unique("users_stripe_customer_id_unique"),
+    /** Payment-provider customer ID (Stripe `cus_xxx` or Xendit customer ID) */
+    customerId: text("customer_id").unique("users_customer_id_unique"),
     credits: integer("credits").notNull().default(FIRST_TIME_CREDITS),
     penName: text("pen_name"),
     bio: text("bio"), // User bio/description
@@ -1063,11 +1064,14 @@ export const deletedImages = pgTable(
 /**
  * Create transactions table
  * @summary Track credit purchases and usage transactions for users
- * 
+ *
  * Records all credit-related transactions including:
- * - Purchases: User buys credits (amountUsd is set)
- * - Usage: User consumes credits for AI generation (amountUsd is null)
- * 
+ * - Purchases: User buys credits (amountCents is set; gateway identifies the provider)
+ * - Usage: User consumes credits for AI generation (amountCents is null)
+ *
+ * Provider IDs are gateway-agnostic: Stripe payment intents / event IDs or
+ * Xendit payment / event IDs. Uniqueness is scoped by `(gateway, provider_*)`.
+ *
  * @example
  * {
  *   "id": "txn123",
@@ -1075,6 +1079,9 @@ export const deletedImages = pgTable(
  *   "type": "purchase",
  *   "credits": 100,
  *   "amount_cents": 999,
+ *   "gateway": "stripe",
+ *   "provider_payment_id": "pi_xxx",
+ *   "provider_event_id": "evt_xxx",
  *   "created_at": "2023-01-01T00:00:00.000Z"
  * }
  */
@@ -1088,8 +1095,12 @@ export const transactions = pgTable(
     amountCents: integer("amount_cents"),
     context: text("context"), // Additional context for usage transactions (e.g., "book_creation")
     metadata: jsonb("metadata"), // Additional metadata for the transaction
-    paymentIntentId: text("payment_intent_id").unique(), // Stripe payment intent for idempotency
-    stripeEventId: text("stripe_event_id").unique(), // Stripe event ID for webhook idempotency
+    /** Payment gateway that produced this row (`stripe` | `xendit`) */
+    gateway: text("gateway").$type<"stripe" | "xendit">().notNull().default("stripe"),
+    /** Gateway payment ID (Stripe `pi_xxx`, Xendit payment/invoice ID) — idempotency */
+    providerPaymentId: text("provider_payment_id"),
+    /** Gateway webhook event ID — idempotency */
+    providerEventId: text("provider_event_id"),
     createdAt,
   },
   (t) => [
@@ -1101,19 +1112,20 @@ export const transactions = pgTable(
     index("transactions_created_idx").on(t.createdAt.desc()),
     // Index for context filtering
     index("transactions_context_idx").on(t.context),
-    // Unique index for payment intent idempotency
-    unique("transactions_payment_intent_unique").on(t.paymentIntentId),
-    // Unique index for Stripe event idempotency
-    unique("transactions_stripe_event_unique").on(t.stripeEventId),
+    // Composite unique: payment ID is unique per gateway (allows NULL rows)
+    unique("transactions_provider_payment_unique").on(t.gateway, t.providerPaymentId),
+    // Composite unique: event ID is unique per gateway (allows NULL rows)
+    unique("transactions_provider_event_unique").on(t.gateway, t.providerEventId),
   ]
 );
 
 /**
  * Webhook delivery tracking table
- * @summary Tracks Stripe webhook delivery status for monitoring and debugging
+ * @summary Tracks payment-gateway webhook delivery status for monitoring and debugging
  * @example
  * {
  *   "id": "webhook123",
+ *   "gateway": "stripe",
  *   "event_id": "evt_1234567890",
  *   "event_type": "checkout.session.completed",
  *   "delivered_at": "2023-01-01T00:00:00.000Z",
@@ -1126,8 +1138,10 @@ export const webhookDeliveries = pgTable(
   "webhook_deliveries",
   {
     id: id(),
-    eventId: text("event_id").notNull(), // Stripe event ID
-    eventType: text("event_type").notNull(), // Stripe event type
+    /** Payment gateway that delivered this event (`stripe` | `xendit`) */
+    gateway: text("gateway").$type<"stripe" | "xendit">().notNull().default("stripe"),
+    eventId: text("event_id").notNull(), // Provider event ID
+    eventType: text("event_type").notNull(), // Provider event type
     deliveredAt: timestamp("delivered_at").defaultNow().notNull(), // When webhook was received
     processedAt: timestamp("processed_at"), // When webhook was processed
     status: text("status").$type<'success' | 'failed' | 'retrying'>().notNull().default('retrying'),
@@ -1138,12 +1152,14 @@ export const webhookDeliveries = pgTable(
   (t) => [
     // Index for event lookup
     index("webhook_deliveries_event_idx").on(t.eventId),
+    // Index for gateway filtering
+    index("webhook_deliveries_gateway_idx").on(t.gateway),
     // Index for status filtering
     index("webhook_deliveries_status_idx").on(t.status),
     // Index for cleanup (old failed deliveries)
     index("webhook_deliveries_created_idx").on(t.createdAt.desc()),
-    // Unique constraint to prevent duplicate tracking
-    unique("webhook_deliveries_event_unique").on(t.eventId),
+    // Unique per gateway so Stripe and Xendit event IDs cannot collide
+    unique("webhook_deliveries_gateway_event_unique").on(t.gateway, t.eventId),
   ]
 );
 
@@ -1377,14 +1393,19 @@ export const userAchievements = pgTable(
 
 /**
  * Subscriptions table
- * @summary Track active user subscriptions and their status
+ * @summary Track active user subscriptions and their status (gateway-agnostic)
+ *
+ * Provider IDs store Stripe (`sub_xxx` / `cus_xxx` / `price_xxx`) or Xendit
+ * equivalents depending on `gateway`. Uniqueness is `(gateway, provider_subscription_id)`.
+ *
  * @example
  * {
  *   "id": "sub123",
  *   "user_id": "user456",
- *   "stripe_subscription_id": "sub_1234567890",
- *   "stripe_customer_id": "cus_1234567890",
- *   "stripe_price_id": "price_1234567890",
+ *   "gateway": "stripe",
+ *   "provider_subscription_id": "sub_1234567890",
+ *   "provider_customer_id": "cus_1234567890",
+ *   "provider_price_id": "price_1234567890",
  *   "status": "active",
  *   "current_period_start": "2023-01-01T00:00:00.000Z",
  *   "current_period_end": "2023-02-01T00:00:00.000Z",
@@ -1402,9 +1423,14 @@ export const subscriptions = pgTable(
     // Was missing a FK reference to users, unlike every other user-linked table in this
     // schema (e.g. subscriptionTransactions.userId below). Added for referential integrity.
     userId: uuid("user_id").notNull().references(() => users.userId, { onDelete: "cascade" }),
-    stripeSubscriptionId: text("stripe_subscription_id").unique().notNull(),
-    stripeCustomerId: text("stripe_customer_id").notNull(),
-    stripePriceId: text("stripe_price_id").notNull(),
+    /** Payment gateway for this subscription (`stripe` | `xendit`) */
+    gateway: text("gateway").$type<"stripe" | "xendit">().notNull().default("stripe"),
+    /** Gateway subscription/plan ID (Stripe `sub_xxx`, Xendit plan/repl ID) */
+    providerSubscriptionId: text("provider_subscription_id").notNull(),
+    /** Gateway customer ID (Stripe `cus_xxx`, Xendit customer ID) */
+    providerCustomerId: text("provider_customer_id").notNull(),
+    /** Gateway price/plan ID (Stripe `price_xxx`, Xendit plan price ID) */
+    providerPriceId: text("provider_price_id").notNull(),
     status: text("status").$type<SubscriptionStatus>().notNull(),
     currentPeriodStart: timestamp("current_period_start", { withTimezone: true }).notNull(),
     currentPeriodEnd: timestamp("current_period_end", { withTimezone: true }).notNull(),
@@ -1422,13 +1448,17 @@ export const subscriptions = pgTable(
     index("subscriptions_user_idx").on(t.userId),
     index("subscriptions_status_idx").on(t.status),
     index("subscriptions_period_end_idx").on(t.currentPeriodEnd),
-    unique("subscriptions_stripe_subscription_unique").on(t.stripeSubscriptionId),
+    index("subscriptions_gateway_idx").on(t.gateway),
+    unique("subscriptions_provider_unique").on(t.gateway, t.providerSubscriptionId),
   ]
 );
 
 /**
  * Subscription transactions table
  * @summary Track subscription-related credit allocations separately from regular transactions
+ *
+ * Provider invoice/event IDs are gateway-agnostic; uniqueness is scoped by gateway.
+ *
  * @example
  * {
  *   "id": "subtxn123",
@@ -1436,8 +1466,9 @@ export const subscriptions = pgTable(
  *   "user_id": "user789",
  *   "type": "activation",
  *   "credits_allocated": 50,
- *   "stripe_invoice_id": "in_1234567890",
- *   "stripe_event_id": "evt_1234567890",
+ *   "gateway": "stripe",
+ *   "provider_invoice_id": "in_1234567890",
+ *   "provider_event_id": "evt_1234567890",
  *   "created_at": "2023-01-01T00:00:00.000Z"
  * }
  */
@@ -1449,8 +1480,12 @@ export const subscriptionTransactions = pgTable(
     userId: userId().references(() => users.userId, { onDelete: "cascade" }).notNull(),
     type: text("type").$type<SubscriptionTransactionType>().notNull(),
     creditsAllocated: integer("credits_allocated").notNull(),
-    stripeInvoiceId: text("stripe_invoice_id").unique(),
-    stripeEventId: text("stripe_event_id").unique(),
+    /** Payment gateway for this allocation (`stripe` | `xendit`) */
+    gateway: text("gateway").$type<"stripe" | "xendit">().notNull().default("stripe"),
+    /** Gateway invoice/cycle ID (Stripe `in_xxx`, Xendit cycle/invoice ID) */
+    providerInvoiceId: text("provider_invoice_id"),
+    /** Gateway webhook event ID — write on create/renew for idempotency */
+    providerEventId: text("provider_event_id"),
     // Free-form context for rows that aren't credit allocations, e.g. 'trial_expired'
     // snapshots the user's credit balance at the moment a trial ends without
     // converting (creditsRemainingAtCancellation) — see VIP_FREE_TRIAL_ROADMAP.md Q4.
@@ -1461,7 +1496,8 @@ export const subscriptionTransactions = pgTable(
     index("subscription_transactions_subscription_idx").on(t.subscriptionId),
     index("subscription_transactions_user_idx").on(t.userId),
     index("subscription_transactions_type_idx").on(t.type),
-    unique("subscription_transactions_invoice_unique").on(t.stripeInvoiceId),
+    unique("sub_tx_provider_invoice_unique").on(t.gateway, t.providerInvoiceId),
+    unique("sub_tx_provider_event_unique").on(t.gateway, t.providerEventId),
   ]
 );
 

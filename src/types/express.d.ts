@@ -10,6 +10,6 @@ export interface AuthUser {
   id: string;
   email: string;
   name?: string;
-  stripeCustomerId?: string;
+  customerId?: string;
   sessionId?: string; // Session ID for device tracking and selective logout
 }

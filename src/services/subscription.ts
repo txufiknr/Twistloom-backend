@@ -9,12 +9,13 @@
  * - Checking user VIP status and expiration
  * - Downgrading expired VIP users to standard tier
  *
- * Stripe Integration:
- * Subscription lifecycle is driven by Stripe webhooks:
- * - `customer.subscription.created` → createSubscription() (status may be 'trialing' or 'active')
- * - `invoice.payment_succeeded` (billing_reason='subscription_cycle' only) → renewSubscription()
- * - `customer.subscription.updated` → updateSubscription()
- * - `customer.subscription.deleted` → cancelSubscription()
+ * Gateway Integration:
+ * Subscription lifecycle is driven by payment-gateway webhooks (Stripe today;
+ * Xendit later). Both map into the same gateway-agnostic params:
+ * - subscription created → createSubscription() (status may be 'trialing' or 'active')
+ * - invoice/cycle payment succeeded (renewal only) → renewSubscription()
+ * - subscription updated → updateSubscription()
+ * - subscription deleted → cancelSubscription()
  *
  * Credit Allocation:
  * Credits are allocated atomically within database transactions, once per billing period:
@@ -36,14 +37,17 @@ import { VIP_BENEFITS, VIP_TRIAL } from "../config/subscription.js";
 import type { SubscriptionStatus } from "../types/subscription.js";
 import { getErrorMessage } from "../utils/error.js";
 
+/** Supported payment gateways for subscriptions */
+export type PaymentGateway = "stripe" | "xendit";
+
 /**
  * Detects a Postgres unique-constraint violation (SQLSTATE 23505).
  *
- * `subscriptions.stripeSubscriptionId` and `subscriptionTransactions.stripeInvoiceId`
- * are unique-constrained specifically so that a redelivered `customer.subscription.created`
- * or `invoice.payment_succeeded` webhook can't double-allocate credits. Without catching
- * this specific error, a redelivery would throw, mark the webhook 'failed', and Stripe
- * would keep retrying an event that was actually already processed successfully.
+ * `subscriptions.(gateway, providerSubscriptionId)` and
+ * `subscriptionTransactions.(gateway, providerInvoiceId)` are unique-constrained
+ * specifically so that a redelivered webhook can't double-allocate credits. Without
+ * catching this specific error, a redelivery would throw, mark the webhook 'failed',
+ * and the provider would keep retrying an event that was already processed successfully.
  */
 function isUniqueViolation(error: unknown): boolean {
   return typeof error === 'object' && error !== null && (error as { code?: string }).code === '23505';
@@ -52,24 +56,19 @@ function isUniqueViolation(error: unknown): boolean {
 /**
  * Creates a new subscription record and allocates initial credits
  *
- * Called when a user subscribes to VIP via Stripe checkout.
+ * Called when a user subscribes to VIP via a payment-gateway checkout.
  * This function runs within a database transaction to ensure atomicity.
  *
- * @param params - Subscription creation parameters
- * @param params.userId - User ID who is subscribing
- * @param params.stripeSubscriptionId - Stripe subscription ID
- * @param params.stripeCustomerId - Stripe customer ID
- * @param params.stripePriceId - Stripe price ID for the subscription
- * @param params.currentPeriodStart - Start of current billing period
- * @param params.currentPeriodEnd - End of current billing period
+ * @param params - Gateway-agnostic subscription creation parameters
  *
  * @example
  * ```typescript
  * await createSubscription({
  *   userId: 'user-123',
- *   stripeSubscriptionId: 'sub_1234567890',
- *   stripeCustomerId: 'cus_1234567890',
- *   stripePriceId: 'price_1234567890',
+ *   gateway: 'stripe',
+ *   providerSubscriptionId: 'sub_1234567890',
+ *   providerCustomerId: 'cus_1234567890',
+ *   providerPriceId: 'price_1234567890',
  *   currentPeriodStart: new Date('2023-01-01'),
  *   currentPeriodEnd: new Date('2023-02-01'),
  * });
@@ -77,28 +76,34 @@ function isUniqueViolation(error: unknown): boolean {
  */
 export async function createSubscription(params: {
   userId: string;
-  stripeSubscriptionId: string;
-  stripeCustomerId: string;
-  stripePriceId: string;
+  gateway?: PaymentGateway;
+  /** Gateway subscription/plan ID (Stripe `sub_xxx`, Xendit plan ID) */
+  providerSubscriptionId: string;
+  /** Gateway customer ID (Stripe `cus_xxx`, Xendit customer ID) */
+  providerCustomerId: string;
+  /** Gateway price/plan ID */
+  providerPriceId: string;
   currentPeriodStart: Date;
   currentPeriodEnd: Date;
   /** True when this subscription was created with a trial (status will be 'trialing') */
   isTrial?: boolean;
   /** Trial end date — required when isTrial is true. See VIP_FREE_TRIAL_ROADMAP.md */
   trialEnd?: Date | null;
-  /** Stripe event ID for webhook idempotency tracking */
-  stripeEventId?: string;
+  /** Gateway webhook event ID for idempotency tracking */
+  providerEventId?: string;
 }): Promise<void> {
   const isTrial = params.isTrial ?? false;
+  const gateway = params.gateway ?? "stripe";
 
   try {
     await dbWrite.transaction(async (tx) => {
       // Create subscription record
       const [subscription] = await tx.insert(subscriptions).values({
         userId: params.userId,
-        stripeSubscriptionId: params.stripeSubscriptionId,
-        stripeCustomerId: params.stripeCustomerId,
-        stripePriceId: params.stripePriceId,
+        gateway,
+        providerSubscriptionId: params.providerSubscriptionId,
+        providerCustomerId: params.providerCustomerId,
+        providerPriceId: params.providerPriceId,
         status: isTrial ? 'trialing' : 'active',
         currentPeriodStart: params.currentPeriodStart,
         currentPeriodEnd: params.currentPeriodEnd,
@@ -140,15 +145,15 @@ export async function createSubscription(params: {
         userId: params.userId,
         type: isTrial ? 'trial_started' : 'activation',
         creditsAllocated: VIP_BENEFITS.monthlyCredits,
-        stripeEventId: params.stripeEventId ?? null,
+        gateway,
+        providerEventId: params.providerEventId ?? null,
       });
     });
   } catch (error) {
     if (isUniqueViolation(error)) {
-      // stripeSubscriptionId already exists — this is a redelivered
-      // customer.subscription.created webhook for a subscription we already
-      // activated. Nothing left to do; treat as success.
-      console.log(`[subscription] 🔄 Duplicate createSubscription for ${params.stripeSubscriptionId} — already activated, skipping.`);
+      // providerSubscriptionId already exists for this gateway — redelivered
+      // subscription-created webhook for a subscription we already activated.
+      console.log(`[subscription] 🔄 Duplicate createSubscription for ${params.providerSubscriptionId} — already activated, skipping.`);
       return;
     }
     throw error;
@@ -162,31 +167,20 @@ export async function createSubscription(params: {
  * or payment failure — in which case only `status` needs updating).
  *
  * @param params - Subscription update parameters
- * @param params.stripeSubscriptionId - Stripe subscription ID
- * @param params.status - New subscription status
- * @param params.currentPeriodEnd - End of current billing period (optional — omit when
- *   only the status is changing, e.g. marking as past_due)
- * @param params.cancelAtPeriodEnd - Whether to cancel at period end
  *
  * @example
  * ```typescript
- * // Update status and period after a plan change
  * await updateSubscription({
- *   stripeSubscriptionId: 'sub_1234567890',
+ *   providerSubscriptionId: 'sub_1234567890',
  *   status: 'active',
  *   currentPeriodEnd: new Date('2023-03-01'),
  *   cancelAtPeriodEnd: true,
  * });
- *
- * // Only update status (e.g., payment_failed → past_due)
- * await updateSubscription({
- *   stripeSubscriptionId: 'sub_1234567890',
- *   status: 'past_due',
- * });
  * ```
  */
 export async function updateSubscription(params: {
-  stripeSubscriptionId: string;
+  providerSubscriptionId: string;
+  gateway?: PaymentGateway;
   status: SubscriptionStatus;
   currentPeriodEnd?: Date; // Omit when only status is being updated
   cancelAtPeriodEnd?: boolean;
@@ -203,42 +197,42 @@ export async function updateSubscription(params: {
       ...(params.status !== 'trialing' && { isTrial: false }),
       updatedAt: new Date(),
     })
-    .where(eq(subscriptions.stripeSubscriptionId, params.stripeSubscriptionId));
+    .where(eq(subscriptions.providerSubscriptionId, params.providerSubscriptionId));
 }
 
 /**
  * Handles subscription renewal - allocates monthly credits
  *
- * Called when a monthly payment succeeds via Stripe webhook.
+ * Called when a monthly payment succeeds via payment-gateway webhook.
  * Allocates recurring credits and updates subscription period.
  *
  * @param params - Subscription renewal parameters
- * @param params.stripeSubscriptionId - Stripe subscription ID
- * @param params.stripeInvoiceId - Stripe invoice ID for the payment
- * @param params.currentPeriodEnd - End of new billing period (from Stripe invoice, not DB)
  *
  * @example
  * ```typescript
  * await renewSubscription({
- *   stripeSubscriptionId: 'sub_1234567890',
- *   stripeInvoiceId: 'in_1234567890',
+ *   providerSubscriptionId: 'sub_1234567890',
+ *   providerInvoiceId: 'in_1234567890',
  *   currentPeriodEnd: new Date('2023-03-01'),
  * });
  * ```
  */
 export async function renewSubscription(params: {
-  stripeSubscriptionId: string;
-  stripeInvoiceId: string;
+  providerSubscriptionId: string;
+  providerInvoiceId: string;
   currentPeriodEnd: Date;
-  stripeEventId?: string;
+  gateway?: PaymentGateway;
+  providerEventId?: string;
 }): Promise<void> {
+  const gateway = params.gateway ?? "stripe";
+
   try {
     await dbWrite.transaction(async (tx) => {
       // Get subscription
       const [subscription] = await tx
         .select()
         .from(subscriptions)
-        .where(eq(subscriptions.stripeSubscriptionId, params.stripeSubscriptionId))
+        .where(eq(subscriptions.providerSubscriptionId, params.providerSubscriptionId))
         .limit(1);
 
       if (!subscription) {
@@ -266,7 +260,7 @@ export async function renewSubscription(params: {
         tx
       });
 
-      // Create subscription transaction record. stripeInvoiceId is unique-constrained,
+      // Create subscription transaction record. providerInvoiceId is unique per gateway,
       // so if this same invoice was already processed (redelivered webhook), the insert
       // below throws and the whole transaction — including the addCredits call above —
       // rolls back atomically. No double-crediting risk from a bare retry.
@@ -275,8 +269,9 @@ export async function renewSubscription(params: {
         userId: subscription.userId,
         type: 'renewal',
         creditsAllocated: VIP_BENEFITS.monthlyCredits,
-        stripeInvoiceId: params.stripeInvoiceId,
-        stripeEventId: params.stripeEventId ?? null,
+        gateway,
+        providerInvoiceId: params.providerInvoiceId,
+        providerEventId: params.providerEventId ?? null,
       });
     });
   } catch (error) {
@@ -284,7 +279,7 @@ export async function renewSubscription(params: {
       // This invoice was already processed on a prior delivery of this webhook.
       // The transaction rolled back in full (including the credit allocation
       // above), so it's safe to just treat this as already-handled.
-      console.log(`[subscription] 🔄 Duplicate renewSubscription for invoice ${params.stripeInvoiceId} — already processed, skipping.`);
+      console.log(`[subscription] 🔄 Duplicate renewSubscription for invoice ${params.providerInvoiceId} — already processed, skipping.`);
       return;
     }
     throw error;
@@ -294,7 +289,7 @@ export async function renewSubscription(params: {
 /**
  * Handles subscription cancellation - schedules tier downgrade
  *
- * Called when a subscription is canceled via Stripe webhook.
+ * Called when a subscription is canceled via payment-gateway webhook.
  * VIP benefits continue until the current billing period ends.
  * The cron job will handle the actual tier downgrade.
  *
@@ -317,28 +312,29 @@ export async function renewSubscription(params: {
  * regardless of event ordering.
  *
  * @param params - Subscription cancellation parameters
- * @param params.stripeSubscriptionId - Stripe subscription ID
- * @param params.canceledAt - When the subscription was canceled
  *
  * @example
  * ```typescript
  * await cancelSubscription({
- *   stripeSubscriptionId: 'sub_1234567890',
+ *   providerSubscriptionId: 'sub_1234567890',
  *   canceledAt: new Date('2023-01-15'),
  * });
  * ```
  */
 export async function cancelSubscription(params: {
-  stripeSubscriptionId: string;
+  providerSubscriptionId: string;
   canceledAt: Date;
-  stripeEventId?: string;
+  gateway?: PaymentGateway;
+  providerEventId?: string;
 }): Promise<void> {
+  const gateway = params.gateway ?? "stripe";
+
   await dbWrite.transaction(async (tx) => {
     // Get subscription
     const [subscription] = await tx
       .select()
       .from(subscriptions)
-      .where(eq(subscriptions.stripeSubscriptionId, params.stripeSubscriptionId))
+      .where(eq(subscriptions.providerSubscriptionId, params.providerSubscriptionId))
       .limit(1);
 
     if (!subscription) {
@@ -380,7 +376,8 @@ export async function cancelSubscription(params: {
         userId: subscription.userId,
         type: 'trial_expired',
         creditsAllocated: 0,
-        stripeEventId: params.stripeEventId ?? null,
+        gateway,
+        providerEventId: params.providerEventId ?? null,
         metadata: {
           creditsRemainingAtCancellation: user?.credits ?? null,
           trialEnd: subscription.trialEnd,
@@ -509,11 +506,11 @@ export async function isTrialEligible(userId: string): Promise<boolean> {
  * fail the webhook (which would make Stripe retry an event that was otherwise
  * handled correctly).
  *
- * @param stripeSubscriptionId - The Stripe subscription ID that's ending its trial
+ * @param providerSubscriptionId - The gateway subscription ID that's ending its trial
  *
  * @see VIP_FREE_TRIAL_ROADMAP.md §4.4b, Q5
  */
-export async function handleTrialWillEnd(stripeSubscriptionId: string): Promise<void> {
+export async function handleTrialWillEnd(providerSubscriptionId: string): Promise<void> {
   const [row] = await dbRead
     .select({
       subscriptionId: subscriptions.id,
@@ -524,11 +521,11 @@ export async function handleTrialWillEnd(stripeSubscriptionId: string): Promise<
     })
     .from(subscriptions)
     .innerJoin(users, eq(subscriptions.userId, users.userId))
-    .where(eq(subscriptions.stripeSubscriptionId, stripeSubscriptionId))
+    .where(eq(subscriptions.providerSubscriptionId, providerSubscriptionId))
     .limit(1);
 
   if (!row) {
-    console.log(`[subscription] ⚠️ trial_will_end for unknown subscription ${stripeSubscriptionId} — skipping`);
+    console.log(`[subscription] ⚠️ trial_will_end for unknown subscription ${providerSubscriptionId} — skipping`);
     return;
   }
 
