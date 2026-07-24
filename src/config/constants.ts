@@ -1,6 +1,3 @@
-import { readFileSync } from "fs";
-import { join } from "path";
-
 /** Application constants and configuration */
 export const APP_NAME: string = 'Twistloom';
 export const APP_NAME_SLUG: string = 'twistloom';
@@ -11,20 +8,6 @@ export const APP_WEB_URL = 'https://twistloom-backend.vercel.app';
 export const APP_EMAIL = 'admin@twistloom.com';
 
 /**
- * Safely get application version from package.json
- * @summary Gets version from npm_package_version env var or package.json file
- * @returns Version string or fallback "1.0.0"
+ * Application version from npm_package_version env var (injected by Vercel at build time)
  */
-const getAppVersion = (): string => {
-  try {
-    if (process.env['npm_package_version']) return process.env['npm_package_version'];
-    const pkgPath = join(process.cwd(), "package.json");
-    const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
-    return pkg.version || "1.0.0";
-  } catch {
-    return "1.0.0";
-  }
-};
-
-/** Application version - safely retrieved once and reused */
-export const VERSION: string = getAppVersion();
+export const VERSION: string = process.env['npm_package_version'] || '1.0.0';

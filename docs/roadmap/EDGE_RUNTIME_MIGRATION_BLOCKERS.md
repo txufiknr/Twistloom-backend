@@ -29,14 +29,14 @@ The Vercel Edge Runtime (web-standard APIs only: `fetch`, `Request`, `Response`,
 
 | # | Blocker | Severity | Files Affected | Effort | Status |
 |---|---------|----------|----------------|--------|--------|
-| 1 | `@imagekit/nodejs` SDK | **CRITICAL** | `services/image.ts`, `services/book.ts`, `middleware/upload.ts` | High | ✅ Done |
+| 1 | `@imagekit/nodejs` SDK | **CRITICAL** | `services/image.ts`, `services/book.ts` | High (removed) | ✅ Done |
 | 2 | `bcrypt` → `bcryptjs` | **CRITICAL** | `utils/password.ts` | Low (drop-in) | ✅ Done |
 | 3 | `Buffer` (9+ usages) | **CRITICAL** | `middleware/upload.ts`, `routes/books.ts`, `utils/ai-image.ts` | Medium | ⬜ |
 | 4 | Neon Pool WebSocket wiring | **HIGH** | `db/client.ts` | Low (+ testing) | ⬜ |
 | 5 | `crypto.createHash` (Node `crypto`) | **HIGH** | `utils/cache.ts` | Medium (async ripple) | ⬜ |
 | 6 | Entrypoint adapter | **HIGH** | `src/app.ts` | Low | ⬜ |
-| 7 | Stripe fetch client config | **HIGH** | `utils/stripe.ts` | Low (1 line) | ⬜ |
-| 8 | `fs` / `path` in constants | **LOW** | `config/constants.ts` | Low (remove fallback) | ⬜ |
+| 7 | Stripe fetch client config | **HIGH** | `utils/stripe.ts` | Low (1 line) | ✅ Done |
+| 8 | `fs` / `path` in constants | **LOW** | `config/constants.ts` | Low (remove fallback) | ✅ Done |
 | 9 | `fs` / `path` in ai-image.ts | **LOW** | `utils/ai-image.ts` | Low (skip branch) | ⬜ |
 | 10 | `@actions/core` (`group()`) | **LOW** | `utils/error.ts`, `utils/ai-logger.ts`, `utils/ai-chat.ts` | Low (console.group) | ⬜ |
 | 11 | `process.*` in admin route | **LOW** | `routes/admin.ts`, `app.ts` | Low (guard/remove) | ⬜ |
@@ -92,6 +92,12 @@ interface ImageKitUploadResponse {
 **Files to create/modify:**
 - Rewrite `src/services/image.ts` — replace SDK client with `fetch`-based helpers
 - Update `src/services/book.ts:16` — replace type import with local type
+- Remove `@imagekit/nodejs` from `package.json` — dependency no longer needed
+
+**Completion notes:**
+- `src/services/image.ts` rewritten — SDK replaced with `fetch`-based REST API calls using `Blob`/`FormData`/`AbortController`
+- `src/services/book.ts` — `import type ImageKit` replaced with `import type { ImageKitUploadResponse }`
+- `package.json` — `@imagekit/nodejs` dependency removed
 
 ---
 
@@ -275,6 +281,8 @@ By default, `new Stripe(secretKey)` creates an HTTP client that uses Node.js's `
 
 This uses Stripe's built-in `fetch`-based HTTP client, which works on Edge (available since Stripe SDK v14+).
 
+**Completed:** `src/utils/stripe.ts` — added `httpClient: Stripe.createFetchHttpClient()` config option.
+
 ---
 
 ### 8. `fs` / `path` in `constants.ts` — LOW
@@ -312,6 +320,8 @@ const getAppVersion = (): string => {
 +   return process.env['npm_package_version'] || "1.0.0";
 };
 ```
+
+**Completed:** `src/config/constants.ts` — removed `fs`/`path` imports, replaced `getAppVersion()` function with inline `process.env['npm_package_version'] || '1.0.0'`.
 
 ---
 
@@ -486,11 +496,12 @@ These are used in the codebase but **do not require changes**:
 4. **Configure Neon WebSocket for Edge** — `db/client.ts`
 5. **Refactor `createHash` → Web Crypto** — `utils/cache.ts` (async ripple)
 6. **Switch entrypoint to `hono/vercel`** — `app.ts`
-7. **Configure Stripe fetch client** — `utils/stripe.ts`
+7. ✅ **Configure Stripe fetch client** — `utils/stripe.ts`
 
 ### Phase 3 — Low blockers (estimated: half day)
 
-8–11. Remove `fs`/`path` fallback, guard admin `process.*`, replace `@actions/core`, etc.
+8. ✅ Remove `fs`/`path` fallback — `config/constants.ts`
+9–11. Guard admin `process.*`, replace `@actions/core`, etc.
 
 ### Phase 4 — Verification (estimated: 1–2 days)
 

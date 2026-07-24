@@ -9,5 +9,7 @@ let stripe: Stripe | null = null;
  * @returns Stripe instance
  */
 export function getStripe(): Stripe {
-  return stripe || (stripe = new Stripe(requireEnv('STRIPE_SECRET_KEY')));
+  return stripe || (stripe = new Stripe(requireEnv('STRIPE_SECRET_KEY'), {
+    httpClient: Stripe.createFetchHttpClient(),
+  }));
 }
