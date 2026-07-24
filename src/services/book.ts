@@ -1760,7 +1760,7 @@ export function mapBookFromDb(dbBook: DBBook): Book {
  * R.L. Stine but darker, with specific rules for narrative manipulation and
  * psychological horror elements.
  */
-export function buildBookMetaDocuments(
+export async function buildBookMetaDocuments(
   book?: Book,
   state?: Pick<StoryState, 'characters' | 'plannedCharacters' | 'places' | 'page'>,
   /**
@@ -1769,11 +1769,10 @@ export function buildBookMetaDocuments(
    * scrolled out of the live pastInteractions/keyEvents sliding windows.
    * Optional and additive: omitting this changes nothing about the existing
    * output. Computed once in prepareNextPageGenerationSetup (prompt.ts),
-   * before this function is called — never fetched from inside here, since
-   * this function itself stays synchronous.
+   * before this function is called — never fetched from inside here.
    */
   semanticRecall?: { characters?: Record<string, string>; places?: Record<string, string> }
-): AIPromptDocuments {
+): Promise<AIPromptDocuments> {
   const documents: AIDocument[] = [];
 
   if (book) {
@@ -1786,7 +1785,7 @@ export function buildBookMetaDocuments(
   }
 
   // Generate unique identifier per identical `book.id + state.characters + state.places`
-  const cachedContentId = createCacheKey([
+  const cachedContentId = await createCacheKey([
     book?.id,
     state?.characters ? Object.values(state.characters) : undefined,
     state?.plannedCharacters ? state.plannedCharacters : undefined,
@@ -1858,7 +1857,7 @@ export async function getFirstPage(bookId: string): Promise<DBPage | null> {
  * @param state - Optional story state context
  * @returns Promise resolving to void (updates book with ImageKit URL)
  */
-export async function generateCoverImages(book: Book, state?: StoryState, total?: number): Promise<Buffer<ArrayBufferLike>[]> {
+export async function generateCoverImages(book: Book, state?: StoryState, total?: number): Promise<Uint8Array[]> {
   // Skip generation in development since there's no way to persist without ImageKit
   if (!IS_PRODUCTION) {
     console.log(`[generateAndUpdateBookCoverImage] ⏩ Skipping cover generation in development`);
@@ -1877,7 +1876,7 @@ export async function generateCoverImages(book: Book, state?: StoryState, total?
   }
 
   try {
-    const bookMeta = buildBookMetaDocuments(book, state);
+    const bookMeta = await buildBookMetaDocuments(book, state);
     const mcGender = book.mc.gender;
     const mcAge = book.mc.age;
     const mcAppearance = mcGender == 'male' ? 'dapper' : 'lovely';

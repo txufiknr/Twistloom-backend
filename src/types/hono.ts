@@ -15,5 +15,5 @@ export interface UploadedFile {
   /** Decoded byte size */
   size: number;
   /** Raw file bytes held in memory (serverless-safe, mirrors multer memoryStorage) */
-  buffer: Buffer;
+  buffer: Uint8Array;
 }

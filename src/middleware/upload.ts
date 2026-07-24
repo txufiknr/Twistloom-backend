@@ -33,7 +33,7 @@ const IMAGE_MAGIC_BYTES: Record<string, Uint8Array> = {
  * definition (unknown format) — the caller should still reject unknown types
  * via the MIME check.
  */
-function matchesMagicBytes(buffer: Buffer, mimeType: string): boolean {
+function matchesMagicBytes(buffer: Uint8Array, mimeType: string): boolean {
   const expected = IMAGE_MAGIC_BYTES[mimeType];
   if (!expected) return true; // Unknown MIME — let the caller's MIME check decide
   if (buffer.length < expected.length) return false;
@@ -76,7 +76,7 @@ export function imageUploadMiddleware(fieldName = "imageFile") {
       throw new HTTPException(413, { message: "Image file exceeds size limit" });
     }
 
-    const buffer = Buffer.from(await file.arrayBuffer());
+    const buffer = new Uint8Array(await file.arrayBuffer());
 
     // Magic-byte validation: verify the file header matches the declared MIME
     // type. This prevents polyglot files and mislabeled content from passing

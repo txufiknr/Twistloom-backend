@@ -1242,7 +1242,11 @@ router.get("/prompt", optionalAuth, async (c) => {
         }
         
         // Combine chunks to get full content
-        promptContent = Buffer.concat(chunks).toString('utf-8');
+        const totalLen = chunks.reduce((s, c) => s + c.length, 0);
+        const combined = new Uint8Array(totalLen);
+        let combinedOffset = 0;
+        for (const c of chunks) { combined.set(c, combinedOffset); combinedOffset += c.length; }
+        promptContent = new TextDecoder().decode(combined);
         
         // Validate and save to cache if quality is good
         if (PROMPT_CACHE_CONFIG.enabled && userId) {

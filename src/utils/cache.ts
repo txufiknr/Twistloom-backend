@@ -24,7 +24,7 @@ import { userCache } from "../db/schema.js";
 import { CACHE_KEY_HASH_THRESHOLD, CACHE_TTL_MINUTES } from "../config/cache.js";
 import { getErrorMessage } from "./error.js";
 import { stableStringify } from "./parser.js";
-import { createHash } from "crypto";
+
 
 /**
  * Removes expired user cache entries using database-enforced TTL.
@@ -494,16 +494,29 @@ export function hashContentDJB2(content: string): string {
   return (h >>> 0).toString(16);
 }
 
-// TODO: jsdoc
-export function hashContentSHA256(content: string): string {
-  // Another small improvement is to hash the UTF-8 bytes rather than the JavaScript string if you're using Node.
-  // That avoids any ambiguity around string encoding and is the standard approach.
-  return createHash('sha256').update(content, 'utf8').digest('hex');
+/**
+ * Hashes content using SHA-256 via Web Crypto API (Edge-compatible)
+ * 
+ * @param content - UTF-8 string content to hash
+ * @returns Hex-encoded SHA-256 hash string
+ */
+export async function hashContentSHA256(content: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(content);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-// TODO: jsdoc
-export function createCacheKey(value: unknown): string {
+/**
+ * Creates a deterministic cache key from a value. Short keys are used as-is;
+ * long keys are SHA-256 hashed to keep cache keys a reasonable length.
+ * 
+ * @param value - Value to create cache key for
+ * @returns Cache key string
+ */
+export async function createCacheKey(value: unknown): Promise<string> {
   const key = stableStringify(value);
   if (key.length <= CACHE_KEY_HASH_THRESHOLD) return key;
-  return `sha256:${key.length}:${hashContentSHA256(key)}`;
+  return `sha256:${key.length}:${await hashContentSHA256(key)}`;
 }

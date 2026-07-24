@@ -31,9 +31,9 @@ The Vercel Edge Runtime (web-standard APIs only: `fetch`, `Request`, `Response`,
 |---|---------|----------|----------------|--------|--------|
 | 1 | `@imagekit/nodejs` SDK | **CRITICAL** | `services/image.ts`, `services/book.ts` | High (removed) | ✅ Done |
 | 2 | `bcrypt` → `bcryptjs` | **CRITICAL** | `utils/password.ts` | Low (drop-in) | ✅ Done |
-| 3 | `Buffer` (9+ usages) | **CRITICAL** | `middleware/upload.ts`, `routes/books.ts`, `utils/ai-image.ts` | Medium | ⬜ |
+| 3 | `Buffer` (9+ usages) | **CRITICAL** | `middleware/upload.ts`, `routes/books.ts`, `utils/ai-image.ts` | Medium | ✅ Done |
 | 4 | Neon Pool WebSocket wiring | **HIGH** | `db/client.ts` | Low (+ testing) | ✅ Done |
-| 5 | `crypto.createHash` (Node `crypto`) | **HIGH** | `utils/cache.ts` | Medium (async ripple) | ⬜ |
+| 5 | `crypto.createHash` (Node `crypto`) | **HIGH** | `utils/cache.ts` | Medium (async ripple) | ✅ Done |
 | 6 | Entrypoint adapter | **HIGH** | `src/app.ts` | Low | ✅ Done |
 | 7 | Stripe fetch client config | **HIGH** | `utils/stripe.ts` | Low (1 line) | ✅ Done |
 | 8 | `fs` / `path` in constants | **LOW** | `config/constants.ts` | Low (remove fallback) | ✅ Done |
@@ -150,6 +150,15 @@ That's it — `hash()` and `compare()` signatures are identical. The trade-off i
 | `routes/books.ts` | 1188 | `Buffer.concat(chunks).toString('utf-8')` | `chunks.join('')` or `new TextDecoder().decode(concatUint8Arrays(chunks))` |
 | `utils/ai-image.ts` | 181 | `Buffer.from(imageData.imageData, "base64")` | `Uint8Array` from base64 |
 
+**Completion notes:**
+- `middleware/upload.ts` — `Buffer.from(file.arrayBuffer())` → `new Uint8Array(file.arrayBuffer())`; parameter type `Buffer` → `Uint8Array`
+- `types/hono.ts` — `UploadedFile.buffer` type `Buffer` → `Uint8Array`
+- `types/ai-images.ts` — `AIImageResult.buffers` type `Buffer[]` → `Uint8Array[]`
+- `routes/books.ts` — `Buffer.concat(chunks).toString('utf-8')` → `TextDecoder().decode(concatUint8Arrays(chunks))`
+- `utils/ai-image.ts` — `Buffer.from(base64, 'base64')` → `atob()` + `Uint8Array` loop; return array type `Uint8Array[]`
+- `services/book.ts` — `generateCoverImages` return type `Buffer<ArrayBufferLike>[]` → `Uint8Array[]`
+- `services/image.ts` — no changes needed (already ImageKit REST API, uses `ArrayBuffer.isView`/`instanceof ArrayBuffer`)
+
 **Estimated effort:** 4–6 hours for systematic replacement across all files.
 
 **Key insight:** If blocker #1 (`@imagekit/nodejs`) is resolved by switching to ImageKit REST API, most `Buffer` usage in the image pipeline becomes unnecessary because you'd send base64 strings or `ArrayBuffer` directly in the HTTP request body. The only remaining `Buffer` usages would be:
@@ -228,6 +237,11 @@ async function hashContentSHA256(content: string): Promise<string> {
 ```
 
 **Ripple effect:** `hashContentSHA256` is called from `createCacheKey` (line 505), which is called from multiple places. Both functions must become `async`, requiring all callers to be updated with `await`.
+
+**Completion notes:**
+- `utils/cache.ts` — replaced `createHash('sha256')` with `crypto.subtle.digest("SHA-256")`; both `hashContentSHA256` and `createCacheKey` are now async
+- `services/book.ts` — `buildBookMetaDocuments` made async with `await createCacheKey(...)`; callers in `book.ts` and `prompt.ts` updated with `await`
+- Both callers were already inside async functions — minimal ripple
 
 ---
 
@@ -514,12 +528,12 @@ These are used in the codebase but **do not require changes**:
 
 1. ✅ **Replace `@imagekit/nodejs` with REST API** — `services/image.ts` rewritten; `services/book.ts` type import updated
 2. ✅ **Replace `bcrypt` with `bcryptjs`** — one-line change
-3. **Systematic `Buffer` → `Uint8Array`/`ArrayBuffer` replacement** — `services/image.ts` done; remaining in `middleware/upload.ts`, `routes/books.ts`, `utils/ai-image.ts`
+3. ✅ **Systematic `Buffer` → `Uint8Array`/`ArrayBuffer` replacement** — `middleware/upload.ts`, `routes/books.ts`, `utils/ai-image.ts`, `types/`
 
 ### Phase 2 — High blockers (estimated: 1–2 days)
 
 4. ✅ **Configure Neon WebSocket for Edge** — `db/client.ts`
-5. **Refactor `createHash` → Web Crypto** — `utils/cache.ts` (async ripple)
+5. ✅ **Refactor `createHash` → Web Crypto** — `utils/cache.ts` (async ripple)
 6. ✅ **Switch entrypoint to `hono/vercel`** — `app.ts`
 7. ✅ **Configure Stripe fetch client** — `utils/stripe.ts`
 

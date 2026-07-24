@@ -152,7 +152,7 @@ async function processAndSaveImages(
   context: string = "ai-image"
 ): Promise<AIImageResult> {
   const savedPaths: string[] = [];
-  const buffers: Buffer[] = [];
+  const buffers: Uint8Array[] = [];
   const mimeTypes: string[] = [];
 
   // Ensure output directory exists (only if outputDir is provided)
@@ -178,9 +178,13 @@ async function processAndSaveImages(
     // Determine MIME type (default to jpeg if unknown)
     const mimeType = imageData.mimeType || "image/jpeg";
 
-    // Always create buffer from base64 data
-    const buffer = Buffer.from(imageData.imageData, "base64");
-    buffers.push(buffer);
+    // Always create Uint8Array from base64 data
+    const binaryStr = atob(imageData.imageData);
+    const bytes = new Uint8Array(binaryStr.length);
+    for (let i = 0; i < binaryStr.length; i++) {
+      bytes[i] = binaryStr.charCodeAt(i);
+    }
+    buffers.push(bytes);
     mimeTypes.push(mimeType);
 
     // Save to disk only if outputDir is provided
@@ -195,7 +199,7 @@ async function processAndSaveImages(
       
       // Save image to disk
       const { writeFileSync } = await import("fs");
-      writeFileSync(filepath, buffer);
+      writeFileSync(filepath, bytes);
       console.log(`[${context}] ✅ Saved: ${filepath}`);
       savedPaths.push(resolve(filepath));
     } else {

@@ -4509,7 +4509,7 @@ async function prepareNextPageGenerationSetup(params: BuildNextPageParams, candi
     buildCharacterRecallBlocks(advancedState.characters, actionedPage, book),
     buildPlaceRecallBlocks(advancedState.places, actionedPage, book),
   ]);
-  const bookMeta = buildBookMetaDocuments(book, advancedState, {
+  const bookMeta = await buildBookMetaDocuments(book, advancedState, {
     characters: characterRecallBlocks,
     places: placeRecallBlocks,
   });

@@ -19,7 +19,7 @@ export interface AIImageResult {
   /** File paths (only available when outputDir is provided) */
   filePaths?: string[];
   /** Image buffers (always available) */
-  buffers: Buffer[];
+  buffers: Uint8Array[];
   /** MIME types for each image */
   mimeTypes: string[];
 }
