@@ -21,7 +21,7 @@
  * ```
  */
 
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs';
 
 const SALT_ROUNDS = 12; // Recommended for production (balance of security & performance)
 

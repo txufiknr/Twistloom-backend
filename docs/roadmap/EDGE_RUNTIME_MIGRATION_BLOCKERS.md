@@ -30,7 +30,7 @@ The Vercel Edge Runtime (web-standard APIs only: `fetch`, `Request`, `Response`,
 | # | Blocker | Severity | Files Affected | Effort | Status |
 |---|---------|----------|----------------|--------|--------|
 | 1 | `@imagekit/nodejs` SDK | **CRITICAL** | `services/image.ts`, `services/book.ts`, `middleware/upload.ts` | High | ✅ Done |
-| 2 | `bcrypt` native addon | **CRITICAL** | `utils/password.ts` | Low (drop-in) | ⬜ |
+| 2 | `bcrypt` → `bcryptjs` | **CRITICAL** | `utils/password.ts` | Low (drop-in) | ✅ Done |
 | 3 | `Buffer` (9+ usages) | **CRITICAL** | `middleware/upload.ts`, `routes/books.ts`, `utils/ai-image.ts` | Medium | ⬜ |
 | 4 | Neon Pool WebSocket wiring | **HIGH** | `db/client.ts` | Low (+ testing) | ⬜ |
 | 5 | `crypto.createHash` (Node `crypto`) | **HIGH** | `utils/cache.ts` | Medium (async ripple) | ⬜ |
@@ -478,7 +478,7 @@ These are used in the codebase but **do not require changes**:
 ### Phase 1 — Critical blockers (estimated: 3–5 days)
 
 1. ✅ **Replace `@imagekit/nodejs` with REST API** — `services/image.ts` rewritten; `services/book.ts` type import updated
-2. **Replace `bcrypt` with `bcryptjs`** — one-line change
+2. ✅ **Replace `bcrypt` with `bcryptjs`** — one-line change
 3. **Systematic `Buffer` → `Uint8Array`/`ArrayBuffer` replacement** — `services/image.ts` done; remaining in `middleware/upload.ts`, `routes/books.ts`, `utils/ai-image.ts`
 
 ### Phase 2 — High blockers (estimated: 1–2 days)
