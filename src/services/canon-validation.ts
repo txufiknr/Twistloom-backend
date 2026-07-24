@@ -11,7 +11,7 @@ import { getStoryStateInfo } from "../utils/story.js";
 import { aiPrompt, createAIOptionsWithSchema } from "../utils/ai-chat.js";
 import { AI_CHAT_MODELS_EVALUATION } from "../config/ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
-import { CANON_VALIDATION_MAX_OUTPUT_TOKEN, CANON_VALIDATION_MAX_REWRITE_ATTEMPTS, CANON_REWRITE_MAX_OUTPUT_TOKEN } from "../config/canon-validation.js";
+import { CANON_VALIDATION_MAX_OUTPUT_TOKEN, CANON_VALIDATION_MAX_REWRITE_ATTEMPTS, CANON_REWRITE_MAX_OUTPUT_TOKEN, CANON_VALIDATION_ENABLED } from "../config/canon-validation.js";
 import { dbWrite } from "../db/client.js";
 import { canonValidations } from "../db/schema.js";
 
@@ -19,6 +19,7 @@ import { canonValidations } from "../db/schema.js";
 // Schema for structured AI output
 // ============================================================================
 
+/** All valid violation category labels — drives both the AI schema enum and runtime validation */
 const CANON_VIOLATION_TYPE_ENUM: CanonViolationType[] = [
   'timeline',
   'character_knowledge',
@@ -31,6 +32,11 @@ const CANON_VIOLATION_TYPE_ENUM: CanonViolationType[] = [
   'other',
 ];
 
+/**
+ * Structured-output schema definition for the validation judge.
+ * Mirrors CanonValidationResult shape; consumed by createAIOptionsWithSchema
+ * to enforce JSON adherence from the AI response.
+ */
 export const CANON_VALIDATION_SCHEMA_DEFINITION: Record<keyof CanonValidationResult, AIJsonProperty> = {
   outcome: {
     type: 'string',
@@ -58,6 +64,7 @@ export const CANON_VALIDATION_SCHEMA_DEFINITION: Record<keyof CanonValidationRes
   revisedText: { type: 'string' },
 };
 
+/** Fields the AI must always populate — outcome, score, description, violations are mandatory */
 export const CANON_VALIDATION_REQUIRED_FIELDS: (keyof CanonValidationResult)[] = [
   'outcome',
   'severityScore',
@@ -69,6 +76,7 @@ export const CANON_VALIDATION_REQUIRED_FIELDS: (keyof CanonValidationResult)[] =
 // Context builders (slim lore snapshot for the judge)
 // ============================================================================
 
+/** Collapse factsHistory into a sorted bullet list — only the latest value per key */
 function formatFactsForCanon(
   factsHistory: StoryState['factsHistory'],
 ): string {
@@ -83,6 +91,7 @@ function formatFactsForCanon(
   return entries.sort().join('\n');
 }
 
+/** Summarise major/recent plot flags — prefers major events, falls back to last 12, caps at 16 entries */
 function formatPlotFlagsForCanon(plotFlags: PlotFlag[]): string {
   if (!plotFlags.length) return '  None yet.';
   const major = plotFlags.filter((f) => f.isMajorEvent);
@@ -93,6 +102,7 @@ function formatPlotFlagsForCanon(plotFlags: PlotFlag[]): string {
     .join('\n');
 }
 
+/** Render up to 24 known characters with role, status, and up to 2 secrets each */
 function formatCharactersForCanon(state: StoryState): string {
   const entries = Object.entries(state.characters);
   if (!entries.length) return '  None introduced.';
@@ -105,6 +115,7 @@ function formatCharactersForCanon(state: StoryState): string {
     .join('\n');
 }
 
+/** Render up to 16 known places with type and truncated context */
 function formatPlacesForCanon(state: StoryState): string {
   const entries = Object.entries(state.places);
   if (!entries.length) return '  None known.';
@@ -114,6 +125,7 @@ function formatPlacesForCanon(state: StoryState): string {
     .join('\n');
 }
 
+/** Render inventory items — appends xN count for stacked items */
 function formatInventoryForCanon(state: StoryState): string {
   if (!state.inventory.length) return '  (empty)';
   return state.inventory
@@ -121,6 +133,7 @@ function formatInventoryForCanon(state: StoryState): string {
     .join('\n');
 }
 
+/** Render active narrative threads with priority and status */
 function formatThreadsForCanon(state: StoryState): string {
   if (!state.threads.length) return '  No active threads.';
   return state.threads
@@ -128,6 +141,7 @@ function formatThreadsForCanon(state: StoryState): string {
     .join('\n');
 }
 
+/** Serialise a single generated page into the structured context block the judge sees — text, location, characters, proposed facts */
 function formatGeneratedPageForCanon(page: StoryGeneration): string {
   const parts: string[] = [];
   parts.push(`TEXT:\n"""\n${page.text}\n"""`);
@@ -200,6 +214,8 @@ ${(state.contextHistory || '(none)').slice(0, 1200)}`;
 
 /**
  * Gate 2-style structured judge for generated page prose vs established lore.
+ * Uses a detailed rubric of violation types and special rules (reality distortion,
+ * lossy context) to prevent false positives from intentional narrative techniques.
  */
 export function buildCanonValidationPrompt(
   state: StoryState,
@@ -247,6 +263,10 @@ SPECIAL RULES:
 ${context}`;
 }
 
+/**
+ * Build the prompt for the targeted rewrite pass (invoked on rejected outcome).
+ * Feed it only the violation details + original text — no redundant context.
+ */
 function buildCanonRewritePrompt(
   state: StoryState,
   generatedPage: StoryGeneration,
@@ -279,8 +299,15 @@ Return JSON only:
 // Normalize / apply
 // ============================================================================
 
+/** Canonical set of valid outcome labels — any other string from the AI is treated as null (fail-open) */
 const VALID_OUTCOMES = new Set<CanonValidationOutcome>(['passed', 'revised', 'rejected']);
 
+/**
+ * Sanitise and coerce a raw AI response into a well-typed CanonValidationResult.
+ * Handles missing fields, out-of-range scores, invalid enum values, and two
+ * implicit demotion rules (revised→rejected when no text; passed→revised/rejected
+ * when contradictions exist). Returns null only when outcome is missing or invalid.
+ */
 function normalizeValidationResult(
   raw: CanonValidationResult | null | undefined,
 ): CanonValidationResult | null {
@@ -324,7 +351,9 @@ function normalizeValidationResult(
 }
 
 /**
- * Apply validation outcome to a generated page (text only for v1).
+ * Apply validation outcome to a generated page (text only — metadata is authoritative).
+ * Only `revised` with usable `revisedText` mutates the page; all other outcomes
+ * pass through unchanged so the story continues even on rejection.
  */
 export function applyCanonValidationToPage(
   page: StoryGeneration,
@@ -340,6 +369,12 @@ export function applyCanonValidationToPage(
 // AI calls
 // ============================================================================
 
+/**
+ * Run the structured validation AI call.
+ * fail-open: any error returns `{ result: null }` so generation is never blocked.
+ * The AI options are built with schema enforcement (createAIOptionsWithSchema)
+ * and the judge model selection from AI_CHAT_MODELS_EVALUATION.
+ */
 async function runCanonValidationAi(
   state: StoryState,
   generatedPage: StoryGeneration,
@@ -377,6 +412,12 @@ async function runCanonValidationAi(
   }
 }
 
+/**
+ * Run the targeted rewrite AI call.
+ * Uses `satisfies Record<'text', AIJsonProperty>` for schema definition
+ * without losing the literal type — only `text` is needed.
+ * fail-open: returns null on any error.
+ */
 async function runCanonRewriteAi(
   state: StoryState,
   generatedPage: StoryGeneration,
@@ -414,6 +455,7 @@ async function runCanonRewriteAi(
 // Public orchestration
 // ============================================================================
 
+/** Shape returned to callers — includes the (possibly rewritten) page, a reader-facing summary, and a full audit trail */
 export type CanonValidationPassResult = {
   page: StoryGeneration;
   summary: CanonValidationSummary | null;
@@ -429,13 +471,21 @@ export type CanonValidationPassResult = {
 };
 
 /**
- * Generation-time canon pass.
+ * Generation-time canon pass — the main entry point.
  *
  * Flow:
- * 1. Structured AI validation
- * 2. If revised with text → apply and done
- * 3. If rejected → up to CANON_VALIDATION_MAX_REWRITE_ATTEMPTS targeted rewrites + re-validate
- * 4. Always fail-open: AI errors or residual reject still return the best page so generation continues
+ * 1. Check enabled (per-call override → config default)
+ * 2. Structured AI validation against story state
+ * 3. Passed → return page as-is with audit
+ * 4. Revised with text → apply revision immediately, return
+ * 5. Rejected (or revised without text) → enter capped rewrite loop:
+ *    a. Targeted AI rewrite of just the contradictions
+ *    b. Re-validate the rewritten page
+ *    c. If passed/revised → return; if still rejected → retry up to N times
+ * 6. Residual reject → fail-open: return best page anyway so generation pipeline isn't blocked
+ *
+ * The rewrite loop is capped by CANON_VALIDATION_MAX_REWRITE_ATTEMPTS (default 1)
+ * to prevent infinite AI calls on an irreconcilable page.
  */
 export async function runCanonValidationPass(params: {
   state: StoryState;
@@ -445,10 +495,11 @@ export async function runCanonValidationPass(params: {
   /** Per-call override; when omitted, uses CANON_VALIDATION_ENABLED (default false). */
   enabled?: boolean;
 }): Promise<CanonValidationPassResult> {
-  const { state, bookId } = params;
+  const { state, bookId, enabled = CANON_VALIDATION_ENABLED } = params;
   const logContext = params.logContext ?? 'canon-validation';
 
-  if (!params.enabled) {
+  // Gate: per-call override OR config default; if disabled, skip all validation work
+  if (!enabled) {
     return { page: params.generatedPage, summary: null, audit: null };
   }
 
@@ -456,13 +507,16 @@ export async function runCanonValidationPass(params: {
   let rewriteAttempts = 0;
   let wasRevised = false;
 
+  // Step 1: initial structured validation judgement
   const { result: firstResult } = await runCanonValidationAi(state, page, bookId);
 
   if (!firstResult) {
+    // fail-open: AI error or no valid outcome → return original page, no audit
     console.warn(`[${logContext}] ⚠️ Canon validation returned no result — fail-open`);
     return { page, summary: null, audit: null };
   }
 
+  // Step 2: clean pass → return immediately with audit trail
   if (firstResult.outcome === 'passed') {
     console.log(`[${logContext}] ✅ Canon validation passed (severity=${firstResult.severityScore})`);
     return {
@@ -480,6 +534,7 @@ export async function runCanonValidationPass(params: {
     };
   }
 
+  // Step 3: AI self-revised with usable text → apply revision and return
   if (firstResult.outcome === 'revised' && firstResult.revisedText) {
     page = applyCanonValidationToPage(page, firstResult);
     console.log(
@@ -505,7 +560,7 @@ export async function runCanonValidationPass(params: {
     };
   }
 
-  // rejected (or revised without text) → capped rewrite loop
+  // Step 4: rejected (or revised without text) → enter capped rewrite loop
   let lastResult: CanonValidationResult = firstResult;
 
   while (rewriteAttempts < CANON_VALIDATION_MAX_REWRITE_ATTEMPTS) {
@@ -514,16 +569,19 @@ export async function runCanonValidationPass(params: {
       `[${logContext}] 🔁 Canon reject → rewrite attempt ${rewriteAttempts}/${CANON_VALIDATION_MAX_REWRITE_ATTEMPTS}`,
     );
 
+    // Step 4a: targeted AI rewrite limited to the listed violations
     const rewritten = await runCanonRewriteAi(state, page, lastResult, bookId);
-    if (!rewritten) break;
+    if (!rewritten) break; // rewrite failed → exit loop, keep best page
 
     page = { ...page, text: rewritten };
     wasRevised = true;
 
+    // Step 4b: re-validate the rewritten page
     const { result: recheck } = await runCanonValidationAi(state, page, bookId);
-    if (!recheck) break;
+    if (!recheck) break; // re-check failed → exit loop, keep rewritten page
     lastResult = recheck;
 
+    // Step 4c: rewrite fully resolved contradictions → return as revised
     if (recheck.outcome === 'passed') {
       console.log(`[${logContext}] ✅ Canon re-check passed after rewrite`);
       return {
@@ -546,6 +604,7 @@ export async function runCanonValidationPass(params: {
       };
     }
 
+    // Step 4d: rewrite reduced severity but minor issues remain → apply revised text
     if (recheck.outcome === 'revised' && recheck.revisedText) {
       page = applyCanonValidationToPage(page, recheck);
       console.log(`[${logContext}] 🔧 Canon re-check applied further revision`);
@@ -570,7 +629,9 @@ export async function runCanonValidationPass(params: {
     }
   }
 
-  // Residual reject: fail-open with best available page + audit
+  // Step 5: residual reject — exhausted rewrite attempts or AI kept rejecting
+  // fail-open: return the best available (possibly rewritten) page so the
+  // generation pipeline is never blocked by an irreconcilable page
   console.warn(
     `[${logContext}] ⚠️ Canon residual reject after ${rewriteAttempts} rewrite(s) — persisting best page (type=${lastResult.violationType})`,
   );
@@ -621,6 +682,12 @@ export async function insertCanonValidationAudit(params: {
   }
 }
 
+/**
+ * Downcast a full audit into the reader-facing summary shape.
+ * Softens a `rejected` outcome to `revised` when a rewrite was actually
+ * applied — the reader only needs to know the page was repaired,
+ * not the internal severity of the original violation.
+ */
 export function toCanonValidationSummary(
   audit: CanonValidationPassResult['audit'],
 ): CanonValidationSummary | null {
