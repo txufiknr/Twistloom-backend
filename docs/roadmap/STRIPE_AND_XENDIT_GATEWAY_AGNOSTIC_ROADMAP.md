@@ -1,6 +1,6 @@
 # Stripe + Xendit Gateway-Agnostic Payment Architecture — Implementation Roadmap
 
-**Status:** 🚧 In progress — Phase 0 bugfixes + Phase 1 schema/service renames done in code (DB migration still pending)
+**Status:** 🚧 In progress — Phase 0–2 backend (credit packs) done in code; DB migrate (1.1) + deploy (1.5) still pending
 **Scope:** Both `twistloom-web` (Next.js frontend) and `twistloom-backend` (Hono.js/Express backend)
 **Stack:** Stripe Node SDK · Xendit Node SDK · PostgreSQL (Neon) · Drizzle ORM · TypeScript
 
@@ -1309,14 +1309,14 @@ It may hit the timeout. The Stripe webhook handler already has this concern, but
 
 ### Phase 2: Xendit Backend Integration — Credit Packs Only (Days 3-5)
 
-| Step | What | Who |
-|------|------|-----|
-| 2.1 | Create `src/config/xendit.ts` | Backend |
-| 2.2 | Implement Xendit Invoice API service (credit packs — one-time purchase only) | Backend |
-| 2.3 | Implement Xendit webhook handler for `invoice.paid` (`POST /payments/xendit/webhook`) | Backend |
-| 2.4 | Add gateway parameter to `POST /payments/create-checkout-session` dispatcher | Backend |
-| 2.5 | Update `GET /payments/credit-packs` for gateway-aware response | Backend |
-| 2.6 | Add Xendit env vars to `.env.example` | Backend |
+| Step | What | Who | Status |
+|------|------|-----|--------|
+| 2.1 | Create `src/config/xendit.ts` | Backend | ✅ Done |
+| 2.2 | Implement Xendit Invoice API service (credit packs — one-time purchase only) | Backend | ✅ Done — `src/utils/xendit.ts` + `src/services/xendit.ts` (raw `fetch`, no SDK) |
+| 2.3 | Implement Xendit webhook handler for `invoice.paid` (`POST /payments/xendit/webhook`) | Backend | ✅ Done — verifies `x-callback-token` |
+| 2.4 | Add gateway parameter to `POST /payments/create-checkout-session` dispatcher | Backend | ✅ Done |
+| 2.5 | Update `GET /payments/credit-packs` for gateway-aware response | Backend | ✅ Done |
+| 2.6 | Add Xendit env vars to `.env.local.example` | Backend | ✅ Done |
 
 ### Phase 2b: Xendit Backend — Subscriptions (Days 5-8, deferred per Q11)
 
@@ -1381,26 +1381,26 @@ Subscription webhook handlers (`handleXenditPlanActivated`, `handleXenditCycleSu
 
 ### Backend (`twistloom-backend`) — New Files
 
-| File | Purpose |
-|------|---------|
-| `src/config/xendit.ts` | Xendit-specific IDR pricing, payment channels, env vars |
-| `src/services/xendit.ts` | Xendit API wrapper functions (Invoice, Subscription SDK calls) |
-| `src/utils/xendit.ts` | Xendit singleton + webhook verification |
+| File | Purpose | Status |
+|------|---------|--------|
+| `src/config/xendit.ts` | Xendit-specific IDR pricing, payment channels, env vars | ✅ Done |
+| `src/services/xendit.ts` | Credit-pack checkout + `invoice.paid` award flow | ✅ Done (subscriptions deferred 2b) |
+| `src/utils/xendit.ts` | Invoice `fetch` client + `x-callback-token` verification | ✅ Done |
 
 ### Backend (`twistloom-backend`) — Modified Files
 
 | File | Changes | Status |
 |------|---------|--------|
 | `src/db/schema.ts` | Rename columns + `gateway` discriminator | ✅ Done |
-| `src/routes/payments.ts` | Gateway-agnostic field names; Stripe paths set `gateway: 'stripe'`; cancel/portal use provider IDs | ✅ Done (Xendit routes still pending Phase 2) |
+| `src/routes/payments.ts` | Gateway-agnostic fields; checkout/credit-packs dispatcher; Xendit webhook | ✅ Done |
 | `src/services/subscription.ts` | Generic params (`providerSubscriptionId`, etc.), `gateway` field; write `providerEventId` on create/renew | ✅ Done |
 | `src/services/credits.ts` | `awardCredits()` writes `gateway` / `providerPaymentId` / `providerEventId` | ✅ Done |
 | `src/types/express.d.ts` | `AuthUser.stripeCustomerId` → `customerId` | ✅ Done |
-| `src/types/subscription.ts` | Generic param types | ⏳ Pending (optional; service interfaces live in subscription service) |
-| `src/types/credits.ts` | `CreditPack.gateway`, `AwardCreditsOptions.gateway` | ⏳ Pending (AwardCreditsOptions is private in credits service) |
-| `src/config/credits.ts` | Optional `priceIdr` field on packs | ⏳ Pending (Phase 2) |
-| `src/config/subscription.ts` | `SubscriptionConfig` gains `currency` option | ⏳ Pending (Phase 2) |
-| `.env.example` | Xendit env vars | ⏳ Pending (Phase 2) |
+| `src/types/subscription.ts` | Generic param types | ⏳ Optional |
+| `src/types/credits.ts` | `CreditPack.gateway` on shared type | ⏳ Optional (API response shaped in route) |
+| `src/config/credits.ts` | Optional `priceIdr` on pack objects | ✅ IDR prices live in `config/xendit.ts` instead |
+| `src/config/subscription.ts` | `SubscriptionConfig` gains `currency` option | ⏳ Pending (Phase 2b / frontend) |
+| `.env.local.example` | Xendit env vars | ✅ Done |
 
 ### Frontend (`twistloom-web`) — Modified Files
 
@@ -1427,4 +1427,4 @@ Subscription webhook handlers (`handleXenditPlanActivated`, `handleXenditCycleSu
 
 ---
 
-*Generated: 2026-07-24 · Last updated: 2026-07-24 — Phase 0.2–0.4 and Phase 1.2–1.4 implemented in backend code. Run DB generate/migrate (1.1) before deploy (1.5). Review [Open Questions](#11-open-questions--recommendations) before Phase 2.*
+*Generated: 2026-07-24 · Last updated: 2026-07-24 — Phase 0.2–0.4, 1.2–1.4, and Phase 2.1–2.6 (Xendit credit packs) implemented. Still need: DB migrate (1.1), deploy (1.5), frontend Phases 4–5, optional 2b subscriptions.*

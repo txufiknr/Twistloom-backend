@@ -20,7 +20,7 @@ router.get("/", (c) => {
       "/books": "Create and manage psychological thriller books",
       "/admin": "Administrative tools and debugging endpoints",
       "/auth": "Authentication endpoints",
-      "/payments": "Stripe checkout sessions and credit purchases",
+      "/payments": "Payment checkout (Stripe/Xendit), credits, and webhooks",
       "/social-mentions": "Public social-proof wall (featured mentions)",
     },
   });

@@ -29,6 +29,7 @@ import { CREDIT_ERRORS } from '../config/errors.js';
 import { logUserActivity } from './user.js';
 import { retryWithBackoffOrNull } from '../utils/retry.js';
 import type { ConsumeCreditsOptions, ConsumeCreditsResult, TransactionType } from '../types/credits.js';
+import { PAYMENT_GATEWAY, type PaymentGateway } from '../types/payment.js';
 
 // ---------------------------------------------------------------------------
 // consumeCredits
@@ -556,8 +557,8 @@ export async function executeWithCredits<T>(
 interface AwardCreditsOptions {
   /** Transaction type recorded in the `transactions` table */
   type: TransactionType;
-  /** Payment gateway for this award (`stripe` | `xendit`); defaults to `stripe` */
-  gateway?: "stripe" | "xendit";
+  /** Payment gateway for this award; defaults to `stripe` */
+  gateway?: PaymentGateway;
   /** Notification type identifier */
   notificationType: string;
   /** Notification title shown to the user */
@@ -601,7 +602,7 @@ export async function awardCredits(
 ): Promise<number> {
   const {
     type,
-    gateway = "stripe",
+    gateway = PAYMENT_GATEWAY.stripe,
     notificationType,
     notificationTitle,
     notificationMessage,

@@ -1,8 +1,8 @@
 /**
  * Payments Routes Module (Hono)
  *
- * Provides endpoints for Stripe checkout sessions, credit purchases, and transaction history.
- * Integrates with Stripe for payment processing and tracks all credit-related transactions.
+ * Checkout sessions, credit packs, subscriptions, and webhooks for Stripe and
+ * Xendit (credit packs). DB is gateway-agnostic; routes set `gateway` on writes.
  */
 
 import { Hono, type Context } from "hono";
@@ -21,8 +21,21 @@ import { CREDIT_ERRORS, isInsufficientCreditsError } from "../config/errors.js";
 import { createSubscription, updateSubscription, renewSubscription, cancelSubscription, hasActiveVipSubscription, isTrialEligible, handleTrialWillEnd } from "../services/subscription.js";
 import { VIP_BENEFITS, VIP_SUBSCRIPTION, VIP_TRIAL } from "../config/subscription.js";
 import { getStripe } from "../utils/stripe.js";
+import { getXenditPackPriceIdr, XENDIT_CONFIG } from "../config/xendit.js";
+import { verifyXenditCallbackToken, isXenditConfigured, type XenditInvoice } from "../utils/xendit.js";
+import {
+  createXenditCreditPackCheckout,
+  finalizeXenditWebhookDelivery,
+  handleXenditInvoicePaid,
+  trackXenditWebhookDelivery,
+} from "../services/xendit.js";
 import type { AppEnv } from "../hono/env.js";
 import { getClientIp } from "../hono/express-shim.js";
+import { isPaymentGateway, PAYMENT_GATEWAY, type PaymentGateway } from "../types/payment.js";
+
+function parseGateway(value: unknown): PaymentGateway | null {
+  return isPaymentGateway(value) ? value : null;
+}
 
 /**
  * Extended Stripe Subscription interface with properties that exist in the API
@@ -159,7 +172,7 @@ async function handleSubscriptionCreated(event: Stripe.Event) {
   const priceId = subscription.items.data[0].price.id;
   await createSubscription({
     userId,
-    gateway: "stripe",
+    gateway: PAYMENT_GATEWAY.stripe,
     providerSubscriptionId: subscription.id,
     providerCustomerId: subscription.customer as string,
     providerPriceId: priceId,
@@ -195,7 +208,7 @@ async function handleSubscriptionUpdated(event: Stripe.Event) {
     return console.error("[subscription] ❌ Invalid subscription object: missing period properties");
   }
   await updateSubscription({
-    gateway: "stripe",
+    gateway: PAYMENT_GATEWAY.stripe,
     providerSubscriptionId: subscription.id,
     status: subscription.status,
     currentPeriodEnd: new Date(subscription.current_period_end * 1000),
@@ -224,7 +237,7 @@ async function handleSubscriptionUpdated(event: Stripe.Event) {
 async function handleSubscriptionDeleted(event: Stripe.Event) {
   const subscription = event.data.object as Stripe.Subscription;
   await cancelSubscription({
-    gateway: "stripe",
+    gateway: PAYMENT_GATEWAY.stripe,
     providerSubscriptionId: subscription.id,
     canceledAt: subscription.canceled_at ? new Date(subscription.canceled_at * 1000) : new Date(),
     providerEventId: event.id,
@@ -267,7 +280,7 @@ async function handleInvoicePaymentSucceeded(event: Stripe.Event) {
     return console.error("[subscription] ❌ Could not determine period end from invoice");
   }
   await renewSubscription({
-    gateway: "stripe",
+    gateway: PAYMENT_GATEWAY.stripe,
     providerSubscriptionId: subscriptionId,
     providerInvoiceId: invoice.id,
     currentPeriodEnd: new Date(periodEnd * 1000),
@@ -298,7 +311,7 @@ async function handleInvoicePaymentFailed(event: Stripe.Event) {
   const subscriptionId = typeof subscriptionData === 'string' ? subscriptionData : subscriptionData?.id;
   if (!subscriptionId) return;
   await updateSubscription({
-    gateway: "stripe",
+    gateway: PAYMENT_GATEWAY.stripe,
     providerSubscriptionId: subscriptionId,
     status: 'past_due',
   });
@@ -330,21 +343,38 @@ async function handleTrialWillEndEvent(event: Stripe.Event) {
 /**
  * GET /credit-packs
  *
- * Returns the list of available credit packs for purchase. Strips internal
- * fields (e.g. Stripe API keys) and exposes only frontend-safe metadata.
+ * Returns available credit packs for purchase. Optional `gateway` query selects
+ * currency/pricing (`stripe` = USD, `xendit` = IDR).
  *
  * @route GET /api/payments/credit-packs
- * @returns {Object[]} Array of credit packs with id, title, credits, priceUSD, etc.
- *
- * @example
- * ```typescript
- * // Response:
- * [{ id: "basic", title: "Basic Pack", credits: 100, priceUSD: 9.99, ... }]
- * ```
+ * @query {string} [gateway=stripe] - `stripe` | `xendit`
+ * @returns {Object[]} Credit packs with gateway-aware pricing fields
  */
 router.get("/credit-packs", async (c) => {
   try {
-    const safeCreditPacks = CREDIT_PACKS.map(pack => ({
+    const gatewayParam = parseGateway(c.req.query("gateway") || PAYMENT_GATEWAY.stripe);
+    if (!gatewayParam) return cValidationError(c, "Invalid gateway (use stripe or xendit)");
+
+    if (gatewayParam === PAYMENT_GATEWAY.xendit) {
+      if (!XENDIT_CONFIG.enabled) {
+        return cValidationError(c, "Xendit gateway is not enabled");
+      }
+      const packs = CREDIT_PACKS.map((pack) => ({
+        id: pack.id,
+        title: pack.title,
+        tagline: pack.tagline,
+        description: pack.description,
+        credits: pack.credits,
+        priceIdr: getXenditPackPriceIdr(pack.id),
+        currency: "IDR" as const,
+        gateway: PAYMENT_GATEWAY.xendit,
+        badge: pack.badge,
+        color: pack.color,
+      }));
+      return c.json(packs);
+    }
+
+    const packs = CREDIT_PACKS.map((pack) => ({
       id: pack.id,
       title: pack.title,
       tagline: pack.tagline,
@@ -353,10 +383,12 @@ router.get("/credit-packs", async (c) => {
       priceUSD: pack.priceUSD,
       priceId: pack.priceId,
       productId: pack.productId,
+      currency: "USD" as const,
+      gateway: PAYMENT_GATEWAY.stripe,
       badge: pack.badge,
       color: pack.color,
     }));
-    return c.json(safeCreditPacks);
+    return c.json(packs);
   } catch (error) {
     return cApiError(c, "Failed to fetch credit packs", error);
   }
@@ -365,29 +397,28 @@ router.get("/credit-packs", async (c) => {
 /**
  * POST /create-checkout-session
  *
- * Creates a Stripe Checkout Session for a one-time credit pack purchase.
+ * Creates a one-time credit pack checkout via Stripe Checkout or Xendit Invoice.
  * Validates the pack ID, enforces a 10-second rate limit per user, constructs
  * safe return URLs (with origin validation for `returnUrl`), and returns the
- * checkout URL to the frontend.
+ * hosted checkout URL.
  *
  * @route POST /api/payments/create-checkout-session
  * @auth required
  * @body {string} packId - ID of the credit pack to purchase
+ * @body {string} [gateway=stripe] - `stripe` | `xendit`
  * @body {string} [successPath] - Fallback success redirect path
  * @body {string} [cancelPath] - Fallback cancel redirect path
  * @body {string} [returnUrl] - Fully-qualified return URL (cross-origin rejected)
- * @returns {{ url: string, sessionId: string }} Stripe Checkout Session URL
- *
- * @example
- * ```typescript
- * // Request body: { packId: "premium_1000", returnUrl: "https://app.example.com/pricing" }
- * // Response: { url: "https://checkout.stripe.com/...", sessionId: "cs_test_..." }
- * ```
+ * @returns {{ url: string, sessionId: string, gateway: string }} Hosted checkout URL
  */
 router.post("/create-checkout-session", requireAuth, async (c) => {
   try {
-    const { packId, successPath, cancelPath, returnUrl } = c.get("body");
+    const { packId, successPath, cancelPath, returnUrl, gateway: gatewayBody } = c.get("body");
     if (!packId) return cValidationError(c, "Credit pack ID is required");
+
+    const gateway = parseGateway(gatewayBody ?? PAYMENT_GATEWAY.stripe);
+    if (!gateway) return cValidationError(c, "Invalid gateway (use stripe or xendit)");
+
     const user = c.get("user")!;
     const { id: userId, email } = user;
 
@@ -414,16 +445,31 @@ router.post("/create-checkout-session", requireAuth, async (c) => {
         returnUrlObj.searchParams.set('payment', 'cancel');
         cancelUrl = returnUrlObj.toString();
       } catch {
-        successUrl = constructSafeUrl(successPath, baseUrl, '/dashboard?success=true');
-        cancelUrl = constructSafeUrl(cancelPath, baseUrl, '/pricing');
+        successUrl = constructSafeUrl(successPath, baseUrl, '/dashboard?payment=success');
+        cancelUrl = constructSafeUrl(cancelPath, baseUrl, '/pricing?payment=cancel');
       }
     } else {
-      successUrl = constructSafeUrl(successPath, baseUrl, '/dashboard?success=true');
-      cancelUrl = constructSafeUrl(cancelPath, baseUrl, '/pricing');
+      successUrl = constructSafeUrl(successPath, baseUrl, '/dashboard?payment=success');
+      cancelUrl = constructSafeUrl(cancelPath, baseUrl, '/pricing?payment=cancel');
     }
 
     const pack = CREDIT_PACKS.find((p) => p.id === packId);
     if (!pack) return cNotFoundError(c, "Credit pack not found");
+
+    if (gateway === PAYMENT_GATEWAY.xendit) {
+      if (!isXenditConfigured()) {
+        return cValidationError(c, "Xendit gateway is not enabled or configured");
+      }
+      const result = await createXenditCreditPackCheckout({
+        userId,
+        email,
+        name: user.name,
+        packId: pack.id,
+        successUrl,
+        cancelUrl,
+      });
+      return c.json(result);
+    }
 
     const session = await getStripe().checkout.sessions.create({
       payment_method_types: ["card"],
@@ -436,7 +482,7 @@ router.post("/create-checkout-session", requireAuth, async (c) => {
       cancel_url: cancelUrl,
     });
 
-    return c.json({ url: session.url, sessionId: session.id });
+    return c.json({ url: session.url, sessionId: session.id, gateway: PAYMENT_GATEWAY.stripe });
   } catch (error) {
     return cApiError(c, "Failed to create checkout session", error);
   }
@@ -809,7 +855,7 @@ router.post("/stripe/webhook", async (c) => {
     const rawBody = await c.req.text();
     const event = getStripe().webhooks.constructEvent(rawBody, sig, webhookSecret);
 
-    const existingDelivery = await dbRead.select().from(webhookDeliveries).where(and(eq(webhookDeliveries.gateway, "stripe"), eq(webhookDeliveries.eventId, event.id))).limit(1);
+    const existingDelivery = await dbRead.select().from(webhookDeliveries).where(and(eq(webhookDeliveries.gateway, PAYMENT_GATEWAY.stripe), eq(webhookDeliveries.eventId, event.id))).limit(1);
     if (existingDelivery.length > 0 && existingDelivery[0].status === 'success') {
       console.log(`[stripe] 🔄 Webhook already processed successfully: ${event.id}`);
       return c.json({ received: true, duplicate: true });
@@ -818,7 +864,7 @@ router.post("/stripe/webhook", async (c) => {
     if (existingDelivery.length === 0) {
       try {
         const [deliveryRecord] = await dbWrite.insert(webhookDeliveries).values({
-          gateway: "stripe",
+          gateway: PAYMENT_GATEWAY.stripe,
           eventId: event.id,
           eventType: event.type,
           status: 'retrying',
@@ -826,7 +872,7 @@ router.post("/stripe/webhook", async (c) => {
         webhookDeliveryId = deliveryRecord.id;
       } catch (insertError) {
         if (isUniqueViolation(insertError)) {
-          const [dupRecord] = await dbRead.select().from(webhookDeliveries).where(and(eq(webhookDeliveries.gateway, "stripe"), eq(webhookDeliveries.eventId, event.id))).limit(1);
+          const [dupRecord] = await dbRead.select().from(webhookDeliveries).where(and(eq(webhookDeliveries.gateway, PAYMENT_GATEWAY.stripe), eq(webhookDeliveries.eventId, event.id))).limit(1);
           webhookDeliveryId = dupRecord?.id ?? null;
           console.log(`[stripe] 🔄 Concurrent delivery race resolved at webhookDelivery INSERT: ${event.id}`);
         } else {
@@ -859,7 +905,7 @@ router.post("/stripe/webhook", async (c) => {
 
       try {
         await dbWrite.transaction(async (tx) => {
-          const existingTransaction = await tx.select().from(transactions).where(and(eq(transactions.gateway, "stripe"), eq(transactions.providerEventId, providerEventId))).limit(1);
+          const existingTransaction = await tx.select().from(transactions).where(and(eq(transactions.gateway, PAYMENT_GATEWAY.stripe), eq(transactions.providerEventId, providerEventId))).limit(1);
           if (existingTransaction.length > 0) {
             isDuplicateTx = true;
             return;
@@ -867,7 +913,7 @@ router.post("/stripe/webhook", async (c) => {
           const priorPurchase = await tx.select().from(transactions).where(and(eq(transactions.userId, userId), eq(transactions.type, 'purchase'))).limit(1);
           await awardCredits(userId, creditsAmount, {
             type: "purchase",
-            gateway: "stripe",
+            gateway: PAYMENT_GATEWAY.stripe,
             notificationType: "payment_success",
             notificationTitle: "Payment Successful",
             notificationMessage: `Your purchase of ${creditsAmount} credits (${pack.title}) was successful`,
@@ -883,7 +929,7 @@ router.post("/stripe/webhook", async (c) => {
             try {
               await awardCredits(userId, FIRST_PURCHASE_BONUS, {
                 type: 'reward',
-                gateway: "stripe",
+                gateway: PAYMENT_GATEWAY.stripe,
                 notificationType: 'first_purchase_bonus',
                 notificationTitle: 'First Purchase Bonus',
                 notificationMessage: `You received ${FIRST_PURCHASE_BONUS} credits for your first purchase`,
@@ -921,12 +967,12 @@ router.post("/stripe/webhook", async (c) => {
 
       try {
         await dbWrite.transaction(async (tx) => {
-          const existingRefund = await tx.select().from(transactions).where(and(eq(transactions.gateway, "stripe"), eq(transactions.providerEventId, providerEventId))).limit(1);
+          const existingRefund = await tx.select().from(transactions).where(and(eq(transactions.gateway, PAYMENT_GATEWAY.stripe), eq(transactions.providerEventId, providerEventId))).limit(1);
           if (existingRefund.length > 0) {
             isDuplicateTx = true;
             return;
           }
-          const originalTransaction = await tx.select().from(transactions).where(and(eq(transactions.gateway, "stripe"), eq(transactions.providerPaymentId, providerPaymentId))).limit(1);
+          const originalTransaction = await tx.select().from(transactions).where(and(eq(transactions.gateway, PAYMENT_GATEWAY.stripe), eq(transactions.providerPaymentId, providerPaymentId))).limit(1);
           if (!originalTransaction.length) {
             console.warn(`[stripe] ⚠️ charge.refunded for paymentIntent ${providerPaymentId} has no matching credit-pack transaction — likely a subscription charge. Skipping credit clawback.`);
             await tx.update(webhookDeliveries).set({ status: 'success', processedAt: new Date(), updatedAt: new Date() }).where(eq(webhookDeliveries.id, webhookDeliveryId!));
@@ -943,7 +989,7 @@ router.post("/stripe/webhook", async (c) => {
               type: 'refund',
               credits: -creditsToDeduct,
               amountCents: -refundCents,
-              gateway: "stripe",
+              gateway: PAYMENT_GATEWAY.stripe,
               providerPaymentId,
               providerEventId: event.id,
             });
@@ -990,6 +1036,95 @@ router.post("/stripe/webhook", async (c) => {
       await dbWrite.update(webhookDeliveries).set({ status: 'failed', errorMessage: getErrorMessage(error), processedAt: new Date(), updatedAt: new Date() }).where(eq(webhookDeliveries.id, webhookDeliveryId)).catch(console.error);
     }
     return cApiError(c, 'Failed to process webhook', error);
+  }
+});
+
+/**
+ * POST /xendit/webhook
+ *
+ * Receives Xendit Invoice callbacks. Verifies `x-callback-token`, tracks delivery
+ * for idempotency, and awards credits on paid invoices.
+ *
+ * Configure callback URL in Xendit Dashboard → Settings → Callbacks:
+ * `https://<backend>/api/payments/xendit/webhook`
+ *
+ * @route POST /api/payments/xendit/webhook
+ * @returns {{ received: boolean, duplicate?: boolean }}
+ */
+router.post("/xendit/webhook", async (c) => {
+  let webhookDeliveryId: string | null = null;
+
+  try {
+    if (!XENDIT_CONFIG.enabled) {
+      return cValidationError(c, "Xendit gateway is not enabled");
+    }
+
+    const callbackToken = c.req.header("x-callback-token");
+    if (!verifyXenditCallbackToken(callbackToken)) {
+      return c.json({ error: "Invalid callback token" }, 401);
+    }
+
+    const webhookRateLimit = await checkRateLimit("xendit-webhook-global", {
+      maxRequests: 120,
+      windowSeconds: 60,
+    });
+    if (!webhookRateLimit.allowed) {
+      return cRateLimitError(c, "Webhook rate limit exceeded");
+    }
+
+    const body = (await c.req.json()) as XenditInvoice & {
+      event?: string;
+      id?: string;
+      external_id?: string;
+      status?: string;
+    };
+
+    // Invoice callbacks usually POST the invoice object; some products wrap event name.
+    const eventType =
+      typeof body.event === "string"
+        ? body.event
+        : body.status
+          ? `invoice.${String(body.status).toLowerCase()}`
+          : "invoice.callback";
+
+    const eventId =
+      (typeof body.id === "string" && body.id) ||
+      (typeof body.external_id === "string" && body.external_id) ||
+      `xendit-${Date.now()}`;
+
+    const tracked = await trackXenditWebhookDelivery(eventId, eventType);
+    webhookDeliveryId = tracked.deliveryId;
+
+    if (tracked.alreadySuccess) {
+      console.log(`[xendit] 🔄 Webhook already processed successfully: ${eventId}`);
+      return c.json({ received: true, duplicate: true });
+    }
+
+    const status = (body.status || "").toUpperCase();
+    const isPaid =
+      eventType === "invoice.paid" ||
+      status === "PAID" ||
+      status === "SETTLED";
+
+    if (isPaid) {
+      const result = await handleXenditInvoicePaid(body as XenditInvoice, eventId);
+      await finalizeXenditWebhookDelivery(webhookDeliveryId, "success");
+      return c.json({ received: true, duplicate: result.duplicate });
+    }
+
+    // Non-paid statuses (PENDING, EXPIRED, etc.) — ack without awarding
+    console.log(`[xendit] ℹ️ Unhandled invoice status/event: ${eventType} status=${body.status}`);
+    await finalizeXenditWebhookDelivery(webhookDeliveryId, "success");
+    return c.json({ received: true });
+  } catch (error) {
+    if (webhookDeliveryId) {
+      await finalizeXenditWebhookDelivery(
+        webhookDeliveryId,
+        "failed",
+        getErrorMessage(error)
+      ).catch(console.error);
+    }
+    return cApiError(c, "Failed to process Xendit webhook", error);
   }
 });
 
@@ -1200,7 +1335,7 @@ router.post("/subscription/cancel", requireAuth, async (c) => {
 
     const sub = subscription[0];
     // Stripe only for now; Xendit cancel path lands with Phase 2b
-    if (sub.gateway === "stripe") {
+    if (sub.gateway === PAYMENT_GATEWAY.stripe) {
       await getStripe().subscriptions.update(sub.providerSubscriptionId, { cancel_at_period_end: true });
     }
     await dbWrite.update(subscriptions).set({ cancelAtPeriodEnd: true }).where(eq(subscriptions.id, sub.id));

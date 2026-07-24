@@ -35,10 +35,10 @@ import { eq } from "drizzle-orm";
 import { addCredits } from "./credits.js";
 import { VIP_BENEFITS, VIP_TRIAL } from "../config/subscription.js";
 import type { SubscriptionStatus } from "../types/subscription.js";
+import { PAYMENT_GATEWAY, type PaymentGateway } from "../types/payment.js";
 import { getErrorMessage } from "../utils/error.js";
 
-/** Supported payment gateways for subscriptions */
-export type PaymentGateway = "stripe" | "xendit";
+export type { PaymentGateway };
 
 /**
  * Detects a Postgres unique-constraint violation (SQLSTATE 23505).
@@ -93,7 +93,7 @@ export async function createSubscription(params: {
   providerEventId?: string;
 }): Promise<void> {
   const isTrial = params.isTrial ?? false;
-  const gateway = params.gateway ?? "stripe";
+  const gateway = params.gateway ?? PAYMENT_GATEWAY.stripe;
 
   try {
     await dbWrite.transaction(async (tx) => {
@@ -224,7 +224,7 @@ export async function renewSubscription(params: {
   gateway?: PaymentGateway;
   providerEventId?: string;
 }): Promise<void> {
-  const gateway = params.gateway ?? "stripe";
+  const gateway = params.gateway ?? PAYMENT_GATEWAY.stripe;
 
   try {
     await dbWrite.transaction(async (tx) => {
@@ -327,7 +327,7 @@ export async function cancelSubscription(params: {
   gateway?: PaymentGateway;
   providerEventId?: string;
 }): Promise<void> {
-  const gateway = params.gateway ?? "stripe";
+  const gateway = params.gateway ?? PAYMENT_GATEWAY.stripe;
 
   await dbWrite.transaction(async (tx) => {
     // Get subscription

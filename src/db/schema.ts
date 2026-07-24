@@ -15,6 +15,7 @@ import type { StoryThread, StoryThreadTranslation } from "../types/story-thread.
 import type { CustomActionOutcome, CustomActionRejectionCategory } from "../types/custom-action.js";
 import type { CanonValidationOutcome, CanonViolation, CanonViolationType } from "../types/canon-validation.js";
 import type { TransactionType } from "../types/credits.js";
+import { PAYMENT_GATEWAY, type PaymentGateway } from "../types/payment.js";
 import type { SubscriptionStatus, SubscriptionTransactionType } from "../types/subscription.js";
 import type { ResourceAIProvider, ResourceAIScore, ResourceTimestamp, ResourceTranslatorType } from "../types/api.js";
 import { BOOK_MIN_PAGES } from "../config/story.js";
@@ -1095,8 +1096,8 @@ export const transactions = pgTable(
     amountCents: integer("amount_cents"),
     context: text("context"), // Additional context for usage transactions (e.g., "book_creation")
     metadata: jsonb("metadata"), // Additional metadata for the transaction
-    /** Payment gateway that produced this row (`stripe` | `xendit`) */
-    gateway: text("gateway").$type<"stripe" | "xendit">().notNull().default("stripe"),
+    /** Payment gateway that produced this row */
+    gateway: text("gateway").$type<PaymentGateway>().notNull().default(PAYMENT_GATEWAY.stripe),
     /** Gateway payment ID (Stripe `pi_xxx`, Xendit payment/invoice ID) — idempotency */
     providerPaymentId: text("provider_payment_id"),
     /** Gateway webhook event ID — idempotency */
@@ -1138,8 +1139,8 @@ export const webhookDeliveries = pgTable(
   "webhook_deliveries",
   {
     id: id(),
-    /** Payment gateway that delivered this event (`stripe` | `xendit`) */
-    gateway: text("gateway").$type<"stripe" | "xendit">().notNull().default("stripe"),
+    /** Payment gateway that delivered this event */
+    gateway: text("gateway").$type<PaymentGateway>().notNull().default(PAYMENT_GATEWAY.stripe),
     eventId: text("event_id").notNull(), // Provider event ID
     eventType: text("event_type").notNull(), // Provider event type
     deliveredAt: timestamp("delivered_at").defaultNow().notNull(), // When webhook was received
@@ -1423,8 +1424,8 @@ export const subscriptions = pgTable(
     // Was missing a FK reference to users, unlike every other user-linked table in this
     // schema (e.g. subscriptionTransactions.userId below). Added for referential integrity.
     userId: uuid("user_id").notNull().references(() => users.userId, { onDelete: "cascade" }),
-    /** Payment gateway for this subscription (`stripe` | `xendit`) */
-    gateway: text("gateway").$type<"stripe" | "xendit">().notNull().default("stripe"),
+    /** Payment gateway for this subscription */
+    gateway: text("gateway").$type<PaymentGateway>().notNull().default(PAYMENT_GATEWAY.stripe),
     /** Gateway subscription/plan ID (Stripe `sub_xxx`, Xendit plan/repl ID) */
     providerSubscriptionId: text("provider_subscription_id").notNull(),
     /** Gateway customer ID (Stripe `cus_xxx`, Xendit customer ID) */
@@ -1480,8 +1481,8 @@ export const subscriptionTransactions = pgTable(
     userId: userId().references(() => users.userId, { onDelete: "cascade" }).notNull(),
     type: text("type").$type<SubscriptionTransactionType>().notNull(),
     creditsAllocated: integer("credits_allocated").notNull(),
-    /** Payment gateway for this allocation (`stripe` | `xendit`) */
-    gateway: text("gateway").$type<"stripe" | "xendit">().notNull().default("stripe"),
+    /** Payment gateway for this allocation */
+    gateway: text("gateway").$type<PaymentGateway>().notNull().default(PAYMENT_GATEWAY.stripe),
     /** Gateway invoice/cycle ID (Stripe `in_xxx`, Xendit cycle/invoice ID) */
     providerInvoiceId: text("provider_invoice_id"),
     /** Gateway webhook event ID — write on create/renew for idempotency */
