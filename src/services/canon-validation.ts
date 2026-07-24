@@ -11,12 +11,7 @@ import { getStoryStateInfo } from "../utils/story.js";
 import { aiPrompt, createAIOptionsWithSchema } from "../utils/ai-chat.js";
 import { AI_CHAT_MODELS_EVALUATION } from "../config/ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
-import {
-  CANON_VALIDATION_ENABLED,
-  CANON_VALIDATION_MAX_OUTPUT_TOKEN,
-  CANON_VALIDATION_MAX_REWRITE_ATTEMPTS,
-  CANON_REWRITE_MAX_OUTPUT_TOKEN,
-} from "../config/canon-validation.js";
+import { CANON_VALIDATION_MAX_OUTPUT_TOKEN, CANON_VALIDATION_MAX_REWRITE_ATTEMPTS, CANON_REWRITE_MAX_OUTPUT_TOKEN } from "../config/canon-validation.js";
 import { dbWrite } from "../db/client.js";
 import { canonValidations } from "../db/schema.js";
 
@@ -447,11 +442,13 @@ export async function runCanonValidationPass(params: {
   generatedPage: StoryGeneration;
   bookId: string;
   logContext?: string;
+  /** Per-call override; when omitted, uses CANON_VALIDATION_ENABLED (default false). */
+  enabled?: boolean;
 }): Promise<CanonValidationPassResult> {
   const { state, bookId } = params;
   const logContext = params.logContext ?? 'canon-validation';
 
-  if (!CANON_VALIDATION_ENABLED) {
+  if (!params.enabled) {
     return { page: params.generatedPage, summary: null, audit: null };
   }
 

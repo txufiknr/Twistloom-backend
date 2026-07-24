@@ -29,6 +29,8 @@ export type BuildNextPageParams = {
   generateNewBranchId?: boolean;
   /** Number of candidate pages to generate per action (default: DEFAULT_CANDIDATE_PAGE_PER_ACTION) */
   candidateCount?: number;
+  /** Opt-in generation-time canon/consistency pass */
+  enableCanonValidation?: boolean;
 };
 
 export type BuildNextPagePromptParams = {

@@ -1,10 +1,8 @@
 /**
- * Canon validation configuration (roadmap 1.1).
- *
- * Kill-switch: set CANON_VALIDATION_ENABLED=false to skip the generation-time
- * check entirely (fail-open to prior behavior).
+ * Canon validation configuration.
+ * Per-call: generateNextPage({ enableCanonValidation: true, ... })
  */
-export const CANON_VALIDATION_ENABLED = process.env['CANON_VALIDATION_ENABLED'] !== 'false';
+export const CANON_VALIDATION_ENABLED = false;
 
 /**
  * Max rewrite attempts after a hard `rejected` outcome.

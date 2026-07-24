@@ -4644,7 +4644,7 @@ function resolvePageDelta(params: {
  * ```
  */
 export async function generateNextPage(params: BuildNextPageParams): Promise<PersistedStoryPage> {
-  const { book, userId, actionedPage, generateNewBranchId = false } = params;
+  const { book, userId, actionedPage, generateNewBranchId = false, enableCanonValidation } = params;
   const context = "generateNextPage";
 
   // 1 & 2. Setup context, config, and prompts
@@ -4693,6 +4693,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
     generatedPage: generatedStoryPage,
     bookId: book.id,
     logContext: context,
+    enabled: enableCanonValidation,
   });
   generatedStoryPage = canonPass.page;
 
@@ -4779,9 +4780,10 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
  * caller can reuse the existing pages.
  */
 export async function generateNextPages(params: BuildNextPageParams): Promise<PersistedStoryPage[]> {
-  const { book, userId, actionedPage, generateNewBranchId = false, candidateCount: providedCandidateCount = DEFAULT_CANDIDATE_PAGE_PER_ACTION } = params;
+  const { book, userId, actionedPage, generateNewBranchId = false, candidateCount: providedCandidateCount = DEFAULT_CANDIDATE_PAGE_PER_ACTION, enableCanonValidation } = params;
   
   // Fast path: Route to single page generation if only 1 is requested
+  // (forwards enableCanonValidation via full params)
   if (providedCandidateCount === 1) return [await generateNextPage(params)];
 
   const candidateCount = Math.min(providedCandidateCount, MAX_CANDIDATE_PAGE_PER_ACTION);
@@ -4852,6 +4854,7 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
       generatedPage: generatedStoryPage,
       bookId: book.id,
       logContext: fateLogContext,
+      enabled: enableCanonValidation,
     });
     generatedStoryPage = canonPass.page;
 
