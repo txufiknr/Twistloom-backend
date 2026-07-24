@@ -181,7 +181,7 @@ actionsHistory.forEach((action, idx) => {
 ## §3. LOW severity
 
 ### BUG-05 — `worldClock.elapsedMinutes` is overwritten, not accumulated; type doc contradicts implementation
-**Status:** ❌ NOT A BUG — REVERTED. Re-examination of the `WorldClock` type doc (`src/types/story.ts:823`) and the only consumer (`src/utils/prompt.ts:3014`, labeled `"Time elapsed since last action"`) confirms `elapsedMinutes` is a **per-page delta**, not a cumulative total. The original `clock.elapsedMinutes = minutesPassed;` overwrite was correct; the prompt display is correct as-is. The fix was applied then reverted — no code change remains.
+**Status:** ✅ NOT A BUG — REVERTED. Re-examination of the `WorldClock` type doc (`src/types/story.ts:823`) and the only consumer (`src/utils/prompt.ts:3014`, labeled `"Time elapsed since last action"`) confirms `elapsedMinutes` is a **per-page delta**, not a cumulative total. The original `clock.elapsedMinutes = minutesPassed;` overwrite was correct; the prompt display is correct as-is. The fix was applied then reverted — no code change remains.
 **File:** `src/utils/story.ts:1453` (`updateWorldClock`), type at `src/types/story.ts:831`.
 
 **Root cause.** The type doc says *"In-fiction minutes since the reader's last action"* and *"tracks elapsed time between actions"* — implying a cumulative clock. But the implementation assigns:

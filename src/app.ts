@@ -19,7 +19,10 @@ import { APP_NAME, VERSION } from "./config/constants.js";
 import { IS_PRODUCTION } from "./config/env.js";
 import type { AppEnv } from "./hono/env.js";
 
-// Initialize Hono app with shared environment bindings
+// Vercel scans the entry file for this flag.
+export const runtime = "edge";
+
+// Initialize Hono app with shared environment bindings.
 const app = new Hono<AppEnv>();
 
 // Security headers — defence-in-depth against common web vulnerabilities.
@@ -164,34 +167,63 @@ function getErrorMessageSafe(err: unknown): string {
 export { app };
 
 // ---------------------------------------------------------------------------
-// Vercel Edge function handler
+// Vercel handler — supports both Edge Runtime and Node.js Serverless
 // ---------------------------------------------------------------------------
 //
-// The hono/vercel adapter converts the Hono app into a Vercel Edge Function
-// handler. On Edge Runtime, Vercel provides a standard Web API Request —
-// no manual body buffering or Node.js adapter needed.
+// On Edge Runtime, Vercel passes a standard Web API Request directly.
+// On Node.js Serverless, `export const runtime = "edge"` may be ignored
+// (particularly for non-Next.js apps), so we detect the request type and
+// convert IncomingMessage to a Web Request as a fallback.
 //
-// ╔═══════════════════════════════════════════════════════════════════════════╗
-// ║  BEHAVIORAL DIFFERENCES vs previous Node.js serverless deployment       ║
-// ╠═══════════════════════════════════════════════════════════════════════════╣
-// ║  Runtime       Edge (fast cold starts)       Node.js 22 (slower)        ║
-// ║  Duration cap  30s (Edge)                    60s (Node.js)              ║
-// ║  Node APIs     No (Buffer, fs, path, …)      Yes                        ║
-// ║  Body parsing  Automatic (hono/vercel)        Manual (for await…of)     ║
-// ║  Env vars      process.env works             process.env works          ║
-// ╚═══════════════════════════════════════════════════════════════════════════╝
-//
-// RECOMMENDATION: Routes that stream or run heavy computation should stay
-// within 30s. The active SSE route (GET /api/books/prompt) is lightweight
-// and well under both limits. The three legacy SSE routes were already unused.
-//
-// Local development still uses @hono/node-server via src/server.ts.
+// Edge:   (req: Request, ctx: VercelContext) => Response
+// Node.js Serverless: (req: IncomingMessage, res: ServerResponse) => void
 //
 // References
 //   - https://hono.dev/docs/getting-started/vercel
 // ---------------------------------------------------------------------------
 
-import { handle } from "hono/vercel";
+import type { IncomingMessage, ServerResponse } from "http";
 
-export const runtime = "edge";
-export default handle(app);
+export default async function vercelHandler(
+  req: Request | IncomingMessage,
+  maybeRes?: ServerResponse,
+): Promise<Response | void> {
+  if (req instanceof Request) {
+    return app.fetch(req);
+  }
+
+  // Node.js Serverless fallback — convert IncomingMessage → Web Request
+  const url = new URL(req.url || "/", `https://${req.headers.host || "localhost"}`);
+  const headers = new Headers();
+  for (const [key, value] of Object.entries(req.headers)) {
+    if (value) {
+      headers.set(key, Array.isArray(value) ? value.join(", ") : value);
+    }
+  }
+
+  const method = req.method || "GET";
+  let body: BodyInit | undefined;
+  if (method !== "GET" && method !== "HEAD") {
+    const rawBody: Buffer = await new Promise((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk: Buffer) => chunks.push(chunk));
+      req.on("end", () => resolve(Buffer.concat(chunks)));
+      req.on("error", reject);
+    });
+    body = rawBody.length > 0 ? (rawBody as BodyInit) : undefined;
+  }
+
+  const response = await app.fetch(new Request(url.toString(), { method, headers, body }));
+
+  // Write response to ServerResponse when running on Node.js Serverless
+  if (maybeRes && typeof maybeRes.statusCode === "number") {
+    maybeRes.statusCode = response.status;
+    for (const [key, value] of response.headers.entries()) {
+      maybeRes.setHeader(key, value);
+    }
+    maybeRes.end(await response.text());
+    return;
+  }
+
+  return response;
+}
