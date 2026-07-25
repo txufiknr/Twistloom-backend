@@ -20,7 +20,7 @@
  */
 
 import { Hono } from "hono";
-import { eq, desc, and, inArray, sql, gte, lte, isNotNull } from "drizzle-orm";
+import { eq, desc, and, or, inArray, sql, gte, lte, isNotNull, ilike } from "drizzle-orm";
 import { requireAuth } from "../middleware/nextauth.js";
 import { requireAdmin, requireSuperAdmin } from "../middleware/admin-auth.js";
 import { cApiError, cValidationError, cNotFoundError } from "../utils/error.js";
@@ -28,7 +28,7 @@ import { reconstructStoryState } from "../utils/branch-traversal.js";
 import { getBookFromDB, getPageFromDB } from "../services/book.js";
 import { getStoryState } from "../services/story.js";
 import { dbRead, dbWrite } from "../db/client.js";
-import { socialMentions, bookTestimonials, adminUsers, usage, users } from "../db/schema.js";
+import { socialMentions, bookTestimonials, adminUsers, usage, users, userFeedbacks, books } from "../db/schema.js";
 import type { AppEnv } from "../hono/env.js";
 import {
   extractAndResolveTwistloomLink,
@@ -1015,6 +1015,222 @@ router.post(
       return cApiError(c, "Failed to send announcement", error);
     }
   },
+);
+
+// ============================================================================
+// FEEDBACKS ADMIN ROUTES (P3)
+// ============================================================================
+
+/**
+ * GET /admin/feedbacks
+ *
+ * Lists user feedbacks for the admin inbox. Supports filtering by status,
+ * category, and pagination.
+ */
+router.get("/feedbacks",
+  requireAuth,
+  requireAdmin,
+  async (c) => {
+    try {
+      const { status, category, limit = "50", offset = "0" } = c.req.query();
+      const limitNum = Math.min(Math.max(Number(limit) || 50, 1), 200);
+      const offsetNum = Math.max(Number(offset) || 0, 0);
+
+      const conditions = [];
+      if (status === "idle" || status === "submitting" || status === "success" || status === "error") {
+        conditions.push(eq(userFeedbacks.status, status));
+      }
+      if (category === "feedback" || category === "bug_report" || category === "feature_request" || category === "other") {
+        conditions.push(eq(userFeedbacks.category, category));
+      }
+
+      const rows = await dbRead
+        .select({
+          id: userFeedbacks.id,
+          userId: userFeedbacks.userId,
+          category: userFeedbacks.category,
+          message: userFeedbacks.message,
+          status: userFeedbacks.status,
+          imageUrl: userFeedbacks.imageUrl,
+          createdAt: userFeedbacks.createdAt,
+          updatedAt: userFeedbacks.updatedAt,
+          userName: users.name,
+          userEmail: users.email,
+        })
+        .from(userFeedbacks)
+        .leftJoin(users, eq(userFeedbacks.userId, users.userId))
+        .where(conditions.length > 0 ? and(...conditions) : undefined)
+        .orderBy(desc(userFeedbacks.createdAt))
+        .limit(limitNum)
+        .offset(offsetNum);
+
+      const [{ count }] = await dbRead
+        .select({ count: sql<number>`count(*)` })
+        .from(userFeedbacks)
+        .where(conditions.length > 0 ? and(...conditions) : undefined);
+
+      return c.json({ total: Number(count), limit: limitNum, offset: offsetNum, feedbacks: rows });
+    } catch (error) {
+      return cApiError(c, "Failed to list feedbacks", error);
+    }
+  }
+);
+
+/**
+ * PATCH /admin/feedbacks/:id
+ *
+ * Updates the status of a user feedback (e.g. mark as resolved).
+ */
+router.patch("/feedbacks/:id",
+  requireAuth,
+  requireAdmin,
+  async (c) => {
+    try {
+      const { id } = c.req.param();
+      const { status } = c.get("body");
+
+      if (status !== "idle" && status !== "submitting" && status !== "success" && status !== "error") {
+        return cValidationError(c, "Invalid status");
+      }
+
+      const [existing] = await dbRead
+        .select({ id: userFeedbacks.id })
+        .from(userFeedbacks)
+        .where(eq(userFeedbacks.id, id))
+        .limit(1);
+
+      if (!existing) {
+        return cNotFoundError(c, "Feedback not found");
+      }
+
+      const [updated] = await dbWrite
+        .update(userFeedbacks)
+        .set({ status })
+        .where(eq(userFeedbacks.id, id))
+        .returning();
+
+      return c.json(updated);
+    } catch (error) {
+      return cApiError(c, "Failed to update feedback", error);
+    }
+  }
+);
+
+// ============================================================================
+// BOOKS ADMIN ROUTES (P2)
+// ============================================================================
+
+/**
+ * GET /admin/books
+ *
+ * Lists original books with key metrics. Supports pagination and title search.
+ */
+router.get("/books",
+  requireAuth,
+  requireAdmin,
+  async (c) => {
+    try {
+      const { search, limit = "50", offset = "0" } = c.req.query();
+      const limitNum = Math.min(Math.max(Number(limit) || 50, 1), 200);
+      const offsetNum = Math.max(Number(offset) || 0, 0);
+
+      const conditions = [];
+      if (typeof search === "string" && search.length > 0) {
+        conditions.push(or(
+          ilike(books.title, `%${search}%`),
+          ilike(books.slug, `%${search}%`),
+        ));
+      }
+
+      const rows = await dbRead
+        .select({
+          id: books.id,
+          title: books.title,
+          slug: books.slug,
+          status: books.status,
+          visibility: books.visibility,
+          isOriginal: books.isOriginal,
+          language: books.language,
+          readCount: books.readCount,
+          totalPages: books.totalPages,
+          branchesCount: books.branchesCount,
+          likesCount: books.likesCount,
+          createdAt: books.createdAt,
+          updatedAt: books.updatedAt,
+        })
+        .from(books)
+        .where(conditions.length > 0 ? and(...conditions) : undefined)
+        .orderBy(desc(books.createdAt))
+        .limit(limitNum)
+        .offset(offsetNum);
+
+      const [{ count }] = await dbRead
+        .select({ count: sql<number>`count(*)` })
+        .from(books)
+        .where(conditions.length > 0 ? and(...conditions) : undefined);
+
+      return c.json({ total: Number(count), limit: limitNum, offset: offsetNum, books: rows });
+    } catch (error) {
+      return cApiError(c, "Failed to list books", error);
+    }
+  }
+);
+
+// ============================================================================
+// USERS ADMIN ROUTES (P4)
+// ============================================================================
+
+/**
+ * GET /admin/users
+ *
+ * Lists platform users with search and pagination.
+ */
+router.get("/users",
+  requireAuth,
+  requireAdmin,
+  async (c) => {
+    try {
+      const { search, limit = "50", offset = "0" } = c.req.query();
+      const limitNum = Math.min(Math.max(Number(limit) || 50, 1), 200);
+      const offsetNum = Math.max(Number(offset) || 0, 0);
+
+      const conditions = [];
+      if (typeof search === "string" && search.length > 0) {
+        conditions.push(or(
+          ilike(users.name, `%${search}%`),
+          ilike(users.email, `%${search}%`),
+          ilike(users.username, `%${search}%`),
+        ));
+      }
+
+      const rows = await dbRead
+        .select({
+          userId: users.userId,
+          name: users.name,
+          username: users.username,
+          email: users.email,
+          tier: users.tier,
+          credits: users.credits,
+          isNewUser: users.isNewUser,
+          lastActive: users.lastActive,
+          createdAt: users.createdAt,
+        })
+        .from(users)
+        .where(conditions.length > 0 ? and(...conditions) : undefined)
+        .orderBy(desc(users.createdAt))
+        .limit(limitNum)
+        .offset(offsetNum);
+
+      const [{ count }] = await dbRead
+        .select({ count: sql<number>`count(*)` })
+        .from(users)
+        .where(conditions.length > 0 ? and(...conditions) : undefined);
+
+      return c.json({ total: Number(count), limit: limitNum, offset: offsetNum, users: rows });
+    } catch (error) {
+      return cApiError(c, "Failed to list users", error);
+    }
+  }
 );
 
 export default router;
