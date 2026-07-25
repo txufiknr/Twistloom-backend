@@ -13,7 +13,7 @@
  */
 
 import { users, userAuth, userCounters, userProviders } from '../db/schema.js';
-import { sql, eq, type SQL } from 'drizzle-orm';
+import { sql, eq, and, type SQL } from 'drizzle-orm';
 import { type DBClient, dbRead, dbWrite } from '../db/client.js';
 import { generateId } from '../utils/uuid.js';
 import { sanitizeTextForDB } from '../utils/text-processing.js';
@@ -252,6 +252,9 @@ export async function createOrUpdateOAuthUser(oAuthUser: {
         },
       });
 
+    // Form-signup users who linked a referrer but skipped OTP may qualify here
+    await tryAwardReferralBonus(existingUserId);
+
     return existingUserId;
   }
 
@@ -324,11 +327,35 @@ export async function createOrUpdateOAuthUser(oAuthUser: {
 }
 
 /**
- * Sets a referrer for a newly created user.
- * Validates, updates the user record, awards referral credits to both parties,
- * logs activity, invalidates caches, and updates last activity.
+ * Sets a referrer for a newly created user (attribution only).
  *
- * Returns true on success, false on any validation / not-found error.
+ * **Split model — link vs pay:**
+ * 1. Always writes `users.referrerId` when valid (attribution).
+ * 2. Does **not** pay credits unless the referred user already has
+ *    `user_auth.email_verified` set (Google OAuth path).
+ * 3. Form signups typically link here and pay later via
+ *    {@link tryAwardReferralBonus} on `POST /auth/verify-email`.
+ *
+ * **Referrer eligibility:** the referrer's email must be verified. Unverified
+ * accounts cannot share invite links (username rejected as not found / not eligible).
+ *
+ * **`referredUsers` counter:** the DB trigger increments
+ * `user_counters.referred_users` only when `referral_rewarded_at` is first
+ * set (same claim as credit payout) — not on bare `referrer_id` link.
+ *
+ * @param c - Hono context (IP / headers for activity log; optional error responses)
+ * @param userId - Referred (new) user ID
+ * @param referrerUsername - Referrer's username
+ * @param opts.client - DB client (default: dbWrite)
+ * @param opts.handleResponse - Whether to write HTTP errors onto `c` (default: true)
+ * @returns true if referrerId was set; false on validation / not-found
+ *
+ * @example
+ * ```typescript
+ * // Signup / onboarding
+ * await setReferrerForNewUser(c, newUserId, 'alice', { handleResponse: false });
+ * // Credits pay only if newUser is already email-verified (e.g. Google)
+ * ```
  */
 export async function setReferrerForNewUser(
   c: Context,
@@ -368,16 +395,28 @@ export async function setReferrerForNewUser(
       return false;
     }
 
-    // Find referrer by username (sanitize input)
+    // Find referrer by username — must have verified email to be eligible
     const cleanReferrer = sanitizeUsername(referrerUsername);
     const [referrer] = await dbRead
-      .select({ userId: users.userId, username: users.username })
+      .select({
+        userId: users.userId,
+        username: users.username,
+        emailVerified: userAuth.emailVerified,
+      })
       .from(users)
+      .leftJoin(userAuth, eq(userAuth.userId, users.userId))
       .where(eq(users.username, cleanReferrer))
       .limit(1);
 
     if (!referrer) {
       console.warn('[setReferrerForNewUser] ⚠️ Referrer user not found:', referrerUsername);
+      if (handleResponse) return !!cNotFoundError(res, 'Referrer user not found');
+      return false;
+    }
+
+    if (!referrer.emailVerified) {
+      console.warn('[setReferrerForNewUser] ⚠️ Referrer email not verified:', referrerUsername);
+      // Same outward message as not-found — avoid leaking account state
       if (handleResponse) return !!cNotFoundError(res, 'Referrer user not found');
       return false;
     }
@@ -394,23 +433,9 @@ export async function setReferrerForNewUser(
       .set({ referrerId: referrer.userId, updatedAt: new Date() })
       .where(eq(users.userId, userId));
 
-    // Award referral bonus to both users
-    await Promise.all([
-      awardCredits(referrer.userId, REFERRAL_BONUS, {
-        type: 'reward',
-        notificationType: 'referral_bonus',
-        notificationTitle: 'Referral Bonus',
-        notificationMessage: `You received ${REFERRAL_BONUS} credits for referring a new user`,
-        metadata: { referredUserId: userId },
-      }),
-      awardCredits(userId, REFERRAL_BONUS, {
-        type: 'reward',
-        notificationType: 'referral_bonus',
-        notificationTitle: 'Referral Bonus',
-        notificationMessage: `You received ${REFERRAL_BONUS} credits for using a referral code`,
-        metadata: { referrerId: referrer.userId },
-      }),
-    ]);
+    // Pay only if referred user is already verified (Google / already-verified path).
+    // Form signup: email still unverified → tryAwardReferralBonus no-ops until verify-email.
+    await tryAwardReferralBonus(userId);
 
     // Log activity
     await logUserActivity(
@@ -438,6 +463,124 @@ export async function setReferrerForNewUser(
   } catch (error) {
     console.error('[user-controller] ❌ Failed to apply referrer:', error);
     if (handleResponse) return !!cApiError(res, 'Failed to apply referrer', error);
+    return false;
+  }
+}
+
+/**
+ * Pays the mutual referral bonus once the referred user qualifies.
+ *
+ * **Qualification (v1):**
+ * - `users.referrer_id` is set
+ * - `user_auth.email_verified` is set
+ * - `users.referral_rewarded_at` is still null (idempotency claim)
+ *
+ * **Idempotency:** atomically sets `referral_rewarded_at` before awarding.
+ * Concurrent callers / re-verify / re-entry cannot double-pay.
+ * That same column transition fires `users_referral_trigger` (+1
+ * `referred_users` for the referrer) inside the payout transaction.
+ *
+ * **Not re-paid** when the user later changes email (verification reset) —
+ * the first successful claim sticks forever.
+ *
+ * Call sites:
+ * - {@link setReferrerForNewUser} when referred user is already verified
+ * - `POST /auth/verify-email` after token verification succeeds
+ * - Google OAuth paths that mark email verified while a pending referrer exists
+ *   (covered if set-referrer runs after verify, or verify runs after set-referrer)
+ *
+ * @param userId - Referred user who may now qualify for payout
+ * @returns true if credits were awarded this call; false if skipped / already paid
+ *
+ * @example
+ * ```typescript
+ * // After email verification
+ * const userId = await verifyEmailToken(token);
+ * if (userId) await tryAwardReferralBonus(userId);
+ * ```
+ */
+export async function tryAwardReferralBonus(userId: string): Promise<boolean> {
+  try {
+    // Fast pre-checks (non-authoritative — claim below is the real guard)
+    const [row] = await dbRead
+      .select({
+        referrerId: users.referrerId,
+        referralRewardedAt: users.referralRewardedAt,
+        emailVerified: userAuth.emailVerified,
+      })
+      .from(users)
+      .leftJoin(userAuth, eq(userAuth.userId, users.userId))
+      .where(eq(users.userId, userId))
+      .limit(1);
+
+    if (!row?.referrerId) {
+      return false;
+    }
+    if (row.referralRewardedAt) {
+      return false;
+    }
+    if (!row.emailVerified) {
+      console.log(`[tryAwardReferralBonus] ⏳ Deferred — email not verified yet: ${userId}`);
+      return false;
+    }
+
+    // Claim + both credit awards in one transaction so a failed award rolls back the claim
+    const referrerId = await dbWrite.transaction(async (tx) => {
+      const claimed = await tx
+        .update(users)
+        .set({ referralRewardedAt: new Date(), updatedAt: new Date() })
+        .where(
+          and(
+            eq(users.userId, userId),
+            sql`${users.referrerId} IS NOT NULL`,
+            sql`${users.referralRewardedAt} IS NULL`,
+          ),
+        )
+        .returning({ referrerId: users.referrerId });
+
+      if (claimed.length === 0 || !claimed[0].referrerId) {
+        return null;
+      }
+
+      const rid = claimed[0].referrerId;
+
+      await awardCredits(rid, REFERRAL_BONUS, {
+        type: 'reward',
+        notificationType: 'referral_bonus',
+        notificationTitle: 'Referral Bonus',
+        notificationMessage: `You received ${REFERRAL_BONUS} credits for referring a new user`,
+        metadata: { referredUserId: userId },
+        context: 'referral_bonus',
+        tx,
+      });
+      await awardCredits(userId, REFERRAL_BONUS, {
+        type: 'reward',
+        notificationType: 'referral_bonus',
+        notificationTitle: 'Referral Bonus',
+        notificationMessage: `You received ${REFERRAL_BONUS} credits for using a referral code`,
+        metadata: { referrerId: rid },
+        context: 'referral_bonus',
+        tx,
+      });
+
+      return rid;
+    });
+
+    if (!referrerId) {
+      return false;
+    }
+
+    await Promise.all([
+      invalidateUserProfileCache(userId),
+      invalidateUserProfileCache(referrerId),
+    ]);
+
+    console.log(`[tryAwardReferralBonus] ✅ Paid referral bonus ${referrerId} ↔ ${userId}`);
+    return true;
+  } catch (error) {
+    console.error('[tryAwardReferralBonus] ❌ Failed to award referral bonus:', error);
+    // Do not rethrow — callers (verify-email, set-referrer) should not fail the primary action.
+    // Claim + awards share one transaction; on failure referral_rewarded_at stays null for retry.
     return false;
   }
 }

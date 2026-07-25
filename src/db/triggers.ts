@@ -627,14 +627,13 @@ async function ensureBookCompleteCountTrigger(): Promise<void> {
  *     `subscription_transactions` (recurring subscription allocations) are
  *     NOT included. Add a mirroring trigger on that table if lifetime
  *     "credits acquired" should also include subscription credits.
- *  7. users → referred_users (Type A)
- *     +1 to the referrer when a new user signs up with referrer_id set, AND
- *     when an existing user's referrer_id is set later for the first time
- *     (NULL -> non-NULL via UPDATE — e.g. entering a referral code after
- *     signup, if your onboarding flow allows that). Assumes referrer_id,
- *     once non-NULL, is never reassigned to a *different* referrer — only
- *     INSERT and the initial NULL -> value UPDATE are counted, so a later
- *     change would not double-count or transfer credit.
+  *  7. users → referred_users (Type A)
+  *     +1 to the referrer when the referred user's referral_rewarded_at goes
+  *     NULL → non-NULL (payout claim in tryAwardReferralBonus). Aligns the
+  *     counter with credit payout + email verification — not with bare
+  *     referrer_id attribution. Assumes referral_rewarded_at is write-once
+  *     (never cleared / reassigned). See
+  *     docs/architecture/REFERRAL_REWARDS_ARCHITECTURE.md.
  *  8. user_checkins → active_checkin_streak / max_checkin_streak (Type B / C)
  *     Recomputes both streaks from the user's full check-in history on every
  *     mutation. max_checkin_streak is clamped with GREATEST() so it can never
@@ -828,19 +827,23 @@ export async function ensureUserCountersTriggers(): Promise<void> {
     // ==========================================
     // 7. REFERRED USERS (Type A: Lifetime)
     // ==========================================
-    // Handles both:
-    // - INSERT with referrer_id already set (referred at signup)
-    // - UPDATE where referrer_id goes from NULL to a value (referral code
-    //   entered after signup, if your onboarding flow allows that)
-    // Assumes referrer_id is never reassigned from one non-NULL referrer to
-    // a different one — only a NULL -> value transition is counted.
+    // Counts qualified referrals only: when referral_rewarded_at is first set
+    // (NULL → value) by tryAwardReferralBonus. That claim is write-once and
+    // only succeeds after email_verified + referrer_id, so the counter stays
+    // aligned with credit payout (not bare attribution).
+    // UPDATE-only: payout never happens on INSERT of a brand-new users row.
     await dbWrite.execute(`
       CREATE OR REPLACE FUNCTION update_referred_users() RETURNS TRIGGER AS $$
       BEGIN
-        IF (TG_OP = 'INSERT' AND NEW.referrer_id IS NOT NULL) OR
-           (TG_OP = 'UPDATE' AND OLD.referrer_id IS NULL AND NEW.referrer_id IS NOT NULL) THEN
-          INSERT INTO user_counters (user_id, referred_users, updated_at) VALUES (NEW.referrer_id, 1, NOW())
-          ON CONFLICT (user_id) DO UPDATE SET referred_users = user_counters.referred_users + 1, updated_at = NOW();
+        IF TG_OP = 'UPDATE'
+           AND OLD.referral_rewarded_at IS NULL
+           AND NEW.referral_rewarded_at IS NOT NULL
+           AND NEW.referrer_id IS NOT NULL THEN
+          INSERT INTO user_counters (user_id, referred_users, updated_at)
+          VALUES (NEW.referrer_id, 1, NOW())
+          ON CONFLICT (user_id) DO UPDATE SET
+            referred_users = user_counters.referred_users + 1,
+            updated_at = NOW();
         END IF;
         RETURN NEW;
       END;
@@ -849,10 +852,10 @@ export async function ensureUserCountersTriggers(): Promise<void> {
     await dbWrite.execute(`DROP TRIGGER IF EXISTS users_referral_trigger ON users;`);
     await dbWrite.execute(`
       CREATE TRIGGER users_referral_trigger
-        AFTER INSERT OR UPDATE ON users
+        AFTER UPDATE ON users
         FOR EACH ROW EXECUTE FUNCTION update_referred_users();
     `);
-    console.log("✅ Trigger created: Referred Users (Lifetime)");
+    console.log("✅ Trigger created: Referred Users (Lifetime, on payout)");
 
     // ==========================================
     // 8. CHECK-IN STREAK (Type B/C: Recomputed State)

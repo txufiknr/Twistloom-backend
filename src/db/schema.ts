@@ -222,6 +222,14 @@ export const users = pgTable(
     tier: text("tier").$type<UserTier>(),
     isNewUser: boolean("is_new_user").notNull().default(true), // For user onboarding
     referrerId: uuid("referrer_id"),
+    /**
+     * When referral credits were paid for this user (both sides).
+     * Null = linked but not yet rewarded (e.g. email not verified).
+     * Set once — idempotency guard against double-pay on re-verify / races.
+     * Also the write-once edge that fires `users_referral_trigger`
+     * (+1 `user_counters.referred_users` for the referrer).
+     */
+    referralRewardedAt: timestamp("referral_rewarded_at", { withTimezone: true }),
     source: text("source").$type<Source>(), // How user discovered the platform (set during onboarding)
     subscriptionId: uuid("subscription_id"),
     vipExpiresAt: timestamp("vip_expires_at", { withTimezone: true }),

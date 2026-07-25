@@ -281,6 +281,13 @@
       "when": 1784954954165,
       "tag": "0039_bumpy_sally_floyd",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1785020926144,
+      "tag": "0040_deep_talon",
+      "breakpoints": true
     }
   ]
 }

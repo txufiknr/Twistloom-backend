@@ -49,7 +49,7 @@ import { cApiError, cRateLimitError, cUnauthorizedError, cValidationError } from
 import { CURRENT_TERMS_VERSION } from '../config/legal.js';
 import { checkRateLimitByIP } from '../middleware/rate-limit.js';
 import { generateId } from '../utils/uuid.js';
-import { createOrUpdateOAuthUser, setReferrerForNewUser } from '../services/user-controller.js';
+import { createOrUpdateOAuthUser, setReferrerForNewUser, tryAwardReferralBonus } from '../services/user-controller.js';
 import { validateUsername } from '../utils/username.js';
 import { isTemp as isTemporaryEmail } from 'tempmail-checker';
 import { requireAuth } from '../middleware/nextauth.js';
@@ -251,7 +251,8 @@ router.post('/verify-credentials', async (c) => {
  * Registers a new user account with email/password authentication.
  * Validates input (password strength, email format, username rules),
  * checks for disposable emails, creates user + auth records in a
- * transaction, sends verification email, and applies referral if provided.
+ * transaction, sends verification email, and links referrer if provided
+ * (credits pay only after email verification — see referral architecture).
  *
  * @route POST /api/auth/signup
  * @description Register a new email/password account
@@ -528,6 +529,9 @@ router.post('/reset-password', async (c) => {
  * Verifies user email using a verification token. Token expires after
  * 24 hours and is invalidated after single use.
  *
+ * On success, also attempts deferred referral payout via
+ * {@link tryAwardReferralBonus} (no-op if no referrer or already paid).
+ *
  * @route POST /api/auth/verify-email
  * @description Verify email address with token
  *
@@ -561,6 +565,9 @@ router.post('/verify-email', async (c) => {
     if (!userId) {
       return cValidationError(c, 'Invalid or expired verification token');
     }
+
+    // Referral payout (if referrer was linked at signup/onboarding and not yet paid)
+    await tryAwardReferralBonus(userId);
 
     return c.json({ message: 'Email verified successfully' });
   } catch (error) {

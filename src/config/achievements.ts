@@ -12,7 +12,7 @@ import type { AchievementRule } from "../types/achievements.js";
  *  pagesRead            user_page_progress    (INSERT / DELETE)
  *  branchesOpened       pages                 (INSERT, distinct branch_id)
  *  topupCredits         transactions          (INSERT, type = 'purchase')
- *  referredUsers        users                 (INSERT, referrer_id IS NOT NULL)
+ *  referredUsers        users                 (UPDATE, referral_rewarded_at NULL→set — payout time; see REFERRAL_REWARDS_ARCHITECTURE.md)
  *  followersCount       user_follows          (INSERT / DELETE, tracks following_id)
  *  maxCheckinStreak     user_checkins         (INSERT, consecutive-day logic)
  *  customActionsWritten custom_actions        (INSERT, outcome = 'allow')  ← NEW
