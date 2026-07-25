@@ -89,6 +89,7 @@ const router = new Hono<AppEnv>();
  * @returns {string|null} user.imageUrl - User's profile image URL
  * @returns {number} user.credits - Available credits
  * @returns {boolean} user.isNewUser - Onboarding completed flag
+ * @returns {boolean} user.hasReferrer - Whether a referrer is already set (SSOT for welcome modal)
  * @returns {boolean} user.emailVerified - Whether email is verified
  * @returns {boolean} user.havePurchased - Whether user has made purchases
  * @returns {number} user.booksGenerated - Books generated count
@@ -487,14 +488,25 @@ router.put('/', requireAuth, async (c: Context<AppEnv>) => {
     await updateUserLastActivity(userId);
 
     // 5. Handle Referrer (only if isNewUser and referrerId is empty — enforced by setReferrerForNewUser)
+    let referralApplied = false;
     if (body.referrer && typeof body.referrer === 'string') {
-      await setReferrerForNewUser(c, userId, body.referrer, { handleResponse: false });
+      referralApplied = await setReferrerForNewUser(c, userId, body.referrer, { handleResponse: false });
     }
 
     // Rename userId → id for frontend consistency
     // Normalize: move tier into subscription sub-object (consistent with GET /api/user)
-    const { userId: id, tier: putTier, ...putRest } = user;
-    return c.json({ success: true, user: { id, ...putRest, subscription: { tier: putTier } } });
+    // Expose hasReferrer (boolean SSOT); never leak raw referrerId UUID to clients
+    // referralApplied covers the case where setReferrer ran after .returning()
+    const { userId: id, tier: putTier, referrerId, ...putRest } = user;
+    return c.json({
+      success: true,
+      user: {
+        id,
+        ...putRest,
+        hasReferrer: !!referrerId || referralApplied,
+        subscription: { tier: putTier },
+      },
+    });
   } catch (error) {
     console.error('[PUT /api/user] ❌', error);
     return cApiError(c, 'Failed to update profile', error);
@@ -596,7 +608,8 @@ router.get("/users/:identifier", optionalAuth, async (c: Context<AppEnv>) => {
       // TODO: is there any better approach rather than using string matching in catch?
       if (!userData) throw new Error("User profile not found");
 
-      // Format response to match frontend expectations
+      // Format response to match frontend expectations.
+      // Intentionally omit hasReferrer — private to own profile (GET /user).
       const formattedUser: User = {
         id: userData.id,
         username: userData.username,

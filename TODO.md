@@ -25,6 +25,8 @@
 [ ] on book.ending edit, evaluate with AI for security and viability score
 [ ] always generate AI illustration for page 1
 [ ] can you apply requireVerifiedEmail middleware on "Profile & account management routes" routes first, sequentially?
+[ ] enrich initialize book with generated mc image
+[ ] enrich page 1 with imagePrompt -> generate page image cron
 
 ---
 

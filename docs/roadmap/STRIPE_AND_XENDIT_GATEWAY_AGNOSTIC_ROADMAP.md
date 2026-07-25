@@ -1,6 +1,6 @@
 # Stripe + Xendit Gateway-Agnostic Payment Architecture — Implementation Roadmap
 
-**Status:** 🚧 In progress — Phase 0–2 backend done (+ subscription gateway param, plans API, invoice helper, tx amountIdr); DB migrate (1.1) + deploy (1.5) + frontend Phases 4–5 still pending
+**Status:** ✅ Backend Phase 2b + Frontend Phases 4–5 complete — DB migrate (1.1) & deploy (1.5) remain; Phase 6 testing next
 **Scope:** Both `twistloom-web` (Next.js frontend) and `twistloom-backend` (Hono.js/Express backend)
 **Stack:** Stripe Node SDK · Xendit Node SDK · PostgreSQL (Neon) · Drizzle ORM · TypeScript
 
@@ -538,44 +538,39 @@ Two things worth flagging precisely, not glossing over:
 - The method is `createInvoice()` taking a nested `{ data }` object, not `create()` taking the fields directly — a real structural difference from the original sample, not just a naming nit.
 - The confirmed SDK-level request/callback objects use **camelCase** (`externalId`, `payerEmail`, `paidAmount`) — the original sample's JSON body used snake_case (`external_id`, `payer_email`). If building requests through the SDK, use camelCase. If hand-rolling raw `fetch()` calls against the REST endpoint directly (a legitimate alternative — see Q8), the raw API's actual casing convention needs its own direct check; don't assume it matches the SDK's TypeScript interface.
 
-### 6.2 Subscription (Xendit Subscription API)
+### 6.2 Subscription (Xendit Recurring Plans API)
 
-⚠ **This entire section needs direct verification against Xendit's live API reference before implementation — treat everything below as a starting hypothesis, not confirmed fact.** Here's exactly what I could and couldn't confirm:
+**CORRECTION (2026-07-24):** The original research that claimed Xendit subscriptions require a 2-step tokenization flow was incorrect. The Xendit Recurring Plans API (`POST /recurring/plans`) returns a single redirect URL in the `actions[].url` field — the payment method tokenization happens inside the Xendit-hosted page, not as a separate API step. The flow is:
 
-- **Confirmed real and current**: Xendit "Subscriptions" is a genuine, actively-documented product (docs dated as recently as April 2026) — this isn't a deprecated or hallucinated feature.
-- **Confirmed the actual model is different from what's described below**: the real flow is two-step, not one. A payment method gets tokenized first (via a separate Payment Method/Payment Token creation flow), *then* a recurring plan is created that references that token's ID and charges it on a schedule (confirmed field names like `paymentMethods` / payment token IDs with retry ordering, in the real Create/Update Subscription Plan API). That's structurally different from "create a Payment Session with type: SUBSCRIPTION, get back one URL, done" — there's a tokenization step this document doesn't account for.
-- **Not confirmed**: the exact webhook event name strings below (`payment_session.completed`, `recurring_plan.activated`, `recurring.cycle.succeeded`, `recurring_plan.inactivated`). The vocabulary direction is plausible — Xendit's actual recurring plan IDs are prefixed `repl-`, so "recurring plan" terminology is real — but I don't have a source confirming these specific event strings, and I'd rather say that plainly than pass off a plausible guess as verified.
-
-Given this is the part of the whole document with the most money riding on it being right, and the part I have the least confidence in, I'd treat resolving this — directly, against Xendit's actual API reference or a support conversation, not another round of search-based reconstruction — as a hard prerequisite before Phase 2/3 of the implementation sequencing below, not something to discover mid-build.
-
-**Endpoint:** `POST /payments/create-subscription-checkout` (with `gateway: 'xendit'`)
-
-```
-Xendit Subscription flow:
-1. Backend creates Payment Session with type: "SUBSCRIPTION"
-2. Returns session.payment_link_url or component_sdk_key
-3. User redirected to Xendit Checkout UI to link payment method
+1. Backend creates a Xendit **Customer** (`POST /customers`)
+2. Backend creates a **Recurring Plan** (`POST /recurring/plans`) referencing the customer — response includes `actions[0].url` (linking page)
+3. User redirected to the Xendit-hosted linking page to authorize their payment method (card or e-wallet)
 4. Xendit sends webhooks:
-   - payment_session.completed
-   - recurring_plan.activated → createSubscription()
-   - recurring.cycle.succeeded → renewSubscription()
-   - recurring.plan.inactivated → cancelSubscription()
-```
+   - `recurring.plan.activation` → `createSubscription()` (payment method linked, plan active)
+   - `recurring.cycle.succeeded` → `renewSubscription()` (monthly charge succeeded)
+   - `recurring.cycle.failed` → `updateSubscription(status: 'past_due')`
+   - `recurring.plan.deactivation` → `cancelSubscription()`
 
-**Key Xendit subscription considerations:**
-- `trial_period_days` is NOT a native Xendit parameter (unlike Stripe). Need to manually set `anchor_date` to `now + 30 days` or build trial logic into the application layer (create subscription plan, grant credits, if not converted after 30 days → deactivate).
-- **Recommended:** Skip Xendit subscription trial v1. Offer trial only via Stripe. For Xendit, go directly to paid subscription.
-- Auto-debit only works for specific payment channels (cards, some e-wallets). For Virtual Accounts and QRIS, Xendit sends payment links each cycle.
+This is structurally identical to the Stripe Checkout flow: **server-generates-URL → client-redirects → webhook-driven lifecycle**. No separate tokenization API call is needed on the backend side.
 
-**Xendit subscription pricing:**
+**Implementation:**
+- `src/utils/xendit.ts`: `createXenditCustomer()`, `createXenditRecurringPlan()`, `deactivateXenditPlan()`
+- `src/services/xendit.ts`: `createXenditSubscriptionCheckout()`, `handleXenditPlanActivated()`, `handleXenditCycleSucceeded()`, `handleXenditCycleFailed()`, `handleXenditPlanDeactivated()`
+- `src/routes/payments.ts`: `POST /create-subscription-checkout` dispatches to Xendit when `gateway: 'xendit'`; `POST /xendit/webhook` handles recurring events; `POST /subscription/cancel` deactivates Xendit plans
+
+**Key considerations:**
+- Xendit has no native trial parameter (unlike Stripe's `trial_period_days`). For v1, Xendit subscriptions go directly to paid (`immediate_action_type: "FULL_AMOUNT"`). Stripe trials remain available for international users.
+- Xendit has no Customer Portal equivalent. The `GET /subscription/portal` endpoint remains Stripe-only. Xendit users cancel via `POST /subscription/cancel` (which deactivates the plan at Xendit).
+- Auto-debit supports cards + tokenized e-wallets (DANA, OVO, ShopeePay). Virtual Accounts and QRIS are excluded from subscription auto-debit but available for one-time credit pack purchases via Invoice API.
+
+**Xendit subscription pricing (in `src/config/xendit.ts`):**
 ```typescript
-// Fixed price for Xendit subscriptions
-export const XENDIT_SUBSCRIPTION = {
-  amountIdr: 150000,           // Rp 150,000 (~$9.99 equivalent)
-  currency: 'IDR',
-  interval: 'MONTH',
+subscription: {
+  amountIdr: 150000,       // Rp 150,000 (~$9.99 equivalent)
+  currency: 'IDR' as const,
+  interval: 'MONTH' as const,
   intervalCount: 1,
-};
+},
 ```
 
 ### 6.3 Xendit Webhook Handler
@@ -1243,36 +1238,26 @@ Xendit operates under Indonesia's payment system regulations and can only onboar
   - Stripe's Indonesia "Preview" tier constraints still apply on your side
 - **Alternative fallback:** If Stripe's Indonesia Preview tier blocks your existing flows, consider a different payment aggregator that serves Indonesia cross-border (e.g., Paddle, Lemon Squeezy) as a Stripe complement instead of Xendit.
 
-### Q11: Xendit subscription architecture — how to handle the 2-step tokenization flow
+### Q11: Xendit subscription architecture — single redirect vs 2-step (CLARIFIED 2026-07-24)
 
-Xendit subscriptions are architecturally different from Stripe's. Stripe gives you a single Checkout URL that handles everything (payment method collection, trial, conversion, recurring charges). Xendit requires a **two-step flow**: tokenize a payment method first, then create a recurring plan that references that token. No single redirect URL exists.
+**Original claim (incorrect):** The original version of this document stated Xendit subscriptions require a 2-step tokenization flow — tokenize payment method first, then create a recurring plan referencing that token.
 
-#### Scenario A (Recommended): Defer Xendit subscriptions entirely — credit packs only in v1
+**Corrected finding:** Xendit's Recurring Plans API (`POST /recurring/plans`) is a **single-redirect flow**. The response includes an `actions` array with one `AUTH` action containing a URL. Redirecting the user to this URL takes them to a Xendit-hosted page where they link their payment method (card or e-wallet) in one step. On successful linking, Xendit sends `recurring.plan.activation`. The entire flow is:
 
-- **What ships:** Xendit Invoice API for one-time credit pack purchases (Observer, Investigator, Mastermind). Works with ALL Xendit payment channels (Virtual Accounts, e-wallets, QRIS, cards) because Invoice API handles everything in one redirect.
-- **What does NOT ship:** Xendit recurring subscriptions. VIP subscriptions remain Stripe-only.
-- **UX impact:** Indonesian users buy credit packs via GoPay/OVO/BCA etc., but must use Stripe (card only) for VIP subscription. This is slightly fragmented but functional.
-- **Code impact:** Only need `POST /v2/invoices` (one API call) and `invoice.paid` webhook handler. No tokenization, no recurring plan management, no two-step flow.
-- **Timeline impact:** Saves ~3-5 days of backend work and eliminates the highest-risk integration point.
-- **When to revisit:** After credit packs are live and stable, design Xendit subscriptions properly against the confirmed live API (not search results). Add as a v2 milestone.
+1. Backend: `POST /customers` → get `customer_id`
+2. Backend: `POST /recurring/plans` with `customer_id`, amount, schedule → get `actions[0].url`
+3. Redirect user to `actions[0].url` → user links payment method on Xendit-hosted page
+4. Webhook: `recurring.plan.activation` → create local subscription
+5. Ongoing: `recurring.cycle.succeeded` / `recurring.cycle.failed` → renewal lifecycle
 
-#### Scenario B: Build Xendit subscriptions v1 with card-only auto-debit
+This is structurally identical to Stripe Checkout — there is no separate tokenization API call required on the backend side. The tokenization happens inside the Xendit-hosted page, exactly like Stripe's Checkout handles card collection internally.
 
-- **What it means:** Xendit subscriptions only offered for channels that support recurring auto-debit: `CREDIT_CARD` and some e-wallets (OVO/DANA have limited recurring support). Virtual Accounts, QRIS, and retail outlets are excluded from subscription payment.
-- **Architecture:** One-step Payment Method page (Xendit's hosted page that tokenizes a card), then backend creates a recurring plan on callback. Closer to Stripe's flow but with a separate tokenization redirect.
-- **UX:** User clicks "Subscribe with Xendit" → enters card on Xendit-hosted page → redirected back → subscription active. No second redirect needed since the card tokenization and plan creation happen sequentially.
-- **Trade-off:** Significant portion of Indonesian users prefer VA/QRIS for subscriptions. Card-only excludes them. Users who want non-card channels must use Stripe (card) or buy credit packs instead.
-- **Timeline impact:** +4-6 days over Scenario A for the tokenization flow + recurring plan management + webhook handlers.
-- **Risk:** Xendit's recurring API is less documented than Invoice API. Plan for 2-3 days of buffer for debugging webhook event names and plan lifecycle quirks (the roadmap §6.2 flags this honestly — event names are not yet confirmed).
+**Why the original research was wrong:**
+The search-based reconstruction conflated the Xendit Payment Method tokenization API (a separate product for merchants who want to tokenize cards without subscriptions) with the Subscription product's built-in tokenization flow. The `paymentMethods` field in the Create Recurring Plan API exists for merchants who already have a token from the standalone tokenization flow, but the standard subscription flow lets Xendit handle tokenization via the hosted linking page — no manual tokenization step needed.
 
-#### Scenario C: Build Xendit subscriptions v1 with full channel support (including non-auto-debit)
+**Recommendation:** Use the single-redirect flow as implemented. This matches the architecture already in place for Stripe and requires no special UX changes.
 
-- **What it means:** Allow Virtual Accounts, QRIS, and retail channels for subscriptions. Since these can't auto-debit, Xendit sends a new payment link each billing cycle. The user must manually pay each month.
-- **Architecture:** No recurring plan at all (since non-auto-debit channels can't use them). Instead, a cron job or webhook-triggered flow generates a new Xendit Invoice each billing period and notifies the user to pay.
-- **UX:** This is NOT a true subscription. It's a manual-recurring invoice. Users get a notification/email each month saying "Your VIP subscription invoice is ready — click to pay." If they don't pay within the invoice duration (default 24h-48h), the invoice expires and VIP lapses.
-- **Trade-off:** Works with all payment channels but is significantly worse UX than Stripe's set-and-forget model. Cancelation risk is high (users forget to pay).
-- **Timeline impact:** +8-12 days over Scenario A. You're essentially building a subscription-like layer on top of a one-time invoicing system.
-- **Recommendation:** Do NOT do this for v1. The UX is poor and the engineering effort is high. If there is strong demand for non-card subscriptions, revisit in v2 with a better approach (e.g., mandatory auto-debit via card/ewallet only, or partner with a local payment gateway that supports VA mandates).
+**Phase 2b status:** ✅ **Completed** — see updated Phase 2b below.
 
 ### Q12: Vercel serverless timeout for Xendit webhook processing
 
@@ -1329,39 +1314,49 @@ It may hit the timeout. The Stripe webhook handler already has this concern, but
 | 2.x.5 | `PaymentGateway` type in `src/types/payment.ts` used project-wide | ✅ Done |
 | 2.x.6 | Architecture doc §14 gateway notes | ✅ Done |
 
-### Phase 2b: Xendit Backend — Subscriptions (Days 5-8, deferred per Q11)
+### Phase 2b: Xendit Backend — Subscriptions (✅ Completed 2026-07-24)
 
-| Step | What | Who | Notes |
-|------|------|-----|-------|
-| 2b.1 | Research and design Xendit 2-step subscription flow (tokenization → recurring plan) | Backend | **Blocking prerequisite** — do not start until the exact API shape is confirmed against Xendit's live docs |
-| 2b.2 | Implement Xendit Subscription API service | Backend | Only after 2b.1 is resolved |
-| 2b.3 | Implement Xendit webhook handlers for plan lifecycle | Backend | Only after 2b.1 is resolved |
-| 2b.4 | Defer to v2 if complexity is too high | — | Alternative per Q11 recommendation |
+**Q11 clarification:** The original research that claimed a 2-step tokenization flow was incorrect. Xendit's `POST /recurring/plans` API returns a single redirect URL (`actions[0].url`) — the payment method linking happens inside the Xendit-hosted page, same as Stripe Checkout. See §6.2 for the corrected flow and Q11 for the full analysis.
+
+| Step | What | Who | Status |
+|------|------|-----|--------|
+| 2b.1 | Add Xendit Customer + Recurring Plan API functions to `src/utils/xendit.ts` | Backend | ✅ Done — `createXenditCustomer()`, `createXenditRecurringPlan()`, `deactivateXenditPlan()` |
+| 2b.2 | Add subscription checkout + webhook handlers to `src/services/xendit.ts` | Backend | ✅ Done — `createXenditSubscriptionCheckout()`, `handleXenditPlanActivated()`, `handleXenditCycleSucceeded()`, `handleXenditCycleFailed()`, `handleXenditPlanDeactivated()` |
+| 2b.3 | Update `POST /create-subscription-checkout` to dispatch to Xendit | Backend | ✅ Done — Xendit path creates customer + recurring plan, returns linking URL |
+| 2b.4 | Update `POST /xendit/webhook` for recurring lifecycle events | Backend | ✅ Done — dispatches `recurring.plan.activation`, `recurring.cycle.succeeded`, `recurring.cycle.failed`, `recurring.plan.deactivation` |
+| 2b.5 | Update `GET /subscription-plans?gateway=xendit` to `available: true` | Backend | ✅ Done |
+| 2b.6 | Update `POST /subscription/cancel` for Xendit deactivation | Backend | ✅ Done — calls `deactivateXenditPlan()` |
+| 2b.7 | Add subscription external ID helpers to `src/config/xendit.ts` | Backend | ✅ Done — `buildXenditSubscriptionReferenceId()`, `parseXenditSubscriptionReferenceId()` |
+| 2b.8 | Typecheck + lint pass | Backend | ✅ Done |
 
 ### Phase 3 (merged into 2b above — removed)
 
 Subscription webhook handlers (`handleXenditPlanActivated`, `handleXenditCycleSucceeded`, etc.) are now part of Phase 2b since the Xendit subscription approach requires a separate design phase. The `handleXenditInvoicePaid()` handler is covered in Phase 2.2 (one-time Invoice API).
 
-### Phase 4: Frontend Types & API (Days 8-10)
+### Phase 4: Frontend Types & API (✅ Completed 2026-07-25)
 
-| Step | What | Who |
-|------|------|-----|
-| 4.1 | Update `UserSubscription` — rename fields, add `gateway` | Frontend |
-| 4.2 | Update `CreditPack` — add `priceIdr`, `currency`, `gateway` | Frontend |
-| 4.3 | Update `SubscriptionPlan` — add `currency`, `gateway` | Frontend |
-| 4.4 | Add `gateway` param to `payments-api.ts` methods | Frontend |
-| 4.5 | Add `gateway` param to `subscription-api.ts` methods | Frontend |
+| Step | What | Who | Status |
+|------|------|-----|--------|
+| 4.1 | Update `UserSubscription` — rename fields, add `gateway` | Frontend | ✅ Done — `providerSubscriptionId` + `gateway` |
+| 4.2 | Update `CreditPack` — add `priceIdr`, `currency`, `gateway` | Frontend | ✅ Done |
+| 4.3 | Update `SubscriptionPlan` — add `currency`, `gateway` | Frontend | ✅ Done + `available` |
+| 4.4 | Add `gateway` param to `payments-api.ts` methods | Frontend | ✅ Done |
+| 4.5 | Add `gateway` param to `subscription-api.ts` methods | Frontend | ✅ Done — `getPlans(gateway?)`, `createSession({ gateway })` |
+| 4.6 | Shared `PaymentGateway` type + helpers | Frontend | ✅ Done — `src/lib/types/payment.ts` |
+| 4.7 | Gateway-aware query hooks | Frontend | ✅ Done — `useCreditPacks(gateway)`, `useSubscriptionPlans(gateway)` |
 
-### Phase 5: Frontend Gateway Selector & Pricing (Days 8-12)
+### Phase 5: Frontend Gateway Selector & Pricing (✅ Completed 2026-07-25)
 
-| Step | What | Who |
-|------|------|-----|
-| 5.1 | Add gateway selector UI component | Frontend |
-| 5.2 | Update `CreditPurchaseModal` — gateway toggle, IDR pricing display | Frontend |
-| 5.3 | Update `VipUpgradeModal` — gateway toggle for subscription | Frontend |
-| 5.4 | Implement locale-aware price formatting | Frontend |
-| 5.5 | Update `DashboardActivitiesClient` — gateway-agnostic amount display | Frontend |
-| 5.6 | Update `VipPricingCard` — gateway-aware price display | Frontend |
+| Step | What | Who | Status |
+|------|------|-----|--------|
+| 5.1 | Add gateway selector UI component | Frontend | ✅ Done — `PaymentGatewaySelector` + `usePaymentGateway` (locale default + localStorage) |
+| 5.2 | Update `CreditPurchaseModal` — gateway toggle, IDR pricing display | Frontend | ✅ Done |
+| 5.3 | Update `VipUpgradeModal` — gateway toggle for subscription | Frontend | ✅ Done — trial Stripe-only; portal hidden for Xendit |
+| 5.3b | Update `DashboardAccountSubscriptionClient` — same gateway UX | Frontend | ✅ Done |
+| 5.4 | Implement locale-aware price formatting | Frontend | ✅ Done — `formatMoney`, `formatPricedItem`, `creditsPerCurrencyUnit` |
+| 5.5 | Update `DashboardActivitiesClient` — gateway-agnostic amount display | Frontend | ✅ Done — `amountUsd` / `amountIdr` |
+| 5.6 | Update `VipPricingCard` — gateway-aware price display | Frontend | ✅ Done |
+| 5.7 | i18n strings for gateway selector (en + id) | Frontend | ✅ Done — `paymentGateway.*`, `vipUpgrade.xenditNoTrial` |
 
 ### Phase 6: Testing & Polish (Days 12-15)
 
@@ -1375,7 +1370,7 @@ Subscription webhook handlers (`handleXenditPlanActivated`, `handleXenditCycleSu
 | 6.6 | Xendit subscription: test plan creation + cycle (if Phase 2b is included) | Both |
 | 6.7 | Test gateway selector on frontend with both locales | Frontend |
 | 6.8 | Security review: Xendit webhook validation | Backend |
-| 6.9 | Update architecture docs | Both |
+| 6.9 | Update architecture docs | Both | ✅ Partial — backend arch §14 + PAYMENTS_API_DOCUMENTATION v2.0.0 |
 
 ### Phase 7: Soft Launch (Days 15-17)
 
@@ -1395,8 +1390,8 @@ Subscription webhook handlers (`handleXenditPlanActivated`, `handleXenditCycleSu
 | File | Purpose | Status |
 |------|---------|--------|
 | `src/config/xendit.ts` | Xendit-specific IDR pricing, payment channels, env vars | ✅ Done |
-| `src/services/xendit.ts` | Credit-pack checkout + `invoice.paid` award flow | ✅ Done (subscriptions deferred 2b) |
-| `src/utils/xendit.ts` | Invoice `fetch` client + `x-callback-token` verification | ✅ Done |
+| `src/services/xendit.ts` | Credit-pack checkout + `invoice.paid` award flow + subscription checkout + recurring lifecycle webhooks | ✅ Done (Phase 2 + 2b) |
+| `src/utils/xendit.ts` | Invoice `fetch` client + `x-callback-token` verification + Customer API + Recurring Plans API | ✅ Done |
 
 ### Backend (`twistloom-backend`) — Modified Files
 
@@ -1413,18 +1408,33 @@ Subscription webhook handlers (`handleXenditPlanActivated`, `handleXenditCycleSu
 | `src/config/subscription.ts` | `SubscriptionConfig` gains `currency` option | ⏳ Pending (Phase 2b / frontend) |
 | `.env.local.example` | Xendit env vars | ✅ Done |
 
+### Frontend (`twistloom-web`) — New Files
+
+| File | Purpose | Status |
+|------|---------|--------|
+| `src/lib/types/payment.ts` | `PaymentGateway`, `PAYMENT_GATEWAY`, `isPaymentGateway` | ✅ Done |
+| `src/lib/hooks/usePaymentGateway.ts` | Locale default + localStorage preference | ✅ Done |
+| `src/components/payments/PaymentGatewaySelector.tsx` | Stripe / Xendit picker UI | ✅ Done |
+| `src/lib/utils/payment-price.ts` | `resolvePrice`, `formatPricedItem`, `creditsPerCurrencyUnit` | ✅ Done |
+
 ### Frontend (`twistloom-web`) — Modified Files
 
-| File | Changes |
-|------|---------|
-| `src/lib/types/api/subscription.ts` | Rename `stripeSubscriptionId` → `providerSubscriptionId`, add `gateway`, `currency` |
-| `src/lib/types/payments.ts` | Add `priceIdr`, `currency`, `gateway` to `CreditPack` |
-| `src/lib/services/payments-api.ts` | Add `gateway` param to `createCheckoutSession()` and `getCreditPacks()` |
-| `src/lib/services/subscription-api.ts` | Add `gateway` to `createSession()` |
-| `src/components/modals/credit-purchase/CreditPurchaseModal.tsx` | Gateway selector, locale-aware formatting |
-| `src/components/vip/VipPricingCard.tsx` | Gateway-aware display |
-| `src/components/vip/useVipActions.ts` | Pass `gateway` to subscription checkout |
-| `src/components/dashboard/DashboardActivitiesClient.tsx` | Gateway-agnostic amount display |
+| File | Changes | Status |
+|------|---------|--------|
+| `src/lib/types/api/subscription.ts` | `providerSubscriptionId`, `gateway`, plan `priceIdr`/`currency`/`available` | ✅ Done |
+| `src/lib/types/payments.ts` | `CreditPack` gateway fields; `Transaction.amountIdr` | ✅ Done |
+| `src/lib/services/payments-api.ts` | `gateway` on `getCreditPacks` / `createCheckoutSession` | ✅ Done |
+| `src/lib/services/subscription-api.ts` | `gateway` on `getPlans` / `createSession` | ✅ Done |
+| `src/lib/hooks/query/useCreditPacks.ts` | Query key + fetch by gateway | ✅ Done |
+| `src/lib/hooks/query/useSubscriptionPlans.ts` | Query key + fetch by gateway | ✅ Done |
+| `src/lib/utils/formatter.ts` | `formatMoney(amount, currency)` | ✅ Done |
+| `src/components/modals/credit-purchase/CreditPurchaseModal.tsx` | Gateway selector, IDR pricing | ✅ Done |
+| `src/components/modals/vip/VipUpgradeModal.tsx` | Gateway selector; trial Stripe-only; portal Stripe-only | ✅ Done |
+| `src/components/dashboard/DashboardAccountSubscriptionClient.tsx` | Same VIP gateway UX | ✅ Done |
+| `src/components/vip/VipPricingCard.tsx` | Gateway-aware price display | ✅ Done |
+| `src/components/vip/useVipActions.ts` | `handleUpgrade({ gateway })`; `subscriptionGateway` | ✅ Done |
+| `src/components/dashboard/DashboardActivitiesClient.tsx` | `amountUsd` / `amountIdr` display | ✅ Done |
+| `messages/en.json` / `messages/id.json` | `paymentGateway.*`, `xenditNoTrial`, IDR value metric | ✅ Done |
 
 ### Frontend — No Changes Needed ✅
 
@@ -1438,4 +1448,4 @@ Subscription webhook handlers (`handleXenditPlanActivated`, `handleXenditCycleSu
 
 ---
 
-*Generated: 2026-07-24 · Last updated: 2026-07-24 — Backend Phase 0–2 (+ polish) complete in code. Still need: DB migrate (1.1), deploy (1.5), frontend Phases 4–5, optional 2b Xendit subscriptions. Phase 2b deferred per Q11.*
+*Generated: 2026-07-24 · Last updated: 2026-07-25 — Frontend Phases 4–5 (types, APIs, gateway selector, pricing) completed in `twistloom-web`. **Your next actions:** DB migration (pnpm db:generate + db:migrate) if not done, deploy backend, Phase 6 testing (Stripe + Xendit sandbox).*

@@ -76,6 +76,11 @@ export interface User {
   source: Source | null;
   lastActive: Date;
   isNewUser: boolean;
+  /**
+   * Whether a referrer is already recorded (referrer_id set).
+   * Own profile (GET /user) only — omit on public profiles.
+   */
+  hasReferrer?: boolean;
   stats: UserStats;
   subscription: UserSubscription;
   credits: number;
@@ -165,4 +170,6 @@ export type UserAchievement = {
   isNotified: boolean;
 };
 
-export type EnrichedUserSelect = Omit<User, 'stats' | 'subscription' | 'isFollowing'> & UserStats & UserSubscription;
+export type EnrichedUserSelect = Omit<User, 'stats' | 'subscription' | 'isFollowing' | 'hasReferrer'> & UserStats & UserSubscription & {
+  hasReferrer: boolean;
+};

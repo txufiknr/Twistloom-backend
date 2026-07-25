@@ -2,16 +2,21 @@
 
 ## Overview
 
-The Payments API provides endpoints for Stripe checkout sessions, credit purchases, transaction history, and credit management. It integrates with Stripe for payment processing and tracks all credit-related transactions including purchases, usage, daily rewards, and refunds.
+The Payments API provides endpoints for multi-gateway checkout (Stripe + Xendit credit packs), VIP subscriptions (Stripe), transaction history, and credit management. The database is **gateway-agnostic**; webhooks write the same columns with a `gateway` discriminator.
 
-**Base URL:** `/payments`
+**Base URL:** `/api/payments`
 
-**Authentication:** Most endpoints require authentication via NextAuth JWT cookies. Public endpoints allow access to pricing information.
+**Gateways:**
+| Gateway | Credit packs | VIP subscription | Notes |
+|---------|--------------|------------------|--------|
+| `stripe` | ✅ USD Checkout | ✅ | Default |
+| `xendit` | ✅ IDR Invoice | ❌ v1 (Phase 2b later) | Requires `XENDIT_ENABLED=true` |
 
-**Response Pattern:**
-- GET endpoints: Return resources directly wrapped in descriptive keys (e.g., `{ creditPacks: [...] }`, `{ transactions: [...] }`)
-- POST endpoints: Return created resources with 201 status (e.g., `{ session: {...} }`, `{ result: {...} }`)
-- Error responses: Follow consistent error format with status codes and messages
+**Authentication:** Most endpoints require NextAuth JWT cookies. Pricing endpoints are public. Webhooks use provider signatures/tokens (not user auth).
+
+**Return URL contract (gateway-agnostic):**
+- Credit packs: `?payment=success` / `?payment=cancel`
+- Subscriptions: `?subscription=success` / `?subscription=cancel`
 
 ---
 
@@ -19,7 +24,7 @@ The Payments API provides endpoints for Stripe checkout sessions, credit purchas
 
 1. [Type Definitions](#type-definitions)
 2. [Credit Packs](#credit-packs)
-   - [Get Available Credit Packs](#get-paymentcredit-packs)
+   - [Get Available Credit Packs](#get-paymentscredit-packs)
 3. [Subscription Plans](#subscription-plans)
    - [Get Subscription Plans](#get-paymentssubscription-plans)
    - [Create Subscription Checkout](#post-paymentscreate-subscription-checkout)
@@ -32,6 +37,7 @@ The Payments API provides endpoints for Stripe checkout sessions, credit purchas
    - [Create Checkout Session](#post-paymentscreate-checkout-session)
 5. [Webhooks](#webhooks)
    - [Handle Stripe Webhook](#post-paymentsstripewebhook)
+   - [Handle Xendit Webhook](#post-paymentsxenditwebhook)
 6. [Credit Management](#credit-management)
    - [Consume Credits](#post-paymentsconsume-credits)
 7. [Transaction History](#transaction-history)
@@ -48,123 +54,135 @@ The Payments API provides endpoints for Stripe checkout sessions, credit purchas
 
 ## Type Definitions
 
+### PaymentGateway
+
+```typescript
+type PaymentGateway = "stripe" | "xendit";
+// Source: src/types/payment.ts — PAYMENT_GATEWAY.stripe | PAYMENT_GATEWAY.xendit
+```
+
 ### CreditPack
 
-Credit pack configuration for purchase options.
+Response shape depends on `?gateway=` (fields omitted when not applicable).
 
 ```typescript
 interface CreditPack {
-  id: string;                // Unique identifier for the credit pack
-  title: string;             // Display title shown to users
-  tagline: string;           // Short tagline for marketing
-  description: string;       // Detailed description of what the pack offers
-  credits: number;           // Number of credits included in this pack
-  priceUSD: number;          // Price in USD
-  priceId: string;           // Stripe Price ID for checkout
-  productId: string;         // Stripe Product ID for reference
-  badge: string | null;      // Optional badge text (e.g., "🔥 Most Popular")
-  color: "gray" | "blue" | "purple" | "green" | "yellow" | "red"; // Color theme for UI display
+  id: string;
+  title: string;
+  tagline: string;
+  description: string;
+  credits: number;
+  badge: string | null;
+  color: "gray" | "blue" | "purple" | "green" | "yellow" | "red";
+  gateway: PaymentGateway;
+  currency: "USD" | "IDR";
+  // Stripe (gateway=stripe)
+  priceUSD?: number;
+  priceId?: string;
+  productId?: string;
+  // Xendit (gateway=xendit)
+  priceIdr?: number | null;
 }
 ```
 
 ### Transaction
 
-Credit transaction record.
-
 ```typescript
 interface Transaction {
-  id: string;                // Transaction's unique identifier
-  type: "purchase" | "usage" | "refund" | "reward"; // Transaction type
-  credits: number;           // Number of credits (positive for addition, negative for usage)
-  amountUsd: number | null;  // USD amount (null for usage/reward transactions)
-  context: string | null;    // Additional context (e.g., "book_creation", "daily_checkin")
-  metadata: object | null;   // Additional metadata as JSON
-  createdAt: string;         // Transaction creation timestamp (ISO 8601)
+  id: string;
+  type: "purchase" | "usage" | "refund" | "reward";
+  credits: number;
+  gateway: PaymentGateway;
+  amountCents: number | null;   // USD cents (Stripe) or whole IDR (Xendit packs)
+  amountUsd: number | null;     // amountCents/100 when gateway=stripe
+  amountIdr: number | null;     // amountCents when gateway=xendit
+  context: string | null;
+  metadata: object | null;
+  providerPaymentId: string | null;
+  providerEventId: string | null;
+  createdAt: string;
 }
 ```
 
 ### CheckoutUrlResponse
 
-Stripe checkout session response returned after creating a checkout session.
-Per Stripe best practices, the `sessionId` should be stored client-side for reconciliation,
-analytics, and potential retry flows.
-
 ```typescript
 interface CheckoutUrlResponse {
-  url: string;               // Stripe Checkout URL to redirect the user to
-  sessionId: string;         // Stripe session ID for reconciliation/analytics
+  url: string;                 // Hosted checkout URL (Stripe Checkout or Xendit Invoice)
+  sessionId: string;           // Stripe session id or Xendit invoice id
+  gateway: PaymentGateway;
 }
 ```
 
 **Usage:**
 ```typescript
-const { url, sessionId } = await response.json();
-console.debug('[checkout] session created', sessionId);
+const { url, sessionId, gateway } = await response.json();
+console.debug('[checkout]', gateway, sessionId);
 window.location.href = url;
 ```
 
 ### TransactionSummary
 
-Transaction summary statistics.
-
 ```typescript
 interface TransactionSummary {
-  totalCreditsPurchased: number;  // Total credits purchased
-  totalCreditsUsed: number;        // Total credits consumed
-  totalCreditsRewarded: number;    // Total credits from rewards
-  totalAmountSpent: number;        // Total USD spent on purchases
-  currentBalance: number;          // Current user credit balance
+  totalCreditsPurchased: number;
+  totalCreditsUsed: number;
+  totalCreditsRewarded: number;
+  totalAmountSpent: number;        // Mixed-currency aggregate — prefer per-row amountUsd/amountIdr for display
+  currentBalance: number;
 }
 ```
 
 ### PaginationMeta
 
-Pagination metadata for list endpoints.
-
 ```typescript
 interface PaginationMeta {
-  page: number;              // Current page number (1-based)
-  limit: number;             // Number of items per page
-  total: number;             // Total number of items
-  totalPages: number;        // Total number of pages
-  hasNext: boolean;          // Whether there is a next page
-  hasPrevious: boolean;      // Whether there is a previous page
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+  hasNext: boolean;
+  hasPrevious: boolean;
 }
 ```
 
 ### SubscriptionPlan
 
-Subscription plan configuration for VIP membership.
-
 ```typescript
 interface SubscriptionPlan {
-  id: string;                // Unique identifier for the plan
-  name: string;              // Display name shown to users
-  description: string;       // Detailed description of the plan
-  priceUSD: number;          // Monthly price in USD
-  priceId: string;           // Stripe Price ID for checkout
-  productId: string;         // Stripe Product ID for reference
-  monthlyCredits: number;    // Monthly credits allocated
-  checkInMultiplier: number; // Multiplier for daily check-in bonus
-  benefits: string[];        // Array of benefit descriptions
+  id: string;
+  name: string;
+  description: string;
+  monthlyCredits: number;
+  checkInMultiplier: number;
+  benefits: string[];
+  gateway: PaymentGateway;
+  currency: "USD" | "IDR";
+  available: boolean;              // false for Xendit until Phase 2b
+  message?: string;                // e.g. why unavailable
+  // Stripe
+  priceUSD?: number;
+  priceId?: string;
+  productId?: string;
+  // Xendit (stub)
+  priceIdr?: number;
 }
 ```
 
-### SubscriptionStatus
-
-User's current subscription status.
+### UserSubscription
 
 ```typescript
-interface SubscriptionStatus {
-  id: string;                         // Subscription ID
-  stripeSubscriptionId: string;       // Stripe subscription ID
+interface UserSubscription {
+  id: string;
+  gateway: PaymentGateway;
+  providerSubscriptionId: string;  // was stripeSubscriptionId
   status: "active" | "canceled" | "past_due" | "unpaid" | "trialing" | null;
-  currentPeriodStart: string;          // Start of current billing period (ISO 8601)
-  currentPeriodEnd: string;            // End of current billing period (ISO 8601)
-  cancelAtPeriodEnd: boolean;          // Whether subscription cancels at period end
-  monthlyCredits: number;             // Monthly credits allocated
-  isTrial: boolean;                   // Whether subscription is in trial period
-  trialEnd: string | null;            // Trial end date (ISO 8601) or null
+  currentPeriodStart: string;
+  currentPeriodEnd: string;
+  cancelAtPeriodEnd: boolean;
+  monthlyCredits: number;
+  isTrial: boolean;
+  trialEnd: string | null;
 }
 ```
 
@@ -174,56 +192,55 @@ interface SubscriptionStatus {
 
 ### GET /payments/credit-packs
 
-Returns the list of available credit packs for purchase. This endpoint allows the frontend to fetch the current credit pack configuration without hardcoding it in the frontend.
+Returns credit packs for the selected payment gateway.
 
-**Authentication:** None (public pricing information)
+**Authentication:** None (public)
 
-**Response (200 OK):**
+**Query:**
+| Param | Default | Description |
+|-------|---------|-------------|
+| `gateway` | `stripe` | `stripe` \| `xendit` |
+
+**Response (200 OK) — Stripe:**
 ```json
 [
   {
     "id": "observer",
     "title": "Observer",
     "tagline": "You watch… but rarely interfere.",
-    "description": "Step into the dark without committing. Enough to trace a few threads and sense what waits beneath the surface.",
+    "description": "Step into the dark without committing...",
     "credits": 50,
     "priceUSD": 2.99,
-    "priceId": "price_1TSq8CFmDKrMqBDfv8hHK8hi",
-    "productId": "prod_URjbG0HYUqTKjj",
+    "priceId": "price_...",
+    "productId": "prod_...",
+    "currency": "USD",
+    "gateway": "stripe",
     "badge": null,
     "color": "gray"
-  },
-  {
-    "id": "investigator",
-    "title": "Investigator",
-    "tagline": "You follow the clues. Carefully.",
-    "description": "Follow the evidence deeper. Shape pivotal moments, reveal what others miss, and craft your own story moves.",
-    "credits": 150,
-    "priceUSD": 7.99,
-    "priceId": "price_1TSqEFFmDKrMqBDfJNv4Rhvi",
-    "productId": "prod_URjhcMuRg9MAl7",
-    "badge": "🔥 Most Popular",
-    "color": "blue"
-  },
-  {
-    "id": "mastermind",
-    "title": "Mastermind",
-    "tagline": "You don't follow the story. You control it.",
-    "description": "The story bends to you. Forge custom choices, pursue alternate endings, and leave your mark on every chapter.",
-    "credits": 500,
-    "priceUSD": 19.99,
-    "priceId": "price_1TSqEpFmDKrMqBDfhrwd9wOn",
-    "productId": "prod_URjiSAzuitp1le",
-    "badge": "💎 Best Value",
-    "color": "purple"
   }
 ]
 ```
 
-**Behavior:**
-- Returns safe data only (no sensitive configuration)
-- Includes all credit packs configured in the system
-- Pricing is public information, no authentication required
+**Response (200 OK) — Xendit (`?gateway=xendit`):**
+```json
+[
+  {
+    "id": "observer",
+    "title": "Observer",
+    "tagline": "You watch… but rarely interfere.",
+    "description": "Step into the dark without committing...",
+    "credits": 50,
+    "priceIdr": 45000,
+    "currency": "IDR",
+    "gateway": "xendit",
+    "badge": null,
+    "color": "gray"
+  }
+]
+```
+
+**Errors:**
+- `400` — invalid `gateway`, or Xendit requested while `XENDIT_ENABLED` is not `true`
 
 ---
 
@@ -231,11 +248,16 @@ Returns the list of available credit packs for purchase. This endpoint allows th
 
 ### GET /payments/subscription-plans
 
-Returns the available subscription plans for purchase.
+Returns VIP plan metadata for the selected gateway.
 
-**Authentication:** None (public pricing information)
+**Authentication:** None (public)
 
-**Response (200 OK):**
+**Query:**
+| Param | Default | Description |
+|-------|---------|-------------|
+| `gateway` | `stripe` | `stripe` \| `xendit` |
+
+**Response (200 OK) — Stripe:**
 ```json
 {
   "plans": [
@@ -246,17 +268,18 @@ Returns the available subscription plans for purchase.
       "priceUSD": 9.99,
       "priceId": "price_...",
       "productId": "prod_...",
-      "monthlyCredits": 50,
+      "currency": "USD",
+      "gateway": "stripe",
+      "available": true,
+      "monthlyCredits": 200,
       "checkInMultiplier": 2,
-      "benefits": [
-        "VIP badge",
-        "2x check-in bonus",
-        "+50 monthly credits"
-      ]
+      "benefits": ["VIP badge", "2x check-in bonus", "+200 monthly credits"]
     }
   ]
 }
 ```
+
+**Response (200 OK) — Xendit:** plan stub with `available: false` and `priceIdr` (checkout not implemented yet).
 
 **Behavior:**
 - Returns safe data only (prices, descriptions, benefits)
@@ -266,17 +289,14 @@ Returns the available subscription plans for purchase.
 
 ### POST /payments/create-subscription-checkout
 
-Creates a Stripe checkout session for VIP subscription. The user is redirected to Stripe's secure checkout page to complete the subscription.
+Creates a VIP subscription checkout. **v1 supports Stripe only.** Pass `gateway: "xendit"` to get a clear validation error until Phase 2b.
 
-**Authentication:** Required (via `requireAuth`)
-
-**Headers:**
-- `X-App-Version`: Application version (for analytics)
-- `X-Platform`: Client platform (android/ios)
+**Authentication:** Required
 
 **Request Body:**
 ```json
 {
+  "gateway": "stripe",
   "returnUrl": "https://app.twistloom.com/dashboard",
   "successPath": "/dashboard?subscription=success",
   "cancelPath": "/pricing"
@@ -287,23 +307,24 @@ Creates a Stripe checkout session for VIP subscription. The user is redirected t
 ```json
 {
   "url": "https://checkout.stripe.com/pay/cs_1234567890",
-  "sessionId": "cs_1234567890"
+  "sessionId": "cs_1234567890",
+  "gateway": "stripe"
 }
 ```
 
 **Error Responses:**
-- **400 Bad Request**: User already has active subscription
+- **400 Bad Request**: User already has active subscription, invalid gateway, or `gateway: xendit` (not available yet)
 - **401 Unauthorized**: Authentication required
 - **429 Too Many Requests**: Rate limit exceeded (1 request per 10 seconds per user)
 - **500 Internal Server Error**: Stripe API error or VIP subscription not configured
 
 **Behavior:**
+- Optional `gateway` (default `stripe`); Xendit VIP rejected until Phase 2b
 - Checks if user already has an active subscription
-- Creates or retrieves Stripe customer ID
+- Creates or retrieves provider customer ID (`users.customer_id`)
 - Creates Stripe checkout session in subscription mode
 - Supports refresh-less UX with returnUrl parameter
 - Rate limited to prevent duplicate session creation
-- Uses idempotency key to prevent duplicate sessions
 - Webhook handles subscription activation and credit allocation
 
 **Optional Enhancements:**
@@ -417,13 +438,14 @@ Returns the authenticated user's current subscription status.
 {
   "hasActiveSubscription": true,
   "subscription": {
-    "id": "sub_1234567890",
-    "stripeSubscriptionId": "sub_1234567890",
+    "id": "uuid-...",
+    "gateway": "stripe",
+    "providerSubscriptionId": "sub_1234567890",
     "status": "active",
     "currentPeriodStart": "2026-05-23T00:00:00.000Z",
     "currentPeriodEnd": "2026-06-23T00:00:00.000Z",
     "cancelAtPeriodEnd": false,
-    "monthlyCredits": 50,
+    "monthlyCredits": 200,
     "isTrial": false,
     "trialEnd": null
   }
@@ -521,51 +543,43 @@ Cancels the authenticated user's active subscription at the period end (not imme
 
 ### POST /payments/create-checkout-session
 
-Creates a Stripe checkout session for purchasing credits. The user is redirected to Stripe's secure checkout page to complete the payment.
+Creates a one-time credit pack checkout via **Stripe Checkout** or **Xendit Invoice**.
 
-**Authentication:** Required (via `requireAuth`)
-
-**Headers:**
-- `X-App-Version`: Application version (for analytics)
-- `X-Platform`: Client platform (android/ios)
+**Authentication:** Required
 
 **Request Body:**
 ```json
 {
   "packId": "investigator",
+  "gateway": "stripe",
   "returnUrl": "https://app.twistloom.com/books/hush-frequency/pageId"
 }
 ```
 
 Parameters:
-- `packId` (required): Credit pack ID (e.g., `"observer"`, `"investigator"`, `"mastermind"`)
-- `returnUrl` (optional): Current page URL for refresh-less UX. Backend appends `?payment=success` or `?payment=cancel` automatically.
-- `successPath` (optional, legacy): Custom success path (relative, e.g., `/dashboard?success=true`)
-- `cancelPath` (optional, legacy): Custom cancel path (relative, e.g., `/pricing`)
+- `packId` (required): `"observer"` | `"investigator"` | `"mastermind"`
+- `gateway` (optional, default `stripe`): `stripe` | `xendit`
+- `returnUrl` (optional): Backend appends `?payment=success` / `?payment=cancel`
+- `successPath` / `cancelPath` (optional, legacy)
 
 **Response (200 OK):**
 ```json
 {
-  "url": "https://checkout.stripe.com/pay/cs_1234567890",
-  "sessionId": "cs_1234567890"
+  "url": "https://checkout.stripe.com/...",
+  "sessionId": "cs_...",
+  "gateway": "stripe"
 }
 ```
 
-**Error Responses:**
-- **400 Bad Request**: Invalid pack ID or user not found
-- **401 Unauthorized**: Authentication required
-- **404 Not Found**: Credit pack not found
-- **429 Too Many Requests**: Rate limit exceeded
-- **500 Internal Server Error**: Stripe API error
+Xendit example: `url` is Xendit `invoice_url`, `sessionId` is invoice id, `gateway: "xendit"`.
+
+**Errors:** `400` invalid gateway / Xendit disabled · `401` · `404` pack · `429` · `500`
 
 **Behavior:**
-- Validates packId against CREDIT_PACKS configuration
-- Validates URLs to prevent open redirects
-- Creates Stripe checkout session with pre-created price ID
-- Supports refresh-less UX with returnUrl parameter (preferred — backend auto-appends payment status params)
-- Rate limited to prevent duplicate session creation (1 session per 10 seconds per user)
-- Uses rate limiting for abuse prevention
-- Webhook handles credit allocation on successful payment
+- Rate limit: 1 request / 10s / user
+- Stripe: Checkout Session with pack `priceId`
+- Xendit: Invoice API (`POST /v2/invoices`), credits awarded on webhook
+- Same return URL contract for both gateways
 
 ---
 
@@ -573,37 +587,38 @@ Parameters:
 
 ### POST /payments/stripe/webhook
 
-Handles Stripe webhook events for payment confirmation and other Stripe events. This endpoint is called by Stripe to notify the application of payment status changes.
+Stripe-signed webhook for payments and subscriptions.
 
-**Authentication:** None (Stripe signature verification)
+**Auth:** `stripe-signature` header · **Env:** `STRIPE_WEBHOOK_SECRET`
 
-**Headers:**
-- `stripe-signature`: Stripe webhook signature for verification
+**Response:** `{ "received": true }` (or `{ "received": true, "duplicate": true }`)
 
-**Request Body:** Stripe webhook event payload
+**Handled events:**
+- `checkout.session.completed` (mode=payment) — credit pack purchase
+- `charge.refunded` — claw back credits
+- `customer.subscription.created|updated|deleted`
+- `invoice.payment_succeeded` (renewals only, `billing_reason=subscription_cycle`)
+- `invoice.payment_failed` → `past_due`
+- `customer.subscription.trial_will_end`
 
-**Response (200 OK):**
-```json
-{
-  "received": true
-}
-```
+Writes `gateway: "stripe"` on all DB rows.
 
-**Handled Events:**
-- **checkout.session.completed**: Successful payment - credits are awarded
-- **charge.refunded**: Charge refunded - credits deducted
-- **customer.subscription.created**: New subscription created
-- **customer.subscription.updated**: Subscription updated
-- **customer.subscription.deleted**: Subscription canceled
-- **invoice.payment_succeeded**: Invoice paid - monthly credits allocated
-- **invoice.payment_failed**: Invoice payment failed
+---
+
+### POST /payments/xendit/webhook
+
+Xendit Invoice callbacks (credit packs v1).
+
+**Auth:** header `x-callback-token` must equal `XENDIT_WEBHOOK_TOKEN`  
+**Gate:** `XENDIT_ENABLED=true`  
+**URL to configure in Xendit Dashboard:** `https://<backend>/api/payments/xendit/webhook`
+
+**Response:** `{ "received": true }` or `{ "received": true, "duplicate": true }`
 
 **Behavior:**
-- Verifies Stripe signature for security
-- Processes completed checkout sessions to award credits
-- Creates transaction records for purchases
-- Updates user credit balance
-- Handles payment failures gracefully
+- On paid/settled invoice → award pack credits + optional first-purchase bonus
+- Idempotent via `(gateway, provider_event_id)` / delivery tracking
+- Non-paid statuses are acknowledged without awarding
 
 ---
 
@@ -883,94 +898,93 @@ Most endpoints require authentication via NextAuth JWT cookies:
 
 ### Users Table (Credits & VIP Columns)
 ```sql
+-- customer_id: Stripe cus_xxx or Xendit customer id (was stripe_customer_id)
 CREATE TABLE "users" (
   "user_id" uuid PRIMARY KEY,
-  -- ... other user fields
-  "credits" integer DEFAULT 0 NOT NULL,
-  "tier" text, -- 'standard' | 'vip'
-  "subscription_id" uuid, -- FK to subscriptions.id (canonical current subscription pointer)
-  "vip_expires_at" timestamp with time zone,
-  "vip_trial_used_at" timestamp with time zone, -- Set once, never cleared (one-trial-per-user)
-  "stripe_customer_id" text UNIQUE,
-  -- ... other user fields
-  "created_at" timestamp with time zone DEFAULT now() NOT NULL,
-  "updated_at" timestamp with time zone DEFAULT now() NOT NULL
+  "credits" integer NOT NULL,
+  "tier" text,
+  "subscription_id" uuid,
+  "vip_expires_at" timestamptz,
+  "vip_trial_used_at" timestamptz,
+  "customer_id" text UNIQUE,
+  ...
 );
 ```
 
 ### Transactions Table
-Tracks all credit movements — purchases, usage, refunds, rewards.
 ```sql
 CREATE TABLE "transactions" (
   "id" uuid PRIMARY KEY DEFAULT uuidv7(),
-  "user_id" uuid REFERENCES users(user_id) ON DELETE cascade NOT NULL,
-  "type" text NOT NULL, -- "purchase" | "usage" | "refund" | "reward"
+  "user_id" uuid NOT NULL,
+  "type" text NOT NULL,
   "credits" integer NOT NULL,
-  "amount_cents" integer,
-  "context" text, -- Additional context (e.g., "credit_pack_purchase", "book_creation")
-  "metadata" jsonb, -- Additional metadata for the transaction
-  "payment_intent_id" text UNIQUE, -- Stripe payment intent for idempotency
-  "stripe_event_id" text UNIQUE, -- Stripe event ID for webhook idempotency
-  "created_at" timestamp with time zone DEFAULT now() NOT NULL
+  "amount_cents" integer,           -- USD cents (Stripe) or whole IDR (Xendit packs)
+  "context" text,
+  "metadata" jsonb,
+  "gateway" text NOT NULL DEFAULT 'stripe',
+  "provider_payment_id" text,       -- was payment_intent_id
+  "provider_event_id" text,         -- was stripe_event_id
+  "created_at" timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (gateway, provider_payment_id),
+  UNIQUE (gateway, provider_event_id)
 );
-
--- Indexes
-CREATE INDEX transactions_user_idx ON transactions(user_id);
-CREATE INDEX transactions_created_idx ON transactions(created_at DESC);
-CREATE INDEX transactions_context_idx ON transactions(context);
 ```
 
 ### Subscriptions Table
-One row per subscription lifecycle. Users may accumulate multiple rows over time (cancel + resubscribe). The "current subscription" is tracked via `users.subscription_id`.
 ```sql
 CREATE TABLE "subscriptions" (
   "id" uuid PRIMARY KEY DEFAULT uuidv7(),
-  "user_id" uuid NOT NULL REFERENCES users(user_id) ON DELETE cascade,
-  "stripe_subscription_id" text UNIQUE NOT NULL,
-  "stripe_customer_id" text NOT NULL,
-  "stripe_price_id" text NOT NULL,
-  "status" text NOT NULL, -- 'active' | 'canceled' | 'past_due' | 'trialing' | ...
-  "current_period_start" timestamp with time zone NOT NULL,
-  "current_period_end" timestamp with time zone NOT NULL,
+  "user_id" uuid NOT NULL,
+  "gateway" text NOT NULL DEFAULT 'stripe',
+  "provider_subscription_id" text NOT NULL,  -- was stripe_subscription_id
+  "provider_customer_id" text NOT NULL,
+  "provider_price_id" text NOT NULL,
+  "status" text NOT NULL,
+  "current_period_start" timestamptz NOT NULL,
+  "current_period_end" timestamptz NOT NULL,
   "cancel_at_period_end" boolean NOT NULL DEFAULT false,
-  "canceled_at" timestamp with time zone,
+  "canceled_at" timestamptz,
   "is_trial" boolean NOT NULL DEFAULT false,
-  "trial_end" timestamp with time zone,
+  "trial_end" timestamptz,
   "metadata" jsonb,
-  "created_at" timestamp with time zone DEFAULT now() NOT NULL,
-  "updated_at" timestamp with time zone DEFAULT now() NOT NULL
+  "created_at" timestamptz NOT NULL DEFAULT now(),
+  "updated_at" timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (gateway, provider_subscription_id)
 );
 ```
 
 ### Subscription Transactions Table
-Separate from `transactions` — tracks subscription-specific credit allocations and lifecycle events.
 ```sql
 CREATE TABLE "subscription_transactions" (
   "id" uuid PRIMARY KEY DEFAULT uuidv7(),
-  "subscription_id" uuid NOT NULL REFERENCES subscriptions(id) ON DELETE cascade,
-  "user_id" uuid NOT NULL REFERENCES users(user_id) ON DELETE cascade,
-  "type" text NOT NULL, -- 'activation' | 'renewal' | 'cancellation' | 'trial_started' | 'trial_expired'
+  "subscription_id" uuid NOT NULL,
+  "user_id" uuid NOT NULL,
+  "type" text NOT NULL,
   "credits_allocated" integer NOT NULL,
-  "stripe_invoice_id" text UNIQUE, -- Idempotency for renewal webhooks
-  "stripe_event_id" text UNIQUE, -- Idempotency for subscription webhooks
+  "gateway" text NOT NULL DEFAULT 'stripe',
+  "provider_invoice_id" text,       -- was stripe_invoice_id
+  "provider_event_id" text,         -- was stripe_event_id
   "metadata" jsonb,
-  "created_at" timestamp with time zone DEFAULT now() NOT NULL
+  "created_at" timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (gateway, provider_invoice_id),
+  UNIQUE (gateway, provider_event_id)
 );
 ```
 
 ### Webhook Deliveries Table
-Tracks Stripe webhook delivery status for idempotency and monitoring.
 ```sql
 CREATE TABLE "webhook_deliveries" (
   "id" uuid PRIMARY KEY DEFAULT uuidv7(),
-  "event_id" text NOT NULL UNIQUE,
+  "gateway" text NOT NULL DEFAULT 'stripe',
+  "event_id" text NOT NULL,
   "event_type" text NOT NULL,
-  "delivered_at" timestamp with time zone DEFAULT now() NOT NULL,
-  "processed_at" timestamp with time zone,
-  "status" text NOT NULL DEFAULT 'retrying', -- 'success' | 'failed' | 'retrying'
+  "delivered_at" timestamptz NOT NULL DEFAULT now(),
+  "processed_at" timestamptz,
+  "status" text NOT NULL DEFAULT 'retrying',
   "error_message" text,
-  "created_at" timestamp with time zone DEFAULT now() NOT NULL,
-  "updated_at" timestamp with time zone DEFAULT now() NOT NULL
+  "created_at" timestamptz NOT NULL DEFAULT now(),
+  "updated_at" timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (gateway, event_id)
 );
 ```
 
@@ -997,16 +1011,18 @@ CREATE TABLE "user_notifications" (
 
 **Get available credit packs:**
 ```bash
-curl https://api.twistloom.com/payments/credit-packs
+curl "https://api.twistloom.com/api/payments/credit-packs?gateway=stripe"
+curl "https://api.twistloom.com/api/payments/credit-packs?gateway=xendit"
 ```
 
-**Create checkout session:**
+**Create checkout session (Stripe or Xendit):**
 ```bash
-curl -X POST https://api.twistloom.com/payments/create-checkout-session \
+curl -X POST https://api.twistloom.com/api/payments/create-checkout-session \
   -H "Cookie: next-auth.session-token=YOUR_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "packId": "investigator",
+    "gateway": "stripe",
     "returnUrl": "https://app.twistloom.com/books/my-story/page-1"
   }'
 ```
@@ -1033,6 +1049,16 @@ curl "https://api.twistloom.com/payments/transactions?limit=20&type=reward" \
 ---
 
 ## Changelog
+
+### v2.0.0 (2026-07-24) — Gateway-agnostic + Xendit credit packs
+- **Schema (Drizzle):** renamed Stripe-specific columns → `gateway` + `provider_*`; unique constraints scoped by gateway
+- **Type:** `PaymentGateway` / `PAYMENT_GATEWAY` in `src/types/payment.ts`
+- **Credit packs:** `GET /credit-packs?gateway=`, `POST /create-checkout-session` body `{ gateway }`
+- **Xendit:** Invoice checkout + `POST /xendit/webhook` (`x-callback-token`); env `XENDIT_*`
+- **Subscriptions:** `providerSubscriptionId` in GET `/subscription`; plans endpoint gateway-aware; VIP still Stripe-only
+- **Transactions API:** `amountUsd` / `amountIdr` by gateway; `awardCredits` writes provider IDs
+- **Docs:** architecture §14; this API doc updated
+- **Pending:** run `pnpm db:generate` + migrate before deploy
 
 ### v1.6.0 (2026-07-14)
 - **Async error hardening**: Added `wrapAsync()` utility in `src/utils/error.ts` to catch promise rejections from async Express middleware (Express 4.x does not handle these natively). Applied to `POST /payments/create-trial-checkout-session` — both `requireAuth` and the handler itself are wrapped.

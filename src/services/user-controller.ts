@@ -75,6 +75,8 @@ export function getEnrichedUserSelect() {
     termsVersion: users.termsVersion,
     emailVerified: userAuth.emailVerified,
     isNewUser: users.isNewUser,
+    // SSOT for welcome-modal: hide referrer input when already set at signup
+    hasReferrer: sql<boolean>`(${users.referrerId} IS NOT NULL)`,
     // Expose the rest of the `user_counters` columns as SSOT-backed fields.
     booksGenerated: sql<number>`COALESCE(${userCounters.booksGenerated},0)`,
     booksCompleted: sql<number>`COALESCE(${userCounters.booksCompleted},0)`,
@@ -385,10 +387,10 @@ export async function setReferrerForNewUser(
       return false;
     }
 
-    // Update user to record referrer
+    // Record referrer only — do NOT flip isNewUser; onboarding still owns that flag
     await client
       .update(users)
-      .set({ referrerId: referrer.userId, isNewUser: false, updatedAt: new Date() })
+      .set({ referrerId: referrer.userId, updatedAt: new Date() })
       .where(eq(users.userId, userId));
 
     // Award referral bonus to both users

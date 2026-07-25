@@ -1,11 +1,13 @@
 /**
  * Xendit payment gateway configuration
  *
- * IDR pricing for credit packs and (future) VIP subscription.
- * v1 ships credit-pack Invoice API only — subscriptions deferred (roadmap Q11).
+ * IDR pricing for credit packs and VIP subscription.
+ * v1 ships credit-pack Invoice API and subscription Recurring Plans API.
  *
  * @see docs/roadmap/STRIPE_AND_XENDIT_GATEWAY_AGNOSTIC_ROADMAP.md §6.4
  */
+
+import { isValidUuid } from "../utils/uuid.js";
 
 /** Credit pack IDs that have Xendit IDR prices */
 export type XenditCreditPackId = "observer" | "investigator" | "mastermind";
@@ -119,4 +121,36 @@ export function parseXenditCreditPackExternalId(
     packId: match[2],
     timestampMs: Number(match[3]),
   };
+}
+
+/**
+ * Builds the reference_id used for Xendit subscription recurring plans.
+ *
+ * Format: `vip-sub-{userId}-{timestamp}`
+ */
+export function buildXenditSubscriptionReferenceId(
+  userId: string,
+  timestampMs: number = Date.now()
+): string {
+  return `vip-sub-${userId}-${timestampMs}`;
+}
+
+/**
+ * Parses a Xendit subscription reference_id back into its components.
+ *
+ * @returns Parsed fields or `null` if the string does not match
+ */
+export function parseXenditSubscriptionReferenceId(
+  referenceId: string
+): { userId: string; timestampMs: number } | null {
+  const match = /^vip-sub-([a-f0-9-]+)-(\d+)$/i.exec(referenceId);
+  if (!match) return null;
+
+  const userId = match[1];
+  if (!isValidUuid(userId)) return null;
+
+  const timestampMs = Number(match[2]);
+  if (!Number.isFinite(timestampMs) || timestampMs <= 0) return null;
+
+  return { userId, timestampMs };
 }

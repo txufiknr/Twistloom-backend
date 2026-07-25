@@ -22,11 +22,17 @@ import { createSubscription, updateSubscription, renewSubscription, cancelSubscr
 import { VIP_BENEFITS, VIP_SUBSCRIPTION, VIP_TRIAL } from "../config/subscription.js";
 import { getStripe } from "../utils/stripe.js";
 import { getXenditPackPriceIdr, XENDIT_CONFIG } from "../config/xendit.js";
-import { verifyXenditCallbackToken, isXenditConfigured, type XenditInvoice } from "../utils/xendit.js";
+import { verifyXenditCallbackToken, isXenditConfigured, type XenditInvoice, type XenditRecurringPlan } from "../utils/xendit.js";
 import {
   createXenditCreditPackCheckout,
+  createXenditSubscriptionCheckout,
   finalizeXenditWebhookDelivery,
+  handleXenditCycleSucceeded,
+  handleXenditCycleFailed,
   handleXenditInvoicePaid,
+  handleXenditPlanActivated,
+  handleXenditPlanDeactivated,
+  cancelXenditSubscription,
   trackXenditWebhookDelivery,
 } from "../services/xendit.js";
 import type { AppEnv } from "../hono/env.js";
@@ -523,12 +529,52 @@ router.post("/create-checkout-session", requireAuth, async (c) => {
 router.post("/create-subscription-checkout", requireAuth, async (c) => {
   try {
     const { successPath, cancelPath, returnUrl, gateway: gatewayBody } = c.get("body");
-    const userId = c.get("user")!.id;
 
     const gateway = parseGateway(gatewayBody ?? PAYMENT_GATEWAY.stripe);
     if (!gateway) return cValidationError(c, "Invalid gateway (use stripe or xendit)");
+
+    const userProfile = c.get("user")!;
+    const userId = userProfile.id;
+
     if (gateway === PAYMENT_GATEWAY.xendit) {
-      return cValidationError(c, "Xendit VIP subscriptions are not available yet. Use gateway=stripe or buy credit packs with Xendit.");
+      if (!isXenditConfigured()) {
+        return cValidationError(c, "Xendit gateway is not enabled or configured");
+      }
+
+      const baseUrl = process.env.FRONTEND_URL;
+      if (!baseUrl) return cApiError(c, "Frontend URL not configured");
+
+      let successUrl: string;
+      let cancelUrl: string;
+
+      if (returnUrl) {
+        try {
+          const returnUrlObj = new URL(returnUrl, baseUrl);
+          const baseUrlObj = new URL(baseUrl);
+          if (returnUrlObj.origin !== baseUrlObj.origin) {
+            throw new Error("Cross-origin returnUrl not allowed");
+          }
+          returnUrlObj.searchParams.set('subscription', 'success');
+          successUrl = returnUrlObj.toString();
+          returnUrlObj.searchParams.set('subscription', 'cancel');
+          cancelUrl = returnUrlObj.toString();
+        } catch {
+          successUrl = constructSafeUrl(successPath, baseUrl, '/dashboard?subscription=success');
+          cancelUrl = constructSafeUrl(cancelPath, baseUrl, '/pricing');
+        }
+      } else {
+        successUrl = constructSafeUrl(successPath, baseUrl, '/dashboard?subscription=success');
+        cancelUrl = constructSafeUrl(cancelPath, baseUrl, '/pricing');
+      }
+
+      const result = await createXenditSubscriptionCheckout({
+        userId,
+        email: userProfile.email,
+        name: userProfile.name,
+        successUrl,
+        cancelUrl,
+      });
+      return c.json(result);
     }
 
     const rateLimitResult = await checkRateLimit(`subscription-checkout-${userId}`, { maxRequests: 1, windowSeconds: 10 });
@@ -1095,14 +1141,17 @@ router.post("/xendit/webhook", async (c) => {
       id?: string;
       external_id?: string;
       status?: string;
+      plan_id?: string;
+      business_id?: string;
     };
 
     // Invoice callbacks usually POST the invoice object; some products wrap event name.
+    // Recurring callbacks have an `event` field (e.g. "recurring.plan.activation").
     const eventType =
       typeof body.event === "string"
         ? body.event
-        : body.status
-          ? `invoice.${String(body.status).toLowerCase()}`
+        : typeof body.status === "string"
+          ? `invoice.${body.status.toLowerCase()}`
           : "invoice.callback";
 
     const eventId =
@@ -1130,8 +1179,42 @@ router.post("/xendit/webhook", async (c) => {
       return c.json({ received: true, duplicate: result.duplicate });
     }
 
-    // Non-paid statuses (PENDING, EXPIRED, etc.) — ack without awarding
-    console.log(`[xendit] ℹ️ Unhandled invoice status/event: ${eventType} status=${body.status}`);
+    // ── Recurring subscription events ────────────────────────────────
+    try {
+      switch (eventType) {
+        case "recurring.plan.activation": {
+          await handleXenditPlanActivated(body as unknown as XenditRecurringPlan, eventId);
+          break;
+        }
+        case "recurring.cycle.succeeded": {
+          await handleXenditCycleSucceeded(body as unknown as {
+            plan_id: string; id: string; amount: number; scheduled_timestamp: string; status: string;
+          }, eventId);
+          break;
+        }
+        case "recurring.cycle.failed": {
+          await handleXenditCycleFailed(body as unknown as {
+            plan_id: string; id: string; failure_code?: string; failure_message?: string;
+          }, eventId);
+          break;
+        }
+        case "recurring.plan.deactivation": {
+          await handleXenditPlanDeactivated(body as unknown as {
+            id: string; deactivation_date?: string;
+          }, eventId);
+          break;
+        }
+        default: {
+          // Non-paid statuses (PENDING, EXPIRED, etc.) or unhandled recurring events — ack
+          console.log(`[xendit] ℹ️ Unhandled event: ${eventType}`);
+        }
+      }
+    } catch (err) {
+      console.error(`[xendit] ❌ Error processing event ${eventType}:`, err);
+      await finalizeXenditWebhookDelivery(webhookDeliveryId, "failed", getErrorMessage(err));
+      return cApiError(c, `Failed to process ${eventType}`, err);
+    }
+
     await finalizeXenditWebhookDelivery(webhookDeliveryId, "success");
     return c.json({ received: true });
   } catch (error) {
@@ -1325,6 +1408,9 @@ router.get("/subscription-plans", async (c) => {
     ];
 
     if (gatewayParam === PAYMENT_GATEWAY.xendit) {
+      if (!XENDIT_CONFIG.enabled) {
+        return cValidationError(c, "Xendit gateway is not enabled");
+      }
       return c.json({
         plans: [
           {
@@ -1337,8 +1423,7 @@ router.get("/subscription-plans", async (c) => {
             monthlyCredits: VIP_SUBSCRIPTION.monthlyCredits,
             checkInMultiplier: VIP_SUBSCRIPTION.checkInMultiplier,
             benefits,
-            available: false,
-            message: "Xendit VIP subscriptions are not available yet",
+            available: true,
           },
         ],
       });
@@ -1395,9 +1480,10 @@ router.post("/subscription/cancel", requireAuth, async (c) => {
     if (subscription.length === 0) return cNotFoundError(c, "No active subscription found");
 
     const sub = subscription[0];
-    // Stripe only for now; Xendit cancel path lands with Phase 2b
     if (sub.gateway === PAYMENT_GATEWAY.stripe) {
       await getStripe().subscriptions.update(sub.providerSubscriptionId, { cancel_at_period_end: true });
+    } else if (sub.gateway === PAYMENT_GATEWAY.xendit) {
+      await cancelXenditSubscription(sub.providerSubscriptionId);
     }
     await dbWrite.update(subscriptions).set({ cancelAtPeriodEnd: true }).where(eq(subscriptions.id, sub.id));
     return c.json({ success: true, message: "Subscription will be canceled at period end" });
