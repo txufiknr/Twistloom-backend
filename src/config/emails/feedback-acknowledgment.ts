@@ -5,29 +5,36 @@
  * Confirms receipt, apologizes for any inconvenience, and reassures that the
  * team will address the issue as soon as possible.
  *
+ * @param locale - Email locale for i18n strings
  * @param appName - Application display name (e.g. "Twistloom")
  * @param name - User's display name for personalisation
  * @returns Complete email HTML string
  *
  * @example
  * ```typescript
- * const html = getFeedbackAcknowledgmentTemplate('Twistloom', 'Jane');
+ * const html = getFeedbackAcknowledgmentTemplate('en', 'Twistloom', 'Jane');
  * ```
  */
 
 import { buildEmailHtml } from './base-layout.js';
+import { t } from './i18n.js';
+import type { EmailLocale } from '../../types/email-locale.js';
 
-export function getFeedbackAcknowledgmentTemplate(appName: string, name: string): string {
+export function getFeedbackAcknowledgmentTemplate(
+  locale: EmailLocale,
+  appName: string,
+  name: string,
+): string {
   return buildEmailHtml({
-    title: `We Received Your Feedback — ${appName}`,
-    heading: `Thank you for reaching out, ${name}.`,
+    title: t(locale, 'feedbackAck.subject', { appName }),
+    heading: t(locale, 'feedbackAck.heading', { name }),
     bodyHtml: `
-      <p>We've received your message and truly appreciate you taking the time to let us know.</p>
-      <p>We're sorry for any inconvenience this may have caused. Our team will review your feedback and address the issue as soon as possible.</p>
-      <p>Your input helps us make ${appName} better for everyone — thank you for being part of the story.</p>
+      <p>${t(locale, 'feedbackAck.body1')}</p>
+      <p>${t(locale, 'feedbackAck.body2')}</p>
+      <p>${t(locale, 'feedbackAck.body3', { appName })}</p>
     `,
     footerHtml: `
-      <p>No action needed on your end. We'll follow up if we need more details.</p>
+      <p>${t(locale, 'feedbackAck.footer')}</p>
     `,
   });
 }

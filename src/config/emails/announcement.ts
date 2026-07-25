@@ -6,8 +6,11 @@
  */
 
 import { buildEmailHtml } from './base-layout.js';
+import { t } from './i18n.js';
+import type { EmailLocale } from '../../types/email-locale.js';
 
 /**
+ * @param locale - Email locale for i18n strings
  * @param appName - Application display name
  * @param title - Announcement title
  * @param bodyHtml - Pre-sanitized HTML body from admin
@@ -15,6 +18,7 @@ import { buildEmailHtml } from './base-layout.js';
  * @param preferencesUrl - Link to manage email preferences
  */
 export function getAnnouncementTemplate(
+  locale: EmailLocale,
   appName: string,
   title: string,
   bodyHtml: string,
@@ -25,13 +29,13 @@ export function getAnnouncementTemplate(
     title: `${title} — ${appName}`,
     heading: title,
     bodyHtml: `
-      <p style="color: #6b7280; font-size: 13px; letter-spacing: 0.5px; text-transform: uppercase; margin: 0 0 12px 0;">A message from the ${appName} team</p>
+      <p style="color: #6b7280; font-size: 13px; letter-spacing: 0.5px; text-transform: uppercase; margin: 0 0 12px 0;">${t(locale, 'announcement.fromTeam', { appName })}</p>
       ${bodyHtml}
     `,
     button: cta,
     plainUrl: cta?.url,
     footerHtml: preferencesUrl
-      ? `<p>Don't want these dispatches? <a href="${preferencesUrl}" style="color: #8b0000;">Manage preferences</a> or turn off product announcements anytime.</p>`
+      ? `<p>${t(locale, 'announcement.footer', { url: preferencesUrl })}</p>`
       : undefined,
   });
 }

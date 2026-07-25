@@ -1,12 +1,10 @@
 /**
  * Email Utilities
  *
- * Provides transactional email sending via Resend. All public functions delegate
- * to the private `sendEmail` helper, which centralises error handling, logging,
- * and the Resend API call — keeping individual email functions DRY.
+ * Provides transactional email sending via Resend. Templates are locale-aware
+ * (C+D hybrid: emailLocale override ?? preferredLocale ?? en).
  *
- * Use {@link sendEmailSafe} from routes/services for fire-and-forget best-effort
- * sends that never throw into the request path.
+ * Use {@link sendEmailSafe} for fire-and-forget best-effort sends.
  */
 
 import { Resend } from 'resend';
@@ -31,7 +29,18 @@ import {
   type RecommendedBookEmailItem,
   type MonthlyActivityStats,
 } from '../config/emails/index.js';
+import { t } from '../config/emails/i18n.js';
 import { getErrorMessage } from './error.js';
+import {
+  resolveEmailLocale,
+  resolveEmailLocaleByEmail,
+  preferencesUrlForLocale,
+} from '../services/email-preferences.js';
+import {
+  DEFAULT_EMAIL_LOCALE,
+  isEmailLocale,
+  type EmailLocale,
+} from '../types/email-locale.js';
 
 // ---------------------------------------------------------------------------
 // Client initialisation
@@ -64,10 +73,6 @@ interface SendEmailOptions {
   from?: string;
 }
 
-/**
- * Core send helper — all public email functions eventually call this.
- * Never throws; returns `false` on error.
- */
 async function sendEmail(options: SendEmailOptions): Promise<boolean> {
   const { to, subject, html, from } = options;
 
@@ -94,10 +99,6 @@ async function sendEmail(options: SendEmailOptions): Promise<boolean> {
 
 /**
  * Best-effort fire-and-forget wrapper for route/service call sites.
- * Logs failures; never rejects. Prefer this over inline try/catch around sends.
- *
- * @param label - Log context (e.g. route name)
- * @param sendFn - Async function that performs the send
  */
 export function sendEmailSafe(label: string, sendFn: () => Promise<boolean>): void {
   void (async () => {
@@ -117,12 +118,14 @@ export function formatSecurityDetailHtml(opts?: {
   at?: Date;
   ip?: string | null;
   userAgent?: string | null;
+  locale?: EmailLocale;
 }): string {
   if (!opts) return '';
+  const tag = opts.locale === 'id' ? 'id-ID' : 'en-US';
   const parts: string[] = [];
   if (opts.at) {
     parts.push(
-      opts.at.toLocaleString('en-US', {
+      opts.at.toLocaleString(tag, {
         dateStyle: 'medium',
         timeStyle: 'short',
         timeZone: 'UTC',
@@ -146,21 +149,45 @@ export function maskEmail(email: string): string {
   return `${local[0]}${'*'.repeat(Math.min(local.length - 1, 4))}@${domain}`;
 }
 
-function preferencesUrl(): string | undefined {
-  const base = process.env.FRONTEND_URL;
-  if (!base) return undefined;
-  return `${base.replace(/\/$/, '')}/dashboard/account/preferences?tab=notifications`;
+async function localeForUser(userId?: string | null): Promise<EmailLocale> {
+  if (!userId) return DEFAULT_EMAIL_LOCALE;
+  try {
+    return await resolveEmailLocale(userId);
+  } catch {
+    return DEFAULT_EMAIL_LOCALE;
+  }
+}
+
+async function localeForEmail(email: string): Promise<EmailLocale> {
+  try {
+    return await resolveEmailLocaleByEmail(email);
+  } catch {
+    return DEFAULT_EMAIL_LOCALE;
+  }
+}
+
+function coerceLocale(locale?: EmailLocale | string | null): EmailLocale {
+  return isEmailLocale(locale) ? locale : DEFAULT_EMAIL_LOCALE;
 }
 
 // ---------------------------------------------------------------------------
 // Auth / lifecycle
 // ---------------------------------------------------------------------------
 
-export async function sendPasswordResetEmail(email: string, resetUrl: string): Promise<boolean> {
+export async function sendPasswordResetEmail(
+  email: string,
+  resetUrl: string,
+  opts?: { userId?: string; locale?: EmailLocale },
+): Promise<boolean> {
+  const locale = opts?.locale
+    ? coerceLocale(opts.locale)
+    : opts?.userId
+      ? await localeForUser(opts.userId)
+      : await localeForEmail(email);
   return sendEmail({
     to: email,
-    subject: `Reset Your ${APP_NAME} Password`,
-    html: getPasswordResetTemplate(APP_NAME, resetUrl),
+    subject: t(locale, 'passwordReset.subject', { appName: APP_NAME }),
+    html: getPasswordResetTemplate(locale, APP_NAME, resetUrl),
   });
 }
 
@@ -168,19 +195,34 @@ export async function sendVerificationEmail(
   email: string,
   verificationUrl: string,
   otpCode?: string,
+  opts?: { userId?: string; locale?: EmailLocale },
 ): Promise<boolean> {
+  const locale = opts?.locale
+    ? coerceLocale(opts.locale)
+    : opts?.userId
+      ? await localeForUser(opts.userId)
+      : await localeForEmail(email);
   return sendEmail({
     to: email,
-    subject: `Verify Your ${APP_NAME} Email`,
-    html: getVerificationTemplate(APP_NAME, verificationUrl, otpCode),
+    subject: t(locale, 'verification.subject', { appName: APP_NAME }),
+    html: getVerificationTemplate(locale, APP_NAME, verificationUrl, otpCode),
   });
 }
 
-export async function sendWelcomeEmail(email: string, username: string): Promise<boolean> {
+export async function sendWelcomeEmail(
+  email: string,
+  username: string,
+  opts?: { userId?: string; locale?: EmailLocale },
+): Promise<boolean> {
+  const locale = opts?.locale
+    ? coerceLocale(opts.locale)
+    : opts?.userId
+      ? await localeForUser(opts.userId)
+      : await localeForEmail(email);
   return sendEmail({
     to: email,
-    subject: `Welcome to ${APP_NAME}!`,
-    html: getWelcomeTemplate(APP_NAME, username),
+    subject: t(locale, 'welcome.subject', { appName: APP_NAME }),
+    html: getWelcomeTemplate(locale, APP_NAME, username),
   });
 }
 
@@ -188,11 +230,17 @@ export async function sendPasswordChangedEmail(
   email: string,
   name: string,
   detailHtml?: string,
+  opts?: { userId?: string; locale?: EmailLocale },
 ): Promise<boolean> {
+  const locale = opts?.locale
+    ? coerceLocale(opts.locale)
+    : opts?.userId
+      ? await localeForUser(opts.userId)
+      : await localeForEmail(email);
   return sendEmail({
     to: email,
-    subject: `Your ${APP_NAME} password was changed`,
-    html: getPasswordChangedTemplate(APP_NAME, name, detailHtml),
+    subject: t(locale, 'passwordChanged.subject', { appName: APP_NAME }),
+    html: getPasswordChangedTemplate(locale, APP_NAME, name, detailHtml),
   });
 }
 
@@ -201,19 +249,30 @@ export async function sendEmailChangedAlertEmail(
   name: string,
   newEmail: string,
   detailHtml?: string,
+  opts?: { userId?: string; locale?: EmailLocale },
 ): Promise<boolean> {
+  const locale = opts?.locale
+    ? coerceLocale(opts.locale)
+    : opts?.userId
+      ? await localeForUser(opts.userId)
+      : await localeForEmail(oldEmail);
   return sendEmail({
     to: oldEmail,
-    subject: `Your ${APP_NAME} email address was changed`,
-    html: getEmailChangedTemplate(APP_NAME, name, maskEmail(newEmail), detailHtml),
+    subject: t(locale, 'emailChanged.subject', { appName: APP_NAME }),
+    html: getEmailChangedTemplate(locale, APP_NAME, name, maskEmail(newEmail), detailHtml),
   });
 }
 
-export async function sendAccountDeletedEmail(email: string, name: string): Promise<boolean> {
+export async function sendAccountDeletedEmail(
+  email: string,
+  name: string,
+  opts?: { locale?: EmailLocale },
+): Promise<boolean> {
+  const locale = opts?.locale ? coerceLocale(opts.locale) : await localeForEmail(email);
   return sendEmail({
     to: email,
-    subject: `Your ${APP_NAME} account has been deleted`,
-    html: getAccountDeletedTemplate(APP_NAME, name),
+    subject: t(locale, 'accountDeleted.subject', { appName: APP_NAME }),
+    html: getAccountDeletedTemplate(locale, APP_NAME, name),
   });
 }
 
@@ -225,11 +284,17 @@ export async function sendTrialEndingEmail(
   email: string,
   name: string,
   trialEndDate: Date,
+  opts?: { userId?: string; locale?: EmailLocale },
 ): Promise<boolean> {
+  const locale = opts?.locale
+    ? coerceLocale(opts.locale)
+    : opts?.userId
+      ? await localeForUser(opts.userId)
+      : await localeForEmail(email);
   return sendEmail({
     to: email,
-    subject: `Your ${APP_NAME} VIP Trial Ends Soon`,
-    html: getTrialEndingTemplate(APP_NAME, name, trialEndDate),
+    subject: t(locale, 'trialEnding.subject', { appName: APP_NAME }),
+    html: getTrialEndingTemplate(locale, APP_NAME, name, trialEndDate),
   });
 }
 
@@ -237,11 +302,17 @@ export async function sendPaymentFailedEmail(
   email: string,
   name: string,
   portalUrl?: string,
+  opts?: { userId?: string; locale?: EmailLocale },
 ): Promise<boolean> {
+  const locale = opts?.locale
+    ? coerceLocale(opts.locale)
+    : opts?.userId
+      ? await localeForUser(opts.userId)
+      : await localeForEmail(email);
   return sendEmail({
     to: email,
-    subject: `Action needed: ${APP_NAME} payment failed`,
-    html: getPaymentFailedTemplate(APP_NAME, name, portalUrl),
+    subject: t(locale, 'paymentFailed.subject', { appName: APP_NAME }),
+    html: getPaymentFailedTemplate(locale, APP_NAME, name, portalUrl),
   });
 }
 
@@ -249,11 +320,17 @@ export async function sendRefundProcessedEmail(
   email: string,
   name: string,
   creditsDeducted: number,
+  opts?: { userId?: string; locale?: EmailLocale },
 ): Promise<boolean> {
+  const locale = opts?.locale
+    ? coerceLocale(opts.locale)
+    : opts?.userId
+      ? await localeForUser(opts.userId)
+      : await localeForEmail(email);
   return sendEmail({
     to: email,
-    subject: `Refund processed — ${APP_NAME}`,
-    html: getRefundProcessedTemplate(APP_NAME, name, creditsDeducted),
+    subject: t(locale, 'refund.subject', { appName: APP_NAME }),
+    html: getRefundProcessedTemplate(locale, APP_NAME, name, creditsDeducted),
   });
 }
 
@@ -261,11 +338,17 @@ export async function sendSubscriptionCanceledEmail(
   email: string,
   name: string,
   accessEndsAt?: Date,
+  opts?: { userId?: string; locale?: EmailLocale },
 ): Promise<boolean> {
+  const locale = opts?.locale
+    ? coerceLocale(opts.locale)
+    : opts?.userId
+      ? await localeForUser(opts.userId)
+      : await localeForEmail(email);
   return sendEmail({
     to: email,
-    subject: `Your ${APP_NAME} VIP subscription was canceled`,
-    html: getSubscriptionCanceledTemplate(APP_NAME, name, accessEndsAt),
+    subject: t(locale, 'subCanceled.subject', { appName: APP_NAME }),
+    html: getSubscriptionCanceledTemplate(locale, APP_NAME, name, accessEndsAt),
   });
 }
 
@@ -273,11 +356,20 @@ export async function sendSubscriptionCanceledEmail(
 // Support
 // ---------------------------------------------------------------------------
 
-export async function sendFeedbackAcknowledgmentEmail(email: string, name: string): Promise<boolean> {
+export async function sendFeedbackAcknowledgmentEmail(
+  email: string,
+  name: string,
+  opts?: { userId?: string; locale?: EmailLocale },
+): Promise<boolean> {
+  const locale = opts?.locale
+    ? coerceLocale(opts.locale)
+    : opts?.userId
+      ? await localeForUser(opts.userId)
+      : await localeForEmail(email);
   return sendEmail({
     to: email,
-    subject: `We Received Your Feedback — ${APP_NAME}`,
-    html: getFeedbackAcknowledgmentTemplate(APP_NAME, name),
+    subject: t(locale, 'feedbackAck.subject', { appName: APP_NAME }),
+    html: getFeedbackAcknowledgmentTemplate(locale, APP_NAME, name),
   });
 }
 
@@ -285,6 +377,7 @@ export async function sendFeedbackInternalEmail(
   to: string,
   params: Omit<FeedbackInternalTemplateParams, 'appName'>,
 ): Promise<boolean> {
+  // Ops inbox stays English
   return sendEmail({
     to,
     subject: `[Feedback] ${params.category} — ${APP_NAME}`,
@@ -300,11 +393,23 @@ export async function sendWeeklyRecommendationsEmail(
   email: string,
   name: string,
   books: RecommendedBookEmailItem[],
+  opts?: { userId?: string; locale?: EmailLocale },
 ): Promise<boolean> {
+  const locale = opts?.locale
+    ? coerceLocale(opts.locale)
+    : opts?.userId
+      ? await localeForUser(opts.userId)
+      : await localeForEmail(email);
   return sendEmail({
     to: email,
-    subject: `This week's dossiers — ${APP_NAME}`,
-    html: getWeeklyRecommendationsTemplate(APP_NAME, name, books, preferencesUrl()),
+    subject: t(locale, 'weekly.subject', { appName: APP_NAME }),
+    html: getWeeklyRecommendationsTemplate(
+      locale,
+      APP_NAME,
+      name,
+      books,
+      preferencesUrlForLocale(locale),
+    ),
   });
 }
 
@@ -313,11 +418,24 @@ export async function sendMonthlyActivityEmail(
   name: string,
   monthLabel: string,
   stats: MonthlyActivityStats,
+  opts?: { userId?: string; locale?: EmailLocale },
 ): Promise<boolean> {
+  const locale = opts?.locale
+    ? coerceLocale(opts.locale)
+    : opts?.userId
+      ? await localeForUser(opts.userId)
+      : await localeForEmail(email);
   return sendEmail({
     to: email,
-    subject: `Your ${monthLabel} dossier — ${APP_NAME}`,
-    html: getMonthlyActivityTemplate(APP_NAME, name, monthLabel, stats, preferencesUrl()),
+    subject: t(locale, 'monthly.subject', { appName: APP_NAME, month: monthLabel }),
+    html: getMonthlyActivityTemplate(
+      locale,
+      APP_NAME,
+      name,
+      monthLabel,
+      stats,
+      preferencesUrlForLocale(locale),
+    ),
   });
 }
 
@@ -326,10 +444,23 @@ export async function sendAnnouncementEmail(
   title: string,
   bodyHtml: string,
   cta?: { url: string; text: string },
+  opts?: { userId?: string; locale?: EmailLocale },
 ): Promise<boolean> {
+  const locale = opts?.locale
+    ? coerceLocale(opts.locale)
+    : opts?.userId
+      ? await localeForUser(opts.userId)
+      : await localeForEmail(email);
   return sendEmail({
     to: email,
     subject: `${title} — ${APP_NAME}`,
-    html: getAnnouncementTemplate(APP_NAME, title, bodyHtml, cta, preferencesUrl()),
+    html: getAnnouncementTemplate(
+      locale,
+      APP_NAME,
+      title,
+      bodyHtml,
+      cta,
+      preferencesUrlForLocale(locale),
+    ),
   });
 }

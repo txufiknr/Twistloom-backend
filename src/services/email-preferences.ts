@@ -1,8 +1,9 @@
 /**
  * Email Preferences Service
  *
- * SSOT for optional product/engagement email flags. Security and billing mail
- * never consult this service.
+ * SSOT for optional product/engagement email flags and email language override.
+ * Security and billing mail never consult engagement toggles, but do use
+ * {@link resolveEmailLocale} for template language.
  */
 
 import { createHmac, timingSafeEqual } from 'crypto';
@@ -11,11 +12,16 @@ import { dbRead, dbWrite } from '../db/client.js';
 import { users } from '../db/schema.js';
 import {
   DEFAULT_EMAIL_PREFERENCES,
-  EMAIL_PREFERENCE_KEYS,
-  type EmailPreferenceKey,
+  EMAIL_PREFERENCE_BOOL_KEYS,
   type EmailPreferences,
   type EmailPreferencesUpdate,
 } from '../types/email-preferences.js';
+import {
+  DEFAULT_EMAIL_LOCALE,
+  isEmailLocale,
+  type EmailLocale,
+} from '../types/email-locale.js';
+import { emailLocalePathPrefix } from '../config/emails/i18n.js';
 
 /**
  * Merges stored jsonb with defaults so missing keys are never undefined.
@@ -23,29 +29,52 @@ import {
 export function normalizeEmailPreferences(
   raw: Partial<EmailPreferences> | null | undefined,
 ): EmailPreferences {
+  let emailLocale: EmailLocale | null = null;
+  if (raw && 'emailLocale' in raw) {
+    if (raw.emailLocale === null) emailLocale = null;
+    else if (isEmailLocale(raw.emailLocale)) emailLocale = raw.emailLocale;
+  }
+
   return {
-    weeklyRecommendations: raw?.weeklyRecommendations ?? DEFAULT_EMAIL_PREFERENCES.weeklyRecommendations,
+    weeklyRecommendations:
+      raw?.weeklyRecommendations ?? DEFAULT_EMAIL_PREFERENCES.weeklyRecommendations,
     monthlyActivitySummary:
       raw?.monthlyActivitySummary ?? DEFAULT_EMAIL_PREFERENCES.monthlyActivitySummary,
-    productAnnouncements: raw?.productAnnouncements ?? DEFAULT_EMAIL_PREFERENCES.productAnnouncements,
+    productAnnouncements:
+      raw?.productAnnouncements ?? DEFAULT_EMAIL_PREFERENCES.productAnnouncements,
+    emailLocale,
   };
 }
 
 /**
- * Sanitises a partial update: only known boolean keys.
+ * Sanitises a partial update: known boolean keys + optional emailLocale (locale | null).
  */
 export function sanitizeEmailPreferencesUpdate(body: unknown): EmailPreferencesUpdate | null {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
 
   const update: EmailPreferencesUpdate = {};
   let hasKey = false;
+  const record = body as Record<string, unknown>;
 
-  for (const key of EMAIL_PREFERENCE_KEYS) {
-    if (key in body) {
-      const value = (body as Record<string, unknown>)[key];
+  for (const key of EMAIL_PREFERENCE_BOOL_KEYS) {
+    if (key in record) {
+      const value = record[key];
       if (typeof value !== 'boolean') return null;
       update[key] = value;
       hasKey = true;
+    }
+  }
+
+  if ('emailLocale' in record) {
+    const value = record.emailLocale;
+    if (value === null) {
+      update.emailLocale = null;
+      hasKey = true;
+    } else if (isEmailLocale(value)) {
+      update.emailLocale = value;
+      hasKey = true;
+    } else {
+      return null;
     }
   }
 
@@ -105,6 +134,75 @@ export async function ensureDefaultEmailPreferences(userId: string): Promise<voi
     .where(eq(users.userId, userId));
 }
 
+/**
+ * Updates account UI language (`preferredLocale`). Fire-and-forget friendly from clients.
+ */
+export async function updatePreferredLocale(
+  userId: string,
+  locale: EmailLocale,
+): Promise<EmailLocale | null> {
+  if (!isEmailLocale(locale)) return null;
+
+  const [row] = await dbWrite
+    .update(users)
+    .set({ preferredLocale: locale, updatedAt: new Date() })
+    .where(eq(users.userId, userId))
+    .returning({ preferredLocale: users.preferredLocale });
+
+  return isEmailLocale(row?.preferredLocale) ? row.preferredLocale : null;
+}
+
+/**
+ * Resolves effective email language: emailLocale override ?? preferredLocale ?? en.
+ */
+export async function resolveEmailLocale(userId: string): Promise<EmailLocale> {
+  const [row] = await dbRead
+    .select({
+      preferredLocale: users.preferredLocale,
+      emailPreferences: users.emailPreferences,
+    })
+    .from(users)
+    .where(eq(users.userId, userId))
+    .limit(1);
+
+  if (!row) return DEFAULT_EMAIL_LOCALE;
+
+  const prefs = normalizeEmailPreferences(row.emailPreferences);
+  if (isEmailLocale(prefs.emailLocale)) return prefs.emailLocale;
+  if (isEmailLocale(row.preferredLocale)) return row.preferredLocale;
+  return DEFAULT_EMAIL_LOCALE;
+}
+
+/**
+ * Resolve locale when only email is known (e.g. password reset by email).
+ */
+export async function resolveEmailLocaleByEmail(email: string): Promise<EmailLocale> {
+  const [row] = await dbRead
+    .select({
+      preferredLocale: users.preferredLocale,
+      emailPreferences: users.emailPreferences,
+    })
+    .from(users)
+    .where(eq(users.email, email))
+    .limit(1);
+
+  if (!row) return DEFAULT_EMAIL_LOCALE;
+  const prefs = normalizeEmailPreferences(row.emailPreferences);
+  if (isEmailLocale(prefs.emailLocale)) return prefs.emailLocale;
+  if (isEmailLocale(row.preferredLocale)) return row.preferredLocale;
+  return DEFAULT_EMAIL_LOCALE;
+}
+
+/**
+ * Locale-aware preferences deep link for email footers.
+ */
+export function preferencesUrlForLocale(locale: EmailLocale): string | undefined {
+  const base = process.env.FRONTEND_URL;
+  if (!base) return undefined;
+  const prefix = emailLocalePathPrefix(locale);
+  return `${base.replace(/\/$/, '')}${prefix}/dashboard/account/preferences?tab=notifications`;
+}
+
 // ---------------------------------------------------------------------------
 // Unsubscribe tokens (HMAC, long-lived, category-aware)
 // ---------------------------------------------------------------------------
@@ -118,13 +216,24 @@ function unsubscribeSecret(): string {
   );
 }
 
-export type UnsubscribeCategory = EmailPreferenceKey | 'all';
+export type UnsubscribeCategory =
+  | 'weeklyRecommendations'
+  | 'monthlyActivitySummary'
+  | 'productAnnouncements'
+  | 'all';
 
 interface UnsubscribePayload {
   userId: string;
   category: UnsubscribeCategory;
   exp: number;
 }
+
+const UNSUBSCRIBE_CATEGORIES: UnsubscribeCategory[] = [
+  'weeklyRecommendations',
+  'monthlyActivitySummary',
+  'productAnnouncements',
+  'all',
+];
 
 /**
  * Creates a signed unsubscribe token for email footers.
@@ -165,9 +274,7 @@ export function verifyUnsubscribeToken(token: string): UnsubscribePayload | null
     const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as UnsubscribePayload;
     if (!payload.userId || !payload.category || !payload.exp) return null;
     if (payload.exp < Date.now()) return null;
-    if (payload.category !== 'all' && !EMAIL_PREFERENCE_KEYS.includes(payload.category as EmailPreferenceKey)) {
-      return null;
-    }
+    if (!UNSUBSCRIBE_CATEGORIES.includes(payload.category)) return null;
     return payload;
   } catch {
     return null;
@@ -194,9 +301,14 @@ export async function applyUnsubscribe(
 /**
  * Builds a public unsubscribe URL for email footers.
  */
-export function buildUnsubscribeUrl(userId: string, category: UnsubscribeCategory = 'all'): string | null {
+export function buildUnsubscribeUrl(
+  userId: string,
+  category: UnsubscribeCategory = 'all',
+  locale?: EmailLocale,
+): string | null {
   const base = process.env.FRONTEND_URL;
   if (!base) return null;
   const token = createUnsubscribeToken(userId, category);
-  return `${base.replace(/\/$/, '')}/email/unsubscribe?token=${encodeURIComponent(token)}`;
+  const prefix = emailLocalePathPrefix(locale ?? DEFAULT_EMAIL_LOCALE);
+  return `${base.replace(/\/$/, '')}${prefix}/email/unsubscribe?token=${encodeURIComponent(token)}`;
 }

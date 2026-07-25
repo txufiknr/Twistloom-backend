@@ -1,9 +1,98 @@
 # Email Internationalization (i18n) Roadmap
 
-**Status:** Planned — templates are English-hardcoded today  
+**Status:** ✅ Implemented (C+D hybrid) — Jul 2026  
 **Depends on:** Transactional email stack ([TRANSACTIONAL_EMAILS.md](../architecture/TRANSACTIONAL_EMAILS.md))  
-**UI locales today:** `en`, `id` (frontend only)  
+**UI locales:** `en`, `id`  
+**Model:** `preferredLocale` (account) + optional `emailLocale` override (`null` = same as app)  
 **Last reviewed:** Jul 2026
+
+---
+
+## Decision (locked)
+
+| Item | Choice |
+|------|--------|
+| Architecture | **Option C + light D** |
+| Account language | `users.preferred_locale` default `en` |
+| Email override | `email_preferences.emailLocale`: `en` \| `id` \| `null` |
+| Resolve order | explicit → `emailLocale` → `preferredLocale` → `en` |
+| UI language sync | Fire-and-forget `PATCH /user/preferred-locale` on Appearance language change |
+| Onboarding | `POST /user` accepts `preferredLocale` from UI cookie |
+| Catalogs | `src/config/emails/locales/en.json` + `id.json` via `t(locale, key, vars)` |
+| Ops mail | Internal feedback stays **English** |
+
+---
+
+## Implementation CHANGELOG
+
+### Jul 2026 — shipped
+
+**Backend**
+
+- Migration `0039_bumpy_sally_floyd.sql`: `users.preferred_locale`
+- Types: `email-locale.ts`, extended `EmailPreferences` with `emailLocale`
+- `resolveEmailLocale` / `resolveEmailLocaleByEmail` / `updatePreferredLocale`
+- `src/config/emails/i18n.ts` + full EN/ID catalogs
+- All user-facing templates take `locale` first; `email.ts` resolves locale per send
+- Routes: `PATCH /user/preferred-locale`, onboarding + email prefs accept locale fields
+- GET `/user` includes `preferredLocale` (enriched select)
+
+**Frontend**
+
+- Appearance language → navigate + fire-and-forget preferredLocale PATCH
+- Email card: language select (Same as app / en / id)
+- Onboarding sends `preferredLocale` from `useLocale()`
+- Types + `UsersApi.updatePreferredLocale`
+
+**Docs**
+
+- This roadmap marked complete; architecture doc updated
+
+---
+
+## How it works
+
+```text
+Cookie preferred-language ──fire-and-forget PATCH──► preferredLocale
+Email prefs select ──PATCH email-preferences───────► emailLocale (nullable)
+                                                              │
+                         resolveEmailLocale(userId) ◄──────────┘
+                              = emailLocale ?? preferredLocale ?? 'en'
+                                                              │
+                         t(locale, key) + templates ──────────┘
+```
+
+---
+
+## Runbook
+
+```bash
+pnpm db:migrate   # preferred_locale column
+```
+
+**API**
+
+| Method | Path | Body |
+|--------|------|------|
+| PATCH | `/user/preferred-locale` | `{ preferredLocale: "en" \| "id" }` |
+| PATCH | `/user/email-preferences` | `{ emailLocale: "en" \| "id" \| null, ...toggles }` |
+| GET | `/user/email-preferences` | includes `emailLocale` |
+| GET | `/user` | includes `preferredLocale` |
+
+---
+
+## Remaining / optional
+
+| Item | Priority |
+|------|----------|
+| Force UI from backend on multi-device mismatch | P3 |
+| Crowdin / more locales | P3 |
+| Snapshot tests per locale | P3 |
+| Professional ID copy review for engagement noir | P2 |
+
+---
+
+*Implementation complete for v1 en/id. Extend catalogs when adding locales.*
 
 ---
 

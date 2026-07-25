@@ -5,24 +5,32 @@
  */
 
 import { buildEmailHtml } from './base-layout.js';
+import { t } from './i18n.js';
+import type { EmailLocale } from '../../types/email-locale.js';
 
 /**
+ * @param locale - Email locale for i18n strings
  * @param appName - Application display name
  * @param name - User display name
  * @param portalUrl - Optional customer portal / billing URL
  */
-export function getPaymentFailedTemplate(appName: string, name: string, portalUrl?: string): string {
+export function getPaymentFailedTemplate(
+  locale: EmailLocale,
+  appName: string,
+  name: string,
+  portalUrl?: string,
+): string {
   return buildEmailHtml({
-    title: `Action needed: ${appName} payment failed`,
-    heading: `The trail went cold, ${name}.`,
+    title: t(locale, 'paymentFailed.subject', { appName }),
+    heading: t(locale, 'paymentFailed.heading', { name }),
     bodyHtml: `
-      <p>We couldn't process your latest ${appName} VIP payment. Your membership is marked <strong>past due</strong>.</p>
-      <p>Update your payment method so the badge, credits, and 2× check-in don't slip into the dark.</p>
+      <p>${t(locale, 'paymentFailed.body1', { appName })}</p>
+      <p>${t(locale, 'paymentFailed.body2')}</p>
     `,
-    button: portalUrl ? { url: portalUrl, text: 'Update billing' } : undefined,
+    button: portalUrl ? { url: portalUrl, text: t(locale, 'paymentFailed.button') } : undefined,
     plainUrl: portalUrl,
     footerHtml: `
-      <p>Already fixed the card? You can ignore this — the next charge will try again on its own.</p>
+      <p>${t(locale, 'paymentFailed.footer')}</p>
     `,
   });
 }

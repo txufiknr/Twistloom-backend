@@ -71,6 +71,7 @@ export function getEnrichedUserSelect() {
     createdAt: users.createdAt,
     updatedAt: users.updatedAt,
     source: users.source,
+    preferredLocale: users.preferredLocale,
     termsAcceptedAt: users.termsAcceptedAt,
     termsVersion: users.termsVersion,
     emailVerified: userAuth.emailVerified,

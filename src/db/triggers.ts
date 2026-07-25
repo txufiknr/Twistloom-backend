@@ -12,7 +12,7 @@
  */
 
 import { fileURLToPath } from "url";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { dbWrite } from "./client.js";
 import { getErrorMessage } from "../utils/error.js";
 import { users } from "./schema.js";
@@ -1260,6 +1260,47 @@ export async function ensureTriggers(): Promise<void> {
 }
 
 /**
+ * Updates system user's password hash if null and SYSTEM_USER_PASSWORD is set
+ * 
+ * This enables re-running `pnpm db:triggers` to set the system account password
+ * for an existing system user that was created before SYSTEM_USER_PASSWORD support
+ * was added.
+ * 
+ * @returns Promise that resolves when the update is complete
+ */
+async function updateSystemUserPassword(): Promise<void> {
+  const systemPassword = process.env['SYSTEM_USER_PASSWORD'];
+  if (!systemPassword) {
+    console.log("ℹ️ SYSTEM_USER_PASSWORD not set, skipping password update.");
+    return;
+  }
+
+  const [systemUser] = await dbWrite
+    .select({ userId: users.userId, passwordHash: users.passwordHash })
+    .from(users)
+    .where(eq(users.username, APP_NAME_SLUG))
+    .limit(1);
+
+  if (!systemUser) {
+    console.log("ℹ️ System user not found, skipping password update.");
+    return;
+  }
+
+  if (systemUser.passwordHash) {
+    console.log("ℹ️ System user already has a password hash, skipping update.");
+    return;
+  }
+
+  const passwordHash = await hashPassword(systemPassword);
+  await dbWrite
+    .update(users)
+    .set({ passwordHash, updatedAt: new Date() })
+    .where(eq(users.userId, systemUser.userId));
+
+  console.log("✅ System user password hash updated successfully!");
+}
+
+/**
  * Main execution block for standalone script execution.
  * Initializes database triggers and creates initial Admin user when run directly.
  */
@@ -1268,9 +1309,14 @@ if (process.argv[1] === __filename) {
     await ensureTriggers();
     console.log("✅ Database triggers initialization complete!");
     
-    // Create initial Admin user
+    // Create initial Admin user (if users table is empty)
     const adminUser = await createInitialAdminUser();
-    console.log("🕵️‍♂️ Created Admin user:", adminUser);
+    if (adminUser) {
+      console.log("🕵️‍♂️ Created Admin user:", adminUser);
+    }
+    
+    // Fill system user password hash if it's null (idempotent on re-run)
+    await updateSystemUserPassword();
     
     process.exit(0);
   })().catch((err) => {

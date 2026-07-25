@@ -5,22 +5,30 @@
  */
 
 import { buildEmailHtml } from './base-layout.js';
+import { t } from './i18n.js';
+import type { EmailLocale } from '../../types/email-locale.js';
 
 /**
+ * @param locale - Email locale for i18n strings
  * @param appName - Application display name
  * @param name - User display name
  * @param creditsDeducted - Credits removed due to refund
  */
-export function getRefundProcessedTemplate(appName: string, name: string, creditsDeducted: number): string {
+export function getRefundProcessedTemplate(
+  locale: EmailLocale,
+  appName: string,
+  name: string,
+  creditsDeducted: number,
+): string {
   return buildEmailHtml({
-    title: `Refund processed — ${appName}`,
-    heading: `The deal is reversed, ${name}.`,
+    title: t(locale, 'refund.subject', { appName }),
+    heading: t(locale, 'refund.heading', { name }),
     bodyHtml: `
-      <p>A refund on your ${appName} purchase has gone through.</p>
-      <p>To keep the books balanced, <strong>${creditsDeducted}</strong> credit${creditsDeducted === 1 ? '' : 's'} ${creditsDeducted === 1 ? 'has' : 'have'} been pulled from your balance.</p>
+      <p>${t(locale, 'refund.body1', { appName })}</p>
+      <p>${t(locale, 'refund.body2', { credits: creditsDeducted })}</p>
     `,
     footerHtml: `
-      <p>Your bank or card issuer may take a few business days to show the refund on your statement.</p>
+      <p>${t(locale, 'refund.footer')}</p>
     `,
   });
 }

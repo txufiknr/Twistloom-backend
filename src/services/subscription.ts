@@ -545,7 +545,7 @@ export async function handleTrialWillEnd(providerSubscriptionId: string): Promis
   if (row.trialEnd && row.email) {
     const { sendTrialEndingEmail, sendEmailSafe } = await import("../utils/email.js");
     sendEmailSafe(`trial_will_end user=${row.userId}`, () =>
-      sendTrialEndingEmail(row.email, row.name || "there", row.trialEnd!),
+      sendTrialEndingEmail(row.email, row.name || "there", row.trialEnd!, { userId: row.userId }),
     );
   }
 }

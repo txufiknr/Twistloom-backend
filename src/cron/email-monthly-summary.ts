@@ -108,6 +108,7 @@ export async function runMonthlyActivitySummaryEmail(): Promise<void> {
           row.name || 'there',
           label,
           stats,
+          { userId: row.userId },
         );
         if (ok) sent++;
         else skipped++;

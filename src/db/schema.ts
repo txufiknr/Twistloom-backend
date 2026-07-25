@@ -236,14 +236,22 @@ export const users = pgTable(
     ageConfirmedAt: timestamp("age_confirmed_at", { withTimezone: true }),
     tokenVersion: integer("token_version").notNull().default(0), // Session version for JWT revocation
     /**
-     * Optional product/engagement email prefs (weekly, monthly, announcements).
-     * Security & billing mail never consult this field. Null until onboarding
+     * Account / app language of record (`en` | `id`).
+     * Synced fire-and-forget from frontend language picker. Email uses this
+     * unless email_preferences.emailLocale override is set.
+     */
+    preferredLocale: text("preferred_locale").notNull().default("en"),
+    /**
+     * Optional product/engagement email prefs (weekly, monthly, announcements)
+     * plus optional emailLocale override (null = follow preferredLocale).
+     * Security & billing never consult engagement toggles. Null until onboarding
      * applies defaults — see DEFAULT_EMAIL_PREFERENCES.
      */
     emailPreferences: jsonb("email_preferences").$type<{
       weeklyRecommendations: boolean;
       monthlyActivitySummary: boolean;
       productAnnouncements: boolean;
+      emailLocale?: "en" | "id" | null;
     }>(),
     lastActive,
     createdAt,

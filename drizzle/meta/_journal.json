@@ -274,6 +274,13 @@
       "when": 1784952347398,
       "tag": "0038_spooky_raider",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1784954954165,
+      "tag": "0039_bumpy_sally_floyd",
+      "breakpoints": true
     }
   ]
 }

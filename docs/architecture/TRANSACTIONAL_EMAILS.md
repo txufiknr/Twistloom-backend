@@ -32,6 +32,7 @@
 | Brand layout | `buildEmailHtml` (`base-layout.ts`) |
 | Send API | `sendEmail` → public `send*Email` · fire-and-forget via `sendEmailSafe` |
 | Preferences | `users.email_preferences` jsonb · GET/PATCH `/user/email-preferences` |
+| Locale (C+D) | `users.preferred_locale` + optional `emailLocale` override · catalogs `en`/`id` |
 | Unsubscribe | HMAC tokens · public `GET/POST /email/unsubscribe` |
 
 ```mermaid
@@ -49,12 +50,15 @@ flowchart LR
 
 | Layer | Path | Role |
 |-------|------|------|
-| Templates | `src/config/emails/*.ts` | Pure HTML |
-| Send utils | `src/utils/email.ts` | Resend + `sendEmailSafe` + security helpers |
-| Preferences | `src/services/email-preferences.ts` | Defaults, PATCH merge, unsubscribe tokens |
+| Templates | `src/config/emails/*.ts` | Locale-aware HTML via `t(locale, key)` |
+| Catalogs | `src/config/emails/locales/{en,id}.json` | Subjects + bodies |
+| i18n helper | `src/config/emails/i18n.ts` | `t`, `formatEmailDate`, path prefix |
+| Send utils | `src/utils/email.ts` | Resend + locale resolve + `sendEmailSafe` |
+| Preferences | `src/services/email-preferences.ts` | Toggles, locale resolve, unsubscribe |
 | Call sites | routes / subscription / crons / admin | When to send |
 
-**Security & billing mail never read preferences.** Engagement mail must check prefs.
+**Security & billing never read engagement toggles** — but **do** use `resolveEmailLocale`.  
+**Engagement mail** must check prefs **and** locale.
 
 ---
 
@@ -160,36 +164,50 @@ Twistloom emails share one brand, but **not one intensity of noir**. Copy must m
 
 ---
 
-## 7. User preferences
+## 7. User preferences & locale
 
 ### Schema
 
-`users.email_preferences` jsonb (nullable until defaults applied):
-
 ```typescript
+// users.preferred_locale  text not null default 'en'   // account / app language
+// users.email_preferences jsonb (nullable until defaults):
 {
   weeklyRecommendations: boolean;   // default true
   monthlyActivitySummary: boolean;  // default true
   productAnnouncements: boolean;    // default true
+  emailLocale: 'en' | 'id' | null;  // null = follow preferredLocale
 }
 ```
 
-Defaults applied at onboarding complete (`ensureDefaultEmailPreferences`) and lazily on first GET prefs.
+**Effective email language:** `emailLocale ?? preferredLocale ?? 'en'`.
+
+Defaults applied at onboarding (`ensureDefaultEmailPreferences`) and lazily on first GET prefs.  
+`preferredLocale` set via fire-and-forget language change + onboarding body.
 
 ### API
 
 | Method | Path | Auth |
 |--------|------|------|
 | GET | `/api/user/email-preferences` | requireAuth |
-| PATCH | `/api/user/email-preferences` | requireAuth (partial booleans) |
+| PATCH | `/api/user/email-preferences` | requireAuth (toggles + `emailLocale`) |
+| PATCH | `/api/user/preferred-locale` | requireAuth `{ preferredLocale }` |
+| GET | `/api/user` | includes `preferredLocale` |
 | GET/POST | `/api/email/unsubscribe?token=` | **public** (HMAC) |
 
 ### Frontend
 
-- Dashboard → Account → Preferences → Notifications → Email card  
-- `useEmailPreferences` + optimistic PATCH  
+- Appearance language → UI cookie + fire-and-forget `PATCH /preferred-locale`  
+- Email card → toggles + **Email language** select (Same as app / en / id)  
+- Onboarding → sends `preferredLocale` from current UI locale  
 - Public `/[locale]/email/unsubscribe?token=`  
 - Deep link `?tab=notifications`
+
+### i18n catalogs
+
+- `src/config/emails/locales/en.json`, `id.json`  
+- Templates call `t(locale, key, vars)` — missing ID keys fall back to English  
+- Internal ops (`FEEDBACK_INBOX`) stays English  
+- See [EMAIL_I18N_ROADMAP.md](../roadmap/EMAIL_I18N_ROADMAP.md) for history & support-burden notes
 
 ---
 
@@ -242,7 +260,10 @@ Frontend (`twistloom-web`):
 - `useEmailPreferences.ts` · `UsersApi` email methods
 - `app/[locale]/email/unsubscribe/page.tsx`
 
-Migration: `drizzle/0038_spooky_raider.sql` (`users.email_preferences`)
+Migrations:
+
+- `0038` — `users.email_preferences`  
+- `0039` — `users.preferred_locale`
 
 ---
 
@@ -251,11 +272,12 @@ Migration: `drizzle/0038_spooky_raider.sql` (`users.email_preferences`)
 | Item | Status |
 |------|--------|
 | Resend bounce/complaint webhooks | Not built |
-| Email HTML locale (`en`/`id`) | Templates English-only |
+| Email HTML locale (`en`/`id`) | ✅ Catalogs + resolve path |
 | Weekly cron ML ranking | v1 = trending public books |
 | Send log / idempotency table | Not built (rely on schedule) |
 | In-app notification prefs | Still local-only UI stub |
+| Multi-device UI/backend locale force-sync | Optional |
 
 ---
 
-*Last updated: Jul 2026 — security, billing, prefs, engagement suite implemented.*
+*Last updated: Jul 2026 — security, billing, prefs, engagement, email i18n (C+D hybrid) implemented.*

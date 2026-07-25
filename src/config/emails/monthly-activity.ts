@@ -5,6 +5,8 @@
  */
 
 import { buildEmailHtml } from './base-layout.js';
+import { t } from './i18n.js';
+import type { EmailLocale } from '../../types/email-locale.js';
 
 export interface MonthlyActivityStats {
   booksCreated: number;
@@ -15,6 +17,7 @@ export interface MonthlyActivityStats {
 }
 
 /**
+ * @param locale - Email locale for i18n strings
  * @param appName - Application display name
  * @param name - User display name
  * @param monthLabel - e.g. "June 2026"
@@ -22,6 +25,7 @@ export interface MonthlyActivityStats {
  * @param preferencesUrl - Link to manage email preferences
  */
 export function getMonthlyActivityTemplate(
+  locale: EmailLocale,
   appName: string,
   name: string,
   monthLabel: string,
@@ -29,21 +33,21 @@ export function getMonthlyActivityTemplate(
   preferencesUrl?: string,
 ): string {
   return buildEmailHtml({
-    title: `Your ${monthLabel} dossier — ${appName}`,
-    heading: `${monthLabel} is closed, ${name}.`,
+    title: t(locale, 'monthly.subject', { month: monthLabel, appName }),
+    heading: t(locale, 'monthly.heading', { month: monthLabel, name }),
     bodyHtml: `
-      <p>We've sealed last month's file. Here's what the record shows you did inside ${appName}:</p>
+      <p>${t(locale, 'monthly.body1', { appName })}</p>
       <ul style="padding-left: 20px; line-height: 1.8;">
-        <li><strong>${stats.booksCreated}</strong> stor${stats.booksCreated === 1 ? 'y' : 'ies'} you set in motion</li>
-        <li><strong>${stats.booksCompleted}</strong> ending${stats.booksCompleted === 1 ? '' : 's'} you reached</li>
-        <li><strong>${stats.pagesRead}</strong> page${stats.pagesRead === 1 ? '' : 's'} turned</li>
-        <li><strong>${stats.likesGiven}</strong> mark${stats.likesGiven === 1 ? '' : 's'} of approval left behind</li>
-        ${stats.checkinStreak != null ? `<li>Longest check-in streak: <strong>${stats.checkinStreak}</strong> night${stats.checkinStreak === 1 ? '' : 's'}</li>` : ''}
+        <li>${t(locale, 'monthly.statCreated', { n: stats.booksCreated })}</li>
+        <li>${t(locale, 'monthly.statCompleted', { n: stats.booksCompleted })}</li>
+        <li>${t(locale, 'monthly.statPages', { n: stats.pagesRead })}</li>
+        <li>${t(locale, 'monthly.statLikes', { n: stats.likesGiven })}</li>
+        ${stats.checkinStreak != null ? `<li>${t(locale, 'monthly.statStreak', { n: stats.checkinStreak })}</li>` : ''}
       </ul>
-      <p>The ledger never lies. A new month is already open — and it doesn't care how last one ended.</p>
+      <p>${t(locale, 'monthly.body2')}</p>
     `,
     footerHtml: preferencesUrl
-      ? `<p><a href="${preferencesUrl}" style="color: #8b0000;">Manage email preferences</a></p>`
+      ? `<p>${t(locale, 'monthly.footer', { url: preferencesUrl })}</p>`
       : undefined,
   });
 }

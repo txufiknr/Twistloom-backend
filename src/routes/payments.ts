@@ -254,6 +254,7 @@ async function handleSubscriptionDeleted(event: Stripe.Event) {
   try {
     const [row] = await dbRead
       .select({
+        userId: users.userId,
         email: users.email,
         name: users.name,
         currentPeriodEnd: subscriptions.currentPeriodEnd,
@@ -269,6 +270,7 @@ async function handleSubscriptionDeleted(event: Stripe.Event) {
           row.email,
           row.name || "there",
           row.currentPeriodEnd ?? undefined,
+          { userId: row.userId },
         ),
       );
     }
@@ -370,7 +372,7 @@ async function handleInvoicePaymentFailed(event: Stripe.Event) {
   // Billing email (always on) — non-blocking
   try {
     const [row] = await dbRead
-      .select({ email: users.email, name: users.name })
+      .select({ userId: users.userId, email: users.email, name: users.name })
       .from(subscriptions)
       .innerJoin(users, eq(subscriptions.userId, users.userId))
       .where(eq(subscriptions.providerSubscriptionId, subscriptionId))
@@ -381,7 +383,7 @@ async function handleInvoicePaymentFailed(event: Stripe.Event) {
         ? `${process.env.FRONTEND_URL.replace(/\/$/, "")}/dashboard/account/subscription`
         : undefined;
       sendEmailSafe("invoice.payment_failed", () =>
-        sendPaymentFailedEmail(row.email, row.name || "there", portalUrl),
+        sendPaymentFailedEmail(row.email, row.name || "there", portalUrl, { userId: row.userId }),
       );
     }
   } catch (emailError) {
@@ -1129,7 +1131,9 @@ router.post("/stripe/webhook", async (c) => {
             if (u?.email) {
               const { sendRefundProcessedEmail, sendEmailSafe } = await import("../utils/email.js");
               sendEmailSafe("charge.refunded", () =>
-                sendRefundProcessedEmail(u.email, u.name || "there", refundMeta.credits),
+                sendRefundProcessedEmail(u.email, u.name || "there", refundMeta.credits, {
+                  userId: refundMeta.userId,
+                }),
               );
             }
           } catch (emailError) {

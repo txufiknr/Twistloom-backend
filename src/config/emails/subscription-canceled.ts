@@ -5,33 +5,32 @@
  */
 
 import { buildEmailHtml } from './base-layout.js';
+import { t, formatEmailDate } from './i18n.js';
+import type { EmailLocale } from '../../types/email-locale.js';
 
 /**
+ * @param locale - Email locale for i18n strings
  * @param appName - Application display name
  * @param name - User display name
  * @param accessEndsAt - Optional date when VIP access ends
  */
 export function getSubscriptionCanceledTemplate(
+  locale: EmailLocale,
   appName: string,
   name: string,
   accessEndsAt?: Date,
 ): string {
   const accessLine = accessEndsAt
-    ? `<p>VIP access holds until <strong>${accessEndsAt.toLocaleDateString('en-US', {
-        weekday: 'long',
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric',
-      })}</strong> — then the lights dim and your account returns to standard.</p>`
-    : `<p>Your VIP benefits will end with the current billing period.</p>`;
+    ? `<p>${t(locale, 'subCanceled.accessUntil', { date: formatEmailDate(locale, accessEndsAt) })}</p>`
+    : `<p>${t(locale, 'subCanceled.accessGeneric')}</p>`;
 
   return buildEmailHtml({
-    title: `Your ${appName} VIP subscription was canceled`,
-    heading: `This chapter ends, ${name}.`,
+    title: t(locale, 'subCanceled.subject', { appName }),
+    heading: t(locale, 'subCanceled.heading', { name }),
     bodyHtml: `
-      <p>Your ${appName} VIP subscription has been canceled.</p>
+      <p>${t(locale, 'subCanceled.body1', { appName })}</p>
       ${accessLine}
-      <p>The door stays open. Resubscribe anytime from your account settings when you're ready for the next act.</p>
+      <p>${t(locale, 'subCanceled.body2')}</p>
     `,
   });
 }

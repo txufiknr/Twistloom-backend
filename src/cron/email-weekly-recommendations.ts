@@ -79,6 +79,7 @@ export async function runWeeklyRecommendationsEmail(): Promise<void> {
           row.email,
           row.name || 'there',
           bookItems,
+          { userId: row.userId },
         );
         if (ok) sent++;
         else skipped++;

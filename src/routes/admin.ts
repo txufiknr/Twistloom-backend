@@ -994,6 +994,7 @@ router.post(
           body.title.trim(),
           body.bodyHtml.trim(),
           body.cta,
+          { userId: r.userId },
         );
         if (ok) sent++;
         else failed++;

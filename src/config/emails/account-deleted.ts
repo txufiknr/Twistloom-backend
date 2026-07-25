@@ -6,21 +6,24 @@
  */
 
 import { buildEmailHtml } from './base-layout.js';
+import { t } from './i18n.js';
+import type { EmailLocale } from '../../types/email-locale.js';
 
 /**
+ * @param locale - Email locale for i18n strings
  * @param appName - Application display name
  * @param name - User display name
  */
-export function getAccountDeletedTemplate(appName: string, name: string): string {
+export function getAccountDeletedTemplate(locale: EmailLocale, appName: string, name: string): string {
   return buildEmailHtml({
-    title: `Your ${appName} account has been deleted`,
-    heading: `The file is closed, ${name}.`,
+    title: t(locale, 'accountDeleted.subject', { appName }),
+    heading: t(locale, 'accountDeleted.heading', { name }),
     bodyHtml: `
-      <p>Your ${appName} account and associated personal data have been deleted as requested.</p>
-      <p>We're sorry to see you go. If this was a mistake, you can create a new account — the previous one cannot be restored.</p>
+      <p>${t(locale, 'accountDeleted.body1', { appName })}</p>
+      <p>${t(locale, 'accountDeleted.body2')}</p>
     `,
     footerHtml: `
-      <p>This confirmation is sent once when an account is deleted.</p>
+      <p>${t(locale, 'accountDeleted.footer')}</p>
     `,
   });
 }

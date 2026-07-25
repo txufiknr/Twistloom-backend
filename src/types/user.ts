@@ -81,6 +81,11 @@ export interface User {
    * Own profile (GET /user) only — omit on public profiles.
    */
   hasReferrer?: boolean;
+  /**
+   * Account / app language of record (`en` | `id`).
+   * Own profile (GET /user) — used for email locale resolution default.
+   */
+  preferredLocale?: string;
   stats: UserStats;
   subscription: UserSubscription;
   credits: number;

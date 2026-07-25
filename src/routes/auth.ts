@@ -341,7 +341,12 @@ router.post('/signup', async (c) => {
 
     const verificationToken = await createEmailVerificationToken(newUser.userId);
     const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`;
-    const verificationEmailSent = await sendVerificationEmail(newUser.email, verificationUrl, verificationToken);
+    const verificationEmailSent = await sendVerificationEmail(
+      newUser.email,
+      verificationUrl,
+      verificationToken,
+      { userId: newUser.userId },
+    );
 
     let referralApplied = false;
     if (referrer && typeof referrer === 'string') {
@@ -414,7 +419,7 @@ router.post('/forgot-password', async (c) => {
 
     if (token) {
       const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${token}`;
-      emailSent = await sendPasswordResetEmail(email, resetUrl);
+      emailSent = await sendPasswordResetEmail(email, resetUrl); // locale resolved by email lookup
     }
 
     // Always return success — prevents email enumeration
@@ -502,7 +507,7 @@ router.post('/reset-password', async (c) => {
         userAgent: c.req.header('user-agent'),
       });
       sendEmailSafe('POST /auth/reset-password', () =>
-        sendPasswordChangedEmail(userRow.email, userRow.name || 'there', detailHtml),
+        sendPasswordChangedEmail(userRow.email, userRow.name || 'there', detailHtml, { userId }),
       );
     }
 
@@ -610,7 +615,7 @@ router.post('/resend-verification', async (c) => {
       if (!verified) {
         const verificationToken = await createEmailVerificationToken(userId);
         const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`;
-        emailSent = await sendVerificationEmail(email, verificationUrl, verificationToken);
+        emailSent = await sendVerificationEmail(email, verificationUrl, verificationToken); // locale by email lookup
       }
     }
 
@@ -1151,13 +1156,15 @@ router.put('/email', requireAuth, async (c) => {
     });
     if (oldEmail && oldEmail !== sanitizedEmail) {
       sendEmailSafe('PUT /auth/email (old)', () =>
-        sendEmailChangedAlertEmail(oldEmail, currentUser?.name || 'there', sanitizedEmail, detailHtml),
+        sendEmailChangedAlertEmail(oldEmail, currentUser?.name || 'there', sanitizedEmail, detailHtml, {
+          userId,
+        }),
       );
     }
     sendEmailSafe('PUT /auth/email (verify)', async () => {
       const verificationToken = await createEmailVerificationToken(userId);
       const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`;
-      return sendVerificationEmail(sanitizedEmail, verificationUrl, verificationToken);
+      return sendVerificationEmail(sanitizedEmail, verificationUrl, verificationToken, { userId });
     });
 
     return c.json({ message: 'Email updated successfully' });
@@ -1255,7 +1262,7 @@ router.put('/password', requireAuth, async (c) => {
         userAgent: c.req.header('user-agent'),
       });
       sendEmailSafe('PUT /auth/password', () =>
-        sendPasswordChangedEmail(userRow.email, userRow.name || 'there', detailHtml),
+        sendPasswordChangedEmail(userRow.email, userRow.name || 'there', detailHtml, { userId }),
       );
     }
 

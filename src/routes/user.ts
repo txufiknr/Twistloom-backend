@@ -393,9 +393,14 @@ router.post('/', requireAuth, async (c: Context<AppEnv>) => {
       { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } }
     );
 
-    // Default engagement prefs (opt-out) + welcome email once (isNewUser SSOT)
-    const { ensureDefaultEmailPreferences } = await import('../services/email-preferences.js');
+    // Default engagement prefs (opt-out) + optional preferredLocale from client UI cookie
+    const { ensureDefaultEmailPreferences, updatePreferredLocale } = await import('../services/email-preferences.js');
     await ensureDefaultEmailPreferences(userId);
+
+    const { isEmailLocale } = await import('../types/email-locale.js');
+    if (body.preferredLocale && isEmailLocale(body.preferredLocale)) {
+      await updatePreferredLocale(userId, body.preferredLocale);
+    }
 
     const [userRow] = await dbRead
       .select({ email: users.email, username: users.username })
@@ -407,7 +412,9 @@ router.post('/', requireAuth, async (c: Context<AppEnv>) => {
       const { sendWelcomeEmail, sendEmailSafe } = await import('../utils/email.js');
       const username =
         (updateData.username as string | undefined) ?? userRow.username ?? current.username;
-      sendEmailSafe('POST /api/user welcome', () => sendWelcomeEmail(userRow.email, username));
+      sendEmailSafe('POST /api/user welcome', () =>
+        sendWelcomeEmail(userRow.email, username, { userId }),
+      );
     }
 
     return c.json({
@@ -752,7 +759,9 @@ router.delete("/", requireAuth, async (c: Context<AppEnv>) => {
   try {
     const userId = c.get("userId")!;
 
-    // Capture contact info before cascade delete for confirmation email
+    // Capture contact + locale before cascade delete for confirmation email
+    const { resolveEmailLocale } = await import('../services/email-preferences.js');
+    const deleteLocale = await resolveEmailLocale(userId);
     const [userRow] = await dbRead
       .select({ email: users.email, name: users.name })
       .from(users)
@@ -769,7 +778,7 @@ router.delete("/", requireAuth, async (c: Context<AppEnv>) => {
     if (userRow?.email) {
       const { sendAccountDeletedEmail, sendEmailSafe } = await import('../utils/email.js');
       sendEmailSafe('DELETE /user', () =>
-        sendAccountDeletedEmail(userRow.email, userRow.name || 'there'),
+        sendAccountDeletedEmail(userRow.email, userRow.name || 'there', { locale: deleteLocale }),
       );
     }
 
@@ -2538,7 +2547,7 @@ router.post("/feedbacks", requireAuth, async (c: Context<AppEnv>) => {
         sendEmailSafe,
       } = await import('../utils/email.js');
       sendEmailSafe('POST /user/feedbacks ack', () =>
-        sendFeedbackAcknowledgmentEmail(userRow.email, userRow.name || 'there'),
+        sendFeedbackAcknowledgmentEmail(userRow.email, userRow.name || 'there', { userId }),
       );
 
       const feedbackInbox = process.env.FEEDBACK_INBOX;
@@ -2615,7 +2624,7 @@ router.patch('/email-preferences', requireAuth, async (c: Context<AppEnv>) => {
     if (!patch) {
       return cValidationError(
         c,
-        'Provide at least one boolean flag: weeklyRecommendations, monthlyActivitySummary, productAnnouncements',
+        'Provide at least one field: weeklyRecommendations, monthlyActivitySummary, productAnnouncements, emailLocale',
       );
     }
 
@@ -2627,6 +2636,33 @@ router.patch('/email-preferences', requireAuth, async (c: Context<AppEnv>) => {
   } catch (error) {
     console.error('[PATCH /user/email-preferences] ❌', error);
     return cApiError(c, 'Failed to update email preferences', error);
+  }
+});
+
+/**
+ * PATCH /user/preferred-locale
+ *
+ * Fire-and-forget friendly update of account UI language (preferredLocale).
+ * Email language follows this unless emailLocale override is set.
+ */
+router.patch('/preferred-locale', requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get('userId')!;
+    const body = c.get('body') as { preferredLocale?: string };
+    const { isEmailLocale } = await import('../types/email-locale.js');
+    const { updatePreferredLocale } = await import('../services/email-preferences.js');
+
+    if (!body?.preferredLocale || !isEmailLocale(body.preferredLocale)) {
+      return cValidationError(c, 'preferredLocale must be "en" or "id"');
+    }
+
+    const preferredLocale = await updatePreferredLocale(userId, body.preferredLocale);
+    if (!preferredLocale) return cNotFoundError(c, 'User not found');
+
+    return c.json({ preferredLocale });
+  } catch (error) {
+    console.error('[PATCH /user/preferred-locale] ❌', error);
+    return cApiError(c, 'Failed to update preferred locale', error);
   }
 });
 
