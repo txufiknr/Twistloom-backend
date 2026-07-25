@@ -5,6 +5,7 @@ import adminRouter from "./admin.js";
 import authRouter from "./auth.js";
 import paymentsRouter from "./payments.js";
 import socialMentionsRouter from "./social-mentions.js";
+import emailRouter from "./email.js";
 import { APP_NAME, VERSION } from "../config/constants.js";
 import type { AppEnv } from "../hono/env.js";
 
@@ -22,6 +23,7 @@ router.get("/", (c) => {
       "/auth": "Authentication endpoints",
       "/payments": "Payment checkout (Stripe/Xendit), credits, and webhooks",
       "/social-mentions": "Public social-proof wall (featured mentions)",
+      "/email": "Public email utilities (unsubscribe)",
     },
   });
 });
@@ -33,5 +35,6 @@ router.route("/admin", adminRouter);
 router.route("/auth", authRouter);
 router.route("/payments", paymentsRouter);
 router.route("/social-mentions", socialMentionsRouter);
+router.route("/email", emailRouter);
 
 export default router;

@@ -18,6 +18,7 @@ import { getErrorMessage } from "../utils/error.js";
 import { users } from "./schema.js";
 import { generateId } from "../utils/uuid.js";
 import { APP_EMAIL, APP_NAME, APP_NAME_SLUG, APP_TAGLINE } from "../config/constants.js";
+import { hashPassword } from "../utils/password.js";
 import type { DBUser } from "../types/schema.js";
 const __filename = fileURLToPath(import.meta.url);
 
@@ -255,6 +256,15 @@ async function createInitialAdminUser(): Promise<DBUser | null> {
     return null;
   }
   
+  // Hash system password if provided in env (enables email/password login for system account)
+  const systemPassword = process.env['SYSTEM_USER_PASSWORD'];
+  let passwordHash: string | undefined;
+  if (systemPassword) {
+    passwordHash = await hashPassword(systemPassword);
+  } else {
+    console.warn("⚠️ SYSTEM_USER_PASSWORD not set — system account will not support password login.");
+  }
+
   const [createdUser] = await dbWrite
     .insert(users)
     .values({
@@ -264,6 +274,7 @@ async function createInitialAdminUser(): Promise<DBUser | null> {
       name: APP_NAME,
       penName: APP_NAME,
       bio: APP_TAGLINE,
+      passwordHash,
     })
     .returning();
   

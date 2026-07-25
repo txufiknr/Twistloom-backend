@@ -1,8 +1,9 @@
-# Twistloom — Transactional Emails Architecture
+# Twistloom — Transactional & Engagement Emails Architecture
 
-**Scope:** All backend-sent transactional emails to Twistloom users  
+**Scope:** All backend-sent emails to Twistloom users (+ internal feedback alert)  
 **Stack:** Resend · shared HTML layout · TypeScript templates  
-**Implementation:** `src/utils/email.ts` · `src/config/emails/`
+**Implementation:** `src/utils/email.ts` · `src/config/emails/` · `src/services/email-preferences.ts`  
+**Roadmap:** [docs/roadmap/TRANSACTIONAL_EMAIL_ROADMAP.md](../roadmap/TRANSACTIONAL_EMAIL_ROADMAP.md)
 
 ---
 
@@ -10,318 +11,251 @@
 
 1. [Overview](#1-overview)
 2. [Architecture](#2-architecture)
-3. [Email catalogue](#3-email-catalogue)
-4. [Mandatory vs optional](#4-mandatory-vs-optional)
-5. [Trigger map](#5-trigger-map)
-6. [User preferences (current state)](#6-user-preferences-current-state)
-7. [Failure handling](#7-failure-handling)
-8. [Environment & configuration](#8-environment--configuration)
-9. [File reference map](#9-file-reference-map)
-10. [Gaps & future work](#10-gaps--future-work)
+3. [Voice & copy guidelines](#3-voice--copy-guidelines)
+4. [Email catalogue](#4-email-catalogue)
+5. [Mandatory vs optional](#5-mandatory-vs-optional)
+6. [Trigger map](#6-trigger-map)
+7. [User preferences](#7-user-preferences)
+8. [Failure handling](#8-failure-handling)
+9. [Environment & configuration](#9-environment--configuration)
+10. [File reference map](#10-file-reference-map)
+11. [Gaps & future work](#11-gaps--future-work)
 
 ---
 
 ## 1. Overview
 
-Twistloom sends **transactional** emails only (account security, verification, billing nudges, support acknowledgments). There is no marketing / newsletter pipeline in this backend today.
-
 | Property | Value |
 |----------|--------|
 | Provider | [Resend](https://resend.com) |
-| Default from | `noreply@twistloom.com` (override: `RESEND_FROM_EMAIL`) |
-| Brand layout | Shared HTML shell (`base-layout.ts`) — logo, crimson accents, light/dark |
-| Send API | `sendEmail()` private helper → public `send*Email()` functions |
-| Return type | `Promise<boolean>` — `true` if Resend accepted the send |
-
-All public send functions are **best-effort**: they never throw to callers; failures are logged and return `false`.
+| Default from | `noreply@twistloom.com` (`RESEND_FROM_EMAIL`) |
+| Brand layout | `buildEmailHtml` (`base-layout.ts`) |
+| Send API | `sendEmail` → public `send*Email` · fire-and-forget via `sendEmailSafe` |
+| Preferences | `users.email_preferences` jsonb · GET/PATCH `/user/email-preferences` |
+| Unsubscribe | HMAC tokens · public `GET/POST /email/unsubscribe` |
 
 ```mermaid
 flowchart LR
-  Trigger["Route / webhook / service"] --> PublicFn["send*Email()"]
-  PublicFn --> Template["get*Template()"]
-  Template --> Layout["buildEmailHtml()"]
-  PublicFn --> Helper["sendEmail()"]
-  Helper --> Resend["Resend API"]
-  Resend --> Inbox["User inbox"]
+  Trigger["Route / webhook / cron / admin"] --> Safe["sendEmailSafe / send*Email"]
+  Safe --> Template["get*Template"]
+  Template --> Layout["buildEmailHtml"]
+  Safe --> Resend["Resend API"]
+  Prefs["emailPreferences"] -.->|gate engagement only| Trigger
 ```
 
 ---
 
 ## 2. Architecture
 
-### 2.1 Layers
-
 | Layer | Path | Role |
 |-------|------|------|
-| Templates | `src/config/emails/*.ts` | Pure HTML generators (no I/O) |
-| Barrel | `src/config/emails/index.ts` | Re-exports template functions |
-| Shared layout | `src/config/emails/base-layout.ts` | Brand frame, button, footer, dark mode |
-| Send utilities | `src/utils/email.ts` | Resend client, subjects, orchestration |
-| Call sites | Routes / services | Decide *when* to send; pass personalisation data |
+| Templates | `src/config/emails/*.ts` | Pure HTML |
+| Send utils | `src/utils/email.ts` | Resend + `sendEmailSafe` + security helpers |
+| Preferences | `src/services/email-preferences.ts` | Defaults, PATCH merge, unsubscribe tokens |
+| Call sites | routes / subscription / crons / admin | When to send |
 
-### 2.2 Shared layout (`buildEmailHtml`)
-
-Every template uses the same card layout:
-
-- Twistloom logo + wordmark
-- Heading + body HTML
-- Optional CTA button + plain-URL fallback
-- Optional muted footer block
-- Standard “automated message — do not reply” footer
-
-Voice is intentionally thriller-adjacent but clear (especially security emails).
-
-### 2.3 Resend client
-
-- Lazy singleton: created on first send so missing `RESEND_API_KEY` does not break boot
-- Throws only inside the send path if the key is absent
-- Outer `sendEmail` catches errors and returns `false`
+**Security & billing mail never read preferences.** Engagement mail must check prefs.
 
 ---
 
-## 3. Email catalogue
+## 3. Voice & copy guidelines
 
-### 3.1 Summary table
+Twistloom emails share one brand, but **not one intensity of noir**. Copy must match the job of the message: security stays unambiguous; engagement can lean into thriller atmosphere.
 
-| # | Email | Subject pattern | Send function | Template | Wired? |
-|---|--------|-----------------|---------------|----------|--------|
-| 1 | Email verification | `Verify Your {APP_NAME} Email` | `sendVerificationEmail` | `getVerificationTemplate` | ✅ Yes |
-| 2 | Password reset | `Reset Your {APP_NAME} Password` | `sendPasswordResetEmail` | `getPasswordResetTemplate` | ✅ Yes |
-| 3 | Welcome | `Welcome to {APP_NAME}!` | `sendWelcomeEmail` | `getWelcomeTemplate` | ✅ Onboarding (`POST /api/user`, `isNewUser` → false) |
-| 4 | VIP trial ending | `Your {APP_NAME} VIP Trial Ends Soon` | `sendTrialEndingEmail` | `getTrialEndingTemplate` | ✅ Yes |
-| 5 | Feedback acknowledgment | `We Received Your Feedback — {APP_NAME}` | `sendFeedbackAcknowledgmentEmail` | `getFeedbackAcknowledgmentTemplate` | ✅ Yes |
+### 3.1 Voice spectrum
 
----
+| Tier | When | Style | Examples |
+|------|------|--------|----------|
+| **A — Clear / plain** | Security alerts, feedback (user + internal ops) | Short sentences. No metaphor that could hide the action. Facts, dates, “if this wasn’t you…” first. | Password changed, email changed, feedback ack, feedback internal |
+| **B — Mild noir** | Auth lifecycle, billing, account lifecycle | Light thriller framing in **heading** and one line of body; **facts and CTAs stay explicit** (dates, amounts, button labels). | Password reset, verification, welcome, trial ending, payment failed, refund, sub canceled, account deleted |
+| **C — Full noir** | Engagement / product marketing | Atmospheric, dossier/casefile metaphors, compelling hooks — **still scannable**: lists, titles, and links remain obvious. | Weekly recommendations, monthly activity, announcement chrome (admin body stays as written) |
 
-### 3.2 Email verification
+### 3.2 Rules (all tiers)
 
-**Purpose:** Confirm ownership of the email address after email/password signup (or when the user requests a resend).
+1. **Clarity over cleverness** — A user must understand *what happened* and *what to do* in under 10 seconds.  
+2. **Never obscure security or money** — Password, email, refund amounts, trial end dates, “past due” must appear in plain language.  
+3. **No horror gore / cruelty** — Psychological thriller tone: shadow, choice, consequence, dossier — not shock for shock’s sake.  
+4. **Subjects can be atmospheric; spam filters still need honesty** — Prefer “This week's dossiers — Twistloom” over clickbait that doesn’t match the body.  
+5. **Engagement footers** — Prefer noir-adjacent prefs links (“Too many whispers? Manage preferences”) without hiding unsubscribe.  
+6. **Admin announcements** — System wraps title/body with light framing; **admin-authored body is not rewritten** by templates.  
+7. **Internal ops mail** (`FEEDBACK_INBOX`) — Stay **Tier A** (plain). Ops need speed, not mood.
 
-| Field | Detail |
+### 3.3 Intended behavior by template
+
+| Template | Tier | Notes |
+|----------|------|--------|
+| `password-changed`, `email-changed` | **A** | Security — plain by design |
+| `feedback-acknowledgment`, `feedback-internal` | **A** | Support — plain / professional |
+| `password-reset`, `verification` | **B** | Mild noir already; keep CTAs literal (“Reset Password”, “Verify Email”) |
+| `welcome`, `trial-ending` | **B–C** | Brand-forward; welcome is the fullest product voice |
+| `payment-failed`, `refund-processed`, `subscription-canceled`, `account-deleted` | **B** | Mild noir headings; numbers and dates plain |
+| `weekly-recommendations`, `monthly-activity` | **C** | Full noir; book titles and stats still crystal clear |
+| `announcement` | **C chrome / free body** | Framing + footer noir; body = admin content |
+
+### 3.4 Anti-patterns
+
+| Avoid | Prefer |
 |-------|--------|
-| **Trigger** | 1) `POST /api/auth/signup` after account insert<br>2) `POST /api/auth/resend-verification` if account exists and email is not yet verified |
-| **User action** | Signup (automatic) or explicit “resend verification” |
-| **Mandatory?** | **Yes (security / product)** — required path for unverified email/password accounts. Not user-configurable. |
-| **Opt-out** | None |
-| **Personalisation** | Verification URL; optional OTP / token display in body |
-| **Token lifetime** | **24 hours** (enforced server-side) |
-| **CTA** | “Verify Email” → `{FRONTEND_URL}/verify-email?token=…` |
-| **Content highlights** | Identity confirmation; large monospace code block when OTP/token is passed; expiry notice |
-| **Anti-abuse** | Resend path is rate-limited by IP; responses avoid email enumeration where applicable |
-| **Failure impact** | Signup still succeeds; API reports `verificationEmailSent: false` so the client can prompt resend |
-
-**Call site:** `src/routes/auth.ts`
+| “Something went wrong with your account” (vague security) | “Your password was changed… If this wasn’t you, reset it now.” |
+| Pure formal “Please find attached your monthly summary” for digests | Dossier framing + plain bullet stats |
+| Hiding the unsubscribe link in purple prose only | One clear prefs/unsubscribe line even if the rest is noir |
+| Rewriting security mail to match weekly digests | Keep Tier A and Tier C separate |
 
 ---
 
-### 3.3 Password reset
+## 4. Email catalogue
 
-**Purpose:** One-time link so the user can set a new password.
-
-| Field | Detail |
-|-------|--------|
-| **Trigger** | `POST /api/auth/forgot-password` when a reset token can be created for that email |
-| **User action** | Explicit “forgot password” |
-| **Mandatory?** | **Yes (security)** when the user requests it and an account exists. Not marketing; not user-configurable. |
-| **Opt-out** | None (user initiated) |
-| **Personalisation** | Full reset URL with signed token |
-| **Token lifetime** | **1 hour** (enforced server-side) |
-| **CTA** | “Reset Password” → `{FRONTEND_URL}/reset-password?token=…` |
-| **Content highlights** | Clear instructions; “ignore if you didn’t request this”; gateway closes in 1 hour |
-| **Anti-abuse** | Rate-limited by IP; always returns a generic success message (no email enumeration) |
-| **Failure impact** | `emailSent: false` in response; user may retry |
-
-**Call site:** `src/routes/auth.ts`
-
----
-
-### 3.4 Welcome
-
-**Purpose:** Orient new users after onboarding — personal greeting from the creator and product framing.
-
-| Field | Detail |
-|-------|--------|
-| **Trigger** | `POST /api/user` after onboarding sets `isNewUser` `true` → `false` |
-| **User action** | Completing onboarding (once) |
-| **Mandatory?** | **Automatic product transactional** — not user-configurable. Once-only via `isNewUser` SSOT (no extra column). |
-| **Opt-out** | None today |
-| **Personalisation** | Username in heading |
-| **CTA** | None (narrative body only) |
-| **Content highlights** | Welcome into the narrative engine; signed note from Taufik (creator) |
-| **Failure impact** | Non-blocking: onboarding still returns success |
-
-**Call site:** `src/routes/user.ts` (`POST /`)
----
-
-### 3.5 VIP trial ending
-
-**Purpose:** Nudge the user ~3 days before VIP free trial ends so they can update billing or cancel.
-
-| Field | Detail |
-|-------|--------|
-| **Trigger** | Stripe webhook `customer.subscription.trial_will_end` → `handleTrialWillEndEvent` → `handleTrialWillEnd` |
-| **User action** | None (billing lifecycle) |
-| **Mandatory?** | **Yes (billing / transactional)** for users on a VIP free trial. Not a marketing blast; companion to in-app notification. |
-| **Opt-out** | None in-app today. User can cancel trial in subscription settings (stops future charges; may still receive Stripe’s own email). |
-| **Personalisation** | Display name; formatted trial end date |
-| **CTA** | **None in email** — in-app notification + subscription settings are the CTA; Stripe Dashboard trial-ending email is a fallback |
-| **Content highlights** | Trial end date; card will be charged to continue VIP; how to update/cancel |
-| **Companions** | In-app `user_notifications` row (`trial_ending_soon`); Stripe’s automatic trial-ending email |
-| **Failure impact** | Non-blocking: in-app notification already written; email failure is logged only |
-
-**Call sites:** `src/routes/payments.ts` · `src/services/subscription.ts`
+| # | Email | Subject pattern | Send function | Trigger | Wired |
+|---|--------|-----------------|---------------|---------|-------|
+| 1 | Email verification | `Verify Your {APP} Email` | `sendVerificationEmail` | Signup, resend, **email change (new)** | ✅ |
+| 2 | Password reset | `Reset Your {APP} Password` | `sendPasswordResetEmail` | Forgot password | ✅ |
+| 3 | Password changed | `Your {APP} password was changed` | `sendPasswordChangedEmail` | PUT password, POST reset-password | ✅ |
+| 4 | Email changed (old) | `Your {APP} email address was changed` | `sendEmailChangedAlertEmail` | PUT email | ✅ |
+| 5 | Welcome | `Welcome to {APP}!` | `sendWelcomeEmail` | POST /user onboarding | ✅ |
+| 6 | Account deleted | `Your {APP} account has been deleted` | `sendAccountDeletedEmail` | DELETE /user (before cascade) | ✅ |
+| 7 | VIP trial ending | `Your {APP} VIP Trial Ends Soon` | `sendTrialEndingEmail` | Stripe `trial_will_end` | ✅ |
+| 8 | Payment failed | `Action needed: {APP} payment failed` | `sendPaymentFailedEmail` | Stripe `invoice.payment_failed` | ✅ |
+| 9 | Refund processed | `Refund processed — {APP}` | `sendRefundProcessedEmail` | Stripe `charge.refunded` (credit packs) | ✅ |
+| 10 | Subscription canceled | `Your {APP} VIP subscription was canceled` | `sendSubscriptionCanceledEmail` | Stripe `subscription.deleted` | ✅ |
+| 11 | Feedback ack | `We Received Your Feedback — {APP}` | `sendFeedbackAcknowledgmentEmail` | POST /user/feedbacks | ✅ |
+| 12 | Feedback internal | `[Feedback] {category}` | `sendFeedbackInternalEmail` | Same (if `FEEDBACK_INBOX`) | ✅ |
+| 13 | Weekly might-like | `This week's dossiers — {APP}` | `sendWeeklyRecommendationsEmail` | Cron `email-weekly` | ✅ |
+| 14 | Monthly activity | `Your {month} dossier — {APP}` | `sendMonthlyActivityEmail` | Cron `email-monthly` | ✅ |
+| 15 | Announcement | `{title} — {APP}` | `sendAnnouncementEmail` | POST /admin/email/announcements | ✅ |
 
 ---
 
-### 3.6 Feedback acknowledgment
+## 5. Mandatory vs optional
 
-**Purpose:** Thank the user after they submit feedback/bug report; confirm receipt and set expectation that the team will act ASAP.
-
-| Field | Detail |
-|-------|--------|
-| **Trigger** | After successful insert on `POST /api/user/feedbacks` |
-| **User action** | Submitting feedback (email is a side effect of that action) |
-| **Mandatory?** | **Product transactional (automatic)** — always attempted after a successful submit when the user has an email. Not user-configurable today. |
-| **Opt-out** | None today |
-| **Personalisation** | Name (falls back to `"there"` if empty) |
-| **CTA** | None |
-| **Content highlights** | Thanks for informing; sorry for inconvenience; team will address ASAP; no action needed |
-| **Failure impact** | Non-blocking: feedback API still returns `201` with the feedback record |
-
-**Call site:** `src/routes/user.ts`
+| Class | Emails | User can disable? |
+|-------|--------|-------------------|
+| **Security** | verify, reset, password changed, email changed, account deleted | No |
+| **Billing** | trial ending, payment failed, refund, subscription canceled | No |
+| **Support** | feedback ack (user), feedback internal (ops) | No |
+| **Product lifecycle** | welcome | No (once via onboarding) |
+| **Engagement** | weekly, monthly, announcements | **Yes** via prefs + unsubscribe |
 
 ---
 
-## 4. Mandatory vs optional
+## 6. Trigger map
 
-| Email | Classification | User can disable? | Rationale |
-|-------|----------------|-------------------|-----------|
-| Email verification | **Mandatory transactional** | No | Account security / ownership proof |
-| Password reset | **Mandatory transactional** | No | User-initiated security recovery |
-| Welcome | **Automatic product** (onboarding complete) | No (today) | Once via `isNewUser` → false |
-| VIP trial ending | **Mandatory billing transactional** | No (except by ending trial / cancelling) | Charge notice / subscription lifecycle |
-| Feedback acknowledgment | **Automatic transactional** | No (today) | Support confirmation tied to user action |
-
-**Note:** There is **no** user email-preference table or API yet. “Optional” above means product-optional (lifecycle/marketing-adjacent), not “user-toggle exists.”
+| Event | Source | Email |
+|-------|--------|-------|
+| Signup | `POST /auth/signup` | Verification |
+| Resend verify | `POST /auth/resend-verification` | Verification |
+| Forgot password | `POST /auth/forgot-password` | Password reset |
+| Password reset OK | `POST /auth/reset-password` | Password changed |
+| Password change | `PUT /auth/password` | Password changed |
+| Email change | `PUT /auth/email` | Old-address alert + verify new |
+| Onboarding | `POST /user` (`isNewUser`→false) | Welcome + default prefs |
+| Account delete | `DELETE /user` | Account deleted |
+| Feedback | `POST /user/feedbacks` | User ack + optional internal |
+| Trial ~3 days left | Stripe webhook | Trial ending |
+| Invoice failed | Stripe webhook | Payment failed |
+| Charge refunded | Stripe webhook | Refund (credit packs) |
+| Sub deleted | Stripe webhook | Subscription canceled |
+| Weekly cron | `pnpm dev:cron:email-weekly` | Weekly recommendations |
+| Monthly cron | `pnpm dev:cron:email-monthly` | Monthly activity |
+| Admin broadcast | `POST /admin/email/announcements` | Announcement |
 
 ---
 
-## 5. Trigger map
+## 7. User preferences
 
-```mermaid
-sequenceDiagram
-  participant U as User / Client
-  participant API as Twistloom API
-  participant S as Stripe
-  participant R as Resend
+### Schema
 
-  U->>API: POST /auth/signup
-  API->>R: sendVerificationEmail
+`users.email_preferences` jsonb (nullable until defaults applied):
 
-  U->>API: POST /auth/resend-verification
-  API->>R: sendVerificationEmail
-
-  U->>API: POST /auth/forgot-password
-  API->>R: sendPasswordResetEmail
-
-  U->>API: POST /user (onboarding complete)
-  API->>R: sendWelcomeEmail
-
-  U->>API: POST /user/feedbacks
-  API->>R: sendFeedbackAcknowledgmentEmail
-
-  S->>API: customer.subscription.trial_will_end
-  API->>R: sendTrialEndingEmail
+```typescript
+{
+  weeklyRecommendations: boolean;   // default true
+  monthlyActivitySummary: boolean;  // default true
+  productAnnouncements: boolean;    // default true
+}
 ```
 
-| Event | Endpoint / source | Email |
-|-------|-------------------|--------|
-| Email/password registration | `POST /api/auth/signup` | Verification |
-| Resend verification | `POST /api/auth/resend-verification` | Verification |
-| Forgot password | `POST /api/auth/forgot-password` | Password reset |
-| Onboarding complete (`isNewUser` → false) | `POST /api/user` | Welcome |
-| Feedback submitted | `POST /api/user/feedbacks` | Feedback acknowledgment |
-| Trial ends in ~3 days | Stripe `customer.subscription.trial_will_end` | VIP trial ending |
+Defaults applied at onboarding complete (`ensureDefaultEmailPreferences`) and lazily on first GET prefs.
+
+### API
+
+| Method | Path | Auth |
+|--------|------|------|
+| GET | `/api/user/email-preferences` | requireAuth |
+| PATCH | `/api/user/email-preferences` | requireAuth (partial booleans) |
+| GET/POST | `/api/email/unsubscribe?token=` | **public** (HMAC) |
+
+### Frontend
+
+- Dashboard → Account → Preferences → Notifications → Email card  
+- `useEmailPreferences` + optimistic PATCH  
+- Public `/[locale]/email/unsubscribe?token=`  
+- Deep link `?tab=notifications`
 
 ---
 
-## 6. User preferences (current state)
+## 8. Failure handling
 
-| Capability | Status |
-|------------|--------|
-| Per-user email notification toggles | **Not implemented** |
-| Marketing / digest preferences | **Not implemented** |
-| Frequency caps beyond auth rate limits | IP rate limits on forgot-password & resend-verification only |
-| Unsubscribe links in transactional mail | **Not used** (transactional; footer says do not reply) |
-
-If preferences are added later, recommended split:
-
-- **Never optional:** verification, password reset, legal/billing charge notices  
-- **Preference-gated:** welcome, product tips, engagement digests  
-- **Grey area (product decision):** feedback ack, trial-ending (often kept mandatory for support/billing clarity)
+| Pattern | Usage |
+|---------|--------|
+| `sendEmail` returns `boolean` | Never throws |
+| `sendEmailSafe(label, fn)` | Fire-and-forget from routes |
+| Auth signup/forgot | May surface `emailSent` / `verificationEmailSent` |
+| Webhooks / feedback / onboarding | Non-blocking; primary action already done |
 
 ---
 
-## 7. Failure handling
+## 9. Environment & configuration
 
-| Pattern | Used by | Behaviour |
-|---------|---------|-----------|
-| Return `boolean` | All `send*Email` | Log + `false` on Resend/API/config errors |
-| Report to client | Signup, forgot-password, resend-verification | `verificationEmailSent` / `emailSent` flags |
-| Non-blocking try/catch | Trial ending, feedback ack | Primary action (notification / DB insert) already succeeded; email errors logged only |
-| Enumeration-safe responses | Forgot password, resend verification | Generic success copy regardless of whether the account exists |
-
-`RESEND_API_KEY` missing → first send throws inside client init → caught by `sendEmail` → `false`.
-
----
-
-## 8. Environment & configuration
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `RESEND_API_KEY` | Yes (to send) | Resend API key |
-| `RESEND_FROM_EMAIL` | No | Override default `noreply@twistloom.com` |
-| `FRONTEND_URL` | Yes (for link emails) | Base URL for verify/reset links |
-| `APP_NAME` | Via constants | Used in subjects and template copy |
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `RESEND_API_KEY` | Yes (to send) | Resend |
+| `RESEND_FROM_EMAIL` | No | From address |
+| `FRONTEND_URL` | Yes (links) | Verify/reset/prefs/unsubscribe deep links |
+| `FEEDBACK_INBOX` | No | Internal feedback alert recipient |
+| `EMAIL_UNSUBSCRIBE_SECRET` | No | HMAC secret (falls back to `NEXTAUTH_SECRET` / `RESEND_API_KEY`) |
 
 ---
 
-## 9. File reference map
+## 10. File reference map
 
 ```
 src/
-├── config/
-│   └── emails/
-│       ├── base-layout.ts              # Shared HTML shell
-│       ├── index.ts                    # Barrel exports
-│       ├── password-reset.ts           # Reset template
-│       ├── verification.ts             # Verify + OTP template
-│       ├── welcome.ts                  # Welcome template
-│       ├── trial-ending.ts             # VIP trial nudge template
-│       └── feedback-acknowledgment.ts  # Feedback thank-you template
-├── utils/
-│   └── email.ts                        # Resend client + send*Email APIs
+├── config/emails/          # templates + index barrel
+├── utils/email.ts          # Resend + send* + sendEmailSafe
+├── services/email-preferences.ts
+├── types/email-preferences.ts
 ├── routes/
-│   ├── auth.ts                         # Verification + password reset triggers
-│   ├── user.ts                         # Feedback acknowledgment trigger
-│   └── payments.ts                     # Stripe trial_will_end → handleTrialWillEnd
-└── services/
-    └── subscription.ts                 # handleTrialWillEnd + trial email send
+│   ├── auth.ts             # security emails
+│   ├── user.ts             # welcome, delete, feedback, prefs API
+│   ├── email.ts            # public unsubscribe
+│   ├── payments.ts         # billing webhooks
+│   └── admin.ts            # POST /email/announcements
+├── services/subscription.ts  # trial ending
+└── cron/
+    ├── email-weekly-recommendations.ts
+    └── email-monthly-summary.ts
 ```
 
+Frontend (`twistloom-web`):
+
+- `DashboardAccountPreferencesClient.tsx`
+- `useEmailPreferences.ts` · `UsersApi` email methods
+- `app/[locale]/email/unsubscribe/page.tsx`
+
+Migration: `drizzle/0038_spooky_raider.sql` (`users.email_preferences`)
+
 ---
 
-## 10. Gaps & future work
+## 11. Gaps & future work
 
-| Item | Notes |
+| Item | Status |
 |------|--------|
-| ~~**Welcome email unwired**~~ | ✅ Wired on onboarding complete (`POST /api/user`) |
-| **Email preference model** | If product emails grow, add prefs without allowing disable of security/billing mail |
-| **Admin / internal alerts** | No “new feedback → team inbox” email yet; only user-facing ack |
-| **Locale / i18n** | Templates are English-only |
-| **Delivery webhooks** | Resend delivery/bounce handling not integrated |
-| **Stripe native emails** | Trial ending intentionally dual-channel (app + Stripe); document any other Stripe Dashboard emails (receipts, invoices) as out-of-band |
+| Resend bounce/complaint webhooks | Not built |
+| Email HTML locale (`en`/`id`) | Templates English-only |
+| Weekly cron ML ranking | v1 = trending public books |
+| Send log / idempotency table | Not built (rely on schedule) |
+| In-app notification prefs | Still local-only UI stub |
 
 ---
 
-*Last updated from `src/config/emails/` and `src/utils/email.ts` call sites. Update this doc when adding templates or wiring new triggers.*
+*Last updated: Jul 2026 — security, billing, prefs, engagement suite implemented.*

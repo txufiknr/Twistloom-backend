@@ -235,6 +235,16 @@ export const users = pgTable(
     // COPPA/GDPR: age confirmation timestamp
     ageConfirmedAt: timestamp("age_confirmed_at", { withTimezone: true }),
     tokenVersion: integer("token_version").notNull().default(0), // Session version for JWT revocation
+    /**
+     * Optional product/engagement email prefs (weekly, monthly, announcements).
+     * Security & billing mail never consult this field. Null until onboarding
+     * applies defaults — see DEFAULT_EMAIL_PREFERENCES.
+     */
+    emailPreferences: jsonb("email_preferences").$type<{
+      weeklyRecommendations: boolean;
+      monthlyActivitySummary: boolean;
+      productAnnouncements: boolean;
+    }>(),
     lastActive,
     createdAt,
     updatedAt,
@@ -2100,22 +2110,28 @@ export const bookTestimonials = pgTable(
   {
     id: id(),
     userId: userId().references(() => users.userId, { onDelete: "cascade" }),
-    bookId: bookId("cascade"), // Delete if book is deleted
-    rating: integer("rating"), // Optional 1-5 star rating
-    content: text("content").notNull(), // Testimonial body
+    bookId: bookId("cascade"),
+    rating: integer("rating"),
+    content: text("content").notNull(),
     status: text("status").$type<'pending' | 'approved' | 'rejected'>().default('pending').notNull(),
-    featured: boolean("featured").default(false).notNull(), // Elevated to the public homepage wall by an admin
+    featured: boolean("featured").default(false).notNull(),
     createdAt,
     updatedAt,
   },
   (t) => [
-    // Index for admin curation queue
     index("book_testimonials_status_idx").on(t.status),
-    // Index for the public homepage wall (only featured testimonials are shown)
     index("book_testimonials_featured_idx").on(t.featured, t.createdAt.desc()),
-    // Index for per-book testimonial listings
     index("book_testimonials_book_idx").on(t.bookId, t.status),
-    // Index for "my testimonials" lookups
     index("book_testimonials_user_idx").on(t.userId, t.createdAt.desc()),
   ]
+);
+
+export const adminUsers = pgTable(
+  "admin_users",
+  {
+    userId: text("user_id").primaryKey(),
+    email: text("email"),
+    invitedBy: text("invited_by"),
+    createdAt,
+  }
 );

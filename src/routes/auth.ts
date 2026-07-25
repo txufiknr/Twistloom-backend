@@ -36,7 +36,14 @@ import { hashPassword, verifyPassword } from '../utils/password.js';
 import { validatePasswordStrength } from '../utils/password-validation.js';
 import { checkAccountLockout, recordFailedLogin, resetFailedLoginAttempts } from '../utils/account-lockout.js';
 import { createPasswordResetToken, resetPassword, verifyPasswordResetToken, revokePasswordResetTokens } from '../utils/password-reset.js';
-import { sendPasswordResetEmail, sendVerificationEmail } from '../utils/email.js';
+import {
+  sendPasswordResetEmail,
+  sendVerificationEmail,
+  sendPasswordChangedEmail,
+  sendEmailChangedAlertEmail,
+  sendEmailSafe,
+  formatSecurityDetailHtml,
+} from '../utils/email.js';
 import { createEmailVerificationToken, verifyEmailToken, isEmailVerified } from '../utils/email-verification.js';
 import { cApiError, cRateLimitError, cUnauthorizedError, cValidationError } from '../utils/error.js';
 import { CURRENT_TERMS_VERSION } from '../config/legal.js';
@@ -480,6 +487,23 @@ router.post('/reset-password', async (c) => {
     const success = await resetPassword(token, password);
     if (!success) {
       return cValidationError(c, 'Failed to reset password');
+    }
+
+    // Security notification (always on) — non-blocking
+    const [userRow] = await dbRead
+      .select({ email: users.email, name: users.name })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1);
+    if (userRow?.email) {
+      const detailHtml = formatSecurityDetailHtml({
+        at: new Date(),
+        ip,
+        userAgent: c.req.header('user-agent'),
+      });
+      sendEmailSafe('POST /auth/reset-password', () =>
+        sendPasswordChangedEmail(userRow.email, userRow.name || 'there', detailHtml),
+      );
     }
 
     return c.json({ message: 'Password reset successfully' });
@@ -1101,6 +1125,13 @@ router.put('/email', requireAuth, async (c) => {
       return c.json({ error: 'Email already in use' }, 409);
     }
 
+    const [currentUser] = await dbRead
+      .select({ email: users.email, name: users.name })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1);
+
+    const oldEmail = currentUser?.email;
     const now = new Date();
     await dbWrite
       .update(users)
@@ -1111,6 +1142,23 @@ router.put('/email', requireAuth, async (c) => {
       .update(userAuth)
       .set({ emailVerified: null, updatedAt: now })
       .where(eq(userAuth.userId, userId));
+
+    // Security: alert old address + verify new address (always on, non-blocking)
+    const detailHtml = formatSecurityDetailHtml({
+      at: now,
+      ip,
+      userAgent: c.req.header('user-agent'),
+    });
+    if (oldEmail && oldEmail !== sanitizedEmail) {
+      sendEmailSafe('PUT /auth/email (old)', () =>
+        sendEmailChangedAlertEmail(oldEmail, currentUser?.name || 'there', sanitizedEmail, detailHtml),
+      );
+    }
+    sendEmailSafe('PUT /auth/email (verify)', async () => {
+      const verificationToken = await createEmailVerificationToken(userId);
+      const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`;
+      return sendVerificationEmail(sanitizedEmail, verificationUrl, verificationToken);
+    });
 
     return c.json({ message: 'Email updated successfully' });
   } catch (error) {
@@ -1193,6 +1241,23 @@ router.put('/password', requireAuth, async (c) => {
       .update(userAuth)
       .set({ failedLoginAttempts: 0, lockUntil: null, updatedAt: now })
       .where(eq(userAuth.userId, userId));
+
+    // Security notification (always on) — non-blocking
+    const [userRow] = await dbRead
+      .select({ email: users.email, name: users.name })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1);
+    if (userRow?.email) {
+      const detailHtml = formatSecurityDetailHtml({
+        at: now,
+        ip,
+        userAgent: c.req.header('user-agent'),
+      });
+      sendEmailSafe('PUT /auth/password', () =>
+        sendPasswordChangedEmail(userRow.email, userRow.name || 'there', detailHtml),
+      );
+    }
 
     return c.json({ message: 'Password updated successfully' });
   } catch (error) {

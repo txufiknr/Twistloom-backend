@@ -35,12 +35,16 @@
     "dev:cron:translate": "tsx --env-file=.env.local src/cron/auto-translate-indonesian.ts",
     "dev:cron:vip-expiration": "tsx --env-file=.env.local src/cron/vip-expiration.ts",
     "dev:cron:cleanup": "tsx --env-file=.env.local src/cron/cleanup.ts",
+    "dev:cron:email-weekly": "tsx --env-file=.env.local src/cron/email-weekly-recommendations.ts",
+    "dev:cron:email-monthly": "tsx --env-file=.env.local src/cron/email-monthly-summary.ts",
     "start:cron:trending": "node dist/cron/update-trending-scores.js",
     "start:cron:generate": "node dist/cron/generate-originals.js",
     "start:cron:candidate": "node dist/cron/retry-pending-generations.js",
     "start:cron:translate": "node dist/cron/auto-translate-indonesian.js",
     "start:cron:vip-expiration": "node dist/cron/vip-expiration.js",
-    "start:cron:cleanup": "node dist/cron/cleanup.js"
+    "start:cron:cleanup": "node dist/cron/cleanup.js",
+    "start:cron:email-weekly": "node dist/cron/email-weekly-recommendations.js",
+    "start:cron:email-monthly": "node dist/cron/email-monthly-summary.js"
   },
   "author": {
     "name": "Taufik Nur Rahmanda",

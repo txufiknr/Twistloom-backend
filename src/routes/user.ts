@@ -297,10 +297,13 @@ router.get('/export', requireAuth, async (c: Context<AppEnv>) => {
  * @header X-App-Version - Application version (for analytics)
  * @header X-Platform - Client platform (android/ios)
  * 
- * @body {Object} Onboarding data
+ * @body {Object} Onboarding data (all optional; empty body still completes onboarding)
  * @body {string} [name] - User's display name
+ * @body {string} [username] - Desired username
+ * @body {string} [imageUrl] - Profile image URL or base64 data
  * @body {string} [gender] - User's gender (e.g., "male", "female", "unknown")
- * @body {string} [referrer] - Referrer username or user ID
+ * @body {string} [source] - How the user found Twistloom
+ * @body {string} [referrer] - Referrer username
  * 
  * @returns {Object} Onboarding completion response
  * @returns {string} message - Confirmation message
@@ -312,7 +315,7 @@ router.get('/export', requireAuth, async (c: Context<AppEnv>) => {
  * POST /user
  * Body: {
  *   "name": "John Doe",
- *   "gender": "male"
+ *   "source": "friend"
  * }
  * 
  * // Response
@@ -325,7 +328,7 @@ router.get('/export', requireAuth, async (c: Context<AppEnv>) => {
 router.post('/', requireAuth, async (c: Context<AppEnv>) => {
   try {
     const userId = c.get("userId")!;
-    const body = c.get("body");
+    const body = c.get("body") ?? {};
 
     const [current] = await dbRead
       .select({ isNewUser: users.isNewUser, username: users.username })
@@ -334,28 +337,51 @@ router.post('/', requireAuth, async (c: Context<AppEnv>) => {
       .limit(1);
 
     if (!current) return cNotFoundError(c, 'User not found');
-    if (!current.isNewUser) return cValidationError(c, 'Onboarding already completed');
 
-    // 1. Sanitize payload via SSOT
+    // Idempotent: already finished — success so fire-and-forget clients don't error
+    if (!current.isNewUser) {
+      return c.json({
+        message: 'Onboarding already completed',
+        isNewUser: false,
+        username: current.username,
+      });
+    }
+
+    // 1. Sanitize payload via SSOT (all fields optional; empty body is valid)
     const updateData = await sanitizeProfileUpdate(userId, body, c);
     if (!updateData) return;
 
-    // 2. Append route-specific data
+    // 2. Avatar base64 → ImageKit (same path as PUT /user)
+    if (updateData.imageUrl?.startsWith('data:')) {
+      const uploadResult = await uploadUserImage(updateData.imageUrl, userId);
+      if (!uploadResult?.url) {
+        console.warn('[POST /api/user] ⚠️ Failed to upload profile image');
+        return cApiError(c, 'Failed to upload profile image', new Error('ImageKit upload returned no URL'));
+      }
+      await dbWrite.insert(uploadedImages).values({
+        imageId: uploadResult.fileId!,
+        imageUrl: uploadResult.url!,
+        type: 'user',
+        userId,
+      });
+      // Trigger sets users.image_url
+      delete updateData.imageUrl;
+    }
+
+    // 3. Complete onboarding
     updateData.isNewUser = false;
     updateData.updatedAt = new Date();
 
-    // 2.5 Handle source (always valid during onboarding since isNewUser is true)
     if (body.source && typeof body.source === 'string' && sources.includes(body.source as Source)) {
       updateData.source = body.source;
     }
 
-    // 3. Apply update
     await dbWrite
       .update(users)
       .set(updateData)
       .where(eq(users.userId, userId));
 
-    // 4. Handle Referrer
+    // 4. Referrer (optional; no-ops if already set)
     if (body.referrer && typeof body.referrer === 'string') {
       await setReferrerForNewUser(c, userId, body.referrer, { handleResponse: false });
     }
@@ -367,25 +393,21 @@ router.post('/', requireAuth, async (c: Context<AppEnv>) => {
       { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } }
     );
 
-    // Welcome email once when onboarding completes (isNewUser true → false). SSOT: no extra column.
-    try {
-      const [userRow] = await dbRead
-        .select({ email: users.email, username: users.username })
-        .from(users)
-        .where(eq(users.userId, userId))
-        .limit(1);
+    // Default engagement prefs (opt-out) + welcome email once (isNewUser SSOT)
+    const { ensureDefaultEmailPreferences } = await import('../services/email-preferences.js');
+    await ensureDefaultEmailPreferences(userId);
 
-      if (userRow?.email) {
-        const { sendWelcomeEmail } = await import('../utils/email.js');
-        const username =
-          (updateData.username as string | undefined) ?? userRow.username ?? current.username;
-        const sent = await sendWelcomeEmail(userRow.email, username);
-        if (sent) {
-          console.log(`[POST /api/user] 📧 Sent welcome email to user ${userId}`);
-        }
-      }
-    } catch (emailError) {
-      console.error(`[POST /api/user] ❌ Failed to send welcome email to user ${userId}:`, getErrorMessage(emailError));
+    const [userRow] = await dbRead
+      .select({ email: users.email, username: users.username })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1);
+
+    if (userRow?.email) {
+      const { sendWelcomeEmail, sendEmailSafe } = await import('../utils/email.js');
+      const username =
+        (updateData.username as string | undefined) ?? userRow.username ?? current.username;
+      sendEmailSafe('POST /api/user welcome', () => sendWelcomeEmail(userRow.email, username));
     }
 
     return c.json({
@@ -417,7 +439,9 @@ router.post('/', requireAuth, async (c: Context<AppEnv>) => {
  * @body {string} [bio] - User's bio/description
  * @body {string} [gender] - User's gender
  * @body {string} [imageUrl] - User's profile image URL or base64 data
- * @body {string} [referrer] - Referrer username (only applies if isNewUser and no referrer set)
+ *
+ * Note: `referrer` and onboarding `source` belong on POST /user (complete onboarding),
+ * not here. PUT never flips isNewUser.
  * 
  * @returns {Object} Update response
  * @returns {boolean} success - Operation status
@@ -449,7 +473,7 @@ router.post('/', requireAuth, async (c: Context<AppEnv>) => {
 router.put('/', requireAuth, async (c: Context<AppEnv>) => {
   try {
     const userId = c.get("userId")!;
-    const body = c.get("body");
+    const body = c.get("body") ?? {};
 
     // 1. Sanitize payload via SSOT
     const updateData = await sanitizeProfileUpdate(userId, body, c);
@@ -482,23 +506,9 @@ router.put('/', requireAuth, async (c: Context<AppEnv>) => {
       delete updateData.imageUrl;
     }
 
-    // 3. Append route-specific data
+    // 3. Apply partial profile update (does not complete onboarding)
     updateData.updatedAt = new Date();
 
-    // 3.5 Handle source (only applicable when isNewUser is true)
-    if (body.source && typeof body.source === 'string' && sources.includes(body.source as Source)) {
-      const [currentUser] = await dbRead
-        .select({ isNewUser: users.isNewUser })
-        .from(users)
-        .where(eq(users.userId, userId))
-        .limit(1);
-
-      if (currentUser?.isNewUser) {
-        updateData.source = body.source;
-      }
-    }
-
-    // 4. Apply update and return updated row
     const [user] = await dbWrite
       .update(users)
       .set(updateData)
@@ -508,23 +518,16 @@ router.put('/', requireAuth, async (c: Context<AppEnv>) => {
     await invalidateUserProfileCache(userId);
     await updateUserLastActivity(userId);
 
-    // 5. Handle Referrer (only if isNewUser and referrerId is empty — enforced by setReferrerForNewUser)
-    let referralApplied = false;
-    if (body.referrer && typeof body.referrer === 'string') {
-      referralApplied = await setReferrerForNewUser(c, userId, body.referrer, { handleResponse: false });
-    }
-
     // Rename userId → id for frontend consistency
     // Normalize: move tier into subscription sub-object (consistent with GET /api/user)
     // Expose hasReferrer (boolean SSOT); never leak raw referrerId UUID to clients
-    // referralApplied covers the case where setReferrer ran after .returning()
     const { userId: id, tier: putTier, referrerId, ...putRest } = user;
     return c.json({
       success: true,
       user: {
         id,
         ...putRest,
-        hasReferrer: !!referrerId || referralApplied,
+        hasReferrer: !!referrerId,
         subscription: { tier: putTier },
       },
     });
@@ -749,12 +752,26 @@ router.delete("/", requireAuth, async (c: Context<AppEnv>) => {
   try {
     const userId = c.get("userId")!;
 
+    // Capture contact info before cascade delete for confirmation email
+    const [userRow] = await dbRead
+      .select({ email: users.email, name: users.name })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1);
+
     // Delete user - cascade delete will handle all related tables automatically
     // Tables with cascade delete on userId:
     // - userAuth, userPageProgress
     // - userFollows, userCompletedBooks, userActivityLogs, transactions
     // - userNotifications, userCheckins, userLikes, userFavorites, userComments, userSessions
     await dbWrite.delete(users).where(eq(users.userId, userId));
+
+    if (userRow?.email) {
+      const { sendAccountDeletedEmail, sendEmailSafe } = await import('../utils/email.js');
+      sendEmailSafe('DELETE /user', () =>
+        sendAccountDeletedEmail(userRow.email, userRow.name || 'there'),
+      );
+    }
 
     // Invalidate all relevant user cache entries
     await Promise.all([
@@ -2507,23 +2524,36 @@ router.post("/feedbacks", requireAuth, async (c: Context<AppEnv>) => {
       .values(feedbackData)
       .returning();
 
-    // Non-blocking: thank-you email must not fail the feedback submission
-    try {
-      const [userRow] = await dbRead
-        .select({ email: users.email, name: users.name })
-        .from(users)
-        .where(eq(users.userId, userId))
-        .limit(1);
+    // Non-blocking: user ack + optional internal ops alert
+    const [userRow] = await dbRead
+      .select({ email: users.email, name: users.name, username: users.username })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1);
 
-      if (userRow?.email) {
-        const { sendFeedbackAcknowledgmentEmail } = await import('../utils/email.js');
-        const sent = await sendFeedbackAcknowledgmentEmail(userRow.email, userRow.name || 'there');
-        if (sent) {
-          console.log(`[POST /user/feedbacks] 📧 Sent acknowledgment email to user ${userId}`);
-        }
+    if (userRow?.email) {
+      const {
+        sendFeedbackAcknowledgmentEmail,
+        sendFeedbackInternalEmail,
+        sendEmailSafe,
+      } = await import('../utils/email.js');
+      sendEmailSafe('POST /user/feedbacks ack', () =>
+        sendFeedbackAcknowledgmentEmail(userRow.email, userRow.name || 'there'),
+      );
+
+      const feedbackInbox = process.env.FEEDBACK_INBOX;
+      if (feedbackInbox) {
+        sendEmailSafe('POST /user/feedbacks internal', () =>
+          sendFeedbackInternalEmail(feedbackInbox, {
+            category: category as string,
+            message: message.trim(),
+            userId,
+            username: userRow.username,
+            email: userRow.email,
+            imageUrl: imageUrlResult ?? null,
+          }),
+        );
       }
-    } catch (emailError) {
-      console.error(`[POST /user/feedbacks] ❌ Failed to send acknowledgment email to user ${userId}:`, getErrorMessage(emailError));
     }
 
     c.status(201);
@@ -2531,6 +2561,72 @@ router.post("/feedbacks", requireAuth, async (c: Context<AppEnv>) => {
   } catch (error) {
     console.error('[POST /user/feedbacks] ❌', error);
     return cApiError(c, 'Failed to submit feedback', error);
+  }
+});
+
+// ===== EMAIL PREFERENCES =====
+
+/**
+ * GET /user/email-preferences
+ *
+ * Returns optional product/engagement email flags. Security and billing mail
+ * are always on and are not included in this payload.
+ */
+router.get('/email-preferences', requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get('userId')!;
+    const {
+      getEmailPreferences,
+      ensureDefaultEmailPreferences,
+    } = await import('../services/email-preferences.js');
+
+    let prefs = await getEmailPreferences(userId);
+    if (!prefs) return cNotFoundError(c, 'User not found');
+
+    // Lazy-apply defaults for users onboarded before prefs existed
+    if (prefs) {
+      await ensureDefaultEmailPreferences(userId);
+      prefs = (await getEmailPreferences(userId)) ?? prefs;
+    }
+
+    return c.json({ preferences: prefs });
+  } catch (error) {
+    console.error('[GET /user/email-preferences] ❌', error);
+    return cApiError(c, 'Failed to fetch email preferences', error);
+  }
+});
+
+/**
+ * PATCH /user/email-preferences
+ *
+ * Partial update of engagement email flags. Unknown keys rejected.
+ */
+router.patch('/email-preferences', requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get('userId')!;
+    const body = c.get('body');
+    const {
+      sanitizeEmailPreferencesUpdate,
+      updateEmailPreferences,
+      ensureDefaultEmailPreferences,
+    } = await import('../services/email-preferences.js');
+
+    const patch = sanitizeEmailPreferencesUpdate(body);
+    if (!patch) {
+      return cValidationError(
+        c,
+        'Provide at least one boolean flag: weeklyRecommendations, monthlyActivitySummary, productAnnouncements',
+      );
+    }
+
+    await ensureDefaultEmailPreferences(userId);
+    const prefs = await updateEmailPreferences(userId, patch);
+    if (!prefs) return cNotFoundError(c, 'User not found');
+
+    return c.json({ preferences: prefs });
+  } catch (error) {
+    console.error('[PATCH /user/email-preferences] ❌', error);
+    return cApiError(c, 'Failed to update email preferences', error);
   }
 });
 

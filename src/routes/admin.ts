@@ -20,18 +20,15 @@
  */
 
 import { Hono } from "hono";
-import { createMiddleware } from "hono/factory";
-import { HTTPException } from "hono/http-exception";
-import { eq, desc, and, inArray, sql } from "drizzle-orm";
+import { eq, desc, and, inArray, sql, gte, lte, isNotNull } from "drizzle-orm";
 import { requireAuth } from "../middleware/nextauth.js";
+import { requireAdmin, requireSuperAdmin } from "../middleware/admin-auth.js";
 import { cApiError, cValidationError, cNotFoundError } from "../utils/error.js";
-// import { getUserBookSnapshots, getLatestMajorCheckpoint, deleteAllSnapshots, getSnapshotStatistics } from "../services/snapshots.bak.js";
 import { reconstructStoryState } from "../utils/branch-traversal.js";
 import { getBookFromDB, getPageFromDB } from "../services/book.js";
-// import { getStateSnapshot } from "../services/snapshots.bak.js";
 import { getStoryState } from "../services/story.js";
 import { dbRead, dbWrite } from "../db/client.js";
-import { socialMentions } from "../db/schema.js";
+import { socialMentions, bookTestimonials, adminUsers, usage, users } from "../db/schema.js";
 import type { AppEnv } from "../hono/env.js";
 import {
   extractAndResolveTwistloomLink,
@@ -39,22 +36,6 @@ import {
   resolveBookByIdForAdmin,
   resolvePublicBookBySlug,
 } from "../services/social/extract-twistloom-link.js";
-
-/**
- * Middleware guard that restricts access to the system admin user only.
- *
- * The system admin is identified by `process.env.SYSTEM_USER_ID`. Requests
- * from any other authenticated user are rejected with 403 Forbidden. This is
- * a defense-in-depth layer on top of `requireAuth` for privileged operations
- * such as social mention curation.
- */
-const requireSystemAdmin = createMiddleware<AppEnv>(async (c, next) => {
-  const systemUserId = process.env.SYSTEM_USER_ID;
-  if (!systemUserId || c.get("userId") !== systemUserId) {
-    throw new HTTPException(403, { message: "Forbidden: admin access required" });
-  }
-  await next();
-});
 
 const router = new Hono<AppEnv>();
 
@@ -225,7 +206,7 @@ function isSocialMentionStatus(value: unknown): value is "pending" | "approved" 
  */
 router.get("/social-mentions",
   requireAuth,
-  requireSystemAdmin,
+  requireAdmin,
   async (c) => {
     try {
       const { status, platform, linked, limit = "50", offset = "0" } = c.req.query();
@@ -280,7 +261,7 @@ router.get("/social-mentions",
  */
 router.get("/social-mentions/:id",
   requireAuth,
-  requireSystemAdmin,
+  requireAdmin,
   async (c) => {
     try {
       const { id } = c.req.param();
@@ -323,7 +304,7 @@ router.get("/social-mentions/:id",
  */
 router.patch("/social-mentions/:id",
   requireAuth,
-  requireSystemAdmin,
+  requireAdmin,
   async (c) => {
     try {
       const { id } = c.req.param();
@@ -450,7 +431,7 @@ router.patch("/social-mentions/:id",
  */
 router.post("/social-mentions",
   requireAuth,
-  requireSystemAdmin,
+  requireAdmin,
   async (c) => {
     try {
       const {
@@ -549,7 +530,7 @@ router.post("/social-mentions",
  */
 router.delete("/social-mentions/:id",
   requireAuth,
-  requireSystemAdmin,
+  requireAdmin,
   async (c) => {
     try {
       const { id } = c.req.param();
@@ -583,7 +564,7 @@ router.delete("/social-mentions/:id",
  */
 router.post("/social-mentions/bulk-status",
   requireAuth,
-  requireSystemAdmin,
+  requireAdmin,
   async (c) => {
     try {
       const { ids, status } = c.get("body");
@@ -684,5 +665,355 @@ router.post("/social-mentions/bulk-status",
 //     res.status(500).json({ error: "Failed to delete snapshots" });
 //   }
 // });
+
+// ============================================================================
+// BOOK TESTIMONIALS ADMIN ROUTES
+// ============================================================================
+
+/**
+ * GET /admin/testimonials
+ *
+ * Lists all book testimonials for the admin curation queue. Supports filtering
+ * by status and pagination.
+ */
+router.get("/testimonials",
+  requireAuth,
+  requireAdmin,
+  async (c) => {
+    try {
+      const { status, limit = "50", offset = "0" } = c.req.query();
+      const limitNum = Math.min(Math.max(Number(limit) || 50, 1), 200);
+      const offsetNum = Math.max(Number(offset) || 0, 0);
+
+      const conditions = [];
+      if (status === "pending" || status === "approved" || status === "rejected") {
+        conditions.push(eq(bookTestimonials.status, status));
+      }
+
+      const rows = await dbRead
+        .select()
+        .from(bookTestimonials)
+        .where(conditions.length > 0 ? and(...conditions) : undefined)
+        .orderBy(desc(bookTestimonials.createdAt))
+        .limit(limitNum)
+        .offset(offsetNum);
+
+      const [{ count }] = await dbRead
+        .select({ count: sql<number>`count(*)` })
+        .from(bookTestimonials)
+        .where(conditions.length > 0 ? and(...conditions) : undefined);
+
+      return c.json({ total: Number(count), limit: limitNum, offset: offsetNum, testimonials: rows });
+    } catch (error) {
+      return cApiError(c, "Failed to list testimonials", error);
+    }
+  }
+);
+
+/**
+ * PATCH /admin/testimonials/:id
+ *
+ * Updates moderation fields of a book testimonial (status, featured).
+ */
+router.patch("/testimonials/:id",
+  requireAuth,
+  requireAdmin,
+  async (c) => {
+    try {
+      const { id } = c.req.param();
+      const { status, featured } = c.get("body");
+
+      if (status !== undefined && status !== "pending" && status !== "approved" && status !== "rejected") {
+        return cValidationError(c, "Invalid status. Must be 'pending', 'approved', or 'rejected'");
+      }
+
+      const [existing] = await dbRead
+        .select({ id: bookTestimonials.id })
+        .from(bookTestimonials)
+        .where(eq(bookTestimonials.id, id))
+        .limit(1);
+
+      if (!existing) {
+        return cNotFoundError(c, "Testimonial not found");
+      }
+
+      const updates: Partial<typeof bookTestimonials.$inferInsert> = {};
+      if (status !== undefined) updates.status = status;
+      if (typeof featured === "boolean") updates.featured = featured;
+
+      const [updated] = await dbWrite
+        .update(bookTestimonials)
+        .set(updates)
+        .where(eq(bookTestimonials.id, id))
+        .returning();
+
+      return c.json(updated);
+    } catch (error) {
+      return cApiError(c, "Failed to update testimonial", error);
+    }
+  }
+);
+
+/**
+ * POST /admin/testimonials/bulk-status
+ *
+ * Bulk updates the status of multiple testimonials.
+ */
+router.post("/testimonials/bulk-status",
+  requireAuth,
+  requireAdmin,
+  async (c) => {
+    try {
+      const { ids, status } = c.get("body");
+
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return cValidationError(c, "ids must be a non-empty array");
+      }
+      if (status !== "pending" && status !== "approved" && status !== "rejected") {
+        return cValidationError(c, "Invalid status. Must be 'pending', 'approved', or 'rejected'");
+      }
+
+      const validIds = ids.filter((value): value is string => typeof value === "string" && value.length > 0);
+
+      const result = await dbWrite
+        .update(bookTestimonials)
+        .set({ status })
+        .where(inArray(bookTestimonials.id, validIds))
+        .returning({ id: bookTestimonials.id });
+
+      return c.json({ success: true, updated: result.length });
+    } catch (error) {
+      return cApiError(c, "Failed to bulk update testimonials", error);
+    }
+  }
+);
+
+// ============================================================================
+// ADMIN USER MANAGEMENT ROUTES (P1.5)
+// ============================================================================
+
+/**
+ * GET /admin/admins
+ *
+ * Lists all admin users. Super admin only.
+ */
+router.get("/admins",
+  requireAuth,
+  requireSuperAdmin,
+  async (c) => {
+    try {
+      const rows = await dbRead
+        .select()
+        .from(adminUsers)
+        .orderBy(desc(adminUsers.createdAt));
+
+      return c.json({ admins: rows });
+    } catch (error) {
+      return cApiError(c, "Failed to list admins", error);
+    }
+  }
+);
+
+/**
+ * POST /admin/admins
+ *
+ * Invites a new admin user by userId or email. Super admin only.
+ */
+router.post("/admins",
+  requireAuth,
+  requireSuperAdmin,
+  async (c) => {
+    try {
+      const { userId, email } = c.get("body");
+
+      if (!userId && !email) {
+        return cValidationError(c, "Either userId or email is required");
+      }
+
+      const [existing] = await dbRead
+        .select({ userId: adminUsers.userId })
+        .from(adminUsers)
+        .where(userId ? eq(adminUsers.userId, userId) : eq(adminUsers.email, email))
+        .limit(1);
+
+      if (existing) {
+        return cValidationError(c, "User is already an admin");
+      }
+
+      const invitedBy = c.get("userId");
+
+      const [created] = await dbWrite
+        .insert(adminUsers)
+        .values({ userId, email, invitedBy })
+        .returning();
+
+      return c.json(created, 201);
+    } catch (error) {
+      return cApiError(c, "Failed to add admin", error);
+    }
+  }
+);
+
+/**
+ * DELETE /admin/admins/:userId
+ *
+ * Removes an admin user. Super admin only.
+ */
+router.delete("/admins/:userId",
+  requireAuth,
+  requireSuperAdmin,
+  async (c) => {
+    try {
+      const { userId } = c.req.param();
+
+      const [deleted] = await dbWrite
+        .delete(adminUsers)
+        .where(eq(adminUsers.userId, userId))
+        .returning({ userId: adminUsers.userId });
+
+      if (!deleted) {
+        return cNotFoundError(c, "Admin not found");
+      }
+
+      return c.json({ success: true, userId: deleted.userId });
+    } catch (error) {
+      return cApiError(c, "Failed to remove admin", error);
+    }
+  }
+);
+
+// ============================================================================
+// AI USAGE CHART ROUTE (P5)
+// ============================================================================
+
+/**
+ * GET /admin/usage/chart
+ *
+ * Returns aggregated AI usage data for charting. Supports date range, provider
+ * filter, and granularity (data is stored per-day; week granularity is
+ * computed client-side).
+ *
+ * @param from - Start date (ISO string, default: 30 days ago)
+ * @param to - End date (ISO string, default: today)
+ * @param provider - Optional provider filter
+ * @returns Array of daily usage records
+ */
+router.get("/usage/chart",
+  requireAuth,
+  requireAdmin,
+  async (c) => {
+    try {
+      const { from, to, provider } = c.req.query();
+
+      const now = new Date();
+      const fromDate = from ? new Date(from) : new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      const toDate = to ? new Date(to) : now;
+
+      const conditions = [
+        gte(usage.date, fromDate.toISOString().split("T")[0]),
+        lte(usage.date, toDate.toISOString().split("T")[0]),
+      ];
+      if (typeof provider === "string" && provider.length > 0) {
+        conditions.push(eq(usage.provider, provider as (typeof usage.$inferSelect)["provider"]));
+      }
+
+      const rows = await dbRead
+        .select()
+        .from(usage)
+        .where(and(...conditions))
+        .orderBy(usage.date);
+
+      return c.json({ from: fromDate.toISOString(), to: toDate.toISOString(), records: rows });
+    } catch (error) {
+      return cApiError(c, "Failed to fetch usage chart data", error);
+    }
+  }
+);
+
+// ============================================================================
+// EMAIL ANNOUNCEMENTS (super-admin)
+// ============================================================================
+
+/**
+ * POST /admin/email/announcements
+ *
+ * Sends a product announcement to users with productAnnouncements=true.
+ * Super-admin only. Body: { title, bodyHtml, cta?: { url, text }, dryRun?: boolean }
+ */
+router.post(
+  "/email/announcements",
+  requireAuth,
+  requireSuperAdmin,
+  async (c) => {
+    try {
+      const body = c.get("body") as {
+        title?: string;
+        bodyHtml?: string;
+        cta?: { url: string; text: string };
+        dryRun?: boolean;
+      };
+
+      if (!body?.title || typeof body.title !== "string" || !body.title.trim()) {
+        return cValidationError(c, "title is required");
+      }
+      if (!body?.bodyHtml || typeof body.bodyHtml !== "string" || !body.bodyHtml.trim()) {
+        return cValidationError(c, "bodyHtml is required");
+      }
+
+      const { normalizeEmailPreferences } = await import("../services/email-preferences.js");
+      const { sendAnnouncementEmail } = await import("../utils/email.js");
+
+      const rows = await dbRead
+        .select({
+          userId: users.userId,
+          email: users.email,
+          emailPreferences: users.emailPreferences,
+          isNewUser: users.isNewUser,
+        })
+        .from(users)
+        .where(and(eq(users.isNewUser, false), isNotNull(users.email)));
+
+      const recipients = rows.filter((r) => {
+        const prefs = normalizeEmailPreferences(r.emailPreferences);
+        return prefs.productAnnouncements && !!r.email;
+      });
+
+      if (body.dryRun) {
+        return c.json({
+          dryRun: true,
+          recipientCount: recipients.length,
+          title: body.title.trim(),
+        });
+      }
+
+      let sent = 0;
+      let failed = 0;
+      for (const r of recipients) {
+        const ok = await sendAnnouncementEmail(
+          r.email,
+          body.title.trim(),
+          body.bodyHtml.trim(),
+          body.cta,
+        );
+        if (ok) sent++;
+        else failed++;
+      }
+
+      console.log(
+        `[admin] 📢 Announcement "${body.title}" sent=${sent} failed=${failed} eligible=${recipients.length}`,
+      );
+
+      return c.json({
+        success: true,
+        title: body.title.trim(),
+        recipientCount: recipients.length,
+        sent,
+        failed,
+      });
+    } catch (error) {
+      return cApiError(c, "Failed to send announcement", error);
+    }
+  },
+);
 
 export default router;

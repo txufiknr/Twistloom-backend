@@ -249,6 +249,32 @@ async function handleSubscriptionDeleted(event: Stripe.Event) {
     providerEventId: event.id,
   });
   console.log(`[subscription] ❌ Canceled subscription ${subscription.id}`);
+
+  // Billing email (always on) — non-blocking
+  try {
+    const [row] = await dbRead
+      .select({
+        email: users.email,
+        name: users.name,
+        currentPeriodEnd: subscriptions.currentPeriodEnd,
+      })
+      .from(subscriptions)
+      .innerJoin(users, eq(subscriptions.userId, users.userId))
+      .where(eq(subscriptions.providerSubscriptionId, subscription.id))
+      .limit(1);
+    if (row?.email) {
+      const { sendSubscriptionCanceledEmail, sendEmailSafe } = await import("../utils/email.js");
+      sendEmailSafe("subscription.deleted", () =>
+        sendSubscriptionCanceledEmail(
+          row.email,
+          row.name || "there",
+          row.currentPeriodEnd ?? undefined,
+        ),
+      );
+    }
+  } catch (emailError) {
+    console.error("[subscription] ❌ Failed to send subscription-canceled email:", emailError);
+  }
 }
 
 /**
@@ -340,6 +366,27 @@ async function handleInvoicePaymentFailed(event: Stripe.Event) {
     status: 'past_due',
   });
   console.log(`[subscription] ❌ Payment failed for subscription ${subscriptionId}`);
+
+  // Billing email (always on) — non-blocking
+  try {
+    const [row] = await dbRead
+      .select({ email: users.email, name: users.name })
+      .from(subscriptions)
+      .innerJoin(users, eq(subscriptions.userId, users.userId))
+      .where(eq(subscriptions.providerSubscriptionId, subscriptionId))
+      .limit(1);
+    if (row?.email) {
+      const { sendPaymentFailedEmail, sendEmailSafe } = await import("../utils/email.js");
+      const portalUrl = process.env.FRONTEND_URL
+        ? `${process.env.FRONTEND_URL.replace(/\/$/, "")}/dashboard/account/subscription`
+        : undefined;
+      sendEmailSafe("invoice.payment_failed", () =>
+        sendPaymentFailedEmail(row.email, row.name || "there", portalUrl),
+      );
+    }
+  } catch (emailError) {
+    console.error("[subscription] ❌ Failed to send payment-failed email:", emailError);
+  }
 }
 
 /**
@@ -1029,6 +1076,8 @@ router.post("/stripe/webhook", async (c) => {
       const providerEventId = event.id;
       if (!providerPaymentId) return cValidationError(c, 'Missing payment intent');
 
+      const refundEmailMeta: { userId: string; credits: number }[] = [];
+
       try {
         await dbWrite.transaction(async (tx) => {
           const existingRefund = await tx.select().from(transactions).where(and(eq(transactions.gateway, PAYMENT_GATEWAY.stripe), eq(transactions.providerEventId, providerEventId))).limit(1);
@@ -1064,9 +1113,29 @@ router.post("/stripe/webhook", async (c) => {
               message: `${creditsToDeduct} credits have been deducted from your account due to a refund`,
               data: { creditsDeducted: creditsToDeduct, refundCents, refundAmount: refundCents / 100, originalPaymentId: providerPaymentId },
             });
+            refundEmailMeta.push({ userId: transaction.userId, credits: creditsToDeduct });
           }
           await tx.update(webhookDeliveries).set({ status: 'success', processedAt: new Date(), updatedAt: new Date() }).where(eq(webhookDeliveries.id, webhookDeliveryId!));
         });
+
+        const refundMeta = refundEmailMeta[0];
+        if (refundMeta) {
+          try {
+            const [u] = await dbRead
+              .select({ email: users.email, name: users.name })
+              .from(users)
+              .where(eq(users.userId, refundMeta.userId))
+              .limit(1);
+            if (u?.email) {
+              const { sendRefundProcessedEmail, sendEmailSafe } = await import("../utils/email.js");
+              sendEmailSafe("charge.refunded", () =>
+                sendRefundProcessedEmail(u.email, u.name || "there", refundMeta.credits),
+              );
+            }
+          } catch (emailError) {
+            console.error("[stripe] ❌ Failed to send refund email:", emailError);
+          }
+        }
       } catch (txError) {
         if (isUniqueViolation(txError)) {
           console.log(`[stripe] 🔄 Concurrent duplicate refund delivery detected via unique constraint: ${providerEventId}`);

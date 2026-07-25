@@ -36,7 +36,6 @@ import { addCredits } from "./credits.js";
 import { VIP_BENEFITS, VIP_TRIAL } from "../config/subscription.js";
 import type { SubscriptionStatus } from "../types/subscription.js";
 import { PAYMENT_GATEWAY, type PaymentGateway } from "../types/payment.js";
-import { getErrorMessage } from "../utils/error.js";
 
 export type { PaymentGateway };
 
@@ -542,18 +541,11 @@ export async function handleTrialWillEnd(providerSubscriptionId: string): Promis
 
   console.log(`[subscription] 🔔 Sent trial-ending-soon notification for user ${row.userId}`);
 
-  // Non-blocking: log and move on if the email fails. The in-app notification
-  // above already succeeded, and Stripe's own trial-ending email is still a
-  // fallback regardless of whether this one goes out.
-  try {
-    const { sendTrialEndingEmail } = await import("../utils/email.js");
-    if (row.trialEnd) {
-      const sent = await sendTrialEndingEmail(row.email, row.name, row.trialEnd);
-      if (sent) {
-        console.log(`[subscription] 📧 Sent trial-ending email to user ${row.userId}`);
-      }
-    }
-  } catch (error) {
-    console.error(`[subscription] ❌ Failed to send trial-ending email to user ${row.userId}:`, getErrorMessage(error));
+  // Non-blocking: in-app notification already succeeded; Stripe email is a fallback.
+  if (row.trialEnd && row.email) {
+    const { sendTrialEndingEmail, sendEmailSafe } = await import("../utils/email.js");
+    sendEmailSafe(`trial_will_end user=${row.userId}`, () =>
+      sendTrialEndingEmail(row.email, row.name || "there", row.trialEnd!),
+    );
   }
 }
