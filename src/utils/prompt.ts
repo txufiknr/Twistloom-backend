@@ -4682,6 +4682,10 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
     throw new Error('Failed to generate page: no result');
   }
 
+  if (response.result.text.length < MIN_CHARS_PER_PAGE) {
+    throw new Error(`Failed to generate page: text too short (${response.result.text.length} < ${MIN_CHARS_PER_PAGE} chars)`);
+  }
+
   // 5. Canon/consistency validation (roadmap 1.1) — after eval, before delta/persist
   let generatedStoryPage: StoryGeneration = {
     ...response.result,
@@ -4842,13 +4846,21 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
   // 5. Per-page state processing and persistence
   for (const [index, generatedStoryPageResult] of generatedStoryPages.entries()) {
     const isFirstAlternative = index === 0;
+    const fateLogContext = `${context}:fate-${index + 1}`;
+
+    // Skip undersized alternatives; outer retry covers full-batch failure when none remain
+    if (generatedStoryPageResult.text.length < MIN_CHARS_PER_PAGE) {
+      lastError = new Error(`Alternative fate ${index + 1} text too short (${generatedStoryPageResult.text.length} < ${MIN_CHARS_PER_PAGE} chars)`);
+      console.warn(`[${fateLogContext}] ⚠️ Skipping: text too short (${generatedStoryPageResult.text.length} < ${MIN_CHARS_PER_PAGE} chars)`);
+      continue;
+    }
+
     let generatedStoryPage: StoryGeneration = {
       ...generatedStoryPageResult,
       calendarDate: generatedStoryPageResult.calendarDate ?? actionedPage.calendarDate,
     };
 
     // Canon/consistency validation per multiverse candidate (roadmap 1.1)
-    const fateLogContext = `${context}:fate-${index + 1}`;
     const canonPass = await runCanonValidationPass({
       state: advancedState,
       generatedPage: generatedStoryPage,

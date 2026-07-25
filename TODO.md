@@ -1,7 +1,6 @@
 [ ] Page 1 selected actions masih none
 [ ] Stripe switch to live
-[ ] Implement belief
-[ ] Implement corruption curve
+[ ] Xendit switch to live
 [ ] Kalau real take action request & source action belum ada, page ga boleh dilihat
 [ ] publish book: create paid book (vip with 500 followers, 30 days-old account, email verified, has published 50 books) -> pay as much as the book price -> book promoted
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
@@ -42,14 +41,6 @@ also ensure `maxRetries` be customized too via config param (defaults to: AI_CHA
 
 2026-07-21T11:26:04.2343652Z [classifyGenAIError] ❓ Bad request (other): ApiError: {"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}
 2026-07-21T11:26:04.2353100Z     at async generateNextPage (file:///home/runner/work/Twistloom-backend/Twistloom-backend/dist/utils/prompt.js:4243:22) {
-
----
-
-[{"hint":{"text":"Checking the book will reveal a handwritten note on the back of the photo that matches my own handwriting.","type":"dark_discovery"},"text":"\"I don't. Let me see that book.\"","type":"dialogue"},{"hint":{"text":"Fleeing into the hallway will lead to the discovery that the corridors have shifted, and the archive door has vanished.","type":"survival"},"text":"Grab Clara's arm and run out of the archive.","type":"escape"}]
-
----
-
-factsHistory: { 'location.apartemen.is_haunted': [Array] },
 
 ---
 
