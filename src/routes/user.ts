@@ -2486,6 +2486,25 @@ router.post("/feedbacks", requireAuth, async (c: Context<AppEnv>) => {
       .values(feedbackData)
       .returning();
 
+    // Non-blocking: thank-you email must not fail the feedback submission
+    try {
+      const [userRow] = await dbRead
+        .select({ email: users.email, name: users.name })
+        .from(users)
+        .where(eq(users.userId, userId))
+        .limit(1);
+
+      if (userRow?.email) {
+        const { sendFeedbackAcknowledgmentEmail } = await import('../utils/email.js');
+        const sent = await sendFeedbackAcknowledgmentEmail(userRow.email, userRow.name || 'there');
+        if (sent) {
+          console.log(`[POST /user/feedbacks] 📧 Sent acknowledgment email to user ${userId}`);
+        }
+      }
+    } catch (emailError) {
+      console.error(`[POST /user/feedbacks] ❌ Failed to send acknowledgment email to user ${userId}:`, getErrorMessage(emailError));
+    }
+
     c.status(201);
     return c.json({ feedback });
   } catch (error) {

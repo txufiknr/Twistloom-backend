@@ -24,6 +24,7 @@ import {
   getVerificationTemplate,
   getWelcomeTemplate,
   getTrialEndingTemplate,
+  getFeedbackAcknowledgmentTemplate,
 } from '../config/emails/index.js';
 
 // ---------------------------------------------------------------------------
@@ -219,5 +220,29 @@ export async function sendTrialEndingEmail(email: string, name: string, trialEnd
     to: email,
     subject: `Your ${APP_NAME} VIP Trial Ends Soon`,
     html: getTrialEndingTemplate(APP_NAME, name, trialEndDate),
+  });
+}
+
+/**
+ * Sends a thank-you email after a user submits feedback.
+ *
+ * Confirms receipt, apologizes for any inconvenience, and reassures that the
+ * team will address the issue ASAP. Non-blocking by design: callers should
+ * wrap this in try/catch so a Resend failure never fails the feedback API.
+ *
+ * @param email - Recipient's email address
+ * @param name - User's display name for personalisation
+ * @returns `true` if the email was accepted by Resend, `false` otherwise
+ *
+ * @example
+ * ```typescript
+ * await sendFeedbackAcknowledgmentEmail('user@example.com', 'Jane');
+ * ```
+ */
+export async function sendFeedbackAcknowledgmentEmail(email: string, name: string): Promise<boolean> {
+  return sendEmail({
+    to: email,
+    subject: `We Received Your Feedback — ${APP_NAME}`,
+    html: getFeedbackAcknowledgmentTemplate(APP_NAME, name),
   });
 }

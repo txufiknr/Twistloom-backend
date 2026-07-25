@@ -16,3 +16,4 @@ export { getPasswordResetTemplate } from './password-reset.js';
 export { getVerificationTemplate } from './verification.js';
 export { getWelcomeTemplate } from './welcome.js';
 export { getTrialEndingTemplate } from './trial-ending.js';
+export { getFeedbackAcknowledgmentTemplate } from './feedback-acknowledgment.js';
