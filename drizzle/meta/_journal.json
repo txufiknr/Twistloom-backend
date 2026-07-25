@@ -253,6 +253,20 @@
       "when": 1784895295532,
       "tag": "0035_bitter_omega_sentinel",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1784947004611,
+      "tag": "0036_needy_mandroid",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1784947042026,
+      "tag": "0037_sweet_scarlet_witch",
+      "breakpoints": true
     }
   ]
 }
