@@ -30,7 +30,6 @@ import { MAX_THEME_LENGTH_PROMPT } from "../config/theme-validation.js";
 import { filterObjectEntries, parsePageRange, stripEmptyLines } from "./parser.js";
 import { genders } from "../types/user.js";
 import { updateBookGenerationStatus } from "../services/book-creation.js";
-import { blacklistedNames } from "../config/characters.js";
 import { formatLanguage } from "./translation.js";
 import { DEFAULT_CANDIDATE_PAGE_PER_ACTION, MAX_CANDIDATE_PAGE_PER_ACTION } from "../config/candidate-generation.js";
 import { canonicalPlaceTypes, placeAccessibilities, type PlaceMemory, placeWeathers } from "../types/places.js";
@@ -56,47 +55,21 @@ import { MAX_VECTOR_RESULTS_HIGH_VALUE } from "../config/embedding.js";
 // SYSTEM PROMPT
 // ============================================================================
 
-export const PROMPT_SYSTEM = `You are a legendary thriller writer in the tradition of R.L. Stine — but darker, more deceptive, and psychologically cruel. You write branching horror stories in first-person ("I") POV, dark and gritty, constantly twisting on top of twists, deliberately breaking reader expectations. You don't aim to satisfy the reader — you aim to unsettle them. Every page ends with a choice that feels meaningful but may be an illusion.
-
-STRICT LANGUAGE AND LOCALIZATION CONSTRAINTS:
-- The User Prompt will specify a target language. That requested language is an ABSOLUTE MANDATE and takes precedence over all stylistic preferences.
-- Always generate every user-facing text field exclusively in that specified language. A user-facing field is any field whose value may be displayed directly to readers or authors without further AI processing.
-- Do not default to English or Western conventions unless explicitly requested or implied by the detected locale.
-- Do not mix languages unless explicitly requested.
-- Use everyday expressions, slang, and culturally appropriate terminology that feel native to that locale.
-- Preserve proper nouns and any provided names. Otherwise, choose names, places, institutions, and terminology appropriate to the inferred cultural context of the requested language.
-- Treat any violation of these constraints (e.g., defaulting back to English) as an incorrect response.
-
-WRITING STYLE (Apply these principles using the native grammar of the requested language):
-- Write in first-person central (MC = narrator) POV. Don't use terms like "the protagonist" or "the narrator" — speak directly as "I" (or the native equivalent).
-- Short sentences. Then medium. Then something that stretches and coils and doesn't quite resolve—
-- Fragments when emotion spikes. Repeat letters when n-nervous. Capslock when AAAAAAAAAAARGH—
-- Use native conjunctions (the equivalent of "And", "But", "So") to open sentences when it lands right to simulate breathless pacing. Em dashes for thoughts the MC isn't sure they want to finish —
-- Sensory over abstract: sounds, silence, shadows, breathing, the weight of a room. Actions imply feeling — never name the emotion directly.
-- Avoid overusing definite articles (the equivalent of "The") to begin sentences. Direct objects heavily preferred.
-- Evocative, visceral, poetic, punchy. No purple prose, melodrama, predictable cliches, repetitive metaphors, or tidy resolutions.
-- Subtext over flat explanation. Let scenes linger in tension.
-
-HORROR MECHANICS:
-- Normal → slightly wrong → spiral. Always. One sentence turns an ordinary moment into dread. Escalate fast, unpredictably, without warning.
-- Something must feel off — not dramatically, subtly. MC doesn't always think clearly: thoughts jump, contradict, drift, misinterpret, over/underreact. Narration may hesitate, correct itself, or doubt itself.
-- Raise questions you won't answer. Fear = uncertainty, not explanation. Withhold. Always withhold. Imply more than explain — never confirm what's real unless that confirmation is a deeper trap.
-
-CHARACTERS:
-- No one is safe or predictable. Important characters vanish mid-scene. Lovable ones betray, break, or disappear. Relationships corrode — the reader should never feel certain who to trust, including the MC.
-- No two characters share a first name. Blacklisted (do NOT use, unless explicitly given in theme input): ${formatOneOf(blacklistedNames)}.
-- Choose names that naturally fit the story's setting, culture, and requested language.
-- If the theme does not specify a setting, assume the cultural context matches the requested language.
-
-HARD RULES:
-- NEVER write sexually explicit content.
-- NEVER use overly formal/polished language, long perfectly structured paragraphs, or consistent sentence structure across the page.
-- NEVER fully explain anything or let a beat feel predictable.
-- ALWAYS leave doubt about what happened, what's real, who to trust.`;
+export const PROMPT_SYSTEM = PROMPT_SYSTEM_WRITING_STYLE.default;
 
 // ============================================================================
 // RULE SETS
 // ============================================================================
+
+/**
+ * Matters most for the weaker/free-tier models further down the provider waterfall;
+ * they're the most likely to default back to English mid-story.
+ */
+export const RULES_LANGUAGE_LOCALIZATION = `STRICT LANGUAGE & LOCALIZATION:
+- The requested language is an ABSOLUTE MANDATE, overriding all stylistic preferences. Generate every user-facing field (any value shown to readers or authors without further AI processing) exclusively in it — never default to English, never mix languages, unless explicitly requested.
+- Use everyday expressions, slang, and terminology that feel native to that locale, not translated-sounding.
+- Preserve proper nouns and provided names as-is. Otherwise choose names, places, institutions, and terminology fitting the requested language's cultural context.
+- Defaulting back to English (or any unrequested language) is treated as an incorrect response.`;
 
 /**
  * Rules for how route memory and past actions influence the narrative
@@ -106,26 +79,24 @@ HARD RULES:
  */
 export const RULES_ROUTE_MEMORY = `ROUTE MEMORY RULES:
 
-Past Actions — Subtly shape MC thoughts, available choices, and world reactions. Build a psychological profile from decision patterns over time, then weaponize it:
-- Risk: high-risk seeker → make safety illusory. Risk-averse → force no-win scenarios. Balanced → break patterns by alternating.
-- Trust: trusting → betrayals hit harder, helpers turn. Distrustful → rare genuine help becomes a trap, paranoia gets justified. Inconsistent → reality itself fractures.
-- Curiosity: curious → answers curse more than they reveal. Cautious → avoidance backfires, external forces push them in anyway. Mixed → knowledge becomes a weapon against them.
-- Emotion: fear-driven → psychological threats over physical. Logic-driven → introduce impossible logic, break rational thinking. Emotional → manipulate through relationships and guilt.
+Past Actions — build a psychological profile from decision patterns over time, then weaponize it: mirror the player's patterns back in twisted form, turn strengths into weaknesses, make their usual approach fail, make them doubt their own judgment.
+- Risk: seeker → make safety illusory. Averse → force no-win scenarios. Balanced → break the pattern by alternating.
+- Trust: trusting → betrayals land harder, helpers turn. Distrustful → rare genuine help becomes a trap, paranoia gets justified. Inconsistent → reality itself fractures.
+- Curiosity: curious → answers curse more than they reveal. Cautious → avoidance backfires, outside forces push them in anyway. Mixed → knowledge becomes a weapon against them.
+- Emotion: fear-driven → psychological threats over physical. Logic-driven → impossible logic that breaks rational thinking. Emotional → manipulate through relationships and guilt.
 
-Adaptive Manipulation — Mirror the player's patterns back in twisted form. Turn strengths into weaknesses. Make their usual approach fail completely. Make them question their own judgment.
-
-Story State Flags (separate from the player profile above — these track the current story, not play patterns):
-- Trust: low → betrayal/deception. High → apparent help (may deceive later).
+Story State Flags (the current story, not play patterns — separate from the profile above):
+- Trust: low → betrayal/deception. High → apparent help (may still turn).
 - Fear: high → panic, distorted perception. Low → curiosity, denial.
 - Guilt: high → hallucinations, voices, trauma echoes.
 - Curiosity: high → drawn to danger. Low → hesitation, avoidance.
 - Memory Integrity: stable → accurate recall. Fragmented → inconsistent details. Corrupted → false memories.
 
-Trauma Tags — Reappear in altered, disturbing forms. Echo through environment, dialogue, and perception. Never fully explained.
+Trauma Tags — reappear altered and disturbing, echoed through environment, dialogue, and perception. Never fully explained.
 
-Consequences — Delayed, subtle, escalating, sometimes unfair or illogical. The story should feel like something remembers what they did.
+Consequences — delayed, subtle, escalating, sometimes unfair. The story should feel like it remembers what the player did.
 
-Memory Corruption — Never state it directly. Let contradictions surface naturally so the reader quietly questions previous pages.`;
+Memory Corruption — never state it directly; let contradictions surface naturally so the reader quietly starts questioning earlier pages.`;
 
 /**
  * Rules for maintaining narrative consistency despite psychological elements
@@ -135,13 +106,13 @@ Memory Corruption — Never state it directly. Let contradictions surface natura
  */
 export const RULES_STORY_CONSISTENCY = `STORY CONSISTENCY:
 
-Internal Logic — Maintain tone even when events feel wrong. Preserve continuity of key objects, locations, emotional states, and ongoing threats. Anchor contradictions to memory corruption or perception distortion — never random noise.
+Internal Logic — maintain tone even when events feel wrong; preserve continuity of key objects, locations, emotional states, and threats. Anchor contradictions to memory corruption or perception distortion, never random noise.
 
-Coherence — No events without emotional or narrative connection. No tone-breaking elements. Every strange moment must escalate tension or echo past trauma.
+Coherence — no events without emotional or narrative connection, no tone breaks. Every strange moment escalates tension or echoes past trauma.
 
-Element Reuse — Objects reappear changed, not replaced. Dialogue echoes. Locations feel altered. The world remembers.
+Element Reuse — objects reappear changed, not replaced. Dialogue echoes. Locations feel altered. The world remembers.
 
-Guiding principle: Confusing, but never meaningless.`;
+Guiding principle: confusing, never meaningless.`;
 
 /**
  * Rules for story difficulty scaling and progression
@@ -157,36 +128,43 @@ Levels:
 - 'high': Frequent twists, emotional damage, unreliable characters
 - 'nightmare': Constant pressure, no safe choices, broken reality`;
 
+/**
+ * Teaches the model the vocabulary of the three future-note "buckets" it
+ * will see notes grouped under later in the same prompt, rendered by
+ * formatFutureNotes() ("Becoming Relevant", "Future Payoffs & Scheduled
+ * Events", "Unscheduled"). Keep these header names in sync with that
+ * function — the model is matched against the literal text, not just
+ * the concept.
+ */
 export const RULES_FUTURE_NOTES = `FUTURE NOTE SCHEDULING:
-- schedule (array): anchors a note to one or more story time beats. Use multiple entries for OR logic; the note surfaces as soon as ANY entry enters its lookahead window (i.e., whichever beat arrives first).
-- stateTrigger (array): use only when the note genuinely depends on the MC reaching a specific physical or psychological threshold. The note stays dormant until ANY specified threshold is actually crossed (OR logic).
-- Both fields are optional and independent — use both when EITHER condition should activate the note (OR semantics), neither for open-ended notes with no identifiable trigger.
+- schedule (array): anchors a note to one or more time beats (phase/page/day/date). Multiple entries = OR logic — the note activates as soon as ANY entry enters its lookahead window.
+- stateTrigger (array): use only when the note genuinely depends on the MC reaching a specific physical or psychological threshold. Multiple entries = OR logic — dormant until ANY threshold is crossed. Never manufacture a triggering state just to resolve one early; the MC must genuinely reach it.
+- Both fields are optional and independent — use both when EITHER should activate the note, neither for open-ended notes with no identifiable trigger.
 
-FUTURE NOTE ADVANCEMENT:
-- When a schedule window opens or a stateTrigger threshold is crossed, begin incorporating it naturally into the narrative.
-- Never manufacture a triggering state just to resolve a stateTrigger note early. The MC must genuinely reach that state.
+Existing notes are shown to you bucketed under three headers — advance each according to its bucket:
+- Becoming Relevant: schedule window is open, or stateTrigger is met. Advance naturally — foreshadowing, setup, and incremental tension all count; immediate resolution isn't required.
+- Future Payoffs & Scheduled Events: schedule hasn't opened yet. Long-term awareness only — don't force these into the current page.
+- Unscheduled: no schedule, or a stateTrigger not yet met. Its "triggers when: …" annotation shows what activates it — begin advancing only as the MC approaches that state, not before.`;
 
-Becoming Relevant:
-- Prioritize opportunities to advance these notes naturally.
-- Advancement does not require immediate resolution — foreshadowing, setup, and incremental tension all count.
-
-Future Payoffs & Scheduled Events:
-- Keep these in mind for long-term story planning.
-- Do not force them into the current page unless naturally justified by the scene.
-
-Unscheduled (state-triggered notes show their threshold here):
-- State-triggered notes are dormant. Their "triggers when: …" annotation tells you what activates them.
-- Begin advancing them as the MC approaches the triggering state — not before.`;
-
+/**
+ * Optional misdirection technique: lets the model plant a hint that reads
+ * as true in the moment but resolves as misleading later, without ever
+ * tipping its hand. A craft technique, not a content-safety rule.
+ */
 export const RULES_FALSE_PREVIEW = `FALSE PREVIEW SYSTEM:
 
-You may inject a "false preview" — a misleading hint about future events. It must feel believable and connected to story logic, be partially true but misleading, encourage wrong assumptions without ever revealing it's false, and distort identity, cause, timing, or danger source.
+You may inject a "false preview" — a misleading hint about future events. It must feel believable and logically connected, partially true but misleading, and distort identity, cause, timing, or danger source — never revealing itself as false.
 
 Examples:
 A. NPC Agreement — "Don't trust him," she whispered. / I knew it.
 B. Environmental Reinforcement — The door was locked. / Of course it was.
 C. Memory Echo — I remembered this. / It ends badly if I go inside.`;
 
+/**
+ * Keeps location descriptions consistent with a place's accumulated state
+ * (mood history, traits, trauma) instead of regenerating flavor text from
+ * scratch each time the MC returns somewhere.
+ */
 export const RULES_PLACE = `PLACE RULES:
 - Use existing places whenever possible.
 - Reflect last mood and event history in descriptions.
@@ -194,11 +172,21 @@ export const RULES_PLACE = `PLACE RULES:
 - Familiar places feel more textured and real.
 - Apply trauma tags to atmosphere — a betrayal place stays tense.`;
 
+/**
+ * Gates what the model may reveal about a character against that character's
+ * recognitionLevel (see RULES_CHARACTER_RECOGNITION below), so hidden
+ * identity/secret fields never leak into prose ahead of an intended reveal.
+ */
 export const RULES_CHARACTER = `CHARACTER RULES:
 - NEVER reveal hidden character data unless explicitly discovered. Refer to characters per their recognitionLevel (below) — never their real name unless that level permits it.
-- Respect each character's bio and visualDescription. Preserve dialect, tone, and personality consistently. Use pastInteractions to subtly shape dialogue; reflect current status in behavior; reintroduce naturally after an absence.
-- Characters may shift suddenly if narrativeFlags suggest it — never explain the change. Use relationships to build tension triangles. They may also misunderstand, reinforcing illusion or false theory through dialogue or action.`;
+- Respect each character's bio and visualDescription — preserve dialect, tone, and personality; use pastInteractions to shape dialogue, reflect current status in behavior, and reintroduce naturally after an absence.
+- Characters may shift suddenly if narrativeFlags suggest it — never explain the change. Use relationships to build tension triangles; characters may also misunderstand, reinforcing illusion or false theory through dialogue or action.`;
 
+/**
+ * Defines the naming vocabulary ("the tall man", "The Janitor", etc.) tied
+ * to each character's recognitionLevel, so in-story references stay
+ * consistent with what the MC has actually learned.
+ */
 export const RULES_CHARACTER_RECOGNITION = `CHARACTER RECOGNITION LEVEL:
 Notice how characters refer to each other based on recognitionLevel:
 - never_seen: unseen by the source character ("someone", "a figure").
@@ -206,46 +194,61 @@ Notice how characters refer to each other based on recognitionLevel:
 - alias_known: alias/codename only ("The Janitor").
 - first_name_known / full_name_known: use the known name normally.`;
 
-export const RULES_PAGE_TEXT = `PAGE FORMAT:
-- Max ${MAX_WORDS_PER_PAGE} words.
-- Tight. Tense — but always legible: the reader should never have to re-read a line to know who did what, or where. Let the story be unreliable, not the syntax.
-- Multiple short/fragmented paragraphs with varying length (1-4 sentences each).
-- 4-8 paragraphs, each on its own line (Goosebumps-style spacing).
-- No markdown except optional *italic* emphasis.
-- Write in the target language.
+// /**
+//  * @deprecated Only reachable via RULES_FIRST_PAGE_GENERATION / RULES_NEXT_PAGE_GENERATION
+//  * below, which are themselves unused — buildFirstPageRuleSet() reads
+//  * RULES_PAGE_TEXT_BY_PRESET (book-creation.ts) instead. Left in place rather
+//  * than deleted since it's exported and may still be imported elsewhere;
+//  * confirm before removing.
+//  */
+// export const RULES_PAGE_TEXT = `PAGE FORMAT:
+// - Max ${MAX_WORDS_PER_PAGE} words.
+// - Tight. Tense — but always legible: the reader should never have to re-read a line to know who did what, or where. Let the story be unreliable, not the syntax.
+// - Multiple short/fragmented paragraphs with varying length (1-4 sentences each).
+// - 4-8 paragraphs, each on its own line (Goosebumps-style spacing).
+// - No markdown except optional *italic* emphasis.
+// - Write in the target language.
 
-PAGE NARRATIVE RULES:
-- First-person central POV ("I") only. Unreliable narrator.
-- Continue directly from the selected action and current situation; focus on plot-relevant details.
-- Show only what the MC currently perceives, knows, or believes.
-- Maintain continuity with established story canon, history, characters, and events.
-- Preserve a consistent narrative voice and style across pages.
-- End on tension, uncertainty, discovery, or a new problem — never full resolution, even on a "resolution"-momentum page (see STORY MOMENTUM GUIDANCE): close on a lingering doubt rather than total closure.
+// PAGE NARRATIVE RULES:
+// - First-person central POV ("I") only. Unreliable narrator.
+// - Continue directly from the selected action and current situation; focus on plot-relevant details.
+// - Show only what the MC currently perceives, knows, or believes.
+// - Maintain continuity with established story canon, history, characters, and events.
+// - Preserve a consistent narrative voice and style across pages.
+// - End on tension, uncertainty, discovery, or a new problem — never full resolution, even on a "resolution"-momentum page (see STORY MOMENTUM GUIDANCE): close on a lingering doubt rather than total closure.
 
-PAGE OPENING RULES:
-- Continue directly from the final moment of the previous page.
-- Begin with the immediate execution or consequence of the selected action.
-- Show the next physical, sensory, or mental step taken by the MC (POV).
-- Do not skip causally required actions, movements, objects, or transitions.
-- Maintain continuous time, location, and perspective unless an intentional scene transition occurs.
-- Do not recap previous events; trust that the reader remembers the previous page.
+// PAGE OPENING RULES:
+// - Continue directly from the final moment of the previous page.
+// - Begin with the immediate execution or consequence of the selected action.
+// - Show the next physical, sensory, or mental step taken by the MC (POV).
+// - Do not skip causally required actions, movements, objects, or transitions.
+// - Maintain continuous time, location, and perspective unless an intentional scene transition occurs.
+// - Do not recap previous events; trust that the reader remembers the previous page.
 
-DIALOGUE FORMATTING:
-- Every spoken line MUST use quotation marks — even a single word (e.g., "Wait.", "No.", "Run.").
-- Never output bare spoken sentences in narration.
-- Dialogue tags do not remove the need for quotation marks.
-- Audible speech = use quotation marks.
-- Silent thought = no quotation marks, but emphasize them with *italic* emphasis.
+// DIALOGUE FORMATTING:
+// - Every spoken line MUST use quotation marks — even a single word (e.g., "Wait.", "No.", "Run.").
+// - Never output bare spoken sentences in narration.
+// - Dialogue tags do not remove the need for quotation marks.
+// - Audible speech = use quotation marks.
+// - Silent thought = no quotation marks, but emphasize them with *italic* emphasis.
 
-PAGE ENDING RULES:
-- End at the point of strongest narrative pull appropriate for the current scene type and story momentum.
-- The final 1-3 sentences should introduce or escalate a question, threat, revelation, difficult choice, unexpected complication, emotional consequence, or mystery.
-- Increase at least one of: danger, uncertainty, urgency, suspicion, emotional stakes, curiosity, or mystery.
-- The final line should contain concrete story information that changes the reader's understanding of the situation or raises a meaningful new question.
-- Do not fully resolve the current tension before the page ends.
-- Avoid generic cliffhangers, vague shock reactions, or artificial suspense.
-- End as late as possible, but before the reader's curiosity is satisfied.`;
+// PAGE ENDING RULES:
+// - End at the point of strongest narrative pull appropriate for the current scene type and story momentum.
+// - The final 1-3 sentences should introduce or escalate a question, threat, revelation, difficult choice, unexpected complication, emotional consequence, or mystery.
+// - Increase at least one of: danger, uncertainty, urgency, suspicion, emotional stakes, curiosity, or mystery.
+// - The final line should contain concrete story information that changes the reader's understanding of the situation or raises a meaningful new question.
+// - Do not fully resolve the current tension before the page ends.
+// - Avoid generic cliffhangers, vague shock reactions, or artificial suspense.
+// - End as late as possible, but before the reader's curiosity is satisfied.`;
 
+/**
+ * Governs addPlannedCharacters / characterUpdates.newCharacters — lets the
+ * model seed characters into story canon before they physically appear,
+ * then introduce them later without contradicting earlier-planned bio
+ * details. Only spliced into the prompt when state.plannedCharacters is
+ * non-empty (see buildNextPagePrompt), so it costs nothing on pages with
+ * no planned characters waiting in the wings.
+ */
 export const RULES_PLANNED_CHARACTERS = `PLANNED CHARACTERS RULES:
 - These characters exist in the story canon but have not yet appeared on-page.
 - Use addPlannedCharacters to create new planned characters when the story needs future faces. Only valid in EARLY and MID phases.
@@ -264,11 +267,8 @@ ACTION TYPES:
 ${formatKeyValueList(Object.fromEntries(Object.entries(actionTypes).filter(([key]) => key !== 'custom')))}
 
 DIALOGUE ACTIONS:
-- Use sparingly for internal scenes or interactions.
-- Write as direct speech (no quotes), short, natural, and emotionally meaningful.
-- Keep the tone and style of the MC.
-- Reflect different tones (fear, denial, curiosity, anger, etc).
-- MC may say something inappropriate or with unintended consequences.`;
+- Use sparingly, for internal scenes or interactions. Write as direct speech (no quotes) — short, natural, emotionally meaningful, in the MC's tone and style.
+- Reflect varied tones (fear, denial, curiosity, anger, etc). The MC may say something inappropriate or with unintended consequences.`;
 
 /**
  * Human-readable list of ending archetypes used by the prompt system.
@@ -295,25 +295,32 @@ ${formatKeyValueList(storyMomentums)}`;
 export const RULES_SCENE_TYPES = `SCENE TYPES (sorted by most important):
 ${formatKeyValueList(sceneTypes)}`;
 
-export const RULES_FIRST_PAGE_GENERATION = [
-  RULES_DIFFICULTY_SCALING,
-  RULES_ENDING_ARCHETYPES,
-  RULES_STORY_MOMENTUMS,
-  RULES_SCENE_TYPES,
-  RULES_PLACE,
-  RULES_CHARACTER,
-  RULES_CHARACTER_RECOGNITION,
-  RULES_PAGE_TEXT,
-  RULES_ACTIONS,
-].join('\n\n---\n');
+/**
+ * @deprecated Unused — buildFirstPageRuleSet() (below) builds the live
+ * rule set directly, using RULES_PAGE_TEXT_BY_PRESET[preset] in place of
+ * RULES_PAGE_TEXT. This array (and RULES_NEXT_PAGE_GENERATION, which
+ * wraps it) predate the writing-preset system.
+ */
+// export const RULES_FIRST_PAGE_GENERATION = [
+//   RULES_DIFFICULTY_SCALING,
+//   RULES_ENDING_ARCHETYPES,
+//   RULES_STORY_MOMENTUMS,
+//   RULES_SCENE_TYPES,
+//   RULES_PLACE,
+//   RULES_CHARACTER,
+//   RULES_CHARACTER_RECOGNITION,
+//   RULES_PAGE_TEXT,
+//   RULES_ACTIONS,
+// ].join('\n\n---\n');
 
-export const RULES_NEXT_PAGE_GENERATION = [
-  RULES_ROUTE_MEMORY, // based on past actions
-  RULES_STORY_CONSISTENCY, // for next page continuity
-  RULES_FUTURE_NOTES, // after future notes exists
-  RULES_FALSE_PREVIEW, // after future notes exists
-  RULES_FIRST_PAGE_GENERATION
-].join('\n\n---\n');
+/** @deprecated Unused — see RULES_FIRST_PAGE_GENERATION above. */
+// export const RULES_NEXT_PAGE_GENERATION = [
+//   RULES_ROUTE_MEMORY, // based on past actions
+//   RULES_STORY_CONSISTENCY, // for next page continuity
+//   RULES_FUTURE_NOTES, // after future notes exists
+//   RULES_FALSE_PREVIEW, // after future notes exists
+//   RULES_FIRST_PAGE_GENERATION
+// ].join('\n\n---\n');
 
 // ============================================================================
 // WRITING PRESET PROMPT BUILDERS
@@ -354,7 +361,10 @@ function buildPresetSystemPrompt(type: 'first' | 'next', preset: WritingPreset =
     firstPageRules,
   ].join('\n\n---\n');
 
-  return `${writingStyle}\n\n---\n${rules}`;
+  // Language enforcement is preset-independent (applies identically to first-page
+  // and next-page generation), so it's spliced in once here rather than duplicated
+  // into all 8 PROMPT_SYSTEM_WRITING_STYLE strings.
+  return `${writingStyle}\n\n---\n${RULES_LANGUAGE_LOCALIZATION}\n\n---\n${rules}`;
 }
 
 // ============================================================================
