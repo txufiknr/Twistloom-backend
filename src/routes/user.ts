@@ -367,6 +367,27 @@ router.post('/', requireAuth, async (c: Context<AppEnv>) => {
       { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } }
     );
 
+    // Welcome email once when onboarding completes (isNewUser true → false). SSOT: no extra column.
+    try {
+      const [userRow] = await dbRead
+        .select({ email: users.email, username: users.username })
+        .from(users)
+        .where(eq(users.userId, userId))
+        .limit(1);
+
+      if (userRow?.email) {
+        const { sendWelcomeEmail } = await import('../utils/email.js');
+        const username =
+          (updateData.username as string | undefined) ?? userRow.username ?? current.username;
+        const sent = await sendWelcomeEmail(userRow.email, username);
+        if (sent) {
+          console.log(`[POST /api/user] 📧 Sent welcome email to user ${userId}`);
+        }
+      }
+    } catch (emailError) {
+      console.error(`[POST /api/user] ❌ Failed to send welcome email to user ${userId}:`, getErrorMessage(emailError));
+    }
+
     return c.json({
       message:   'Onboarding complete',
       isNewUser: false,
