@@ -4,21 +4,61 @@
  * Exposes the curated social-proof wall for the public homepage. Unlike the
  * admin endpoints (which live under `/admin/social-mentions` and require system
  * admin privileges), these routes are completely public and unauthenticated.
+ *
+ * Product CTAs (Read / More like this) are derived server-side only when the
+ * linked book is still public+active (D2/D3).
  */
 
 import { Hono } from "hono";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { union } from "drizzle-orm/pg-core";
 import { cApiError, cValidationError } from "../utils/error.js";
 import { dbRead } from "../db/client.js";
-import { socialMentions, bookTestimonials, users } from "../db/schema.js";
+import { socialMentions, bookTestimonials, users, books, uploadedImages } from "../db/schema.js";
 import type { AppEnv } from "../hono/env.js";
 import { extractPaginationParams, calculatePaginationMeta } from "../utils/pagination.js";
+import { buildBookReadHref } from "../services/social/extract-twistloom-link.js";
 
 const router = new Hono<AppEnv>();
 
+interface WallBookEmbed {
+  id: string;
+  slug: string;
+  title: string;
+  imageUrl: string | null;
+}
+
+interface WallActions {
+  canRead: boolean;
+  canSimilar: boolean;
+  readHref: string | null;
+  openOriginalUrl: string | null;
+}
+
+type WallRow = {
+  id: string;
+  source: string;
+  platform: string | null;
+  author: string;
+  authorAvatar: string | null;
+  title: string | null;
+  content: string;
+  url: string | null;
+  score: number;
+  rating: number | null;
+  sentimentScore: number;
+  relevanceScore: number;
+  status: string;
+  featured: boolean;
+  publishedAt: Date | null;
+  bookId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
 /**
  * Builds the shared public projection for a social mention row.
+ * relatedBookId is exposed as bookId for a unified wall contract.
  */
 function socialWallQuery() {
   return dbRead
@@ -38,7 +78,7 @@ function socialWallQuery() {
       status: socialMentions.status,
       featured: socialMentions.featured,
       publishedAt: socialMentions.publishedAt,
-      bookId: sql<string | null>`NULL`.as("book_id"),
+      bookId: sql<string | null>`${socialMentions.relatedBookId}`.as("book_id"),
       createdAt: socialMentions.createdAt,
       updatedAt: socialMentions.updatedAt,
     })
@@ -82,6 +122,71 @@ function userWallQuery() {
     ));
 }
 
+/**
+ * Batch-loads public+active books for wall CTA eligibility (D3).
+ */
+async function loadPublicBooksByIds(
+  bookIds: string[],
+): Promise<Map<string, WallBookEmbed>> {
+  const unique = [...new Set(bookIds.filter((id): id is string => typeof id === "string" && id.length > 0))];
+  const map = new Map<string, WallBookEmbed>();
+  if (unique.length === 0) return map;
+
+  const rows = await dbRead
+    .select({
+      id: books.id,
+      slug: books.slug,
+      title: books.title,
+      imageUrl: sql<string | null>`(
+        SELECT ui.image_url FROM ${uploadedImages} ui WHERE ui.image_id = ${books.imageId} LIMIT 1
+      )`.as("image_url"),
+    })
+    .from(books)
+    .where(and(
+      inArray(books.id, unique),
+      eq(books.status, "active"),
+      eq(books.visibility, "public"),
+    ));
+
+  for (const row of rows) {
+    if (!row.slug) continue;
+    map.set(row.id, {
+      id: row.id,
+      slug: row.slug,
+      title: row.title,
+      imageUrl: row.imageUrl,
+    });
+  }
+
+  return map;
+}
+
+/**
+ * Attaches book embed + derived actions for homepage CTAs.
+ */
+function enrichWallRows(
+  rows: WallRow[],
+  publicBooks: Map<string, WallBookEmbed>,
+) {
+  return rows.map((row) => {
+    const book = row.bookId ? publicBooks.get(row.bookId) ?? null : null;
+    const actions: WallActions = {
+      canRead: !!book,
+      canSimilar: !!book,
+      readHref: book ? buildBookReadHref(book.slug) : null,
+      openOriginalUrl: row.url ?? null,
+    };
+
+    return {
+      ...row,
+      // Only expose bookId when CTA-eligible so clients never deep-link private books
+      bookId: book ? book.id : null,
+      book,
+      actions,
+    };
+  });
+}
+
 router.get("/", async (c) => {
   try {
     const { limit = 20, page = 1 } = extractPaginationParams(c.req.query(), 20);
@@ -99,14 +204,14 @@ router.get("/", async (c) => {
       query = union(socialWallQuery(), userWallQuery());
     }
 
-    const rows = await query
+    const rows = (await query
       .orderBy(desc(sql`relevance_score`), desc(sql`created_at`))
       .limit(limit)
-      .offset(offset);
+      .offset(offset)) as WallRow[];
 
-    // Total count for the requested source, used to build pagination metadata.
-    // Social and user mentions come from disjoint tables, so the "all" total is
-    // the sum of the two independent counts.
+    const publicBooks = await loadPublicBooksByIds(rows.map((r) => r.bookId).filter(Boolean) as string[]);
+    const mentions = enrichWallRows(rows, publicBooks);
+
     let totalCount: number;
     if (validSource === "social") {
       const [row] = await dbRead
@@ -134,7 +239,7 @@ router.get("/", async (c) => {
 
     const pagination = calculatePaginationMeta(page, limit, totalCount);
 
-    return c.json({ source: validSource, mentions: rows, pagination });
+    return c.json({ source: validSource, mentions, pagination });
   } catch (error) {
     return cApiError(c, "Failed to retrieve social mentions", error);
   }
@@ -162,7 +267,7 @@ router.get("/:id", async (c) => {
         status: socialMentions.status,
         featured: socialMentions.featured,
         publishedAt: socialMentions.publishedAt,
-        bookId: sql<string | null>`NULL`.as("book_id"),
+        bookId: sql<string | null>`${socialMentions.relatedBookId}`.as("book_id"),
         createdAt: socialMentions.createdAt,
         updatedAt: socialMentions.updatedAt,
       })
@@ -175,7 +280,9 @@ router.get("/:id", async (c) => {
       .limit(1);
 
     if (social) {
-      return c.json(social);
+      const publicBooks = await loadPublicBooksByIds(social.bookId ? [social.bookId] : []);
+      const [enriched] = enrichWallRows([social as WallRow], publicBooks);
+      return c.json(enriched);
     }
 
     const [user] = await dbRead
@@ -212,7 +319,9 @@ router.get("/:id", async (c) => {
       return cValidationError(c, "Social mention not found", undefined, 404);
     }
 
-    return c.json(user);
+    const publicBooks = await loadPublicBooksByIds(user.bookId ? [user.bookId] : []);
+    const [enriched] = enrichWallRows([user as WallRow], publicBooks);
+    return c.json(enriched);
   } catch (error) {
     return cApiError(c, "Failed to retrieve social mention", error);
   }

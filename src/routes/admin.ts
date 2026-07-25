@@ -33,6 +33,12 @@ import { getStoryState } from "../services/story.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { socialMentions } from "../db/schema.js";
 import type { AppEnv } from "../hono/env.js";
+import {
+  extractAndResolveTwistloomLink,
+  parseTwistloomProductUrl,
+  resolveBookByIdForAdmin,
+  resolvePublicBookBySlug,
+} from "../services/social/extract-twistloom-link.js";
 
 /**
  * Middleware guard that restricts access to the system admin user only.
@@ -207,11 +213,12 @@ function isSocialMentionStatus(value: unknown): value is "pending" | "approved" 
  * GET /admin/social-mentions
  *
  * Lists social mentions for the admin curation queue. Supports filtering by
- * status, platform, and pagination. Results are ordered by relevance score
- * (highest first) so the best candidates surface at the top of the queue.
+ * status, platform, linked state, and pagination. Results are ordered by
+ * relevance score (highest first) so the best candidates surface at the top.
  *
  * @param status - Optional filter: "pending" | "approved" | "rejected"
  * @param platform - Optional filter: e.g. "reddit" | "hackernews" | "web"
+ * @param linked - Optional: "true" | "false" | "auto" | "admin" for related book filters
  * @param limit - Maximum rows to return (default: 50, max: 200)
  * @param offset - Number of rows to skip for pagination (default: 0)
  * @returns Array of social mentions and a total count for the applied filter
@@ -221,7 +228,7 @@ router.get("/social-mentions",
   requireSystemAdmin,
   async (c) => {
     try {
-      const { status, platform, limit = "50", offset = "0" } = c.req.query();
+      const { status, platform, linked, limit = "50", offset = "0" } = c.req.query();
 
       const limitNum = Math.min(Math.max(Number(limit) || 50, 1), 200);
       const offsetNum = Math.max(Number(offset) || 0, 0);
@@ -232,6 +239,15 @@ router.get("/social-mentions",
       }
       if (typeof platform === "string" && platform.length > 0) {
         conditions.push(eq(socialMentions.platform, platform));
+      }
+      if (linked === "true") {
+        conditions.push(sql`${socialMentions.relatedBookId} IS NOT NULL`);
+      } else if (linked === "false") {
+        conditions.push(sql`${socialMentions.relatedBookId} IS NULL`);
+      } else if (linked === "auto") {
+        conditions.push(eq(socialMentions.relatedBookSource, "auto"));
+      } else if (linked === "admin") {
+        conditions.push(eq(socialMentions.relatedBookSource, "admin"));
       }
 
       const rows = await dbRead
@@ -291,14 +307,18 @@ router.get("/social-mentions/:id",
  *
  * Updates moderation fields of a social mention. Only the curation-relevant
  * columns are mutable through this endpoint (status, relevance score, sentiment
- * score, and admin override of the displayed title/content).
+ * score, displayed title/content, featured, and related book linkage).
+ *
+ * Linkage fields (D1 link-only v1, D4):
+ * - relatedBookId: book UUID, or null to unlink
+ * - relatedPageId: optional page UUID, or null to clear
+ * - relatedBookUrl: paste Twistloom /books or /share URL (resolved server-side; sets admin source)
+ * - clearRelatedBook: true → nulls related book/page and source
+ *
+ * Setting a book via relatedBookId or relatedBookUrl always sets relatedBookSource='admin'
+ * so cron backfill will not overwrite it.
  *
  * @param id - Social mention identifier
- * @param status - New status: "pending" | "approved" | "rejected"
- * @param relevanceScore - Optional override of the computed relevance score
- * @param sentimentScore - Optional override of the computed sentiment score
- * @param title - Optional admin-edited title
- * @param content - Optional admin-edited content
  * @returns The updated social mention row
  */
 router.patch("/social-mentions/:id",
@@ -307,7 +327,18 @@ router.patch("/social-mentions/:id",
   async (c) => {
     try {
       const { id } = c.req.param();
-      const { status, featured, relevanceScore, sentimentScore, title, content } = c.get("body");
+      const {
+        status,
+        featured,
+        relevanceScore,
+        sentimentScore,
+        title,
+        content,
+        relatedBookId,
+        relatedPageId,
+        relatedBookUrl,
+        clearRelatedBook,
+      } = c.get("body");
 
       if (status !== undefined && !isSocialMentionStatus(status)) {
         return cValidationError(c, "Invalid status. Must be 'pending', 'approved', or 'rejected'");
@@ -330,6 +361,58 @@ router.patch("/social-mentions/:id",
       if (typeof sentimentScore === "number") updates.sentimentScore = sentimentScore;
       if (typeof title === "string") updates.title = title;
       if (typeof content === "string") updates.content = content;
+
+      if (clearRelatedBook === true) {
+        updates.relatedBookId = null;
+        updates.relatedPageId = null;
+        updates.relatedBookSource = null;
+      } else if (typeof relatedBookUrl === "string" && relatedBookUrl.trim().length > 0) {
+        const parsed = parseTwistloomProductUrl(relatedBookUrl.trim());
+        if (!parsed) {
+          return cValidationError(c, "relatedBookUrl is not a valid Twistloom /books or /share URL");
+        }
+        // Admin may link any existing book; wall CTAs still require public+active at read time
+        const bySlug = await resolvePublicBookBySlug(parsed.slug);
+        if (bySlug) {
+          updates.relatedBookId = bySlug.bookId;
+          updates.relatedPageId = parsed.pageId;
+          updates.relatedBookSource = "admin";
+        } else {
+          // Fall back: resolve slug without public gate for admin storage
+          const { books } = await import("../db/schema.js");
+          const [anyBook] = await dbRead
+            .select({ id: books.id })
+            .from(books)
+            .where(eq(books.slug, parsed.slug))
+            .limit(1);
+          if (!anyBook) {
+            return cValidationError(c, `No book found for slug "${parsed.slug}"`);
+          }
+          updates.relatedBookId = anyBook.id;
+          updates.relatedPageId = parsed.pageId;
+          updates.relatedBookSource = "admin";
+        }
+      } else if (relatedBookId === null) {
+        updates.relatedBookId = null;
+        updates.relatedPageId = null;
+        updates.relatedBookSource = null;
+      } else if (typeof relatedBookId === "string" && relatedBookId.length > 0) {
+        const book = await resolveBookByIdForAdmin(relatedBookId);
+        if (!book) {
+          return cValidationError(c, "relatedBookId does not match an existing book");
+        }
+        updates.relatedBookId = book.bookId;
+        updates.relatedBookSource = "admin";
+        if (relatedPageId === null) {
+          updates.relatedPageId = null;
+        } else if (typeof relatedPageId === "string") {
+          updates.relatedPageId = relatedPageId;
+        }
+      } else if (relatedPageId === null) {
+        updates.relatedPageId = null;
+      } else if (typeof relatedPageId === "string") {
+        updates.relatedPageId = relatedPageId;
+      }
 
       const [updated] = await dbWrite
         .update(socialMentions)
@@ -373,6 +456,7 @@ router.post("/social-mentions",
       const {
         platform, author, content, url, title, authorAvatar,
         score, sentimentScore, relevanceScore, status, featured, publishedAt,
+        relatedBookId, relatedPageId, relatedBookUrl,
       } = c.get("body");
 
       if (!platform || !author || !content || !url) {
@@ -380,6 +464,45 @@ router.post("/social-mentions",
       }
       if (status !== undefined && !isSocialMentionStatus(status)) {
         return cValidationError(c, "Invalid status. Must be 'pending', 'approved', or 'rejected'");
+      }
+
+      let linkBookId: string | null = null;
+      let linkPageId: string | null = null;
+      let linkSource: "auto" | "admin" | null = null;
+
+      if (typeof relatedBookUrl === "string" && relatedBookUrl.trim().length > 0) {
+        const parsed = parseTwistloomProductUrl(relatedBookUrl.trim());
+        if (!parsed) {
+          return cValidationError(c, "relatedBookUrl is not a valid Twistloom /books or /share URL");
+        }
+        const { books } = await import("../db/schema.js");
+        const [anyBook] = await dbRead
+          .select({ id: books.id })
+          .from(books)
+          .where(eq(books.slug, parsed.slug))
+          .limit(1);
+        if (!anyBook) {
+          return cValidationError(c, `No book found for slug "${parsed.slug}"`);
+        }
+        linkBookId = anyBook.id;
+        linkPageId = parsed.pageId;
+        linkSource = "admin";
+      } else if (typeof relatedBookId === "string" && relatedBookId.length > 0) {
+        const book = await resolveBookByIdForAdmin(relatedBookId);
+        if (!book) {
+          return cValidationError(c, "relatedBookId does not match an existing book");
+        }
+        linkBookId = book.bookId;
+        linkPageId = typeof relatedPageId === "string" ? relatedPageId : null;
+        linkSource = "admin";
+      } else {
+        // Best-effort auto extract from pasted content (public books only)
+        const resolved = await extractAndResolveTwistloomLink(title, content, "auto");
+        if (resolved) {
+          linkBookId = resolved.bookId;
+          linkPageId = resolved.pageId;
+          linkSource = "auto";
+        }
       }
 
       const [created] = await dbWrite
@@ -397,6 +520,9 @@ router.post("/social-mentions",
           status: isSocialMentionStatus(status) ? status : "pending",
           featured: typeof featured === "boolean" ? featured : false,
           publishedAt: publishedAt ? new Date(publishedAt) : null,
+          relatedBookId: linkBookId,
+          relatedPageId: linkPageId,
+          relatedBookSource: linkSource,
         })
         .onConflictDoNothing({ target: socialMentions.url })
         .returning();

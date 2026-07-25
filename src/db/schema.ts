@@ -2024,6 +2024,10 @@ export const clueEmbeddings = pgTable(
  * @summary Stores automatically collected community commentary, reviews, and platform mentions.
  * @description Serves as an inbound queue for community social proof. Items are ingested as 'pending'
  * and calculated with localized heuristic scores to prioritize administrative approval.
+ *
+ * Optional product linkage (`relatedBookId`) is best-effort filled by cron when a post
+ * contains a Twistloom `/books/...` URL, and completed/overridden by admins. Public wall
+ * CTAs only surface when the linked book is still public+active.
  */
 export const socialMentions = pgTable(
   "social_mentions",
@@ -2040,6 +2044,12 @@ export const socialMentions = pgTable(
     relevanceScore: real("relevance_score").default(0).notNull(), // Computed routing prioritization score
     status: text("status").$type<'pending' | 'approved' | 'rejected'>().default('pending').notNull(),
     featured: boolean("featured").default(false).notNull(), // Explicitly elevated to the public homepage wall by an admin
+    /** Optional public book linked for homepage "Read the story" CTAs */
+    relatedBookId: uuid("related_book_id").references(() => books.id, { onDelete: "set null" }),
+    /** Optional page (e.g. share ending); Read CTA still defaults to book landing unless admin promotes */
+    relatedPageId: uuid("related_page_id").references(() => pages.id, { onDelete: "set null" }),
+    /** Who set relatedBookId: cron auto-extract vs admin override (admin is sticky) */
+    relatedBookSource: text("related_book_source").$type<'auto' | 'admin'>(),
     publishedAt: timestamp("published_at", { withTimezone: true }),
     createdAt,
     updatedAt,
@@ -2054,6 +2064,8 @@ export const socialMentions = pgTable(
     index("social_mentions_filtering_idx").on(t.status, t.relevanceScore.desc()),
     // Index for the public homepage wall (only featured mentions are shown)
     index("social_mentions_featured_idx").on(t.featured, t.relevanceScore.desc()),
+    // Admin queue: filter linked / unlinked mentions
+    index("social_mentions_related_book_idx").on(t.relatedBookId),
   ]
 );
 

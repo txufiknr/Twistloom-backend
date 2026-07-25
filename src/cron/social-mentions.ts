@@ -329,7 +329,9 @@ export async function runSocialMentionCollection(): Promise<void> {
     }
 
     console.log(`[social-ingest] 🔨 Processing ${unifiedCollection.length} raw inbound nodes for validation...`);
+    const { extractAndResolveTwistloomLink } = await import("../services/social/extract-twistloom-link.js");
     let loadedCount = 0;
+    let autoLinkedCount = 0;
 
     for (const mention of unifiedCollection) {
       try {
@@ -344,6 +346,22 @@ export async function runSocialMentionCollection(): Promise<void> {
 
         // Run algorithmic sorting metrics local calculations
         const heuristics = computeLocalHeuristics(strippedContent, mention.title);
+
+        // Best-effort product link extract (public books only; never features)
+        let relatedBookId: string | null = null;
+        let relatedPageId: string | null = null;
+        let relatedBookSource: "auto" | null = null;
+        try {
+          const resolved = await extractAndResolveTwistloomLink(mention.title, strippedContent, "auto");
+          if (resolved) {
+            relatedBookId = resolved.bookId;
+            relatedPageId = resolved.pageId;
+            relatedBookSource = "auto";
+            autoLinkedCount++;
+          }
+        } catch (linkError) {
+          console.error(`[social-ingest] ⚠️ Link extract failed for ${mention.url}:`, getErrorMessage(linkError));
+        }
 
         // Deduplication handled automatically during the standard writing query logic block
         await dbWrite
@@ -360,6 +378,9 @@ export async function runSocialMentionCollection(): Promise<void> {
             relevanceScore: heuristics.relevance,
             status: "pending", // Queued for user curation
             publishedAt: mention.publishedAt,
+            relatedBookId,
+            relatedPageId,
+            relatedBookSource,
           })
           .onConflictDoNothing({ target: socialMentions.url });
 
@@ -374,6 +395,7 @@ export async function runSocialMentionCollection(): Promise<void> {
     console.log(`[social-ingest] ✅ Aggregation pipeline concluded safely in ${totalDuration}ms:`, {
       totalDiscovered: unifiedCollection.length,
       processedWithoutExceptions: loadedCount,
+      autoLinked: autoLinkedCount,
     });
 
   } catch (error) {
