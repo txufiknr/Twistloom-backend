@@ -18,6 +18,7 @@ import { and, eq, asc, or, desc, ne, sql, isNull, lt } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
 import { sanitizeActionsForMode } from "../utils/book-mode.js";
 import { MAX_GENERATION_DURATION_MS } from "../config/book-creation.js";
+import { isPublicActiveBook, notifyForumBranchAdded } from "./forum-queue.js";
 import { getEnrichedBookSelect } from "./book-controller.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage, DBUpdateBook } from "../types/schema.js";
 import type { Book, BookSlugGenerationResult, BookStatus, BookVisibility, EnrichedBookData, EnrichedPageOptions, PublicStats } from "../types/book.js";
@@ -482,7 +483,7 @@ export async function persistPageWithState(params: {
   branchId: string;
   usedBranchIds: Set<string>; // must be passed in for within-call collision safety on retry
   context?: string;
-  book: Pick<Book, 'storyStartDate' | 'mode'>
+  book: Pick<Book, 'storyStartDate' | 'mode' | 'id' | 'visibility' | 'status'>
 }): Promise<PersistedStoryPage> {
   const {
     userId,
@@ -540,7 +541,7 @@ export async function persistPageWithState(params: {
 
   for (let attempt = 1; attempt <= MAX_BRANCH_RETRIES; attempt++) {
     try {
-      return await dbWrite.transaction(async (tx) => {
+      const { page: newPage, insertedBranch } = await dbWrite.transaction(async (tx) => {
         const pageMeta: StoryPageMeta = {
           bookId: actionedPage.bookId,
           branchId: currentBranchId,
@@ -576,6 +577,7 @@ export async function persistPageWithState(params: {
         });
 
         // If this is a new branch (not "main"), create a branches row atomically
+        let inserted: { branchId: string; displayName: string; slug: string }[] = [];
         if (currentBranchId !== "main") {
           const existingRows = await tx
             .select({ name: branches.displayName })
@@ -584,18 +586,31 @@ export async function persistPageWithState(params: {
           const existingNames = new Set(existingRows.map(r => r.name));
           const displayName = resolveBranchDisplayName(generatedStoryPage.branchNames, existingNames);
 
-          await tx.insert(branches).values({
+          inserted = await tx.insert(branches).values({
             branchId: currentBranchId,
             bookId: actionedPage.bookId,
             displayName,
-          }).onConflictDoNothing();
+          }).onConflictDoNothing().returning({
+            branchId: branches.branchId,
+            displayName: branches.displayName,
+            slug: branches.slug,
+          }) as unknown as { branchId: string; displayName: string; slug: string }[];
         }
 
         // If this throws, the transaction auto-rolls back — no orphan page
         await insertStoryState(newPage.bookId, newPage.id, newState, 'original', { client: tx });
 
-        return newPage;
+        return {
+          page: newPage,
+          insertedBranch: inserted.length > 0 ? inserted[0] : null,
+        };
       });
+
+      if (insertedBranch && isPublicActiveBook(book)) {
+        notifyForumBranchAdded(book.id, insertedBranch.branchId, insertedBranch.displayName, insertedBranch.slug);
+      }
+
+      return newPage;
     } catch (error) {
       // isUniqueConstraintError now walks the cause chain, so code: '23505' is
       // reliably detected even if the error is wrapped by Drizzle or insertStoryPage

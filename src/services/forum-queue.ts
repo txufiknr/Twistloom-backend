@@ -19,6 +19,7 @@ export const ForumQueueEvent = {
   STORY_TRENDING: 'story.trending',
   USER_BANNED: 'user.banned',
   USER_UNBANNED: 'user.unbanned',
+  BRANCH_ADDED: 'branch.added',
 } as const;
 
 export type ForumQueueEventName = (typeof ForumQueueEvent)[keyof typeof ForumQueueEvent];
@@ -50,6 +51,13 @@ export type StoryTrendingPayload = {
 export type UserBanPayload = {
   userId: string;
   reason?: string;
+};
+
+export type BranchAddedPayload = {
+  storyId: string;
+  branchId: string;
+  name: string;
+  slug?: string;
 };
 
 type QueueEnvelope<T> = {
@@ -253,5 +261,22 @@ export function notifyForumUserUnbanned(userId: string): void {
     ForumQueueEvent.USER_UNBANNED,
     { userId } satisfies UserBanPayload,
     `user.unbanned:${userId}`,
+  );
+}
+
+/**
+ * Publish a new branch event for the portal to create branch_refs + thread.
+ * Only call when book is public+active and a new branch row was actually inserted.
+ */
+export function notifyForumBranchAdded(
+  storyId: string,
+  branchId: string,
+  name: string,
+  slug?: string,
+): void {
+  publishForumEventSafe(
+    ForumQueueEvent.BRANCH_ADDED,
+    { storyId, branchId, name, slug } satisfies BranchAddedPayload,
+    `branch.added:${branchId}`,
   );
 }
