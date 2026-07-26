@@ -85,12 +85,17 @@ Past Actions — build a psychological profile from decision patterns over time,
 - Curiosity: curious → answers curse more than they reveal. Cautious → avoidance backfires, outside forces push them in anyway. Mixed → knowledge becomes a weapon against them.
 - Emotion: fear-driven → psychological threats over physical. Logic-driven → impossible logic that breaks rational thinking. Emotional → manipulate through relationships and guilt.
 
-Story State Flags (the current story, not play patterns — separate from the profile above):
+ Story State Flags (the current story, not play patterns — separate from the profile above):
 - Trust: low → betrayal/deception. High → apparent help (may still turn).
 - Fear: high → panic, distorted perception. Low → curiosity, denial.
 - Guilt: high → hallucinations, voices, trauma echoes.
 - Curiosity: high → drawn to danger. Low → hesitation, avoidance.
-- Memory Integrity: stable → accurate recall. Fragmented → inconsistent details. Corrupted → false memories.
+- Memory Integrity: stable → accurate recall. Fragmented → inconsistent details. Corrupted → false memories. (This is recall reliability — NOT the composure meter.)
+
+Composure (reader resource, separate from Memory Integrity):
+- High composure → MC can still function under pressure; allow brief lucidity even in danger.
+- Low composure → panic, tunnel vision, poor decisions; world pressure should feel crushing.
+- Crashed (0) → crisis mode: reality and identity fracture; no safe choices; steer toward collapse.
 
 Trauma Tags — reappear altered and disturbing, echoed through environment, dialogue, and perception. Never fully explained.
 
@@ -3098,7 +3103,7 @@ Write that moment before advancing the scene.`;
 
 function formatNextPageNarrativePrompt(params: BuildNextPagePromptParams): string {
   const { advancedState: state, actionedPage, relevantFutureNoteKeys, book, clueRecallBlocks } = params;
-  const { flags, psychologicalProfile, hiddenState, threads, memoryIntegrity, futureNotes, healthStatus } = state;
+  const { flags, psychologicalProfile, hiddenState, threads, memoryIntegrity, futureNotes, healthStatus, sanityState } = state;
   const stateInfo = getStoryStateInfo(state);
   const { currentPage, phase, isFinale } = stateInfo;
   const { calendarDate, elapsedDays } = actionedPage;
@@ -3110,6 +3115,9 @@ ${createNarrativeStyle(state).instructions}
 
 PSYCHOLOGICAL FLAGS (Accumulated):
 ${formatPsychologicalFlags(flags, memoryIntegrity)}
+
+COMPOSURE (Reader resource — not memory integrity):
+${formatSanityState(sanityState)}
 
 PSYCHOLOGICAL PROFILE (Behavioral analysis):
 ${formatPsychologicalProfile(psychologicalProfile)}
@@ -3317,7 +3325,44 @@ function formatPsychologicalFlags(flags: PsychologicalFlags, memoryIntegrity: Me
 • Fear: ${flags.fear}
 • Guilt: ${flags.guilt}
 • Curiosity: ${flags.curiosity}
-• Memory Integrity: ${memoryIntegrity}`;
+• Memory Integrity: ${memoryIntegrity} (recall reliability — how accurately past events are remembered; distinct from Composure below)`;
+}
+
+/**
+ * Formats the reader-facing composure resource for the AI prompt.
+ *
+ * Composure is a game HUD meter (0–100). It is NOT:
+ * - memoryIntegrity (recall reliability)
+ * - psychologicalProfile.stability (behavioral lens)
+ * - hiddenState.realityStability (world rules)
+ *
+ * The AI should pressure the MC when composure is low, and enter crisis
+ * mode when crashed — without ever naming the meter to the reader.
+ */
+function formatSanityState(sanityState: StoryState['sanityState']): string {
+  const s = sanityState ?? { composure: 100, maxComposure: 100, decayRate: 5, hasCrashed: false };
+  const { composure, maxComposure, hasCrashed, crashedAtPage } = s;
+  const ratio = maxComposure > 0 ? composure / maxComposure : 0;
+
+  let pressure: string;
+  if (hasCrashed || composure <= 0) {
+    pressure = 'CRISIS — composure depleted. Force psychological collapse: no safe choices, reality fractures, identity slips. Never name "composure" or "sanity meter" to the reader.';
+  } else if (ratio <= 0.25) {
+    pressure = 'CRITICAL — MC is barely holding on. Tunnel vision, panic edges, poor judgment. World pressure should feel crushing.';
+  } else if (ratio <= 0.5) {
+    pressure = 'STRAINED — stress shows in body language and thought. Brief lucidity still possible between blows.';
+  } else if (ratio <= 0.75) {
+    pressure = 'WEARING — tension accumulates. Occasional cracks in composure; not yet broken.';
+  } else {
+    pressure = 'HOLDING — MC can still function under pressure. Allow clear thought when the scene permits.';
+  }
+
+  const crashNote = hasCrashed && crashedAtPage
+    ? `\n• Crashed at page: ${crashedAtPage} (sticky crisis — do not restore safety)`
+    : '';
+
+  return `• Composure: ${composure}/${maxComposure}${hasCrashed ? ' [CRASHED]' : ''}
+• Pressure: ${pressure}${crashNote}`;
 }
 
 /**
@@ -4587,7 +4632,10 @@ function resolvePageDelta(params: {
     newState.page = expectedPageNumber;
   }
   
-  // Calculate psychological deltas and merge into the state delta
+  // Engine-owned psych layer (profile, hidden, memoryIntegrity, difficulty,
+  // sanityState full snapshot) — not in AI extractStateDelta. Merged onto the
+  // page delta so reconstruction can rebuild without re-running advanceStoryState.
+  // See PsychologicalStateDelta + docs/architecture/SANITY_STATE_ARCHITECTURE.md.
   const psychologicalDeltas = calculatePsychologicalDeltas(currentState, newState);
   const fullStateDelta: StateDelta = { ...stateDelta, ...psychologicalDeltas };
 

@@ -55,6 +55,35 @@ export const MAX_RECENT_MAJOR_EVENTS = 5;
  */
 export const MAX_TRAUMA_TAGS = 5;
 
+// ── Sanity / composure resource ─────────────────────────────────────────────
+
+/** Default starting / maximum composure for a new story. */
+export const SANITY_DEFAULT_MAX_COMPOSURE = 100;
+
+/** Base composure lost per page while momentum is `critical`. */
+export const SANITY_DEFAULT_DECAY_RATE = 5;
+
+/**
+ * Permanent maxComposure reduction per trauma tag.
+ * maxComposure = max(SANITY_MIN_MAX_COMPOSURE, 100 - traumaCount * this).
+ */
+export const SANITY_TRAUMA_MAX_PENALTY = 5;
+
+/** Floor for maxComposure so trauma never zeros the resource permanently. */
+export const SANITY_MIN_MAX_COMPOSURE = 40;
+
+/** Composure restored on `resolution` momentum pages (healing beat). */
+export const SANITY_RESOLUTION_RECOVERY = 3;
+
+/**
+ * Cost to spend composure resisting a imminent `realityStability: broken` step.
+ * Used by `spendComposureToResistReality` when a reader action opts in.
+ */
+export const SANITY_REALITY_RESIST_COST = 15;
+
+/** Composure at or below this is treated as "critical" for prompt pressure. */
+export const SANITY_CRITICAL_THRESHOLD = 25;
+
 export const MAX_FUTURE_NOTES = 10;
 
 /**

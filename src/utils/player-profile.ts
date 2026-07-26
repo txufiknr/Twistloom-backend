@@ -9,7 +9,10 @@
  * ┌──────────────────────────────────────────────────────────────────┐
  * │  advanceStoryState() (before every generation turn)             │
  * │    → updateFlags()              → state.flags (discrete)        │
- * │    → updateHiddenState()        → state.hiddenState             │
+ * │    → updateHiddenState()        → state.hiddenState +           │
+ * │                                   memoryIntegrity + difficulty  │
+ * │    → updateSanity()             → state.sanityState (HUD meter) │
+ * │    → applySanityCrisisEffects() → crisis ending pressure        │
  * │    → derivePsychologicalProfile()→ state.psychologicalProfile   │
  * │                                   (archetype, stability,        │
  * │                                    dominantTraits,              │
@@ -25,6 +28,7 @@
  *    ↓
  * ┌──────────────────────────────────────────────────────────────────┐
  * │  createStyleInput() → createNarrativeStyle()                    │
+ * │    memoryClarity from memoryIntegrity (NOT sanityState)          │
  * │    NARRATIVE STYLE: "How should the story be written?"           │
  * └──────────────────────────────────────────────────────────────────┘
  */
@@ -238,10 +242,10 @@ function calculateInjurySeverity(injuries: Array<{ severity?: number }>): number
  * format consumed by createNarrativeStyle().
  *
  * Key design decisions:
- * - sanity:  derived from memoryIntegrity (primary sanity signal)
- * - tension: derived from fear flag (immediate emotional state)
- * - entropy: weighted blend of trauma, cognitive disorder, and story progress —
- *            represents actual psychological chaos, not just page count
+ * - memoryClarity: from `memoryIntegrity` only — how reliably the MC recalls.
+ *   Intentionally NOT from `sanityState.composure` (reader HUD resource).
+ * - tension: from fear flag (immediate emotional state)
+ * - entropy: weighted blend of trauma, cognitive disorder, and story progress
  *
  * @param state - Current story state
  * @returns StyleInput ready for the Narrative Style Engine
@@ -262,7 +266,8 @@ export function createStyleInput(state: StoryState): StyleInput {
   );
 
   return {
-    sanity: state.memoryIntegrity === 'stable' ? 1.0 : state.memoryIntegrity === 'fragmented' ? 0.5 : 0.2,
+    // memoryIntegrity → prose clarity. Do not substitute sanityState.composure.
+    memoryClarity: state.memoryIntegrity === 'stable' ? 1.0 : state.memoryIntegrity === 'fragmented' ? 0.5 : 0.2,
     tension: state.flags.fear === 'high' ? 0.8 : state.flags.fear === 'medium' ? 0.5 : 0.3,
     entropy,
     traumaTags,

@@ -22,23 +22,26 @@ import { normalize, stripEmptyLines } from './parser.js';
 /**
  * Calculates base style metrics from core story inputs.
  *
- * Uses profile traits to enrich base calculations beyond just sanity/tension/entropy:
+ * Uses profile traits to enrich base calculations beyond memoryClarity/tension/entropy:
  * - denial amplifies contradiction (the MC rationalizes what they shouldn't)
  * - guilt amplifies repetition (intrusive echoes of past choices)
  * - aggression tightens pacing (urgency, forward pressure)
+ *
+ * `memoryClarity` is recall reliability (from memoryIntegrity), not the
+ * reader composure meter (`sanityState`).
  */
 function calculateBaseMetrics(input: StyleInput): StyleVector {
-  const { sanity, tension, entropy, traumaTags, profile } = input;
+  const { memoryClarity, tension, entropy, traumaTags, profile } = input;
   
   return {
-    /** Increases as sanity decreases and entropy rises */
-    fragmentation: (1 - sanity) * 0.8 + entropy * 0.3,
+    /** Increases as memory clarity falls and entropy rises */
+    fragmentation: (1 - memoryClarity) * 0.8 + entropy * 0.3,
     /** Driven by tension, trauma, and guilt-driven intrusive echoes */
     repetition:    tension * 0.6 + traumaTags.length * 0.1 + profile.guilt * 0.1,
-    /** Self-doubt from sanity collapse, amplified by active denial */
-    contradiction: (1 - sanity) * 0.7 + profile.denial * 0.2,
+    /** Self-doubt from memory collapse, amplified by active denial */
+    contradiction: (1 - memoryClarity) * 0.7 + profile.denial * 0.2,
     /** Decreases with entropy and psychological distress */
-    clarity:       sanity * 0.8 - entropy * 0.3,
+    clarity:       memoryClarity * 0.8 - entropy * 0.3,
     /** Faster with tension, tightened by aggression, slowed by physical injury */
     pacing:        tension * 0.7 + profile.aggression * 0.1,
     /** Detail-oriented when curious; abstract when distressed */
@@ -90,10 +93,10 @@ function applyPsychologicalAdjustments(base: StyleVector, profile: Psychological
  * @example
  * ```typescript
  * const vector = calculateStyleVector({
- *   sanity: 0.9, tension: 0.3, entropy: 0.1,
+ *   memoryClarity: 0.9, tension: 0.3, entropy: 0.1,
  *   traumaTags: [],
  *   profile: { curiosity: 0.8, fear: 0.2, cognitiveState: 1.0, ... },
- *   page: 5, isEnding: false
+ *   page: 5
  * });
  * // → { fragmentation: ~0.15, clarity: ~0.7, ... }
  * ```
@@ -113,7 +116,7 @@ export function calculateStyleVector(input: StyleInput): StyleVector {
 }
 
 /**
- * Determines narrative mode from style vector, sanity level, and story conditions.
+ * Determines narrative mode from style vector, memory clarity, and story conditions.
  *
  * Mapping:
  * - grounded  — stable psychology, coherent prose, unease in implication
@@ -122,12 +125,12 @@ export function calculateStyleVector(input: StyleInput): StyleVector {
  *
  * Decision Hierarchy:
  * 1. Ending phase → always fractured (psychological impact at finale)
- * 2. Sanity level → primary driver
+ * 2. memoryClarity (from memoryIntegrity) → primary driver
  * 3. distressScore → multi-factor confirmation
  * 4. Specific style combinations → catch edge cases
  *
  * @param vector - Normalized style vector
- * @param sanity - Current sanity (0.0 = completely insane, 1.0 = completely sane)
+ * @param memoryClarity - Recall clarity 0.0–1.0 (from memoryIntegrity, not composure)
  * @param isEnding - Whether the story is in its ending phase
  *
  * @example
@@ -137,15 +140,15 @@ export function calculateStyleVector(input: StyleInput): StyleVector {
  * determineNarrativeMode({ fragmentation: 0.3, clarity: 0.7, ... }, 0.8, true);  // "fractured"
  * ```
  */
-export function determineNarrativeMode(vector: StyleVector, sanity: number, isEnding: boolean): NarrativeMode {
+export function determineNarrativeMode(vector: StyleVector, memoryClarity: number, isEnding: boolean): NarrativeMode {
   // Ending phase forces fractured regardless of other factors
   if (isEnding) return 'fractured';
 
-  // ── Sanity thresholds ──────────────────────────────────────────────────────
-  const veryLowSanity  = sanity <= 0.3;
-  const lowSanity      = sanity <= 0.5;
-  const moderateSanity = sanity <= 0.7;
-  const highSanity     = sanity >  0.7;
+  // ── Memory-clarity thresholds (not reader composure) ───────────────────────
+  const veryLowSanity  = memoryClarity <= 0.3;
+  const lowSanity      = memoryClarity <= 0.5;
+  const moderateSanity = memoryClarity <= 0.7;
+  const highSanity     = memoryClarity >  0.7;
 
   // ── Style-based secondary indicators ──────────────────────────────────────
   const highFragmentation     = vector.fragmentation > 0.6;
@@ -236,7 +239,7 @@ function primaryWeaknessProseHint(weakness: PrimaryWeakness): string {
  * exploitation tactics, or manipulation vectors (those are in PSYCHOLOGICAL PROFILE).
  *
  * @param style      - Mode and style vector
- * @param styleInput - Provides phase, sanity, and profile context
+ * @param styleInput - Provides phase, memoryClarity, and profile context
  * @param state      - Story state for phase information
  * @returns Structured prose directives ready for injection into the generation prompt
  *
@@ -345,7 +348,7 @@ export function createNarrativeStyle(state: StoryState): NarrativeStyle {
   const { isFinale } = getStoryStateInfo(state);
   const styleInput   = createStyleInput(state);
   const vector       = calculateStyleVector(styleInput);
-  const mode         = determineNarrativeMode(vector, styleInput.sanity, isFinale);
+  const mode         = determineNarrativeMode(vector, styleInput.memoryClarity, isFinale);
   const instructions = generateStyleInstructions({ mode, vector }, styleInput, state);
   
   return {

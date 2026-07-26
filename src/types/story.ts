@@ -155,13 +155,23 @@ export type AIActionConfig = { temperature: AIParameterValue, topP: AIParameterV
 
 /**
  * Core inputs for Narrative Style Engine
- * 
+ *
  * These represent the fundamental inputs that determine narrative style
  * based on story state, player psychology, and progression.
+ *
+ * Naming note — `memoryClarity` is intentionally NOT called "sanity":
+ * - `memoryClarity` (0–1 here) is derived from `StoryState.memoryIntegrity`
+ *   and answers "how reliably does the MC recall/perceive?" for prose texture.
+ * - `StoryState.sanityState.composure` is a separate reader-facing resource
+ *   meter (0–100) used for HUD pressure / crisis endings — never feed it here.
+ * See docs/architecture/SANITY_STATE_ARCHITECTURE.md.
  */
 export type StyleInput = {
-  /** Current sanity level (0.0–1.0) */
-  sanity: number;
+  /**
+   * Memory / perception clarity (0.0 = corrupted recall, 1.0 = stable recall).
+   * Mapped from `memoryIntegrity`, not from `sanityState.composure`.
+   */
+  memoryClarity: number;
   /** Current tension level (0.0–1.0) */
   tension: number;
   /** World entropy/instability (from entropy controller) */
@@ -876,24 +886,35 @@ export type WorldClock = {
 /**
  * Reader-facing sanity/composure resource — the horror-themed "ticking clock."
  *
- * Decays under sustained critical momentum and can be deliberately spent
- * by the reader to resist realityStability collapse. Depletion at high
- * danger forces bad endings rather than being purely flavor text.
+ * This is a **game resource** (like HP), not a narrative-style dial.
  *
- * Unlike a fixed-page timer (which fights variable AI pacing), this
- * is threat-proximity-driven and momentum-aware — the inputs
- * `updateHiddenState` already computes.
+ * | Field / system | Layer | Question it answers |
+ * |---|---|---|
+ * | `sanityState.composure` | Reader resource | How much composure is left before crisis? |
+ * | `memoryIntegrity` | Narrative reliability | How accurate is the MC's recall? |
+ * | `psychologicalProfile.stability` | Behavioral lens | How psychologically compromised is the MC? |
+ * | `hiddenState.realityStability` | World dial | How broken are physical/world rules? |
+ * | `StyleInput.memoryClarity` | Prose engine | How clear should narration sound? (from memoryIntegrity) |
+ *
+ * Decay is momentum- and threat-driven (not fixed page count) so it does not
+ * fight variable AI scene pacing. At 0 composure the engine arms crisis
+ * ending pressure rather than treating depletion as flavor text.
+ *
+ * @see docs/architecture/SANITY_STATE_ARCHITECTURE.md
  */
 export type SanityState = {
-  /** Current composure 0–100. At 0, the reader is in crisis. */
+  /** Current composure 0–100. At 0 the reader is in crisis. */
   composure: number;
-  /** Maximum composure (starts at 100, can be permanently reduced by trauma). */
+  /**
+   * Maximum composure (starts at 100). Permanently reduced by accumulated
+   * trauma tags so recovery never fully restores pre-trauma capacity.
+   */
   maxComposure: number;
   /** Base decay per page when momentum is critical (default ~5). */
   decayRate: number;
-  /** Whether the reader has hit 0 composure this story. */
+  /** Whether composure has hit 0 at least once this story. Sticky. */
   hasCrashed: boolean;
-  /** Page number when composure last hit 0 (for ending forcing). */
+  /** Page number when composure first hit 0 (ending / crisis forcing). */
   crashedAtPage?: number;
 };
 
@@ -1168,13 +1189,40 @@ export type StoryPageMeta = Pick<DBNewPage, 'bookId' | 'branchId' | 'parentId'> 
 };
 
 /**
- * State delta representing incremental changes between pages
- * 
- * This structure captures the differences between story states,
- * enabling efficient reconstruction without storing full snapshots
- * for every page.
- * 
- * @interface StateDelta
+ * State delta representing incremental changes between pages.
+ *
+ * Captures differences between story states so reconstruction can rebuild
+ * a full `StoryState` from a sparse checkpoint + ordered page deltas without
+ * storing a full snapshot for every page.
+ *
+ * ## Two authorship layers (do not mix)
+ *
+ * 1. **AI-authored** — most fields (`flagUpdates`, `characterUpdates`, …).
+ *    Produced by the model and extracted via `extractStateDelta`.
+ * 2. **Engine-owned (`PsychologicalStateDelta`)** — profile, hidden state,
+ *    memoryIntegrity, difficulty, **and `sanityState`**. Never appear in
+ *    AI JSON schemas (`StateDeltaGeneration` omits them). Written by
+ *    `advanceStoryState` / `calculatePsychologicalDeltas` and merged into
+ *    the page's stored `stateDelta` after generation.
+ *
+ * ## Why engine-owned fields (including `sanityState`) live on the delta
+ *
+ * Reconstruction (`applyDeltaChain`, parent-chain, branch traversal) does
+ * **not** re-run `advanceStoryState`. It only:
+ *   snapshot → apply page N+1 delta → … → apply page target delta.
+ *
+ * Intermediate `story_states` rows may be deleted by cleanup strategy, so
+ * the per-page `stateDelta` is the durable record of engine progression.
+ * Omitting `sanityState` (or other psych fields) would freeze composure at
+ * the last full snapshot — wrong for any path that relies on deltas only.
+ *
+ * **Rejected alternatives**
+ * - Rely only on full `story_states` rows → breaks when cleanup drops them.
+ * - Re-simulate `updateSanity` during reconstruction → fragile; needs full
+ *   momentum/threat history re-derivation and can diverge from live values.
+ *
+ * @see PsychologicalStateDelta
+ * @see docs/architecture/SANITY_STATE_ARCHITECTURE.md § "StateDelta design decision"
  */
 export type StateDelta = {
   /** Updates to psychological flags (trust, fear, guilt, curiosity) */
@@ -1212,11 +1260,28 @@ export type StateDelta = {
   /** AI-authored minutes elapsed for this scene (fallback to heuristic if omitted) */
   minutesPassed?: number;
 
-  /** Psychological state */
+  // ── Engine-owned psychological layer (see PsychologicalStateDelta) ─────────
+  /** Partial psychological profile after this page's engine advance. */
   psychologicalProfileUpdates?: Partial<PsychologicalProfile>;
+  /** Partial hidden narrative dials after this page's engine advance. */
   hiddenStateUpdates?: Partial<HiddenState>;
+  /** Recall reliability after this page's engine advance. */
   memoryIntegrity?: MemoryIntegrity;
+  /** Story difficulty after this page's engine advance. */
   difficulty?: Difficulty;
+  /**
+   * Full reader composure snapshot after this page's engine advance.
+   *
+   * Engine-owned (never AI-authored). Stored as a **full snapshot** (not a
+   * partial patch) because composure is a small fixed object and reconstruction
+   * must restore exact values without re-running `updateSanity`.
+   *
+   * Same pattern as other `PsychologicalStateDelta` fields: required for
+   * delta-only reconstruction when intermediate `story_states` rows are gone.
+   *
+   * @see docs/architecture/SANITY_STATE_ARCHITECTURE.md
+   */
+  sanityState?: SanityState;
 };
 
 export type FlagUpdate = {
@@ -1224,8 +1289,23 @@ export type FlagUpdate = {
   level: FlagLevel;
 };
 
-export type PsychologicalStateDelta = Pick<StateDelta, 'psychologicalProfileUpdates' | 'hiddenStateUpdates' | 'memoryIntegrity' | 'difficulty'>;
+/**
+ * Engine-owned psychological slice of {@link StateDelta}.
+ *
+ * These fields are computed in `advanceStoryState` (and related helpers),
+ * **never** by the AI. `StateDeltaGeneration` / AI JSON schemas omit them;
+ * `calculatePsychologicalDeltas` fills them after generation so the page's
+ * stored delta can rebuild engine progression during reconstruction.
+ *
+ * Includes `sanityState` for the same reconstruction contract as
+ * profile / hidden / memoryIntegrity / difficulty — see StateDelta JSDoc.
+ */
+export type PsychologicalStateDelta = Pick<StateDelta, 'psychologicalProfileUpdates' | 'hiddenStateUpdates' | 'memoryIntegrity' | 'difficulty' | 'sanityState'>;
 
+/**
+ * AI-output shape of a state delta — excludes engine-owned psych fields
+ * (`PsychologicalStateDelta`) and server-assigned future-note keys.
+ */
 export type StateDeltaGeneration = Omit<StateDelta, keyof PsychologicalStateDelta | 'futureNoteUpdates' | 'isMajorEvent'> & {
   futureNoteUpdates?: {
     add?: FutureNoteGeneration[];
@@ -1276,6 +1356,20 @@ export type EnrichedStoryPage = Partial<Omit<UserStoryPage, 'stateDelta'>> & {
 
 export type TranslatedStoryPage = Omit<PersistedStoryPage, 'weather' | 'mood'> & { weather?: string; mood?: string; };
 
+/**
+ * Reader-safe composure slice exposed on the page API.
+ * Omits engine-only fields (e.g. decayRate) that have no HUD value.
+ *
+ * Distinct from `HealthStatus` (injury axes) and from
+ * `hiddenState.realityStability` (world dial — not this meter).
+ *
+ * @see docs/architecture/SANITY_STATE_ARCHITECTURE.md
+ */
+export type EnrichedSanityState = Pick<
+  SanityState,
+  'composure' | 'maxComposure' | 'hasCrashed' | 'crashedAtPage'
+>;
+
 export type EnrichedStoryPageContext = {
   /** Current story phase classification */
   phase: StoryPhase;
@@ -1285,6 +1379,12 @@ export type EnrichedStoryPageContext = {
   injuries: Injury[];
   /** Deterministically derived health status of the MC */
   healthStatus?: HealthStatus;
+  /**
+   * Reader-facing composure resource (0–maxComposure).
+   * Engine-owned; never AI-authored. Powers the HUD composure rail.
+   * Do not confuse with `healthStatus.mentalPercent` or realityStability.
+   */
+  sanityState?: EnrichedSanityState;
   /** AI-summarized context of the story until this page */
   contextHistory: string;
   /** History of actions made until this page */
@@ -1528,9 +1628,9 @@ export type StoryMCState = {
   healthStatus?: HealthStatus;
 
   /**
-   * Reader-facing sanity/composure resource.
-   * Decays under pressure, can be spent to resist reality collapse.
-   * At 0, forces crisis mode that can lock in bad endings.
+   * Reader-facing sanity/composure resource (game HUD meter).
+   * Distinct from `memoryIntegrity` and `psychologicalProfile.stability`.
+   * @see SanityState and docs/architecture/SANITY_STATE_ARCHITECTURE.md
    */
   sanityState?: SanityState;
 };

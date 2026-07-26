@@ -6,6 +6,7 @@ import authRouter from "./auth.js";
 import paymentsRouter from "./payments.js";
 import socialMentionsRouter from "./social-mentions.js";
 import emailRouter from "./email.js";
+import blogRouter from "./blog.js";
 import { APP_NAME, VERSION } from "../config/constants.js";
 import type { AppEnv } from "../hono/env.js";
 
@@ -24,6 +25,7 @@ router.get("/", (c) => {
       "/payments": "Payment checkout (Stripe/Xendit), credits, and webhooks",
       "/social-mentions": "Public social-proof wall (featured mentions)",
       "/email": "Public email utilities (unsubscribe)",
+      "/blog": "Public portal blog posts (published only)",
     },
   });
 });
@@ -36,5 +38,6 @@ router.route("/auth", authRouter);
 router.route("/payments", paymentsRouter);
 router.route("/social-mentions", socialMentionsRouter);
 router.route("/email", emailRouter);
+router.route("/blog", blogRouter);
 
 export default router;

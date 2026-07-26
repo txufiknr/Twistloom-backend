@@ -857,6 +857,7 @@ export const SANITY_STATE_DEFAULTS: SanityState = {
   maxComposure: 100,
   decayRate: 5,
   hasCrashed: false,
+  // crashedAtPage omitted until first crash
 };
 
 export const STORY_STATE_DEFAULTS: Omit<StoryState, 'pageId' | 'page' | 'maxPage'> = {

@@ -2148,6 +2148,41 @@ export const adminUsers = pgTable(
     userId: text("user_id").primaryKey(),
     email: text("email"),
     invitedBy: text("invited_by"),
+    /**
+     * Capability keys (e.g. blog, social_mentions). Empty = no section powers.
+     * Super admin (SYSTEM_USER_ID) ignores this and has all capabilities.
+     */
+    permissions: text("permissions").array().notNull().default([]),
     createdAt,
   }
+);
+
+/**
+ * Portal community blog posts (CMS).
+ * Source of truth for portal.twistloom.com/blog — managed via /api/admin/blog-posts.
+ * Body is sanitized HTML from TipTap (not Markdown). Public: GET /api/blog/posts.
+ */
+export const portalBlogPosts = pgTable(
+  "portal_blog_posts",
+  {
+    id: id(),
+    slug: text("slug").notNull(),
+    title: text("title").notNull(),
+    description: text("description"),
+    excerpt: text("excerpt"),
+    /** Sanitized HTML from admin TipTap editor (SSOT for body content). */
+    bodyHtml: text("body_html").notNull(),
+    coverUrl: text("cover_url"),
+    authorName: text("author_name"),
+    authorId: uuid("author_id").references(() => users.userId, { onDelete: "set null" }),
+    status: text("status").$type<"draft" | "published" | "archived">().default("draft").notNull(),
+    publishedAt: timestamp("published_at", { withTimezone: true }),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    unique("portal_blog_posts_slug_unique").on(t.slug),
+    index("portal_blog_posts_status_idx").on(t.status),
+    index("portal_blog_posts_published_idx").on(t.status, t.publishedAt.desc()),
+  ]
 );

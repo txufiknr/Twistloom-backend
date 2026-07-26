@@ -1,4 +1,4 @@
-import { ARCHETYPE_ACTION_AFFINITY, DANGEROUS_ACTIONS, DEFAULT_SCENE_URGENCY, MAJOR_EVENT_CLIMAX_FLOOR, MANIPULATION_HINT_AFFINITY, MAX_ACTION_HISTORY, MAX_CHARACTERS, MAX_DOMINANT_TRAITS, MAX_FUTURE_NOTES, MAX_PLACES, MAX_TRAUMA_TAGS, MOMENTUM_BASELINE_SCORE, MOMENTUM_PERSISTENCE, MOMENTUM_RECENCY_WINDOW, MOMENTUM_THRESHOLDS, MOMENTUM_WEIGHTS, RESOLVING_DROP_THRESHOLD, SAFE_ACTIONS, SCENE_ROLE_DANGER, SCENE_TYPE_URGENCY, TENDENCY_RECENCY_WINDOW, THREAD_PRIORITY_WEIGHT, THREAT_PROXIMITY_SCORE } from "../config/story.js";
+import { ARCHETYPE_ACTION_AFFINITY, DANGEROUS_ACTIONS, DEFAULT_SCENE_URGENCY, MAJOR_EVENT_CLIMAX_FLOOR, MANIPULATION_HINT_AFFINITY, MAX_ACTION_HISTORY, MAX_CHARACTERS, MAX_DOMINANT_TRAITS, MAX_FUTURE_NOTES, MAX_PLACES, MAX_TRAUMA_TAGS, MOMENTUM_BASELINE_SCORE, MOMENTUM_PERSISTENCE, MOMENTUM_RECENCY_WINDOW, MOMENTUM_THRESHOLDS, MOMENTUM_WEIGHTS, RESOLVING_DROP_THRESHOLD, SAFE_ACTIONS, SCENE_ROLE_DANGER, SCENE_TYPE_URGENCY, TENDENCY_RECENCY_WINDOW, THREAD_PRIORITY_WEIGHT, THREAT_PROXIMITY_SCORE, SANITY_DEFAULT_DECAY_RATE, SANITY_DEFAULT_MAX_COMPOSURE, SANITY_MIN_MAX_COMPOSURE, SANITY_REALITY_RESIST_COST, SANITY_RESOLUTION_RECOVERY, SANITY_TRAUMA_MAX_PENALTY } from "../config/story.js";
 import { HIDDEN_STATE_DEFAULTS, STORY_STATE_DEFAULTS, SANITY_STATE_DEFAULTS } from "../schema/story.js";
 import { storyPhases, plotFlagTypes } from "../types/story.js";
 import { calculateHealthStatus, processCharacterUpdates } from "./characters.js";
@@ -6,7 +6,7 @@ import { processPlaceUpdates } from "./places.js";
 import { deepEqualSimple } from "../utils/parser.js";
 import { calculatePlayerProfile } from './player-profile.js';
 import { ensureUniqueId } from "./text-processing.js";
-import type { StoryState, StoryMomentum, SceneType, PsychologicalProfileMetrics, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, TagItem, FutureNote, FactUpdate, FutureNoteGeneration, Action, PsychologicalStateDelta, InitialPlotFlag, StoryScene, CalculateStoryMomentumParams, StoryMomentumResult, SceneCharacter, EndingRecommendation, NarrativeContext, PersistedStoryPage, SelectedAction, StateDeltaGeneration } from "../types/story.js";
+import type { StoryState, StoryMomentum, SceneType, PsychologicalProfileMetrics, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, TagItem, FutureNote, FactUpdate, FutureNoteGeneration, Action, PsychologicalStateDelta, InitialPlotFlag, StoryScene, CalculateStoryMomentumParams, StoryMomentumResult, SceneCharacter, EndingRecommendation, NarrativeContext, PersistedStoryPage, SelectedAction, StateDeltaGeneration, SanityState } from "../types/story.js";
 import type { CharacterPlan, Injury, InventoryItem } from "../types/character.js";
 import type { ThreadUpdates, StoryThread, ThreadClue } from "../types/story-thread.js";
 import type { CandidateGenerationPage } from "../types/candidate-generation.js";
@@ -355,19 +355,33 @@ export function mapFutureNoteWithKey(notes: FutureNoteGeneration[] | undefined, 
 }
 
 /**
- * Calculates psychological state deltas between base and new state
- * 
- * This function compares two story states and extracts the differences
- * in psychological profile, hidden state, memory integrity, and difficulty.
- * 
- * @param baseState - Base story state before updates
- * @param newState - Updated story state after applying AI updates
- * @returns Partial state delta with psychological changes
- * 
+ * Calculates engine-owned psychological deltas between base and new state.
+ *
+ * Compares two story states and extracts differences in:
+ * - `psychologicalProfile` (partial field updates)
+ * - `hiddenState` (partial field updates)
+ * - `memoryIntegrity`, `difficulty` (scalar replacements)
+ * - `sanityState` (**full snapshot** of the composure resource)
+ *
+ * These fields are never AI-authored. After page generation they are merged
+ * into the page's stored `StateDelta` so reconstruction can rebuild engine
+ * progression without re-running `advanceStoryState`.
+ *
+ * ### Why `sanityState` is a full snapshot
+ * Profile/hidden use partial patches; composure is a tiny fixed object, so
+ * storing the whole post-advance value is simpler and guarantees exact
+ * restore when intermediate `story_states` rows have been cleaned up.
+ * Same reconstruction contract as other `PsychologicalStateDelta` fields —
+ * see `StateDelta` JSDoc and SANITY_STATE_ARCHITECTURE.md.
+ *
+ * @param baseState - Story state before this page's engine + AI updates
+ * @param newState - Story state after advance + applyStateDelta
+ * @returns Partial state delta with only the psych fields that changed
+ *
  * @example
  * ```typescript
  * const psychologicalDeltas = calculatePsychologicalDeltas(baseState, updatedState);
- * // Returns: { psychologicalProfileUpdates, hiddenStateUpdates, ... }
+ * // May include: psychologicalProfileUpdates, hiddenStateUpdates, sanityState, …
  * ```
  */
 export function calculatePsychologicalDeltas(baseState: StoryState, newState: StoryState): PsychologicalStateDelta {
@@ -432,6 +446,12 @@ export function calculatePsychologicalDeltas(baseState: StoryState, newState: St
     deltas.difficulty = newState.difficulty;
   }
 
+  // Reader composure: full post-advance snapshot for delta-only reconstruction.
+  // Do not re-simulate updateSanity here — store what the live path already computed.
+  if (!deepEqualSimple(baseState.sanityState, newState.sanityState) && newState.sanityState) {
+    deltas.sanityState = { ...newState.sanityState };
+  }
+
   if (Object.keys(deltas).length) {
     console.log(`[calculatePsychologicalDeltas] ✅ Calculated psychological state delta:`, deltas);
   } else {
@@ -442,35 +462,33 @@ export function calculatePsychologicalDeltas(baseState: StoryState, newState: St
 }
 
 /**
- * Applies AI-generated state delta to story state
- * 
- * This function applies incremental changes from a StateDelta (extracted from
- * AI-generated page content) to a StoryState, producing a new state with all
- * updates applied. This is used after page generation to apply the AI's
- * creative updates to the advanced story state.
- * 
- * Typical usage flow:
+ * Applies a page `StateDelta` to a base story state.
+ *
+ * Used in two modes:
+ * 1. **Live generation** — AI creative fields from `extractStateDelta` applied
+ *    onto the state already advanced by `advanceStoryState` (composure already
+ *    on `baseState.sanityState`; delta may later record a snapshot for storage).
+ * 2. **Reconstruction** — pure apply of stored deltas (AI + engine-owned
+ *    `PsychologicalStateDelta`, including full `sanityState` snapshots). Does
+ *    **not** re-run `updateSanity` / `advanceStoryState`.
+ *
+ * Typical live flow:
  * 1. User selects action on page N
  * 2. `advanceStoryState` advances state from page N to page N+1 (deterministic)
  * 3. AI generates page N+1 based on advanced state
  * 4. `applyStateDelta` applies AI's updates to the advanced state (creative)
- * 5. Result becomes the final state for page N+1
- * 
- * This function is also used for reconstructing story states from stored deltas
- * when loading previously generated pages.
- * 
- * @param baseState - Base story state to apply delta to (typically the advanced state from `advanceStoryState`)
- * @param stateDelta - State delta containing AI-generated incremental changes
+ * 5. `calculatePsychologicalDeltas` records engine psych + composure for the page delta
+ *
+ * @param baseState - Base story state (advanced state live, or snapshot/reconstruct mid-chain)
+ * @param stateDelta - Incremental changes (AI and/or engine-owned psych slice)
  * @returns New story state with delta applied
- * 
+ *
  * @example
  * ```typescript
- * // After generating page 2, apply AI's updates
  * const advancedState = await advanceStoryState(currentState, actionedPage);
  * const generatedPage = await generatePage(advancedState);
  * const stateDelta = extractStateDelta(generatedPage);
  * const finalState = applyStateDelta(advancedState, stateDelta);
- * // finalState now includes both user-driven and AI-driven changes
  * ```
  */
 export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, scene?: StoryScene): StoryState {
@@ -494,7 +512,8 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, s
     psychologicalProfileUpdates,
     hiddenStateUpdates,
     memoryIntegrity,
-    difficulty
+    difficulty,
+    sanityState: sanityStateDelta,
   } = stateDelta;
 
   // Explicitly copy every mutable array/object field so that
@@ -524,6 +543,14 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, s
     hiddenState: hiddenStateUpdates ? { ...baseState.hiddenState, ...hiddenStateUpdates } : baseState.hiddenState,
     memoryIntegrity: memoryIntegrity ?? baseState.memoryIntegrity,
     difficulty: difficulty ?? baseState.difficulty,
+    // Engine-owned composure: replace with full snapshot when the delta carries
+    // one (live generation + reconstruction). Otherwise preserve base / defaults.
+    // Never re-run updateSanity here — reconstruction must stay pure apply-only.
+    sanityState: sanityStateDelta
+      ? { ...sanityStateDelta }
+      : baseState.sanityState
+        ? { ...baseState.sanityState }
+        : { ...SANITY_STATE_DEFAULTS },
   };
 
   const [previousPlaceId] = Object.entries(baseState.places).find(([, place]) => place.lastVisitedAtPage === newState.page - 1) ?? [];
@@ -586,6 +613,11 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, s
  * already the page being applied — true in the live generation flow
  * because `advanceStoryState` increments `.page` first. This helper makes
  * the same contract hold true for every step of a reconstruction loop.
+ *
+ * **Engine-owned fields** (including `stateDelta.sanityState`) are restored
+ * purely by applying stored deltas — this loop never re-runs
+ * `advanceStoryState` / `updateSanity`. That is why composure must be
+ * snapshotted onto each page's delta at generation time.
  *
  * @param baseState - Starting state (typically a stored snapshot)
  * @param pages - Pages to apply, in chronological order, NOT including the page baseState was loaded from
@@ -750,8 +782,11 @@ export async function advanceStoryState(state: StoryState, actionedPage: Pick<Ca
   // Escalate story tension and hidden state
   updateHiddenState(updatedState, narrativeContext);
 
-  // Update sanity/composure resource (momentum-driven ticking clock)
+  // Reader composure resource (momentum-driven ticking clock)
   updateSanity(updatedState, narrativeContext);
+
+  // Crisis side-effects once composure has crashed (ending pressure, dials)
+  applySanityCrisisEffects(updatedState);
 
   // Update psychological profile based on new state
   updatePsychologicalProfile(updatedState, narrativeContext);
@@ -1380,30 +1415,62 @@ export function updateHiddenState(state: StoryState, context: NarrativeContext):
 }
 
 /**
+ * Computes permanent maxComposure from trauma load.
+ * Trauma permanently scars capacity — recovery never restores pre-trauma max.
+ */
+export function computeMaxComposureFromTrauma(traumaTagCount: number): number {
+  const reduced = SANITY_DEFAULT_MAX_COMPOSURE - traumaTagCount * SANITY_TRAUMA_MAX_PENALTY;
+  return Math.max(SANITY_MIN_MAX_COMPOSURE, reduced);
+}
+
+/**
+ * Ensures `state.sanityState` exists and returns a mutable reference.
+ */
+export function ensureSanityState(state: StoryState): SanityState {
+  if (!state.sanityState) {
+    state.sanityState = { ...SANITY_STATE_DEFAULTS };
+  }
+  return state.sanityState;
+}
+
+/**
  * Updates the reader-facing sanity/composure resource.
  *
- * Decays composure under sustained critical momentum.
- * Can be spent to resist realityStability collapse (not implemented here —
- * the spending decision is a reader-facing action choice).
+ * This is the **game HUD meter** — not memoryIntegrity, not profile.stability,
+ * and not StyleInput.memoryClarity. See SANITY_STATE_ARCHITECTURE.md.
  *
- * Key design principle: tie decay to momentum + threatProximity, NOT to
- * a fixed page count, to avoid fighting the AI's variable scene pacing.
+ * Behavior:
+ * - Permanent maxComposure shrinks with trauma tags
+ * - Decays under rising/critical momentum, amplified by threatProximity
+ * - Small recovery on resolution momentum (capped at maxComposure)
+ * - First crash sets hasCrashed + crashedAtPage (sticky); further decay freezes
+ * - Crisis side-effects (ending pressure) are applied in applySanityCrisisEffects
+ *
+ * Spending composure to resist reality collapse is opt-in via
+ * {@link spendComposureToResistReality} (reader action), not automatic here.
  *
  * @param state - Current story state (mutated in place)
  * @param context - Current momentum, scene type, and phase
  */
 export function updateSanity(state: StoryState, context: NarrativeContext): void {
   const { momentum = 'building' } = context;
+  const sanity = ensureSanityState(state);
 
-  // Initialize sanity state if not present
-  if (!state.sanityState) {
-    state.sanityState = { ...SANITY_STATE_DEFAULTS };
+  // Trauma permanently reduces max capacity; clamp current composure to new max
+  const traumaMax = computeMaxComposureFromTrauma(state.traumaTags.length);
+  if (traumaMax < sanity.maxComposure) {
+    sanity.maxComposure = traumaMax;
   }
+  if (sanity.decayRate <= 0) {
+    sanity.decayRate = SANITY_DEFAULT_DECAY_RATE;
+  }
+  sanity.composure = Math.min(sanity.composure, sanity.maxComposure);
 
-  const sanity = state.sanityState;
-
-  // Only decay if we haven't already crashed
-  if (sanity.hasCrashed) return;
+  // After a crash the bar stays at crisis — no further decay/recovery churn
+  if (sanity.hasCrashed) {
+    sanity.composure = 0;
+    return;
+  }
 
   // Rate-limited decay:
   // - critical: full decayRate
@@ -1423,23 +1490,118 @@ export function updateSanity(state: StoryState, context: NarrativeContext): void
     decayThisPage = Math.round(decayThisPage * 1.2);
   }
 
-  // Every 3 trauma tags adds +1 decay
+  // Every 3 trauma tags adds +1 decay this page
   if (state.traumaTags.length >= 3) {
     decayThisPage += Math.floor(state.traumaTags.length / 3);
   }
 
-  // Apply decay
-  sanity.composure = Math.max(0, sanity.composure - decayThisPage);
+  if (decayThisPage > 0) {
+    sanity.composure = Math.max(0, sanity.composure - decayThisPage);
+  }
 
-  // Check for crash
+  // Small recovery on resolution (only if not crashed)
+  if (momentum === 'resolution' && sanity.composure < sanity.maxComposure) {
+    sanity.composure = Math.min(
+      sanity.maxComposure,
+      sanity.composure + SANITY_RESOLUTION_RECOVERY,
+    );
+  }
+
+  // First crash — mark sticky crisis; ending pressure applied after profile update
   if (sanity.composure <= 0 && !sanity.hasCrashed) {
+    sanity.composure = 0;
+    sanity.hasCrashed = true;
+    sanity.crashedAtPage = state.page;
+  }
+}
+
+/**
+ * Spends composure to push back against imminent reality collapse.
+ *
+ * Call when a reader-facing action explicitly resists distortion (future UI).
+ * Returns true if the spend succeeded and reality was stabilized one step.
+ *
+ * @param state - Mutable story state
+ * @param cost - Composure cost (default SANITY_REALITY_RESIST_COST)
+ */
+export function spendComposureToResistReality(
+  state: StoryState,
+  cost: number = SANITY_REALITY_RESIST_COST,
+): boolean {
+  const sanity = ensureSanityState(state);
+  if (sanity.hasCrashed || sanity.composure < cost) return false;
+
+  sanity.composure = Math.max(0, sanity.composure - cost);
+
+  const reality = state.hiddenState.realityStability;
+  if (reality === 'broken') {
+    state.hiddenState.realityStability = 'slipping';
+  } else if (reality === 'slipping') {
+    state.hiddenState.realityStability = 'stable';
+  }
+
+  if (sanity.composure <= 0) {
+    sanity.composure = 0;
     sanity.hasCrashed = true;
     sanity.crashedAtPage = state.page;
   }
 
-  // Small recovery in resolution phase (healing effect)
-  if (momentum === 'resolution' && sanity.composure < sanity.maxComposure) {
-    sanity.composure = Math.min(sanity.maxComposure, sanity.composure + 3);
+  return true;
+}
+
+/**
+ * Applies crisis side-effects after composure hits 0.
+ *
+ * Escalation of narrative dials runs **once** on the crash page only
+ * (`crashedAtPage === state.page`) so subsequent advances do not
+ * ratcheting-break reality every turn. Ending-plan arming is re-checked
+ * every page so a missing plan can still be armed if something cleared it.
+ */
+export function applySanityCrisisEffects(state: StoryState): void {
+  const sanity = state.sanityState;
+  if (!sanity?.hasCrashed) return;
+
+  const isCrashPage = sanity.crashedAtPage === state.page;
+
+  if (isCrashPage) {
+    // One-step push toward breakdown so prose matches the resource crash
+    if (state.memoryIntegrity === 'stable') {
+      state.memoryIntegrity = 'fragmented';
+    } else if (state.memoryIntegrity === 'fragmented') {
+      state.memoryIntegrity = 'corrupted';
+    }
+
+    if (state.hiddenState.realityStability === 'stable') {
+      state.hiddenState.realityStability = 'slipping';
+    } else if (state.hiddenState.realityStability === 'slipping') {
+      state.hiddenState.realityStability = 'broken';
+    }
+
+    if (state.hiddenState.threatProximity === 'distant') {
+      state.hiddenState.threatProximity = 'near';
+    } else if (state.hiddenState.threatProximity === 'near') {
+      state.hiddenState.threatProximity = 'immediate';
+    }
+
+    // Nudge difficulty upward under crisis (once)
+    if (state.difficulty === 'low') state.difficulty = 'medium';
+    else if (state.difficulty === 'medium') state.difficulty = 'high';
+    else if (state.difficulty === 'high') state.difficulty = 'nightmare';
+  }
+
+  // Arm a near-term ending trap if nothing is already armed
+  const plan = state.hiddenState.endingPlan;
+  if (!plan?.armed) {
+    const triggerPage = Math.min(
+      state.maxPage,
+      Math.max(state.page + 1, state.page + 2),
+    );
+    state.hiddenState.endingPlan = {
+      type: 'unreliable_reality',
+      armed: true,
+      triggerPage,
+      fakeToReal: false,
+    } satisfies EndingPlan;
   }
 }
 
@@ -2128,7 +2290,8 @@ export function updateAdvancedEndingSystems(state: StoryState): void {
   // Detect profile shifts (late game behavior changes)
   if (pageProgress > 0.6) detectProfileShift(state);
 
-  // Auto-arm fake-to-real plan for twist-eligible ending types
+  // Composure crash already armed a crisis plan via applySanityCrisisEffects —
+  // still allow fake-to-real arming only when no plan is armed yet.
   if (pageProgress >= 0.7 && !state.hiddenState.endingPlan?.armed) {
     const ending = state.viableEnding?.type;
     const triggerPage = Math.max(state.page + 1, state.maxPage - 2);
@@ -2139,9 +2302,19 @@ export function updateAdvancedEndingSystems(state: StoryState): void {
   }
 
   // Transition: once we hit triggerPage, activate the rug-pull phase
-  const plan = state.hiddenState.endingPlan;
+  let plan = state.hiddenState.endingPlan;
   if (plan?.armed && !plan.fakeToReal && state.page >= plan.triggerPage) {
-    state.hiddenState.endingPlan = { ...plan, fakeToReal: true };
+    plan = { ...plan, fakeToReal: true };
+    state.hiddenState.endingPlan = plan;
+  }
+
+  // Under composure crash, force the rug-pull sooner so crisis is felt in-story
+  plan = state.hiddenState.endingPlan;
+  if (state.sanityState?.hasCrashed && plan?.armed && !plan.fakeToReal) {
+    const crashPage = state.sanityState.crashedAtPage ?? state.page;
+    if (state.page >= crashPage + 1) {
+      state.hiddenState.endingPlan = { ...plan, fakeToReal: true };
+    }
   }
 }
 

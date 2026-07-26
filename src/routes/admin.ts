@@ -1,4 +1,4 @@
-/**
+﻿/**
  * @overview Admin Routes Module
  * 
  * Provides administrative endpoints for debugging and system management.
@@ -22,13 +22,13 @@
 import { Hono } from "hono";
 import { eq, desc, and, or, inArray, sql, gte, lte, isNotNull, ilike } from "drizzle-orm";
 import { requireAuth } from "../middleware/nextauth.js";
-import { requireAdmin, requireSuperAdmin } from "../middleware/admin-auth.js";
+import { requireSuperAdmin, requirePermission, resolveAdminAccess, normalizePermissions, isSuperAdminUserId, ADMIN_PERMISSIONS } from "../middleware/admin-auth.js";
 import { cApiError, cValidationError, cNotFoundError } from "../utils/error.js";
 import { reconstructStoryState } from "../utils/branch-traversal.js";
 import { getBookFromDB, getPageFromDB } from "../services/book.js";
 import { getStoryState } from "../services/story.js";
 import { dbRead, dbWrite } from "../db/client.js";
-import { socialMentions, bookTestimonials, adminUsers, usage, users, userFeedbacks, books } from "../db/schema.js";
+import { socialMentions, bookTestimonials, adminUsers, usage, users, userFeedbacks, books, portalBlogPosts } from "../db/schema.js";
 import type { AppEnv } from "../hono/env.js";
 import {
   extractAndResolveTwistloomLink,
@@ -36,6 +36,7 @@ import {
   resolveBookByIdForAdmin,
   resolvePublicBookBySlug,
 } from "../services/social/extract-twistloom-link.js";
+import { sanitizeBlogHtml } from "../utils/sanitize-html.js";
 
 const router = new Hono<AppEnv>();
 
@@ -204,9 +205,34 @@ function isSocialMentionStatus(value: unknown): value is "pending" | "approved" 
  * @param offset - Number of rows to skip for pagination (default: 0)
  * @returns Array of social mentions and a total count for the applied filter
  */
+/**
+ * GET /admin/me
+ * Current admin session capabilities (for sidebar / UI). Not a security boundary.
+ */
+router.get("/me", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId");
+    if (!userId) {
+      return c.json({ error: "Unauthorized" }, 401);
+    }
+    const access = await resolveAdminAccess(userId);
+    if (!access.isAdmin) {
+      return c.json({ error: "Forbidden: admin access required" }, 403);
+    }
+    return c.json({
+      userId,
+      isSuperAdmin: access.isSuperAdmin,
+      permissions: access.permissions,
+      availablePermissions: ADMIN_PERMISSIONS,
+    });
+  } catch (error) {
+    return cApiError(c, "Failed to resolve admin session", error);
+  }
+});
+
 router.get("/social-mentions",
   requireAuth,
-  requireAdmin,
+  requirePermission("social_mentions"),
   async (c) => {
     try {
       const { status, platform, linked, limit = "50", offset = "0" } = c.req.query();
@@ -261,7 +287,7 @@ router.get("/social-mentions",
  */
 router.get("/social-mentions/:id",
   requireAuth,
-  requireAdmin,
+  requirePermission("social_mentions"),
   async (c) => {
     try {
       const { id } = c.req.param();
@@ -294,7 +320,7 @@ router.get("/social-mentions/:id",
  * - relatedBookId: book UUID, or null to unlink
  * - relatedPageId: optional page UUID, or null to clear
  * - relatedBookUrl: paste Twistloom /books or /share URL (resolved server-side; sets admin source)
- * - clearRelatedBook: true → nulls related book/page and source
+ * - clearRelatedBook: true â†’ nulls related book/page and source
  *
  * Setting a book via relatedBookId or relatedBookUrl always sets relatedBookSource='admin'
  * so cron backfill will not overwrite it.
@@ -304,7 +330,7 @@ router.get("/social-mentions/:id",
  */
 router.patch("/social-mentions/:id",
   requireAuth,
-  requireAdmin,
+  requirePermission("social_mentions"),
   async (c) => {
     try {
       const { id } = c.req.param();
@@ -431,7 +457,7 @@ router.patch("/social-mentions/:id",
  */
 router.post("/social-mentions",
   requireAuth,
-  requireAdmin,
+  requirePermission("social_mentions"),
   async (c) => {
     try {
       const {
@@ -530,7 +556,7 @@ router.post("/social-mentions",
  */
 router.delete("/social-mentions/:id",
   requireAuth,
-  requireAdmin,
+  requirePermission("social_mentions"),
   async (c) => {
     try {
       const { id } = c.req.param();
@@ -564,7 +590,7 @@ router.delete("/social-mentions/:id",
  */
 router.post("/social-mentions/bulk-status",
   requireAuth,
-  requireAdmin,
+  requirePermission("social_mentions"),
   async (c) => {
     try {
       const { ids, status } = c.get("body");
@@ -622,7 +648,7 @@ router.post("/social-mentions/bulk-status",
 //       timestamp: new Date().toISOString()
 //     });
 //   } catch (error) {
-//     console.error("[admin] ❌ Failed to get snapshot statistics:", error);
+//     console.error("[admin] âŒ Failed to get snapshot statistics:", error);
 //     res.status(500).json({ error: "Failed to get snapshot statistics" });
 //   }
 // });
@@ -652,7 +678,7 @@ router.post("/social-mentions/bulk-status",
 //     // Delete all snapshots
 //     await deleteAllSnapshots(userId, bookIdStr);
     
-//     console.log(`[admin] 🗑️ Admin deleted all snapshots for user ${userId}, book ${bookIdStr} (${beforeStats.total} snapshots)`);
+//     console.log(`[admin] ðŸ—‘ï¸ Admin deleted all snapshots for user ${userId}, book ${bookIdStr} (${beforeStats.total} snapshots)`);
     
 //     res.json({
 //       bookId: bookIdStr,
@@ -661,7 +687,7 @@ router.post("/social-mentions/bulk-status",
 //       timestamp: new Date().toISOString()
 //     });
 //   } catch (error) {
-//     console.error("[admin] ❌ Failed to delete snapshots:", error);
+//     console.error("[admin] âŒ Failed to delete snapshots:", error);
 //     res.status(500).json({ error: "Failed to delete snapshots" });
 //   }
 // });
@@ -678,7 +704,7 @@ router.post("/social-mentions/bulk-status",
  */
 router.get("/testimonials",
   requireAuth,
-  requireAdmin,
+  requirePermission("testimonials"),
   async (c) => {
     try {
       const { status, limit = "50", offset = "0" } = c.req.query();
@@ -717,7 +743,7 @@ router.get("/testimonials",
  */
 router.patch("/testimonials/:id",
   requireAuth,
-  requireAdmin,
+  requirePermission("testimonials"),
   async (c) => {
     try {
       const { id } = c.req.param();
@@ -761,7 +787,7 @@ router.patch("/testimonials/:id",
  */
 router.post("/testimonials/bulk-status",
   requireAuth,
-  requireAdmin,
+  requirePermission("testimonials"),
   async (c) => {
     try {
       const { ids, status } = c.get("body");
@@ -824,16 +850,40 @@ router.post("/admins",
   requireSuperAdmin,
   async (c) => {
     try {
-      const { userId, email } = c.get("body");
+      const { userId, email, permissions } = c.get("body") as {
+        userId?: string;
+        email?: string;
+        permissions?: unknown;
+      };
 
       if (!userId && !email) {
         return cValidationError(c, "Either userId or email is required");
       }
 
+      let resolvedUserId = typeof userId === "string" && userId.length > 0 ? userId : null;
+      let resolvedEmail = typeof email === "string" && email.length > 0 ? email : null;
+
+      if (!resolvedUserId && resolvedEmail) {
+        const [platformUser] = await dbRead
+          .select({ userId: users.userId, email: users.email })
+          .from(users)
+          .where(eq(users.email, resolvedEmail))
+          .limit(1);
+        if (!platformUser) {
+          return cValidationError(c, "No platform user found for that email");
+        }
+        resolvedUserId = platformUser.userId;
+        resolvedEmail = platformUser.email ?? resolvedEmail;
+      }
+
+      if (!resolvedUserId) {
+        return cValidationError(c, "userId is required");
+      }
+
       const [existing] = await dbRead
         .select({ userId: adminUsers.userId })
         .from(adminUsers)
-        .where(userId ? eq(adminUsers.userId, userId) : eq(adminUsers.email, email))
+        .where(eq(adminUsers.userId, resolvedUserId))
         .limit(1);
 
       if (existing) {
@@ -841,10 +891,16 @@ router.post("/admins",
       }
 
       const invitedBy = c.get("userId");
+      const perms = normalizePermissions(permissions ?? []);
 
       const [created] = await dbWrite
         .insert(adminUsers)
-        .values({ userId, email, invitedBy })
+        .values({
+          userId: resolvedUserId,
+          email: resolvedEmail,
+          invitedBy,
+          permissions: perms,
+        })
         .returning();
 
       return c.json(created, 201);
@@ -852,6 +908,50 @@ router.post("/admins",
       return cApiError(c, "Failed to add admin", error);
     }
   }
+);
+
+/**
+ * PATCH /admin/admins/:userId/permissions
+ *
+ * Replace capability list for an invited admin. Super admin only.
+ * Body: { permissions: string[] } — only known keys are kept.
+ */
+router.patch(
+  "/admins/:userId/permissions",
+  requireAuth,
+  requireSuperAdmin,
+  async (c) => {
+    try {
+      const { userId } = c.req.param();
+      const body = c.get("body") as { permissions?: unknown };
+
+      if (isSuperAdminUserId(userId)) {
+        return cValidationError(c, "Cannot set permissions on the super admin account");
+      }
+
+      const [existing] = await dbRead
+        .select({ userId: adminUsers.userId })
+        .from(adminUsers)
+        .where(eq(adminUsers.userId, userId))
+        .limit(1);
+
+      if (!existing) {
+        return cNotFoundError(c, "Admin not found");
+      }
+
+      const perms = normalizePermissions(body?.permissions ?? []);
+
+      const [updated] = await dbWrite
+        .update(adminUsers)
+        .set({ permissions: perms })
+        .where(eq(adminUsers.userId, userId))
+        .returning();
+
+      return c.json(updated);
+    } catch (error) {
+      return cApiError(c, "Failed to update admin permissions", error);
+    }
+  },
 );
 
 /**
@@ -900,7 +1000,7 @@ router.delete("/admins/:userId",
  */
 router.get("/usage/chart",
   requireAuth,
-  requireAdmin,
+  requirePermission("usage"),
   async (c) => {
     try {
       const { from, to, provider } = c.req.query();
@@ -1001,7 +1101,7 @@ router.post(
       }
 
       console.log(
-        `[admin] 📢 Announcement "${body.title}" sent=${sent} failed=${failed} eligible=${recipients.length}`,
+        `[admin] ðŸ“¢ Announcement "${body.title}" sent=${sent} failed=${failed} eligible=${recipients.length}`,
       );
 
       return c.json({
@@ -1029,7 +1129,7 @@ router.post(
  */
 router.get("/feedbacks",
   requireAuth,
-  requireAdmin,
+  requirePermission("feedbacks"),
   async (c) => {
     try {
       const { status, category, limit = "50", offset = "0" } = c.req.query();
@@ -1083,7 +1183,7 @@ router.get("/feedbacks",
  */
 router.patch("/feedbacks/:id",
   requireAuth,
-  requireAdmin,
+  requirePermission("feedbacks"),
   async (c) => {
     try {
       const { id } = c.req.param();
@@ -1127,7 +1227,7 @@ router.patch("/feedbacks/:id",
  */
 router.get("/books",
   requireAuth,
-  requireAdmin,
+  requirePermission("books"),
   async (c) => {
     try {
       const { search, limit = "50", offset = "0" } = c.req.query();
@@ -1187,7 +1287,7 @@ router.get("/books",
  */
 router.get("/users",
   requireAuth,
-  requireAdmin,
+  requirePermission("users"),
   async (c) => {
     try {
       const { search, limit = "50", offset = "0" } = c.req.query();
@@ -1231,6 +1331,283 @@ router.get("/users",
       return cApiError(c, "Failed to list users", error);
     }
   }
+);
+
+// ============================================================================
+// PORTAL BLOG POSTS CMS (portal.twistloom.com/blog)
+// ============================================================================
+
+function isBlogPostStatus(value: unknown): value is "draft" | "published" | "archived" {
+  return value === "draft" || value === "published" || value === "archived";
+}
+
+function slugifyBlogTitle(title: string): string {
+  return title
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 120) || `post-${Date.now()}`;
+}
+
+/**
+ * GET /admin/blog-posts
+ *
+ * Lists portal blog posts for the CMS. Filter by status; paginate with limit/offset.
+ */
+router.get(
+  "/blog-posts",
+  requireAuth,
+  requirePermission("blog"),
+  async (c) => {
+    try {
+      const { status, limit = "50", offset = "0", search } = c.req.query();
+      const limitNum = Math.min(Math.max(Number(limit) || 50, 1), 200);
+      const offsetNum = Math.max(Number(offset) || 0, 0);
+
+      const conditions = [];
+      if (isBlogPostStatus(status)) {
+        conditions.push(eq(portalBlogPosts.status, status));
+      }
+      if (typeof search === "string" && search.length > 0) {
+        conditions.push(
+          or(
+            ilike(portalBlogPosts.title, `%${search}%`),
+            ilike(portalBlogPosts.slug, `%${search}%`),
+          ),
+        );
+      }
+
+      const rows = await dbRead
+        .select()
+        .from(portalBlogPosts)
+        .where(conditions.length > 0 ? and(...conditions) : undefined)
+        .orderBy(desc(portalBlogPosts.updatedAt))
+        .limit(limitNum)
+        .offset(offsetNum);
+
+      const [{ count }] = await dbRead
+        .select({ count: sql<number>`count(*)` })
+        .from(portalBlogPosts)
+        .where(conditions.length > 0 ? and(...conditions) : undefined);
+
+      return c.json({ total: Number(count), limit: limitNum, offset: offsetNum, posts: rows });
+    } catch (error) {
+      return cApiError(c, "Failed to list blog posts", error);
+    }
+  },
+);
+
+/**
+ * GET /admin/blog-posts/:id
+ */
+router.get(
+  "/blog-posts/:id",
+  requireAuth,
+  requirePermission("blog"),
+  async (c) => {
+    try {
+      const { id } = c.req.param();
+      const [post] = await dbRead
+        .select()
+        .from(portalBlogPosts)
+        .where(eq(portalBlogPosts.id, id))
+        .limit(1);
+      if (!post) return cNotFoundError(c, "Blog post not found");
+      return c.json(post);
+    } catch (error) {
+      return cApiError(c, "Failed to get blog post", error);
+    }
+  },
+);
+
+/**
+ * POST /admin/blog-posts
+ *
+ * Creates a draft (or published) portal blog post.
+ */
+router.post(
+  "/blog-posts",
+  requireAuth,
+  requirePermission("blog"),
+  async (c) => {
+    try {
+      const body = c.get("body") as {
+        slug?: string;
+        title?: string;
+        description?: string;
+        excerpt?: string;
+        bodyHtml?: string;
+        coverUrl?: string;
+        authorName?: string;
+        status?: string;
+        publishedAt?: string | null;
+      };
+
+      if (!body?.title || typeof body.title !== "string" || !body.title.trim()) {
+        return cValidationError(c, "title is required");
+      }
+      if (!body?.bodyHtml || typeof body.bodyHtml !== "string" || !body.bodyHtml.trim()) {
+        return cValidationError(c, "bodyHtml is required");
+      }
+      if (body.status !== undefined && !isBlogPostStatus(body.status)) {
+        return cValidationError(c, "Invalid status. Must be draft | published | archived");
+      }
+
+      const status = isBlogPostStatus(body.status) ? body.status : "draft";
+      const slugRaw =
+        typeof body.slug === "string" && body.slug.trim().length > 0
+          ? body.slug.trim().toLowerCase()
+          : slugifyBlogTitle(body.title);
+      const slug = slugRaw.replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-");
+
+      let publishedAt: Date | null = null;
+      if (status === "published") {
+        publishedAt = body.publishedAt ? new Date(body.publishedAt) : new Date();
+      } else if (body.publishedAt) {
+        publishedAt = new Date(body.publishedAt);
+      }
+
+      const bodyHtml = sanitizeBlogHtml(body.bodyHtml);
+      if (!bodyHtml.trim()) {
+        return cValidationError(c, "bodyHtml is empty after sanitization");
+      }
+
+      const [created] = await dbWrite
+        .insert(portalBlogPosts)
+        .values({
+          slug,
+          title: body.title.trim(),
+          description: body.description?.trim() || null,
+          excerpt: body.excerpt?.trim() || null,
+          bodyHtml,
+          coverUrl: body.coverUrl?.trim() || null,
+          authorName: body.authorName?.trim() || null,
+          authorId: c.get("userId") ?? null,
+          status,
+          publishedAt,
+        })
+        .returning();
+
+      return c.json(created, 201);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "";
+      if (msg.includes("portal_blog_posts_slug_unique") || msg.includes("unique")) {
+        return cValidationError(c, "A post with this slug already exists");
+      }
+      return cApiError(c, "Failed to create blog post", error);
+    }
+  },
+);
+
+/**
+ * PATCH /admin/blog-posts/:id
+ */
+router.patch(
+  "/blog-posts/:id",
+  requireAuth,
+  requirePermission("blog"),
+  async (c) => {
+    try {
+      const { id } = c.req.param();
+      const body = c.get("body") as {
+        slug?: string;
+        title?: string;
+        description?: string | null;
+        excerpt?: string | null;
+        bodyHtml?: string;
+        coverUrl?: string | null;
+        authorName?: string | null;
+        status?: string;
+        publishedAt?: string | null;
+      };
+
+      const [existing] = await dbRead
+        .select()
+        .from(portalBlogPosts)
+        .where(eq(portalBlogPosts.id, id))
+        .limit(1);
+      if (!existing) return cNotFoundError(c, "Blog post not found");
+
+      if (body.status !== undefined && !isBlogPostStatus(body.status)) {
+        return cValidationError(c, "Invalid status. Must be draft | published | archived");
+      }
+
+      const updates: Partial<typeof portalBlogPosts.$inferInsert> = {};
+      if (typeof body.title === "string" && body.title.trim()) updates.title = body.title.trim();
+      if (typeof body.bodyHtml === "string") {
+        const cleaned = sanitizeBlogHtml(body.bodyHtml);
+        if (!cleaned.trim()) {
+          return cValidationError(c, "bodyHtml is empty after sanitization");
+        }
+        updates.bodyHtml = cleaned;
+      }
+      if (body.description !== undefined) {
+        updates.description = body.description === null ? null : String(body.description).trim() || null;
+      }
+      if (body.excerpt !== undefined) {
+        updates.excerpt = body.excerpt === null ? null : String(body.excerpt).trim() || null;
+      }
+      if (body.coverUrl !== undefined) {
+        updates.coverUrl = body.coverUrl === null ? null : String(body.coverUrl).trim() || null;
+      }
+      if (body.authorName !== undefined) {
+        updates.authorName = body.authorName === null ? null : String(body.authorName).trim() || null;
+      }
+      if (typeof body.slug === "string" && body.slug.trim()) {
+        updates.slug = body.slug.trim().toLowerCase().replace(/[^a-z0-9-]/g, "-");
+      }
+      if (isBlogPostStatus(body.status)) {
+        updates.status = body.status;
+        if (body.status === "published" && !existing.publishedAt && body.publishedAt === undefined) {
+          updates.publishedAt = new Date();
+        }
+      }
+      if (body.publishedAt !== undefined) {
+        updates.publishedAt = body.publishedAt ? new Date(body.publishedAt) : null;
+      }
+
+      if (Object.keys(updates).length === 0) {
+        return c.json(existing);
+      }
+
+      const [updated] = await dbWrite
+        .update(portalBlogPosts)
+        .set(updates)
+        .where(eq(portalBlogPosts.id, id))
+        .returning();
+
+      return c.json(updated);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "";
+      if (msg.includes("portal_blog_posts_slug_unique") || msg.includes("unique")) {
+        return cValidationError(c, "A post with this slug already exists");
+      }
+      return cApiError(c, "Failed to update blog post", error);
+    }
+  },
+);
+
+/**
+ * DELETE /admin/blog-posts/:id
+ */
+router.delete(
+  "/blog-posts/:id",
+  requireAuth,
+  requirePermission("blog"),
+  async (c) => {
+    try {
+      const { id } = c.req.param();
+      const [deleted] = await dbWrite
+        .delete(portalBlogPosts)
+        .where(eq(portalBlogPosts.id, id))
+        .returning({ id: portalBlogPosts.id });
+      if (!deleted) return cNotFoundError(c, "Blog post not found");
+      return c.json({ success: true, id: deleted.id });
+    } catch (error) {
+      return cApiError(c, "Failed to delete blog post", error);
+    }
+  },
 );
 
 export default router;

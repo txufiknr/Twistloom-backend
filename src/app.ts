@@ -42,6 +42,10 @@ const allowedOrigins = new Set([
   "https://twistloom-web.vercel.app", // Production (Vercel deployment)
   "https://localhost:3002", // Development (HTTPS) via `pnpm dev:ssl`
   "http://localhost:3001", // Development via `pnpm dev`
+  // Portal (server-side fetch often has no Origin; listed for browser tools / future admin embeds)
+  process.env.PORTAL_URL,
+  "https://portal.twistloom.com",
+  "http://localhost:5174",
 ].filter(Boolean) as string[]);
 
 // CORS — mirrors the previous Express cors() configuration.

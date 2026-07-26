@@ -71,6 +71,7 @@
     "google-auth-library": "^10.6.2",
     "groq-sdk": "^1.2.1",
     "hono": "^4.12.31",
+    "isomorphic-dompurify": "^3.19.0",
     "jsonrepair": "^3.14.0",
     "lru-cache": "^11.5.1",
     "openai": "^6.39.1",

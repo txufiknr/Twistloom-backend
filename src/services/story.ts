@@ -259,23 +259,22 @@ function buildFrontierAncestorIds(state: DBStoryState | null, pageId: string): s
 }
 
 /**
- * Updates the story state for a user and book
- * 
- * @param userId - The user's unique identifier
- * @param bookId - The book's unique identifier
- * @param state - The updated story state to persist
- * @returns Promise that resolves when state is updated
- * 
- * Behavior:
- * - Updates story_states table with new state data
- * - Maintains composite key relationship
- * - Handles all story state fields including psychological data
- * - Preserves candidate flag for branching narratives
- * 
- * Example:
- * ```typescript
- * await insertStoryState("user123", "book456", "page789", state);
- * ```
+ * Inserts or updates the full `story_states` row for a page.
+ *
+ * Fast path for load-by-`pageId`. Includes engine fields such as
+ * `sanityState`, threads, injuries, factsHistory, etc.
+ *
+ * **Not sufficient alone for reconstruction:** intermediate full rows may
+ * be deleted by cleanup. Engine progression (including composure) is also
+ * snapshotted on each page's `stateDelta` (`PsychologicalStateDelta`) so
+ * `applyDeltaChain` can rebuild without re-running `advanceStoryState`.
+ * See docs/architecture/SANITY_STATE_ARCHITECTURE.md § StateDelta design decision.
+ *
+ * @param bookId - Book identifier
+ * @param pageId - Page this state belongs to (primary key)
+ * @param state - Domain story state to persist
+ * @param source - Provenance (`original` | `reconstructed` | …)
+ * @param options.client - Optional DB transaction client
  */
 export async function insertStoryState(
   bookId: string,
@@ -296,6 +295,7 @@ export async function insertStoryState(
         flags: state.flags,
         traumaTags: state.traumaTags,
         futureNotes: state.futureNotes,
+        factsHistory: state.factsHistory,
         plotFlags: state.plotFlags,
         inventory: state.inventory,
         psychologicalProfile: state.psychologicalProfile,
@@ -304,9 +304,15 @@ export async function insertStoryState(
         difficulty: state.difficulty,
         viableEnding: state.viableEnding,
         characters: state.characters,
+        plannedCharacters: state.plannedCharacters,
         places: state.places,
+        threads: state.threads,
         actionsHistory: state.actionsHistory,
+        injuries: state.injuries,
+        healthStatus: state.healthStatus,
+        sanityState: state.sanityState ?? undefined,
         contextHistory: state.contextHistory,
+        isMajorEvent: state.isMajorEvent,
         source,
       })
       .onConflictDoUpdate({
@@ -317,6 +323,7 @@ export async function insertStoryState(
           flags: state.flags,
           traumaTags: state.traumaTags,
           futureNotes: state.futureNotes,
+          factsHistory: state.factsHistory,
           plotFlags: state.plotFlags,
           inventory: state.inventory,
           psychologicalProfile: state.psychologicalProfile,
@@ -325,9 +332,15 @@ export async function insertStoryState(
           difficulty: state.difficulty,
           viableEnding: state.viableEnding,
           characters: state.characters,
+          plannedCharacters: state.plannedCharacters,
           places: state.places,
+          threads: state.threads,
           actionsHistory: state.actionsHistory,
+          injuries: state.injuries,
+          healthStatus: state.healthStatus,
+          sanityState: state.sanityState ?? undefined,
           contextHistory: state.contextHistory,
+          isMajorEvent: state.isMajorEvent,
           updatedAt: new Date(),
         }
       });

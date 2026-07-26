@@ -288,6 +288,13 @@
       "when": 1785020926144,
       "tag": "0040_deep_talon",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1785029400535,
+      "tag": "0041_perfect_leo",
+      "breakpoints": true
     }
   ]
 }
