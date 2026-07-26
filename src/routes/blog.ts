@@ -76,7 +76,7 @@ router.get("/posts/:slug", async (c) => {
     // Defense-in-depth: re-sanitize stored HTML on public read
     return c.json({
       ...post,
-      bodyHtml: sanitizeBlogHtml(post.bodyHtml),
+      bodyHtml: await sanitizeBlogHtml(post.bodyHtml),
     });
   } catch (error) {
     return cApiError(c, "Failed to get blog post", error);

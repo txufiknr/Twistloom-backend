@@ -1790,7 +1790,7 @@ router.post(
         publishedAt = new Date(body.publishedAt);
       }
 
-      const bodyHtml = sanitizeBlogHtml(body.bodyHtml);
+      const bodyHtml = await sanitizeBlogHtml(body.bodyHtml);
       if (!bodyHtml.trim()) {
         return cValidationError(c, "bodyHtml is empty after sanitization");
       }
@@ -1858,7 +1858,7 @@ router.patch(
       const updates: Partial<typeof portalBlogPosts.$inferInsert> = {};
       if (typeof body.title === "string" && body.title.trim()) updates.title = body.title.trim();
       if (typeof body.bodyHtml === "string") {
-        const cleaned = sanitizeBlogHtml(body.bodyHtml);
+        const cleaned = await sanitizeBlogHtml(body.bodyHtml);
         if (!cleaned.trim()) {
           return cValidationError(c, "bodyHtml is empty after sanitization");
         }

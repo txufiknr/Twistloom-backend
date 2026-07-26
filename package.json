@@ -80,6 +80,7 @@
     "stripe": "^22.2.0",
     "tempmail-checker": "^1.1.1",
     "ua-parser-js": "^2.0.10",
+    "ultrahtml": "^1.7.0",
     "undici": "^8.3.0",
     "uuid": "^14.0.0"
   },
