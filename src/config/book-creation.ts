@@ -2,6 +2,7 @@ import { MAX_WORDS_PER_PAGE } from "./story.js";
 import { blacklistedNames } from "./characters.js";
 import { formatOneOf } from "../utils/text-processing.js";
 import type { WritingPreset } from "../types/book-creation.js";
+import type { EndingPlanType, EndingType, ProfileShiftType } from "../types/story.js";
 
 export const MAX_CONCURRENT_GENERATIONS = 5;
 
@@ -426,4 +427,50 @@ PAGE ENDING RULES:
 - End on a fracture — something that contradicts what the reader thought they understood.
 - The last line should destabilize: a memory that can't be right, a dead character speaking.
 - If the page ends on clarity, that clarity is a trap.`
+};
+
+/**
+ * Static ending + flavor-summary pairs for each EndingPlanType, used by
+ * Tier 1 of determineOptimalEnding below. "fake_relief_twist" isn't listed
+ * here -- its target ending depends on runtime state (`fakeToReal` and the
+ * carried `viableEnding`), so Tier 1 resolves it separately instead of
+ * forcing that branch into a static table.
+ */
+export const ENDING_PLAN_MAP: Partial<Record<EndingPlanType, { type: EndingType; summary: string }>> = {
+  loop_trap: { type: "loop", summary: "Active plan: Forcing a cyclical nightmare or time loop." },
+  identity_reveal: { type: "identity_twist", summary: "Active plan: Building toward a shocking truth about MC's identity." },
+  unreliable_reality: { type: "false_reality", summary: "Active plan: The world rules are breaking down completely." },
+  possession: { type: "possession", summary: "Active plan: External control or supernatural possession." },
+  silent_void: { type: "irreversible_loss", summary: "Active plan: Existential dread culminating in permanent loss." },
+  observer_twist: { type: "simulation", summary: "Active plan: Breaking the fourth wall or revealing the simulation." },
+};
+
+/**
+ * Static ending + flavor-summary pairs for each detectable profile shift.
+ * Was previously a switch statement with a hand-written comment above each
+ * case restating the summary as a design note -- five of those comments had
+ * drifted out of sync with the actual summary string below them (a stale
+ * first draft left in place after the real line was revised), which is
+ * exactly the kind of silent doc-rot a plain data map can't develop: the
+ * summary text IS the only copy now, so there's nothing left to fall out of
+ * sync with.
+ *
+ * denial_break and trust_betrayal are handled here but currently never
+ * detected -- kept for when detectProfileShift gains those detection paths.
+ */
+export const SHIFTED_ENDING_MAP: Partial<Record<ProfileShiftType, { type: EndingType; summary: string }>> = {
+  curiosity_collapse: { type: "mental_fabrication", summary: "You stopped asking questions... but something kept answering anyway." },
+  fear_spike: { type: "loop", summary: "It didn't chase you because you were slow — it chased you because you understood." },
+  aggression_turn: { type: "become_threat", summary: "You weren't trying to survive anymore. You became the monster you fought." },
+  archetype_collapse: { type: "possession", summary: "The core identity collapsed, leaving an empty vessel for control." },
+  reality_breakdown: { type: "false_reality", summary: "When reality shattered, you found the truth in the pieces." },
+  manipulation_acceptance: { type: "mental_fabrication", summary: "You finally stopped fighting... and accepted the lie as truth." },
+  trait_inversion: { type: "loop", summary: "The curious became fearful — stepping perfectly back to the beginning." },
+  fear_to_aggression: { type: "possession", summary: "Fear turned to rage, and rage opened the door to outside influence." },
+  deception_onset: { type: "identity_twist", summary: "You started lying and couldn't stop — even to yourself about who you are." },
+  social_withdrawal: { type: "irreversible_loss", summary: "You pushed everyone away. Now, there is no one left to lose." },
+  protective_to_aggressive: { type: "become_threat", summary: "The protector became the thing everyone needed protecting from." },
+  creative_to_destructive: { type: "escalation", summary: "You built something beautiful, then burned it, creating a worse threat." },
+  denial_break: { type: "false_reality", summary: "The dam broke. The world as you knew it never existed." },
+  trust_betrayal: { type: "betrayal", summary: "The safety was a lie; the true villain was the one you trusted." },
 };

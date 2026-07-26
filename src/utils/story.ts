@@ -11,6 +11,7 @@ import type { CharacterPlan, Injury, InventoryItem } from "../types/character.js
 import type { ThreadUpdates, StoryThread, ThreadClue } from "../types/story-thread.js";
 import type { CandidateGenerationPage } from "../types/candidate-generation.js";
 import type { NewThread } from "../types/story-thread.js";
+import { ENDING_PLAN_MAP, SHIFTED_ENDING_MAP } from "../config/book-creation.js";
 
 /**
  * Create a StoryThread object from a NewThread-like spec.
@@ -1836,39 +1837,10 @@ export function determineOptimalEnding(state: StoryState): EndingRecommendation 
   // TIER 1: Respect an Active Ending Plan (Highest Priority)
   // ---------------------------------------------------------
   if (hiddenState.endingPlan?.armed) {
-    let targetEnding: EndingType;
-    let summary: string;
-
-    switch (hiddenState.endingPlan.type) {
-      case "fake_relief_twist":
-        targetEnding = hiddenState.endingPlan.fakeToReal ? (viableEnding?.type ?? "fake_escape") : "fake_escape";
-        summary = "Active plan: False sense of security followed by the rug-pull.";
-        break;
-      case "loop_trap":
-        targetEnding = "loop";
-        summary = "Active plan: Forcing a cyclical nightmare or time loop.";
-        break;
-      case "identity_reveal":
-        targetEnding = "identity_twist";
-        summary = "Active plan: Building toward a shocking truth about MC's identity.";
-        break;
-      case "unreliable_reality":
-        targetEnding = "false_reality";
-        summary = "Active plan: The world rules are breaking down completely.";
-        break;
-      case "possession":
-        targetEnding = "possession";
-        summary = "Active plan: External control or supernatural possession.";
-        break;
-      case "silent_void":
-        targetEnding = "irreversible_loss";
-        summary = "Active plan: Existential dread culminating in permanent loss.";
-        break;
-      case "observer_twist":
-        targetEnding = "simulation";
-        summary = "Active plan: Breaking the fourth wall or revealing the simulation.";
-        break;
-    }
+    const { type: planType, fakeToReal } = hiddenState.endingPlan;
+    const { type: targetEnding, summary } = planType === "fake_relief_twist"
+      ? { type: fakeToReal ? (viableEnding?.type ?? "fake_escape") : "fake_escape", summary: "Active plan: False sense of security followed by the rug-pull." }
+      : ENDING_PLAN_MAP[planType]!;
 
     return {
       type: targetEnding,
@@ -1876,8 +1848,8 @@ export function determineOptimalEnding(state: StoryState): EndingRecommendation 
       recommendChange: true,
       because: {
         tier: "ending_plan",
-        planType: hiddenState.endingPlan.type,
-        fakeToReal: hiddenState.endingPlan.fakeToReal
+        planType,
+        fakeToReal
       }
     };
   }
@@ -2240,38 +2212,8 @@ function shiftStillHolds(
  * ```
  */
 function getShiftedEnding(shiftType: ProfileShiftType, fallbackEnding?: EndingType): { type: EndingType, summary: string } | undefined {
-  switch (shiftType) {
-    // "You stopped asking questions... but something kept answering anyway"
-    case "curiosity_collapse": return { type: "mental_fabrication", summary: "You stopped asking questions... but something kept answering anyway." };
-    // "It didn't chase you because you were slow — it chased you because you understood"
-    case "fear_spike": return { type: "loop", summary: "It didn't chase you because you were slow — it chased you because you understood." };
-    // "You weren't trying to survive anymore. You were trying to win."
-    case "aggression_turn": return { type: "become_threat", summary: "You weren't trying to survive anymore. You became the monster you fought." };
-    // "The explorer became the trapped"
-    case "archetype_collapse": return { type: "possession", summary: "The core identity collapsed, leaving an empty vessel for control." };
-    // "When reality shattered, you found the truth in the pieces"
-    case "reality_breakdown": return { type: "false_reality", summary: "When reality shattered, you found the truth in the pieces." };
-    // "You finally stopped fighting... and accepted the lie as truth"
-    case "manipulation_acceptance": return { type: "mental_fabrication", summary: "You finally stopped fighting... and accepted the lie as truth." };
-    // "The curious became fearful — the perfect victim"
-    case "trait_inversion": return { type: "loop", summary: "The curious became fearful — stepping perfectly back to the beginning." };
-    // "Fear turned to rage, and rage opened the wrong door"
-    case "fear_to_aggression": return { type: "possession", summary: "Fear turned to rage, and rage opened the door to outside influence." };
-    // "You started lying and couldn't stop — even to yourself"
-    case "deception_onset": return { type: "identity_twist", summary: "You started lying and couldn't stop — even to yourself about who you are." };
-    // "You pushed everyone away. No one was left to hear you scream."
-    case "social_withdrawal": return { type: "irreversible_loss", summary: "You pushed everyone away. Now, there is no one left to lose." };
-    // "The protector became the thing everyone needed protecting from"
-    case "protective_to_aggressive": return { type: "become_threat", summary: "The protector became the thing everyone needed protecting from." };
-    // "You built something beautiful. Then you burned it."
-    case "creative_to_destructive": return { type: "escalation", summary: "You built something beautiful, then burned it, creating a worse threat." };
-
-    // Handled here but currently never detected — keep them for when
-    // detectProfileShift gains those detection paths:
-    case "denial_break": return { type: "false_reality", summary: "The dam broke. The world as you knew it never existed." };
-    case "trust_betrayal": return { type: "betrayal", summary: "The safety was a lie; the true villain was the one you trusted." };
-    default: return fallbackEnding ? { type: fallbackEnding, summary: "Profile shift mapped to current viable ending." } : undefined;
-  }
+  return SHIFTED_ENDING_MAP[shiftType]
+    ?? (fallbackEnding ? { type: fallbackEnding, summary: "Profile shift mapped to current viable ending." } : undefined);
 }
 
 /**

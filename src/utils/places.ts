@@ -252,6 +252,20 @@ export function updateConnection(place: PlaceMemory, update: PlaceConnectionUpda
 }
 
 /**
+ * Pushes a "  - Label:" header followed by one "    -> item" line per entry,
+ * or nothing at all if the list is empty/undefined. Every optional list
+ * section below (Traits, Key events, Key objects, Associated characters,
+ * Known routes) used to repeat this same header-then-forEach shape inline;
+ * centralizing it means the indentation/arrow convention can't drift
+ * between sections as new ones get added.
+ */
+function pushListSection<T>(lines: string[], label: string, items: T[] | undefined, formatItem: (item: T) => string): void {
+  if (!items?.length) return;
+  lines.push(`  - ${label}:`);
+  items.forEach(item => lines.push(`    → ${formatItem(item)}`));
+}
+
+/**
  * Formats places for prompt injection with comprehensive narrative information
  * 
  * Creates a rich, detailed string representation of places including context,
@@ -275,7 +289,7 @@ export function updateConnection(place: PlaceMemory, update: PlaceConnectionUpda
  * ```
  * 
  * • Old River (river) [CURRENT] - familiarity: 0.8 [ID: old_river]
- *   - Real name: Simatra River (revealed: true)
+ *   - Real name: Simatra River (revealed)
  *   - Visited 3 times (last visited: page 12, last mood: threatening, last weather: misty)
  *   - Context: narrow river behind the school
  *   - Location: 500 meters south of the school
@@ -291,7 +305,7 @@ export function updateConnection(place: PlaceMemory, update: PlaceConnectionUpda
  *     → Tom (saved from drowning here)
  * 
  * • Abandoned Church (building) - familiarity: 0.6 [ID: abandoned_church] [Parent ID: oakhaven_city]
- *   - Real name: Project Lazarus Research Facility (revealed: false)
+ *   - Real name: Project Lazarus Research Facility (hidden)
  *   - Visited 2 times (last visited: page 30)
  *   - Context: abandoned stone church outside town
  *   - Key events:
@@ -330,7 +344,7 @@ export function formatPlacesForPrompt(places: Record<string, PlaceMemory>, curre
     lines.push(`• ${placeName} (${type})${currentMarker} - familiarity: ${place.familiarity.toFixed(1)} [ID: ${id}]${parentMarker}`);
 
     // Real name and whether it's revealed to the MC (matches jsdoc example format)
-    lines.push(`  - Real name: ${realName} (revealed: ${place.isRealNameKnown ? 'true' : 'false'})`);
+    lines.push(`  - Real name: ${realName} (${place.isRealNameKnown ? 'revealed' : 'hidden'})`);
     lines.push(`  - Visited ${visitCount} time${visitCount > 1 ? 's' : ''} (last visited: page ${place.lastVisitedAtPage}${place.lastMood ? `, last mood: ${place.lastMood}`: ''}${place.lastWeather ? `, last weather: ${place.lastWeather}`: ''})`);
     lines.push(`  - Context: ${context}`);
 
@@ -338,27 +352,15 @@ export function formatPlacesForPrompt(places: Record<string, PlaceMemory>, curre
       lines.push(`  - Hints: ${hints.join('; ')}`);
     }
 
-    if (traits?.length) {
-      lines.push('  - Traits:');
-      traits.forEach(t => {
-        lines.push(`    → ${t.key}: ${t.value}`);
-      });
-    }
-
-    if (keyEvents?.length) {
-      lines.push('  - Key events:');
-      keyEvents
-        .slice(-MAX_PLACE_EVENTS)
-        .sort((a, b) => a.page - b.page)
-        .forEach(event => {
-          lines.push(`    → Page ${event.page}: ${event.event}`);
-        });
-    }
+    pushListSection(lines, 'Traits', traits, t => `${t.key}: ${t.value}`);
 
     // pgvector semantic memory (Use Case 5): events that have scrolled out
     // of the live MAX_PLACE_EVENTS window above, surfaced only when
     // semantically relevant to the current scene. Does NOT feed
     // calculatePlaceFamiliarity() — that stays deterministic, untouched.
+    const recentKeyEvents = keyEvents?.length ? keyEvents.slice(-MAX_PLACE_EVENTS).sort((a, b) => a.page - b.page) : keyEvents;
+    pushListSection(lines, 'Key events', recentKeyEvents, event => `Page ${event.page}: ${event.event}`);
+
     const recalledEvent = recalledEvents?.[id];
     if (recalledEvent) {
       lines.push('  - Earlier events (recalled):');
@@ -366,31 +368,20 @@ export function formatPlacesForPrompt(places: Record<string, PlaceMemory>, curre
     }
 
     const keyObjects = place.keyObjects?.filter(i => i.amount);
-    if (keyObjects?.length) {
-      lines.push('  - Key objects:');
-      keyObjects.forEach(item => {
-        const traitEntries = item.traits?.map(t => `${t.key}: ${t.value}`) ?? [];
-        const itemInfo = [item.where, ...traitEntries].filter(Boolean).join(', ');
-        lines.push(`    → ${item.amount}x ${item.name}${itemInfo ? ` (${itemInfo})` : ''}`);
-      });
-    }
+    pushListSection(lines, 'Key objects', keyObjects, item => {
+      const traitEntries = item.traits?.map(t => `${t.key}: ${t.value}`) ?? [];
+      const itemInfo = [item.where, ...traitEntries].filter(Boolean).join(', ');
+      return `${item.amount}x ${item.name}${itemInfo ? ` (${itemInfo})` : ''}`;
+    });
 
-    if (knownCharacters.length) {
-      lines.push('  - Associated characters:');
-      knownCharacters.forEach(character => {
-        lines.push(`    → ${character.key}: ${character.value}`);
-      });
-    }
+    pushListSection(lines, 'Associated characters', knownCharacters, character => `${character.key}: ${character.value}`);
 
-    if (place.knownConnections?.length) {
-      lines.push('  - Known routes:');
-      place.knownConnections.forEach(conn => {
-        const parts = [conn.travelTime, conn.routeType, conn.accessibility].filter(Boolean);
-        const details = parts.length ? ` (${parts.join(', ')})` : '';
-        const notes = conn.notes ? ` ${conn.notes}` : '';
-        lines.push(`    → ${conn.targetId}:${notes}${details}`);
-      });
-    }
+    pushListSection(lines, 'Known routes', place.knownConnections, conn => {
+      const parts = [conn.travelTime, conn.routeType, conn.accessibility].filter(Boolean);
+      const details = parts.length ? ` (${parts.join(', ')})` : '';
+      const notes = conn.notes ? ` ${conn.notes}` : '';
+      return `${conn.targetId}:${notes}${details}`;
+    });
 
     return lines.join('\n');
   }).join('\n\n');

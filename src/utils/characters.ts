@@ -302,6 +302,18 @@ export function processCharacterUpdates(
 }
 
 /**
+ * Pushes a "- Label: " block whose items sit one level deeper ("  - item"),
+ * matching getMainCharacterInfo's own nesting depth -- its fields sit
+ * directly at the top level, not nested one level under a place/character
+ * header the way the sections in formatCharactersForPrompt / formatPlacesForPrompt
+ * are. See pushListSection below for that (deeper-nested, "→"-bulleted) variant.
+ */
+function pushIndentedListSection<T>(target: string[], label: string, items: T[] | undefined, formatItem: (item: T) => string): void {
+  if (!items?.length) return;
+  target.push(`- ${label}: \n${items.map(item => `  - ${formatItem(item)}`).join('\n')}`);
+}
+
+/**
  * Gets formatted main character information for AI prompt injection.
  *
  * Outputs a compact MC status block including bio, health, mobility, action
@@ -364,48 +376,35 @@ export function getMainCharacterInfo(params: {
   mcInfo.push(`- Mental State (Psychological integrity): ${mentalPercent}%`);
 
   // Format inventory items with detailed nested information
-  if (inventory.length) {
-    const inventoryList = inventory.map(item => {
-      const parts = [];
-      parts.push(`${item.amount}x`);
-      parts.push(item.name);
-
-      const traitEntries = item.traits?.map(t => `${t.key}: ${t.value}`) ?? [];
-      const itemInfo = [item.where, ...traitEntries].filter(Boolean);
-
-      let inventoryLine = `  - ${parts.join(' ')}`;
-      if (itemInfo.length) inventoryLine += ` (${itemInfo.join(', ')})`;
-
-      if (item.pageAcquired) inventoryLine += ` - acquired: page ${item.pageAcquired}`;
-      return inventoryLine;
-    });
-
-    const inventoryDetails = `\n${inventoryList.join('\n')}`;
-    mcInfo.push(`- Inventory: ${inventoryDetails}`);
-  }
+  pushIndentedListSection(mcInfo, 'Inventory', inventory, item => {
+    const traitEntries = item.traits?.map(t => `${t.key}: ${t.value}`) ?? [];
+    const itemInfo = [item.where, ...traitEntries].filter(Boolean);
+    const acquired = item.pageAcquired ? ` - acquired: page ${item.pageAcquired}` : '';
+    return `${item.amount}x ${item.name}${itemInfo.length ? ` (${itemInfo.join(', ')})` : ''}${acquired}`;
+  });
 
   // Format detailed injury information with nested bullet points
-  if (injuries.length) {
-    const injuryList = injuries.map(injury => {
-      const parts = [];
-      const injuryLocation = [injury.bodyPart, injury.category, injury.severity ? `severity: ${injury.severity}` : ''].filter(Boolean).join(', ');
-      if (injury.description) parts.push(injury.description);
-      if (injuryLocation) parts.push(`(${injuryLocation})`);
-      if (injury.pageAcquired) parts.push(`- acquired: page ${injury.pageAcquired}${injury.placeId ? ` at ${injury.placeId}` : ''}`);
-
-      let injuryLine = `  - ${parts.join(' ')}`;
-      if (injury.consequences) {
-        const injurySeverity = getInjurySeverityLabel(injury);
-        injuryLine += `\n    → Consequences (${injurySeverity}): ${injury.consequences}`;
-      }
-      return injuryLine;
-    });
-
-    const injuryDetails = `\n${injuryList.join('\n')}`;
-    mcInfo.push(`- Injuries: ${injuryDetails}`);
-  }
+  pushIndentedListSection(mcInfo, 'Injuries', injuries, injury => {
+    const injuryLocation = [injury.bodyPart, injury.category, injury.severity ? `severity: ${injury.severity}` : ''].filter(Boolean).join(', ');
+    const parts = [injury.description, injuryLocation ? `(${injuryLocation})` : '', injury.pageAcquired ? `- acquired: page ${injury.pageAcquired}${injury.placeId ? ` at ${injury.placeId}` : ''}` : ''].filter(Boolean);
+    const consequence = injury.consequences ? `\n    → Consequences (${getInjurySeverityLabel(injury)}): ${injury.consequences}` : '';
+    return `${parts.join(' ')}${consequence}`;
+  });
 
   return mcInfo.length ? mcInfo.join('\n') : null;
+}
+
+/**
+ * Pushes a "  - Label:" header followed by one "    -> item" line per entry
+ * (nothing if the list is empty/undefined). Same convention as the identically-
+ * named helper in places.ts -- both formatters sit one level under an entity
+ * header, so both use this 2-level shape. getMainCharacterInfo below sits at
+ * the top level instead, hence its own pushIndentedListSection variant above.
+ */
+function pushListSection<T>(lines: string[], label: string, items: T[] | undefined, formatItem: (item: T) => string): void {
+  if (!items?.length) return;
+  lines.push(`  - ${label}:`);
+  items.forEach(item => lines.push(`    → ${formatItem(item)}`));
 }
 
 /**
@@ -521,30 +520,19 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
       details.push(`  - Relationship to MC: ${relationshipToMCStatus ? `(${relationshipToMCStatus}) ` : ''}${relationshipToMC.context}`);
 
       // Character secrets with nested bullets (spoiler for AI, not shown to player)
-      if (secrets?.length) {
-        details.push(`  - Secrets (spoiler, don't reveal too early):`);
-        secrets.forEach((secret) => {
-          details.push(`    → ${secret}`);
-        });
-      }
+      pushListSection(details, `Secrets (spoiler, don't reveal too early)`, secrets, secret => secret);
 
       // Recent interactions with nested bullets
       if (pastInteractions?.length) {
         const recentInteractions = pastInteractions.sort((a, b) => a.page - b.page).slice(-MAX_PAST_INTERACTIONS);
-        details.push(`  - Recent interactions:`);
         const interactionsByPage = recentInteractions.reduce<Record<number, string[]>>((acc, interaction) => {
           acc[interaction.page] = acc[interaction.page] || [];
           acc[interaction.page].push(interaction.interaction);
           return acc;
         }, {});
 
-        Object.keys(interactionsByPage)
-          .map(Number)
-          .sort((a, b) => a - b)
-          .forEach((page) => {
-            const interactionsText = interactionsByPage[page].join(' ');
-            details.push(`    → Page ${page}: ${interactionsText}`);
-          });
+        const pagesInOrder = Object.keys(interactionsByPage).map(Number).sort((a, b) => a - b);
+        pushListSection(details, 'Recent interactions', pagesInOrder, page => `Page ${page}: ${interactionsByPage[page].join(' ')}`);
       }
 
       // pgvector semantic memory (Use Case 2): interactions that have
@@ -558,27 +546,21 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
       }
       
       // Character relationships with nested bullets
-      if (relationships?.length) {
-        details.push(`  - Relationships:`);
-        relationships.forEach(r => {
-          const relStatus = [r.type, r.status, r.recognitionLevel].filter(Boolean).join(' - ');
-          details.push(`    → ${r.targetId}: ${relStatus ? `(${relStatus}) ` : ''}${r.context}`);
-        });
-      }
+      pushListSection(details, 'Relationships', relationships, r => {
+        const relStatus = [r.type, r.status, r.recognitionLevel].filter(Boolean).join(' - ');
+        return `${r.targetId}: ${relStatus ? `(${relStatus}) ` : ''}${r.context}`;
+      });
       
       // Detailed injuries section
-      if (injuries?.length) {
-        details.push(`  - Injuries:`);
-        injuries.forEach((injury: Injury) => {
-          const injuryParts: string[] = [];
-          if (injury.category) injuryParts.push(injury.category);
-          if (injury.bodyPart) injuryParts.push(`location: ${injury.bodyPart}`);
-          if (injury.severity !== undefined) injuryParts.push(`severity: ${injury.severity}`);
-          if (injury.consequences) injuryParts.push(`consequences (${getInjurySeverityLabel(injury)}): ${injury.consequences}`);
-          if (injury.pageAcquired) injuryParts.push(`acquired: page ${injury.pageAcquired}`);
-          details.push(`    → ${injury.description}${injuryParts.length ? ` (${injuryParts.join(', ')})` : ''}`);
-        });
-      }
+      pushListSection(details, 'Injuries', injuries, (injury: Injury) => {
+        const injuryParts: string[] = [];
+        if (injury.category) injuryParts.push(injury.category);
+        if (injury.bodyPart) injuryParts.push(`location: ${injury.bodyPart}`);
+        if (injury.severity !== undefined) injuryParts.push(`severity: ${injury.severity}`);
+        if (injury.consequences) injuryParts.push(`consequences (${getInjurySeverityLabel(injury)}): ${injury.consequences}`);
+        if (injury.pageAcquired) injuryParts.push(`acquired: page ${injury.pageAcquired}`);
+        return `${injury.description}${injuryParts.length ? ` (${injuryParts.join(', ')})` : ''}`;
+      });
       
       // Narrative mechanics (Strictly plot planning constraints now)
       const narrativeInfo = [];
@@ -593,22 +575,14 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
       details.push(`  - Physical state: ${physicalStatusDisplay}`);
 
       // Schedules with descriptive formatting
-      if (schedules?.length) {
-        details.push(`  - Schedules:`);
-        schedules.forEach(s => {
-          const parts = [`Available: ${s.availabilityWindow}`, `Place: ${s.placeId}`];
-          if (s.missedConsequence) parts.push(`If missed: ${s.missedConsequence}`);
-          details.push(`    → ${parts.join(' | ')}`);
-        });
-      }
+      pushListSection(details, 'Schedules', schedules, s => {
+        const parts = [`Available: ${s.availabilityWindow}`, `Place: ${s.placeId}`];
+        if (s.missedConsequence) parts.push(`If missed: ${s.missedConsequence}`);
+        return parts.join(' | ');
+      });
 
       // Traits with nested bullets
-      if (traits?.length) {
-        details.push(`  - Traits:`);
-        traits.forEach((trait) => {
-          details.push(`    → ${trait.key}: ${trait.value}`);
-        });
-      }
+      pushListSection(details, 'Traits', traits, trait => `${trait.key}: ${trait.value}`);
 
       return `${mainInfo}\n${details.join('\n')}`;
     })
