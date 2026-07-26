@@ -3,14 +3,18 @@
  * Strips scripts, styles, event handlers, and dangerous URIs.
  * Allows a safe subset of semantic HTML from TipTap.
  */
-import DOMPurify from "isomorphic-dompurify";
+import sanitizeHtml from "sanitize-html";
 
-const BLOG_HTML_CONFIG: Parameters<typeof DOMPurify.sanitize>[1] = {
-  USE_PROFILES: { html: true },
-  FORBID_TAGS: ["style", "script", "iframe", "object", "embed", "form", "input", "button"],
-  FORBID_ATTR: ["style", "srcset"],
-  ALLOW_DATA_ATTR: false,
-  ADD_ATTR: ["target", "rel"],
+const BLOG_HTML_CONFIG: sanitizeHtml.IOptions = {
+  allowedTags: [...sanitizeHtml.defaults.allowedTags, "img"],
+  allowedAttributes: {
+    a: ["href", "name", "target", "rel"],
+    img: ["src", "alt", "title", "width", "height", "loading"],
+    td: ["colspan", "rowspan"],
+    th: ["colspan", "rowspan"],
+  },
+  allowedSchemes: ["http", "https", "mailto"],
+  allowProtocolRelative: false,
 };
 
 /**
@@ -21,5 +25,5 @@ const BLOG_HTML_CONFIG: Parameters<typeof DOMPurify.sanitize>[1] = {
  */
 export function sanitizeBlogHtml(dirty: string): string {
   if (!dirty || typeof dirty !== "string") return "";
-  return DOMPurify.sanitize(dirty.trim(), BLOG_HTML_CONFIG);
+  return sanitizeHtml(dirty.trim(), BLOG_HTML_CONFIG);
 }
