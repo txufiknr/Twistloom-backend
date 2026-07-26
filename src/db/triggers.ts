@@ -1289,11 +1289,6 @@ async function updateSystemUserPassword(): Promise<void> {
     return;
   }
 
-  if (systemUser.passwordHash) {
-    console.log("ℹ️ System user already has a password hash, skipping update.");
-    return;
-  }
-
   const passwordHash = await hashPassword(systemPassword);
   await dbWrite
     .update(users)
