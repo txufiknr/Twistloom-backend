@@ -100,6 +100,7 @@ import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
 import { books, branches, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress, userCompletedBooks, uploadedImages, userActivityLogs, pages, bookTestimonials } from "../db/schema.js";
 import { getErrorMessage, cApiError, cForbiddenError, cNotFoundError, cRateLimitError, cUnauthorizedError, cValidationError } from "../utils/error.js";
 import { sanitizeTextForDB, sanitizeKeywords } from '../utils/text-processing.js';
+import { stripHtml } from '../utils/sanitize-html.js';
 import { eq, and, desc, sql, ne, inArray, arrayOverlaps } from "drizzle-orm";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
 import { getBook, getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage, tryAcquireWorkflowDispatchGate } from "../services/book.js";
@@ -4057,14 +4058,21 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
 router.post("/:identifier/:pageId/actions/hint", requireAuth, async (c) => {
   try {
     const { identifier, pageId: pageIdParam } = c.req.param();
-    const { actionText } = c.get("body");
+    const { actionText: rawActionText } = c.get("body");
     const userId = c.get("userId")!;
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
     const pageId = Array.isArray(pageIdParam) ? pageIdParam[0] : pageIdParam;
 
     // Validate actionText parameter
-    if (!actionText || typeof actionText !== 'string') {
+    if (!rawActionText || typeof rawActionText !== 'string') {
       return cValidationError(c, "actionText is required");
+    }
+
+    // Strip HTML as defense-in-depth for plain-text inputs
+    const actionText = stripHtml(rawActionText);
+
+    if (!actionText) {
+      return cValidationError(c, "actionText is empty after sanitization");
     }
 
     // Validate that the page exists and belongs to the book
@@ -4672,14 +4680,21 @@ router.get("/:identifier/locked-paths", requireAuth, async (c) => {
 router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, async (c) => {
   try {
     const { identifier, pageId: pageIdParam } = c.req.param();
-    const { text } = c.get("body");
+    const { text: rawText } = c.get("body");
     const userId = c.get("userId")!;
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
     const pageId = Array.isArray(pageIdParam) ? pageIdParam[0] : pageIdParam;
 
     // Validate input
-    if (!text || typeof text !== 'string') {
+    if (!rawText || typeof rawText !== 'string') {
       return cValidationError(c, "text is required");
+    }
+
+    // Strip HTML as defense-in-depth for plain-text inputs
+    const text = stripHtml(rawText);
+
+    if (!text) {
+      return cValidationError(c, "text is empty after sanitization");
     }
 
     // Validate pageId format
@@ -4822,14 +4837,21 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (c)
   let creditsCost: number = CREDIT_COSTS.CUSTOM_ACTION;
   try {
     const { identifier, pageId: pageIdParam } = c.req.param();
-    const { text } = c.get("body");
+    const { text: rawText } = c.get("body");
     const userId = c.get("userId")!;
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
     const pageId = Array.isArray(pageIdParam) ? pageIdParam[0] : pageIdParam;
 
     // Validate input
-    if (!text || typeof text !== 'string') {
+    if (!rawText || typeof rawText !== 'string') {
       return cValidationError(c, "text is required");
+    }
+
+    // Strip HTML as defense-in-depth for plain-text inputs
+    const text = stripHtml(rawText);
+
+    if (!text) {
+      return cValidationError(c, "text is empty after sanitization");
     }
 
     // Validate pageId format

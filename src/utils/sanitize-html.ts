@@ -126,6 +126,29 @@ const SANITIZE_BLOG = sanitize({
 const TRANSFORMERS = [SANITIZE_BLOG, sanitizeAttrs(), removeComments()];
 
 /**
+ * Lightweight HTML tag stripper for plain-text inputs (custom actions,
+ * hint purchase text, etc.). No dependencies — synchronous.
+ *
+ * Removes all HTML tags (including self-closing) and decodes common
+ * HTML entities back to their plain-text equivalents.
+ *
+ * @param text - Raw text that may contain HTML markup
+ * @returns Plain text with tags stripped and entities decoded
+ */
+export function stripHtml(text: string): string {
+  if (!text || typeof text !== "string") return "";
+  return text
+    .replace(/<[^>]*>/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;|&#39;/g, "'")
+    .replace(/&#x2F;|&#47;/g, "/")
+    .trim();
+}
+
+/**
  * Sanitize rich HTML from the admin TipTap editor before persistence.
  *
  * @param dirty - Untrusted HTML string from the client

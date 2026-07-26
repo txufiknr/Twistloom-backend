@@ -44,7 +44,7 @@ import type { AIChatStreamResult, ProgressCallback } from "../types/sse.js";
 import type { CandidateGenerationPage, CandidatePagesGeneration } from "../types/candidate-generation.js";
 import { ucfirst } from "./formatter.js";
 import { daysBetween, formatMinutes, toUtcMidnight } from "./time.js";
-import { MAX_FINAL_COMMENT_LENGTH, PROMPT_SYSTEM_WRITING_STYLE, RULES_PAGE_TEXT_BY_PRESET } from "../config/book-creation.js";
+import { HINT_GUIDANCE_MAP, MAX_FINAL_COMMENT_LENGTH, PROMPT_SYSTEM_WRITING_STYLE, RULES_PAGE_TEXT_BY_PRESET } from "../config/book-creation.js";
 import type { WritingPreset } from "../types/book-creation.js";
 import { formatOneOf } from "./text-processing.js";
 import { sanitizePromptAppend } from "./prompt-security.js";
@@ -86,7 +86,7 @@ Past Actions — build a psychological profile from decision patterns over time,
 - Curiosity: curious → answers curse more than they reveal. Cautious → avoidance backfires, outside forces push them in anyway. Mixed → knowledge becomes a weapon against them.
 - Emotion: fear-driven → psychological threats over physical. Logic-driven → impossible logic that breaks rational thinking. Emotional → manipulate through relationships and guilt.
 
- Story State Flags (the current story, not play patterns — separate from the profile above):
+Story State Flags (the current story, not play patterns — separate from the profile above):
 - Trust: low → betrayal/deception. High → apparent help (may still turn).
 - Fear: high → panic, distorted perception. Low → curiosity, denial.
 - Guilt: high → hallucinations, voices, trauma echoes.
@@ -1871,17 +1871,7 @@ function formatPreviousPagesForPrompt(
  * @returns Processed hint with narrative guidance and constraints
  */
 function getHintGuidanceForAI(hintType: ActionHintType): string {
-  switch (hintType) {
-    case "dark_discovery": return "Focus on atmosphere and emotional impact. Avoid revealing discovery immediately. Build tension through sensory details and MC's internal reaction rather than external events.";
-    case "relationship_revelation": return "Reveal through dialogue and character interactions. Show relationship dynamics through subtext and emotional responses rather than direct exposition.";
-    case "betrayal": return "Create suspicion and unease. Use unreliable narration, subtle inconsistencies, and character behavior changes rather than stating betrayal directly.";
-    case "confrontation": return "Emphasize power dynamics and survival instinct. Use physical sensations, environmental threats, and MC's limitations rather than detailed creature descriptions.";
-    case "truth_revelation": return "Reveal through fragmented memories and environmental storytelling. Use symbolism, metaphor, and gradual realization rather than direct exposition.";
-    case "survival": return "Focus on immediate consequences and resource limitations. Use time pressure, environmental hazards, and MC's physical/mental state rather than planning solutions.";
-    case "psychological": return "Explore internal conflict and perception issues. Use unreliable narration, memory inconsistencies, and blurred reality rather than psychological analysis.";
-    case "custom": return "Reader provided unique direction. Honor their creative intent while maintaining narrative consistency. Weave their suggestion naturally into the story's existing themes and character development, avoiding abrupt tonal shifts or plot contradictions.";
-    default: return "Develop naturally with appropriate tone for the action type and context.";
-  }
+  return HINT_GUIDANCE_MAP[hintType] ?? "Develop naturally with appropriate tone for the action type and context.";
 }
 
 /**
@@ -2347,8 +2337,12 @@ function formatSelectedAction(page: Pick<CandidateGenerationPage, 'action' | 'ac
 
   const isCustomAction = action.type === 'custom';
 
-  // Find the index of selected action to get the letter
-  const selectedIndex = allActions.findIndex(action => action.text === action.text);
+  // Find the index of selected action to get the letter. `a` must NOT be
+  // named `action` here -- shadowing the outer `action` made this compare
+  // each candidate's text against itself, so findIndex always matched
+  // index 0 regardless of which action was actually picked (every
+  // "Selected:" line rendered "A." even when a later choice was chosen).
+  const selectedIndex = allActions.findIndex(a => a.text === action.text);
   const selectedLetter = String.fromCharCode(65 + selectedIndex); // A, B, C, etc.
 
   return `${selectedLetter ? `${selectedLetter}.` : '•'} ${action.text} (type: ${action.type})
@@ -2435,6 +2429,12 @@ function formatActiveThreads(threads: StoryThread[], clueRecallBlocks?: Record<s
     ].filter(Boolean).join('\n');
   }).join('\n');
 }
+
+// Duplicated verbatim across the early-phase and mid-phase branches of
+// formatThreadRules below -- named once so the two branches can't drift
+// out of sync on lines that are meant to say the exact same thing.
+const THREAD_FOCUS_LIMIT_LINE = '- Focus on 1-2 threads per page';
+const THREAD_UPDATE_ON_REVISIT_LINE = '- When a thread is revisited or meaningfully developed, update that thread even if no new clue is added';
 
 /**
  * Generates thread-management guidance for AI story generation.
@@ -2524,9 +2524,9 @@ function formatThreadRules(threads: StoryThread[], stateInfo: StoryStateInfo): s
   if (isEarlyPhase) {
     return `
 ${atThreadLimit ? `- Do NOT introduce new threads (active thread limit reached)` : `- Avoid introducing new threads unless necessary`}
-- Focus on 1-2 threads per page
+${THREAD_FOCUS_LIMIT_LINE}
 - Deepen mysteries through clues, contradictions, or unsettling discoveries
-- When a thread is revisited or meaningfully developed, update that thread even if no new clue is added
+${THREAD_UPDATE_ON_REVISIT_LINE}
 - Use false clues sparingly to create plausible but incorrect conclusions
 - Plant seeds for future mysteries without fully activating them
 - Prefer developing existing threads over creating new ones`;
@@ -2536,9 +2536,9 @@ ${atThreadLimit ? `- Do NOT introduce new threads (active thread limit reached)`
   if (isMidPhase) {
     return `
 ${atThreadLimit ? `- Do NOT introduce new threads (active thread limit reached)` : `- Introduce at most 1 new thread if truly needed`}
-- Focus on 1-2 threads per page
+${THREAD_FOCUS_LIMIT_LINE}
 - Advance, complicate, or partially reveal existing mysteries
-- When a thread is revisited or meaningfully developed, update that thread even if no new clue is added
+${THREAD_UPDATE_ON_REVISIT_LINE}
 - Threads nearing resolution should move closer to answers, revelations, or major reversals
 - Use false clues sparingly to create believable misdirection
 - Start resolving minor threads
@@ -3363,39 +3363,10 @@ Goal: Make the MC feel "This story knows exactly how I think and is actively usi
  */
 function formatRouteContext(state: StoryState): string {
   const { traumaTags, difficulty } = state;
-  getStoryStateInfo(state);
   return `• Trauma tags: ${traumaTags.join(', ')}
 • Difficulty: ${difficulty}`;
 }
 
-// /**
-//  * Formats action history for prompt display
-//  * 
-//  * Creates a formatted string of past actions with page numbers,
-//  * action text, types, and hints for AI context.
-//  * 
-//  * @param actionsHistory - Array of action history items with page numbers
-//  * @returns Formatted string with actions as bullet points including hints
-//  * 
-//  * @example
-//  * ```typescript
-//  * const actions = [
-//  *   { page: 1, text: "Investigate noise", type: "explore", hint: { text: "Something awaits", type: "consequence" } },
-//  *   { page: 2, text: "Run away", type: "flee", hint: { text: "Escape is impossible", type: "consequence" } }
-//  * ];
-//  * const formatted = formatActionHistory(actions);
-//  * // Returns:
-//  * // "• Page 1: Investigate noise (type: explore)
-//  * //   → Hint: Something awaits
-//  * // • Page 2: Run away (type: flee)
-//  * //   → Hint: Escape is impossible"
-//  * ```
-//  */
-// function formatActionHistory(actionsHistory: ActionHistory[]): string {
-//   return actionsHistory.slice(-MAX_ACTION_HISTORY).map(a => {
-//     return `• Page ${a.page}: ${a.text} (type: ${a.type})\n  → Hint: ${a.hint.text || 'none'}`;
-//   }).join('\n');
-// }
 
 /**
  * Formats plot flags and recent major events for anti-repetition guidance.

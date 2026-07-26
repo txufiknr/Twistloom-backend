@@ -2,7 +2,7 @@ import { MAX_WORDS_PER_PAGE } from "./story.js";
 import { blacklistedNames } from "./characters.js";
 import { formatOneOf } from "../utils/text-processing.js";
 import type { WritingPreset } from "../types/book-creation.js";
-import type { EndingPlanType, EndingType, ProfileShiftType } from "../types/story.js";
+import type { ActionHintType, EndingPlanType, EndingType, ProfileShiftType } from "../types/story.js";
 
 export const MAX_CONCURRENT_GENERATIONS = 5;
 
@@ -473,4 +473,20 @@ export const SHIFTED_ENDING_MAP: Partial<Record<ProfileShiftType, { type: Ending
   creative_to_destructive: { type: "escalation", summary: "You built something beautiful, then burned it, creating a worse threat." },
   denial_break: { type: "false_reality", summary: "The dam broke. The world as you knew it never existed." },
   trust_betrayal: { type: "betrayal", summary: "The safety was a lie; the true villain was the one you trusted." },
+};
+
+/**
+ * Static narrative-guidance text per ActionHintType, keyed the same way
+ * SHIFTED_ENDING_MAP and ENDING_PLAN_MAP are in story.ts -- a static lookup,
+ * not branching logic, so it's a plain object rather than a switch.
+ */
+export const HINT_GUIDANCE_MAP: Partial<Record<ActionHintType, string>> = {
+  dark_discovery: "Focus on atmosphere and emotional impact. Avoid revealing discovery immediately. Build tension through sensory details and MC's internal reaction rather than external events.",
+  relationship_revelation: "Reveal through dialogue and character interactions. Show relationship dynamics through subtext and emotional responses rather than direct exposition.",
+  betrayal: "Create suspicion and unease. Use unreliable narration, subtle inconsistencies, and character behavior changes rather than stating betrayal directly.",
+  confrontation: "Emphasize power dynamics and survival instinct. Use physical sensations, environmental threats, and MC's limitations rather than detailed creature descriptions.",
+  truth_revelation: "Reveal through fragmented memories and environmental storytelling. Use symbolism, metaphor, and gradual realization rather than direct exposition.",
+  survival: "Focus on immediate consequences and resource limitations. Use time pressure, environmental hazards, and MC's physical/mental state rather than planning solutions.",
+  psychological: "Explore internal conflict and perception issues. Use unreliable narration, memory inconsistencies, and blurred reality rather than psychological analysis.",
+  custom: "Reader provided unique direction. Honor their creative intent while maintaining narrative consistency. Weave their suggestion naturally into the story's existing themes and character development, avoiding abrupt tonal shifts or plot contradictions.",
 };
