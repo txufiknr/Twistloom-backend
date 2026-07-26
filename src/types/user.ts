@@ -24,6 +24,10 @@ export type FeedbackCategory = typeof feedbackCategories[number];
 export const feedbackStatuses = ['idle', 'submitting', 'success', 'error'] as const;
 export type FeedbackStatus = typeof feedbackStatuses[number];
 
+/** Admin resolution workflow — separate from user submission `status`. */
+export const feedbackAdminStatuses = ['unread', 'read', 'solved'] as const;
+export type FeedbackAdminStatus = typeof feedbackAdminStatuses[number];
+
 /**
  * Union type of all possible like target types
  * 

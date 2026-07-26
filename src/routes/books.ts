@@ -137,6 +137,7 @@ import { runGate0, runGate1, buildCustomActionValidationPrompt, buildCanonicalAc
 import { customActions } from "../db/schema.js";
 import { getStoryStateFromPage, computeEndingStats, setActiveSession } from "../services/story.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
+import { notifyForumOfBookChange, notifyForumStoryArchived } from "../services/forum-queue.js";
 import { createAIOptionsWithSchema, aiPrompt } from "../utils/ai-chat.js";
 import { AI_CHAT_MODELS_THEME } from "../config/ai-clients.js";
 import { BOOK_MIN_PAGES } from "../config/story.js";
@@ -1491,6 +1492,23 @@ router.put("/:id", requireAuth, imageUploadMiddleware(), async (c) => {
     // or if visibility/status changed in a way that affects explore visibility
     await invalidateExploreCache({ before: book, after: updatedBook });
 
+    notifyForumOfBookChange({
+      before: book,
+      after: {
+        id: updatedBook.id,
+        slug: updatedBook.slug,
+        title: updatedBook.title,
+        summary: updatedBook.summary,
+        hook: updatedBook.hook,
+        userId: updatedBook.userId,
+        status: updatedBook.status,
+        visibility: updatedBook.visibility,
+        mode: updatedBook.mode,
+        language: updatedBook.language,
+        imageUrl: newImageUrl ?? undefined,
+      },
+    });
+
     return c.json({
       book: updatedBook,
       imageUploaded: !!newImageUrl,
@@ -1565,6 +1583,22 @@ router.patch("/:id/visibility", requireAuth, async (c) => {
     // (any change to/from 'public' affects whether the book appears in explore)
     await invalidateExploreCache({ before: book, after: { ...book, visibility: visibility as string } });
 
+    notifyForumOfBookChange({
+      before: book,
+      after: {
+        id: updatedBook.id,
+        slug: updatedBook.slug,
+        title: updatedBook.title,
+        summary: updatedBook.summary,
+        hook: updatedBook.hook,
+        userId: updatedBook.userId,
+        status: updatedBook.status,
+        visibility: updatedBook.visibility,
+        mode: updatedBook.mode,
+        language: updatedBook.language,
+      },
+    });
+
     return c.json({
       book: updatedBook,
       visibility: updatedBook.visibility,
@@ -1634,6 +1668,22 @@ router.patch("/:id/archive", requireAuth, async (c) => {
 
     // Invalidate explore cache if the book is public and its status changed to/from 'active'
     await invalidateExploreCache({ before: book, after: { ...book, status: newStatus as string } });
+
+    notifyForumOfBookChange({
+      before: book,
+      after: {
+        id: updatedBook.id,
+        slug: updatedBook.slug,
+        title: updatedBook.title,
+        summary: updatedBook.summary,
+        hook: updatedBook.hook,
+        userId: updatedBook.userId,
+        status: updatedBook.status,
+        visibility: updatedBook.visibility,
+        mode: updatedBook.mode,
+        language: updatedBook.language,
+      },
+    });
 
     return c.json({
       book: updatedBook,
@@ -2033,6 +2083,7 @@ router.delete("/:id", requireAuth, async (c) => {
     const book = await dbRead
       .select({ 
         id: books.id,
+        slug: books.slug,
         imageId: books.imageId,
         userId: books.userId,
         status: books.status,
@@ -2077,6 +2128,10 @@ router.delete("/:id", requireAuth, async (c) => {
     
     // Invalidate explore cache only if the deleted book was publicly visible
     await invalidateExploreCache({ book: bookToDelete });
+
+    if (bookToDelete.status === 'active' && bookToDelete.visibility === 'public') {
+      notifyForumStoryArchived(bookToDelete.id, bookToDelete.slug);
+    }
 
     return c.json({
       message: "Book deleted successfully",

@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer, unique, type UpdateDeleteAction, boolean, vector } from "drizzle-orm/pg-core";
-import type { CheckinClaimType, FeedbackCategory, FeedbackStatus, Gender, Source, UserActivityType, UserTier } from "../types/user.js";
+import type { CheckinClaimType, FeedbackAdminStatus, FeedbackCategory, FeedbackStatus, Gender, Source, UserActivityType, UserTier } from "../types/user.js";
 import type { LikeTargetType } from "../types/user.js";
 import type { CharacterMemoryTranslation, CharacterPlan, HealthStatus, InjuryTranslation, InventoryItem, InventoryItemTranslation, StoryMC, StoryMCCandidate, StoryMCTranslation } from "../types/character.js";
 import type { BookGenerationStatus, StoryGenerationStep, BookStatus, BookVisibility, Book, BookStats, UploadedImageType, BookMode } from "../types/book.js";
@@ -243,6 +243,11 @@ export const users = pgTable(
     // COPPA/GDPR: age confirmation timestamp
     ageConfirmedAt: timestamp("age_confirmed_at", { withTimezone: true }),
     tokenVersion: integer("token_version").notNull().default(0), // Session version for JWT revocation
+    /**
+     * Admin ban (P4). NULL = not banned. Non-null = banned since this timestamp.
+     * Auth rejects when set; ban bumps tokenVersion to revoke JWTs.
+     */
+    bannedAt: timestamp("banned_at", { withTimezone: true }),
     /**
      * Account / app language of record (`en` | `id`).
      * Synced fire-and-forget from frontend language picker. Email uses this
@@ -1802,6 +1807,8 @@ export const userFeedbacks = pgTable(
     imageId: text("image_id"), // ImageKit file ID (optional feedback screenshot)
     imageUrl: text("image_url"), // ImageKit URL (optional feedback screenshot)
     status: text("status").$type<FeedbackStatus>().notNull().default('idle'),
+    /** Admin inbox resolution — independent of user submission `status`. */
+    adminStatus: text("admin_status").$type<FeedbackAdminStatus>().notNull().default('unread'),
     createdAt,
     updatedAt,
   },
@@ -1809,6 +1816,7 @@ export const userFeedbacks = pgTable(
     index("user_feedbacks_user_idx").on(t.userId),
     index("user_feedbacks_category_idx").on(t.category),
     index("user_feedbacks_created_idx").on(t.createdAt.desc()),
+    index("user_feedbacks_admin_status_idx").on(t.adminStatus),
   ]
 );
 

@@ -20,7 +20,7 @@
  */
 
 import { Hono } from "hono";
-import { eq, desc, and, or, inArray, sql, gte, lte, isNotNull, ilike } from "drizzle-orm";
+import { eq, desc, and, or, inArray, sql, gte, lte, isNotNull, isNull, ilike } from "drizzle-orm";
 import { requireAuth } from "../middleware/nextauth.js";
 import { requireSuperAdmin, requirePermission, resolveAdminAccess, normalizePermissions, isSuperAdminUserId, ADMIN_PERMISSIONS } from "../middleware/admin-auth.js";
 import { cApiError, cValidationError, cNotFoundError } from "../utils/error.js";
@@ -30,13 +30,11 @@ import { getStoryState } from "../services/story.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { socialMentions, bookTestimonials, adminUsers, usage, users, userFeedbacks, books, portalBlogPosts } from "../db/schema.js";
 import type { AppEnv } from "../hono/env.js";
-import {
-  extractAndResolveTwistloomLink,
-  parseTwistloomProductUrl,
-  resolveBookByIdForAdmin,
-  resolvePublicBookBySlug,
-} from "../services/social/extract-twistloom-link.js";
+import { bookStatuses, bookVisibilities, type BookStatus, type BookVisibility } from "../types/book.js";
+import { feedbackAdminStatuses, feedbackCategories, type FeedbackAdminStatus, type FeedbackCategory } from "../types/user.js";
+import { extractAndResolveTwistloomLink, parseTwistloomProductUrl, resolveBookByIdForAdmin, resolvePublicBookBySlug } from "../services/social/extract-twistloom-link.js";
 import { sanitizeBlogHtml } from "../utils/sanitize-html.js";
+import { notifyForumUserBanned, notifyForumUserUnbanned } from "../services/forum-queue.js";
 
 const router = new Hono<AppEnv>();
 
@@ -1121,45 +1119,58 @@ router.post(
 // FEEDBACKS ADMIN ROUTES (P3)
 // ============================================================================
 
+const feedbackSelect = {
+  id: userFeedbacks.id,
+  userId: userFeedbacks.userId,
+  category: userFeedbacks.category,
+  message: userFeedbacks.message,
+  status: userFeedbacks.status,
+  adminStatus: userFeedbacks.adminStatus,
+  imageUrl: userFeedbacks.imageUrl,
+  createdAt: userFeedbacks.createdAt,
+  updatedAt: userFeedbacks.updatedAt,
+  userName: users.name,
+  userEmail: users.email,
+};
+
+function isFeedbackAdminStatus(value: unknown): value is FeedbackAdminStatus {
+  return typeof value === "string" && (feedbackAdminStatuses as readonly string[]).includes(value);
+}
+
 /**
  * GET /admin/feedbacks
  *
- * Lists user feedbacks for the admin inbox. Supports filtering by status,
- * category, and pagination.
+ * Lists user feedbacks for the admin inbox. Filters by adminStatus (resolution),
+ * category, and pagination. User submission `status` is returned but not the
+ * primary admin filter (see admin_status column).
  */
 router.get("/feedbacks",
   requireAuth,
   requirePermission("feedbacks"),
   async (c) => {
     try {
-      const { status, category, limit = "50", offset = "0" } = c.req.query();
+      const { adminStatus, category, limit = "50", offset = "0" } = c.req.query();
       const limitNum = Math.min(Math.max(Number(limit) || 50, 1), 200);
       const offsetNum = Math.max(Number(offset) || 0, 0);
 
       const conditions = [];
-      if (status === "idle" || status === "submitting" || status === "success" || status === "error") {
-        conditions.push(eq(userFeedbacks.status, status));
+      if (isFeedbackAdminStatus(adminStatus)) {
+        conditions.push(eq(userFeedbacks.adminStatus, adminStatus));
       }
-      if (category === "feedback" || category === "bug_report" || category === "feature_request" || category === "other") {
-        conditions.push(eq(userFeedbacks.category, category));
+      if (
+        typeof category === "string" &&
+        (feedbackCategories as readonly string[]).includes(category)
+      ) {
+        conditions.push(eq(userFeedbacks.category, category as FeedbackCategory));
       }
 
+      const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
       const rows = await dbRead
-        .select({
-          id: userFeedbacks.id,
-          userId: userFeedbacks.userId,
-          category: userFeedbacks.category,
-          message: userFeedbacks.message,
-          status: userFeedbacks.status,
-          imageUrl: userFeedbacks.imageUrl,
-          createdAt: userFeedbacks.createdAt,
-          updatedAt: userFeedbacks.updatedAt,
-          userName: users.name,
-          userEmail: users.email,
-        })
+        .select(feedbackSelect)
         .from(userFeedbacks)
         .leftJoin(users, eq(userFeedbacks.userId, users.userId))
-        .where(conditions.length > 0 ? and(...conditions) : undefined)
+        .where(whereClause)
         .orderBy(desc(userFeedbacks.createdAt))
         .limit(limitNum)
         .offset(offsetNum);
@@ -1167,7 +1178,7 @@ router.get("/feedbacks",
       const [{ count }] = await dbRead
         .select({ count: sql<number>`count(*)` })
         .from(userFeedbacks)
-        .where(conditions.length > 0 ? and(...conditions) : undefined);
+        .where(whereClause);
 
       return c.json({ total: Number(count), limit: limitNum, offset: offsetNum, feedbacks: rows });
     } catch (error) {
@@ -1177,9 +1188,40 @@ router.get("/feedbacks",
 );
 
 /**
+ * GET /admin/feedbacks/:id
+ *
+ * Single feedback with submitter join (image URL included when present).
+ */
+router.get("/feedbacks/:id",
+  requireAuth,
+  requirePermission("feedbacks"),
+  async (c) => {
+    try {
+      const { id } = c.req.param();
+
+      const [row] = await dbRead
+        .select(feedbackSelect)
+        .from(userFeedbacks)
+        .leftJoin(users, eq(userFeedbacks.userId, users.userId))
+        .where(eq(userFeedbacks.id, id))
+        .limit(1);
+
+      if (!row) {
+        return cNotFoundError(c, "Feedback not found");
+      }
+
+      return c.json(row);
+    } catch (error) {
+      return cApiError(c, "Failed to get feedback", error);
+    }
+  }
+);
+
+/**
  * PATCH /admin/feedbacks/:id
  *
- * Updates the status of a user feedback (e.g. mark as resolved).
+ * Updates admin_status only (unread | read | solved). Does not mutate user
+ * submission lifecycle `status`.
  */
 router.patch("/feedbacks/:id",
   requireAuth,
@@ -1187,10 +1229,11 @@ router.patch("/feedbacks/:id",
   async (c) => {
     try {
       const { id } = c.req.param();
-      const { status } = c.get("body");
+      const body = c.get("body") as { adminStatus?: unknown };
+      const adminStatus = body?.adminStatus;
 
-      if (status !== "idle" && status !== "submitting" && status !== "success" && status !== "error") {
-        return cValidationError(c, "Invalid status");
+      if (!isFeedbackAdminStatus(adminStatus)) {
+        return cValidationError(c, "Invalid adminStatus. Must be 'unread', 'read', or 'solved'");
       }
 
       const [existing] = await dbRead
@@ -1205,13 +1248,59 @@ router.patch("/feedbacks/:id",
 
       const [updated] = await dbWrite
         .update(userFeedbacks)
-        .set({ status })
+        .set({ adminStatus, updatedAt: new Date() })
         .where(eq(userFeedbacks.id, id))
         .returning();
 
-      return c.json(updated);
+      const [row] = await dbRead
+        .select(feedbackSelect)
+        .from(userFeedbacks)
+        .leftJoin(users, eq(userFeedbacks.userId, users.userId))
+        .where(eq(userFeedbacks.id, updated.id))
+        .limit(1);
+
+      return c.json(row ?? updated);
     } catch (error) {
       return cApiError(c, "Failed to update feedback", error);
+    }
+  }
+);
+
+/**
+ * POST /admin/feedbacks/bulk-status
+ *
+ * Bulk-update admin_status for multiple feedback rows.
+ * Body: { ids: string[], adminStatus: 'unread' | 'read' | 'solved' }
+ */
+router.post("/feedbacks/bulk-status",
+  requireAuth,
+  requirePermission("feedbacks"),
+  async (c) => {
+    try {
+      const body = c.get("body") as { ids?: unknown; adminStatus?: unknown };
+      const { ids, adminStatus } = body ?? {};
+
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return cValidationError(c, "ids must be a non-empty array");
+      }
+      if (!isFeedbackAdminStatus(adminStatus)) {
+        return cValidationError(c, "Invalid adminStatus. Must be 'unread', 'read', or 'solved'");
+      }
+
+      const validIds = ids.filter((value): value is string => typeof value === "string" && value.length > 0);
+      if (validIds.length === 0) {
+        return cValidationError(c, "ids must contain at least one string id");
+      }
+
+      const result = await dbWrite
+        .update(userFeedbacks)
+        .set({ adminStatus, updatedAt: new Date() })
+        .where(inArray(userFeedbacks.id, validIds))
+        .returning({ id: userFeedbacks.id });
+
+      return c.json({ success: true, updated: result.length });
+    } catch (error) {
+      return cApiError(c, "Failed to bulk update feedbacks", error);
     }
   }
 );
@@ -1221,26 +1310,88 @@ router.patch("/feedbacks/:id",
 // ============================================================================
 
 /**
+ * Build shared WHERE conditions for admin book list / summary.
+ * Explore "originals" public shelf ≈ isOriginal + hasCover + status=active + visibility=public.
+ */
+function buildAdminBookConditions(query: {
+  search?: string;
+  isOriginal?: string;
+  hasCover?: string;
+  status?: string;
+  visibility?: string;
+}) {
+  const conditions = [];
+
+  if (typeof query.search === "string" && query.search.length > 0) {
+    conditions.push(or(
+      ilike(books.title, `%${query.search}%`),
+      ilike(books.slug, `%${query.search}%`),
+    ));
+  }
+
+  if (query.isOriginal === "true") {
+    conditions.push(eq(books.isOriginal, true));
+  } else if (query.isOriginal === "false") {
+    conditions.push(eq(books.isOriginal, false));
+  }
+
+  if (query.hasCover === "true") {
+    conditions.push(isNotNull(books.imageId));
+  } else if (query.hasCover === "false") {
+    conditions.push(isNull(books.imageId));
+  }
+
+  if (typeof query.status === "string" && bookStatuses.includes(query.status as BookStatus)) {
+    conditions.push(eq(books.status, query.status as BookStatus));
+  }
+
+  if (typeof query.visibility === "string" && bookVisibilities.includes(query.visibility as BookVisibility)) {
+    conditions.push(eq(books.visibility, query.visibility as BookVisibility));
+  }
+
+  return conditions;
+}
+
+/**
  * GET /admin/books
  *
- * Lists original books with key metrics. Supports pagination and title search.
+ * Lists books with metrics for admin ops. Supports search, pagination, and
+ * filters aligned with roadmap Decision A2:
+ * - isOriginal: "true" | "false"
+ * - hasCover: "true" | "false" (imageId present)
+ * - status: active | draft | archived
+ * - visibility: private | unlisted | followers | public
+ *
+ * Public explore originals shelf ≈ isOriginal=true&hasCover=true&status=active&visibility=public
+ *
+ * Optional includeSummary=true adds aggregate KPIs for the same filter set.
  */
 router.get("/books",
   requireAuth,
   requirePermission("books"),
   async (c) => {
     try {
-      const { search, limit = "50", offset = "0" } = c.req.query();
+      const {
+        search,
+        isOriginal,
+        hasCover,
+        status,
+        visibility,
+        includeSummary,
+        limit = "50",
+        offset = "0",
+      } = c.req.query();
       const limitNum = Math.min(Math.max(Number(limit) || 50, 1), 200);
       const offsetNum = Math.max(Number(offset) || 0, 0);
 
-      const conditions = [];
-      if (typeof search === "string" && search.length > 0) {
-        conditions.push(or(
-          ilike(books.title, `%${search}%`),
-          ilike(books.slug, `%${search}%`),
-        ));
-      }
+      const conditions = buildAdminBookConditions({
+        search,
+        isOriginal,
+        hasCover,
+        status,
+        visibility,
+      });
+      const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
       const rows = await dbRead
         .select({
@@ -1250,16 +1401,19 @@ router.get("/books",
           status: books.status,
           visibility: books.visibility,
           isOriginal: books.isOriginal,
+          hasCover: sql<boolean>`${books.imageId} IS NOT NULL`,
           language: books.language,
           readCount: books.readCount,
           totalPages: books.totalPages,
           branchesCount: books.branchesCount,
           likesCount: books.likesCount,
+          completeCount: books.completeCount,
+          completionRate: books.completionRate,
           createdAt: books.createdAt,
           updatedAt: books.updatedAt,
         })
         .from(books)
-        .where(conditions.length > 0 ? and(...conditions) : undefined)
+        .where(whereClause)
         .orderBy(desc(books.createdAt))
         .limit(limitNum)
         .offset(offsetNum);
@@ -1267,9 +1421,48 @@ router.get("/books",
       const [{ count }] = await dbRead
         .select({ count: sql<number>`count(*)` })
         .from(books)
-        .where(conditions.length > 0 ? and(...conditions) : undefined);
+        .where(whereClause);
 
-      return c.json({ total: Number(count), limit: limitNum, offset: offsetNum, books: rows });
+      const total = Number(count);
+      const payload: {
+        total: number;
+        limit: number;
+        offset: number;
+        books: typeof rows;
+        summary?: {
+          totalBooks: number;
+          totalReads: number;
+          totalPages: number;
+          totalBranches: number;
+          totalLikes: number;
+          avgCompletionRate: number | null;
+        };
+      } = { total, limit: limitNum, offset: offsetNum, books: rows };
+
+      if (includeSummary === "true") {
+        const [agg] = await dbRead
+          .select({
+            totalReads: sql<number>`coalesce(sum(${books.readCount}), 0)`,
+            totalPages: sql<number>`coalesce(sum(${books.totalPages}), 0)`,
+            totalBranches: sql<number>`coalesce(sum(${books.branchesCount}), 0)`,
+            totalLikes: sql<number>`coalesce(sum(${books.likesCount}), 0)`,
+            avgCompletionRate: sql<number | null>`avg(${books.completionRate})`,
+          })
+          .from(books)
+          .where(whereClause);
+
+        payload.summary = {
+          totalBooks: total,
+          totalReads: Number(agg?.totalReads ?? 0),
+          totalPages: Number(agg?.totalPages ?? 0),
+          totalBranches: Number(agg?.totalBranches ?? 0),
+          totalLikes: Number(agg?.totalLikes ?? 0),
+          avgCompletionRate:
+            agg?.avgCompletionRate == null ? null : Number(agg.avgCompletionRate),
+        };
+      }
+
+      return c.json(payload);
     } catch (error) {
       return cApiError(c, "Failed to list books", error);
     }
@@ -1283,14 +1476,15 @@ router.get("/books",
 /**
  * GET /admin/users
  *
- * Lists platform users with search and pagination.
+ * Lists platform users with search, banned filter, and pagination.
+ * Query: search, banned=true|false, limit, offset
  */
 router.get("/users",
   requireAuth,
   requirePermission("users"),
   async (c) => {
     try {
-      const { search, limit = "50", offset = "0" } = c.req.query();
+      const { search, banned, limit = "50", offset = "0" } = c.req.query();
       const limitNum = Math.min(Math.max(Number(limit) || 50, 1), 200);
       const offsetNum = Math.max(Number(offset) || 0, 0);
 
@@ -1302,6 +1496,13 @@ router.get("/users",
           ilike(users.username, `%${search}%`),
         ));
       }
+      if (banned === "true") {
+        conditions.push(isNotNull(users.bannedAt));
+      } else if (banned === "false") {
+        conditions.push(isNull(users.bannedAt));
+      }
+
+      const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
       const rows = await dbRead
         .select({
@@ -1314,9 +1515,10 @@ router.get("/users",
           isNewUser: users.isNewUser,
           lastActive: users.lastActive,
           createdAt: users.createdAt,
+          bannedAt: users.bannedAt,
         })
         .from(users)
-        .where(conditions.length > 0 ? and(...conditions) : undefined)
+        .where(whereClause)
         .orderBy(desc(users.createdAt))
         .limit(limitNum)
         .offset(offsetNum);
@@ -1324,13 +1526,133 @@ router.get("/users",
       const [{ count }] = await dbRead
         .select({ count: sql<number>`count(*)` })
         .from(users)
-        .where(conditions.length > 0 ? and(...conditions) : undefined);
+        .where(whereClause);
 
       return c.json({ total: Number(count), limit: limitNum, offset: offsetNum, users: rows });
     } catch (error) {
       return cApiError(c, "Failed to list users", error);
     }
   }
+);
+
+/**
+ * PATCH /admin/users/:userId/ban
+ *
+ * Sets banned_at, bumps token_version, deletes auth sessions (immediate lockout).
+ * Cannot ban SYSTEM_USER_ID (super admin).
+ */
+router.patch(
+  "/users/:userId/ban",
+  requireAuth,
+  requirePermission("users"),
+  async (c) => {
+    try {
+      const { userId } = c.req.param();
+      if (!userId) {
+        return cValidationError(c, "userId is required");
+      }
+      if (isSuperAdminUserId(userId)) {
+        return cValidationError(c, "Cannot ban the super admin account");
+      }
+
+      const [existing] = await dbRead
+        .select({ userId: users.userId, bannedAt: users.bannedAt })
+        .from(users)
+        .where(eq(users.userId, userId))
+        .limit(1);
+
+      if (!existing) {
+        return cNotFoundError(c, "User not found");
+      }
+      if (existing.bannedAt) {
+        return c.json({
+          userId,
+          bannedAt: existing.bannedAt,
+          alreadyBanned: true,
+        });
+      }
+
+      const now = new Date();
+      const [updated] = await dbWrite
+        .update(users)
+        .set({
+          bannedAt: now,
+          tokenVersion: sql`${users.tokenVersion} + 1`,
+          updatedAt: now,
+        })
+        .where(eq(users.userId, userId))
+        .returning({
+          userId: users.userId,
+          bannedAt: users.bannedAt,
+        });
+
+      // Best-effort session wipe (tokenVersion already invalidates JWTs)
+      try {
+        const { logoutFromAllDevices } = await import("../services/session-manager.js");
+        await logoutFromAllDevices(userId);
+      } catch (err) {
+        console.error(`[admin] ⚠️ Ban session wipe failed for ${userId}:`, err);
+      }
+
+      console.log(`[admin] 🚫 User banned: ${userId} by ${c.get("userId")}`);
+      notifyForumUserBanned(userId, "admin_ban");
+
+      return c.json({ userId: updated.userId, bannedAt: updated.bannedAt, alreadyBanned: false });
+    } catch (error) {
+      return cApiError(c, "Failed to ban user", error);
+    }
+  },
+);
+
+/**
+ * PATCH /admin/users/:userId/unban
+ *
+ * Clears banned_at. Does not restore old sessions (user must sign in again).
+ */
+router.patch(
+  "/users/:userId/unban",
+  requireAuth,
+  requirePermission("users"),
+  async (c) => {
+    try {
+      const { userId } = c.req.param();
+      if (!userId) {
+        return cValidationError(c, "userId is required");
+      }
+
+      const [existing] = await dbRead
+        .select({ userId: users.userId, bannedAt: users.bannedAt })
+        .from(users)
+        .where(eq(users.userId, userId))
+        .limit(1);
+
+      if (!existing) {
+        return cNotFoundError(c, "User not found");
+      }
+      if (!existing.bannedAt) {
+        return c.json({ userId, bannedAt: null, alreadyUnbanned: true });
+      }
+
+      const [updated] = await dbWrite
+        .update(users)
+        .set({
+          bannedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(users.userId, userId))
+        .returning({
+          userId: users.userId,
+          bannedAt: users.bannedAt,
+        });
+
+      console.log(`[admin] ✅ User unbanned: ${userId} by ${c.get("userId")}`);
+      notifyForumUserUnbanned(userId);
+
+      return c.json({ userId: updated.userId, bannedAt: updated.bannedAt, alreadyUnbanned: false });
+    } catch (error) {
+      return cApiError(c, "Failed to unban user", error);
+    }
+  },
 );
 
 // ============================================================================

@@ -295,6 +295,13 @@
       "when": 1785029400535,
       "tag": "0041_perfect_leo",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1785039435734,
+      "tag": "0042_silly_sprite",
+      "breakpoints": true
     }
   ]
 }

@@ -21,6 +21,7 @@ import { eq } from "drizzle-orm";
 import { insertStoryState } from "../services/story.js";
 import { invalidateUserBooksCache, invalidateUserProfileCache, invalidateExploreCache } from "../services/cache.js";
 import { logUserActivity } from "../services/user.js";
+import { notifyForumOfBookChange } from "../services/forum-queue.js";
 import { generateBranchId, getStoryStateWithBranch } from "../services/story-branch.js";
 import { BOOK_CREATION_REQUIRED_FIELDS, BOOK_CREATION_SCHEMA_DEFINITION, CANDIDATE_GENERATION_REQUIRED_FIELDS, CANDIDATE_GENERATION_SCHEMA_DEFINITION, STORY_GENERATION_REQUIRED_FIELDS, STORY_GENERATION_SCHEMA_DEFINITION } from "../schema/story.js";
 import { formatPageTextForPrompt } from "./books.js";
@@ -198,53 +199,6 @@ Notice how characters refer to each other based on recognitionLevel:
 - seen: description only, never a name ("the tall man", "the woman in red").
 - alias_known: alias/codename only ("The Janitor").
 - first_name_known / full_name_known: use the known name normally.`;
-
-// /**
-//  * @deprecated Only reachable via RULES_FIRST_PAGE_GENERATION / RULES_NEXT_PAGE_GENERATION
-//  * below, which are themselves unused — buildFirstPageRuleSet() reads
-//  * RULES_PAGE_TEXT_BY_PRESET (book-creation.ts) instead. Left in place rather
-//  * than deleted since it's exported and may still be imported elsewhere;
-//  * confirm before removing.
-//  */
-// export const RULES_PAGE_TEXT = `PAGE FORMAT:
-// - Max ${MAX_WORDS_PER_PAGE} words.
-// - Tight. Tense — but always legible: the reader should never have to re-read a line to know who did what, or where. Let the story be unreliable, not the syntax.
-// - Multiple short/fragmented paragraphs with varying length (1-4 sentences each).
-// - 4-8 paragraphs, each on its own line (Goosebumps-style spacing).
-// - No markdown except optional *italic* emphasis.
-// - Write in the target language.
-
-// PAGE NARRATIVE RULES:
-// - First-person central POV ("I") only. Unreliable narrator.
-// - Continue directly from the selected action and current situation; focus on plot-relevant details.
-// - Show only what the MC currently perceives, knows, or believes.
-// - Maintain continuity with established story canon, history, characters, and events.
-// - Preserve a consistent narrative voice and style across pages.
-// - End on tension, uncertainty, discovery, or a new problem — never full resolution, even on a "resolution"-momentum page (see STORY MOMENTUM GUIDANCE): close on a lingering doubt rather than total closure.
-
-// PAGE OPENING RULES:
-// - Continue directly from the final moment of the previous page.
-// - Begin with the immediate execution or consequence of the selected action.
-// - Show the next physical, sensory, or mental step taken by the MC (POV).
-// - Do not skip causally required actions, movements, objects, or transitions.
-// - Maintain continuous time, location, and perspective unless an intentional scene transition occurs.
-// - Do not recap previous events; trust that the reader remembers the previous page.
-
-// DIALOGUE FORMATTING:
-// - Every spoken line MUST use quotation marks — even a single word (e.g., "Wait.", "No.", "Run.").
-// - Never output bare spoken sentences in narration.
-// - Dialogue tags do not remove the need for quotation marks.
-// - Audible speech = use quotation marks.
-// - Silent thought = no quotation marks, but emphasize them with *italic* emphasis.
-
-// PAGE ENDING RULES:
-// - End at the point of strongest narrative pull appropriate for the current scene type and story momentum.
-// - The final 1-3 sentences should introduce or escalate a question, threat, revelation, difficult choice, unexpected complication, emotional consequence, or mystery.
-// - Increase at least one of: danger, uncertainty, urgency, suspicion, emotional stakes, curiosity, or mystery.
-// - The final line should contain concrete story information that changes the reader's understanding of the situation or raises a meaningful new question.
-// - Do not fully resolve the current tension before the page ends.
-// - Avoid generic cliffhangers, vague shock reactions, or artificial suspense.
-// - End as late as possible, but before the reader's curiosity is satisfied.`;
 
 /**
  * Governs addPlannedCharacters / characterUpdates.newCharacters — lets the
@@ -4312,6 +4266,24 @@ export async function initializeBook(
       await invalidateExploreCache();
       invalidatePopularTagsCache();
     }
+
+    // Portal forum: auto-thread when book is already public+active (soft-fail)
+    notifyForumOfBookChange({
+      before: { status: 'draft', visibility: 'private' },
+      after: {
+        id: book.id,
+        slug: book.slug,
+        title: book.title,
+        summary: book.summary,
+        hook: book.hook,
+        userId: book.userId,
+        status: book.status,
+        visibility: book.visibility,
+        mode: book.mode,
+        language: book.language,
+        imageUrl: book.imageUrl,
+      },
+    });
 
     // ── 13. Log user activity ─────────────────────────────────────────────────
     await logUserActivity({

@@ -152,6 +152,17 @@ export async function verifyNextAuthToken(c: Context<AppEnv>): Promise<AuthUser 
         invalidateByEmail(email);
       }
 
+      // P4: reject banned accounts (banned_at IS NOT NULL)
+      const [banRow] = await dbRead
+        .select({ bannedAt: users.bannedAt })
+        .from(users)
+        .where(eq(users.userId, userId))
+        .limit(1);
+      if (banRow?.bannedAt) {
+        console.info(`[nextauth] 🚫 Banned user attempted access: ${userId}`);
+        throw new HTTPException(403, { message: "account_banned" });
+      }
+
       if (sessionId) {
         updateSessionMetadata(
           sessionId,
