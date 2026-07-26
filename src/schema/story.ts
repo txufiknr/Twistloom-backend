@@ -74,7 +74,7 @@ export const INITIAL_INJURY_PROPERTIES: Record<keyof InitialInjury, AIJsonProper
   consequences:  { type: 'string', description: 'Functional consequences that can affect the storyline' },
   category:      { type: 'string', description: 'Broad injury classification', enum: [...injuryCategories] },
   severity:      { type: 'number', description: 'Severity level (0-1)' },
-  decayPerPage:  { type: 'number', description: 'RSeverity reduction applied per page' },
+  decayPerPage:  { type: 'number', description: 'Severity reduction applied per page' },
 };
 
 export const INITIAL_INJURY_KEYS: (keyof InitialInjury)[] = ['bodyPart', 'description', 'category', 'severity', 'decayPerPage'];
@@ -176,7 +176,7 @@ export const INITIAL_PLACE_PROPERTIES: Record<keyof NewPlace, AIJsonProperty> = 
   category: { type: 'string', enum: [...canonicalPlaceTypes], description: 'Canonical place type for BGM mapping' },
 };
 
-export const { keyEvents: placeEvents, familiarity: _f, realName: _n, ...placeUpdateProperties } = INITIAL_PLACE_PROPERTIES;
+const { keyEvents: placeEvents, familiarity: _f, realName: _n, ...placeUpdateProperties } = INITIAL_PLACE_PROPERTIES;
 
 export const INITIAL_PLACE_KEYS: (keyof NewPlace)[] = ['placeId', 'knownName', 'realName', 'type', 'context', 'familiarity'];
 
@@ -390,7 +390,7 @@ export const CHARACTER_PLAN_PROPERTIES: Record<keyof CharacterPlan, AIJsonProper
 export const CHARACTER_PLAN_SCHEMA: AIJsonProperty = {
   type: 'object',
   properties: CHARACTER_PLAN_PROPERTIES,
-  required: ['characterId', 'knownName', 'realName', 'gender', 'role', 'bio', 'visualDescription', 'importance'],
+  required: ['characterId', 'knownName', 'realName', 'gender', 'role', 'bio', 'visualDescription', 'importance'] satisfies (keyof CharacterPlan)[],
   additionalProperties: false,
 };
 
@@ -402,7 +402,7 @@ export const CHARACTER_SCHEDULE_SCHEMA: AIJsonProperty = {
     placeId: { type: 'string', description: 'Place ID they are usually found at during their window.' },
     availabilityWindow: { type: 'string', description: 'When in the day this character is typically present (e.g., time range, "night", "day", "24h", "random").' },
     missedConsequence: { type: 'string', description: 'What happens if MC misses them (e.g., "Can\'t buy tickets").' },
-  },
+  } satisfies Record<keyof CharacterSchedule, AIJsonProperty>,
   required: ['placeId', 'availabilityWindow'] satisfies (keyof CharacterSchedule)[],
   additionalProperties: false
 };
@@ -436,7 +436,7 @@ export const INITIAL_CHARACTER_PROPERTIES: Record<keyof NewCharacter, AIJsonProp
   },
 };
 
-export const { realName: _cn, pastInteractions: _pin, schedules: _schedules, ...updateCharacterProperties } = INITIAL_CHARACTER_PROPERTIES;
+const { realName: _cn, pastInteractions: _pin, schedules: _schedules, ...updateCharacterProperties } = INITIAL_CHARACTER_PROPERTIES;
 
 export const INITIAL_CHARACTER_SCHEMA: AIJsonProperty = {
   type: 'object',

@@ -23,7 +23,7 @@ import { invalidateUserBooksCache, invalidateUserProfileCache, invalidateExplore
 import { logUserActivity } from "../services/user.js";
 import { notifyForumOfBookChange } from "../services/forum-queue.js";
 import { generateBranchId, getStoryStateWithBranch } from "../services/story-branch.js";
-import { BOOK_CREATION_REQUIRED_FIELDS, BOOK_CREATION_SCHEMA_DEFINITION, CANDIDATE_GENERATION_REQUIRED_FIELDS, CANDIDATE_GENERATION_SCHEMA_DEFINITION, STORY_GENERATION_REQUIRED_FIELDS, STORY_GENERATION_SCHEMA_DEFINITION } from "../schema/story.js";
+import { BOOK_CREATION_REQUIRED_FIELDS, BOOK_CREATION_SCHEMA_DEFINITION, CANDIDATE_GENERATION_REQUIRED_FIELDS, CANDIDATE_GENERATION_SCHEMA_DEFINITION, SANITY_STATE_DEFAULTS, STORY_GENERATION_REQUIRED_FIELDS, STORY_GENERATION_SCHEMA_DEFINITION } from "../schema/story.js";
 import { formatPageTextForPrompt } from "./books.js";
 import { threadPriorities, type ThreadPriority, threadStatuses, threadTruths, type StoryThread, type ThreadStatus } from "../types/story-thread.js";
 import { aiStreamSSE, parseSSEStreamContent } from "./ai-chat-stream.js";
@@ -35,7 +35,7 @@ import { formatLanguage } from "./translation.js";
 import { DEFAULT_CANDIDATE_PAGE_PER_ACTION, MAX_CANDIDATE_PAGE_PER_ACTION } from "../config/candidate-generation.js";
 import { canonicalPlaceTypes, placeAccessibilities, type PlaceMemory, placeWeathers } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
-import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, FutureNoteSchedule, FutureNoteStateTrigger, MemoryIntegrity, PastEvent, PlotFlag, SceneType, StateDelta, StoryGeneration, StoryOutline, StoryPage, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
+import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, FutureNoteSchedule, FutureNoteStateTrigger, MemoryIntegrity, PastEvent, PlotFlag, SanityState, SceneType, StateDelta, StoryGeneration, StoryOutline, StoryPage, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import type { AIChatConfig, AIChatConfigCaps, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
 import type { CharacterMemory, CharacterRelationship, Injury, InventoryItem, PastInteraction, HealthStatus, StoryMCCandidate } from "../types/character.js";
 import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, CreateBookResponse, BookStatus, BookMode } from "../types/book.js";
@@ -91,12 +91,8 @@ Story State Flags (the current story, not play patterns — separate from the pr
 - Fear: high → panic, distorted perception. Low → curiosity, denial.
 - Guilt: high → hallucinations, voices, trauma echoes.
 - Curiosity: high → drawn to danger. Low → hesitation, avoidance.
-- Memory Integrity: stable → accurate recall. Fragmented → inconsistent details. Corrupted → false memories. (This is recall reliability — NOT the composure meter.)
-
-Composure (reader resource, separate from Memory Integrity):
-- High composure → MC can still function under pressure; allow brief lucidity even in danger.
-- Low composure → panic, tunnel vision, poor decisions; world pressure should feel crushing.
-- Crashed (0) → crisis mode: reality and identity fracture; no safe choices; steer toward collapse.
+- Memory Integrity: stable → accurate recall. Fragmented → inconsistent details. Corrupted → false memories.
+- Composure (distinct from Memory Integrity — a reader-facing pressure meter, not recall reliability): high → still functions, brief lucidity even in danger. Low → panic, tunnel vision, crushing pressure. Crashed → crisis: reality and identity fracture, no safe choices.
 
 Trauma Tags — reappear altered and disturbing, echoed through environment, dialogue, and perception. Never fully explained.
 
@@ -982,6 +978,11 @@ placeId
   - Use "unknown" only if location is genuinely ambiguous to the MC.
 ${isLatePhase || isFinale ? `  - Familiar places should feel subtly wrong now — same name, different atmosphere.` : ''}
 
+weather
+  - Keep consistent with recent pages unless enough time has passed or the scene has moved somewhere conditions would plausibly differ.
+  - Omit if not narratively relevant to this page.
+${isLatePhase || isFinale ? `  - A sudden shift can heighten dread — but don't reuse it as a cheap scare every page.` : ''}
+
 calendarDate:
   - Increment if the day has changed.
   - Write in 'yyyy-MM-dd' format (e.g., "2026-07-26").
@@ -1115,6 +1116,10 @@ ${isEarlyPhase ? `  - Choices should feel open and curious — stakes are presen
 ${isMidPhase ? `  - Choices should reflect the player's established decision patterns. Make the trap feel tailored.` : ''}
 ${isLatePhase ? `  - Every choice should carry visible weight. No option should feel consequence-free.` : ''}
 ${isFinale ? `  - Both choices should feel like loss. The difference is only in what kind.` : ''}`}
+
+branchNames
+  - Suggest 3 creative, distinct names for this page as a timeline/branch — evocative, spoiler-free (e.g., "The Locked Door", "Trust No One").
+  - Always suggest regardless of whether this page's actions actually fork the story — the system decides whether a name is used.
 
 characterUpdates.newCharacters
 ${charactersSlot === 0 ? `  - Don't introduce new characters. ${MAX_CHARACTERS} characters limit reached.`
@@ -3070,15 +3075,15 @@ ${createNarrativeStyle(state).instructions}
 PSYCHOLOGICAL FLAGS (Accumulated):
 ${formatPsychologicalFlags(flags, memoryIntegrity)}
 
-COMPOSURE (Reader resource — not memory integrity):
-${formatSanityState(sanityState)}
-
 PSYCHOLOGICAL PROFILE (Behavioral analysis):
 ${formatPsychologicalProfile(psychologicalProfile)}
 
 ---
 HIDDEN STATE (Influence writing, don't reveal):
 ${formatHiddenState(hiddenState, currentPage)}
+
+COMPOSURE (Reader resource — not memory integrity):
+${formatSanityState(sanityState)}
 
 ROUTE MEMORY (Influence writing, don't reveal):
 ${formatRouteContext(state)}
@@ -3292,31 +3297,29 @@ function formatPsychologicalFlags(flags: PsychologicalFlags, memoryIntegrity: Me
  *
  * The AI should pressure the MC when composure is low, and enter crisis
  * mode when crashed — without ever naming the meter to the reader.
+ * @see SANITY_STATE_ARCHITECTURE.md.
  */
-function formatSanityState(sanityState: StoryState['sanityState']): string {
-  const s = sanityState ?? { composure: 100, maxComposure: 100, decayRate: 5, hasCrashed: false };
-  const { composure, maxComposure, hasCrashed, crashedAtPage } = s;
+function formatSanityState(sanityState: SanityState | undefined): string {
+  const { composure, maxComposure, hasCrashed, crashedAtPage } = sanityState ?? SANITY_STATE_DEFAULTS;
   const ratio = maxComposure > 0 ? composure / maxComposure : 0;
 
-  let pressure: string;
-  if (hasCrashed || composure <= 0) {
-    pressure = 'CRISIS — composure depleted. Force psychological collapse: no safe choices, reality fractures, identity slips. Never name "composure" or "sanity meter" to the reader.';
-  } else if (ratio <= 0.25) {
-    pressure = 'CRITICAL — MC is barely holding on. Tunnel vision, panic edges, poor judgment. World pressure should feel crushing.';
-  } else if (ratio <= 0.5) {
-    pressure = 'STRAINED — stress shows in body language and thought. Brief lucidity still possible between blows.';
-  } else if (ratio <= 0.75) {
-    pressure = 'WEARING — tension accumulates. Occasional cracks in composure; not yet broken.';
-  } else {
-    pressure = 'HOLDING — MC can still function under pressure. Allow clear thought when the scene permits.';
-  }
+  // hasCrashed is the sole source of truth once composure hits 0 — updateSanity
+  // and spendComposureToResistReality both set composure=0 and hasCrashed=true
+  // atomically, so there's no page where one is true without the other.
+  const pressure = hasCrashed
+    ? 'CRISIS — force psychological collapse: no safe choices, reality fractures, identity slips'
+    : ratio <= 0.25 ? 'CRITICAL — barely holding on. Tunnel vision, panic, poor judgment. World pressure feels crushing'
+    : ratio <= 0.5  ? 'STRAINED — stress shows in body and thought. Brief lucidity still possible between blows'
+    : ratio <= 0.75 ? 'WEARING — tension accumulates. Occasional cracks; not yet broken'
+    : 'HOLDING — MC can still function under pressure. Allow clear thought when the scene permits';
 
   const crashNote = hasCrashed && crashedAtPage
     ? `\n• Crashed at page: ${crashedAtPage} (sticky crisis — do not restore safety)`
     : '';
 
   return `• Composure: ${composure}/${maxComposure}${hasCrashed ? ' [CRASHED]' : ''}
-• Pressure: ${pressure}${crashNote}`;
+• Pressure: ${pressure}${crashNote}
+• Never name "composure" or a sanity meter to the reader — pressure the prose, not the label.`;
 }
 
 /**
@@ -4575,10 +4578,7 @@ function resolvePageDelta(params: {
     newState.page = expectedPageNumber;
   }
   
-  // Engine-owned psych layer (profile, hidden, memoryIntegrity, difficulty,
-  // sanityState full snapshot) — not in AI extractStateDelta. Merged onto the
-  // page delta so reconstruction can rebuild without re-running advanceStoryState.
-  // See PsychologicalStateDelta + docs/architecture/SANITY_STATE_ARCHITECTURE.md.
+  // Calculate psychological deltas and merge into the state delta
   const psychologicalDeltas = calculatePsychologicalDeltas(currentState, newState);
   const fullStateDelta: StateDelta = { ...stateDelta, ...psychologicalDeltas };
 
