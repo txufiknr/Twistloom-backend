@@ -1,10 +1,10 @@
 import type { AIChatProvider, AIResponseProvider } from "./ai-chat.js";
 import type { ResourceAIProvider, ResourceAIScore, ResourceTimestamp } from "./api.js";
 import type { Book, PageTranslation } from "./book.js";
-import type { CharacterMemory, CharacterUpdates, HealthStatus, Injury, InitialInjury, InventoryItem, RelationshipUpdate, StoryMCCandidate, CharacterPlan, HealthCondition } from "./character.js";
-import type { PlaceConnectionUpdate, PlaceMemory, PlaceUpdates, PlaceWeather } from "./places.js";
+import type { CharacterMemory, NewCharacter, CharacterUpdate, HealthStatus, Injury, InitialInjury, InventoryItem, RelationshipUpdate, StoryMCCandidate, CharacterPlan, HealthCondition } from "./character.js";
+import type { PlaceConnectionUpdate, PlaceMemory, NewPlace, PlaceUpdate, PlaceWeather } from "./places.js";
 import type { DBNewPage, DBPage, DBUserSession } from "./schema.js";
-import type { StoryThread, ThreadUpdates } from "./story-thread.js";
+import type { StoryThread, NewThread, UpdateThread, AddThreadClue } from "./story-thread.js";
 import type { CanonValidationSummary } from "./canon-validation.js";
 
 /**
@@ -1191,7 +1191,7 @@ export type StoryPageMeta = Pick<DBNewPage, 'bookId' | 'branchId' | 'parentId'> 
  *
  * ## Two authorship layers (do not mix)
  *
- * 1. **AI-authored** — most fields (`flagUpdates`, `characterUpdates`, …).
+ * 1. **AI-authored** — most fields (`flagUpdates`, `newCharacters`, …).
  *    Produced by the model and extracted via `extractStateDelta`.
  * 2. **Engine-owned (`PsychologicalStateDelta`)** — profile, hidden state,
  *    memoryIntegrity, difficulty, **and `sanityState`**. Never appear in
@@ -1234,7 +1234,9 @@ export type StateDelta = {
   /** What durable facts about the story world changed */
   factUpdates?: FactUpdate[];
   /** Updates to characters (new and existing) with changes */
-  characterUpdates?: CharacterUpdates;
+  newCharacters?: NewCharacter[];
+  /** Updates to existing characters */
+  updatedCharacters?: CharacterUpdate[];
   /** Updates to character relationships and dynamics */
   relationshipUpdates?: RelationshipUpdate[];
   /** Updates to connection between places */
@@ -1242,9 +1244,17 @@ export type StateDelta = {
   /** New planned character candidates for future introduction */
   addPlannedCharacters?: CharacterPlan[];
   /** Updates to places (new and existing) with modifications */
-  placeUpdates?: PlaceUpdates;
-  /** Updates to story threads (new, modify, add clues, close) */
-  threadUpdates?: ThreadUpdates;
+  newPlaces?: NewPlace[];
+  /** Updates to existing places */
+  updatedPlaces?: PlaceUpdate[];
+  /** New story threads to create */
+  newThreads?: NewThread[];
+  /** Updates to existing threads */
+  updateThreads?: UpdateThread[];
+  /** Clues to add to existing threads */
+  addClues?: AddThreadClue[];
+  /** Threads to close/resolve */
+  closeThreads?: string[];
   /** Partial ending information if this page leads to an ending */
   viableEnding?: Ending;
   /** Flag indicating if this is a major story event */

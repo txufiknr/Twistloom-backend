@@ -1,11 +1,11 @@
 import { FACT_KEY_FORMAT, HOOK_LENGTH, SUMMARY_LENGTH, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MAX_TRAUMA_TAGS, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT, RELATIONSHIP_TO_MC_LENGTH, BOOK_MAX_PAGES, BOOK_MIN_PAGES, BOOK_TITLE_LENGTH, MAX_CHARACTER_AGE, MIN_CHARACTER_AGE, VIABLE_ENDING_LENGTH, KEYWORDS_COUNT } from "../config/story.js";
 import { characterImportances, characterRecognitionLevels, characterStatuses, healthConditions, injuryCategories, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
-import type { NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter, CharacterRelationshipContext, CharacterUpdate, CharacterSchedule, StoryMCGeneration } from "../types/character.js";
-import { canonicalPlaceTypes, type NewPlace, type PlaceUpdate, placeWeathers, type PlaceUpdates, type PlaceConnectionUpdate, placeAccessibilities } from "../types/places.js";
+import type { NarrativeFlags, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter, CharacterRelationshipContext, CharacterUpdate, CharacterSchedule, StoryMCGeneration } from "../types/character.js";
+import { canonicalPlaceTypes, type NewPlace, type PlaceUpdate, placeWeathers, type PlaceConnectionUpdate, placeAccessibilities } from "../types/places.js";
 import { actionHintTypes, actionTypes, characterSceneRoles, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, sceneTypes, difficulties, endingTypes, storyMomentums, stabilityLevels, storyPhaseKeys, futureNoteTriggerTypes, memoryIntegrities } from "../types/story.js";
 import type { AIJsonActionFlag, AIJsonEvaluation, AIJsonEvaluationFix, AIJsonEvaluationIssue, AIJsonIntegrityFlag, AIJsonProperty, AIJsonScoreAfter, AIJsonScoreBefore, AIJsonScoreBreakdown, AIPromptOptions } from "../types/ai-chat.js";
 import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, TagItem, FactUpdate, StateDeltaGeneration, ActionGeneration, FutureNoteGeneration, FlagUpdate, PlotFlagType, InitialPlotFlag, SceneCharacter, SanityState } from "../types/story.js";
-import { threadPriorities, threadStatuses, threadTruths, type UpdateThread, type NewThread, type ThreadUpdates, type AddThreadClue, type InitialThreadClue } from "../types/story-thread.js";
+import { threadPriorities, threadStatuses, threadTruths, type UpdateThread, type NewThread, type AddThreadClue, type InitialThreadClue } from "../types/story-thread.js";
 import type { CandidatePagesGeneration } from "../types/candidate-generation.js";
 import { genders } from "../types/user.js";
 import type { BookCreationResponse, BookTranslation, BookTranslationBulk, BookTranslationWithID, PageTranslation, PageTranslationBulk, PageTranslationWithID } from "../types/book.js";
@@ -578,16 +578,8 @@ export const VIABLE_ENDING_SCHEMA: AIJsonProperty = {
 
 export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, AIJsonProperty> = {
   // CHARACTERS
-  characterUpdates: {
-    type: 'object',
-    properties: {
-      newCharacters: { type: 'array', items: INITIAL_CHARACTER_SCHEMA, description: 'New characters introduced if any. Empty array if none.' },
-      updatedCharacters: { type: 'array', items: UPDATE_CHARACTER_SCHEMA, description: 'Characters whose details have been updated if any. Empty array if none.' },
-    } satisfies Record<keyof CharacterUpdates, AIJsonProperty>,
-    // CharacterUpdates fields are optional in types; require empty arrays when present for structured-output providers
-    required: ['newCharacters', 'updatedCharacters'] satisfies (keyof CharacterUpdates)[],
-    additionalProperties: false
-  },
+  newCharacters: { type: 'array', items: INITIAL_CHARACTER_SCHEMA, description: 'New characters introduced if any. Empty array if none.' },
+  updatedCharacters: { type: 'array', items: UPDATE_CHARACTER_SCHEMA, description: 'Characters whose details have been updated if any. Empty array if none.' },
   addPlannedCharacters: {
     type: 'array',
     description: 'New planned character candidates for future introduction (only when slots available and phase is EARLY/MID).',
@@ -596,55 +588,39 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
   relationshipUpdates: { type: 'array', items: RELATIONSHIP_UPDATE_SCHEMA, description: 'Updates to relationships between side characters if any.' },
 
   // PLACES
-  placeUpdates: {
-    type: 'object',
-    properties: {
-      newPlaces: { type: 'array', items: INITIAL_PLACE_SCHEMA, description: 'New places visited if any.' },
-      updatedPlaces: { type: 'array', items: UPDATE_PLACE_SCHEMA, description: 'Places which details have been updated if any.' },
-    } satisfies Record<keyof PlaceUpdates, AIJsonProperty>,
-    required: ['newPlaces', 'updatedPlaces'] satisfies (keyof PlaceUpdates)[],
-    additionalProperties: false
-  },
+  newPlaces: { type: 'array', items: INITIAL_PLACE_SCHEMA, description: 'New places visited if any.' },
+  updatedPlaces: { type: 'array', items: UPDATE_PLACE_SCHEMA, description: 'Places which details have been updated if any.' },
   placeConnections: { type: 'array', items: PLACE_CONNECTION_UPDATE_SCHEMA, description: 'Updates to connections between places if any.' },
 
   // STORY
   contextHistory: { type: 'string', description: `Story summary from page 1 up to this point. Focus on key facts and developments for continuity. Max ${MAX_WORDS_SUMMARIZED_CONTEXT} words.` },
-  threadUpdates: {
+  newThreads: THREADS_SCHEMA,
+  updateThreads: { type: 'array', description: 'Updates to existing threads if any.', items: {
     type: 'object',
-    description: 'Updates to narrative threads. Omit if no update.',
     properties: {
-      newThreads: THREADS_SCHEMA,
-      updateThreads: { type: 'array', description: 'Updates to existing threads if any.', items: {
-        type: 'object',
-        properties: {
-          threadId: { type: 'string', description: 'Existing thread ID' },
-          status: { type: 'string', enum: [...threadStatuses] },
-          priority: { type: 'string', enum: [...threadPriorities] },
-          truth: { type: 'string', enum: [...threadTruths] },
-          importance: { type: 'number' },
-          urgencyCorrection: { type: 'number', description: 'Only for exceptional shifts in narrative momentum (between -0.5 to 0.5). Not for normal development.' },
-          summary: { type: 'string' },
-          resolution: { type: 'string' },
-        } satisfies Record<keyof UpdateThread, AIJsonProperty>,
-        required: ['threadId'] satisfies (keyof UpdateThread)[],
-        additionalProperties: false
-      } },
-      addClues: { type: 'array', description: 'Clues to be added to existing threads if any.', items: {
-        type: 'object',
-        properties: {
-          threadId: { type: 'string', description: 'Existing thread ID' },
-          clue: { type: 'string' },
-          isFalse: { type: 'boolean', description: 'Whether the clue is true or misleading' },
-        } satisfies Record<keyof AddThreadClue, AIJsonProperty>,
-        required: ['threadId', 'clue', 'isFalse'] satisfies (keyof AddThreadClue)[],
-        additionalProperties: false
-      } },
-      closeThreads: { type: 'array', description: 'Thread titles to be closed if any.', items: { type: 'string' } },
-    } satisfies Record<keyof ThreadUpdates, AIJsonProperty>,
-    // Note: no any required fields, but Cohere requires at least one field in `required` array
-    required: ['closeThreads'] satisfies (keyof ThreadUpdates)[],
+      threadId: { type: 'string', description: 'Existing thread ID' },
+      status: { type: 'string', enum: [...threadStatuses] },
+      priority: { type: 'string', enum: [...threadPriorities] },
+      truth: { type: 'string', enum: [...threadTruths] },
+      importance: { type: 'number' },
+      urgencyCorrection: { type: 'number', description: 'Only for exceptional shifts in narrative momentum (between -0.5 to 0.5). Not for normal development.' },
+      summary: { type: 'string' },
+      resolution: { type: 'string' },
+    } satisfies Record<keyof UpdateThread, AIJsonProperty>,
+    required: ['threadId'] satisfies (keyof UpdateThread)[],
     additionalProperties: false
-  },
+  } },
+  addClues: { type: 'array', description: 'Clues to be added to existing threads if any.', items: {
+    type: 'object',
+    properties: {
+      threadId: { type: 'string', description: 'Existing thread ID' },
+      clue: { type: 'string' },
+      isFalse: { type: 'boolean', description: 'Whether the clue is true or misleading' },
+    } satisfies Record<keyof AddThreadClue, AIJsonProperty>,
+    required: ['threadId', 'clue', 'isFalse'] satisfies (keyof AddThreadClue)[],
+    additionalProperties: false
+  } },
+  closeThreads: { type: 'array', description: 'Thread titles to be closed if any.', items: { type: 'string' } },
   futureNoteAdd: {
     type: 'array',
     description: `Future notes to add. Max ${MAX_FUTURE_NOTES}. Narrative obligations towards viableEnding (plans, foreshadowing, future reveals, scenes, twists, etc).`,

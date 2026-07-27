@@ -232,15 +232,4 @@ export type PlaceUpdate = Partial<Omit<NewPlace, 'realName' | 'keyEvents' | 'fam
   removeHints?: string[];
 };
 
-/**
- * Complete place updates structure for AI JSON output
- * 
- * This structure allows the AI to create new places and update
- * existing ones in a single response, maintaining narrative flow.
- */
-export type PlaceUpdates = {
-  /** New places introduced in this page */
-  newPlaces?: NewPlace[];
-  /** Updates to existing places */
-  updatedPlaces?: PlaceUpdate[];
-};
+

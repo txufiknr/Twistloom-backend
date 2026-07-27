@@ -95,24 +95,6 @@ export type StoryThreadTranslation = Pick<StoryThread, 'threadId' | 'title' | 'q
   clues: ThreadClueTranslation[];
 };
 
-/**
- * Thread update operations for AI-generated content
- * 
- * Defines the structure for thread updates that can be requested from AI
- * during story generation, including new thread creation, existing thread
- * modifications, and clue additions.
- */
-export interface ThreadUpdates {
-  /** New threads to create (max 1-2 per page) */
-  newThreads?: NewThread[];
-  /** Updates to existing threads by title */
-  updateThreads?: UpdateThread[];
-  /** Clues to add to existing threads by title */
-  addClues?: AddThreadClue[];
-  /** Threads to close/resolve by title */
-  closeThreads?: string[];
-}
-
 export type NewThread = Pick<StoryThread,
   | 'threadId'
   | 'title'

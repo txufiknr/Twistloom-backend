@@ -200,7 +200,7 @@ Notice how characters refer to each other based on recognitionLevel:
 - first_name_known / full_name_known: use the known name normally.`;
 
 /**
- * Governs addPlannedCharacters / characterUpdates.newCharacters — lets the
+ * Governs addPlannedCharacters / newCharacters — lets the
  * model seed characters into story canon before they physically appear,
  * then introduce them later without contradicting earlier-planned bio
  * details. Only spliced into the prompt when state.plannedCharacters is
@@ -210,8 +210,8 @@ Notice how characters refer to each other based on recognitionLevel:
 export const RULES_PLANNED_CHARACTERS = `PLANNED CHARACTERS RULES:
 - These characters exist in the story canon but have not yet appeared on-page.
 - Use addPlannedCharacters to create new planned characters when the story needs future faces. Only valid in EARLY and MID phases.
-- Introduce them naturally (add to characterUpdates.newCharacters) when appropriate for the current scene, pacing, and story momentum.
-- Only add to characterUpdates.newCharacters when a planned character is genuinely introduced (physically present) in this page.
+- Introduce them naturally (add to newCharacters) when appropriate for the current scene, pacing, and story momentum.
+- Only add to newCharacters when a planned character is genuinely introduced (physically present) in this page.
 - Refine details like bio, appearance, etc when introducing planned characters. Preserve name, gender and role.`;
 
 /**
@@ -725,81 +725,79 @@ const nextPageOutputFormat: string = `{
       }
     }
   ],
-  "characterUpdates": {
-    "newCharacters": [
-      {
-        "characterId": "<new_character_id>",
-        "knownName": "...",
-        "realName": "...",
-        "recognitionLevel": "${recognitionLevelValues}",
-        "gender": "${genderValues}",
-        "role": "...",
-        "bio": "...",
-        "appearance": "...",
-        "status": "${characterStatusValues}",
-        "secrets": ["..."],
-        "importance": "${characterImportanceValues}",
-        "relationshipToMC": {
-          "type": "${relationshipTypeValues}",
-          "status": "${relationshipStatusValues}",
-          "context": "...",
-          "recognitionLevel": "${recognitionLevelValues}"
-        },
-        "pastInteractions": ["..."],
-        "narrativeFlags": {
-          "potentialTwist": "${twistTypeValues}"
-        },
-        "schedules": [
-          {
-            "placeId": "<place_id>",
-            "availabilityWindow": "...",
-            "missedConsequence": "..."
-          }
-        ],
-        "traits": [
-          "...: ..."
-        ],
-        "injuries": []
-      }
-    ],
-    "updatedCharacters": [
-      {
-        "characterId": "<character_id>",
-        "knownName": "...",
-        "recognitionLevel": "${recognitionLevelValues}",
-        "gender": "${genderValues}",
-        "role": "...",
-        "bio": "...",
-        "appearance": "...",
-        "status": "${characterStatusValues}",
-        "secrets": ["..."],
-        "importance": "${characterImportanceValues}",
-        "relationshipToMC": {
-          "type": "${relationshipTypeValues}",
-          "status": "${relationshipStatusValues}",
-          "context": "...",
-          "recognitionLevel": "${recognitionLevelValues}"
-        },
-        "newInteractions": ["..."],
-        "narrativeFlags": {
-          "potentialTwist": "${twistTypeValues}"
-        },
-        "updateSchedules": [
-          {
-            "placeId": "<place_id>",
-            "availabilityWindow": "...",
-            "missedConsequence": "..."
-          }
-        ],
-        "removeSchedules": ["<place_id>"],
-        "updateTraits": [
-          "...: ..."
-        ],
-        "removeTraits": [],
-        "injuries": []
-      }
-    ]
-  },
+  "newCharacters": [
+    {
+      "characterId": "<new_character_id>",
+      "knownName": "...",
+      "realName": "...",
+      "recognitionLevel": "${recognitionLevelValues}",
+      "gender": "${genderValues}",
+      "role": "...",
+      "bio": "...",
+      "appearance": "...",
+      "status": "${characterStatusValues}",
+      "secrets": ["..."],
+      "importance": "${characterImportanceValues}",
+      "relationshipToMC": {
+        "type": "${relationshipTypeValues}",
+        "status": "${relationshipStatusValues}",
+        "context": "...",
+        "recognitionLevel": "${recognitionLevelValues}"
+      },
+      "pastInteractions": ["..."],
+      "narrativeFlags": {
+        "potentialTwist": "${twistTypeValues}"
+      },
+      "schedules": [
+        {
+          "placeId": "<place_id>",
+          "availabilityWindow": "...",
+          "missedConsequence": "..."
+        }
+      ],
+      "traits": [
+        "...: ..."
+      ],
+      "injuries": []
+    }
+  ],
+  "updatedCharacters": [
+    {
+      "characterId": "<character_id>",
+      "knownName": "...",
+      "recognitionLevel": "${recognitionLevelValues}",
+      "gender": "${genderValues}",
+      "role": "...",
+      "bio": "...",
+      "appearance": "...",
+      "status": "${characterStatusValues}",
+      "secrets": ["..."],
+      "importance": "${characterImportanceValues}",
+      "relationshipToMC": {
+        "type": "${relationshipTypeValues}",
+        "status": "${relationshipStatusValues}",
+        "context": "...",
+        "recognitionLevel": "${recognitionLevelValues}"
+      },
+      "newInteractions": ["..."],
+      "narrativeFlags": {
+        "potentialTwist": "${twistTypeValues}"
+      },
+      "updateSchedules": [
+        {
+          "placeId": "<place_id>",
+          "availabilityWindow": "...",
+          "missedConsequence": "..."
+        }
+      ],
+      "removeSchedules": ["<place_id>"],
+      "updateTraits": [
+        "...: ..."
+      ],
+      "removeTraits": [],
+      "injuries": []
+    }
+  ],
   "relationshipUpdates": [
     {
       "sourceId": "<character_id_1>",
@@ -810,62 +808,60 @@ const nextPageOutputFormat: string = `{
       "recognitionLevel": "${recognitionLevelValues}"
     }
   ],
-  "placeUpdates": {
-    "newPlaces": [
-      {
-        "placeId": "<new_place_id>",
-        "parentPlaceId": "Optional. <parent_place_id>",
-        "knownName": "...",
-        "realName": "...",
-        "type": "...",
-        "category": "${canonicalPlaceTypeValues}",
-        "context": "...",
-        "familiarity": <number between 0.0 and 1.0>,
-        "isRealNameKnown": <boolean>,
-        "hints": ["..."],
-        "keyEvents": ["..."],
-        "keyObjects": [
-          {
-            "name": "...",
-            "traits": [
-              "...: ..."
-            ],
-            "amount": <number>,
-            "where": "..."
-          }
-        ],
-        "traits": [
-          "...: ..."
-        ],
-        "knownCharacters": [
-          {
-            "<character_id>: <Context or interaction>"
-          }
-        ]
-      }
-    ],
-    "updatedPlaces": [
-      {
-        "placeId": "<place_id>",
-        "knownName": "...",
-        "type": "...",
-        "category": "${canonicalPlaceTypeValues}",
-        "context": "...",
-        "familiarityCorrection": <number between -0.5 to 0.5>,
-        "isRealNameKnown": <boolean>,
-        "addKeyEvents": ["..."],
-        "addHints": [],
-        "removeHints": [],
-        "updateTraits": [
-          "...: ..."
-        ],
-        "removeTraits": [],
-        "knownCharacters": [
+  "newPlaces": [
+    {
+      "placeId": "<new_place_id>",
+      "parentPlaceId": "Optional. <parent_place_id>",
+      "knownName": "...",
+      "realName": "...",
+      "type": "...",
+      "category": "${canonicalPlaceTypeValues}",
+      "context": "...",
+      "familiarity": <number between 0.0 and 1.0>,
+      "isRealNameKnown": <boolean>,
+      "hints": ["..."],
+      "keyEvents": ["..."],
+      "keyObjects": [
+        {
+          "name": "...",
+          "traits": [
+            "...: ..."
+          ],
+          "amount": <number>,
+          "where": "..."
+        }
+      ],
+      "traits": [
+        "...: ..."
+      ],
+      "knownCharacters": [
+        {
           "<character_id>: <Context or interaction>"
-        ]
-      }
-    ]
-  },
+        }
+      ]
+    }
+  ],
+  "updatedPlaces": [
+    {
+      "placeId": "<place_id>",
+      "knownName": "...",
+      "type": "...",
+      "category": "${canonicalPlaceTypeValues}",
+      "context": "...",
+      "familiarityCorrection": <number between -0.5 to 0.5>,
+      "isRealNameKnown": <boolean>,
+      "addKeyEvents": ["..."],
+      "addHints": [],
+      "removeHints": [],
+      "updateTraits": [
+        "...: ..."
+      ],
+      "removeTraits": [],
+      "knownCharacters": [
+        "<character_id>: <Context or interaction>"
+      ]
+    }
+  ],
   "placeConnections": [
     {
       "sourceId": "<place_id_1>",
@@ -878,42 +874,40 @@ const nextPageOutputFormat: string = `{
       "notes": "..."
     }
   ],
-  "threadUpdates": {
-    "newThreads": [
-      {
-        "threadId": "<new_thread_id>",
-        "title": "...",
-        "question": "...",
-        "priority": "${threadPriorityValues}",
-        "truth": "${threadTruthValues}",
-        "importance": <number between 0.0 and 1.0>,
-        "summary": "...",
-        "clues": [
-          { "clue": "...", "isFalse": <boolean> }
-        ]
-      }
-    ],
-    "updateThreads": [
-      {
-        "threadId": "<thread_id>",
-        "status": "${threadStatusValues}",
-        "priority": "${threadPriorityValues}",
-        "truth": "${threadTruthValues}",
-        "importance": <number between 0.0 and 1.0>,
-        "urgencyCorrection": <number between -0.5 and 0.5>,
-        "summary": "...",
-        "resolution": "..."
-      }
-    ],
-    "addClues": [
-      {
-        "threadId": "<thread_id>",
-        "clue": "...",
-        "isFalse": <boolean>
-      }
-    ],
-    "closeThreads": []
-  },
+  "newThreads": [
+    {
+      "threadId": "<new_thread_id>",
+      "title": "...",
+      "question": "...",
+      "priority": "${threadPriorityValues}",
+      "truth": "${threadTruthValues}",
+      "importance": <number between 0.0 and 1.0>,
+      "summary": "...",
+      "clues": [
+        { "clue": "...", "isFalse": <boolean> }
+      ]
+    }
+  ],
+  "updateThreads": [
+    {
+      "threadId": "<thread_id>",
+      "status": "${threadStatusValues}",
+      "priority": "${threadPriorityValues}",
+      "truth": "${threadTruthValues}",
+      "importance": <number between 0.0 and 1.0>,
+      "urgencyCorrection": <number between -0.5 and 0.5>,
+      "summary": "...",
+      "resolution": "..."
+    }
+  ],
+  "addClues": [
+    {
+      "threadId": "<thread_id>",
+      "clue": "...",
+      "isFalse": <boolean>
+    }
+  ],
+  "closeThreads": [],
   "viableEnding": {
     "text": "...",
     "type": "${endingTypeValues}",
@@ -1058,7 +1052,7 @@ ${futureNotes.length < MAX_FUTURE_NOTES ? `  - ONLY add for important unresolved
 
 addPlannedCharacters
 ${!isLatePhase && charactersSlot > 0 ? `  - Add new planned character candidates for future introduction when the story needs fresh faces for upcoming beats.
-  - This is for characters not yet on-page — they're seeds for future pages. Use characterUpdates.newCharacters instead if the new character is physically present on this page.
+  - This is for characters not yet on-page — they're seeds for future pages. Use newCharacters instead if the new character is physically present on this page.
   - Each must have a distinct characterId. Avoid generic or throwaway plans.
   - storyPurpose: why this character exists and what role they'll play.
   - plannedIntro: brief hook describing how/when they might first appear.`
@@ -1121,7 +1115,7 @@ branchNames
   - Suggest 3 creative, distinct names for this page as a timeline/branch — evocative, spoiler-free (e.g., "The Locked Door", "Trust No One").
   - Always suggest regardless of whether this page's actions actually fork the story — the system decides whether a name is used.
 
-characterUpdates.newCharacters
+newCharacters
 ${charactersSlot === 0 ? `  - Don't introduce new characters. ${MAX_CHARACTERS} characters limit reached.`
 : isEarlyPhase ? `  - New characters are welcome up to ${charactersSlot} more — establish the cast now.`
 : isMidPhase ? `  - You can optionally introduce up to ${charactersSlot} new characters only if genuinely necessary to support the story. Prefer deepening existing ones.`
@@ -1139,7 +1133,7 @@ ${isEarlyPhase || isMidPhase ? `  - Name must feel authentic to the MC's age gro
   - relationships: only include known relationships to other named characters. Omit if none.` : ''}
   - traits: only story-relevant (e.g., interests).
 
-characterUpdates.updatedCharacters
+updatedCharacters
 ${isLatePhase || isFinale
 ? `  - Expect significant status and flag changes now. Characters should be fracturing or revealing.`
 : `  - Only include characters whose state actually changed this page.`}
@@ -1163,7 +1157,7 @@ relationshipUpdates
 ${isEarlyPhase ? `  - Subtle shifts only — early relationships should feel ambiguous, not defined.` : ''}
 ${isLatePhase || isFinale ? `  - Relationships should be breaking, inverting, or crystallizing. No more ambiguity.` : ''}
 
-placeUpdates.newPlaces
+newPlaces
 ${placesSlot === 0 ? `  - Don't introduce new places. Limit of ${MAX_PLACES} reached.`
 : isEarlyPhase || isMidPhase ? `  - You can introduce up to ${placesSlot} new meaningful places the MC enters for the first time in this page — no generic one-offs.
   - knownName: should fit the in-world cultural setting.
@@ -1178,7 +1172,7 @@ ${placesSlot === 0 ? `  - Don't introduce new places. Limit of ${MAX_PLACES} rea
   - Might need to update other places' hint to link with this new place.`
 : `  - New places should not be introduced. If the MC is somewhere new, question whether it's necessary.`}
 
-placeUpdates.updatedPlaces
+updatedPlaces
   - Only update on revisit or significant event.
   - Include only changed fields: addKeyEvents (1 contextual sentence), knownCharacters (with meaningful context update), keyObjects (overwrite), and traits change.
   - familiarityCorrection: always 0 except on major condition:
@@ -1197,7 +1191,7 @@ placeConnections
   - updateObstacles: Current story-relevant barriers, hazards, or access requirements.
   - notes: Short route details not covered elsewhere.
 
-threadUpdates.newThreads
+newThreads
 ${isFinale ? `  - Do NOT introduce new threads. The story is in finale.`
 : isLatePhase ? `  - Avoid introducing new threads. Focus on resolving existing ones.`
 : isEarlyPhase ? `  - Introduce 1-2 core mysteries if this is early in the story. Each thread should have a compelling question that connects to the psychological premise.`
@@ -1209,7 +1203,7 @@ ${isEarlyPhase || isMidPhase ? `  - title: Short, evocative name for the mystery
   - truth: "true" if the thread leads to genuine revelation, "false" if it's a deliberate misdirection, "unknown" if ambiguous
   - importance: 0.0-1.0 (how frequently this thread should appear in the narrative)` : ''}
 
-threadUpdates.updateThreads
+updateThreads
   - Update existing threads when their status, priority, or urgency meaningfully changes.
   - threadId: must match an existing thread ID.
   - status: ${isLatePhase ? 'update to "revealed" or "closed" as threads converge toward the ending.' : '"open" (newly introduced), "developing" (active investigation), "revealed" (truth partially shown), "closed" (resolved).'}
@@ -1219,7 +1213,7 @@ threadUpdates.updateThreads
   - If this page develops, complicates, advances, or revisits an active thread, include a summary update for that thread.
 ${isFinale ? `  - Every main thread must be resolved (status: "closed" with resolution text).` : ''}
 
-threadUpdates.addClues
+addClues
 ${isEarlyPhase || isMidPhase ? `  - Add clues to existing threads to advance mysteries.
   - threadId: must match an existing thread ID.
   - clue: short, evocative clue that advances the mystery (e.g., "She knows my mother", "Flashbacks of water").
@@ -1227,7 +1221,7 @@ ${isEarlyPhase || isMidPhase ? `  - Add clues to existing threads to advance mys
 ${isLatePhase ? `  - Add revealing clues that push threads toward resolution.` : ''}
 ${isFinale ? `  - Add final clues that complete thread resolutions.` : ''}
 
-${isLatePhase ? 'threadUpdates.closeThreads' : ''}
+${isLatePhase ? 'closeThreads' : ''}
 ${isLatePhase ? `  - Close threads that have been fully resolved or are no longer relevant.
   - Include thread IDs that should be marked as closed (resolution should be in updateThreads.resolution)` : ''}
 ${isFinale ? `  - All remaining threads must be closed in the finale.` : ''}
@@ -1453,7 +1447,7 @@ Flag any choice that fails — include in issues.
 JSON INTEGRITY CHECKS (flag any violation):
 - All user-facing field values using ${formattedLanguage} language consistently
 - familiarity is a decimal between 0.0 and 1.0
-- charactersPresent IDs exist in "KNOWN CHARACTERS"${isFinale || charactersSlot === 0 ? '' : ` or in characterUpdates.newCharacters`}
+- charactersPresent IDs exist in "KNOWN CHARACTERS"${isFinale || charactersSlot === 0 ? '' : ` or in newCharacters`}
 - All mandatory fields present and filled
 
 ---
@@ -2754,7 +2748,7 @@ function formatCurrentSituationForPrompt(page: CandidateGenerationPage, state: S
       const character = state.characters[characterId];
       if (!character) {
         console.log(`[charactersPresent] ⚠️ Character ID "${characterId}" does not exist`)
-        return `  · ${characterId} (${sceneRole}, focus: ${sceneFocus}) [not present in known characters, add it via characterUpdates.newCharacters]`;
+        return `  · ${characterId} (${sceneRole}, focus: ${sceneFocus}) [not present in known characters, add it via newCharacters]`;
       }
       const { knownName, role } = character;
       return `  · ${knownName} (${role} - ${sceneRole}, focus: ${sceneFocus}) [ID: ${characterId}]`;

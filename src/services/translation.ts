@@ -483,7 +483,7 @@ async function translatePageWithLibre({
     ? translated.slice(keyEventsStart, keyEventsStart + (page.keyEvents?.length ?? 0))
     : [];
 
-  const translatedImportantObjects: string[] = keyObjectsStart !== undefined
+  const translatedKeyObjects: string[] = keyObjectsStart !== undefined
     ? translated.slice(keyObjectsStart, keyObjectsStart + (page.keyObjects?.length ?? 0))
     : [];
 
@@ -611,7 +611,7 @@ async function translatePageWithLibre({
       mood:             translatedMood,
       weather:          translatedWeather,
       keyEvents:        translatedKeyEvents,
-      keyObjects: translatedImportantObjects,
+      keyObjects:       translatedKeyObjects,
       actions:          translatedActions,
       actionsHistory:   translatedActionsHistory,
       contextHistory:   translatedContextHistory,

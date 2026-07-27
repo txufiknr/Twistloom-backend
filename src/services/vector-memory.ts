@@ -234,23 +234,23 @@ export async function embedStateDeltaEntities(page: PersistedStoryPage): Promise
 
   const jobs: Promise<void>[] = [];
 
-  for (const character of stateDelta.characterUpdates?.newCharacters ?? []) {
+  for (const character of stateDelta.newCharacters ?? []) {
     if (character.pastInteractions?.length) {
       jobs.push(embedCharacterInteractions(page, character.characterId, character.pastInteractions));
     }
   }
-  for (const update of stateDelta.characterUpdates?.updatedCharacters ?? []) {
+  for (const update of stateDelta.updatedCharacters ?? []) {
     if (update.newInteractions?.length) {
       jobs.push(embedCharacterInteractions(page, update.characterId, update.newInteractions));
     }
   }
 
-  for (const place of stateDelta.placeUpdates?.newPlaces ?? []) {
+  for (const place of stateDelta.newPlaces ?? []) {
     if (place.keyEvents?.length) {
       jobs.push(embedPlaceEvents(page, place.placeId, place.keyEvents));
     }
   }
-  for (const update of stateDelta.placeUpdates?.updatedPlaces ?? []) {
+  for (const update of stateDelta.updatedPlaces ?? []) {
     if (update.addKeyEvents?.length) {
       jobs.push(embedPlaceEvents(page, update.placeId, update.addKeyEvents));
     }
@@ -266,13 +266,13 @@ export async function embedStateDeltaEntities(page: PersistedStoryPage): Promise
   // two clues added to the same thread on the same page would race on the
   // same (pageId, threadId) upsert target instead of getting joined into
   // one row like embedClues expects.
-  for (const newThread of stateDelta.threadUpdates?.newThreads ?? []) {
+  for (const newThread of stateDelta.newThreads ?? []) {
     if (newThread.clues?.length) {
       jobs.push(embedClues(page, newThread.threadId, newThread.clues.map(c => c.clue)));
     }
   }
   const addCluesByThread = new Map<string, string[]>();
-  for (const added of stateDelta.threadUpdates?.addClues ?? []) {
+  for (const added of stateDelta.addClues ?? []) {
     const existing = addCluesByThread.get(added.threadId) ?? [];
     existing.push(added.clue);
     addCluesByThread.set(added.threadId, existing);

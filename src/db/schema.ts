@@ -1304,7 +1304,7 @@ export const pageTranslations = pgTable(
     mood: text("mood"),
     weather: text("weather"),
     keyEvents: text("key_events").array().notNull().default(sql`ARRAY[]::text[]`),
-    keyObjects: text("important_objects").array().notNull().default(sql`ARRAY[]::text[]`),
+    keyObjects: text("important_objects").array().notNull().default(sql`ARRAY[]::text[]`), // TODO: key_objects
     contextHistory: text("context_history"),
     characters: jsonb("characters").$type<CharacterMemoryTranslation[]>().notNull().default(sql`'[]'::jsonb`),
     places: jsonb("places").$type<PlaceMemoryTranslation[]>().notNull().default(sql`'[]'::jsonb`),

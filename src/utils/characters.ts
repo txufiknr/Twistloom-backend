@@ -1,7 +1,7 @@
 import { ACTION_SCORE_CAP, BODY_PART_WEIGHTS, DEFAULT_BODY_PART_IMPACT, FEAR_MENTAL_PENALTY, HEALTH_SCORE_CAP, INJURY_CATEGORY_WEIGHTS, MEMORY_INTEGRITY_MENTAL_PENALTY, MENTAL_SCORE_CAP, MOBILITY_SCORE_CAP, TRAUMA_TAG_MENTAL_WEIGHT } from "../config/characters.js";
 import { CHARACTER_NAMES } from "../config/characters.js";
 import { MAX_PAST_INTERACTIONS, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, MAX_CHARACTERS } from "../config/story.js";
-import type { CharacterMemory, CharacterUpdate, CharacterUpdates, RelationshipUpdate, StoryMC, StoryMCCandidate, Injury, InjurySeverity, PastInteraction, HealthCondition, HealthStatus, MentalHealthInputs, BodyPartImpact, CharacterPlan } from "../types/character.js";
+import type { CharacterMemory, CharacterUpdate, RelationshipUpdate, StoryMC, StoryMCCandidate, Injury, InjurySeverity, PastInteraction, HealthCondition, HealthStatus, MentalHealthInputs, BodyPartImpact, CharacterPlan, NewCharacter } from "../types/character.js";
 import type { StoryMCState, StoryState } from "../types/story.js";
 import type { KnownGender } from "../types/user.js";
 import { ucfirst } from "./formatter.js";
@@ -226,38 +226,41 @@ export function updateRelationship(character: CharacterMemory, update: Relations
  * the character dictionary structure.
  *
  * @param state - Current story state (mutated in place)
- * @param characterUpdates - New characters and updates from AI output
+ * @param newCharacters - New characters from AI output
+ * @param updatedCharacters - Character updates from AI output
  * @param relationshipUpdates - Directional relationship changes to apply
  * @param placeId - Optional place ID providing context for new interactions
  *
  * @example
  * ```typescript
- * processCharacterUpdates(state, output.characterUpdates, output.relationshipUpdates, placeId);
+ * processCharacterUpdates(state, output.newCharacters, output.updatedCharacters, output.relationshipUpdates, placeId);
  * ```
  */
 export function processCharacterUpdates(
   state: StoryState,
-  characterUpdates?: CharacterUpdates,
+  newCharacters?: NewCharacter[],
+  updatedCharacters?: CharacterUpdate[],
   relationshipUpdates?: RelationshipUpdate[],
   placeId?: string
 ): void {
-  const { newCharacters = [], updatedCharacters = [] } = characterUpdates || {};
+  const newChars = newCharacters || [];
+  const updChars = updatedCharacters || [];
 
   // Early exit: if no updates to process
-  if (!newCharacters.length && !updatedCharacters.length && !relationshipUpdates?.length) return;
+  if (!newChars.length && !updChars.length && !relationshipUpdates?.length) return;
   
   // Process character updates if they exist
   const { page } = state;
 
   // Add new characters
-  if (newCharacters.length) {
-    for (const character of newCharacters) {
+  if (newChars.length) {
+    for (const character of newChars) {
       const characterId = character.characterId;
       state.characters[characterId] = {
         ...character,
         introducedAtPage: page,
         injuries: character.injuries ?? [],
-        pastInteractions: character.pastInteractions?.map<PastInteraction>(i => ({ page, interaction: i, placeId })) ?? [],
+        pastInteractions: character.pastInteractions?.map<PastInteraction>((i: string) => ({ page, interaction: i, placeId })) ?? [],
         relationships: [], // Will be populated via relationshipUpdates
       };
       // Remove any matching planned character entries now that the character
@@ -270,8 +273,8 @@ export function processCharacterUpdates(
   }
 
   // Update existing characters
-  if (updatedCharacters.length) {
-    for (const update of updatedCharacters) {
+  if (updChars.length) {
+    for (const update of updChars) {
       const updateId = update.characterId;
       const existing = state.characters[updateId];
       if (existing) {

@@ -290,19 +290,6 @@ export type CharacterUpdate = Partial<Omit<NewCharacter, 'realName' | 'pastInter
   removeSchedules?: string[];
 };
 
-/**
- * Complete character updates structure for AI JSON output
- * 
- * This structure allows the AI to create new characters and update
- * existing ones in a single response, maintaining narrative flow.
- */
-export type CharacterUpdates = {
-  /** New characters introduced in this page */
-  newCharacters?: NewCharacter[];
-  /** Updates to existing characters */
-  updatedCharacters?: CharacterUpdate[];
-};
-
 export type ObjectItem = {
   /** The name of the item */
   name: string;

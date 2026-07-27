@@ -9,7 +9,7 @@ import {
   FAMILIARITY_VISIT_WEIGHT,
   MAX_PLACES
 } from "../config/story.js";
-import type { NewPlace, PlaceConnectionUpdate, PlaceMemory, PlaceUpdate, PlaceUpdates } from "../types/places.js";
+import type { NewPlace, PlaceConnectionUpdate, PlaceMemory, PlaceUpdate } from "../types/places.js";
 import type { PastEvent, StoryScene, StoryState } from "../types/story.js";
 import { cleanUpInventory } from "./story.js";
 import { slugify, getTraitKey } from "./text-processing.js";
@@ -151,23 +151,28 @@ export function updatePlace(params: {
  * Processes AI output for new places and updates, maintaining
  * place dictionary structure and active place limits.
  * 
- * @param state - Current story state
- * @param page - Story page containing place updates
+ * @param state - Current story state (mutated in place)
+ * @param newPlaces - New places created in this page
+ * @param updatedPlaces - Updates to existing places
+ * @param placeConnections - Optional connection updates between places
+ * @param scene - Scene context if available
+ * @param previousPlaceId - The previous place ID for continuity
  * 
  * @example
  * ```typescript
- * processPlaceUpdates(state, storyPage);
+ * processPlaceUpdates(state, output.newPlaces, output.updatedPlaces);
  * ```
  */
-export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdates, placeConnections?: PlaceConnectionUpdate[], scene?: StoryScene, previousPlaceId?: string): void {
-  const { newPlaces = [], updatedPlaces = [] } = placeUpdates || {};
+export function processPlaceUpdates(state: StoryState, newPlaces?: NewPlace[], updatedPlaces?: PlaceUpdate[], placeConnections?: PlaceConnectionUpdate[], scene?: StoryScene, previousPlaceId?: string): void {
+  const newPlacesList = newPlaces || [];
+  const updatedPlacesList = updatedPlaces || [];
 
   // Early exit: if no updates to process
-  if (!newPlaces.length && !updatedPlaces.length && !placeConnections?.length) return;
+  if (!newPlacesList.length && !updatedPlacesList.length && !placeConnections?.length) return;
   
   // Add new places into place memory
-  if (newPlaces.length) {
-    for (const newPlace of newPlaces) {
+  if (newPlacesList.length) {
+    for (const newPlace of newPlacesList) {
       const place = createPlace(newPlace, state.page, scene);
       const placeId = slugify(newPlace.placeId);
       state.places[placeId] = place;
@@ -175,8 +180,8 @@ export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdat
   }
   
   // Update existing places
-  if (updatedPlaces.length) {
-    for (const update of updatedPlaces) {
+  if (updatedPlacesList.length) {
+    for (const update of updatedPlacesList) {
       const placeId = slugify(update.placeId);
       const existing = state.places[placeId];
       if (existing) {

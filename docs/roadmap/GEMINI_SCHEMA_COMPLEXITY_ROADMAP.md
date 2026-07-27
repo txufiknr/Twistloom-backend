@@ -1,6 +1,6 @@
 # Gemini Schema Complexity Eradication Roadmap
 
-> **Revision:** v7 — Phase 1.3: `placeConnectionUpdates→placeConnections`, `visualDescription→appearance` completed. Phase 2.2 **skipped** (1 batch call intentional — see decision note below). Phase 1.7 still blocked on Phase 1.5.
+> **Revision:** v8 — Phase 1.5 completed: unwrapped `characterUpdates`/`placeUpdates`/`threadUpdates` to flat root-level arrays across types, schema, prompts, services. Phase 1.7 unblocked (no longer depends on 1.5).
 > **Target error:** `ApiError: {"error":{"code":400,"message":"The specified schema produces a constraint that has too many states for serving…","status":"INVALID_ARGUMENT"}}`
 > **Affects:** Gemini 2.5 Flash/Pro structured-output calls (`responseSchema`)
 > **Stack:** TypeScript / Node.js, Gemini, `convertToGeminiSchema` (minify: true)
@@ -39,7 +39,7 @@ All measurements from `src/schema/story.ts` live schema definitions.
 | EVAL_STORY (wraps STORY) | 192 | 26 | 151 | 49 | 50 | 147 | 9 | 35 KB |
 | EVAL_BOOK (wraps BOOK) | 142 | 24 | 131 | 35 | 31 | 138 | 7 | 24 KB |
 
-#### After Phase 1 (flattening) + Phase 2.3 (decoupled evaluator) + Phase 1.5 (flatten wrappers) + Phase 1.6 (flatten changeNote) [Phase 2.2 skipped intentionally]
+#### After Phase 1 (flattening) + Phase 2.3 (decoupled evaluator) + Phase 1.5 (flatten wrappers — done) + Phase 1.6 (flatten changeNote) [Phase 2.2 skipped intentionally]
 
 | Schema | Props | Enums | Enum Items | Objects | Arrays | Required | Max Depth | JSON Size |
 |--------|------:|------:|-----------:|--------:|-------:|---------:|----------:|----------:|
@@ -82,7 +82,7 @@ Beyond the raw schema, each generation call appends ~10 KB of output format (`ne
 
 ## Implementation Plan (Reorganized by Risk)
 
-### ✅ Completed — Low Risk (11 items)
+### ✅ Completed — Low Risk (12 items)
 
 | Phase | Change | What it did |
 |-------|--------|-------------|
@@ -97,32 +97,11 @@ Beyond the raw schema, each generation call appends ~10 KB of output format (`ne
 | **1.8-alt (p2)** | Replace `formatOneOf` in output formats with centralized value strings | Replaced all inline `"One of: ${formatOneOf(...)}"` patterns in `firstBookOutputFormat` and `nextPageOutputFormat` with pre-computed value strings from `enums.ts`. ~75 occurrences replaced across both templates. Kept `formatOneOf` in field instructions / rules sections where natural language usage is appropriate. |
 | **1.3 (partial)** | `plannedIntroduction→plannedIntro`, `importantObjects→keyObjects` | Renamed 2 property names across types, schemas, prompts, services, DB schema. DB column names preserved (`important_objects`) — migration separate. ~1.7 chars saved per occurrence. Verified: all references updated in type defs, schema defs, prompt templates, service code, and DB column mapping. |
 | **1.3 (cont.)** | `placeConnectionUpdates→placeConnections`, `visualDescription→appearance` | Renamed 2 more property names across types, schemas, prompts, services. `placeConnectionUpdates` shortened by 8 chars, `visualDescription` shortened by 7 chars. All references updated. |
+| **1.5** | Flatten wrapper objects (`characterUpdates`, `placeUpdates`, `threadUpdates`) | Unwrapped 3 wrapper objects to flat root-level arrays across `StateDelta` type, `STORY_STATE_GENERATION_SCHEMA`, `nextPageOutputFormat`, `buildNextPageFieldInstructions`, `extractStateDelta`/`applyStateDelta`, `processCharacterUpdates`/`processPlaceUpdates`/`processThreadUpdates`, and `embedStateDeltaEntities`. Removed `CharacterUpdates`, `PlaceUpdates`, `ThreadUpdates` types. -3 objects, depth 7→6. Unblocks Phase 1.7. |
 
 ---
 
-### 🟡 Pending — Medium Risk (2 items)
-
-#### Phase 1.5 — Flatten wrapper objects in STORY_STATE_GENERATION_SCHEMA
-
-**⚠️ Naming collision:** The AGENTS.md task plan uses "Phase 1.5" for a *different* change (inlining `storyFlags.characterRecognitionLevels` → `characterMemoryStrength`/`characterMemoryDecay` on `StoryState`). That change is tracked separately; this roadmap's Phase 1.5 is the wrapper-flattening described below.
-
-**Problem:** Three wrapper objects (`characterUpdates`, `placeUpdates`, `threadUpdates`) add intermediate nesting without providing structural value. Each wraps multiple arrays in a single `{ type: 'object', properties: {...} }` node.
-
-**Proposed change:**
-
-| Wrapper | Contains | After flattening |
-|---------|----------|-----------------|
-| `characterUpdates` | `newCharacters[]`, `updatedCharacters[]` | `newCharacters[]`, `updatedCharacters[]` (root) |
-| `placeUpdates` | `newPlaces[]`, `updatedPlaces[]` | `newPlaces[]`, `updatedPlaces[]` (root) |
-| `threadUpdates` | `newThreads[]`, `updateThreads[]`, `addClues[]`, `closeThreads[]` | all 4 arrays at root |
-
-**Savings:**
-- -3 objects from `STORY_STATE_GENERATION_SCHEMA`
-- Depth reduces 7→6 for `STORY_GENERATION`, 8→7 for `CANDIDATE_GENERATION`
-- Schema JSON size drops ~2 KB
-- **Prompt-side bonus**: `buildNextPageFieldInstructions` deduplicates char and place instruction blocks (currently `newCharacters` and `updatedCharacters` share 70% content — after flattening, they share one instruction block, saving ~20 lines)
-
-**Risk assessment:** 🟡 Medium — same scale as Phase 1.2 (TagUpdates collapse). Touches types (`StateDeltaGeneration`, `StoryGeneration`), schema, prompts (`nextPageOutputFormat`, `buildNextPageFieldInstructions`), and consumer code (`extractStateDelta`, `applyStateDelta`). TypeScript `satisfies` catches mismatches. Effort ~3 days.
+### 🟡 Pending — Medium Risk (1 item)
 
 #### Phase 1.3 — Shorten property names to ≤ 15 chars
 
@@ -135,28 +114,26 @@ Beyond the raw schema, each generation call appends ~10 KB of output format (`ne
 | Current | Length | Proposed | Len | Rationale | Status |
 |---------|--------|----------|----:|-----------|--------|
 | `placeConnectionUpdates` | 23 | `placeConnections` | 15 | Full "connections" preserved; "updates" dropped (inherent in context) | ✅ Done |
+| `importantObjects` | 16 | `keyObjects` | 10 | Already used elsewhere in codebase; self-explanatory | ✅ Done |
+| `plannedIntroduction` | 19 | `plannedIntro` | 12 | "Intro" standard abbreviation | ✅ Done |
+| `visualDescription` | 17 | `appearance` | 10 | Same meaning | ✅ Done |
 | `addPlannedCharacters` | 21 | `plannedChars` | 12 | "Chars" standard abbreviation; "planned" retained | ⬜ Pending |
 | `relationshipUpdates` | 19 | `relUpdates` | 10 | "Rel" for "relationship" is recognizable in context | ⬜ Pending |
 | `charactersPresent` | 17 | `presentChars` | 12 | Reordered for clarity; "chars" standard | ⬜ Pending |
-| `importantObjects` | 16 | `keyObjects` | 10 | Already used elsewhere in codebase; self-explanatory | ✅ Done |
 | `characterUpdates` | 16 | `charUpdates` | 11 | Matches `presentChars` convention | ⬜ Pending |
 | `futureNoteRemove` | 16 | `futureNoteDel` | 13 | Truncation preserves meaning | ⬜ Pending |
 | `traumaTagRemove` | 16 | `traumaTagDel` | 12 | Truncation preserves meaning | ⬜ Pending |
 | `familiarityCorrection` | 21 | `famCorrection` | 13 | "Fam" clear in relationship context | ⬜ Pending |
-| `plannedIntroduction` | 19 | `plannedIntro` | 12 | "Intro" standard abbreviation | ✅ Done |
 | `availabilityWindow` | 17 | `availWindow` | 11 | "Avail" standard abbreviation | ⬜ Pending |
 | `alternativeTitles` | 17 | `altTitles` | 9 | "Alt" standard abbreviation | ⬜ Pending |
 | `initialCharacters` | 17 | `initialChars` | 12 | Consistent with `presentChars` | ⬜ Pending |
 | `updatedCharacters` | 17 | `updatedChars` | 12 | Consistent with `presentChars` | ⬜ Pending |
 | `urgencyCorrection` | 17 | `urgCorrection` | 13 | "Urg" clear in pacing context | ⬜ Pending |
-| `visualDescription` | 17 | `appearance` | 10 | Same meaning | ✅ Done |
 | `initialRelationships` | 20 | `initialRels` | 11 | Consistent with `relUpdates` | ⬜ Pending |
 | `missedConsequence` | 17 | `missedCons` | 10 | "Cons" clear in narrative context | ⬜ Pending |
 | `pastInteractions` | 16 | `pastInts` | 8 | "Ints" recognizable in character context | ⬜ Pending |
 | `recognitionLevel` | 16 | `recogLevel` | 10 | "Recog" clear in familiarity context | ⬜ Pending |
 | `relationshipToMC` | 15 | *(keep)* | 15 | Already at limit | — |
-| `futureNoteUpdates` | 16 | *(split)* | — | Already split into `futureNoteAdd`/`futureNoteRemove` (Phase 1.2) | ✅ Done |
-| `traumaTagUpdates` | 15 | *(split)* | — | Already split into `traumaTagAdd`/`traumaTagRemove` (Phase 1.2) | ✅ Done |
 
 **Savings:** Average key length drops from ~9.5 to ~7.8. Field name shortened by ~1.7 chars × 30 props ≈ ~50 fewer tokens — negligible impact on decoder state. **Low priority** — Phase 4 safety nets already prevent Gemini crashes regardless of name length.
 
@@ -176,7 +153,7 @@ Beyond the raw schema, each generation call appends ~10 KB of output format (`ne
 
 ---
 
-### 🟢 Pending — Low Risk (1 item)
+### 🟢 Pending — Low Risk (1 item — unblocked)
 
 ### 🔴 Rejected (1 item)
 
@@ -192,7 +169,7 @@ Beyond the raw schema, each generation call appends ~10 KB of output format (`ne
 
 **Risk assessment:** 🟢 Low — pure prompt text change. Effort ~1 day.
 
-**Dependency:** Requires Phase 1.5 (wrapper flattening) first.
+**Dependency:** ✅ Phase 1.5 completed (wrapper flattening) — this is now unblocked.
 
 ---
 
@@ -261,9 +238,9 @@ Depth 8 is acceptable for non-Gemini providers (they handle it without issues). 
 
 | Status | Count | Phases |
 |--------|------:|--------|
-| ✅ Completed | 11 | 1.1, 1.2, 1.4, 1.6, 1.8-alt (p1, p2), 1.3 (4 renames done), 2.3, 4.1, 4.2 |
-| 🟡 Pending (medium) | 3 | 1.5, 3.1, 1.3 (remaining 17 renames — deferred) |
-| 🟢 Pending (low) | 1 | 1.7 (blocked on 1.5) |
+| ✅ Completed | 12 | 1.1, 1.2, 1.4, 1.5, 1.6, 1.8-alt (p1, p2), 1.3 (4 renames done), 2.3, 4.1, 4.2 |
+| 🟡 Pending (medium) | 2 | 3.1, 1.3 (remaining 17 renames — deferred) |
+| 🟢 Pending (low) | 1 | 1.7 (unblocked — Phase 1.5 completed) |
 | 🔴 Skipped | 2 | 2.1 (high risk), 2.2 (intentional — 1 batch preserves RPM, fairness, parallel world consistency) |
 | 🔴 Rejected | 1 | 1.8 (harmful — removed enum values from AI context) |
 
@@ -308,7 +285,7 @@ Depth 8 is acceptable for non-Gemini providers (they handle it without issues). 
 | 5 | 123 required constraints | ✅ **Resolved** | Phase 1.4: reduced to ~50 |
 | 6 | 32 KB schema payload | ✅ **Resolved** | Reduced to ~10 KB (Phases 1.1, 1.2, 1.4, 1.5) |
 | 7 | 3 unnecessary wrapper objects | ✅ **Resolved** | Phase 1.5: characterUpdates, placeUpdates, threadUpdates flattened to root arrays |
-| 8 | Duplicate field instructions | 🟢 **Pending** | Phase 1.7: collate duplicated char/place instruction blocks (depends on Phase 1.5) |
+| 8 | Duplicate field instructions | 🟢 **Unblocked (pending)** | Phase 1.7: collate duplicated char/place instruction blocks. Phase 1.5 completed — wrapper flattening done, ready to deduplicate. |
 | 9 | Inflated output format strings | ✅ **Resolved** | Phase 1.8-alt p2: replaced inline `formatOneOf` in output formats with centralized value strings. ~17 KB total → ~11 KB. `formatOneOf` retained in rules sections where natural language usage is appropriate. |
 
 ---
@@ -463,10 +440,10 @@ This would be accepted by `JSON.parse`, and the type cast `as T` silences the ty
 | 9 | **1.3 (partial)** — Shorten 2 property names | ✅ Done | 0.3 day | 🟢 Low | -1.7 chars avg on 2 properties |
 | 10 | **1.3 (cont.)** — Shorten 2 more property names (`placeConnectionUpdates→placeConnections`, `visualDescription→appearance`) | ✅ Done | 0.5 day | 🟢 Low | -8 chars on `placeConnectionUpdates`, -7 on `visualDescription` |
 | 11 | **1.8-alt (p2)** — Replace `formatOneOf` in output formats | ✅ Done | 2 days | 🟢 Low | ~75 `formatOneOf` calls replaced with centralized value strings in output format templates |
-| 12 | **3.1** — Provider-based routing | ⬜ Pending | 2 days | 🟡 Medium | Correct by provider |
-| 13 | **1.5** — Flatten wrapper objects | ⬜ Pending | 3 days | 🟡 Medium | -3 objects, depth 7→6 |
+| 12 | **1.5** — Flatten wrapper objects | ✅ Done | 3 days | 🟡 Medium | -3 objects, depth 7→6, unblocks Phase 1.7 |
+| 13 | **3.1** — Provider-based routing | ⬜ Pending | 2 days | 🟡 Medium | Correct by provider |
 | 14 | **1.3 (rest)** — Remaining 17 property renames | ⬜ Deferred | 3 days | 🟡 Medium | Modest savings (~50 tokens); low priority |
-| 15 | **1.7** — Collapse duplicate field instructions | ⬜ Pending (blocked on 1.5) | 1 day | 🟢 Low | ~40 lines trimmed from prompt |
+| 15 | **1.7** — Collapse duplicate field instructions | ⬜ Pending (unblocked) | 1 day | 🟢 Low | ~40 lines trimmed from prompt |
 | 16 | **2.2** — Unwrap candidate generation | 🔴 **Skipped** | — | 🟡 Medium | 1 batch call intentional — preserves RPM budget, ensures fairness, maintains parallel-world consistency |
 | 17 | **1.8** — Replace `formatOneOf` with references | 🔴 **Rejected** | — | 🔴 High | Harmful — removed enum values from AI context |
 | 18 | **2.1** — Split page/state schemas | 🔴 **Skipped** | — | 🔴 High | Unnecessary after Phase 1 reductions |
@@ -483,7 +460,7 @@ This would be accepted by `JSON.parse`, and the type cast `as T` silences the ty
 |------|-----:|---------------------|
 | `nextPageOutputFormat` | ~9.7 KB → **~6.3 KB** | Phase 1.8-alt p2 ✅ — replaced inline `formatOneOf` with centralized value strings |
 | `firstBookOutputFormat` | ~7.8 KB → **~5.1 KB** | Phase 1.8-alt p2 ✅ — replaced inline `formatOneOf` with centralized value strings |
-| `buildNextPageFieldInstructions` | ~290 lines | Phase 1.7 (dedup) + Phase 1.5 (flattening eliminates duplicated blocks) |
+| `buildNextPageFieldInstructions` | ~290 lines | Phase 1.5 ✅ (flattening completed). Phase 1.7 (dedup) unblocked — ready to collapse duplicated char/place instruction blocks. |
 
 These don't affect Gemini's constrained decoder. They reduce per-call token spend.
 
@@ -493,4 +470,4 @@ These don't affect Gemini's constrained decoder. They reduce per-call token spen
 
 ---
 
-*Last updated: v7 — Phase 1.3: `placeConnectionUpdates→placeConnections`, `visualDescription→appearance` completed. Phase 2.2 skipped (1 batch intentional — see decision note). Completed phases: 1.1, 1.2, 1.4, 1.6, 1.8-alt (p1, p2), 1.3 (4 renames done), 2.3, 4.1, 4.2. Pending: 1.5, 1.7 (blocked on 1.5), 3.1, 1.3 (17 renames deferred). Skipped: 2.1, 2.2. Rejected: 1.8.*
+*Last updated: v8 — Phase 1.5 completed (wrapper flattening). Phase 1.7 unblocked. Completed phases: 1.1, 1.2, 1.4, 1.5, 1.6, 1.8-alt (p1, p2), 1.3 (4 renames done), 2.3, 4.1, 4.2. Pending: 1.7 (unblocked), 3.1, 1.3 (17 renames deferred). Skipped: 2.1, 2.2. Rejected: 1.8.*
