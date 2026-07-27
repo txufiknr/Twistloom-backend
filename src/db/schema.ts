@@ -1974,9 +1974,9 @@ export const placeEmbeddings = pgTable(
 /**
  * Future note embeddings table
  * @summary Semantic embeddings for future notes, keyed by the note's own stable
- * `key` (NOT array position — array indices shift on removal via futureNoteUpdates
+ * `key` (NOT array position — array indices shift on removal via futureNoteRemove
  * and would silently misattribute embeddings to the wrong note).
- * Embedded once on note creation; re-embedded only if futureNoteUpdates reports
+ * Embedded once on note creation; re-embedded only if futureNoteAdd reports
  * a text change — never re-embedded just because it appears in a later page's
  * state snapshot.
  * 

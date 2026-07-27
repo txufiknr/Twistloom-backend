@@ -357,8 +357,8 @@ export const factTypes = {
 export type FactType = keyof typeof factTypes;
 
 export type FactHistory = {
-  page: number;
   value: string;
+  page?: number;
   type?: FactType;
   reason?: string;
 };
@@ -436,7 +436,7 @@ export const futureNoteHealthStates = [
  * the AI must not manufacture the triggering state to resolve the note early.
  */
 export type FutureNote = {
-  /** Unique key for targeted updates and removal via `futureNoteUpdates`. */
+  /** Unique key for targeted updates and removal via `futureNoteAdd`/`futureNoteRemove`. */
   key: string;
   /** Narrative description of what should happen later in the story. */
   note: string;

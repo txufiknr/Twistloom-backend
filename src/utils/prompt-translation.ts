@@ -247,7 +247,7 @@ const pageTranslationOutputFormat: string = `{
     {
       "originalName": "rusty key (unchanged)",
       "name": "Translated rusty key",
-      "traits": [{ "key": "material (translated)", "value": "iron (translated)" }, { "key": "state (translated)", "value": "rusty (translated)" }],
+      "traits": [{ "key": "material (unchanged)", "value": "iron (translated)" }, { "key": "state (unchanged)", "value": "rusty (translated)" }],
       "where": "Translated location (e.g. in the drawer)"
     }
   ],

@@ -1079,7 +1079,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
               // boolean (see resolveUseStringEvaluator above). When true: output is
               // JSON string → parse. When false: output is structured object → use directly.
               let correctedOutput: T | undefined;
-              if (evaluationOptions.useStringEvaluatorOutput!) {
+              if (evaluationOptions.useStringEvaluatorOutput) {
                 try {
                   const raw = evaluationResult.output as unknown as string;
                   correctedOutput = raw ? JSON.parse(raw) as T : undefined;

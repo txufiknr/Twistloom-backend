@@ -156,7 +156,7 @@ async function embedPlaceEvents(
 /**
  * Embeds a single future note, keyed by its stable `key` — not array
  * position. Call only for genuinely new/changed notes (from
- * StateDelta.futureNoteUpdates.add), never for notes that are merely
+ * StateDelta.futureNoteAdd), never for notes that are merely
  * present in a page's futureNotes snapshot.
  */
 async function embedFutureNote(page: PersistedStoryPage, note: FutureNote): Promise<void> {
