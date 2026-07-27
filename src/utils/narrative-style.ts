@@ -14,7 +14,7 @@
  * duplication and ensures the AI uses each section for its intended purpose.
  */
 
-import type { StyleVector, NarrativeMode, NarrativeStyle, StyleInput, StoryState, PsychologicalProfileMetrics, PrimaryWeakness } from '../types/story.js';
+import type { StyleVector, NarrativeMode, NarrativeStyle, StyleInput, StoryState, PsychologicalProfileMetrics, PrimaryWeakness, StoryPhase } from '../types/story.js';
 import { createStyleInput } from './player-profile.js';
 import { getStoryStateInfo } from './story.js';
 import { normalize, stripEmptyLines } from './parser.js';
@@ -192,40 +192,23 @@ export function determineNarrativeMode(vector: StyleVector, memoryClarity: numbe
   return 'grounded';
 }
 
-// /**
-//  * Maps a numeric style value to a qualitative level label.
-//  *
-//  * LLMs interpret categorical labels more consistently than raw decimals —
-//  * they bucket 0.43 and 0.47 as "moderate" anyway. Explicit labels remove
-//  * prompt noise and cut token count without any loss of accuracy.
-//  *
-//  * @param value - Normalized value [0, 1]
-//  * @param low  - Upper bound for 'low' (default: 0.33)
-//  * @param high - Lower bound for 'high' (default: 0.66)
-//  */
-// function level(value: number, low = 0.33, high = 0.66): 'low' | 'moderate' | 'high' {
-//   if (value >= high) return 'high';
-//   if (value >= low)  return 'moderate';
-//   return 'low';
-// }
 
 /**
- * Generates a single prose-texture line based on the player's primary weakness.
- *
- * This is a WRITING TECHNIQUE directive — how the MC's perspective is colored —
- * not an exploitation tactic. Exploitation belongs in PSYCHOLOGICAL PROFILE.
- *
- * @param weakness - The player's dominant psychological vulnerability
+ * Prose-texture line per primary weakness -- a WRITING TECHNIQUE directive
+ * (how the MC's perspective is colored), not an exploitation tactic.
+ * Exploitation belongs in PSYCHOLOGICAL PROFILE, not here.
  */
+const PRIMARY_WEAKNESS_PROSE_HINTS: Record<PrimaryWeakness, string> = {
+  truth_seeking:    'MC scans everything as if it might be a clue. Write observations with latent significance.',
+  fear_of_loss:     'Anchor details in what the MC values. Let those things feel quietly, persistently fragile.',
+  need_for_control: 'Emphasize constraints and what the MC cannot reach, change, or predict.',
+  trust_hunger:     'MC reads too much into others\' behavior. Every tone of voice, every pause, is analyzed.',
+  guilt:            'Filter sensory details through residue of past choices. Familiar things carry weight.',
+  avoidance:        'MC\'s attention drifts away from the most important things. The truth is always slightly off-frame.',
+};
+
 function primaryWeaknessProseHint(weakness: PrimaryWeakness): string {
-  switch (weakness) {
-    case 'truth_seeking':    return 'MC scans everything as if it might be a clue. Write observations with latent significance.';
-    case 'fear_of_loss':     return 'Anchor details in what the MC values. Let those things feel quietly, persistently fragile.';
-    case 'need_for_control': return 'Emphasize constraints and what the MC cannot reach, change, or predict.';
-    case 'trust_hunger':     return 'MC reads too much into others\' behavior. Every tone of voice, every pause, is analyzed.';
-    case 'guilt':            return 'Filter sensory details through residue of past choices. Familiar things carry weight.';
-    case 'avoidance':        return 'MC\'s attention drifts away from the most important things. The truth is always slightly off-frame.';
-  }
+  return PRIMARY_WEAKNESS_PROSE_HINTS[weakness];
 }
 
 /**
@@ -285,30 +268,38 @@ export function generateStyleInstructions(style: Pick<NarrativeStyle, 'mode' | '
   // PSYCHOLOGICAL PROFILE section, not here.
   const structuralDirectives: string[] = [];
 
-  // Fragmentation vector
-  if (vector.fragmentation > 0.6) structuralDirectives.push('- Heavy fragmentation: broken clauses, fractured thought bursts.');
-  else if (vector.fragmentation > 0.3) structuralDirectives.push('- Selective fragmentation: abrupt transitions and incomplete thoughts.');
+  // Fragmentation/repetition/contradiction/clarity: skip in 'fractured' mode --
+  // baseToneInstructions.fractured already states all four explicitly ("cut
+  // thoughts with em dashes", "loop key words", "contradictions stand without
+  // resolution", "reduce clarity"), so repeating them here in 'fractured' mode
+  // was pure duplication, not reinforcement. Still meaningful in 'grounded'/
+  // 'uneasy' mode, where base tone only lightly (or never) touches these.
+  if (mode !== 'fractured') {
+    // Fragmentation vector
+    if (vector.fragmentation > 0.6) structuralDirectives.push('- Heavy fragmentation: broken clauses, fractured thought bursts.');
+    else if (vector.fragmentation > 0.3) structuralDirectives.push('- Selective fragmentation: abrupt transitions and incomplete thoughts.');
 
-  // Repetition vector
-  if (vector.repetition > 0.6) structuralDirectives.push('- Re-echo key words, trauma hooks, or core realizations across adjacent beats.');
+    // Repetition vector
+    if (vector.repetition > 0.6) structuralDirectives.push('- Re-echo key words, trauma hooks, or core realizations across adjacent beats.');
 
-  // Contradiction vector
-  if (vector.contradiction > 0.6) structuralDirectives.push('- Allow descriptions to reverse prior assertions within the same sequence.');
+    // Contradiction vector
+    if (vector.contradiction > 0.6) structuralDirectives.push('- Allow descriptions to reverse prior assertions within the same sequence.');
 
-  // Clarity vector
-  if (vector.clarity < 0.4) structuralDirectives.push('- Abstract the setting; prioritize raw sensation over factual description.');
-  else if (vector.clarity > 0.7) structuralDirectives.push('- Sharp, grounded prose focused on realistic observation.');
+    // Clarity vector
+    if (vector.clarity < 0.4) structuralDirectives.push('- Abstract the setting; prioritize raw sensation over factual description.');
+    else if (vector.clarity > 0.7) structuralDirectives.push('- Sharp, grounded prose focused on realistic observation.');
+  }
 
-  // Pacing vector
+  // Pacing and sensory focus: no base-tone mode ever mentions rhythm or sensory
+  // balance, so these carry non-redundant information regardless of mode.
   if (vector.pacing > 0.6) structuralDirectives.push('- Fast rhythm: immediate action verbs, short clauses, minimal introspection.');
   else if (vector.pacing < 0.4) structuralDirectives.push('- Slow rhythm: prolonged sentences, heavy pauses, deep internal monologue.');
 
-  // Sensory focus vector
   if (vector.sensoryFocus > 0.6) structuralDirectives.push('- Sensory immersion: cold touch, ambient sounds, skin pressure, smell.');
   else structuralDirectives.push('- Abstract dread: existential unease, environmental themes over physical detail.');
 
   // Phase directive
-  const phaseDirectives: Record<string, string> = {
+  const phaseDirectives: Record<StoryPhase, string> = {
     EARLY:  '- Phase: Establish the world. Let unease grow beneath the surface.',
     MID:    '- Phase: Escalate pressure. Complicate what the MC thinks they know.',
     LATE:   '- Phase: Converge. Force confrontation with suppressed truths.',

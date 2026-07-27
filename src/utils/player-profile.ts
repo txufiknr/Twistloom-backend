@@ -93,8 +93,10 @@ function derivePrimaryWeakness(
  * trust and guilt entries in ACTION_INFLUENCES are intentionally skipped here —
  * they are sourced from state.flags (maintained by updateFlags() with hysteresis).
  *
- * Note: all actions are weighted equally regardless of recency. If late-game
- * behavior should dominate, enable the decay block below and tune the factor.
+ * Recency-weighted: later actions matter more, via an EMA-style 0.95 decay per
+ * step back from the most recent action (see below). Without it, an early-game
+ * burst of noise (e.g. `custom`/`other` free-text actions) would permanently
+ * skew the profile regardless of the reader's actual later behavior.
  */
 function calculateBaseTraits(actionsHistory: SelectedAction[]): PsychologicalProfileTraits {
   const traits: PsychologicalProfileTraits = {
@@ -214,11 +216,9 @@ function mapMemoryIntegrity(memoryIntegrity: MemoryIntegrity): number {
 }
 
 /**
- * Estimates social connectedness from the number of known characters.
- *
- * Ideal Implementation:
- * Filter to characters with positive relationship toward MC to distinguish
- * isolation from hostile-only encounters.
+ * Estimates social connectedness from the number of known characters with a
+ * positive relationship to the MC (friend, or trusting status) -- hostile-only
+ * encounters don't count toward connectedness.
  */
 function calculateSocialEngagement(characters: Record<string, CharacterMemory>): number {
   const characterCount = Object.values(characters).filter(c => c.relationshipToMC.type === 'friend' || c.relationshipToMC.status === 'trusting').length;
