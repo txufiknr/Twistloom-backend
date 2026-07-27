@@ -237,7 +237,9 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
   ],
   nvidia: [
     // Verify still in NIM catalog — Mixtral variants deprecated elsewhere
+    // TODO: Error: HTTP 400: {"error":{"message":"Validation: Unsupported parameter(s): `extra_body`","type":"Bad Request","code":400}}
     'meta/llama-3.3-70b-instruct', // Tightly paced, structurally robust. Llama-3.3 has a large context window and excels naturally at dialogue, character development, and narrative pacing. It generates much more "human-like" text that flows organically without feeling forced.
+    // TODO: Error: HTTP 404: 404 page not found
     'qwen/qwen2.5-72b-instruct', // Intricate, heavily detailed. Ideal for massive lore.
   ],
   cloudflare: [

@@ -148,7 +148,7 @@ export async function aiStreamSSE(
           const totalPromptLength = systemPrompt.length + prompt.length;
           const maxPromptLength = AI_MAX_PROMPT_LENGTH[provider];
           if (totalPromptLength > maxPromptLength) {
-            console.log(`[${provider}] ⚠️ Prompt length (${totalPromptLength.toLocaleString()} chars) exceeds limit (${maxPromptLength.toLocaleString()} chars), skipping`);
+            console.log(`[${provider}] ⏩ Prompt length (${totalPromptLength.toLocaleString()} chars) exceeds limit (${maxPromptLength.toLocaleString()} chars), skipping`);
             continue;
           }
 

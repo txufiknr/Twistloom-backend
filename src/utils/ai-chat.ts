@@ -1,6 +1,6 @@
 import type { AIChatProvider, AIDocument, AIJsonEvaluation, AIJsonProperty, AIPromptForJson, AIPromptOptions, AIResponse, AIModelSelection, NvidiaChatCompletionResponse, OpenRouterCreateParams, PromptWithFallbackOptions } from "../types/ai-chat.js";
 import { AI_PROVIDER_API_KEYS, getCerebrasClient, getCloudflareClient, getCohereClient, getGeminiClient, getGitHubClient, getGroqClient, getMistralClient, getOpenRouterClient } from "./ai-clients.js";
-import { AI_CHAT_CONFIG_DEFAULT, EVALUATION_FALLBACK_LIMIT, EVALUATION_SCORING_OUTPUT_TOKEN } from "../config/ai-chat.js";
+import { AI_CHAT_CONFIG_DEFAULT, EVALUATION_FALLBACK_LIMIT, EVALUATION_SCORING_OUTPUT_TOKEN, MAX_SCHEMA_LENGTH } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_EVALUATION, AI_CHAT_MODELS_WRITING, AI_MAX_PROMPT_LENGTH } from "../config/ai-clients.js";
 import { canUseAIToday, getRateLimiter, incrementDailyUsageCount } from './ai-limiters.js';
 import { requireEnv } from "./env.js";
@@ -753,8 +753,12 @@ export async function mistralPrompt(
  * @returns Normalized AI response with provider, model, output, usage, and finish reason,
  *          or null if all models fail
  * 
- * @see structured JSON guide - https://docs.nvidia.com/nim/large-language-models/1.13.0/structured-generation.html
  * @see docs - https://docs.api.nvidia.com/nim/reference/create_chat_completion_v1_chat_completions_post
+ * @see structured JSON guide - https://docs.nvidia.com/nim/large-language-models/1.13.0/structured-generation.html
+ * 
+ * @remarks
+ * - The doc covers self-hosted NIM containers (which you deploy yourself with docker run), where extra_body.nvext.guided_json works. But your code hits the NVIDIA Integrate cloud API (integrate.api.nvidia.com), which is a different product — an OpenAI-compatible hosted endpoint that strips vendor extensions.
+ * - NVIDIA is a single-model fallback provider with no structured output support.
  * 
  * @example
  * ```typescript
@@ -774,7 +778,7 @@ export async function nvidiaPrompt(
     prompt,
     options,
     async (model, prompt, opts) => {
-      const { config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
+      const { config = AI_CHAT_CONFIG_DEFAULT } = opts;
       const { maxOutputToken, temperature, topP, stopSequences, frequencyPenalty, seed } = config;
 
       const systemPromptWithDocuments = formatSystemPromptWithDocuments('nvidia', opts);
@@ -799,21 +803,21 @@ export async function nvidiaPrompt(
           seed,
           stream: false,
 
-          // NVIDIA NIM Structured JSON Implementation
-          ...(outputAsJson ? {
-            extra_body: {
-              nvext: {
-                guided_json: {
-                  type: "object",
-                  ...(outputJsonStructure ? {
-                    properties: outputJsonStructure,
-                    required: outputJsonRequired,
-                    additionalProperties: false
-                  } : {})
-                } satisfies AIJsonProperty // Falls back to a generic JSON object if no structural layout is passed
-              }
-            }
-          } : {}),
+          // NVIDIA's hosted API doesn't support structured output extensions.
+          // ...(outputAsJson ? {
+          //   extra_body: {
+          //     nvext: {
+          //       guided_json: {
+          //         type: "object",
+          //         ...(outputJsonStructure ? {
+          //           properties: outputJsonStructure,
+          //           required: outputJsonRequired,
+          //           additionalProperties: false
+          //         } : {})
+          //       } satisfies AIJsonProperty // Falls back to a generic JSON object if no structural layout is passed
+          //     }
+          //   }
+          // } : {}),
         }),
       });
 
@@ -961,7 +965,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
 
       // Skip if total prompt length exceeded provider's max prompt length
       if (totalPromptLength > maxPromptLength) {
-        console.log(`[${provider}] ⚠️ Prompt length (${totalPromptLength.toLocaleString()} chars) exceeds limit (${maxPromptLength.toLocaleString()} chars), skipping`);
+        console.log(`[${provider}] ⏩ Prompt length (${totalPromptLength.toLocaleString()} chars) exceeds limit (${maxPromptLength.toLocaleString()} chars), skipping`);
         continue;
       }
 
@@ -1004,7 +1008,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
         case 'mistral':    result = await mistralPrompt(prompt, opts); break;       // ✅ JSON schema | ☑️ document via system prompt
         case 'groq':       result = await groqPrompt(prompt, opts); break;             // ✅ JSON schema | ☑️ document via system prompt
         case 'cerebras':   result = await cerebrasPrompt(prompt, opts); break;     // ✅ JSON schema | ☑️ document via system prompt
-        case 'nvidia':     result = await nvidiaPrompt(prompt, opts); break;         // ✅ JSON schema via extra_body | ☑️ document via system prompt
+        case 'nvidia':     result = await nvidiaPrompt(prompt, opts); break;         // ☑️ JSON via prompt instructions | ☑️ document via system prompt
         case 'openrouter': result = await openrouterPrompt(prompt, opts); break; // Same as github
         case 'cloudflare': result = await cloudflarePrompt(prompt, opts); break; // Same as github
       }
@@ -1206,12 +1210,11 @@ export function isSchemaTooComplex(schema: Record<string, AIJsonProperty> | unde
     }
   }
 
-  measure(schema);
+  measure(schema); // TODO: always `0 props, 0 enum items, depth 0`
 
-  const isComplex = props > 100 || enumItems > 100 || maxDepth > 6 || schemaStr.length > 15000;
-
+  const isComplex = props > 100 || enumItems > 100 || maxDepth > 6 || schemaStr.length > MAX_SCHEMA_LENGTH;
   if (isComplex) {
-    console.warn(`[schema-complexity] ⚠️ Schema too complex: ${schemaStr.length / 1024 | 0}KB, ${props} props, ${enumItems} enum items, depth ${maxDepth}`);
+    console.warn(`[schema-complexity] ⚠️ Schema too complex: ${schemaStr.length} chars (${schemaStr.length / 1024 | 0}KB), ${props} props, ${enumItems} enum items, depth ${maxDepth}`);
   }
 
   return isComplex;
