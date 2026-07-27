@@ -1168,7 +1168,7 @@ export type StoryPage = StoryScene & {
   /** Key events that occurred in the page */
   keyEvents?: string[];
   /** Important objects mentioned in the page */
-  importantObjects?: string[];
+  keyObjects?: string[];
   /** Next branching actions for user choice (2-3 options) */
   actions: Action[];
   /** Changes to the story state */
@@ -1238,7 +1238,7 @@ export type StateDelta = {
   /** Updates to character relationships and dynamics */
   relationshipUpdates?: RelationshipUpdate[];
   /** Updates to connection between places */
-  placeConnectionUpdates?: PlaceConnectionUpdate[];
+  placeConnections?: PlaceConnectionUpdate[];
   /** New planned character candidates for future introduction */
   addPlannedCharacters?: CharacterPlan[];
   /** Updates to places (new and existing) with modifications */

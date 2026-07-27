@@ -162,10 +162,10 @@ export type CharacterStatus = typeof characterStatuses[number];
 export const characterImportances = ['major', 'supporting', 'minor'] as const;
 export type CharacterImportance = typeof characterImportances[number];
 
-export type CharacterPlan = Pick<CharacterMemory, 'knownName' | 'realName' | 'gender' | 'role' | 'bio' | 'visualDescription' | 'importance'> & {
+export type CharacterPlan = Pick<CharacterMemory, 'knownName' | 'realName' | 'gender' | 'role' | 'bio' | 'appearance' | 'importance'> & {
   characterId: string;
   /** When do they enter? / How/when do they first enter the story? */
-  plannedIntroduction?: string;
+  plannedIntro?: string;
   /** Why do they matter? / Why do they exist in the narrative? */
   storyPurpose?: string;
 };
@@ -236,7 +236,7 @@ export type CharacterMemory = {
   /** Brief 1-sentence character description with hints (Who are they?) */
   bio: string;
   /** Character visual description (e.g., "tall, pale, messy black hair, hollow eyes") */
-  visualDescription: string;
+  appearance: string;
   /** Character significance */
   importance: CharacterImportance;
   /** Physical narrative state (active/missing/dead) */

@@ -300,7 +300,7 @@ export function extractStateDelta(params: {
     factUpdates: generation.factUpdates,
     characterUpdates: generation.characterUpdates,
     relationshipUpdates: generation.relationshipUpdates,
-    placeConnectionUpdates: generation.placeConnectionUpdates,
+    placeConnections: generation.placeConnections,
     placeUpdates: generation.placeUpdates,
     threadUpdates: generation.threadUpdates,
     viableEnding: generation.viableEnding,
@@ -503,7 +503,7 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, s
     factUpdates,
     characterUpdates,
     relationshipUpdates,
-    placeConnectionUpdates,
+    placeConnections,
     placeUpdates,
     threadUpdates,
     viableEnding,
@@ -564,7 +564,7 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, s
   processPlotFlagUpdates(newState, addPlotFlags, scene);
   processFactUpdates(newState, factUpdates);
   processCharacterUpdates(newState, characterUpdates, relationshipUpdates, scene?.placeId);
-  processPlaceUpdates(newState, placeUpdates, placeConnectionUpdates, scene, previousPlaceId);
+  processPlaceUpdates(newState, placeUpdates, placeConnections, scene, previousPlaceId);
   processThreadUpdates(newState, threadUpdates);
 
   // Apply flag updates — each update contains a `type` and `level`.

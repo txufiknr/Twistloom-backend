@@ -376,20 +376,20 @@ export const CHARACTER_PLAN_PROPERTIES: Record<keyof CharacterPlan, AIJsonProper
   role: { type: 'string', description: 'Role or occupation known to the MC.' },
   gender: { type: 'string', enum: [...genders] },
   bio: { type: 'string', description: "Brief character description in detected language. Include one trait that could become a source of threat or betrayal." },
-  visualDescription: { type: 'string', description: "Visual appearance (e.g., height, skin color, eye color, hair)." },
+  appearance: { type: 'string', description: "Visual appearance (e.g., height, skin color, eye color, hair)." },
   storyPurpose: { type: 'string', description: 'Explain why this character exists in the story' },
-  plannedIntroduction: { type: 'string', description: 'Explain how this character planned to be introduced' },
+  plannedIntro: { type: 'string', description: 'Explain how this character planned to be introduced' },
   importance: { type: 'string', enum: [...characterImportances] },
 };
 
 export const CHARACTER_PLAN_SCHEMA: AIJsonProperty = {
   type: 'object',
   properties: CHARACTER_PLAN_PROPERTIES,
-  required: ['characterId', 'knownName', 'realName', 'gender', 'role', 'bio', 'visualDescription', 'importance'] satisfies (keyof CharacterPlan)[],
+  required: ['characterId', 'knownName', 'realName', 'gender', 'role', 'bio', 'appearance', 'importance'] satisfies (keyof CharacterPlan)[],
   additionalProperties: false,
 };
 
-const { storyPurpose: _sp, plannedIntroduction: _pli, ...initialCharacterProperties} = CHARACTER_PLAN_PROPERTIES;
+const { storyPurpose: _sp, plannedIntro: _pli, ...initialCharacterProperties} = CHARACTER_PLAN_PROPERTIES;
 
 export const CHARACTER_SCHEDULE_SCHEMA: AIJsonProperty = {
   type: 'object',
@@ -436,7 +436,7 @@ const { realName: _cn, pastInteractions: _pin, schedules: _schedules, ...updateC
 export const INITIAL_CHARACTER_SCHEMA: AIJsonProperty = {
   type: 'object',
   properties: INITIAL_CHARACTER_PROPERTIES,
-  required: ['characterId', 'knownName', 'realName', 'recognitionLevel', 'role', 'gender', 'status', 'importance', 'relationshipToMC', 'bio', 'visualDescription', 'injuries', 'secrets', 'narrativeFlags'] satisfies (keyof NewCharacter)[],
+  required: ['characterId', 'knownName', 'realName', 'recognitionLevel', 'role', 'gender', 'status', 'importance', 'relationshipToMC', 'bio', 'appearance', 'injuries', 'secrets', 'narrativeFlags'] satisfies (keyof NewCharacter)[],
   additionalProperties: false
 };
 
@@ -530,7 +530,7 @@ export const STORY_PAGE_GENERATION_SCHEMA: Record<keyof StoryPageGeneration, AIJ
     },
   },
   keyEvents: { type: 'array', items: { type: 'string' }, description: 'Key events that occurred in this page in detected language' },
-  importantObjects: { type: 'array', items: { type: 'string' }, description: 'Important objects in this page in detected language' },
+  keyObjects: { type: 'array', items: { type: 'string' }, description: 'Important objects in this page in detected language' },
   actions: STORY_ACTION_SCHEMA
 };
 
@@ -605,7 +605,7 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
     required: ['newPlaces', 'updatedPlaces'] satisfies (keyof PlaceUpdates)[],
     additionalProperties: false
   },
-  placeConnectionUpdates: { type: 'array', items: PLACE_CONNECTION_UPDATE_SCHEMA, description: 'Updates to connections between places if any.' },
+  placeConnections: { type: 'array', items: PLACE_CONNECTION_UPDATE_SCHEMA, description: 'Updates to connections between places if any.' },
 
   // STORY
   contextHistory: { type: 'string', description: `Story summary from page 1 up to this point. Focus on key facts and developments for continuity. Max ${MAX_WORDS_SUMMARIZED_CONTEXT} words.` },
@@ -1030,7 +1030,7 @@ export const BOOK_CREATION_SCHEMA_DEFINITION: Record<keyof BookCreationResponse,
   plannedCharacters: { type: 'array', description: 'Any unintroduced characters inferred from theme.', items: {
     type: 'object',
     properties: CHARACTER_PLAN_PROPERTIES,
-    required: ['characterId', 'knownName', 'realName', 'gender', 'role', 'bio', 'visualDescription', 'storyPurpose', 'plannedIntroduction', 'importance'] satisfies (keyof CharacterPlan)[],
+    required: ['characterId', 'knownName', 'realName', 'gender', 'role', 'bio', 'appearance', 'storyPurpose', 'plannedIntro', 'importance'] satisfies (keyof CharacterPlan)[],
     additionalProperties: false
   } },
   initialRelationships: { type: 'array', items: RELATIONSHIP_UPDATE_SCHEMA },
@@ -1101,7 +1101,7 @@ export const PAGE_TRANSLATION_SCHEMA_DEFINITION = {
   mood: { type: 'string' },
   weather: { type: 'string' },
   keyEvents: { type: 'array', items: { type: 'string' } },
-  importantObjects: { type: 'array', items: { type: 'string' } },
+  keyObjects: { type: 'array', items: { type: 'string' } },
   actions: { type: 'array', items: {
     type: 'object',
     properties: {
@@ -1213,7 +1213,7 @@ export const BULK_PAGE_TRANSLATION_SCHEMA_DEFINITION = {
   translations: { type: 'array', items: {
     type: 'object',
     properties: { pageId: { type: 'string' }, ...PAGE_TRANSLATION_SCHEMA_DEFINITION } satisfies Record<keyof PageTranslationWithID, AIJsonProperty>,
-    required: ['pageId', 'text', 'keyEvents', 'importantObjects', 'actions', 'actionsHistory'] satisfies (keyof PageTranslationWithID)[],
+    required: ['pageId', 'text', 'keyEvents', 'keyObjects', 'actions', 'actionsHistory'] satisfies (keyof PageTranslationWithID)[],
     additionalProperties: false
   } }
 } satisfies Record<keyof PageTranslationBulk, AIJsonProperty>;

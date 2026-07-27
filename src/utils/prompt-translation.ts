@@ -223,7 +223,7 @@ const pageTranslationOutputFormat: string = `{
   "mood": "Translated mood",
   "weather": "Translated weather",
   "keyEvents": ["Translated key event 1", "Translated key event 2"],
-  "importantObjects": ["translated-object-1", "translated-object-2"],
+  "keyObjects": ["translated-object-1", "translated-object-2"],
   "contextHistory": "Translated context history",
   "places": [
     {
@@ -292,7 +292,7 @@ const bulkPageTranslationOutputFormat: string = `{
       "mood": "Translated mood",
       "weather": "Translated weather",
       "keyEvents": ["Translated key event 1"],
-      "importantObjects": ["translated-object-1"],
+      "keyObjects": ["translated-object-1"],
       "contextHistory": "Translated context history",
       "places": [{ "placeId": "place_id_1 (unchanged)", "knownName": "Translated", "realName": "Translated", "context": "Translated", "type": "house", "traits": [{ "key": "smell (unchanged)", "value": "damp earth (translated)" }] }],
       "characters": [{ "characterId": "character_id_1 (unchanged)", "role": "Translated role", "bio": "Translated bio", "traits": [{ "key": "skill (unchanged)", "value": "lockpicking (translated)" }] }],
@@ -319,7 +319,7 @@ const buildPageTranslationFieldInstructions = (hasAsterisks: boolean, isBulk = f
 - mood: Translate current mood.
 - weather: Translate current weather.
 - keyEvents: Translate key events. Preserve the sequence and importance.
-- importantObjects: Translate important objects. Keep them relevant to the story.
+- keyObjects: Translate important objects. Keep them relevant to the story.
 - contextHistory: Translate story summary until the current page — key plot developments, hard facts, major events.
 - places: For each place, keep 'placeId' unchanged and translate 'knownName', 'realName', and 'context'. Translate 'type' only if it is free-form prose; leave it unchanged if it is a simple category word (e.g. "house", "hospital"). Translate trait values but keep trait keys identical.
 - characters: Keep 'characterId' unchanged. Translate 'role', 'bio', and trait values (keep trait keys identical). Do not invent new characters or alter identities.
@@ -482,7 +482,7 @@ function formatBookDocument(book: BookToTranslate, index: number): AIDocument {
  *
  * Two sections are emitted:
  * 1. **TO TRANSLATE — PAGE**: page-level fields (text, time, mood, weather,
- *    keyEvents, importantObjects, actions).
+ *    keyEvents, keyObjects, actions).
  * 2. **TO TRANSLATE — STATE**: state-level fields (contextHistory, places,
  *    characters, inventory, injuries, threads, actionsHistory).
  *
@@ -609,8 +609,8 @@ function formatPagePrompt(page: PageToTranslate): string {
     page.mood                  ? `Mood: ${page.mood}` : null,
     page.weather               ? `Weather: ${page.weather}` : null,
     page.keyEvents?.length     ? `Key Events: ${page.keyEvents.join(', ')}` : null,
-    page.importantObjects?.length
-                               ? `Important Objects: ${page.importantObjects.join(', ')}` : null,
+    page.keyObjects?.length
+                               ? `Important Objects: ${page.keyObjects.join(', ')}` : null,
   ].filter((l): l is string => l !== null);
 
   if (page.actions?.length) {

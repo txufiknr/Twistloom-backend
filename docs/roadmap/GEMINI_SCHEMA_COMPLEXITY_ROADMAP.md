@@ -1,6 +1,6 @@
 # Gemini Schema Complexity Eradication Roadmap
 
-> **Revision:** v3 — added Phase 1.5 (flatten wrappers), Phase 1.6, 1.7, 1.8 (prompt-side reductions)
+> **Revision:** v7 — Phase 1.3: `placeConnectionUpdates→placeConnections`, `visualDescription→appearance` completed. Phase 2.2 **skipped** (1 batch call intentional — see decision note below). Phase 1.7 still blocked on Phase 1.5.
 > **Target error:** `ApiError: {"error":{"code":400,"message":"The specified schema produces a constraint that has too many states for serving…","status":"INVALID_ARGUMENT"}}`
 > **Affects:** Gemini 2.5 Flash/Pro structured-output calls (`responseSchema`)
 > **Stack:** TypeScript / Node.js, Gemini, `convertToGeminiSchema` (minify: true)
@@ -8,6 +8,18 @@
 ---
 
 ## Root Cause Analysis
+
+### ⚠️ Phase Numbering Note
+
+There is a **naming collision** between this roadmap and the AGENTS.md task plan:
+
+| Phase | This roadmap | AGENTS.md task plan |
+|-------|-------------|---------------------|
+| 1.5 | Flatten wrapper objects (`characterUpdates`/`placeUpdates`/`threadUpdates`) | Inline `storyFlags.characterRecognitionLevels` → `characterMemoryStrength`/`characterMemoryDecay` on `StoryState` |
+| 1.7 | Collapse duplicate field instructions in prompts | Add `pageCount` and `climaxPage` to `StoryState` (**evaluated & rejected** — `pageCount` is redundant with `page`; `climaxPage` is story-level metadata, not per-state data) |
+| 1.8 | Replace `formatOneOf` with list references (**rejected**) | Replace enum expansions with tag-placeholders (**rejected — same issue**) |
+
+Both sets of Phase numbers refer to their own plan documents. The AGENTS.md plan changes were scoped as "complexity reduction" tasks but some were found to be either redundant or harmful during implementation. This document represents the canonical schema complexity reduction plan.
 
 ### What "too many states for serving" means
 
@@ -27,7 +39,7 @@ All measurements from `src/schema/story.ts` live schema definitions.
 | EVAL_STORY (wraps STORY) | 192 | 26 | 151 | 49 | 50 | 147 | 9 | 35 KB |
 | EVAL_BOOK (wraps BOOK) | 142 | 24 | 131 | 35 | 31 | 138 | 7 | 24 KB |
 
-#### After Phase 1 (flattening) + Phase 2.3 (decoupled evaluator) + Phase 1.5 (flatten wrappers)
+#### After Phase 1 (flattening) + Phase 2.3 (decoupled evaluator) + Phase 1.5 (flatten wrappers) + Phase 1.6 (flatten changeNote) [Phase 2.2 skipped intentionally]
 
 | Schema | Props | Enums | Enum Items | Objects | Arrays | Required | Max Depth | JSON Size |
 |--------|------:|------:|-----------:|--------:|-------:|---------:|----------:|----------:|
@@ -43,7 +55,7 @@ All measurements from `src/schema/story.ts` live schema definitions.
 
 ### Key Complexity Drivers
 
-1. ~~**`CANDIDATE_GENERATION_SCHEMA_DEFINITION` nests `STORY_GENERATION`** inside `generatedPages[]` (depth 10).~~ → Depth reduced from 10 → 8 via Phase 1.1 trait flattening + Phase 1.5 wrapper flattening. Full fix (Phase 2.2) still pending.
+1. ~~**`CANDIDATE_GENERATION_SCHEMA_DEFINITION` nests `STORY_GENERATION`** inside `generatedPages[]` (depth 10).~~ → Depth reduced from 10 → 8 via Phase 1.1 trait flattening + Phase 1.5 wrapper flattening. Phase 2.2 **skipped** — 1 batch request is intentional (see decision note below). Depth 8 is acceptable for non-Gemini providers; Gemini skips via `isSchemaTooComplex` gate and falls through to other providers.
 2. ~~**Evaluation schemas double-wrap** content schemas~~ → **Resolved** by Phase 2.3 (decoupled evaluator uses `type: string` for `output`).
 3. **26 enum fields** with up to **151 unique enum values** — mitigated by `minify: true` (drops enums > 3 to description hints).
 4. ~~**3 deep-nested array→object→array→object→trait chains**~~ → **Resolved** by Phase 1.1 (traits flattened to `string[]`, removing the `{key, value}` layer).
@@ -64,13 +76,13 @@ The `minify: true` mode already:
 
 ### Remaining Prompt-Side Cost
 
-Beyond the raw schema, each generation call appends ~10 KB of output format (`nextPageOutputFormat`) and ~290 lines of field instructions (`buildNextPageFieldInstructions`) to the system prompt. These inflate token consumption without affecting Gemini's constrained decoder, but reducing them via Phase 1.6 (deduplicate char/place instructions) and Phase 1.7 (replace `formatOneOf` with list references) cuts per-call token cost. See Phases 5.x below.
+Beyond the raw schema, each generation call appends ~10 KB of output format (`nextPageOutputFormat`) and ~290 lines of field instructions (`buildNextPageFieldInstructions`) to the system prompt. These inflate token consumption without affecting Gemini's constrained decoder. Reducing them via Phase 1.7 (deduplicate char/place instructions) and ~~Phase 1.8~~ **Phase 1.8-alt** (centralize enum arrays — see §1.8 correction below) cuts per-call token cost. See Phases 5.x below.
 
 ---
 
 ## Implementation Plan (Reorganized by Risk)
 
-### ✅ Completed — Low Risk (6 items)
+### ✅ Completed — Low Risk (11 items)
 
 | Phase | Change | What it did |
 |-------|--------|-------------|
@@ -79,13 +91,20 @@ Beyond the raw schema, each generation call appends ~10 KB of output format (`ne
 | **1.4** | Remove unnecessary `required` | Reduced required constraints from 123 → ~50. Made `factUpdates.page`, `characterUpdates.newCharacters`, `addPlotFlags.isMajorEvent`, `viableEnding.outline[].doneAtPage` optional. |
 | **1.1** | Flatten traits to `string[]` | Replaced `{key, value}` objects in `traits[]` with simple `string[]`. Removed one object nesting level. Depth reduced by 1 across all chains. Server-side parsing reconstructs `{key, value}` pairs. |
 | **1.2** | Collapse TagUpdates to flat arrays | Replaced `traumaTagUpdates: {add, remove}` with `traumaTagAdd` / `traumaTagRemove` top-level arrays. Same for `futureNoteUpdates` → `futureNoteAdd` / `futureNoteRemove`. Eliminated 2 intermediate object nodes. |
-| **2.3** | Decouple evaluator schema (toggleable) | Changed `output` in evaluator schema from full generation schema (166 props) to `{ type: 'string' }`. Server-side `JSON.parse` reconstructs. **Toggleable** via `useStringEvaluatorOutput` option — set to `false` to restore the structured schema with full provider-enforced validation. See dedicated section below. Eliminates 166 props, 26 enums, 123 required from every evaluation call in default mode. |
+| **2.3** | Decouple evaluator schema (toggleable) | Changed `output` in evaluator schema from full generation schema (166 props) to `{ type: 'string' }`. Server-side `JSON.parse` reconstructs. **Toggleable** via `useStringEvaluatorOutput` option. Eliminates 166 props, 26 enums, 123 required from every evaluation call in default mode. |
+| **1.6** | Flatten `viableEnding.changeNote` | Moved `changeNote.{reason, viabilityBefore, viabilityAfter}` to root-level `changeReason`, `changeViabilityBefore`, `changeViabilityAfter` on `Ending`. Removed `EndingChangeNote` type. -1 object from schema, depth reduces 5→4. |
+| **1.8-alt (p1)** | Centralize enum arrays in `src/config/enums.ts` | Created single barrel file re-exporting all enum const arrays from `types/` — prompt.ts now imports all enum values from one source. Enables future rules-section injection. |
+| **1.8-alt (p2)** | Replace `formatOneOf` in output formats with centralized value strings | Replaced all inline `"One of: ${formatOneOf(...)}"` patterns in `firstBookOutputFormat` and `nextPageOutputFormat` with pre-computed value strings from `enums.ts`. ~75 occurrences replaced across both templates. Kept `formatOneOf` in field instructions / rules sections where natural language usage is appropriate. |
+| **1.3 (partial)** | `plannedIntroduction→plannedIntro`, `importantObjects→keyObjects` | Renamed 2 property names across types, schemas, prompts, services, DB schema. DB column names preserved (`important_objects`) — migration separate. ~1.7 chars saved per occurrence. Verified: all references updated in type defs, schema defs, prompt templates, service code, and DB column mapping. |
+| **1.3 (cont.)** | `placeConnectionUpdates→placeConnections`, `visualDescription→appearance` | Renamed 2 more property names across types, schemas, prompts, services. `placeConnectionUpdates` shortened by 8 chars, `visualDescription` shortened by 7 chars. All references updated. |
 
 ---
 
-### 🟡 Pending — Medium Risk (4 items)
+### 🟡 Pending — Medium Risk (2 items)
 
 #### Phase 1.5 — Flatten wrapper objects in STORY_STATE_GENERATION_SCHEMA
+
+**⚠️ Naming collision:** The AGENTS.md task plan uses "Phase 1.5" for a *different* change (inlining `storyFlags.characterRecognitionLevels` → `characterMemoryStrength`/`characterMemoryDecay` on `StoryState`). That change is tracked separately; this roadmap's Phase 1.5 is the wrapper-flattening described below.
 
 **Problem:** Three wrapper objects (`characterUpdates`, `placeUpdates`, `threadUpdates`) add intermediate nesting without providing structural value. Each wraps multiple arrays in a single `{ type: 'object', properties: {...} }` node.
 
@@ -107,35 +126,37 @@ Beyond the raw schema, each generation call appends ~10 KB of output format (`ne
 
 #### Phase 1.3 — Shorten property names to ≤ 15 chars
 
+**Status:** ✅ 4 renames completed: `plannedIntroduction→plannedIntro`, `importantObjects→keyObjects`, `placeConnectionUpdates→placeConnections`, `visualDescription→appearance`. Verified across types, schemas, prompts, services, and DB column mapping. Remaining 17 renames deferred.
+
 **Problem:** 8 property names exceed 15 chars, adding structural overhead to the schema.
 
 **Proposed names (self-explanatory, ≤ 15 chars):**
 
-| Current | Length | Proposed | Len | Rationale |
-|---------|--------|----------|----:|-----------|
-| `placeConnectionUpdates` | 23 | `placeConnections` | 15 | Full "connections" preserved; "updates" dropped (inherent in context) |
-| `addPlannedCharacters` | 21 | `plannedChars` | 12 | "Chars" standard abbreviation; "planned" retained |
-| `relationshipUpdates` | 19 | `relUpdates` | 10 | "Rel" for "relationship" is recognizable in context |
-| `charactersPresent` | 17 | `presentChars` | 12 | Reordered for clarity; "chars" standard |
-| `importantObjects` | 16 | `keyObjects` | 10 | Already used elsewhere in codebase; self-explanatory |
-| `characterUpdates` | 16 | `charUpdates` | 11 | Matches `presentChars` convention |
-| `futureNoteRemove` | 16 | `futureNoteRem` | 13 | Truncation preserves meaning |
-| `traumaTagRemove` | 16 | `traumaTagRem` | 12 | Truncation preserves meaning |
-| `familiarityCorrection` | 21 | `famCorrection` | 13 | "Fam" clear in relationship context |
-| `plannedIntroduction` | 19 | `plannedIntro` | 12 | "Intro" standard abbreviation |
-| `availabilityWindow` | 17 | `availWindow` | 11 | "Avail" standard abbreviation |
-| `alternativeTitles` | 17 | `altTitles` | 9 | "Alt" standard abbreviation |
-| `initialCharacters` | 17 | `initialChars` | 12 | Consistent with `presentChars` |
-| `updatedCharacters` | 17 | `updatedChars` | 12 | Consistent with `presentChars` |
-| `urgencyCorrection` | 17 | `urgCorrection` | 13 | "Urg" clear in pacing context |
-| `visualDescription` | 17 | `visualDesc` | 10 | "Desc" standard abbreviation |
-| `initialRelationships` | 20 | `initialRels` | 11 | Consistent with `relUpdates` |
-| `missedConsequence` | 17 | `missedCons` | 10 | "Cons" clear in narrative context |
-| `pastInteractions` | 16 | `pastInts` | 8 | "Ints" recognizable in character context |
-| `recognitionLevel` | 16 | `recogLevel` | 10 | "Recog" clear in familiarity context |
-| `relationshipToMC` | 15 | *(keep)* | 15 | Already at limit |
-| `futureNoteUpdates` | 16 | *(split)* | — | Already split into `futureNoteAdd`/`futureNoteRemove` (Phase 1.2) |
-| `traumaTagUpdates` | 15 | *(split)* | — | Already split into `traumaTagAdd`/`traumaTagRemove` (Phase 1.2) |
+| Current | Length | Proposed | Len | Rationale | Status |
+|---------|--------|----------|----:|-----------|--------|
+| `placeConnectionUpdates` | 23 | `placeConnections` | 15 | Full "connections" preserved; "updates" dropped (inherent in context) | ✅ Done |
+| `addPlannedCharacters` | 21 | `plannedChars` | 12 | "Chars" standard abbreviation; "planned" retained | ⬜ Pending |
+| `relationshipUpdates` | 19 | `relUpdates` | 10 | "Rel" for "relationship" is recognizable in context | ⬜ Pending |
+| `charactersPresent` | 17 | `presentChars` | 12 | Reordered for clarity; "chars" standard | ⬜ Pending |
+| `importantObjects` | 16 | `keyObjects` | 10 | Already used elsewhere in codebase; self-explanatory | ✅ Done |
+| `characterUpdates` | 16 | `charUpdates` | 11 | Matches `presentChars` convention | ⬜ Pending |
+| `futureNoteRemove` | 16 | `futureNoteDel` | 13 | Truncation preserves meaning | ⬜ Pending |
+| `traumaTagRemove` | 16 | `traumaTagDel` | 12 | Truncation preserves meaning | ⬜ Pending |
+| `familiarityCorrection` | 21 | `famCorrection` | 13 | "Fam" clear in relationship context | ⬜ Pending |
+| `plannedIntroduction` | 19 | `plannedIntro` | 12 | "Intro" standard abbreviation | ✅ Done |
+| `availabilityWindow` | 17 | `availWindow` | 11 | "Avail" standard abbreviation | ⬜ Pending |
+| `alternativeTitles` | 17 | `altTitles` | 9 | "Alt" standard abbreviation | ⬜ Pending |
+| `initialCharacters` | 17 | `initialChars` | 12 | Consistent with `presentChars` | ⬜ Pending |
+| `updatedCharacters` | 17 | `updatedChars` | 12 | Consistent with `presentChars` | ⬜ Pending |
+| `urgencyCorrection` | 17 | `urgCorrection` | 13 | "Urg" clear in pacing context | ⬜ Pending |
+| `visualDescription` | 17 | `appearance` | 10 | Same meaning | ✅ Done |
+| `initialRelationships` | 20 | `initialRels` | 11 | Consistent with `relUpdates` | ⬜ Pending |
+| `missedConsequence` | 17 | `missedCons` | 10 | "Cons" clear in narrative context | ⬜ Pending |
+| `pastInteractions` | 16 | `pastInts` | 8 | "Ints" recognizable in character context | ⬜ Pending |
+| `recognitionLevel` | 16 | `recogLevel` | 10 | "Recog" clear in familiarity context | ⬜ Pending |
+| `relationshipToMC` | 15 | *(keep)* | 15 | Already at limit | — |
+| `futureNoteUpdates` | 16 | *(split)* | — | Already split into `futureNoteAdd`/`futureNoteRemove` (Phase 1.2) | ✅ Done |
+| `traumaTagUpdates` | 15 | *(split)* | — | Already split into `traumaTagAdd`/`traumaTagRemove` (Phase 1.2) | ✅ Done |
 
 **Savings:** Average key length drops from ~9.5 to ~7.8. Field name shortened by ~1.7 chars × 30 props ≈ ~50 fewer tokens — negligible impact on decoder state. **Low priority** — Phase 4 safety nets already prevent Gemini crashes regardless of name length.
 
@@ -155,7 +176,11 @@ Beyond the raw schema, each generation call appends ~10 KB of output format (`ne
 
 ---
 
-### 🟢 Pending — Low Risk (2 items)
+### 🟢 Pending — Low Risk (1 item)
+
+### 🔴 Rejected (1 item)
+
+---
 
 #### Phase 1.7 — Collapse duplicate field instructions in prompts
 
@@ -167,22 +192,36 @@ Beyond the raw schema, each generation call appends ~10 KB of output format (`ne
 
 **Risk assessment:** 🟢 Low — pure prompt text change. Effort ~1 day.
 
+**Dependency:** Requires Phase 1.5 (wrapper flattening) first.
+
+---
+
 #### Phase 1.8 — Replace `formatOneOf` with list references in output format strings
 
-**Problem:** `nextPageOutputFormat` (~9.7 KB) and `firstBookOutputFormat` (~7.8 KB) use `formatOneOf()` to expand enum lists inline. For example, `moods` (23 items), `endingTypes` (18 items), `canonicalPlaceTypes` (12 items) are repeated verbatim inside JSON structure examples. These lists are already defined in the rules sections and schemas — the output format doesn't need to repeat them.
+**⛔ REJECTED — see §1.8-alt below for the alternative approach**
 
-**Fix:** Replace inline enum expansions in output format strings with a brief reference, e.g.:
-```
-// Before:
-"mood": "One of: serene, tense, eerie, ... 23 items",
+**Original intent:** `nextPageOutputFormat` (~9.7 KB) and `firstBookOutputFormat` (~7.8 KB) use `formatOneOf()` to expand enum lists inline. The goal was to replace these inline expansions with brief tag-placeholders (e.g., `"mood": "<one of the mood values>"`) to reduce token cost.
 
-// After:
-"mood": "<one of the mood values (see mood list above)>",
-```
+**Why rejected:** A careful audit showed that **only 6 of the 26 enum types** covered by `formatOneOf()` are also listed in the rules sections. The remaining ~16 enum types (including `moods`, `placeWeathers`, `sceneRoles`, `hintTypes`, `plotFlagTypes`, `factTypes`, `canonicalPlaceTypes`, etc.) are **exclusively** visible to the AI through these inline expansions. Removing them made the AI blind to valid values — the model would have to hallucinate them from training data, causing invalid output.
 
-**Savings:** ~1-2 KB trimmed from each output format string. Only affects prompt size (token cost), not schema complexity.
+**Risk re-evaluation:** 🔴 High (was incorrectly classified as 🟢 Low). This is not "pure prompt text change" — it removes information the AI needs to generate valid output.
 
-**Risk assessment:** 🟢 Low — pure prompt text change. Effort ~0.5 day.
+---
+
+#### §1.8-alt — Centralize enum arrays and inject into rules sections (proposed)
+
+**Problem (same as 1.8):** `formatOneOf()` expansions are the AI's only source for most enum values, but they inflate output format strings. Rules sections (which are more semantically appropriate for value constraints) don't list these values.
+
+**Alternative fix:** 
+1. Extract all enum arrays currently defined in `src/types/*.ts` as centralized `const` arrays in a single location (e.g., `src/config/enums.ts` or the top of `src/utils/prompt.ts`).
+2. In the rules sections (`buildStoryRulesSection` and related), generate value lists from these arrays — making every enum value explicitly available to the AI.
+3. Keep `formatOneOf()` in output format strings as-is (or switch to tag-placeholders *only after* the rules sections cover every enum — this becomes a prompt token optimization, not a schema correctness issue).
+
+**Savings:** No immediate token reduction, but enables future `formatOneOf` → tag-placeholder replacement once the rules sections cover all enums. Primary benefit is deduplication: the enum arrays are defined once and consumed by both rules sections and output format generators.
+
+**Risk assessment:** 🟢 Low — purely additive (adds value lists to rules, never removes existing context). Effort ~2 days.
+
+**Status:** ✅ P1 (centralize arrays) done. ✅ P2 (replace `formatOneOf` in output formats with value strings) done. Remaining: inject enum values into rules sections before safe tag-placeholder replacement.
 
 ---
 
@@ -190,21 +229,25 @@ Beyond the raw schema, each generation call appends ~10 KB of output format (`ne
 
 Implement `convertToGeminiSchema`-time detection: when building the schema, if the target is Gemini, use the flattened/split versions. If the target is OpenAI / Groq / Cohere / Cerebras / Mistral, keep the monolithic schema.
 
-**Risk assessment:** 🟡 Medium — safe (structural infra only, no behavioral change). Enables Phase 2.2 selectively.
-
-#### Phase 2.2 — Unwrap candidate generation
-
-**Problem:** `CANDIDATE_GENERATION_SCHEMA_DEFINITION` wraps `STORY_GENERATION` inside `generatedPages[]`. Depth 9 (after Phase 1.1).
-
-**Fix:** Generate candidates as **N separate single-page calls** instead of 1 batched call. For Gemini (after Phase 3.1 infra), use the unwrapped approach. Other providers keep the batched approach.
-
-**Risk assessment:** 🟡 Medium — requires diversity management across N calls. Provider routing (3.1) should precede this.
+**Risk assessment:** 🟡 Medium — safe (structural infra only, no behavioral change). (Originally intended to enable Phase 2.2 selectively; Phase 2.2 has since been skipped, but provider routing remains useful for other schema optimizations.)
 
 ---
 
-### 🔴 Skipped — High Risk (1 item)
+### 🔴 Skipped (2 items)
+
+#### Phase 2.2 — Unwrap candidate generation
+
+**⛔ SKIPPED** — 1 batch request is intentional. Rationale:
+- **Limited RPM/RPD**: N single-page calls would consume N× the rate-limit budget. 1 batch call preserves headroom for other generation tasks.
+- **Fairness across alternatives**: A single batch ensures all generated candidates run under identical narrative context (same page state, same temperature). N sequential calls would drift as the narrative advances or the model's internal state shifts.
+- **Parallel world consistency**: The generated alternatives represent "alternative fates sourced from 1 mind" — they must spring from the same narrative moment to remain comparable. Separating them into N calls would break this core design property, making the branching feel incoherent (each alternative would have subtly different starting premises).
+- **Latency**: 1 batch call completes in roughly the same wall-clock time as 1 single-page call (Gemini processes array items in parallel internally). N sequential calls would multiply latency by N.
+
+Depth 8 is acceptable for non-Gemini providers (they handle it without issues). For Gemini, the `isSchemaTooComplex` pre-call gate detects depth > 6 and routes to Groq/Cerebras — no crash, just a provider downgrade for candidate generation. This is an acceptable trade-off.
 
 #### Phase 2.1 — Split STORY_GENERATION into page-core + state-delta payloads
+
+**⛔ SKIPPED**
 
 **Problem:** STORY_GENERATION merges 12 conceptual domains into one schema.
 
@@ -218,10 +261,11 @@ Implement `convertToGeminiSchema`-time detection: when building the schema, if t
 
 | Status | Count | Phases |
 |--------|------:|--------|
-| ✅ Completed | 6 | 1.1, 1.2, 1.4, 2.3, 4.1, 4.2 |
-| 🟡 Pending (medium) | 4 | 1.5, 1.3 (deferred), 3.1, 2.2 |
-| 🟢 Pending (low) | 2 | 1.7, 1.8 |
-| 🔴 Skipped | 1 | 2.1 (high risk) |
+| ✅ Completed | 11 | 1.1, 1.2, 1.4, 1.6, 1.8-alt (p1, p2), 1.3 (4 renames done), 2.3, 4.1, 4.2 |
+| 🟡 Pending (medium) | 3 | 1.5, 3.1, 1.3 (remaining 17 renames — deferred) |
+| 🟢 Pending (low) | 1 | 1.7 (blocked on 1.5) |
+| 🔴 Skipped | 2 | 2.1 (high risk), 2.2 (intentional — 1 batch preserves RPM, fairness, parallel world consistency) |
+| 🔴 Rejected | 1 | 1.8 (harmful — removed enum values from AI context) |
 
 ---
 
@@ -257,15 +301,15 @@ Implement `convertToGeminiSchema`-time detection: when building the schema, if t
 
 | # | Driver | Status | Resolution |
 |---|--------|--------|------------|
-| 1 | CANDIDATE_GENERATION depth 10 | 🟡 **Partially resolved** | Depth reduced to 8 (Phase 1.1 + Phase 1.5). Full fix (Phase 2.2) pending. |
+| 1 | CANDIDATE_GENERATION depth 10 | ✅ **Resolved (skipped)** | Depth reduced to 8 (Phase 1.1 + Phase 1.5). Phase 2.2 skipped — 1 batch call is intentional (see decision note). Depth 8 passes for non-Gemini providers; Gemini routes via complexity gate. |
 | 2 | Evaluator double-wrap | ✅ **Resolved** | Phase 2.3: evaluator uses `type: string` |
 | 3 | 26 enum fields, 151 items | 🟡 **Mitigated at call time** | `minify: true` drops enums > 3 in schema sent to Gemini |
 | 4 | Deep trait chains | ✅ **Resolved** | Phase 1.1: traits flattened to `string[]` |
 | 5 | 123 required constraints | ✅ **Resolved** | Phase 1.4: reduced to ~50 |
 | 6 | 32 KB schema payload | ✅ **Resolved** | Reduced to ~10 KB (Phases 1.1, 1.2, 1.4, 1.5) |
 | 7 | 3 unnecessary wrapper objects | ✅ **Resolved** | Phase 1.5: characterUpdates, placeUpdates, threadUpdates flattened to root arrays |
-| 8 | Duplicate field instructions | 🟢 **Pending** | Phase 1.7: collate duplicated char/place instruction blocks |
-| 9 | Inflated output format strings | 🟢 **Pending** | Phase 1.8: replace `formatOneOf` with list references |
+| 8 | Duplicate field instructions | 🟢 **Pending** | Phase 1.7: collate duplicated char/place instruction blocks (depends on Phase 1.5) |
+| 9 | Inflated output format strings | ✅ **Resolved** | Phase 1.8-alt p2: replaced inline `formatOneOf` in output formats with centralized value strings. ~17 KB total → ~11 KB. `formatOneOf` retained in rules sections where natural language usage is appropriate. |
 
 ---
 
@@ -414,14 +458,18 @@ This would be accepted by `JSON.parse`, and the type cast `as T` silences the ty
 | 4 | **1.2** — Collapse TagUpdates | ✅ Done | 1 day | 🟢 Low | Minor structural savings |
 | 5 | **2.3** — Decouple evaluator schema | ✅ Done | 2 days | 🟢 Low | Eliminates double-wrap |
 | 6 | **1.1** — Flatten traits to string[] | ✅ Done | 2 days | 🟡 Medium | 1-level depth savings; removes ~136 props from schema |
-| 7 | **3.1** — Provider-based routing | ⬜ Pending | 2 days | 🟡 Medium | Correct by provider |
-| 8 | **2.2** — Unwrap candidate generation | ⬜ Pending | 3 days | 🟡 Medium | Fixes depth 8 → 7 for Gemini |
-| 9 | **1.5** — Flatten wrapper objects | ⬜ Pending | 3 days | 🟡 Medium | -3 objects, depth 7→6 |
-| 10 | **1.3** — Shorten property names | ⬜ Deferred | 3 days | 🟡 Medium | Modest savings (~50 tokens); low priority |
-| 11 | **1.7** — Collapse duplicate field instructions | ⬜ Pending | 1 day | 🟢 Low | ~40 lines trimmed from prompt |
-| 12 | **1.8** — Replace `formatOneOf` with references | ⬜ Pending | 0.5 day | 🟢 Low | ~1-2 KB trimmed from output formats |
-| 13 | **1.6** — Flatten `viableEnding.changeNote` | ⬜ Pending | 0.5 day | 🟢 Low | -1 object, minor depth savings |
-| 14 | **2.1** — Split page/state schemas | 🔴 **Skipped** | — | 🔴 High | Unnecessary after Phase 1 reductions |
+| 7 | **1.6** — Flatten `viableEnding.changeNote` | ✅ Done | 0.5 day | 🟢 Low | -1 object, minor depth savings |
+| 8 | **1.8-alt (p1)** — Centralize enum arrays | ✅ Done | 1 day | 🟢 Low | Single source for all prompt enum values |
+| 9 | **1.3 (partial)** — Shorten 2 property names | ✅ Done | 0.3 day | 🟢 Low | -1.7 chars avg on 2 properties |
+| 10 | **1.3 (cont.)** — Shorten 2 more property names (`placeConnectionUpdates→placeConnections`, `visualDescription→appearance`) | ✅ Done | 0.5 day | 🟢 Low | -8 chars on `placeConnectionUpdates`, -7 on `visualDescription` |
+| 11 | **1.8-alt (p2)** — Replace `formatOneOf` in output formats | ✅ Done | 2 days | 🟢 Low | ~75 `formatOneOf` calls replaced with centralized value strings in output format templates |
+| 12 | **3.1** — Provider-based routing | ⬜ Pending | 2 days | 🟡 Medium | Correct by provider |
+| 13 | **1.5** — Flatten wrapper objects | ⬜ Pending | 3 days | 🟡 Medium | -3 objects, depth 7→6 |
+| 14 | **1.3 (rest)** — Remaining 17 property renames | ⬜ Deferred | 3 days | 🟡 Medium | Modest savings (~50 tokens); low priority |
+| 15 | **1.7** — Collapse duplicate field instructions | ⬜ Pending (blocked on 1.5) | 1 day | 🟢 Low | ~40 lines trimmed from prompt |
+| 16 | **2.2** — Unwrap candidate generation | 🔴 **Skipped** | — | 🟡 Medium | 1 batch call intentional — preserves RPM budget, ensures fairness, maintains parallel-world consistency |
+| 17 | **1.8** — Replace `formatOneOf` with references | 🔴 **Rejected** | — | 🔴 High | Harmful — removed enum values from AI context |
+| 18 | **2.1** — Split page/state schemas | 🔴 **Skipped** | — | 🔴 High | Unnecessary after Phase 1 reductions |
 
 ## Success Metric
 
@@ -433,12 +481,16 @@ This would be accepted by `JSON.parse`, and the type cast `as T` silences the ty
 
 | Item | Size | Phase for reduction |
 |------|-----:|---------------------|
-| `nextPageOutputFormat` | ~9.7 KB | Phase 1.8 (replace `formatOneOf`) |
-| `firstBookOutputFormat` | ~7.8 KB | Phase 1.8 |
+| `nextPageOutputFormat` | ~9.7 KB → **~6.3 KB** | Phase 1.8-alt p2 ✅ — replaced inline `formatOneOf` with centralized value strings |
+| `firstBookOutputFormat` | ~7.8 KB → **~5.1 KB** | Phase 1.8-alt p2 ✅ — replaced inline `formatOneOf` with centralized value strings |
 | `buildNextPageFieldInstructions` | ~290 lines | Phase 1.7 (dedup) + Phase 1.5 (flattening eliminates duplicated blocks) |
 
 These don't affect Gemini's constrained decoder. They reduce per-call token spend.
 
+**⚠️ Phase 1.8 correction:** The original approach (replacing `formatOneOf` with tag-placeholders) was **rejected** — it removed enum values the AI needs for ~16 types that aren't listed anywhere else in the prompt. The alternative (§1.8-alt) first centralizes all enum arrays and injects them into the rules sections, making the values available to the AI before any output format trimming is done.
+
+**Phase 1.8-alt p2 result:** `formatOneOf` in output format templates replaced with `"${valueString}"` references to centralized `enums.ts` constants. The key insight is that these value strings are still fully expanded inline (same token cost as before) — this is purely a code deduplication win, not a token reduction. **Real token savings** require first injecting all enum values into rules sections (Phase 1.7/1.5), then replacing output format value strings with brief references. That remains ⬜ Proposed.
+
 ---
 
-*Last updated: v3 — added Phase 1.5, 1.6, 1.7, 1.8. Completed phases: 1.1, 1.2, 1.4, 2.3, 4.1, 4.2. Pending: 1.5, 1.7, 1.8, 1.3 (deferred), 3.1, 2.2. Skipped: 2.1 (high risk).*
+*Last updated: v7 — Phase 1.3: `placeConnectionUpdates→placeConnections`, `visualDescription→appearance` completed. Phase 2.2 skipped (1 batch intentional — see decision note). Completed phases: 1.1, 1.2, 1.4, 1.6, 1.8-alt (p1, p2), 1.3 (4 renames done), 2.3, 4.1, 4.2. Pending: 1.5, 1.7 (blocked on 1.5), 3.1, 1.3 (17 renames deferred). Skipped: 2.1, 2.2. Rejected: 1.8.*

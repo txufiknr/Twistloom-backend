@@ -508,7 +508,7 @@ export type PageTranslation = {
   mood?: string | null;
   weather?: string | null;
   keyEvents: string[];
-  importantObjects: string[];
+  keyObjects: string[];
   actions: ActionTranslation[];
   // state translations
   actionsHistory: ActionTranslation[];

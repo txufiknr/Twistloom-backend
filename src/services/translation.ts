@@ -121,7 +121,7 @@ export async function getPageTranslation({
  * Applies a `PageTranslation` overlay onto a `PersistedStoryPage`.
  *
  * Covers page-level fields only: text, calendarDate, timeOfDay, mood, weather,
- * keyEvents, importantObjects, and actions.
+ * keyEvents, keyObjects, and actions.
  *
  * State-level translations (contextHistory, places, characters, inventory,
  * injuries, threads, actionsHistory) must be applied separately via
@@ -160,7 +160,7 @@ export function applyPageTranslation(
     ...(translation.weather    != null && { weather:   translation.weather }),
     // Arrays: only override when the translated array is non-empty
     ...(translation.keyEvents.length        > 0 && { keyEvents:        translation.keyEvents }),
-    ...(translation.importantObjects.length > 0 && { importantObjects: translation.importantObjects }),
+    ...(translation.keyObjects.length > 0 && { keyObjects: translation.keyObjects }),
     actions: translatedActions,
   };
 }
@@ -327,7 +327,7 @@ export function applyStateTranslation(state: StoryState, translation: PageTransl
  *  4?       : state.contextHistory
  *  places   : [knownName, realName, context, type] × N places
  *  keyEvts  : keyEvents[] × M
- *  impObjs  : importantObjects[] × M
+ *  impObjs  : keyObjects[] × M
  *  chars    : [role, bio] × N characters
  *  inventory: [name, where, trait₀.value, …] × N items
  *  injuries : [bodyPart, description, consequences] × N injuries
@@ -380,17 +380,17 @@ async function translatePageWithLibre({
     }
   }
 
-  // — keyEvents & importantObjects ────────────────────────────────────────────
+  // — keyEvents & keyObjects ────────────────────────────────────────────
   let keyEventsStart:         number | undefined;
-  let importantObjectsStart:  number | undefined;
+  let keyObjectsStart:  number | undefined;
 
   if (page.keyEvents?.length) {
     keyEventsStart = batch.length;
     batch.push(...page.keyEvents);
   }
-  if (page.importantObjects?.length) {
-    importantObjectsStart = batch.length;
-    batch.push(...page.importantObjects);
+  if (page.keyObjects?.length) {
+    keyObjectsStart = batch.length;
+    batch.push(...page.keyObjects);
   }
 
   // — characters (2 + N strings per character: role, bio, then one slot per trait string) ──
@@ -478,13 +478,13 @@ async function translatePageWithLibre({
   const translatedWeather        = weatherIndex        !== undefined ? translated[weatherIndex]        : undefined;
   const translatedContextHistory = contextHistoryIndex !== undefined ? translated[contextHistoryIndex] : undefined;
 
-  // ── Extract — keyEvents / importantObjects ───────────────────────────────────
+  // ── Extract — keyEvents / keyObjects ───────────────────────────────────
   const translatedKeyEvents: string[] = keyEventsStart !== undefined
     ? translated.slice(keyEventsStart, keyEventsStart + (page.keyEvents?.length ?? 0))
     : [];
 
-  const translatedImportantObjects: string[] = importantObjectsStart !== undefined
-    ? translated.slice(importantObjectsStart, importantObjectsStart + (page.importantObjects?.length ?? 0))
+  const translatedImportantObjects: string[] = keyObjectsStart !== undefined
+    ? translated.slice(keyObjectsStart, keyObjectsStart + (page.keyObjects?.length ?? 0))
     : [];
 
   // ── Extract — actions ────────────────────────────────────────────────────────
@@ -611,7 +611,7 @@ async function translatePageWithLibre({
       mood:             translatedMood,
       weather:          translatedWeather,
       keyEvents:        translatedKeyEvents,
-      importantObjects: translatedImportantObjects,
+      keyObjects: translatedImportantObjects,
       actions:          translatedActions,
       actionsHistory:   translatedActionsHistory,
       contextHistory:   translatedContextHistory,
@@ -661,7 +661,7 @@ export function mapToPageTranslation(row: DBPageTranslations): PageTranslation {
     mood:             row.mood,
     weather:          row.weather,
     keyEvents:        row.keyEvents,
-    importantObjects: row.importantObjects,
+    keyObjects: row.keyObjects,
     actions:          row.actions,
     actionsHistory:   row.actionsHistory,
     contextHistory:   row.contextHistory,

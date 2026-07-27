@@ -132,7 +132,7 @@ async function translatePagesToIndonesianBulk(dbPages: DBPage[]): Promise<void> 
         mood:             translation.mood,
         weather:          translation.weather,
         keyEvents:        translation.keyEvents,
-        importantObjects: translation.importantObjects,
+        keyObjects:       translation.keyObjects,
         contextHistory:   translation.contextHistory,
         characters:       translation.characters,
         places:           translation.places,

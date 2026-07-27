@@ -72,7 +72,7 @@ export const pages = pgTable(
     momentum: text("momentum").$type<StoryMomentum>(), // Current pressure level
     charactersPresent: jsonb("characters_present").$type<SceneCharacter[]>().notNull().default(sql`'[]'::jsonb`), // Characters present
     keyEvents: text("key_events").array().notNull().default(sql`ARRAY[]::text[]`),
-    importantObjects: text("important_objects").array().notNull().default(sql`ARRAY[]::text[]`),
+    keyObjects: text("important_objects").array().notNull().default(sql`ARRAY[]::text[]`), // TODO: key_objects
     actions: jsonb("actions").$type<Action[]>().notNull().default(sql`'[]'::jsonb`), // 2-3 branching actions
     stateDelta: jsonb("delta").$type<StateDelta>().notNull().default(sql`'{}'::jsonb`), // Incremental delta (chronological)
     aiProvider: text("ai_provider").$type<AIChatProvider | 'none'>(),
@@ -1304,7 +1304,7 @@ export const pageTranslations = pgTable(
     mood: text("mood"),
     weather: text("weather"),
     keyEvents: text("key_events").array().notNull().default(sql`ARRAY[]::text[]`),
-    importantObjects: text("important_objects").array().notNull().default(sql`ARRAY[]::text[]`),
+    keyObjects: text("important_objects").array().notNull().default(sql`ARRAY[]::text[]`),
     contextHistory: text("context_history"),
     characters: jsonb("characters").$type<CharacterMemoryTranslation[]>().notNull().default(sql`'[]'::jsonb`),
     places: jsonb("places").$type<PlaceMemoryTranslation[]>().notNull().default(sql`'[]'::jsonb`),

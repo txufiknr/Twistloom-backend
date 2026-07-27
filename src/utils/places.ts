@@ -159,11 +159,11 @@ export function updatePlace(params: {
  * processPlaceUpdates(state, storyPage);
  * ```
  */
-export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdates, placeConnectionUpdates?: PlaceConnectionUpdate[], scene?: StoryScene, previousPlaceId?: string): void {
+export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdates, placeConnections?: PlaceConnectionUpdate[], scene?: StoryScene, previousPlaceId?: string): void {
   const { newPlaces = [], updatedPlaces = [] } = placeUpdates || {};
 
   // Early exit: if no updates to process
-  if (!newPlaces.length && !updatedPlaces.length && !placeConnectionUpdates?.length) return;
+  if (!newPlaces.length && !updatedPlaces.length && !placeConnections?.length) return;
   
   // Add new places into place memory
   if (newPlaces.length) {
@@ -193,8 +193,8 @@ export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdat
   }
 
   // Process relationship updates
-  if (placeConnectionUpdates?.length) {
-    for (const conUpdate of placeConnectionUpdates) {
+  if (placeConnections?.length) {
+    for (const conUpdate of placeConnections) {
       const sourcePlace = state.places[conUpdate.sourceId];
       if (sourcePlace) {
         state.places[conUpdate.sourceId] = updateConnection(sourcePlace, conUpdate, state.page);

@@ -1,7 +1,9 @@
 import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_CREATIVE, DEFAULT_MAX_OUTPUT_TOKEN } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
-import { characterImportances, characterRecognitionLevels, characterStatuses, healthConditions, injuryCategories, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
-import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, endingTypes, finalePhases, plotFlagTypes, factTypes, flagLevels, psychologicalFlagsTypes, difficulties, sceneTypes, storyMomentums, characterSceneRoles, type StabilityLevel, storyPhaseKeys, memoryIntegrities } from "../types/story.js";
+import { characterImportances, characterStatuses } from "../config/enums.js";
+import { actionTypes, archetypes, stabilityLevels, manipulationAffinities, truthLevels, threatProximities, realityStabilities, endingTypes, finalePhases, factTypes, sceneTypes, storyMomentums, characterSceneRoles } from "../config/enums.js";
+import type { StoryState, Action, PsychologicalFlags, PsychologicalProfile, HiddenState, PersistedStoryPage, ActionHintType, AIActionConfig, StabilityLevel } from "../types/story.js";
+import { moodValues, weatherValues, sceneTypeValues, sceneRoleValues, momentumValues, actionTypeValues, hintTypeValues, memoryIntegrityValues, difficultyValues, plotFlagTypeValues, injuryCategoryValues, threadPriorityValues, threadTruthValues, threadStatusValues, endingTypeValues, factTypeValues, phaseValues, stabilityLevelValues, healthConditionValues, canonicalPlaceTypeValues, accessibilityValues, recognitionLevelValues, genderValues, characterStatusValues, characterImportanceValues, relationshipTypeValues, relationshipStatusValues, twistTypeValues, psychologicalFlagTypeValues, flagLevelValues } from "../config/enums.js";
 import { createNonRetryableError } from "./retry.js";
 import { TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS, MAX_THREADS_CLUES, MAX_ACTION_CHOICES_FINALE, FUTURE_NOTE_LOOKAHEAD_DAYS } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
@@ -25,15 +27,16 @@ import { notifyForumOfBookChange } from "../services/forum-queue.js";
 import { generateBranchId, getStoryStateWithBranch } from "../services/story-branch.js";
 import { BOOK_CREATION_REQUIRED_FIELDS, BOOK_CREATION_SCHEMA_DEFINITION, CANDIDATE_GENERATION_REQUIRED_FIELDS, CANDIDATE_GENERATION_SCHEMA_DEFINITION, SANITY_STATE_DEFAULTS, STORY_GENERATION_REQUIRED_FIELDS, STORY_GENERATION_SCHEMA_DEFINITION } from "../schema/story.js";
 import { formatPageTextForPrompt } from "./books.js";
-import { threadPriorities, type ThreadPriority, threadStatuses, threadTruths, type StoryThread, type ThreadStatus } from "../types/story-thread.js";
+import type { ThreadPriority, StoryThread, ThreadStatus } from "../types/story-thread.js";
 import { aiStreamSSE, parseSSEStreamContent } from "./ai-chat-stream.js";
 import { MAX_THEME_LENGTH_PROMPT } from "../config/theme-validation.js";
 import { filterObjectEntries, parsePageRange, stripEmptyLines } from "./parser.js";
-import { genders } from "../types/user.js";
+import { genders } from "../config/enums.js";
 import { updateBookGenerationStatus } from "../services/book-creation.js";
 import { formatLanguage } from "./translation.js";
 import { DEFAULT_CANDIDATE_PAGE_PER_ACTION, MAX_CANDIDATE_PAGE_PER_ACTION } from "../config/candidate-generation.js";
-import { canonicalPlaceTypes, placeAccessibilities, type PlaceMemory, placeWeathers } from "../types/places.js";
+import { canonicalPlaceTypes, placeAccessibilities } from "../config/enums.js";
+import type { PlaceMemory } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
 import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, FutureNoteSchedule, FutureNoteStateTrigger, MemoryIntegrity, PastEvent, PlotFlag, SanityState, SceneType, StateDelta, StoryGeneration, StoryOutline, StoryPage, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import type { AIChatConfig, AIChatConfigCaps, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
@@ -181,7 +184,7 @@ export const RULES_PLACE = `PLACE RULES:
  */
 export const RULES_CHARACTER = `CHARACTER RULES:
 - NEVER reveal hidden character data unless explicitly discovered. Refer to characters per their recognitionLevel (below) — never their real name unless that level permits it.
-- Respect each character's bio and visualDescription — preserve dialect, tone, and personality; use pastInteractions to shape dialogue, reflect current status in behavior, and reintroduce naturally after an absence.
+- Respect each character's bio and appearance — preserve dialect, tone, and personality; use pastInteractions to shape dialogue, reflect current status in behavior, and reintroduce naturally after an absence.
 - Characters may shift suddenly if narrativeFlags suggest it — never explain the change. Use relationships to build tension triangles; characters may also misunderstand, reinforcing illusion or false theory through dialogue or action.`;
 
 /**
@@ -209,7 +212,7 @@ export const RULES_PLANNED_CHARACTERS = `PLANNED CHARACTERS RULES:
 - Use addPlannedCharacters to create new planned characters when the story needs future faces. Only valid in EARLY and MID phases.
 - Introduce them naturally (add to characterUpdates.newCharacters) when appropriate for the current scene, pacing, and story momentum.
 - Only add to characterUpdates.newCharacters when a planned character is genuinely introduced (physically present) in this page.
-- Refine details like bio, visualDescription, etc when introducing planned characters. Preserve name, gender and role.`;
+- Refine details like bio, appearance, etc when introducing planned characters. Preserve name, gender and role.`;
 
 /**
  * Action rules and a human-readable list of action types (excluding
@@ -350,28 +353,28 @@ const firstBookOutputFormat: string = `{
   },
   "firstPage": {
     "text": "...",
-    "mood": "One of: ${formatOneOf(moods)}",
-    "weather": "One of: ${formatOneOf(placeWeathers)}",
+    "mood": "${moodValues}",
+    "weather": "${weatherValues}",
     "calendarDate": "<yyyy-MM-dd>",
     "timeOfDay": "e.g., 'night', 'HH:mm', '2 AM', 'unknown', time range",
-    "sceneType": "One of: ${formatOneOf(Object.keys(sceneTypes))}",
+    "sceneType": "${sceneTypeValues}",
     "charactersPresent": [
       {
         "characterId": "<character_id>",
-        "sceneRole": "One of: ${formatOneOf(characterSceneRoles)}",
+        "sceneRole": "${sceneRoleValues}",
         "sceneFocus": <number between 0.0 and 1.0>
       }
     ],
-    "momentum": "One of: ${formatOneOf(Object.keys(storyMomentums))}",
+    "momentum": "${momentumValues}",
     "keyEvents": [],
-    "importantObjects": [],
+    "keyObjects": [],
     "actions": [
       {
         "text": "First-person action or dialogue",
-        "type": "One of: ${formatOneOf(Object.keys(actionTypes))}",
+        "type": "${actionTypeValues}",
         "hint": {
           "text": "Subtle implication of consequence",
-          "type": "One of: ${formatOneOf(actionHintTypes)}"
+          "type": "${hintTypeValues}"
         }
       }
     ]
@@ -383,13 +386,13 @@ const firstBookOutputFormat: string = `{
       "guilt": "One of: low | medium | high",
       "curiosity": "One of: low | medium | high"
     },
-    "memoryIntegrity": "One of: ${formatOneOf(memoryIntegrities)}",
-    "difficulty": "One of: ${formatOneOf(difficulties)}",
+    "memoryIntegrity": "${memoryIntegrityValues}",
+    "difficulty": "${difficultyValues}",
     "traumaTags": ["..."],
     "plotFlags": [
       {
         "fact": "...",
-        "type": "One of: ${formatOneOf(plotFlagTypes)}",
+        "type": "${plotFlagTypeValues}",
         "isMajorEvent": <boolean>
       }
     ],
@@ -408,7 +411,7 @@ const firstBookOutputFormat: string = `{
         "bodyPart": "...",
         "description": "...",
         "consequences": "...",
-        "category": "One of: ${formatOneOf(injuryCategories)}",
+        "category": "${injuryCategoryValues}",
         "severity": <number between 0.0 and 1.0>,
         "decayPerPage": <number between 0.0 and 1.0>
       }
@@ -419,8 +422,8 @@ const firstBookOutputFormat: string = `{
       "threadId": "<new_thread_id>",
       "title": "...",
       "question": "...",
-      "priority": "One of: ${formatOneOf(threadPriorities)}",
-      "truth": "One of: ${formatOneOf(threadTruths)}",
+      "priority": "${threadPriorityValues}",
+      "truth": "${threadTruthValues}",
       "importance": <number between 0.0 and 1.0>,
       "summary": "...",
       "clues": [
@@ -430,23 +433,23 @@ const firstBookOutputFormat: string = `{
   ],
   "viableEnding": {
     "text": "Specific ending plan for this MC and theme (${VIABLE_ENDING_LENGTH})",
-    "type": "One of: ${formatOneOf(Object.keys(endingTypes))}",
+    "type": "${endingTypeValues}",
     "outline": ["...", "..."]
   },
   "futureNotes": [
     {
       "note": "...",
       "isMajor": <boolean>,
-      "tag": "One of: ${formatOneOf(Object.keys(factTypes))}",
+      "tag": "${factTypeValues}",
       "schedule": [
-        { "type": "phase", "phase": "One of: ${formatOneOf(storyPhaseKeys, '|')}" },
+        { "type": "phase", "phase": "${phaseValues}" },
         { "type": "page", "range": "<min>-<max>" },
         { "type": "day", "day": <integer> },
         { "type": "date", "date": "YYYY-MM-DD" }
       ],
       "stateTrigger": [
-        { "type": "stability", "level": "One of: ${formatOneOf(Object.keys(stabilityLevels), '|')}" },
-        { "type": "condition", "condition": "One of: ${formatOneOf(healthConditions, '|')}" },
+        { "type": "stability", "level": "${stabilityLevelValues}" },
+        { "type": "condition", "condition": "${healthConditionValues}" },
         { "type": "healthPercent", "threshold": <0-100> },
         { "type": "mobilityPercent", "threshold": <0-100> },
         { "type": "actionPercent", "threshold": <0-100> },
@@ -460,7 +463,7 @@ const firstBookOutputFormat: string = `{
     "knownName": "...",
     "realName": "...",
     "type": "...",
-    "category": "One of: ${formatOneOf(canonicalPlaceTypes)}",
+    "category": "${canonicalPlaceTypeValues}",
     "context": "One evocative sentence.",
     "familiarity": <number between 0.0 and 1.0>,
     "isRealNameKnown": <boolean>,
@@ -488,23 +491,23 @@ const firstBookOutputFormat: string = `{
       "characterId": "<new_character_id>",
       "knownName": "Narration Alias",
       "realName": "Real Full Name",
-      "recognitionLevel": "One of: ${formatOneOf(characterRecognitionLevels)}",
-      "gender": "One of: ${formatOneOf(genders)}",
+      "recognitionLevel": "${recognitionLevelValues}",
+      "gender": "${genderValues}",
       "role": "Role or occupation (e.g. 'schoolmate', 'librarian')",
       "bio": "Brief character description. Include one trait that could become a source of threat or betrayal.",
-      "visualDescription": "Visual appearance (e.g. height, skin color, eye color, hair, etc).",
-      "status": "One of: ${formatOneOf(characterStatuses)}",
+      "appearance": "Visual appearance (e.g. height, skin color, eye color, hair, etc).",
+      "status": "${characterStatusValues}",
       "secrets": ["Any secrets unknown to MC (max ${MAX_CHARACTER_SECRETS})."],
-      "importance": "One of: ${formatOneOf(characterImportances)}",
+      "importance": "${characterImportanceValues}",
       "relationshipToMC": {
-        "type": "One of: ${formatOneOf(relationshipTypes)}",
-        "status": "One of: ${formatOneOf(relationshipStatuses)}",
+        "type": "${relationshipTypeValues}",
+        "status": "${relationshipStatusValues}",
         "context": "${RELATIONSHIP_TO_MC_LENGTH}. Specific dynamic, not generic (e.g. 'Close childhood friend who knows too much.')",
-        "recognitionLevel": "One of: ${formatOneOf(characterRecognitionLevels)}"
+        "recognitionLevel": "${recognitionLevelValues}"
       },
       "pastInteractions": ["..."],
       "narrativeFlags": {
-        "potentialTwist": "One of: ${formatOneOf(potentialTwistTypes)}"
+        "potentialTwist": "${twistTypeValues}"
       },
       "traits": [
         "...: ..."
@@ -521,7 +524,7 @@ const firstBookOutputFormat: string = `{
           "bodyPart": "...",
           "description": "...",
           "consequences": "...",
-          "category": "One of: ${formatOneOf(injuryCategories)}",
+          "category": "${injuryCategoryValues}",
           "severity": <number between 0.0 and 1.0>,
           "decayPerPage": <number between 0.0 and 1.0>
         }
@@ -531,32 +534,32 @@ const firstBookOutputFormat: string = `{
   "plannedCharacters": [
     {
       "characterId": "<character_id>",
-      "plannedIntroduction": "...",
+      "plannedIntro": "...",
       "storyPurpose": "...",
-      "importance": "One of: ${formatOneOf(characterImportances)}",
+      "importance": "${characterImportanceValues}",
       "knownName": "...",
       "realName": "...",
-      "gender": "One of: ${formatOneOf(genders)}",
+      "gender": "${genderValues}",
       "role": "...",
       "bio": "...",
-      "visualDescription": "..."
+      "appearance": "..."
     }
   ],
   "initialRelationships": [
     {
       "sourceId": "<character_id_1>",
       "targetId": "<character_id_2>",
-      "type": "One of: ${formatOneOf(relationshipTypes)}",
-      "status": "One of: ${formatOneOf(relationshipStatuses)}",
+      "type": "${relationshipTypeValues}",
+      "status": "${relationshipStatusValues}",
       "context": "Define relationship context",
-      "recognitionLevel": "One of: ${formatOneOf(characterRecognitionLevels)}"
+      "recognitionLevel": "${recognitionLevelValues}"
     }
   ],
   "initialFacts": [
     {
       "key": "fact.key",
       "value": "Fact Value",
-      "type": "One of: ${formatOneOf(Object.keys(factTypes))}",
+      "type": "${factTypeValues}",
       "reason": "Reason for the fact"
     }
   ],
@@ -614,27 +617,27 @@ const buildFirstBookReviewChecklist = (language: string): string => {
 
 const nextPageOutputFormat: string = `{
   "text": "...",
-  "mood": "One of: ${formatOneOf(moods)}",
+  "mood": "${moodValues}",
   "placeId": "<place_id>",
-  "weather": "One of: ${formatOneOf(placeWeathers)}",
+  "weather": "${weatherValues}",
   "calendarDate": "<yyyy-MM-dd>",
   "timeOfDay": "...",
   "minutesPassed": <number>,
-  "sceneType": "One of: ${formatOneOf(Object.keys(sceneTypes))}",
+  "sceneType": "${sceneTypeValues}",
   "charactersPresent": [
     {
       "characterId": "<character_id>",
-      "sceneRole": "One of: ${formatOneOf(characterSceneRoles)}",
+      "sceneRole": "${sceneRoleValues}",
       "sceneFocus": <number between 0.0 and 1.0>
     }
   ],
   "keyEvents": [],
-  "importantObjects": [],
+  "keyObjects": [],
   "traumaTagAdd": [],
   "traumaTagRemove": [],
   "addPlotFlags": [{
     "fact": "...",
-    "type": "One of: ${formatOneOf(plotFlagTypes)}",
+    "type": "${plotFlagTypeValues}",
     "isMajorEvent": <boolean>
   }],
   "inventory": [
@@ -653,7 +656,7 @@ const nextPageOutputFormat: string = `{
       "bodyPart": "...",
       "description": "...",
       "consequences": "...",
-      "category": "One of: ${formatOneOf(injuryCategories)}",
+      "category": "${injuryCategoryValues}",
       "severity": <number between 0.0 and 1.0>,
       "decayPerPage": <number between 0.0 and 1.0>,
       "pageAcquired": <number>
@@ -664,16 +667,16 @@ const nextPageOutputFormat: string = `{
     {
       "note": "...",
       "isMajor": <boolean>,
-      "tag": "One of: ${formatOneOf(Object.keys(factTypes))}",
+      "tag": "${factTypeValues}",
       "schedule": [
-        { "type": "phase", "phase": "One of: ${formatOneOf(storyPhaseKeys, '|')}" },
+        { "type": "phase", "phase": "${phaseValues}" },
         { "type": "page", "range": "<min>-<max>" },
         { "type": "day", "day": <integer> },
         { "type": "date", "date": "YYYY-MM-DD" }
       ],
       "stateTrigger": [
-        { "type": "stability", "level": "One of: ${formatOneOf(Object.keys(stabilityLevels), '|')}" },
-        { "type": "condition", "condition": "One of: ${formatOneOf(healthConditions, '|')}" },
+        { "type": "stability", "level": "${stabilityLevelValues}" },
+        { "type": "condition", "condition": "${healthConditionValues}" },
         { "type": "healthPercent", "threshold": <0-100> },
         { "type": "mobilityPercent", "threshold": <0-100> },
         { "type": "actionPercent", "threshold": <0-100> },
@@ -688,13 +691,13 @@ const nextPageOutputFormat: string = `{
       "characterId": "<unique_id>",
       "knownName": "...",
       "realName": "...",
-      "gender": "One of: ${formatOneOf(genders)}",
+      "gender": "${genderValues}",
       "role": "...",
       "bio": "...",
-      "visualDescription": "...",
-      "importance": "One of: ${formatOneOf(characterImportances)}",
+      "appearance": "...",
+      "importance": "${characterImportanceValues}",
       "storyPurpose": "...",
-      "plannedIntroduction": "..."
+      "plannedIntro": "..."
     }
   ],
   "factUpdates": [
@@ -702,23 +705,23 @@ const nextPageOutputFormat: string = `{
       "key": <new or existing key>,
       "value": "...",
       "page": <number>,
-      "type": "One of: ${formatOneOf(Object.keys(factTypes))}",
+      "type": "${factTypeValues}",
       "reason": "..."
     }
   ],
   "flagUpdates": [
     {
-      "type": "${formatOneOf(psychologicalFlagsTypes)}",
-      "level": "${formatOneOf(flagLevels)}"
+      "type": "${psychologicalFlagTypeValues}",
+      "level": "${flagLevelValues}"
     }
   ],
   "actions": [
     {
       "text": "First-person action or dialogue",
-      "type": "One of: ${formatOneOf(Object.keys(actionTypes))}",
+      "type": "${actionTypeValues}",
       "hint": {
         "text": "Subtle implication of consequence",
-        "type": "One of: ${formatOneOf(actionHintTypes)}"
+        "type": "${hintTypeValues}"
       }
     }
   ],
@@ -728,23 +731,23 @@ const nextPageOutputFormat: string = `{
         "characterId": "<new_character_id>",
         "knownName": "...",
         "realName": "...",
-        "recognitionLevel": "One of: ${formatOneOf(characterRecognitionLevels)}",
-        "gender": "One of: ${formatOneOf(genders)}",
+        "recognitionLevel": "${recognitionLevelValues}",
+        "gender": "${genderValues}",
         "role": "...",
         "bio": "...",
-        "visualDescription": "...",
-        "status": "One of: ${formatOneOf(characterStatuses)}",
+        "appearance": "...",
+        "status": "${characterStatusValues}",
         "secrets": ["..."],
-        "importance": "One of: ${formatOneOf(characterImportances)}",
+        "importance": "${characterImportanceValues}",
         "relationshipToMC": {
-          "type": "One of: ${formatOneOf(relationshipTypes)}",
-          "status": "One of: ${formatOneOf(relationshipStatuses)}",
+          "type": "${relationshipTypeValues}",
+          "status": "${relationshipStatusValues}",
           "context": "...",
-          "recognitionLevel": "One of: ${formatOneOf(characterRecognitionLevels)}"
+          "recognitionLevel": "${recognitionLevelValues}"
         },
         "pastInteractions": ["..."],
         "narrativeFlags": {
-          "potentialTwist": "One of: ${formatOneOf(potentialTwistTypes)}"
+          "potentialTwist": "${twistTypeValues}"
         },
         "schedules": [
           {
@@ -763,23 +766,23 @@ const nextPageOutputFormat: string = `{
       {
         "characterId": "<character_id>",
         "knownName": "...",
-        "recognitionLevel": "One of: ${formatOneOf(characterRecognitionLevels)}",
-        "gender": "One of: ${formatOneOf(genders)}",
+        "recognitionLevel": "${recognitionLevelValues}",
+        "gender": "${genderValues}",
         "role": "...",
         "bio": "...",
-        "visualDescription": "...",
-        "status": "One of: ${formatOneOf(characterStatuses)}",
+        "appearance": "...",
+        "status": "${characterStatusValues}",
         "secrets": ["..."],
-        "importance": "One of: ${formatOneOf(characterImportances)}",
+        "importance": "${characterImportanceValues}",
         "relationshipToMC": {
-          "type": "One of: ${formatOneOf(relationshipTypes)}",
-          "status": "One of: ${formatOneOf(relationshipStatuses)}",
+          "type": "${relationshipTypeValues}",
+          "status": "${relationshipStatusValues}",
           "context": "...",
-          "recognitionLevel": "One of: ${formatOneOf(characterRecognitionLevels)}"
+          "recognitionLevel": "${recognitionLevelValues}"
         },
         "newInteractions": ["..."],
         "narrativeFlags": {
-          "potentialTwist": "One of: ${formatOneOf(potentialTwistTypes)}"
+          "potentialTwist": "${twistTypeValues}"
         },
         "updateSchedules": [
           {
@@ -801,10 +804,10 @@ const nextPageOutputFormat: string = `{
     {
       "sourceId": "<character_id_1>",
       "targetId": "<character_id_2>",
-      "type": "One of: ${formatOneOf(relationshipTypes)}",
-      "status": "One of: ${formatOneOf(relationshipStatuses)}",
+      "type": "${relationshipTypeValues}",
+      "status": "${relationshipStatusValues}",
       "context": "Define relationship context",
-      "recognitionLevel": "One of: ${formatOneOf(characterRecognitionLevels)}"
+      "recognitionLevel": "${recognitionLevelValues}"
     }
   ],
   "placeUpdates": {
@@ -815,7 +818,7 @@ const nextPageOutputFormat: string = `{
         "knownName": "...",
         "realName": "...",
         "type": "...",
-        "category": "One of: ${formatOneOf(canonicalPlaceTypes)}",
+        "category": "${canonicalPlaceTypeValues}",
         "context": "...",
         "familiarity": <number between 0.0 and 1.0>,
         "isRealNameKnown": <boolean>,
@@ -846,7 +849,7 @@ const nextPageOutputFormat: string = `{
         "placeId": "<place_id>",
         "knownName": "...",
         "type": "...",
-        "category": "One of: ${formatOneOf(canonicalPlaceTypes)}",
+        "category": "${canonicalPlaceTypeValues}",
         "context": "...",
         "familiarityCorrection": <number between -0.5 to 0.5>,
         "isRealNameKnown": <boolean>,
@@ -863,13 +866,13 @@ const nextPageOutputFormat: string = `{
       }
     ]
   },
-  "placeConnectionUpdates": [
+  "placeConnections": [
     {
       "sourceId": "<place_id_1>",
       "targetId": "<place_id_2>",
       "travelTime": "...",
       "routeType": "...",
-      "accessibility": "One of: ${formatOneOf(placeAccessibilities)}",
+      "accessibility": "${accessibilityValues}",
       "updateObstacles": { "add": [], "remove": [] },
       "bidirectional": <boolean>,
       "notes": "..."
@@ -881,8 +884,8 @@ const nextPageOutputFormat: string = `{
         "threadId": "<new_thread_id>",
         "title": "...",
         "question": "...",
-        "priority": "One of: ${formatOneOf(threadPriorities)}",
-        "truth": "One of: ${formatOneOf(threadTruths)}",
+        "priority": "${threadPriorityValues}",
+        "truth": "${threadTruthValues}",
         "importance": <number between 0.0 and 1.0>,
         "summary": "...",
         "clues": [
@@ -893,9 +896,9 @@ const nextPageOutputFormat: string = `{
     "updateThreads": [
       {
         "threadId": "<thread_id>",
-        "status": "One of: ${formatOneOf(threadStatuses)}",
-        "priority": "One of: ${formatOneOf(threadPriorities)}",
-        "truth": "One of: ${formatOneOf(threadTruths)}",
+        "status": "${threadStatusValues}",
+        "priority": "${threadPriorityValues}",
+        "truth": "${threadTruthValues}",
         "importance": <number between 0.0 and 1.0>,
         "urgencyCorrection": <number between -0.5 and 0.5>,
         "summary": "...",
@@ -913,7 +916,7 @@ const nextPageOutputFormat: string = `{
   },
   "viableEnding": {
     "text": "...",
-    "type": "One of: ${formatOneOf(Object.keys(endingTypes))}",
+    "type": "${endingTypeValues}",
     "outline": [
       {
         "text": "...",
@@ -1015,7 +1018,7 @@ keyEvents
   - ${KEY_EVENT_LENGTH}. Plot-level facts only — what objectively happened (situation/exact hard facts).
 ${isLatePhase || isFinale ? `  - At least one event should connect to or resolve a thread opened earlier in the story.` : ''}
 
-importantObjects
+keyObjects
   - Objects introduced or used this page that may have future narrative significance.
 ${isEarlyPhase ? `  - Seed freely — early objects pay off later. Introduce them without drawing attention.` : ''}
 ${isMidPhase ? `  - Only include objects with clear narrative weight. No new red herrings.` : ''}
@@ -1032,7 +1035,7 @@ injuries
   - Injuries are auto-decaying, ONLY update when character takes action that treats/worsens injury.
   - If an action is taken to heal, or anything made injury worse, update the injury severity and description accordingly.
   - If healed, set severity to 0 (system will auto-remove fully healed injuries).
-  - If healed but leaves permanent scar/story relevance, move to character's visualDescription.
+  - If healed but leaves permanent scar/story relevance, move to character's appearance.
   - If no meaningful injury-related action occurs, output empty array or omit this field entirely.
   - Otherwise, MUST include all previous injuries with updated values and/or new injury if any.
   - consequences: update any that affect the storyline (e.g. "Can't run fast, can't lift heavy objects").
@@ -1058,7 +1061,7 @@ ${!isLatePhase && charactersSlot > 0 ? `  - Add new planned character candidates
   - This is for characters not yet on-page — they're seeds for future pages. Use characterUpdates.newCharacters instead if the new character is physically present on this page.
   - Each must have a distinct characterId. Avoid generic or throwaway plans.
   - storyPurpose: why this character exists and what role they'll play.
-  - plannedIntroduction: brief hook describing how/when they might first appear.`
+  - plannedIntro: brief hook describing how/when they might first appear.`
 : `  - Do not add new planned characters. ${isLatePhase ? 'Phase is too late for meaningful future introductions.' : `${MAX_CHARACTERS} characters limit reached.`}`}
 
 factUpdates
@@ -1129,7 +1132,7 @@ ${isEarlyPhase || isMidPhase ? `  - Name must feel authentic to the MC's age gro
   - Create only when genuinely new to the story, if it strongly recommended and opportunity is right based on your assessment.
   - knownName: mandatory narration alias. If MC know, use actual/nick name. Otherwise, use descriptions, pronouns, roles, or words interpreted by MC.
   - bio: concise, suggestive over descriptive, include personality traits, one vulnerability or potential threat vector, and age if plot-sensitive. Never spoil secrets that haven't been revealed in the story.
-  - visualDescription: visual description (e.g. height, skin color, eye color, hair, etc). Permanent physical attributes only, not ephemeral like clothing.
+  - appearance: visual description (e.g. height, skin color, eye color, hair, etc). Permanent physical attributes only, not ephemeral like clothing.
   - secrets: spoiler or hints of the character for AI narrative guidance (max ${MAX_CHARACTER_SECRETS}).
   - narrativeFlags: set to match behavior and twist setup.
   - pastInteractions: dialogue or event towards MC in current page.
@@ -1149,7 +1152,7 @@ ${isLatePhase || isFinale
   - traits: remove or update.
   - newInteractions: add new interactions from this page.
   - injuries: add or update (full replacement). Set severity to zero to remove.
-  - visualDescription: only if character's appearance meaningfully changed (e.g., from permanent injury).
+  - appearance: only if character's appearance meaningfully changed (e.g., from permanent injury).
   - status: One of ${formatOneOf(characterStatuses)}
   - importance: One of ${formatOneOf(characterImportances)}
   - relationshipToMC: based on interaction and story progression.
@@ -1185,7 +1188,7 @@ placeUpdates.updatedPlaces
     → Do NOT use for ordinary visits, repeated exposure, spending time in a place, or learning the place gradually. Those changes are handled automatically by the system.
 ${isLatePhase || isFinale ? `  - High-familiarity places revisited now should feel distorted.` : ''}
 
-placeConnectionUpdates
+placeConnections
   - Add new if visiting/adding a new place or when a place is first connected.
   - Only update existing if route conditions meaningfully change on revisit.
   - travelTime: Estimated travel duration (e.g., "5 minutes walk", "20 minutes drive").
@@ -2704,7 +2707,7 @@ Open the door
  *     { characterId: 'enemy', sceneRole: 'opposition', sceneFocus: 1 },
  *     { characterId: 'ally', sceneRole: 'supporting', sceneFocus: 0.5 }
  *   ],
- *   importantObjects: ['mysterious book'],
+ *   keyObjects: ['mysterious book'],
  *   keyEvents: ['heard a distant scream']
  * };
  * const state = {
@@ -2731,7 +2734,7 @@ Open the door
  *   · heard a distant scream
  */
 function formatCurrentSituationForPrompt(page: CandidateGenerationPage, state: StoryState): string {
-  const { mood, placeId, weather, timeOfDay, sceneType, momentum, charactersPresent = [], importantObjects = [], keyEvents = [] } = page;
+  const { mood, placeId, weather, timeOfDay, sceneType, momentum, charactersPresent = [], keyObjects = [], keyEvents = [] } = page;
   const situation: string[] = [];
   
   // Basic situation elements
@@ -2759,7 +2762,7 @@ function formatCurrentSituationForPrompt(page: CandidateGenerationPage, state: S
   }
   
   // Add important objects if any
-  if (importantObjects.length) situation.push(`Important objects:\n${importantObjects.map(obj => `  · ${obj}`).join('\n')}`);
+  if (keyObjects.length) situation.push(`Important objects:\n${keyObjects.map(obj => `  · ${obj}`).join('\n')}`);
   
   // Add key events if any
   if (keyEvents.length) situation.push(`Key events:\n${keyEvents.map(event => `  · ${event}`).join('\n')}`);
@@ -3740,7 +3743,7 @@ plannedCharacters:
 - You may infer additional major characters if they naturally strengthen the premise.
 - Do not include background NPCs or disposable one-scene characters.
 - Each planned character should have a clear future narrative purpose.
-- plannedIntroduction: explain how this character planned to be introduced (when they are likely to appear, why they matter, how they connect to the MC or central mystery).
+- plannedIntro: explain how this character planned to be introduced (when they are likely to appear, why they matter, how they connect to the MC or central mystery).
 - storyPurpose: why this character exists in the story and how they contribute to the MC's journey, central mystery, or ending (avoid describing specific future events).
 
 initialRelationships:
@@ -3751,7 +3754,7 @@ firstPage:
 - text: follow the rules in "WRITING STYLE:" and "PAGE FORMAT:" creatively (max ${MAX_WORDS_PER_PAGE} words).
 - keyEvents: ${KEY_EVENT_LENGTH}. Plot-level facts happened in this page.
 - charactersPresent: side characters in the scene besides MC. Must match characters in initialCharacters. sceneFocus: between 0.0 to 1.0 (highest = character to focus).
-- importantObjects: objects introduced or used this page that may have future narrative significance.
+- keyObjects: objects introduced or used this page that may have future narrative significance.
 - momentum: narrative pressure or urgency level in the first page. Thriller openings often start at "rising" or sometimes "critial", just saying.
 
 initialState:

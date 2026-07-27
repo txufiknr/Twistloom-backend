@@ -50,7 +50,7 @@ export function getInjurySeverityLabel(injury: Injury): InjurySeverity {
 // /**
 //  * Creates a new character with default values
 //  * 
-//  * @param newCharacter - Character creation parameters including name, gender, role, bio, visualDescription, status, narrativeFlags, and relationshipToMC
+//  * @param newCharacter - Character creation parameters including name, gender, role, bio, appearance, status, narrativeFlags, and relationshipToMC
 //  * @returns New character memory structure
 //  * 
 //  * @example
@@ -60,7 +60,7 @@ export function getInjurySeverityLabel(injury: Injury): InjurySeverity {
 //  *   gender: "female",
 //  *   role: "best friend",
 //  *   bio: "Cheerful but secretive",
-//  *   visualDescription: "tall, pale, messy black hair, hollow eyes",
+//  *   appearance: "tall, pale, messy black hair, hollow eyes",
 //  *   status: "trusting",
 //  *   narrativeFlags: { potentialTwist: "none" },
 //  *   relationshipToMC: { type: "friend", context: "Childhood best friend, incredibly loyal." }
@@ -115,7 +115,7 @@ export function updateCharacter(existing: CharacterMemory, update: CharacterUpda
   if (update.gender) updated.gender = update.gender;
   if (update.role) updated.role = update.role;
   if (update.bio) updated.bio = update.bio;
-  if (update.visualDescription) updated.visualDescription = update.visualDescription;
+  if (update.appearance) updated.appearance = update.appearance;
   if (update.status) updated.status = update.status;
   if (update.secrets) updated.secrets = update.secrets;
   if (update.importance) updated.importance = update.importance;
@@ -485,7 +485,7 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
     .map(([id, character]) => {
       const {
         knownName, realName, recognitionLevel, role, gender, status,
-        bio, visualDescription, introducedAtPage, pastInteractions, importance,
+        bio, appearance, introducedAtPage, pastInteractions, importance,
         secrets, relationships, relationshipToMC, narrativeFlags, injuries, traits, schedules
       } = character;
 
@@ -512,7 +512,7 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
       // Basic information
       if (useDifferentReference) details.push(`  - Real name: "${realName}" (Recognition: ${recognitionLevel}${nameUnknown ? ` - Don't spoil unless revealed` : ''})`);
       details.push(`  - Bio: ${bio}`);
-      details.push(`  - Visual description: ${visualDescription}`);
+      details.push(`  - Visual description: ${appearance}`);
       details.push(`  - Introduced at page: ${introducedAtPage}`);
       
       // Relationship to MC
@@ -644,7 +644,7 @@ export function formatPlannedCharactersForPrompt(characterPlans: CharacterPlan[]
 
   return characterPlans
     .map((plan) => {
-      const { characterId, knownName, realName, gender, role, bio, visualDescription, importance, plannedIntroduction, storyPurpose } = plan;
+      const { characterId, knownName, realName, gender, role, bio, appearance, importance, plannedIntro, storyPurpose } = plan;
 
       const roleString = [role, importance].filter(Boolean).join(', ');
       const mainInfo = buildCharacterHeader(knownName, roleString, gender, characterId);
@@ -655,9 +655,9 @@ export function formatPlannedCharactersForPrompt(characterPlans: CharacterPlan[]
         details.push(`  - Real name: "${realName}"`);
       }
       if (bio) details.push(`  - Bio: ${bio}`);
-      if (visualDescription) details.push(`  - Visual description: ${visualDescription}`);
+      if (appearance) details.push(`  - Visual description: ${appearance}`);
       if (storyPurpose) details.push(`  - Story purpose: ${storyPurpose}`);
-      if (plannedIntroduction) details.push(`  - Planned introduction: ${plannedIntroduction}`);
+      if (plannedIntro) details.push(`  - Planned introduction: ${plannedIntro}`);
 
       return details.length ? `${mainInfo}\n${details.join('\n')}` : mainInfo;
     })
