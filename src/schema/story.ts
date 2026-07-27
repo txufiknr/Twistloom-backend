@@ -10,7 +10,7 @@ import type { CandidatePagesGeneration } from "../types/candidate-generation.js"
 import { genders } from "../types/user.js";
 import type { BookCreationResponse, BookTranslation, BookTranslationBulk, BookTranslationWithID, PageTranslation, PageTranslationBulk, PageTranslationWithID } from "../types/book.js";
 import type { CharacterMemoryTranslation, CharacterPlan, InjuryTranslation, InventoryItemTranslation, StoryMCTranslation } from "../types/character.js";
-import type { ActionTranslation, PsychologicalFlags, InitialStoryState, StoryOutline, InitialFact, InitialEnding, Ending, EndingChangeNote, InitialStoryPageGeneration } from "../types/story.js";
+import type { ActionTranslation, PsychologicalFlags, InitialStoryState, StoryOutline, InitialFact, InitialEnding, Ending, InitialStoryPageGeneration } from "../types/story.js";
 import type { AIDetectedItem, AIDetectedItemType, AIValidationResult, ThemeValidationCategory } from "../types/theme-validation.js";
 import type { KnownGender } from "../types/user.js";
 import type { PlaceMemoryTranslation } from "../types/places.js";
@@ -570,17 +570,9 @@ export const VIABLE_ENDING_SCHEMA: AIJsonProperty = {
         additionalProperties: false
       }
     },
-    changeNote: {
-      type: 'object',
-      description: 'Note about ending plan shift or changes.',
-      properties: {
-        reason: { type: 'string', description: `Terse. 1-2 sentence.` },
-        viabilityBefore: { type: 'number', description: '0-1 (lower)' },
-        viabilityAfter: { type: 'number', description: '0-1 (higher)' },
-      } satisfies Record<keyof EndingChangeNote, AIJsonProperty>,
-      required: ['reason'] satisfies (keyof EndingChangeNote)[],
-      additionalProperties: false
-    }
+    changeReason: { type: 'string', description: 'Terse 1-2 sentence note about ending plan shift or changes.' },
+    changeViabilityBefore: { type: 'number', description: 'Previous viability score before this change (0-1, lower)' },
+    changeViabilityAfter: { type: 'number', description: 'New viability score after this change (0-1, higher)' }
   } satisfies Record<keyof Ending, AIJsonProperty>
 }
 

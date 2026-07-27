@@ -483,17 +483,14 @@ export type Ending = {
   /** Outline hint for the ending (optional). */
   outline?: StoryOutline[];
   /** Optional note about changes to the ending plan based on story progression */
-  changeNote?: EndingChangeNote;
+  changeReason?: string;
+  /** Previous viability score before this change */
+  changeViabilityBefore?: number;
+  /** New viability score after this change */
+  changeViabilityAfter?: number;
 }
 
-/** Details of the change that triggered the ending mutation */
-export type EndingChangeNote = {
-  reason: string;
-  viabilityBefore: number; // 0-1
-  viabilityAfter: number; // 0-1
-};
-
-export type InitialEnding = Omit<Ending, 'outline' | 'changeNote'> & { outline: string[] };
+export type InitialEnding = Omit<Ending, 'outline' | 'changeReason' | 'changeViabilityBefore' | 'changeViabilityAfter'> & { outline: string[] };
 
 export type StoryOutline = {
   text: string;
@@ -1397,7 +1394,7 @@ export type EnrichedStoryPageContext = {
   /** Collection of ongoing narrative threads in the story */
   threads: StoryThread[];
   /** Outline towards planned ending */
-  ending?: Omit<Ending, 'changeNote'>;
+  ending?: Omit<Ending, 'changeReason' | 'changeViabilityBefore' | 'changeViabilityAfter'>;
 };
 
 export type EnrichedStoryPagePlace = Pick<PlaceMemory, 'type' | 'category' | 'context'> & { placeId: string; name: string; };

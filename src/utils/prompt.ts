@@ -921,11 +921,9 @@ const nextPageOutputFormat: string = `{
         "doneAtPage": <number>
       }
     ],
-    "changeNote": {
-      "reason": "...",
-      "viabilityBefore": <number between 0.0 and 1.0>,
-      "viabilityAfter": <number between 0.0 and 1.0>
-    }
+    "changeReason": "...",
+    "changeViabilityBefore": <number between 0.0 and 1.0>,
+    "changeViabilityAfter": <number between 0.0 and 1.0>
   },
   "branchNames": ["...", "...", "..."]
 }`;
@@ -2562,8 +2560,8 @@ ${THREAD_UPDATE_ON_REVISIT_LINE}
 }
 
 function formatEndingPlan(viableEnding?: Ending, bookEnding?: Ending): string {
-  // If is'a an initial viable ending (no `changeNote`), use from `book.ending` instead
-  const ending = viableEnding?.changeNote ? viableEnding : (bookEnding ?? viableEnding);
+  // If is'a an initial viable ending (no `changeReason`), use from `book.ending` instead
+  const ending = viableEnding?.changeReason ? viableEnding : (bookEnding ?? viableEnding);
   if (!ending) return 'No ending plan yet.';
 
   const { type, text, outline } = ending;
