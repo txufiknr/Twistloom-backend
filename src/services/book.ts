@@ -1981,17 +1981,26 @@ export async function generateCoverImages(book: Book, state?: StoryState, total?
  */
 export async function uploadBookCoverImage(
   bookMeta: Pick<Book, 'id' | 'title' | 'keywords'>,
-  image: ImageUploadSource
+  image: ImageUploadSource,
+  userId?: string,
 ): Promise<ImageKitUploadResponse | null> {
   try {
     const uploadResult = await uploadBookCover(image, bookMeta);
-    
+
     if (!uploadResult?.url) {
       console.warn(`[uploadBookCoverImage] ⚠️ Failed to upload to ImageKit for book ${bookMeta.id}`);
       return null;
     }
-    
+
     console.log(`[uploadBookCoverImage] 🌐 Uploaded to ImageKit: ${uploadResult.url}`);
+
+    await dbWrite.insert(uploadedImages).values({
+      imageId: uploadResult.fileId!,
+      imageUrl: uploadResult.url!,
+      type: 'cover',
+      userId: userId ?? null,
+    });
+
     return uploadResult;
   } catch (error) {
     console.error('[uploadBookCoverImage] ❌ Error uploading cover image:', {bookId: bookMeta.id, error: getErrorMessage(error)});
@@ -2025,10 +2034,6 @@ export async function generateAndUpdateBookCoverImage(book: Book, state?: StoryS
   const uploadResult = await uploadBookCoverImage(book, buffers[0]); // Direct buffer upload
   
   if (uploadResult) {
-    // TODO: insert into uploadedImages
-    // - imageUrl: uploadResult.url,
-    // - imageId: uploadResult.fileId
-
     // TODO: make it all atomic with db transaction
 
     // Update book with new image ID

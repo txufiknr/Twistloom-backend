@@ -1418,7 +1418,8 @@ router.put("/:id", requireAuth, imageUploadMiddleware(), async (c) => {
           title: title || book.title,
           keywords: keywords || book.keywords
         },
-        imageSource
+        imageSource,
+        userId
       );
       
       if (uploadResult) {
