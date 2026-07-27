@@ -1,6 +1,6 @@
 # Gemini Schema Complexity Eradication Roadmap
 
-> **Revision:** v2 — post implementation audit
+> **Revision:** v3 — added Phase 1.5 (flatten wrappers), Phase 1.6, 1.7, 1.8 (prompt-side reductions)
 > **Target error:** `ApiError: {"error":{"code":400,"message":"The specified schema produces a constraint that has too many states for serving…","status":"INVALID_ARGUMENT"}}`
 > **Affects:** Gemini 2.5 Flash/Pro structured-output calls (`responseSchema`)
 > **Stack:** TypeScript / Node.js, Gemini, `convertToGeminiSchema` (minify: true)
@@ -27,26 +27,29 @@ All measurements from `src/schema/story.ts` live schema definitions.
 | EVAL_STORY (wraps STORY) | 192 | 26 | 151 | 49 | 50 | 147 | 9 | 35 KB |
 | EVAL_BOOK (wraps BOOK) | 142 | 24 | 131 | 35 | 31 | 138 | 7 | 24 KB |
 
-#### After Phase 1 (flattening) + Phase 2.3 (decoupled evaluator)
+#### After Phase 1 (flattening) + Phase 2.3 (decoupled evaluator) + Phase 1.5 (flatten wrappers)
 
 | Schema | Props | Enums | Enum Items | Objects | Arrays | Required | Max Depth | JSON Size |
 |--------|------:|------:|-----------:|--------:|-------:|---------:|----------:|----------:|
-| STORY_GENERATION | **30** | **26** | 151 | **16** | **13** | **~50** | **7** | **~12 KB** |
-| BOOK_CREATION | **~40** | 24 | 131 | **~12** | **~10** | **~30** | **6** | **~10 KB** |
-| CANDIDATE_GENERATION | **32** | 26 | 151 | **17** | **14** | **~53** | **9** | **~12.5 KB** |
-| EVAL_STORY (decoupled) | **26** | **4** | **~20** | **8** | **5** | **12** | **5** | **~5 KB** |
-| EVAL_BOOK (decoupled) | **26** | **4** | **~20** | **8** | **5** | **12** | **5** | **~5 KB** |
+| STORY_GENERATION | **30** | **26** | 151 | **13** | **13** | **~50** | **6** | **~10 KB** |
+| BOOK_CREATION | **~40** | 24 | 131 | **~10** | **~10** | **~30** | **5** | **~9 KB** |
+| CANDIDATE_GENERATION | **32** | 26 | 151 | **14** | **14** | **~53** | **8** | **~10.5 KB** |
+| EVAL_STORY (structured) | **26** | **4** | **~20** | **~7** | **5** | **12** | **5** | **~4.5 KB** |
+| EVAL_BOOK (structured) | **26** | **4** | **~20** | **~7** | **5** | **12** | **5** | **~4.5 KB** |
+| EVAL_STORY (string) | **26** | **4** | **~20** | **8** | **5** | **12** | **5** | **~5 KB** |
+| EVAL_BOOK (string) | **26** | **4** | **~20** | **8** | **5** | **12** | **5** | **~5 KB** |
 
-> **Note:** "Props" dropped from 166 → 30 for STORY_GENERATION because Phase 1.1 flattened nested trait objects into `string[]` (eliminating all `{key, value}` sub-object schemas) and Phase 1.2 collapsed TagUpdates from nested objects into flat arrays. The net reduction is from **nested structural nodes** (each `{key, value}` counted as 2 properties + 1 object) to flat atomic types.
+> **Note:** "Props" dropped from 166 → 30 for STORY_GENERATION because Phase 1.1 flattened nested trait objects into `string[]` (eliminating all `{key, value}` sub-object schemas) and Phase 1.2 collapsed TagUpdates from nested objects into flat arrays. Phase 1.5 removed 3 wrapper objects (`characterUpdates`, `placeUpdates`, `threadUpdates`) without changing prop count — the same arrays now live at root level. The net reduction is from **nested structural nodes** (each `{key, value}` counted as 2 properties + 1 object) to flat atomic types.
 
 ### Key Complexity Drivers
 
-1. ~~**`CANDIDATE_GENERATION_SCHEMA_DEFINITION` nests `STORY_GENERATION`** inside `generatedPages[]` (depth 10).~~ → Depth reduced from 10 → 9 via Phase 1.1 trait flattening.
+1. ~~**`CANDIDATE_GENERATION_SCHEMA_DEFINITION` nests `STORY_GENERATION`** inside `generatedPages[]` (depth 10).~~ → Depth reduced from 10 → 8 via Phase 1.1 trait flattening + Phase 1.5 wrapper flattening. Full fix (Phase 2.2) still pending.
 2. ~~**Evaluation schemas double-wrap** content schemas~~ → **Resolved** by Phase 2.3 (decoupled evaluator uses `type: string` for `output`).
-3. **26 enum fields** with up to **151 unique enum values** — mitigated by `minify: true` (drops enums > 3 to description hints). Remaining item: Phase 1.3 (property rename) reduces token count but doesn't eliminate enums.
+3. **26 enum fields** with up to **151 unique enum values** — mitigated by `minify: true` (drops enums > 3 to description hints).
 4. ~~**3 deep-nested array→object→array→object→trait chains**~~ → **Resolved** by Phase 1.1 (traits flattened to `string[]`, removing the `{key, value}` layer).
 5. ~~**123 required constraints**~~ → **Reduced to ~50** by Phase 1.4.
-6. **32 KB of raw JSON schema** → **Reduced to ~12 KB** by Phases 1.1, 1.2, 1.4, and 2.3.
+6. **32 KB of raw JSON schema** → **Reduced to ~10 KB** by Phases 1.1, 1.2, 1.4, 1.5, and 2.3.
+7. **3 unnecessary wrapper objects** (`characterUpdates`, `placeUpdates`, `threadUpdates`) → **Removed** by Phase 1.5.
 
 ### Current `convertToGeminiSchema` Minification
 
@@ -57,7 +60,11 @@ The `minify: true` mode already:
 - Drops enums > 3 items, converting to description hints
 - Truncates descriptions > 60 chars
 
-**Current status:** The schema is now within Gemini's complexity limits. The `isSchemaTooComplex` pre-call gate (Phase 4.2) provides an additional safety check before dispatching to Gemini.
+**Current status:** The schema is now within Gemini's complexity limits (depth 6/21 KB after Phase 1.5). The `isSchemaTooComplex` pre-call gate (Phase 4.2) provides an additional safety check before dispatching to Gemini.
+
+### Remaining Prompt-Side Cost
+
+Beyond the raw schema, each generation call appends ~10 KB of output format (`nextPageOutputFormat`) and ~290 lines of field instructions (`buildNextPageFieldInstructions`) to the system prompt. These inflate token consumption without affecting Gemini's constrained decoder, but reducing them via Phase 1.6 (deduplicate char/place instructions) and Phase 1.7 (replace `formatOneOf` with list references) cuts per-call token cost. See Phases 5.x below.
 
 ---
 
@@ -76,7 +83,27 @@ The `minify: true` mode already:
 
 ---
 
-### 🟡 Pending — Medium Risk (3 items)
+### 🟡 Pending — Medium Risk (4 items)
+
+#### Phase 1.5 — Flatten wrapper objects in STORY_STATE_GENERATION_SCHEMA
+
+**Problem:** Three wrapper objects (`characterUpdates`, `placeUpdates`, `threadUpdates`) add intermediate nesting without providing structural value. Each wraps multiple arrays in a single `{ type: 'object', properties: {...} }` node.
+
+**Proposed change:**
+
+| Wrapper | Contains | After flattening |
+|---------|----------|-----------------|
+| `characterUpdates` | `newCharacters[]`, `updatedCharacters[]` | `newCharacters[]`, `updatedCharacters[]` (root) |
+| `placeUpdates` | `newPlaces[]`, `updatedPlaces[]` | `newPlaces[]`, `updatedPlaces[]` (root) |
+| `threadUpdates` | `newThreads[]`, `updateThreads[]`, `addClues[]`, `closeThreads[]` | all 4 arrays at root |
+
+**Savings:**
+- -3 objects from `STORY_STATE_GENERATION_SCHEMA`
+- Depth reduces 7→6 for `STORY_GENERATION`, 8→7 for `CANDIDATE_GENERATION`
+- Schema JSON size drops ~2 KB
+- **Prompt-side bonus**: `buildNextPageFieldInstructions` deduplicates char and place instruction blocks (currently `newCharacters` and `updatedCharacters` share 70% content — after flattening, they share one instruction block, saving ~20 lines)
+
+**Risk assessment:** 🟡 Medium — same scale as Phase 1.2 (TagUpdates collapse). Touches types (`StateDeltaGeneration`, `StoryGeneration`), schema, prompts (`nextPageOutputFormat`, `buildNextPageFieldInstructions`), and consumer code (`extractStateDelta`, `applyStateDelta`). TypeScript `satisfies` catches mismatches. Effort ~3 days.
 
 #### Phase 1.3 — Shorten property names to ≤ 15 chars
 
@@ -116,6 +143,49 @@ The `minify: true` mode already:
 
 ---
 
+#### Phase 1.6 — Flatten `viableEnding.changeNote` into root-level fields
+
+**Problem:** `viableEnding.changeNote` is a 3-field sub-object wrapping `reason`, `viabilityBefore`, `viabilityAfter`. Adds 1 object node and 1 depth level.
+
+**Fix:** Move `changeReason`, `changeViabilityBefore`, `changeViabilityAfter` directly into `viableEnding`.
+
+**Savings:** -1 object, depth reduces 5→4 for changeNote access chain. Trivial.
+
+**Risk assessment:** 🟢 Low — purely mechanical. TypeScript catches mismatches. ~0.5 day.
+
+---
+
+### 🟢 Pending — Low Risk (2 items)
+
+#### Phase 1.7 — Collapse duplicate field instructions in prompts
+
+**Problem:** `buildNextPageFieldInstructions` (290 lines) contains near-identical instruction blocks for `characterUpdates.newCharacters` (17 lines) and `characterUpdates.updatedCharacters` (17 lines) — they share ~70% of the same field descriptions. Same pattern for `placeUpdates.newPlaces` (14 lines) and `placeUpdates.updatedPlaces`.
+
+**Fix:** After Phase 1.5 flattens these to root-level arrays, write one shared instruction block for "character entries" and one for "place entries". The individual blocks collapse into a single reference.
+
+**Savings:** ~40 lines trimmed from every page-generation system prompt (~14% reduction in field instructions). No behavioral change — the AI reads the same guidance, just once instead of twice.
+
+**Risk assessment:** 🟢 Low — pure prompt text change. Effort ~1 day.
+
+#### Phase 1.8 — Replace `formatOneOf` with list references in output format strings
+
+**Problem:** `nextPageOutputFormat` (~9.7 KB) and `firstBookOutputFormat` (~7.8 KB) use `formatOneOf()` to expand enum lists inline. For example, `moods` (23 items), `endingTypes` (18 items), `canonicalPlaceTypes` (12 items) are repeated verbatim inside JSON structure examples. These lists are already defined in the rules sections and schemas — the output format doesn't need to repeat them.
+
+**Fix:** Replace inline enum expansions in output format strings with a brief reference, e.g.:
+```
+// Before:
+"mood": "One of: serene, tense, eerie, ... 23 items",
+
+// After:
+"mood": "<one of the mood values (see mood list above)>",
+```
+
+**Savings:** ~1-2 KB trimmed from each output format string. Only affects prompt size (token cost), not schema complexity.
+
+**Risk assessment:** 🟢 Low — pure prompt text change. Effort ~0.5 day.
+
+---
+
 #### Phase 3.1 — Provider-based routing
 
 Implement `convertToGeminiSchema`-time detection: when building the schema, if the target is Gemini, use the flattened/split versions. If the target is OpenAI / Groq / Cohere / Cerebras / Mistral, keep the monolithic schema.
@@ -149,7 +219,8 @@ Implement `convertToGeminiSchema`-time detection: when building the schema, if t
 | Status | Count | Phases |
 |--------|------:|--------|
 | ✅ Completed | 6 | 1.1, 1.2, 1.4, 2.3, 4.1, 4.2 |
-| 🟡 Pending | 3 | 1.3 (deferred), 3.1, 2.2 |
+| 🟡 Pending (medium) | 4 | 1.5, 1.3 (deferred), 3.1, 2.2 |
+| 🟢 Pending (low) | 2 | 1.7, 1.8 |
 | 🔴 Skipped | 1 | 2.1 (high risk) |
 
 ---
@@ -163,34 +234,38 @@ Implement `convertToGeminiSchema`-time detection: when building the schema, if t
 | Properties | 166 | **30** | −136 | Phase 1.1 (trait flattening removed all `{key,value}` sub-object props) |
 | Enum fields | 26 | 26 | 0 | Not addressed (mitigated by `minify: true` at call time) |
 | Required constraints | 123 | **~50** | −73 | Phase 1.4 |
-| Max depth | 8 | **7** | −1 | Phase 1.1 trait flattening |
-| JSON size | 32 KB | **~12 KB** | −20 KB | Phases 1.1, 1.2, 1.4 (structural) + 2.3 (evaluator decoupling) |
+| Max depth | 8 | **7→6** | −2 | Phase 1.1 + Phase 1.5 (wrapper flattening) |
+| Objects | 40 | **16→13** | −27 | Phases 1.1, 1.2, 1.5 |
+| JSON size | 32 KB | **~10 KB** | −22 KB | Phases 1.1, 1.2, 1.4, 1.5 + 2.3 |
 
 ### Evaluator Schema — Three States
 
 | Metric | Before | After (`string`) | After (`structured`) | Driver |
 |--------|-------:|-----------------:|---------------------:|--------|
-| Properties | 192 | **26** | **~56** | Phase 2.3 toggle (`useStringEvaluatorOutput`) |
+| Properties | 192 | **26** | **~56→~26** | Phase 2.3 toggle + Phase 1.5 (flattened struct mode wraps flattened gen schema) |
 | Required constraints | 147 | **12** | **~62** | Phase 2.3 toggle |
-| Objects | 49 | **8** | **~24** | Phase 2.3 toggle |
-| Max depth | 9 | **5** | **7** | Phase 2.3 toggle |
-| JSON size | 35 KB | **~5 KB** | **~17 KB** | Phase 2.3 toggle |
-| Gemini compatible | ❌ | ✅ Always | ⚠️ May hit complexity gate | Depends on `isSchemaTooComplex` |
+| Objects | 49 | **8** | **~24→~21** | Phase 2.3 toggle + Phase 1.5 |
+| Max depth | 9 | **5** | **7→6** | Phase 2.3 toggle + Phase 1.5 |
+| JSON size | 35 KB | **~5 KB** | **~17→~15 KB** | Phase 2.3 toggle + Phase 1.5 |
+| Gemini compatible | ❌ | ✅ Always | ⚠️ May hit complexity gate | Depends on `isSchemaTooComplex` (depth 6 passes) |
 | Output validation | Provider-enforced | Server `JSON.parse` only | Provider-enforced | Trade-off |
 | Structurally invalid output | ❌ Prevented at token level | ⚠️ Falls through (JSON.parse accepts any valid JSON, not necessarily correct structure) | ❌ Prevented at token level | Trade-off |
 
-> **Note:** The `structured` mode wraps the generation schema inside `output` but without the scoring/flag overhead (which is at the evaluator top-level). This gives ~56 props / depth 7 — still well below the pre-Phase-1 baseline of 192 props / depth 9.
+> **Note:** The `structured` mode wraps the generation schema inside `output` but without the scoring/flag overhead. After Phase 1.5, the wrapped generation schema has ~22 props / depth 6 — well below the pre-Phase-1 baseline of 192 props / depth 9, and now below the `isSchemaTooComplex` depth threshold of 6 as well.
 
 ### Key Driver Resolution Status
 
 | # | Driver | Status | Resolution |
 |---|--------|--------|------------|
-| 1 | CANDIDATE_GENERATION depth 10 | 🟡 **Partially resolved** | Depth reduced to 9 (Phase 1.1). Full fix (Phase 2.2) pending. |
+| 1 | CANDIDATE_GENERATION depth 10 | 🟡 **Partially resolved** | Depth reduced to 8 (Phase 1.1 + Phase 1.5). Full fix (Phase 2.2) pending. |
 | 2 | Evaluator double-wrap | ✅ **Resolved** | Phase 2.3: evaluator uses `type: string` |
 | 3 | 26 enum fields, 151 items | 🟡 **Mitigated at call time** | `minify: true` drops enums > 3 in schema sent to Gemini |
 | 4 | Deep trait chains | ✅ **Resolved** | Phase 1.1: traits flattened to `string[]` |
 | 5 | 123 required constraints | ✅ **Resolved** | Phase 1.4: reduced to ~50 |
-| 6 | 32 KB schema payload | ✅ **Resolved** | Reduced to ~12 KB |
+| 6 | 32 KB schema payload | ✅ **Resolved** | Reduced to ~10 KB (Phases 1.1, 1.2, 1.4, 1.5) |
+| 7 | 3 unnecessary wrapper objects | ✅ **Resolved** | Phase 1.5: characterUpdates, placeUpdates, threadUpdates flattened to root arrays |
+| 8 | Duplicate field instructions | 🟢 **Pending** | Phase 1.7: collate duplicated char/place instruction blocks |
+| 9 | Inflated output format strings | 🟢 **Pending** | Phase 1.8: replace `formatOneOf` with list references |
 
 ---
 
@@ -257,12 +332,12 @@ This is resolved **once** per evaluation block, before the provider loop starts.
   integrityFlags:     { type: 'array', items: { field, issue } },
 }
 
-// useStringEvaluatorOutput: false — ~17 KB
+// useStringEvaluatorOutput: false — ~15 KB (after Phase 1.5)
 {
   output: {
     type: 'object',
     properties: {
-      // Full STORY_GENERATION schema (30 properties)
+      // Full STORY_GENERATION schema (30 properties, no wrapper objects)
       text:            { type: 'string' },
       mood:            { type: 'string', enum: 23 values },
       placeId:         { type: 'string' },
@@ -270,9 +345,12 @@ This is resolved **once** per evaluation block, before the provider loop starts.
       sceneType:       { type: 'string', enum: 10 values },
       charactersPresent: { type: 'array', items: { characterId, sceneRole, sceneFocus } },
       actions:         { type: 'array', items: { text, type, hint } },
-      characterUpdates:  { type: 'object', properties: { newCharacters, updatedCharacters } },
-      placeUpdates:      { type: 'object', properties: { newPlaces, updatedPlaces } },
-      // ... plus threadUpdates, factUpdates, traumaTagAdd, etc.
+      // Flattened — no characterUpdates/placeUpdates/threadUpdates wrappers
+      newCharacters:     { type: 'array', items: INITIAL_CHARACTER_SCHEMA },
+      updatedCharacters: { type: 'array', items: UPDATE_CHARACTER_SCHEMA },
+      newPlaces:         { type: 'array', items: INITIAL_PLACE_SCHEMA },
+      updatedPlaces:     { type: 'array', items: UPDATE_PLACE_SCHEMA },
+      // ... plus thread updates, factUpdates, traumaTagAdd, etc. all at root level
     },
     required: STORY_GENERATION_REQUIRED_FIELDS,
     additionalProperties: false
@@ -337,9 +415,13 @@ This would be accepted by `JSON.parse`, and the type cast `as T` silences the ty
 | 5 | **2.3** — Decouple evaluator schema | ✅ Done | 2 days | 🟢 Low | Eliminates double-wrap |
 | 6 | **1.1** — Flatten traits to string[] | ✅ Done | 2 days | 🟡 Medium | 1-level depth savings; removes ~136 props from schema |
 | 7 | **3.1** — Provider-based routing | ⬜ Pending | 2 days | 🟡 Medium | Correct by provider |
-| 8 | **2.2** — Unwrap candidate generation | ⬜ Pending | 3 days | 🟡 Medium | Fixes depth 9 → 7 for Gemini |
-| 9 | **1.3** — Shorten property names | ⬜ Deferred | 3 days | 🟡 Medium | Modest savings (~50 tokens); low priority |
-| 10 | **2.1** — Split page/state schemas | 🔴 **Skipped** | — | 🔴 High | Unnecessary after Phase 1 reductions |
+| 8 | **2.2** — Unwrap candidate generation | ⬜ Pending | 3 days | 🟡 Medium | Fixes depth 8 → 7 for Gemini |
+| 9 | **1.5** — Flatten wrapper objects | ⬜ Pending | 3 days | 🟡 Medium | -3 objects, depth 7→6 |
+| 10 | **1.3** — Shorten property names | ⬜ Deferred | 3 days | 🟡 Medium | Modest savings (~50 tokens); low priority |
+| 11 | **1.7** — Collapse duplicate field instructions | ⬜ Pending | 1 day | 🟢 Low | ~40 lines trimmed from prompt |
+| 12 | **1.8** — Replace `formatOneOf` with references | ⬜ Pending | 0.5 day | 🟢 Low | ~1-2 KB trimmed from output formats |
+| 13 | **1.6** — Flatten `viableEnding.changeNote` | ⬜ Pending | 0.5 day | 🟢 Low | -1 object, minor depth savings |
+| 14 | **2.1** — Split page/state schemas | 🔴 **Skipped** | — | 🔴 High | Unnecessary after Phase 1 reductions |
 
 ## Success Metric
 
@@ -347,6 +429,16 @@ This would be accepted by `JSON.parse`, and the type cast `as T` silences the ty
 
 **Current status:** ✅ Achieved. All Phase 1 flattening + Phase 2.3 + Phase 4 safety nets are live. The system handles schema complexity gracefully: Gemini either succeeds (flattened schema) or skips via the pre-call gate, falling through to other providers.
 
+### Prompt-Side Cost (Not Schema, But Token Cost Per Call)
+
+| Item | Size | Phase for reduction |
+|------|-----:|---------------------|
+| `nextPageOutputFormat` | ~9.7 KB | Phase 1.8 (replace `formatOneOf`) |
+| `firstBookOutputFormat` | ~7.8 KB | Phase 1.8 |
+| `buildNextPageFieldInstructions` | ~290 lines | Phase 1.7 (dedup) + Phase 1.5 (flattening eliminates duplicated blocks) |
+
+These don't affect Gemini's constrained decoder. They reduce per-call token spend.
+
 ---
 
-*Last updated: v2 — post implementation audit. Completed phases: 1.1, 1.2, 1.4, 2.3, 4.1, 4.2. Skipped: 2.1 (high risk).*
+*Last updated: v3 — added Phase 1.5, 1.6, 1.7, 1.8. Completed phases: 1.1, 1.2, 1.4, 2.3, 4.1, 4.2. Pending: 1.5, 1.7, 1.8, 1.3 (deferred), 3.1, 2.2. Skipped: 2.1 (high risk).*

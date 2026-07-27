@@ -207,6 +207,14 @@ const PRIMARY_WEAKNESS_PROSE_HINTS: Record<PrimaryWeakness, string> = {
   avoidance:        'MC\'s attention drifts away from the most important things. The truth is always slightly off-frame.',
 };
 
+/**
+ * Generates a single prose-texture line based on the player's primary weakness.
+ *
+ * This is a WRITING TECHNIQUE directive — how the MC's perspective is colored —
+ * not an exploitation tactic. Exploitation belongs in PSYCHOLOGICAL PROFILE.
+ *
+ * @param weakness - The player's dominant psychological vulnerability
+ */
 function primaryWeaknessProseHint(weakness: PrimaryWeakness): string {
   return PRIMARY_WEAKNESS_PROSE_HINTS[weakness];
 }
@@ -295,6 +303,7 @@ export function generateStyleInstructions(style: Pick<NarrativeStyle, 'mode' | '
   if (vector.pacing > 0.6) structuralDirectives.push('- Fast rhythm: immediate action verbs, short clauses, minimal introspection.');
   else if (vector.pacing < 0.4) structuralDirectives.push('- Slow rhythm: prolonged sentences, heavy pauses, deep internal monologue.');
 
+  // Sensory focus vector
   if (vector.sensoryFocus > 0.6) structuralDirectives.push('- Sensory immersion: cold touch, ambient sounds, skin pressure, smell.');
   else structuralDirectives.push('- Abstract dread: existential unease, environmental themes over physical detail.');
 
