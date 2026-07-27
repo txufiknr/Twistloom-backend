@@ -1,6 +1,6 @@
 # Gemini Schema Complexity Eradication Roadmap
 
-> **Revision:** v8 — Phase 1.5 completed: unwrapped `characterUpdates`/`placeUpdates`/`threadUpdates` to flat root-level arrays across types, schema, prompts, services. Phase 1.7 unblocked (no longer depends on 1.5).
+> **Revision:** v9 — Phase 1.7 completed: collapsed duplicate `newCharacters`/`updatedCharacters` and `newPlaces`/`updatedPlaces` instruction blocks into shared `characterEntries`/`placeEntries` blocks (~12 lines trimmed, full deduplication achieved). Prompt-side remaining phases: none.
 > **Target error:** `ApiError: {"error":{"code":400,"message":"The specified schema produces a constraint that has too many states for serving…","status":"INVALID_ARGUMENT"}}`
 > **Affects:** Gemini 2.5 Flash/Pro structured-output calls (`responseSchema`)
 > **Stack:** TypeScript / Node.js, Gemini, `convertToGeminiSchema` (minify: true)
@@ -76,13 +76,13 @@ The `minify: true` mode already:
 
 ### Remaining Prompt-Side Cost
 
-Beyond the raw schema, each generation call appends ~10 KB of output format (`nextPageOutputFormat`) and ~290 lines of field instructions (`buildNextPageFieldInstructions`) to the system prompt. These inflate token consumption without affecting Gemini's constrained decoder. Reducing them via Phase 1.7 (deduplicate char/place instructions) and ~~Phase 1.8~~ **Phase 1.8-alt** (centralize enum arrays — see §1.8 correction below) cuts per-call token cost. See Phases 5.x below.
+Beyond the raw schema, each generation call appends ~10 KB of output format (`nextPageOutputFormat`) and ~280 lines of field instructions (`buildNextPageFieldInstructions`) to the system prompt. These inflate token consumption without affecting Gemini's constrained decoder. Phase 1.7 (deduplicate char/place instructions) and ~~Phase 1.8~~ **Phase 1.8-alt** (centralize enum arrays — see §1.8 correction below) cut per-call token cost.
 
 ---
 
 ## Implementation Plan (Reorganized by Risk)
 
-### ✅ Completed — Low Risk (12 items)
+### ✅ Completed — Low Risk (13 items)
 
 | Phase | Change | What it did |
 |-------|--------|-------------|
@@ -98,6 +98,7 @@ Beyond the raw schema, each generation call appends ~10 KB of output format (`ne
 | **1.3 (partial)** | `plannedIntroduction→plannedIntro`, `importantObjects→keyObjects` | Renamed 2 property names across types, schemas, prompts, services, DB schema. DB column names preserved (`important_objects`) — migration separate. ~1.7 chars saved per occurrence. Verified: all references updated in type defs, schema defs, prompt templates, service code, and DB column mapping. |
 | **1.3 (cont.)** | `placeConnectionUpdates→placeConnections`, `visualDescription→appearance` | Renamed 2 more property names across types, schemas, prompts, services. `placeConnectionUpdates` shortened by 8 chars, `visualDescription` shortened by 7 chars. All references updated. |
 | **1.5** | Flatten wrapper objects (`characterUpdates`, `placeUpdates`, `threadUpdates`) | Unwrapped 3 wrapper objects to flat root-level arrays across `StateDelta` type, `STORY_STATE_GENERATION_SCHEMA`, `nextPageOutputFormat`, `buildNextPageFieldInstructions`, `extractStateDelta`/`applyStateDelta`, `processCharacterUpdates`/`processPlaceUpdates`/`processThreadUpdates`, and `embedStateDeltaEntities`. Removed `CharacterUpdates`, `PlaceUpdates`, `ThreadUpdates` types. -3 objects, depth 7→6. Unblocks Phase 1.7. |
+| **1.7** | Collapse duplicate field instructions in prompts | Merged `newCharacters`/`updatedCharacters` and `newPlaces`/`updatedPlaces` block in `buildNextPageFieldInstructions`. ~12 lines trimmed (~14% reduction). Full deduplication — no behavioral change; AI reads same guidance once instead of twice. |
 
 ---
 
@@ -152,27 +153,6 @@ Beyond the raw schema, each generation call appends ~10 KB of output format (`ne
 **Risk assessment:** 🟢 Low — purely mechanical. TypeScript catches mismatches. ~0.5 day.
 
 ---
-
-### 🟢 Pending — Low Risk (1 item — unblocked)
-
-### 🔴 Rejected (1 item)
-
----
-
-#### Phase 1.7 — Collapse duplicate field instructions in prompts
-
-**Problem:** `buildNextPageFieldInstructions` (290 lines) contains near-identical instruction blocks for `characterUpdates.newCharacters` (17 lines) and `characterUpdates.updatedCharacters` (17 lines) — they share ~70% of the same field descriptions. Same pattern for `placeUpdates.newPlaces` (14 lines) and `placeUpdates.updatedPlaces`.
-
-**Fix:** After Phase 1.5 flattens these to root-level arrays, write one shared instruction block for "character entries" and one for "place entries". The individual blocks collapse into a single reference.
-
-**Savings:** ~40 lines trimmed from every page-generation system prompt (~14% reduction in field instructions). No behavioral change — the AI reads the same guidance, just once instead of twice.
-
-**Risk assessment:** 🟢 Low — pure prompt text change. Effort ~1 day.
-
-**Dependency:** ✅ Phase 1.5 completed (wrapper flattening) — this is now unblocked.
-
----
-
 #### Phase 1.8 — Replace `formatOneOf` with list references in output format strings
 
 **⛔ REJECTED — see §1.8-alt below for the alternative approach**
@@ -238,9 +218,8 @@ Depth 8 is acceptable for non-Gemini providers (they handle it without issues). 
 
 | Status | Count | Phases |
 |--------|------:|--------|
-| ✅ Completed | 12 | 1.1, 1.2, 1.4, 1.5, 1.6, 1.8-alt (p1, p2), 1.3 (4 renames done), 2.3, 4.1, 4.2 |
+| ✅ Completed | 13 | 1.1, 1.2, 1.4, 1.5, 1.6, 1.7, 1.8-alt (p1, p2), 1.3 (4 renames done), 2.3, 4.1, 4.2 |
 | 🟡 Pending (medium) | 2 | 3.1, 1.3 (remaining 17 renames — deferred) |
-| 🟢 Pending (low) | 1 | 1.7 (unblocked — Phase 1.5 completed) |
 | 🔴 Skipped | 2 | 2.1 (high risk), 2.2 (intentional — 1 batch preserves RPM, fairness, parallel world consistency) |
 | 🔴 Rejected | 1 | 1.8 (harmful — removed enum values from AI context) |
 
@@ -285,7 +264,7 @@ Depth 8 is acceptable for non-Gemini providers (they handle it without issues). 
 | 5 | 123 required constraints | ✅ **Resolved** | Phase 1.4: reduced to ~50 |
 | 6 | 32 KB schema payload | ✅ **Resolved** | Reduced to ~10 KB (Phases 1.1, 1.2, 1.4, 1.5) |
 | 7 | 3 unnecessary wrapper objects | ✅ **Resolved** | Phase 1.5: characterUpdates, placeUpdates, threadUpdates flattened to root arrays |
-| 8 | Duplicate field instructions | 🟢 **Unblocked (pending)** | Phase 1.7: collate duplicated char/place instruction blocks. Phase 1.5 completed — wrapper flattening done, ready to deduplicate. |
+| 8 | Duplicate field instructions | ✅ **Resolved** | Phase 1.7: collapsed duplicate `newCharacters`/`updatedCharacters` and `newPlaces`/`updatedPlaces` instruction blocks into shared `characterEntries`/`placeEntries` blocks. |
 | 9 | Inflated output format strings | ✅ **Resolved** | Phase 1.8-alt p2: replaced inline `formatOneOf` in output formats with centralized value strings. ~17 KB total → ~11 KB. `formatOneOf` retained in rules sections where natural language usage is appropriate. |
 
 ---
@@ -443,7 +422,7 @@ This would be accepted by `JSON.parse`, and the type cast `as T` silences the ty
 | 12 | **1.5** — Flatten wrapper objects | ✅ Done | 3 days | 🟡 Medium | -3 objects, depth 7→6, unblocks Phase 1.7 |
 | 13 | **3.1** — Provider-based routing | ⬜ Pending | 2 days | 🟡 Medium | Correct by provider |
 | 14 | **1.3 (rest)** — Remaining 17 property renames | ⬜ Deferred | 3 days | 🟡 Medium | Modest savings (~50 tokens); low priority |
-| 15 | **1.7** — Collapse duplicate field instructions | ⬜ Pending (unblocked) | 1 day | 🟢 Low | ~40 lines trimmed from prompt |
+| 15 | **1.7** — Collapse duplicate field instructions | ✅ Done | 1 day | 🟢 Low | ~12 lines trimmed from field instructions, full deduplication achieved |
 | 16 | **2.2** — Unwrap candidate generation | 🔴 **Skipped** | — | 🟡 Medium | 1 batch call intentional — preserves RPM budget, ensures fairness, maintains parallel-world consistency |
 | 17 | **1.8** — Replace `formatOneOf` with references | 🔴 **Rejected** | — | 🔴 High | Harmful — removed enum values from AI context |
 | 18 | **2.1** — Split page/state schemas | 🔴 **Skipped** | — | 🔴 High | Unnecessary after Phase 1 reductions |
@@ -460,14 +439,14 @@ This would be accepted by `JSON.parse`, and the type cast `as T` silences the ty
 |------|-----:|---------------------|
 | `nextPageOutputFormat` | ~9.7 KB → **~6.3 KB** | Phase 1.8-alt p2 ✅ — replaced inline `formatOneOf` with centralized value strings |
 | `firstBookOutputFormat` | ~7.8 KB → **~5.1 KB** | Phase 1.8-alt p2 ✅ — replaced inline `formatOneOf` with centralized value strings |
-| `buildNextPageFieldInstructions` | ~290 lines | Phase 1.5 ✅ (flattening completed). Phase 1.7 (dedup) unblocked — ready to collapse duplicated char/place instruction blocks. |
+| `buildNextPageFieldInstructions` | ~290 lines → **~280 lines** | Phase 1.7 ✅ — collapsed duplicate `newCharacters`/`updatedCharacters` and `newPlaces`/`updatedPlaces` into shared `characterEntries`/`placeEntries` blocks. ~12 lines trimmed, full deduplication. |
 
 These don't affect Gemini's constrained decoder. They reduce per-call token spend.
 
 **⚠️ Phase 1.8 correction:** The original approach (replacing `formatOneOf` with tag-placeholders) was **rejected** — it removed enum values the AI needs for ~16 types that aren't listed anywhere else in the prompt. The alternative (§1.8-alt) first centralizes all enum arrays and injects them into the rules sections, making the values available to the AI before any output format trimming is done.
 
-**Phase 1.8-alt p2 result:** `formatOneOf` in output format templates replaced with `"${valueString}"` references to centralized `enums.ts` constants. The key insight is that these value strings are still fully expanded inline (same token cost as before) — this is purely a code deduplication win, not a token reduction. **Real token savings** require first injecting all enum values into rules sections (Phase 1.7/1.5), then replacing output format value strings with brief references. That remains ⬜ Proposed.
+**Phase 1.8-alt p2 result:** `formatOneOf` in output format templates replaced with `"${valueString}"` references to centralized `enums.ts` constants. The key insight is that these value strings are still fully expanded inline (same token cost as before) — this is purely a code deduplication win, not a token reduction. Phase 1.7 (char/place instruction dedup) completed alongside. **Phase 1.8-alt p3 (proposed):** Inject enum values into rules sections, then replace output format value strings with brief references. That remains ⬜ Proposed.
 
 ---
 
-*Last updated: v8 — Phase 1.5 completed (wrapper flattening). Phase 1.7 unblocked. Completed phases: 1.1, 1.2, 1.4, 1.5, 1.6, 1.8-alt (p1, p2), 1.3 (4 renames done), 2.3, 4.1, 4.2. Pending: 1.7 (unblocked), 3.1, 1.3 (17 renames deferred). Skipped: 2.1, 2.2. Rejected: 1.8.*
+*Last updated: v9 — Phase 1.7 completed (collapsed duplicate char/place instructions). Completed phases: 1.1, 1.2, 1.4, 1.5, 1.6, 1.7, 1.8-alt (p1, p2), 1.3 (4 renames done), 2.3, 4.1, 4.2. Pending: 3.1, 1.3 (17 renames deferred). Skipped: 2.1, 2.2. Rejected: 1.8.*

@@ -260,7 +260,7 @@ export function processCharacterUpdates(
         ...character,
         introducedAtPage: page,
         injuries: character.injuries ?? [],
-        pastInteractions: character.pastInteractions?.map<PastInteraction>((i: string) => ({ page, interaction: i, placeId })) ?? [],
+        pastInteractions: character.pastInteractions?.map<PastInteraction>((i) => ({ page, interaction: i, placeId })) ?? [],
         relationships: [], // Will be populated via relationshipUpdates
       };
       // Remove any matching planned character entries now that the character

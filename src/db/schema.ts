@@ -2013,14 +2013,15 @@ export const futureNoteEmbeddings = pgTable(
  * Clue embeddings table
  * @summary Semantic embeddings for thread clues (StoryThread.clues), embedded
  * once per (pageId, threadId) at the moment they're added — via either
- * ThreadUpdates.newThreads[].clues (bundled at thread creation) or
- * ThreadUpdates.addClues[] (added to an existing thread later). Unlike
+ * newThreads[].clues (bundled at thread creation) or
+ * addClues[] (added to an existing thread later). Unlike
  * pastInteractions/keyEvents, StoryThread.clues is never trimmed at storage
  * time (processThreadUpdates just .push()es) — the trim happens at DISPLAY
  * time instead (formatActiveThreads shows only the last MAX_THREADS_CLUES).
  * Functionally the same problem as character/place embeddings though: clues
  * older than what's currently displayed are invisible to the AI unless
  * recalled here.
+ * 
  * @example
  * {
  *   "id": "emb123",

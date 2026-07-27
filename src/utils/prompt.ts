@@ -1115,41 +1115,30 @@ branchNames
   - Suggest 3 creative, distinct names for this page as a timeline/branch — evocative, spoiler-free (e.g., "The Locked Door", "Trust No One").
   - Always suggest regardless of whether this page's actions actually fork the story — the system decides whether a name is used.
 
-newCharacters
-${charactersSlot === 0 ? `  - Don't introduce new characters. ${MAX_CHARACTERS} characters limit reached.`
-: isEarlyPhase ? `  - New characters are welcome up to ${charactersSlot} more — establish the cast now.`
-: isMidPhase ? `  - You can optionally introduce up to ${charactersSlot} new characters only if genuinely necessary to support the story. Prefer deepening existing ones.`
-: `  - No new characters. The cast is fixed. Late arrivals dilute stakes.`}
-  - It's meant for characters beside MC (the POV). Don't include MC here.
-  - When introducing new characters, ensure to describe their visual appearance, incorporate naturally in the storytelling.
-${isEarlyPhase || isMidPhase ? `  - Name must feel authentic to the MC's age group, culture, and language context.
-  - Create only when genuinely new to the story, if it strongly recommended and opportunity is right based on your assessment.
-  - knownName: mandatory narration alias. If MC know, use actual/nick name. Otherwise, use descriptions, pronouns, roles, or words interpreted by MC.
-  - bio: concise, suggestive over descriptive, include personality traits, one vulnerability or potential threat vector, and age if plot-sensitive. Never spoil secrets that haven't been revealed in the story.
-  - appearance: visual description (e.g. height, skin color, eye color, hair, etc). Permanent physical attributes only, not ephemeral like clothing.
-  - secrets: spoiler or hints of the character for AI narrative guidance (max ${MAX_CHARACTER_SECRETS}).
-  - narrativeFlags: set to match behavior and twist setup.
-  - pastInteractions: dialogue or event towards MC in current page.
-  - relationships: only include known relationships to other named characters. Omit if none.` : ''}
-  - traits: only story-relevant (e.g., interests).
-
-updatedCharacters
+newCharacters/updatedCharacters
+${charactersSlot === 0 ? `  - Can't introduce new characters (${MAX_CHARACTERS} limit). Update existing ones only.`
+: isEarlyPhase ? `  - New characters welcome up to ${charactersSlot} more — establish the cast now.`
+: isMidPhase ? `  - Optionally introduce up to ${charactersSlot} new characters only if genuinely necessary. Prefer deepening existing ones.`
+: `  - No new characters. Cast is fixed. Late arrivals dilute stakes.`}
 ${isLatePhase || isFinale
-? `  - Expect significant status and flag changes now. Characters should be fracturing or revealing.`
-: `  - Only include characters whose state actually changed this page.`}
-  - Only include changed fields, omit which unaltered.
-  - bio: only gradually update character's bio if new information is revealed in this page.
-  - knownName: gradually update mysterious character's known name as the MC learns more about his/her real identity.
-  - recognitionLevel: how well does MC recognize this character at this point.
-  - narrativeFlags: adjust to reflect plot developments.
-  - secrets: remove any revealed secret.
-  - traits: remove or update.
-  - newInteractions: add new interactions from this page.
-  - injuries: add or update (full replacement). Set severity to zero to remove.
-  - appearance: only if character's appearance meaningfully changed (e.g., from permanent injury).
-  - status: One of ${formatOneOf(characterStatuses)}
-  - importance: One of ${formatOneOf(characterImportances)}
+? `  - Expect significant status/flag changes now. Characters should be fracturing or revealing.`
+: `  - Only update characters whose state actually changed this page.`}
+  - For new characters: describe visual appearance, incorporate naturally in storytelling.
+  - For updates: only include changed fields, omit unaltered ones.
+  - knownName: mandatory narration alias. Gradually update as MC learns real identity.
+  - bio: concise, suggestive. Gradually update when new info revealed.
+  - appearance: visual description. Only update if meaningfully changed (e.g., permanent injury).
+  - recognitionLevel: how well MC recognizes this character.
+  - status: ${formatOneOf(characterStatuses)}
+  - importance: ${formatOneOf(characterImportances)}
   - relationshipToMC: based on interaction and story progression.
+  - narrativeFlags: adjust to reflect plot developments.
+  - secrets: spoiler/hints (new) or remove revealed ones (update).
+  - traits: only story-relevant. Remove or update.
+  - injuries: add or update. Set severity to zero to remove.
+  - pastInteractions (new): dialogue or event towards MC in current page.
+  - newInteractions (update): interactions since last page.
+  - relationships (new only): include known relationships to other named characters. Omit if none.
 
 relationshipUpdates
   - Changes in relationship between any two named characters (excluding MC).
@@ -1157,29 +1146,26 @@ relationshipUpdates
 ${isEarlyPhase ? `  - Subtle shifts only — early relationships should feel ambiguous, not defined.` : ''}
 ${isLatePhase || isFinale ? `  - Relationships should be breaking, inverting, or crystallizing. No more ambiguity.` : ''}
 
-newPlaces
-${placesSlot === 0 ? `  - Don't introduce new places. Limit of ${MAX_PLACES} reached.`
-: isEarlyPhase || isMidPhase ? `  - You can introduce up to ${placesSlot} new meaningful places the MC enters for the first time in this page — no generic one-offs.
-  - knownName: should fit the in-world cultural setting.
+newPlaces/updatedPlaces
+${placesSlot === 0 ? `  - Can't introduce new places (${MAX_PLACES} limit). Update existing ones only.`
+: isEarlyPhase || isMidPhase ? `  - You can introduce up to ${placesSlot} new meaningful places the MC enters for the first time — no generic one-offs.
+  - knownName: should fit in-world cultural setting.
   - context: ${PLACE_CONTEXT_LENGTH}. Evocative over descriptive.
-  - hints: known clues, obstacles, spatial relationship to known places (e.g., "500 meters behind school"). Must be consistent to build a "world map."
-  - category: category for audio atmosphere. Choose the closest match: ${formatOneOf(canonicalPlaceTypes)}.
-  - familiarity: start at 0.0-0.2 unless MC has prior history with this place.
-  - traits: include relevant information about this place (e.g., smell, sound, visual, feeling).
+  - hints: known clues, obstacles, spatial relationships. Must be consistent to build a "world map."
+  - category: Choose the closest match: ${formatOneOf(canonicalPlaceTypes)}.
+  - familiarity: start at 0.0-0.2 unless MC has prior history.
+  - traits: include relevant info (e.g., smell, sound, visual, feeling).
   - knownCharacters: include relevant characters (beside MC) with meaningful context.
   - keyEvents: any important event happening in the scene.
-  - keyObjects: any important objects to remember in the scene.
-  - Might need to update other places' hint to link with this new place.`
-: `  - New places should not be introduced. If the MC is somewhere new, question whether it's necessary.`}
-
-updatedPlaces
-  - Only update on revisit or significant event.
-  - Include only changed fields: addKeyEvents (1 contextual sentence), knownCharacters (with meaningful context update), keyObjects (overwrite), and traits change.
+  - keyObjects: any important objects to remember.
+  - Might need to update other places' hints to link with this new place.`
+: `  - No new places. If MC is somewhere new, question whether it's necessary.`}
+  - For updates: only on revisit or significant event. Include only changed fields.
   - familiarityCorrection: always 0 except on major condition:
-    → place changes drastically, or something fundamentally changes how the MC understands the place.
-    → learns important hidden functions or secrets, discovers substantial new areas, gains significantly deeper understanding of the place.
-    → memory loss/confusion, familiar assumptions are proven false, environment becomes unrecognizable.
-    → Do NOT use for ordinary visits, repeated exposure, spending time in a place, or learning the place gradually. Those changes are handled automatically by the system.
+    → place changes drastically, or fundamentally changes how MC understands it.
+    → learns hidden functions/secrets, discovers new areas, gains deeper understanding.
+    → memory loss/confusion, familiar assumptions proven false, environment unrecognizable.
+    → Do NOT use for ordinary visits, repeated exposure, or gradual learning (handled automatically).
 ${isLatePhase || isFinale ? `  - High-familiarity places revisited now should feel distorted.` : ''}
 
 placeConnections
