@@ -497,12 +497,13 @@ const firstBookOutputFormat: string = `{
       "bio": "Brief character description. Include one trait that could become a source of threat or betrayal.",
       "visualDescription": "Visual appearance (e.g. height, skin color, eye color, hair, etc).",
       "status": "One of: ${formatOneOf(characterStatuses)}",
-      "secrets": "Any secrets the character has unknown to MC (max ${MAX_CHARACTER_SECRETS}).",
+      "secrets": ["Any secrets unknown to MC (max ${MAX_CHARACTER_SECRETS})."],
       "importance": "One of: ${formatOneOf(characterImportances)}",
       "relationshipToMC": {
         "type": "One of: ${formatOneOf(relationshipTypes)}",
         "status": "One of: ${formatOneOf(relationshipStatuses)}",
-        "context": "${RELATIONSHIP_TO_MC_LENGTH}. Specific dynamic, not generic (e.g. 'Close childhood friend who knows too much.')"
+        "context": "${RELATIONSHIP_TO_MC_LENGTH}. Specific dynamic, not generic (e.g. 'Close childhood friend who knows too much.')",
+        "recognitionLevel": "One of: ${formatOneOf(characterRecognitionLevels)}"
       },
       "pastInteractions": ["..."],
       "narrativeFlags": {
@@ -525,7 +526,7 @@ const firstBookOutputFormat: string = `{
           "consequences": "...",
           "category": "One of: ${formatOneOf(injuryCategories)}",
           "severity": <number between 0.0 and 1.0>,
-          "decayPerPage": <number between 0.0 and 1.0>,
+          "decayPerPage": <number between 0.0 and 1.0>
         }
       ]
     }
@@ -550,6 +551,7 @@ const firstBookOutputFormat: string = `{
       "targetId": "<character_id_2>",
       "type": "One of: ${formatOneOf(relationshipTypes)}",
       "status": "One of: ${formatOneOf(relationshipStatuses)}",
+      "context": "Define relationship context",
       "recognitionLevel": "One of: ${formatOneOf(characterRecognitionLevels)}"
     }
   ],
@@ -736,12 +738,13 @@ const nextPageOutputFormat: string = `{
         "bio": "...",
         "visualDescription": "...",
         "status": "One of: ${formatOneOf(characterStatuses)}",
-        "secrets": "...",
+        "secrets": ["..."],
         "importance": "One of: ${formatOneOf(characterImportances)}",
         "relationshipToMC": {
           "type": "One of: ${formatOneOf(relationshipTypes)}",
           "status": "One of: ${formatOneOf(relationshipStatuses)}",
-          "context": "..."
+          "context": "...",
+          "recognitionLevel": "One of: ${formatOneOf(characterRecognitionLevels)}"
         },
         "pastInteractions": ["..."],
         "narrativeFlags": {
@@ -770,12 +773,13 @@ const nextPageOutputFormat: string = `{
         "bio": "...",
         "visualDescription": "...",
         "status": "One of: ${formatOneOf(characterStatuses)}",
-        "secrets": "...",
+        "secrets": ["..."],
         "importance": "One of: ${formatOneOf(characterImportances)}",
         "relationshipToMC": {
           "type": "One of: ${formatOneOf(relationshipTypes)}",
           "status": "One of: ${formatOneOf(relationshipStatuses)}",
-          "context": "..."
+          "context": "...",
+          "recognitionLevel": "One of: ${formatOneOf(characterRecognitionLevels)}"
         },
         "newInteractions": ["..."],
         "narrativeFlags": {
@@ -802,7 +806,9 @@ const nextPageOutputFormat: string = `{
       "sourceId": "<character_id_1>",
       "targetId": "<character_id_2>",
       "type": "One of: ${formatOneOf(relationshipTypes)}",
-      "status": "One of: ${formatOneOf(relationshipStatuses)}"
+      "status": "One of: ${formatOneOf(relationshipStatuses)}",
+      "context": "Define relationship context",
+      "recognitionLevel": "One of: ${formatOneOf(characterRecognitionLevels)}"
     }
   ],
   "placeUpdates": {
@@ -892,7 +898,7 @@ const nextPageOutputFormat: string = `{
         ]
       }
     ],
-    "updatedThreads": [
+    "updateThreads": [
       {
         "threadId": "<thread_id>",
         "status": "One of: ${formatOneOf(threadStatuses)}",
@@ -911,7 +917,7 @@ const nextPageOutputFormat: string = `{
         "isFalse": <boolean>
       }
     ],
-    "closedThreads": []
+    "closeThreads": []
   },
   "viableEnding": {
     "text": "...",
@@ -928,7 +934,8 @@ const nextPageOutputFormat: string = `{
       "viabilityBefore": <number between 0.0 and 1.0>,
       "viabilityAfter": <number between 0.0 and 1.0>
     }
-  }
+  },
+  "branchNames": ["...", "...", "..."]
 }`;
 
 const multiNextPageOutputFormat: string = `{

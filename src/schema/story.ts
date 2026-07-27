@@ -2,7 +2,7 @@ import { FACT_KEY_FORMAT, HOOK_LENGTH, SUMMARY_LENGTH, MAX_CHARACTER_SECRETS, MA
 import { characterImportances, characterRecognitionLevels, characterStatuses, healthConditions, injuryCategories, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
 import type { NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter, CharacterRelationshipContext, CharacterUpdate, CharacterSchedule, StoryMCGeneration } from "../types/character.js";
 import { canonicalPlaceTypes, type NewPlace, type PlaceUpdate, placeWeathers, type PlaceUpdates, type PlaceConnectionUpdate, placeAccessibilities } from "../types/places.js";
-import { actionHintTypes, characterSceneRoles, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, sceneTypes, difficulties, endingTypes, storyMomentums, stabilityLevels, storyPhaseKeys, futureNoteTriggerTypes, memoryIntegrities } from "../types/story.js";
+import { actionHintTypes, actionTypes, characterSceneRoles, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, sceneTypes, difficulties, endingTypes, storyMomentums, stabilityLevels, storyPhaseKeys, futureNoteTriggerTypes, memoryIntegrities } from "../types/story.js";
 import type { AIJsonActionFlag, AIJsonEvaluation, AIJsonEvaluationFix, AIJsonEvaluationIssue, AIJsonIntegrityFlag, AIJsonProperty, AIJsonScoreAfter, AIJsonScoreBefore, AIJsonScoreBreakdown, AIPromptOptions } from "../types/ai-chat.js";
 import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, TagItem, FutureNote, FactUpdate, StateDeltaGeneration, ActionGeneration, FutureNoteGeneration, FlagUpdate, PlotFlagType, InitialPlotFlag, TraitItem, SceneCharacter, SanityState } from "../types/story.js";
 import { threadPriorities, threadStatuses, threadTruths, type UpdateThread, type NewThread, type ThreadUpdates, type AddThreadClue, type InitialThreadClue } from "../types/story-thread.js";
@@ -21,7 +21,7 @@ export const STORY_ACTION_SCHEMA: AIJsonProperty = { type: 'array', items: {
   type: 'object',
   properties: {
     text: { type: 'string', description: 'Text of the action as presented to the player' },
-    type: { type: 'string', description: 'Type of the action' },
+    type: { type: 'string', description: 'Type of the action', enum: Object.keys(actionTypes) },
     hint: {
       type: 'object',
       properties: {
@@ -370,8 +370,8 @@ export const UPDATE_PLACE_SCHEMA: AIJsonProperty = {
     addHints: { type: 'array', items: { type: 'string' }, description: 'Known clues, obstacles, spatial relationship to other places' },
     removeHints: { type: 'array', items: { type: 'string' } },
   } satisfies Record<keyof PlaceUpdate, AIJsonProperty>,
-  // TODO: include more keys?
-  required: ['placeId', 'type', 'context', 'addKeyEvents'] satisfies (keyof PlaceUpdate)[],
+  // PlaceUpdate is Partial — only placeId is required; omit unaltered fields
+  required: ['placeId'] satisfies (keyof PlaceUpdate)[],
 };
 
 export const CHARACTER_PLAN_PROPERTIES: Record<keyof CharacterPlan, AIJsonProperty> = {
@@ -461,7 +461,8 @@ export const UPDATE_CHARACTER_SCHEMA: AIJsonProperty = {
     updateSchedules: { type: 'array', items: CHARACTER_SCHEDULE_SCHEMA },
     removeSchedules: { type: 'array', items: { type: 'string', description: 'Place ID of the schedule to remove' } },
   } satisfies Record<keyof CharacterUpdate, AIJsonProperty>,
-  required: ['characterId', 'knownName', 'recognitionLevel', 'role', 'gender', 'status', 'importance', 'relationshipToMC', 'bio', 'visualDescription', 'injuries', 'secrets', 'narrativeFlags', 'newInteractions', 'updateTraits', 'removeTraits', 'updateSchedules', 'removeSchedules'] satisfies (keyof CharacterUpdate)[],
+  // CharacterUpdate is Partial — only characterId is required; omit unaltered fields
+  required: ['characterId'] satisfies (keyof CharacterUpdate)[],
   additionalProperties: false
 };
 
@@ -476,7 +477,7 @@ export const RELATIONSHIP_UPDATE_SCHEMA: AIJsonProperty = {
     context: { type: 'string', description: 'Define relationship context' },
     recognitionLevel: { type: 'string', enum: [...characterRecognitionLevels], description: 'How well does source know target' },
   } satisfies Record<keyof RelationshipUpdate, AIJsonProperty>,
-  required: ['sourceId', 'targetId', 'context'] satisfies (keyof RelationshipUpdate)[],
+  required: ['sourceId', 'targetId', 'context', 'recognitionLevel'] satisfies (keyof RelationshipUpdate)[],
   additionalProperties: false
 };
 
@@ -593,9 +594,10 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
   characterUpdates: {
     type: 'object',
     properties: {
-      newCharacters: { type: 'array', items: INITIAL_CHARACTER_SCHEMA, description: 'New characters introduced if any.' },
-      updatedCharacters: { type: 'array', items: UPDATE_CHARACTER_SCHEMA, description: 'Characters whose details have been updated if any.' },
+      newCharacters: { type: 'array', items: INITIAL_CHARACTER_SCHEMA, description: 'New characters introduced if any. Empty array if none.' },
+      updatedCharacters: { type: 'array', items: UPDATE_CHARACTER_SCHEMA, description: 'Characters whose details have been updated if any. Empty array if none.' },
     } satisfies Record<keyof CharacterUpdates, AIJsonProperty>,
+    // CharacterUpdates fields are optional in types; require empty arrays when present for structured-output providers
     required: ['newCharacters', 'updatedCharacters'] satisfies (keyof CharacterUpdates)[],
     additionalProperties: false
   },
