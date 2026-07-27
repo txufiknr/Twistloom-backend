@@ -48,6 +48,14 @@ function matchesMagicBytes(buffer: Uint8Array, mimeType: string): boolean {
  */
 export function imageUploadMiddleware(fieldName = "imageFile") {
   return createMiddleware<AppEnv>(async (c, next) => {
+    const contentType = c.req.header("content-type") || "";
+
+    // JSON requests carry imageUrl as a base64 string — no multipart file to validate
+    if (contentType.includes("application/json")) {
+      await next();
+      return;
+    }
+
     let body: Record<string, unknown>;
     try {
       body = await c.req.parseBody({ all: true });
