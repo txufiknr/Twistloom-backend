@@ -9,7 +9,7 @@
 [ ] Generate originals tambah custom input book title & mc name
 [ ] Paid book: VIP 500+ followers, must be > 30 days old account, Verified email required
 [ ] Sale credits: 10% fee, cuma bisa dicairkan kelipatan 10 ke credits
-[ ] userSettings schema: interests: string[], email notification settings
+[ ] userSettings schema: interests: string[]
 [ ] reader vip: addPlannedCharacters (via add custom character button)
 [ ] enhance book explore:
 - [ ] fuzzy search/Levenshtein (typo tolerant) // does postgresql has this built-in?
@@ -26,6 +26,7 @@
 [ ] can you apply requireVerifiedEmail middleware on "Profile & account management routes" routes first, sequentially?
 [ ] enrich initialize book with generated mc image
 [ ] enrich page 1 with imagePrompt -> generate page image cron
+[ ] reset db -> check "1.2 — Engine regression test suite"
 
 ApiError: {"error":{"code":429,"message":"TotalCachedContentStorageTokensPerModelFreeTier limit exceeded for model gemini-2.5-flash: limit=0, requested=7558","status":"RESOURCE_EXHAUSTED"}}
 

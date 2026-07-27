@@ -1,0 +1,1 @@
+ALTER TABLE "pages" RENAME COLUMN "important_objects" TO "key_objects";

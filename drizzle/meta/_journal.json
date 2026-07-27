@@ -302,6 +302,13 @@
       "when": 1785039435734,
       "tag": "0042_silly_sprite",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1785141965814,
+      "tag": "0043_chemical_jamie_braddock",
+      "breakpoints": true
     }
   ]
 }
