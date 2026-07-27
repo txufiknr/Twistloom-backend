@@ -215,9 +215,9 @@ export async function aiStreamSSE(
                 },
                 {
                   maxRetries: AI_CHAT_MODEL_RETRY_COUNT,
-                  shouldRetry: (err) => isGenAIErrorRetryable(classifyGenAIError(err)),
+                  shouldRetry: (err) => isGenAIErrorRetryable(classifyGenAIError(provider, model, err)),
                   onRetry: (attempt, err) => {
-                    console.warn(`[${provider}] 🔄 Retry ${attempt}/${AI_CHAT_MODEL_RETRY_COUNT} for model ${model}: ${classifyGenAIError(err)}`);
+                    console.warn(`[${provider}] 🔄 Retry ${attempt}/${AI_CHAT_MODEL_RETRY_COUNT} for model ${model}: ${classifyGenAIError(provider, model, err)}`);
                   },
                 }
               );

@@ -300,7 +300,7 @@ export async function getOrCreateGeminiCache(
     return cache.name;
   } catch (err) {
     // Non-fatal — caller falls back to a standard (non-cached) request
-    console.log(`[gemini-cache] ⏩ Cache creation failed, skipping:`, classifyGenAIError(err));
+    console.log(`[gemini-cache] ⏩ Cache creation failed, skipping:`, classifyGenAIError('gemini', model, err));
     return null;
   }
 }

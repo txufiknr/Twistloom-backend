@@ -86,9 +86,9 @@ async function promptWithFallback<T>(
         () => apiCall(model, prompt, modelOptions),
         {
           maxRetries: AI_CHAT_MODEL_RETRY_COUNT,
-          shouldRetry: (err) => isGenAIErrorRetryable(classifyGenAIError(err)),
+          shouldRetry: (err) => isGenAIErrorRetryable(classifyGenAIError(provider, model, err)),
           onRetry: (attempt, err) => {
-            console.warn(`[${provider}] 🔄 Retry ${attempt}/${AI_CHAT_MODEL_RETRY_COUNT} for model ${model}: ${classifyGenAIError(err)}`);
+            console.warn(`[${provider}] 🔄 Retry ${attempt}/${AI_CHAT_MODEL_RETRY_COUNT} for model ${model}: ${classifyGenAIError(provider, model, err)}`);
           },
         }
       );
@@ -134,7 +134,7 @@ async function promptWithFallback<T>(
     } catch (error) {
       // Error handling: Classify error and decide on retry strategy.
       // Retryable errors were already retried by retryWithBackoff within the try block.
-      const code = classifyGenAIError(error);
+      const code = classifyGenAIError(provider, model, error);
       if (i < models.length - 1) {
         // Model fallback: Try next model if more are available
         console.warn(`[${provider}] 💥 Model ${model} failed (${isGenAIErrorRetryable(code) ? 'retries exhausted' : 'non-retryable'}), trying next model:`, code);

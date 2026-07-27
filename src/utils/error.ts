@@ -13,6 +13,7 @@
  */
 
 import type { Context } from "hono";
+import type { AIChatProvider } from "../types/ai-chat.js";
 import { IS_DEVELOPMENT } from "../config/env.js";
 import { edgeGroup } from './edge-group.js';
 
@@ -140,9 +141,10 @@ function getDeepErrorStringForClassification(err: unknown): string {
  * @param err - The thrown value or error to classify
  * @returns One of the `GenAIErrorCode` discriminants describing the category
  */
-export function classifyGenAIError(err: unknown): GenAIErrorCode {
+export function classifyGenAIError(provider: AIChatProvider, model: string, err: unknown): GenAIErrorCode {
   // Use deep string extraction to ensure we catch deeply nested raw JSON payloads
   const msg = getDeepErrorStringForClassification(err);
+  const logPrefix = `${provider}/${model}`;
 
   // Check for timeout/transport aborts — treat as request timeout for retry/backoff
   if (
@@ -152,7 +154,7 @@ export function classifyGenAIError(err: unknown): GenAIErrorCode {
     getErrorName(err).toLowerCase().includes('timeout') ||
     isUndiciAbortError(err)
   ) {
-    edgeGroup.wrap(`[classifyGenAIError] ⌚ Request timeout:`, async () => {
+    edgeGroup.wrap(`[${logPrefix}] ⌚ Request timeout:`, async () => {
       console.log(err);
     });
     return 'REQUEST_TIMEOUT';
@@ -160,7 +162,7 @@ export function classifyGenAIError(err: unknown): GenAIErrorCode {
 
   // Check for complex schema error BEFORE generic validation/schema
   if (msg.includes('too many states for serving')) {
-    edgeGroup.wrap(`[classifyGenAIError] 💢 Schema too complex:`, async () => {
+    edgeGroup.wrap(`[${logPrefix}] 💢 Schema too complex:`, async () => {
       console.log(err);
     });
     return 'SCHEMA_TOO_COMPLEX';
@@ -173,7 +175,7 @@ export function classifyGenAIError(err: unknown): GenAIErrorCode {
     msg.includes('max_tokens') || 
     msg.includes('context length exceeded')
   ) {
-    edgeGroup.wrap(`[classifyGenAIError] 💥 Max tokens exceeded:`, async () => {
+    edgeGroup.wrap(`[${logPrefix}] 💥 Max tokens exceeded:`, async () => {
       console.log(err);
     });
     return 'MAX_TOKENS_EXCEEDED';
@@ -187,7 +189,7 @@ export function classifyGenAIError(err: unknown): GenAIErrorCode {
     msg.includes('json schema') ||
     msg.includes('array schema')
   ) {
-    edgeGroup.wrap(`[classifyGenAIError] ❗ Schema invalid:`, async () => {
+    edgeGroup.wrap(`[${logPrefix}] ❗ Schema invalid:`, async () => {
       console.log(err);
     });
     return 'INVALID_SCHEMA';
@@ -199,7 +201,7 @@ export function classifyGenAIError(err: unknown): GenAIErrorCode {
     msg.includes('invalid request') ||
     msg.includes('invalid_parameter')
   ) {
-    edgeGroup.wrap(`[classifyGenAIError] ❗ Validation error:`, async () => {
+    edgeGroup.wrap(`[${logPrefix}] ❗ Validation error:`, async () => {
       console.log(err);
     });
     return 'VALIDATION_ERROR';
@@ -212,7 +214,7 @@ export function classifyGenAIError(err: unknown): GenAIErrorCode {
     msg.includes('exceeded') ||
     msg.includes('billing')
   ) {
-    edgeGroup.wrap(`[classifyGenAIError] 💥 Quota exceeded:`, async () => {
+    edgeGroup.wrap(`[${logPrefix}] 💥 Quota exceeded:`, async () => {
       console.log(err);
     });
     return 'QUOTA_EXCEEDED';
@@ -220,7 +222,7 @@ export function classifyGenAIError(err: unknown): GenAIErrorCode {
 
   // Check for rate limiting
   if (msg.includes('429') || msg.includes('rate limit') || msg.includes('too many requests')) {
-    edgeGroup.wrap(`[classifyGenAIError] 💥 Rate limited:`, async () => {
+    edgeGroup.wrap(`[${logPrefix}] 💥 Rate limited:`, async () => {
       console.log(err);
     });
     return 'RATE_LIMITED';
@@ -234,7 +236,7 @@ export function classifyGenAIError(err: unknown): GenAIErrorCode {
     msg.includes('request body too large') ||
     msg.includes('too large for')
   ) {
-    edgeGroup.wrap(`[classifyGenAIError] ❗ Bad request (too large):`, async () => {
+    edgeGroup.wrap(`[${logPrefix}] ❗ Bad request (too large):`, async () => {
       console.log(err);
     });
     return 'BAD_REQUEST';
@@ -242,7 +244,7 @@ export function classifyGenAIError(err: unknown): GenAIErrorCode {
 
   // Check for API key issues
   if (msg.includes('403') || msg.includes('401') || msg.includes('api key') || msg.includes('unauthorized')) {
-    edgeGroup.wrap(`[classifyGenAIError] ⚠️ API key invalid:`, async () => {
+    edgeGroup.wrap(`[${logPrefix}] ⚠️ API key invalid:`, async () => {
       console.log(err);
     });
     return 'INVALID_API_KEY';
@@ -250,7 +252,7 @@ export function classifyGenAIError(err: unknown): GenAIErrorCode {
 
   // Check for safety/content policy blocks
   if (msg.includes('safety') || msg.includes('content policy') || msg.includes('blocked')) {
-    edgeGroup.wrap(`[classifyGenAIError] ⚠️ Safety blocked:`, async () => {
+    edgeGroup.wrap(`[${logPrefix}] ⚠️ Safety blocked:`, async () => {
       console.log(err);
     });
     return 'SAFETY_BLOCKED';
@@ -258,7 +260,7 @@ export function classifyGenAIError(err: unknown): GenAIErrorCode {
 
   // Check for network/fetch errors
   if (msg.includes('fetch') || msg.includes('network') || msg.includes('enetunreach') || msg.includes('econnrefused')) {
-    edgeGroup.wrap(`[classifyGenAIError] 🛜 Network error:`, async () => {
+    edgeGroup.wrap(`[${logPrefix}] 🛜 Network error:`, async () => {
       console.log(err);
     });
     return 'NETWORK_ERROR';
@@ -266,7 +268,7 @@ export function classifyGenAIError(err: unknown): GenAIErrorCode {
 
   // Check for bad request errors (400)
   if (msg.includes('400') || msg.includes('bad request')) {
-    edgeGroup.wrap(`[classifyGenAIError] ❗ Bad request (other):`, async () => {
+    edgeGroup.wrap(`[${logPrefix}] ❗ Bad request (other):`, async () => {
       console.log(err);
     });
     return 'BAD_REQUEST';
@@ -279,13 +281,13 @@ export function classifyGenAIError(err: unknown): GenAIErrorCode {
     msg.includes('high demand') ||
     msg.includes('try again later')
   ) {
-    edgeGroup.wrap(`[classifyGenAIError] 🛜 Service unavailable:`, async () => {
+    edgeGroup.wrap(`[${logPrefix}] 🛜 Service unavailable:`, async () => {
       console.log(err);
     });
     return 'SERVICE_UNAVAILABLE';
   }
 
-  edgeGroup.wrap(`[classifyGenAIError] ❓ Unknown error:`, async () => {
+  edgeGroup.wrap(`[${logPrefix}] ❓ Unknown error:`, async () => {
     console.log(err);
   });
   return 'UNKNOWN';
