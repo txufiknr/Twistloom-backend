@@ -12,7 +12,7 @@
  */
 
 import { type DBClient, dbRead, dbWrite, isTransaction } from "../db/client.js";
-import { pages, books, branches, users, userPageProgress, userCompletedBooks, userActionHints, customActions, bookGenerations, uploadedImages, userComments, canonValidations } from "../db/schema.js";
+import { pages, books, branches, users, userPageProgress, userCompletedBooks, userActionHints, customActions, bookGenerations, userComments, canonValidations } from "../db/schema.js";
 import type { ImageKitUploadResponse } from "../types/image.js";
 import { and, eq, asc, or, desc, ne, sql, isNull, lt } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
@@ -34,7 +34,7 @@ import { IS_PRODUCTION } from "../config/env.js";
 import { geminiGenerateImage } from "../utils/ai-image.js";
 import { retryWithBranchConflict, isUniqueConstraintError } from "../utils/retry.js";
 import { generateBranchId } from "./story-branch.js";
-import { deleteFileFromImageKit, uploadBookCover, uploadBookCharacterImage } from "./image.js";
+import { deleteFileFromImageKit, persistUploadedImage, uploadBookCover, uploadBookCharacterImage } from "./image.js";
 import { sanitizeText, generateSlug, sanitizeKeywords } from "../utils/text-processing.js";
 import { generateId, isValidUuid } from "../utils/uuid.js";
 import { calculateActionTendency, calculateStoryMomentum, getStoryStateInfo } from "../utils/story.js";
@@ -962,18 +962,20 @@ export async function getEnrichedBook(
 export async function updateBook(
   bookId: string,
   updates: DBUpdateBook,
-  options?: { client?: DBClient }
+  options?: { client?: DBClient; invalidateCache?: boolean }
 ): Promise<DBBook> {
-  const { client = dbWrite } = options ?? {};
+  const { client = dbWrite, invalidateCache = true } = options ?? {};
   const [updated] = await client
     .update(books)
     .set({ ...updates, updatedAt: new Date() })
     .where(eq(books.id, bookId))
     .returning();
 
-  // Invalidate cache for this book
-  invalidateBookCache(bookId);
-  invalidateEnrichedBookCache(bookId);
+  if (invalidateCache) {
+    // Invalidate cache for this book
+    invalidateBookCache(bookId);
+    invalidateEnrichedBookCache(bookId);
+  }
 
   return updated;
 }
@@ -1723,21 +1725,19 @@ export function sanitizeBookTextField(
 }
 
 /**
- * Uploads a main character avatar image to ImageKit and persists the record
- * to the `uploadedImages` table with type `'mc'`.
+ * Uploads a main character avatar image to ImageKit
  *
- * Wraps {@link uploadBookCharacterImage} with consistent logging, null-guarding,
- * and database persistence — same pattern as user profile image uploads.
+ * Wraps {@link uploadBookCharacterImage} with consistent logging and null-guarding.
+ * Callers are responsible for persisting to `uploaded_images` via
+ * {@link persistUploadedImage}.
  *
  * @param bookMeta - Book metadata used for ImageKit tags and filenames
  * @param image - Image source (URL, base64, or file object)
- * @param userId - Uploading user's ID (persisted to uploaded_images for audit)
  * @returns ImageKit upload response, or null on failure
  */
 export async function uploadBookCharacterAvatarImage(
   bookMeta: Pick<Book, 'id' | 'title' | 'keywords'>,
   image: ImageUploadSource,
-  userId: string
 ): Promise<ImageKitUploadResponse | null> {
   try {
     const characterName = bookMeta.title ? `avatar-${bookMeta.title}` : 'avatar';
@@ -1749,14 +1749,6 @@ export async function uploadBookCharacterAvatarImage(
     }
 
     console.log(`[uploadBookCharacterAvatarImage] 🌐 Uploaded MC avatar: ${uploadResult.url}`);
-
-    // Persist to uploaded_images table for audit and cleanup tracking
-    await dbWrite.insert(uploadedImages).values({
-      imageId: uploadResult.fileId!,
-      imageUrl: uploadResult.url!,
-      type: 'mc',
-      userId,
-    });
 
     return uploadResult;
   } catch (error) {
@@ -1958,10 +1950,11 @@ export async function generateCoverImages(book: Book, state?: StoryState, total?
 }
 
 /**
- * Updates book cover image with ImageKit upload
+ * Uploads book cover image to ImageKit
  * 
- * Handles image upload to ImageKit. Does NOT update the book record or queue deletion.
- * Callers should handle book update and deletion queue separately.
+ * Handles image upload to ImageKit only. Does NOT update the book record,
+ * persist to uploaded_images, or queue deletion. Callers are responsible
+ * for all three of those steps.
  * 
  * @param bookMeta - Book metadata (id, title, keywords)
  * @param image - Image source (buffer, file, URL, or base64)
@@ -1974,15 +1967,18 @@ export async function generateCoverImages(book: Book, state?: StoryState, total?
  *   imageBuffer
  * );
  * if (result) {
- *   await updateBook(bookId, { image: result.url, imageId: result.fileId });
- *   await queueImageForDeletion(oldImageId);
+ *   await persistUploadedImage({
+ *     imageId: result.fileId!, imageUrl: result.url!,
+ *     type: 'cover', userId,
+ *   });
+ *   await updateBook(bookId, { imageId: result.fileId });
+ *   await deleteFileFromImageKit(oldImageId);
  * }
  * ```
  */
 export async function uploadBookCoverImage(
   bookMeta: Pick<Book, 'id' | 'title' | 'keywords'>,
   image: ImageUploadSource,
-  userId?: string,
 ): Promise<ImageKitUploadResponse | null> {
   try {
     const uploadResult = await uploadBookCover(image, bookMeta);
@@ -1993,14 +1989,6 @@ export async function uploadBookCoverImage(
     }
 
     console.log(`[uploadBookCoverImage] 🌐 Uploaded to ImageKit: ${uploadResult.url}`);
-
-    await dbWrite.insert(uploadedImages).values({
-      imageId: uploadResult.fileId!,
-      imageUrl: uploadResult.url!,
-      type: 'cover',
-      userId: userId ?? null,
-    });
-
     return uploadResult;
   } catch (error) {
     console.error('[uploadBookCoverImage] ❌ Error uploading cover image:', {bookId: bookMeta.id, error: getErrorMessage(error)});
@@ -2035,6 +2023,15 @@ export async function generateAndUpdateBookCoverImage(book: Book, state?: StoryS
   
   if (uploadResult) {
     // TODO: make it all atomic with db transaction
+
+    if (book.userId) {
+      await persistUploadedImage({
+        imageId: uploadResult.fileId!,
+        imageUrl: uploadResult.url!,
+        type: 'cover',
+        userId: book.userId,
+      });
+    }
 
     // Update book with new image ID
     await updateBook(book.id, { imageId: uploadResult.fileId });

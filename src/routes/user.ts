@@ -51,7 +51,7 @@ import type { FeedbackCategory, LikeTargetType, Source, User, UserAchievement, U
 import { feedbackCategories, sources } from "../types/user.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { requireAuth, optionalAuth } from "../middleware/nextauth.js";
-import { users, books, userAuth, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, userSessions, userCompletedBooks, userComments, transactions, uploadedImages, userProviders, userFeedbacks } from "../db/schema.js";
+import { users, books, userAuth, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, userSessions, userCompletedBooks, userComments, transactions, userProviders, userFeedbacks } from "../db/schema.js";
 import { getErrorMessage, cApiError, cNotFoundError, cValidationError } from "../utils/error.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { calculatePaginationMeta } from "../utils/pagination.js";
@@ -59,7 +59,7 @@ import { updateUserLastActivity, getCheckInStatus, logUserActivity, sanitizeProf
 import { invalidateCachePattern } from "../utils/cache.js";
 import { invalidateExploreCache, invalidateUserBooksCache, invalidateUserProfileCache, withCache, CACHE_KEYS, CACHE_TTL } from "../services/cache.js";
 import { getEnrichedUser, getEnrichedUserById, setReferrerForNewUser, handleCheckIn } from "../services/user-controller.js";
-import { uploadUserImage, uploadFeedbackScreenshot } from "../services/image.js";
+import { uploadUserImage, uploadFeedbackScreenshot, persistUploadedImage } from "../services/image.js";
 import { isValidUuid } from "../utils/uuid.js";
 import { getStoryProgressWithBranch } from '../services/story-branch.js';
 import { checkAndAwardAchievements, getUserAchievements, getUserMetrics } from '../services/achievements.js';
@@ -358,7 +358,7 @@ router.post('/', requireAuth, async (c: Context<AppEnv>) => {
         console.warn('[POST /api/user] ⚠️ Failed to upload profile image');
         return cApiError(c, 'Failed to upload profile image', new Error('ImageKit upload returned no URL'));
       }
-      await dbWrite.insert(uploadedImages).values({
+      await persistUploadedImage({
         imageId: uploadResult.fileId!,
         imageUrl: uploadResult.url!,
         type: 'user',
@@ -500,9 +500,8 @@ router.put('/', requireAuth, async (c: Context<AppEnv>) => {
         return cApiError(c, 'Failed to upload profile image', new Error('ImageKit upload returned no URL'));
       }
 
-      // Insert into uploaded_images — DB trigger auto-sets users.image_url.
       // Old user images are cleaned up by daily cron (cleanupStaleUserUploads).
-      await dbWrite.insert(uploadedImages).values({
+      await persistUploadedImage({
         imageId: uploadResult.fileId!,
         imageUrl: uploadResult.url!,
         type: 'user',
@@ -2509,8 +2508,7 @@ router.post("/feedbacks", requireAuth, async (c: Context<AppEnv>) => {
         imageId = uploadResult.fileId;
         imageUrlResult = uploadResult.url;
 
-        // Insert into uploaded_images table
-        await dbWrite.insert(uploadedImages).values({
+        await persistUploadedImage({
           imageId,
           imageUrl: imageUrlResult,
           type: 'feedback',

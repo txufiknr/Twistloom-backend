@@ -5,14 +5,14 @@
  */
 
 import { getTodayDate } from "../utils/time.js";
-import { dbWrite } from "../db/client.js";
+import { type DBClient, dbWrite } from "../db/client.js";
 import { inArray, sql, and, eq, isNull } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
 import { APP_NAME_SLUG } from "../config/constants.js";
 import { deletedImages, uploadedImages } from "../db/schema.js";
 import { dbRead } from "../db/client.js";
 import type { ImageKitUploadResponse, ImageUploadObject, ImageUploadOptions, ImageUploadSource } from "../types/image.js";
-import type { Book } from "../types/book.js";
+import type { Book, UploadedImageType } from "../types/book.js";
 
 // Runtime environments: Node 20+ / Edge (both have globalThis.btoa)
 const encodeBase64 = (str: string): string =>
@@ -716,5 +716,44 @@ export async function cleanupOrphanedUserUploads(batchSize: number = 100): Promi
     console.error('[imagekit] ❌ Failed to cleanup orphaned user uploads:', msg);
     stats.errors.push(msg);
     return stats;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Upload tracking
+// ---------------------------------------------------------------------------
+
+/**
+ * Persists an upload record to the uploaded_images table
+ *
+ * Inserts a row tracking an image upload. Use inside a transaction by
+ * passing a `client` to participate in an existing transaction context.
+ *
+ * @param params - Upload tracking parameters
+ * @param params.imageId - ImageKit file ID
+ * @param params.imageUrl - ImageKit URL
+ * @param params.type - Image type (cover, mc, user, feedback)
+ * @param params.userId - User who uploaded the image
+ * @param params.client - Optional DB client for transaction participation
+ * @throws Rethrows DB errors for the caller to handle (e.g. transaction rollback)
+ */
+export async function persistUploadedImage(params: {
+  imageId: string;
+  imageUrl: string;
+  type: UploadedImageType;
+  userId: string;
+  client?: DBClient;
+}): Promise<void> {
+  const db = params.client ?? dbWrite;
+  try {
+    await db.insert(uploadedImages).values({
+      imageId: params.imageId,
+      imageUrl: params.imageUrl,
+      type: params.type,
+      userId: params.userId,
+    });
+  } catch (error) {
+    console.error(`[persistUploadedImage] ❌ Failed to persist uploaded image ${params.imageId}:`, getErrorMessage(error));
+    throw error;
   }
 }

@@ -108,7 +108,7 @@ import { shouldUseCache, getFreshPromptForUser, trackPromptView, savePromptToCac
 import { streamCachedPrompt } from "../utils/prompt-stream.js";
 import { PROMPT_CACHE_CONFIG } from "../config/prompt-cache.js";
 import { imageUploadMiddleware } from "../middleware/upload.js";
-import { deleteFileFromImageKit, isBase64Upload } from "../services/image.js";
+import { deleteFileFromImageKit, isBase64Upload, persistUploadedImage } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, calculatePaginationMeta } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import { validateSearchQuery, validateLanguageCode, validateAgeRange, validateGender, createRelevanceExpression, buildTokenizedSearchCondition } from "../utils/search.js";
@@ -1410,52 +1410,42 @@ router.put("/:id", requireAuth, imageUploadMiddleware(), async (c) => {
       imageSource = imageUrl;
     }
 
+    let coverUploadResult: Awaited<ReturnType<typeof uploadBookCoverImage>> | null = null;
+    let mcAvatarUploadResult: Awaited<ReturnType<typeof uploadBookCharacterAvatarImage>> | null = null;
+
     // Process image upload if source is provided
     if (imageSource) {
-      const uploadResult = await uploadBookCoverImage(
+      coverUploadResult = await uploadBookCoverImage(
         {
           id: book.id,
           title: title || book.title,
           keywords: keywords || book.keywords
         },
-        imageSource,
-        userId
+        imageSource
       );
-      
-      if (uploadResult) {
-        newImageUrl = uploadResult.url;
-        newImageId = uploadResult.fileId;
-        
-        // Delete old image from ImageKit (with fallback to deletion queue)
-        if (book.imageId) {
-          await deleteFileFromImageKit(book.imageId);
-          oldImageIdQueued = true;
-        }
-      } else {
+
+      if (!coverUploadResult) {
         return c.json({
           error: "Failed to upload cover image"
         }, 400);
       }
+
+      newImageUrl = coverUploadResult.url;
+      newImageId = coverUploadResult.fileId;
     }
 
     // --- MC avatar image upload ---
     let mcAvatarUploaded = false;
     const oldMcImageId = book.mc?.imageId;
     if (mc?.imageUrl && typeof mc.imageUrl === 'string') {
-      const avatarResult = await uploadBookCharacterAvatarImage(
+      mcAvatarUploadResult = await uploadBookCharacterAvatarImage(
         { id: book.id, title: title || book.title, keywords: keywords || book.keywords },
         mc.imageUrl,
-        userId
       );
-      if (avatarResult?.url) {
-        mc.imageUrl = avatarResult.url;
-        if (avatarResult.fileId) mc.imageId = avatarResult.fileId;
+      if (mcAvatarUploadResult?.url) {
+        mc.imageUrl = mcAvatarUploadResult.url;
+        if (mcAvatarUploadResult.fileId) mc.imageId = mcAvatarUploadResult.fileId;
         mcAvatarUploaded = true;
-
-        // Delete old MC avatar from ImageKit
-        if (oldMcImageId) {
-          await deleteFileFromImageKit(oldMcImageId);
-        }
       }
     }
 
@@ -1468,7 +1458,7 @@ router.put("/:id", requireAuth, imageUploadMiddleware(), async (c) => {
     const sanitizedTitle = sanitizeBookTextField('title', title);
     const sanitizedHook = sanitizeBookTextField('hook', hook);
     const sanitizedSummary = sanitizeBookTextField('summary', summary);
-    
+
     if (sanitizedTitle !== undefined) updateData.title = sanitizedTitle;
     if (sanitizedHook !== undefined) updateData.hook = sanitizedHook;
     if (sanitizedSummary !== undefined) updateData.summary = sanitizedSummary;
@@ -1479,20 +1469,64 @@ router.put("/:id", requireAuth, imageUploadMiddleware(), async (c) => {
     if (mc !== undefined) updateData.mc = mc;
     if (ending !== undefined) updateData.ending = ending;
 
-    // Update the book
-    const updatedBook = await updateBook(book.id, updateData);
+    let updatedBook: Awaited<ReturnType<typeof updateBook>>;
+
+    try {
+      updatedBook = await dbWrite.transaction(async (tx) => {
+        if (coverUploadResult?.fileId) {
+          await persistUploadedImage({
+            imageId: coverUploadResult.fileId,
+            imageUrl: coverUploadResult.url!,
+            type: 'cover',
+            userId,
+            client: tx,
+          });
+        }
+
+        if (mcAvatarUploadResult?.fileId) {
+          await persistUploadedImage({
+            imageId: mcAvatarUploadResult.fileId,
+            imageUrl: mcAvatarUploadResult.url!,
+            type: 'mc',
+            userId,
+            client: tx,
+          });
+        }
+
+        return updateBook(book.id, updateData, { client: tx, invalidateCache: false });
+      });
+    } catch (error) {
+      if (coverUploadResult?.fileId) {
+        await deleteFileFromImageKit(coverUploadResult.fileId);
+      }
+      if (mcAvatarUploadResult?.fileId) {
+        await deleteFileFromImageKit(mcAvatarUploadResult.fileId);
+      }
+      throw error;
+    }
 
     // Invalidate user's book cache
     await invalidateUserBooksCache(userId);
-    
+
     // Invalidate popular tags cache if keywords were updated
     if (keywords !== undefined) {
       invalidatePopularTagsCache();
     }
-    
+
     // Invalidate explore cache only if this public+active book's metadata changed,
     // or if visibility/status changed in a way that affects explore visibility
     await invalidateExploreCache({ before: book, after: updatedBook });
+
+    // Delete old image from ImageKit (with fallback to deletion queue)
+    if (coverUploadResult && book.imageId) {
+      await deleteFileFromImageKit(book.imageId);
+      oldImageIdQueued = true;
+    }
+
+    // Delete old MC avatar from ImageKit
+    if (mcAvatarUploadResult && oldMcImageId) {
+      await deleteFileFromImageKit(oldMcImageId);
+    }
 
     notifyForumOfBookChange({
       before: book,
