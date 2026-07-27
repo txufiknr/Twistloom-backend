@@ -35,7 +35,7 @@ import { genders } from "../config/enums.js";
 import { updateBookGenerationStatus } from "../services/book-creation.js";
 import { formatLanguage } from "./translation.js";
 import { DEFAULT_CANDIDATE_PAGE_PER_ACTION, MAX_CANDIDATE_PAGE_PER_ACTION } from "../config/candidate-generation.js";
-import { canonicalPlaceTypes, placeAccessibilities } from "../config/enums.js";
+import { canonicalPlaceTypes } from "../config/enums.js";
 import type { PlaceMemory } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
 import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, FutureNoteSchedule, FutureNoteStateTrigger, MemoryIntegrity, PastEvent, PlotFlag, SanityState, SceneType, StateDelta, StoryGeneration, StoryOutline, StoryPage, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
@@ -1123,7 +1123,7 @@ ${charactersSlot === 0 ? `  - Can't introduce new characters (${MAX_CHARACTERS} 
 ${isLatePhase || isFinale
 ? `  - Expect significant status/flag changes now. Characters should be fracturing or revealing.`
 : `  - Only update characters whose state actually changed this page.`}
-  - For new characters: describe visual appearance, incorporate naturally in storytelling.
+  - For new characters: incorporate appearance naturally in storytelling.
   - For updates: only include changed fields, omit unaltered ones.
   - knownName: mandatory narration alias. Gradually update as MC learns real identity.
   - bio: concise, suggestive. Gradually update when new info revealed.
@@ -1171,11 +1171,11 @@ ${isLatePhase || isFinale ? `  - High-familiarity places revisited now should fe
 placeConnections
   - Add new if visiting/adding a new place or when a place is first connected.
   - Only update existing if route conditions meaningfully change on revisit.
-  - travelTime: Estimated travel duration (e.g., "5 minutes walk", "20 minutes drive").
-  - routeType: Primary route description (e.g., "main street", "alley", "tunnel").
-  - accessibility: One of: ${formatOneOf(placeAccessibilities)}.
-  - updateObstacles: Current story-relevant barriers, hazards, or access requirements.
-  - notes: Short route details not covered elsewhere.
+  - travelTime: travel duration (e.g., "5 minutes walk", "20 minutes drive").
+  - routeType: route description (e.g., "main street", "alley", "tunnel").
+  - accessibility: ${accessibilityValues}.
+  - updateObstacles: story-relevant barriers, hazards, or access requirements.
+  - notes: short route details not covered elsewhere.
 
 newThreads
 ${isFinale ? `  - Do NOT introduce new threads. The story is in finale.`

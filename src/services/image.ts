@@ -1,3 +1,9 @@
+/**
+ * Image Upload Services (ImageKit REST API v1)
+ * @see https://imagekit.io/docs/api-overview
+ * @see https://imagekit.io/docs/api-reference/upload-file/upload-file
+ */
+
 import { getTodayDate } from "../utils/time.js";
 import { dbWrite } from "../db/client.js";
 import { inArray, sql, and, eq, isNull } from "drizzle-orm";
@@ -194,25 +200,65 @@ function generateImageFilename(entityId: string, prefix: string, extension: stri
 const DEFAULT_FILENAME_PREFIX = 'image';
 
 /**
+ * Returns true when a value looks like an image payload supplied as base64.
+ *
+ * Supports both standard data URLs such as `data:image/png;base64,...` and
+ * raw base64 strings. Regular URLs and other non-base64 values return false.
+ */
+export function isBase64Upload(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+
+  const trimmed = value.trim();
+  if (trimmed.startsWith('data:')) {
+    return /^data:(image\/[a-zA-Z0-9.+-]+);base64,[A-Za-z0-9+/]+={0,2}$/i.test(trimmed);
+  }
+
+  return /^[A-Za-z0-9+/]+={0,2}$/.test(trimmed) && trimmed.length % 4 === 0;
+}
+
+/**
  * Handle base64 data URL uploads — extracts the raw base64 payload and filename
  */
 function handleBase64Upload(base64Url: string, prefix: string, entityId: string): {
-  base64Data: string;
+  file: Blob;
   fileName: string;
   mimeType: string;
 } | null {
-  const matches = base64Url.match(/^data:(.+?);base64,(.+)$/);
-  if (!matches || matches.length !== 3) {
-    console.error('[handleBase64Upload] ❌ Invalid base64 data URL format');
+  const trimmed = base64Url.trim();
+  let mimeType = 'image/jpeg';
+  let payload = trimmed;
+
+  if (trimmed.startsWith('data:')) {
+    const matches = trimmed.match(/^data:(.+?);base64,(.+)$/i);
+    if (!matches || matches.length !== 3) {
+      console.error('[handleBase64Upload] ❌ Invalid base64 data URL format');
+      return null;
+    }
+
+    mimeType = matches[1];
+    payload = matches[2];
+  } else if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith('blob:')) {
+    console.error('[handleBase64Upload] ❌ Expected base64 content but received a URL');
+    return null;
+  } else if (!/^[A-Za-z0-9+/]+={0,2}$/.test(trimmed) || trimmed.length % 4 !== 0) {
+    console.error('[handleBase64Upload] ❌ Invalid base64 content format');
     return null;
   }
 
-  const mimeType = matches[1];
-  const base64Data = matches[2];
+  const buffer = Buffer.from(payload, 'base64');
+  if (buffer.length === 0) {
+    console.error('[handleBase64Upload] ❌ Decoded base64 payload is empty');
+    return null;
+  }
+
   const extension = validateMimeType(mimeType);
   const fileName = generateImageFilename(entityId, prefix, extension);
 
-  return { base64Data, fileName, mimeType };
+  return {
+    file: new Blob([buffer], { type: mimeType }),
+    fileName,
+    mimeType,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -241,10 +287,10 @@ export async function uploadImageKit(
     const prefix = options.filenamePrefix || DEFAULT_FILENAME_PREFIX;
 
     if (typeof imageSource === 'string') {
-      if (imageSource.startsWith('data:')) {
+      if (isBase64Upload(imageSource)) {
         const parsed = handleBase64Upload(imageSource, prefix, entityId);
         if (!parsed) return null;
-        formData.append('file', parsed.base64Data);
+        formData.append('file', parsed.file, parsed.fileName);
         formData.append('fileName', parsed.fileName);
       } else {
         formData.append('file', imageSource);

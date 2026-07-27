@@ -108,7 +108,7 @@ import { shouldUseCache, getFreshPromptForUser, trackPromptView, savePromptToCac
 import { streamCachedPrompt } from "../utils/prompt-stream.js";
 import { PROMPT_CACHE_CONFIG } from "../config/prompt-cache.js";
 import { imageUploadMiddleware } from "../middleware/upload.js";
-import { deleteFileFromImageKit } from "../services/image.js";
+import { deleteFileFromImageKit, isBase64Upload } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, calculatePaginationMeta } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import { validateSearchQuery, validateLanguageCode, validateAgeRange, validateGender, createRelevanceExpression, buildTokenizedSearchCondition } from "../utils/search.js";
@@ -1515,7 +1515,7 @@ router.put("/:id", requireAuth, imageUploadMiddleware(), async (c) => {
       imageUploaded: !!newImageUrl,
       oldImageQueuedForDeletion: oldImageIdQueued,
       mcAvatarUploaded,
-      uploadSource: c.get("file") ? 'file' : (imageUrl?.startsWith('data:') ? 'base64' : 'url'),
+      uploadSource: c.get("file") ? 'file' : (isBase64Upload(imageUrl) ? 'base64' : 'url'),
     });
   } catch (error) {
     return cApiError(c, "Failed to update book", error);
