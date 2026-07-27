@@ -425,13 +425,17 @@ async function handleTrialWillEndEvent(event: Stripe.Event) {
  */
 router.get("/credit-packs", async (c) => {
   try {
-    const gatewayParam = parseGateway(c.req.query("gateway") || PAYMENT_GATEWAY.stripe);
+    const rawGateway = c.req.query("gateway");
+    const gatewayParam = parseGateway(rawGateway || PAYMENT_GATEWAY.stripe);
+    console.log(`[credit-packs] ▶️ Entered handler, gateway query param: "${rawGateway}" (parsed: ${gatewayParam})`);
     if (!gatewayParam) return cValidationError(c, "Invalid gateway (use stripe or xendit)");
 
     if (gatewayParam === PAYMENT_GATEWAY.xendit) {
       if (!XENDIT_CONFIG.enabled) {
+        console.warn(`[credit-packs] ⚠️ Xendit gateway is not enabled — returning 400`);
         return cValidationError(c, "Xendit gateway is not enabled");
       }
+      console.log(`[credit-packs] ✅ Xendit gateway is enabled`);
       const packs = CREDIT_PACKS.map((pack) => ({
         id: pack.id,
         title: pack.title,
