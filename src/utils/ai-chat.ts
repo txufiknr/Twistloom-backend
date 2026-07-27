@@ -1,4 +1,4 @@
-import type { AIChatProvider, AIDocument, AIJsonEvaluation, AIJsonProperty, AIPromptForJson, AIPromptOptions, AIResponse, NvidiaChatCompletionResponse, OpenRouterCreateParams, PromptWithFallbackOptions } from "../types/ai-chat.js";
+import type { AIChatProvider, AIDocument, AIJsonEvaluation, AIJsonProperty, AIPromptForJson, AIPromptOptions, AIResponse, AIModelSelection, NvidiaChatCompletionResponse, OpenRouterCreateParams, PromptWithFallbackOptions } from "../types/ai-chat.js";
 import { AI_PROVIDER_API_KEYS, getCerebrasClient, getCloudflareClient, getCohereClient, getGeminiClient, getGitHubClient, getGroqClient, getMistralClient, getOpenRouterClient } from "./ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT, EVALUATION_FALLBACK_LIMIT, EVALUATION_SCORING_OUTPUT_TOKEN } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_EVALUATION, AI_CHAT_MODELS_WRITING, AI_MAX_PROMPT_LENGTH } from "../config/ai-clients.js";
@@ -135,6 +135,16 @@ async function promptWithFallback<T>(
       // Error handling: Classify error and decide on retry strategy.
       // Retryable errors were already retried by retryWithBackoff within the try block.
       const code = classifyGenAIError(provider, model, error);
+
+      // SCHEMA_TOO_COMPLEX is a permanent failure — the schema itself is too large for
+      // this provider's constrained decoder. No other model in the same provider will
+      // succeed since they all receive the same schema. Break immediately.
+      if (code === 'SCHEMA_TOO_COMPLEX') {
+        console.warn(`[${provider}] 💢 Schema too complex for ${model} — schema structure exceeds provider limits, skipping remaining ${provider} models`);
+        if (options._fallbackCounter) options._fallbackCounter.count++;
+        break;
+      }
+
       if (i < models.length - 1) {
         // Model fallback: Try next model if more are available
         console.warn(`[${provider}] 💥 Model ${model} failed (${isGenAIErrorRetryable(code) ? 'retries exhausted' : 'non-retryable'}), trying next model:`, code);
@@ -979,6 +989,13 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
         _fallbackCounter: fallbackCounter,
       };
       
+      // Pre-call check: Skip Gemini if the schema exceeds its constrained decoder limits.
+      // The remaining providers (Groq, Cerebras, etc.) handle large schemas fine.
+      if (provider === 'gemini' && isSchemaTooComplex(outputJsonStructure)) {
+        console.warn(`[gemini] ⏩ Skipping Gemini — schema exceeds complexity limits that Gemini's constrained decoder can compile`);
+        continue;
+      }
+
       // Provider-agnostic stack
       switch (provider) {
         case 'github':     result = await githubPrompt(prompt, opts); break;         // ✅ JSON schema | ☑️ document via system prompt
@@ -1009,11 +1026,19 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
           await onGenerationProgress?.('ai_evaluation');
 
           const evaluationContext = `${context}-evaluation`;
+
+          // Resolve 'auto' once at the evaluation level. The resolved boolean threads
+          // through to both schema building and result parsing, ensuring they stay in sync.
+          const evaluationOptions: AIPromptOptions = {
+            ...options,
+            modelSelection: AI_CHAT_MODELS_EVALUATION,
+            useStringEvaluatorOutput: resolveUseStringEvaluator({ ...options, modelSelection: AI_CHAT_MODELS_EVALUATION }),
+          };
+
           try {
             // Call second AI prompt to score, evaluate, and output corrected result
             const response = await aiPrompt<AIJsonEvaluation<T>>(evaluatorPrompt, {
-              ...options,
-              modelSelection: AI_CHAT_MODELS_EVALUATION,
+              ...evaluationOptions,
               config: {...config, maxOutputToken: config.maxOutputToken + EVALUATION_SCORING_OUTPUT_TOKEN },
               systemPrompt,
               context: evaluationContext,
@@ -1030,7 +1055,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
 
               // Evaluation output schema
               outputAsJson: true,
-              outputJsonStructure: buildEvaluationSchemaDefinition(options),
+              outputJsonStructure: buildEvaluationSchemaDefinition(evaluationOptions),
               outputJsonRequired: EVALUATION_REQUIRED_FIELDS satisfies (keyof AIJsonEvaluation<T>)[],
               outputJsonFallbackField: 'output' satisfies keyof AIJsonEvaluation<T>
 
@@ -1049,14 +1074,32 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
                   console.log("Integrity flags:", integrityFlags);
                 });
               }
-              return {
-                ...result,
-                evalProvider,
-                evalModel,
-                scoreBefore: scoreBefore.total,
-                scoreAfter: scoreAfter.total,
-                result: evaluationResult.output
-              } satisfies AIResponse<T>;
+              // Process evaluator output based on schema strategy
+              // evaluationOptions.useStringEvaluatorOutput is already resolved to a
+              // boolean (see resolveUseStringEvaluator above). When true: output is
+              // JSON string → parse. When false: output is structured object → use directly.
+              let correctedOutput: T | undefined;
+              if (evaluationOptions.useStringEvaluatorOutput!) {
+                try {
+                  const raw = evaluationResult.output as unknown as string;
+                  correctedOutput = raw ? JSON.parse(raw) as T : undefined;
+                } catch {
+                  console.warn(`[${evaluationContext}] ⚠️ Failed to parse evaluator string output as JSON — falling back to original`);
+                }
+              } else {
+                correctedOutput = evaluationResult.output;
+              }
+
+              if (correctedOutput) {
+                return {
+                  ...result,
+                  evalProvider,
+                  evalModel,
+                  scoreBefore: scoreBefore.total,
+                  scoreAfter: scoreAfter.total,
+                  result: correctedOutput
+                } satisfies AIResponse<T>;
+              }
             } else if (logEvaluationResult) {
               console.warn(`[${evaluationContext}] ❓ Evaluation returned no result — falling back to generation output`);
             }
@@ -1114,6 +1157,88 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
 
   await onProgress?.({ type: 'ai_generation_complete' });
   return { provider: 'none', output: '' };
+}
+
+/**
+ * Calculates whether a JSON schema is too complex for Gemini's constrained decoder.
+ * 
+ * Gemini's structured output uses constrained decoding, which builds a state graph
+ * from the schema. Schemas with too many properties, enum values, deep nesting, or
+ * large serialized size can exceed the graph compilation budget and produce
+ * "too many states for serving" errors.
+ * 
+ * Thresholds (empirically determined):
+ * - >100 properties → too many structural branches
+ * - >100 total enum items → too many token alternatives at decision points
+ * - >6 max depth → nested state explosion (arrays of objects within arrays)
+ * - >15KB JSON → schema payload itself exceeds decoder limits
+ * 
+ * @param schema - The JSON schema properties object to evaluate
+ * @returns True if the schema exceeds complexity thresholds
+ */
+export function isSchemaTooComplex(schema: Record<string, AIJsonProperty> | undefined): boolean {
+  if (!schema || Object.keys(schema).length === 0) return false;
+
+  const schemaStr = JSON.stringify(schema);
+  let props = 0;
+  let enumItems = 0;
+  let maxDepth = 0;
+
+  function measure(obj: unknown, depth: number = 0): void {
+    if (depth > maxDepth) maxDepth = depth;
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
+
+    const record = obj as Record<string, unknown>;
+
+    if (Array.isArray(record.enum)) {
+      enumItems += record.enum.length;
+    }
+
+    if (record.properties && typeof record.properties === 'object') {
+      props += Object.keys(record.properties).length;
+      for (const val of Object.values(record.properties)) {
+        measure(val, depth + 1);
+      }
+    }
+
+    if (record.items && typeof record.items === 'object' && !Array.isArray(record.items)) {
+      measure(record.items, depth + 1);
+    }
+  }
+
+  measure(schema);
+
+  const isComplex = props > 100 || enumItems > 100 || maxDepth > 6 || schemaStr.length > 15000;
+
+  if (isComplex) {
+    console.warn(`[schema-complexity] ⚠️ Schema too complex: ${schemaStr.length / 1024 | 0}KB, ${props} props, ${enumItems} enum items, depth ${maxDepth}`);
+  }
+
+  return isComplex;
+}
+
+/**
+ * Resolves the `useStringEvaluatorOutput` option to a concrete boolean.
+ *
+ * Three modes:
+ * – `'auto'` (default): Checks the evaluator's model selection for Gemini.
+ *   If Gemini is present → `true` (string mode, avoids Gemini's constrained-decoder limits).
+ *   If Gemini is absent → `false` (structured mode, tighter provider-enforced validation).
+ * – `true`: Always use string mode (small schema, no structural validation at provider level).
+ * – `false`: Always use structured mode (provider enforces field names, types, required).
+ *
+ * The auto mode adapts automatically to provider config changes. If Gemini is removed
+ * from or added to the evaluator chain in the future, the strategy switches accordingly.
+ *
+ * @param options - Prompt options containing the raw flag value and model selection
+ * @returns Resolved boolean for use in schema building and result parsing
+ */
+function resolveUseStringEvaluator(options: { useStringEvaluatorOutput?: boolean | 'auto'; modelSelection?: AIModelSelection }): boolean {
+  const setting = options.useStringEvaluatorOutput;
+  if (setting === false) return false;
+  if (setting === true) return true;
+  // 'auto' (default): use string mode when Gemini is in the evaluator provider chain
+  return options.modelSelection ? 'gemini' in options.modelSelection : true;
 }
 
 /**

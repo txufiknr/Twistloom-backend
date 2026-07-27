@@ -12,7 +12,7 @@ import {
 import type { NewPlace, PlaceConnectionUpdate, PlaceMemory, PlaceUpdate, PlaceUpdates } from "../types/places.js";
 import type { PastEvent, StoryScene, StoryState } from "../types/story.js";
 import { cleanUpInventory } from "./story.js";
-import { slugify } from "./text-processing.js";
+import { slugify, getTraitKey } from "./text-processing.js";
 
 /**
  * Creates a new place with default values
@@ -113,7 +113,7 @@ export function updatePlace(params: {
   // Merge known characters
   if (update.knownCharacters?.length) {
     updated.knownCharacters = [
-      ...knownCharacters.filter(c => !update.knownCharacters!.some(u => u.key === c.key)),
+      ...knownCharacters.filter(c => !update.knownCharacters!.some(u => getTraitKey(u) === getTraitKey(c))),
       ...update.knownCharacters
     ];
   }
@@ -121,7 +121,7 @@ export function updatePlace(params: {
   // Update traits if provided
   if (updateTraits.length) {
     updated.traits = [
-      ...traits.filter(t => !updateTraits.some(u => u.key === t.key)),
+      ...traits.filter(t => !updateTraits.some(u => getTraitKey(u) === getTraitKey(t))),
       ...updateTraits
     ];
   }
@@ -129,7 +129,7 @@ export function updatePlace(params: {
   // Remove traits
   if (removeTraits.length) {
     updated.traits = [
-      ...traits.filter(t => !removeTraits.includes(t.key)),
+      ...traits.filter(t => !removeTraits.includes(getTraitKey(t))),
     ];
   }
 
@@ -352,7 +352,7 @@ export function formatPlacesForPrompt(places: Record<string, PlaceMemory>, curre
       lines.push(`  - Hints: ${hints.join('; ')}`);
     }
 
-    pushListSection(lines, 'Traits', traits, t => `${t.key}: ${t.value}`);
+    pushListSection(lines, 'Traits', traits, t => t);
 
     // pgvector semantic memory (Use Case 5): events that have scrolled out
     // of the live MAX_PLACE_EVENTS window above, surfaced only when
@@ -369,12 +369,12 @@ export function formatPlacesForPrompt(places: Record<string, PlaceMemory>, curre
 
     const keyObjects = place.keyObjects?.filter(i => i.amount);
     pushListSection(lines, 'Key objects', keyObjects, item => {
-      const traitEntries = item.traits?.map(t => `${t.key}: ${t.value}`) ?? [];
+      const traitEntries = item.traits ?? [];
       const itemInfo = [item.where, ...traitEntries].filter(Boolean).join(', ');
       return `${item.amount}x ${item.name}${itemInfo ? ` (${itemInfo})` : ''}`;
     });
 
-    pushListSection(lines, 'Associated characters', knownCharacters, character => `${character.key}: ${character.value}`);
+    pushListSection(lines, 'Associated characters', knownCharacters, character => character);
 
     pushListSection(lines, 'Known routes', place.knownConnections, conn => {
       const parts = [conn.travelTime, conn.routeType, conn.accessibility].filter(Boolean);

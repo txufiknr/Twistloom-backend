@@ -636,7 +636,7 @@ function formatPagePrompt(page: PageToTranslate): string {
   if (placeEntries.length) {
     stateLines.push(
       `Places:\n${placeEntries.map(([id, p]) =>
-        `  placeId: "${id}" | knownName: "${p.knownName ?? ''}" | realName: "${p.realName ?? ''}" | type: "${p.type ?? ''}" | context: "${p.context ?? ''}" | traits: [${(p.traits ?? []).map((t) => `key: "${t.key}", value: "${t.value}"`).join('; ')}]`,
+        `  placeId: "${id}" | knownName: "${p.knownName ?? ''}" | realName: "${p.realName ?? ''}" | type: "${p.type ?? ''}" | context: "${p.context ?? ''}" | traits: [${(p.traits ?? []).map((t) => `"${t}"`).join(', ')}]`,
       ).join('\n')}`,
     );
   }
@@ -646,7 +646,7 @@ function formatPagePrompt(page: PageToTranslate): string {
   if (characterEntries.length) {
     stateLines.push(
       `Characters:\n${characterEntries.map(([id, ch]) =>
-        `  characterId: "${id}" | role: "${ch.role ?? ''}" | bio: "${ch.bio ?? ''}" | traits: [${(ch.traits ?? []).map((t) => `key: "${t.key}", value: "${t.value}"`).join('; ')}]`,
+        `  characterId: "${id}" | role: "${ch.role ?? ''}" | bio: "${ch.bio ?? ''}" | traits: [${(ch.traits ?? []).map((t) => `"${t}"`).join(', ')}]`,
       ).join('\n')}`,
     );
   }
@@ -656,7 +656,7 @@ function formatPagePrompt(page: PageToTranslate): string {
     stateLines.push(
       `Inventory:\n${state.inventory.map((item) =>
         `  originalName: "${item.name}" | where: "${item.where ?? ''}" | traits: [${
-          (item.traits ?? []).map((t) => `key: "${t.key}", value: "${t.value}"`).join('; ')
+          (item.traits ?? []).map((t) => `"${t}"`).join(', ')
         }]`,
       ).join('\n')}`,
     );

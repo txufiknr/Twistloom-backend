@@ -362,8 +362,8 @@ async function translatePageWithLibre({
   if (page.weather)             { weatherIndex        = batch.length; batch.push(page.weather); }
   if (page.state.contextHistory){ contextHistoryIndex = batch.length; batch.push(page.state.contextHistory); }
 
-  // — places (4 + N strings per place: knownName, realName, context, type, then one slot per trait value) —
-  type PlaceFieldIndices = { start: number; traitKeys: string[]; };
+  // — places (4 + N strings per place: knownName, realName, context, type, then one slot per trait string) —
+  type PlaceFieldIndices = { start: number; traitCount: number; };
   let placeIds: string[] = [];
   let placesMap: Record<string, PlaceFieldIndices> | undefined;
 
@@ -372,11 +372,11 @@ async function translatePageWithLibre({
     placesMap = {};
     for (const pid of placeIds) {
       const p = page.state.places[pid];
-      const traitKeys = (p.traits ?? []).map((t) => t.key);
-      placesMap[pid] = { start: batch.length, traitKeys };
-      // Fixed 4-slot layout: [knownName, realName, context, type] + variable trait values
+      const pt = p.traits ?? [];
+      placesMap[pid] = { start: batch.length, traitCount: pt.length };
+      // Fixed 4-slot layout: [knownName, realName, context, type] + variable trait strings
       batch.push(p.knownName ?? '', p.realName ?? '', p.context ?? '', p.type ?? '');
-      for (const t of p.traits ?? []) batch.push(t.value ?? '');
+      for (const t of pt) batch.push(t);
     }
   }
 
@@ -393,24 +393,24 @@ async function translatePageWithLibre({
     batch.push(...page.importantObjects);
   }
 
-  // — characters (2 + N strings per character: role, bio, then one slot per trait value) ──
+  // — characters (2 + N strings per character: role, bio, then one slot per trait string) ──
   let characterIds: string[] = [];
-  let charactersMap: Record<string, { start: number; traitKeys: string[] }> | undefined;
+  let charactersMap: Record<string, { start: number; traitCount: number }> | undefined;
 
   if (page.state?.characters && Object.keys(page.state.characters).length) {
     characterIds = Object.keys(page.state.characters);
     charactersMap = {};
     for (const cid of characterIds) {
       const ch = page.state.characters[cid];
-      const traitKeys = (ch.traits ?? []).map((t) => t.key);
-      charactersMap[cid] = { start: batch.length, traitKeys };
+      const ct = ch.traits ?? [];
+      charactersMap[cid] = { start: batch.length, traitCount: ct.length };
       batch.push(ch.role ?? '', ch.bio ?? '');
-      for (const t of ch.traits ?? []) batch.push(t.value ?? '');
+      for (const t of ct) batch.push(t);
     }
   }
 
-  // — inventory (variable width: name, where, then one slot per trait value) ──
-  type InventoryMeta = { start: number; traitKeys: string[]; };
+  // — inventory (variable width: name, where, then one slot per trait string) ──
+  type InventoryMeta = { start: number; traitCount: number; };
   let inventoryMap: Record<number, InventoryMeta> | undefined;
   let inventoryCount = 0;
 
@@ -418,10 +418,10 @@ async function translatePageWithLibre({
     inventoryMap = {};
     for (let i = 0; i < page.state.inventory.length; i++) {
       const item = page.state.inventory[i];
-      const traitKeys = (item.traits ?? []).map((t) => t.key);
-      inventoryMap[i] = { start: batch.length, traitKeys };
+      const it = item.traits ?? [];
+      inventoryMap[i] = { start: batch.length, traitCount: it.length };
       batch.push(item.name ?? '', item.where ?? '');
-      for (const t of item.traits ?? []) batch.push(t.value ?? '');
+      for (const t of it) batch.push(t);
       inventoryCount++;
     }
   }
@@ -496,16 +496,15 @@ async function translatePageWithLibre({
       }))
     : [];
 
-  // ── Extract — places (4 + N slot layout: knownName, realName, context, type, traits…) ──
+  // ── Extract — places (4 + N slot layout: knownName, realName, context, type, trait strings) ──
   const translatedPlaces: PlaceMemoryTranslation[] = [];
   if (placesMap) {
     for (const pid of placeIds) {
-      const { start, traitKeys } = placesMap[pid];
+      const { start, traitCount } = placesMap[pid];
       const orig = page.state.places[pid];
-      const traits: TraitItem[] = traitKeys.map((key, t) => ({
-        key,
-        value: translated[start + 4 + t] || (orig.traits?.[t].value ?? ''),
-      }));
+      const traits: TraitItem[] = Array.from({ length: traitCount }, (_, t) =>
+        translated[start + 4 + t] || (orig.traits?.[t] ?? ''),
+      );
       translatedPlaces.push({
         placeId:   pid,
         knownName: translated[start]     || orig.knownName,
@@ -521,12 +520,11 @@ async function translatePageWithLibre({
   const translatedCharacters: CharacterMemoryTranslation[] = [];
   if (charactersMap) {
     for (const cid of characterIds) {
-      const { start, traitKeys } = charactersMap[cid];
+      const { start, traitCount } = charactersMap[cid];
       const orig  = page.state.characters[cid];
-      const traits: TraitItem[] = traitKeys.map((key, t) => ({
-        key,
-        value: translated[start + 2 + t] || (orig.traits?.[t].value ?? ''),
-      }));
+      const traits: TraitItem[] = Array.from({ length: traitCount }, (_, t) =>
+        translated[start + 2 + t] || (orig.traits?.[t] ?? ''),
+      );
       translatedCharacters.push({
         characterId: cid,
         role: translated[start]     || orig.role,
@@ -540,12 +538,11 @@ async function translatePageWithLibre({
   const translatedInventory: InventoryItemTranslation[] = [];
   if (inventoryMap) {
     for (let i = 0; i < inventoryCount; i++) {
-      const { start, traitKeys } = inventoryMap[i];
+      const { start, traitCount } = inventoryMap[i];
       const orig = page.state.inventory[i];
-      const traits: TraitItem[] = traitKeys.map((key, t) => ({
-        key,
-        value: translated[start + 2 + t] || (orig.traits?.[t].value ?? ''),
-      }));
+      const traits: TraitItem[] = Array.from({ length: traitCount }, (_, t) =>
+        translated[start + 2 + t] || (orig.traits?.[t] ?? ''),
+      );
       translatedInventory.push({
         originalName: orig.name,
         name:  translated[start]     || orig.name,

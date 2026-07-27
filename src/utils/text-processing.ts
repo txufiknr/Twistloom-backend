@@ -524,3 +524,15 @@ export function sanitizeText(text: string): string {
 export function sanitizeKeywords(keywords: string[]): string[] {
   return dedupe(keywords?.map(k => k.trim().toLowerCase()).filter(Boolean) ?? []);
 }
+
+/**
+ * Extracts the key portion from a flattened trait string "key: value".
+ * Falls back to the full string if no `: ` separator is found.
+ * 
+ * @param trait - A TraitItem string in "key: value" format
+ * @returns The key portion (string before the first ": ")
+ */
+export function getTraitKey(trait: string): string {
+  const colonIndex = trait.indexOf(': ');
+  return colonIndex === -1 ? trait : trait.slice(0, colonIndex).trim();
+}

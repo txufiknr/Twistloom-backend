@@ -4,7 +4,7 @@ import type { NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInven
 import { canonicalPlaceTypes, type NewPlace, type PlaceUpdate, placeWeathers, type PlaceUpdates, type PlaceConnectionUpdate, placeAccessibilities } from "../types/places.js";
 import { actionHintTypes, actionTypes, characterSceneRoles, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, sceneTypes, difficulties, endingTypes, storyMomentums, stabilityLevels, storyPhaseKeys, futureNoteTriggerTypes, memoryIntegrities } from "../types/story.js";
 import type { AIJsonActionFlag, AIJsonEvaluation, AIJsonEvaluationFix, AIJsonEvaluationIssue, AIJsonIntegrityFlag, AIJsonProperty, AIJsonScoreAfter, AIJsonScoreBefore, AIJsonScoreBreakdown, AIPromptOptions } from "../types/ai-chat.js";
-import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, TagItem, FutureNote, FactUpdate, StateDeltaGeneration, ActionGeneration, FutureNoteGeneration, FlagUpdate, PlotFlagType, InitialPlotFlag, TraitItem, SceneCharacter, SanityState } from "../types/story.js";
+import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, TagItem, FactUpdate, StateDeltaGeneration, ActionGeneration, FutureNoteGeneration, FlagUpdate, PlotFlagType, InitialPlotFlag, SceneCharacter, SanityState } from "../types/story.js";
 import { threadPriorities, threadStatuses, threadTruths, type UpdateThread, type NewThread, type ThreadUpdates, type AddThreadClue, type InitialThreadClue } from "../types/story-thread.js";
 import type { CandidatePagesGeneration } from "../types/candidate-generation.js";
 import { genders } from "../types/user.js";
@@ -124,22 +124,17 @@ export const PLACE_KEY_OBJECT_SCHEMA: AIJsonProperty = {
 
 const placeTraitsExample = 'e.g., smell, sound, visual, feeling, dimension, wall color';
 
-export function buildTraitItemSchema(params?: {
+// TODO: remove params
+export function buildTraitItemSchema(_params?: {
   keyDescription?: string,
   valueDescription?: string
   keyEnum?: string[],
   valueEnum?: string[]
 }): AIJsonProperty {
-  const { keyDescription, valueDescription, keyEnum, valueEnum } = params ?? {};
-  return {
-    type: 'object',
-    properties: {
-      key: { type: 'string', description: keyDescription, enum: keyEnum },
-      value: { type: 'string', description: valueDescription, enum: valueEnum },
-    } satisfies Record<keyof TraitItem, AIJsonProperty>,
-    required: ['key', 'value'] satisfies (keyof TraitItem)[],
-    additionalProperties: false
-  };
+  // TraitItem flattened from {key, value} object to "key: value" string to reduce
+  // schema depth for Gemini constrained-decoder compatibility. The params are kept
+  // for call-site documentation but ignored — the AI just outputs a string[].
+  return { type: 'string', description: 'Key-value pair formatted as "key: value"' };
 }
 
 export const INITIAL_PLACE_PROPERTIES: Record<keyof NewPlace, AIJsonProperty> = {
@@ -441,7 +436,7 @@ const { realName: _cn, pastInteractions: _pin, schedules: _schedules, ...updateC
 export const INITIAL_CHARACTER_SCHEMA: AIJsonProperty = {
   type: 'object',
   properties: INITIAL_CHARACTER_PROPERTIES,
-  required: ['characterId', 'knownName', 'realName', 'recognitionLevel', 'role', 'gender', 'status', 'importance', 'relationshipToMC', 'bio', 'visualDescription', 'injuries', 'secrets', 'narrativeFlags', 'pastInteractions', 'traits'] satisfies (keyof NewCharacter)[],
+  required: ['characterId', 'knownName', 'realName', 'recognitionLevel', 'role', 'gender', 'status', 'importance', 'relationshipToMC', 'bio', 'visualDescription', 'injuries', 'secrets', 'narrativeFlags'] satisfies (keyof NewCharacter)[],
   additionalProperties: false
 };
 
@@ -655,13 +650,19 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
       closeThreads: { type: 'array', description: 'Thread titles to be closed if any.', items: { type: 'string' } },
     } satisfies Record<keyof ThreadUpdates, AIJsonProperty>,
     // Note: no any required fields, but Cohere requires at least one field in `required` array
-    required: ['newThreads'] satisfies (keyof ThreadUpdates)[],
+    required: ['closeThreads'] satisfies (keyof ThreadUpdates)[],
     additionalProperties: false
   },
-  futureNoteUpdates: getTagUpdatesSchema<FutureNote>({
-    description: `Max ${MAX_FUTURE_NOTES}. Narrative obligations towards viableEnding (plans, foreshadowing, future reveals, scenes, twists, etc).`,
+  futureNoteAdd: {
+    type: 'array',
+    description: `Future notes to add. Max ${MAX_FUTURE_NOTES}. Narrative obligations towards viableEnding (plans, foreshadowing, future reveals, scenes, twists, etc).`,
     items: FUTURE_NOTE_SCHEMA
-  }),
+  },
+  futureNoteRemove: {
+    type: 'array',
+    items: { type: 'string' },
+    description: 'Future note keys to remove.'
+  },
   factUpdates: {
     type: 'array',
     items: {
@@ -673,15 +674,22 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
         type: { type: 'string', enum: [...Object.keys(factTypes)] },
         reason: { type: 'string', description: 'Explain why or how it happened in 1 sentence' },
       } satisfies Record<keyof FactUpdate, AIJsonProperty>,
-      required: ['key', 'value', 'page'] satisfies (keyof FactUpdate)[],
+      required: ['key', 'value'] satisfies (keyof FactUpdate)[],
       additionalProperties: false
     }
   },
 
   // PSYCHOLOGY
-  traumaTagUpdates: getTagUpdatesSchema<string>({
-    description: `Max ${MAX_TRAUMA_TAGS}. Haunting experiences referenced by story (and affect MC's psychological profile).`
-  }),
+  traumaTagAdd: {
+    type: 'array',
+    items: { type: 'string' },
+    description: `Trauma tags to add. Max ${MAX_TRAUMA_TAGS}. Haunting experiences referenced by story.`
+  },
+  traumaTagRemove: {
+    type: 'array',
+    items: { type: 'string' },
+    description: 'Trauma tag keys to remove.'
+  },
   flagUpdates: {
     type: 'array',
     description: 'Updates to psychological flags (trust, fear, guilt, curiosity) if any.',
@@ -746,7 +754,7 @@ export const CANDIDATE_GENERATION_SCHEMA_DEFINITION = {
 export const CANDIDATE_GENERATION_REQUIRED_FIELDS = ['generatedPages'] satisfies Array<keyof CandidatePagesGeneration>;
 
 export function buildEvaluationSchemaDefinition<T extends Record<string, unknown>>(options: AIPromptOptions): Record<keyof AIJsonEvaluation<T>, AIJsonProperty> {
-  const { outputJsonStructure, outputJsonRequired } = options;
+  const { useStringEvaluatorOutput = true, outputJsonStructure, outputJsonRequired } = options;
   const scoringBreakdownSchema: AIJsonProperty = {
     type: "array",
     description: 'Detailed breakdown of scores by dimension',
@@ -762,12 +770,17 @@ export function buildEvaluationSchemaDefinition<T extends Record<string, unknown
   };
 
   return {
-    output: {
-      type: 'object',
-      properties: outputJsonStructure,
-      required: outputJsonRequired,
-      additionalProperties: outputJsonStructure ? false : undefined
-    },
+    output: useStringEvaluatorOutput
+      ? {
+          type: 'string',
+          description: 'Full corrected JSON output as a string. See the expected JSON structure in prompt — output the corrected JSON as a valid JSON string here.'
+        }
+      : {
+          type: 'object',
+          properties: outputJsonStructure,
+          required: outputJsonRequired,
+          additionalProperties: outputJsonStructure ? false : undefined,
+        },
     scoreBefore: {
       type: 'object',
       description: 'Scoring evaluation of the original content before any corrections',

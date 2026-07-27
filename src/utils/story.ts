@@ -6,7 +6,7 @@ import { processPlaceUpdates } from "./places.js";
 import { deepEqualSimple } from "../utils/parser.js";
 import { calculatePlayerProfile } from './player-profile.js';
 import { ensureUniqueId } from "./text-processing.js";
-import type { StoryState, StoryMomentum, SceneType, PsychologicalProfileMetrics, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, TagItem, FutureNote, FactUpdate, FutureNoteGeneration, Action, PsychologicalStateDelta, InitialPlotFlag, StoryScene, CalculateStoryMomentumParams, StoryMomentumResult, SceneCharacter, EndingRecommendation, NarrativeContext, PersistedStoryPage, SelectedAction, StateDeltaGeneration, SanityState } from "../types/story.js";
+import type { StoryState, StoryMomentum, SceneType, PsychologicalProfileMetrics, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, TagItem, FutureNote, FactUpdate, FutureNoteGeneration, Action, PsychologicalStateDelta, InitialPlotFlag, StoryScene, CalculateStoryMomentumParams, StoryMomentumResult, SceneCharacter, EndingRecommendation, NarrativeContext, PersistedStoryPage, SelectedAction, StateDeltaGeneration, SanityState, FactHistory } from "../types/story.js";
 import type { CharacterPlan, Injury, InventoryItem } from "../types/character.js";
 import type { ThreadUpdates, StoryThread, ThreadClue } from "../types/story-thread.js";
 import type { CandidateGenerationPage } from "../types/candidate-generation.js";
@@ -288,16 +288,15 @@ export function extractStateDelta(params: {
   futureNoteKeys: string[],
 }): StateDelta {
   const { generatedStoryPage: generation, expectedPageNumber, futureNoteKeys } = params;
-  const { placeId, futureNoteUpdates } = generation;
+  const { placeId } = generation;
   if (expectedPageNumber === 1) return {}; // No story state delta for page 1
 
   const stateDelta: StateDelta = {
     flagUpdates: generation.flagUpdates,
-    traumaTagUpdates: generation.traumaTagUpdates,
-    futureNoteUpdates: futureNoteUpdates ? {
-      ...futureNoteUpdates,
-      add: mapFutureNoteWithKey(futureNoteUpdates.add, expectedPageNumber, futureNoteKeys),
-    } satisfies TagUpdates<FutureNote> : undefined,
+    traumaTagAdd: generation.traumaTagAdd,
+    traumaTagRemove: generation.traumaTagRemove,
+    futureNoteAdd: generation.futureNoteAdd ? mapFutureNoteWithKey(generation.futureNoteAdd, expectedPageNumber, futureNoteKeys) : undefined,
+    futureNoteRemove: generation.futureNoteRemove,
     factUpdates: generation.factUpdates,
     characterUpdates: generation.characterUpdates,
     relationshipUpdates: generation.relationshipUpdates,
@@ -495,8 +494,10 @@ export function calculatePsychologicalDeltas(baseState: StoryState, newState: St
 export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, scene?: StoryScene): StoryState {
   const {
     flagUpdates,
-    traumaTagUpdates,
-    futureNoteUpdates,
+    traumaTagAdd,
+    traumaTagRemove,
+    futureNoteAdd,
+    futureNoteRemove,
     addPlannedCharacters,
     addPlotFlags,
     factUpdates,
@@ -557,8 +558,8 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, s
   const [previousPlaceId] = Object.entries(baseState.places).find(([, place]) => place.lastVisitedAtPage === newState.page - 1) ?? [];
 
   // Mutating helpers are now safe: they operate on freshly-copied arrays/objects
-  processTraumaTagUpdates(newState, traumaTagUpdates);
-  processFutureNoteUpdates(newState, futureNoteUpdates);
+  processTraumaTagUpdates(newState, traumaTagAdd, traumaTagRemove);
+  processFutureNoteUpdates(newState, futureNoteAdd, futureNoteRemove);
   processPlannedCharacterUpdates(newState, addPlannedCharacters);
   processPlotFlagUpdates(newState, addPlotFlags, scene);
   processFactUpdates(newState, factUpdates);
@@ -1079,12 +1080,12 @@ function processTagUpdates<T extends TagItem>(
  * });
  * ```
  */
-export function processTraumaTagUpdates(state: StoryState, updates?: TagUpdates<string>): void {
-  processTagUpdates(state.traumaTags, updates, MAX_TRAUMA_TAGS);
+export function processTraumaTagUpdates(state: StoryState, add?: string[], remove?: string[]): void {
+  processTagUpdates(state.traumaTags, { add, remove }, MAX_TRAUMA_TAGS);
 }
 
-export function processFutureNoteUpdates(state: StoryState, updates?: TagUpdates<FutureNote>): void {
-  processTagUpdates(state.futureNotes, updates, MAX_FUTURE_NOTES);
+export function processFutureNoteUpdates(state: StoryState, add?: FutureNote[], remove?: string[]): void {
+  processTagUpdates(state.futureNotes, { add, remove }, MAX_FUTURE_NOTES);
 }
 
 /**
@@ -1183,19 +1184,25 @@ export function processFactUpdates(
   if (!factUpdates?.length) return;
 
   for (const { key, ...factHistory } of factUpdates) {
+    const currentPage = state.page;
+    const effectivePage = factHistory.page ?? currentPage;
+
+    // Normalize: always store with a page number
+    const normalized: FactHistory = { ...factHistory, page: effectivePage };
+
     const history = state.factsHistory[key];
-    if (!history) { state.factsHistory[key] = [factHistory]; continue; }
+    if (!history) { state.factsHistory[key] = [normalized]; continue; }
 
     const latestFact = history.at(-1);
-    if (!latestFact) { history.push(factHistory); continue; }
+    if (!latestFact) { history.push(normalized); continue; }
 
     // Same page -> replace
-    if (latestFact.page === factHistory.page) { history[history.length - 1] = factHistory; continue; }
+    if (latestFact.page === effectivePage) { history[history.length - 1] = normalized; continue; }
 
     // Skip unchanged state
-    if (latestFact.value === factHistory.value) continue;
+    if (latestFact.value === normalized.value) continue;
 
-    history.push(factHistory);
+    history.push(normalized);
   }
 }
 

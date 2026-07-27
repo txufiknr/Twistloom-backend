@@ -397,7 +397,7 @@ const firstBookOutputFormat: string = `{
       {
         "name": "...",
         "traits": [
-          { "key": "...", "value": "..." }
+          "...: ..."
         ],
         "amount": <number>,
         "where": "..."
@@ -470,20 +470,17 @@ const firstBookOutputFormat: string = `{
       {
         "name": "...",
         "traits": [
-          { "key": "...", "value": "..." }
+          "...: ..."
         ],
         "amount": <number>,
         "where": "..."
       }
     ],
     "traits": [
-      { "key": "...", "value": "..." }
+      "...: ..."
     ],
     "knownCharacters": [
-      {
-        "key": "<character_id>",
-        "value": "<Context or interaction>"
-      }
+      "<character_id>: <Context or interaction>"
     ]
   },
   "initialCharacters": [
@@ -510,7 +507,7 @@ const firstBookOutputFormat: string = `{
         "potentialTwist": "One of: ${formatOneOf(potentialTwistTypes)}"
       },
       "traits": [
-        { "key": "...", "value": "..." }
+        "...: ..."
       ],
       "schedules": [
         {
@@ -633,7 +630,8 @@ const nextPageOutputFormat: string = `{
   ],
   "keyEvents": [],
   "importantObjects": [],
-  "traumaTagUpdates": { "add": [], "remove": [] },
+  "traumaTagAdd": [],
+  "traumaTagRemove": [],
   "addPlotFlags": [{
     "fact": "...",
     "type": "One of: ${formatOneOf(plotFlagTypes)}",
@@ -643,7 +641,7 @@ const nextPageOutputFormat: string = `{
     {
       "name": "...",
       "traits": [
-        { "key": "...", "value": "..." }
+        "...: ..."
       ],
       "amount": <number>,
       "where": "...",
@@ -662,31 +660,29 @@ const nextPageOutputFormat: string = `{
     }
   ],
   "contextHistory": "...",
-  "futureNoteUpdates": {
-    "add": [
-      {
-        "note": "...",
-        "isMajor": <boolean>,
-        "tag": "One of: ${formatOneOf(Object.keys(factTypes))}",
-        "schedule": [
-          { "type": "phase", "phase": "One of: ${formatOneOf(storyPhaseKeys, '|')}" },
-          { "type": "page", "range": "<min>-<max>" },
-          { "type": "day", "day": <integer> },
-          { "type": "date", "date": "YYYY-MM-DD" }
-        ],
-        "stateTrigger": [
-          { "type": "stability", "level": "One of: ${formatOneOf(Object.keys(stabilityLevels), '|')}" },
-          { "type": "condition", "condition": "One of: ${formatOneOf(healthConditions, '|')}" },
-          { "type": "healthPercent", "threshold": <0-100> },
-          { "type": "mobilityPercent", "threshold": <0-100> },
-          { "type": "actionPercent", "threshold": <0-100> },
-          { "type": "mentalPercent", "threshold": <0-100> }
-        ],
-        "relatedThreadId": "<thread_id> or 'none'"
-      }
-    ],
-    "remove": [<key>]
-  },
+  "futureNoteAdd": [
+    {
+      "note": "...",
+      "isMajor": <boolean>,
+      "tag": "One of: ${formatOneOf(Object.keys(factTypes))}",
+      "schedule": [
+        { "type": "phase", "phase": "One of: ${formatOneOf(storyPhaseKeys, '|')}" },
+        { "type": "page", "range": "<min>-<max>" },
+        { "type": "day", "day": <integer> },
+        { "type": "date", "date": "YYYY-MM-DD" }
+      ],
+      "stateTrigger": [
+        { "type": "stability", "level": "One of: ${formatOneOf(Object.keys(stabilityLevels), '|')}" },
+        { "type": "condition", "condition": "One of: ${formatOneOf(healthConditions, '|')}" },
+        { "type": "healthPercent", "threshold": <0-100> },
+        { "type": "mobilityPercent", "threshold": <0-100> },
+        { "type": "actionPercent", "threshold": <0-100> },
+        { "type": "mentalPercent", "threshold": <0-100> }
+      ],
+      "relatedThreadId": "<thread_id> or 'none'"
+    }
+  ],
+  "futureNoteRemove": [<key>],
   "addPlannedCharacters": [
     {
       "characterId": "<unique_id>",
@@ -758,7 +754,7 @@ const nextPageOutputFormat: string = `{
           }
         ],
         "traits": [
-          { "key": "...", "value": "..." }
+          "...: ..."
         ],
         "injuries": []
       }
@@ -794,7 +790,7 @@ const nextPageOutputFormat: string = `{
         ],
         "removeSchedules": ["<place_id>"],
         "updateTraits": [
-          { "key": "...", "value": "..." }
+          "...: ..."
         ],
         "removeTraits": [],
         "injuries": []
@@ -829,19 +825,18 @@ const nextPageOutputFormat: string = `{
           {
             "name": "...",
             "traits": [
-              { "key": "...", "value": "..." }
+              "...: ..."
             ],
             "amount": <number>,
             "where": "..."
           }
         ],
         "traits": [
-          { "key": "...", "value": "..." }
+          "...: ..."
         ],
         "knownCharacters": [
           {
-            "key": "<character_id>",
-            "value": "<Context or interaction>"
+            "<character_id>: <Context or interaction>"
           }
         ]
       }
@@ -859,14 +854,11 @@ const nextPageOutputFormat: string = `{
         "addHints": [],
         "removeHints": [],
         "updateTraits": [
-          { "key": "...", "value": "..." }
+          "...: ..."
         ],
         "removeTraits": [],
         "knownCharacters": [
-          {
-            "key": "<character_id>",
-            "value": "<Context or interaction>"
-          }
+          "<character_id>: <Context or interaction>"
         ]
       }
     ]
@@ -992,7 +984,7 @@ ${isLatePhase || isFinale ? `  - A sudden shift can heighten dread — but don't
 
 calendarDate:
   - Increment if the day has changed.
-  - Write in 'yyyy-MM-dd' format (e.g., "2026-07-26").
+  - Use 'yyyy-MM-dd' format (e.g., "2026-07-26").
 
 timeOfDay
   - Any string: "2 AM", "dusk", "HH:mm", time range, or "unknown".
@@ -1047,14 +1039,14 @@ injuries
   - Otherwise, MUST include all previous injuries with updated values and/or new injury if any.
   - consequences: update any that affect the storyline (e.g. "Can't run fast, can't lift heavy objects").
 
-traumaTagUpdates
+traumaTagAdd / traumaTagRemove
   - Short evocative phrases for experiences that will haunt the MC later.
 ${traumaTags.length < MAX_TRAUMA_TAGS ? `  - Only add if something genuinely traumatic or psychologically significant occurs.` : `  - Maximum trauma tags reached. Can't add more.`}
   - Remove when trauma is resolved.
 ${isEarlyPhase ? `  - Max 1 per page. Plant sparingly — early trauma tags shape everything downstream.` : `  - Max 2 per page. Omit if none.`}
 ${isFinale ? `  - Existing trauma tags should be echoing and surfacing now, not new ones being added.` : ''}
 
-futureNoteUpdates
+futureNoteAdd / futureNoteRemove
 ${futureNotes.length < MAX_FUTURE_NOTES ? `  - ONLY add for important unresolved clues, revelations, promises, relationships, mysteries, or future developments which matter later.
   - Do NOT add for temporary details, completed events, or facts already captured by plot flags.
   - Prefer advancing existing future notes before creating new ones. Avoid duplicate or overlapping future notes.` : ''}
@@ -3443,7 +3435,7 @@ function formatCurrentFacts(factsHistory: Record<string, FactHistory[]>, groupBy
   // 3. Early return for the flat list
   if (!groupByCategory) {
     return entries
-      .map(([key, fact]) => `• ${key}: ${fact.value} (from page ${fact.page})`)
+      .map(([key, fact]) => `• ${key}: ${fact.value} (from page ${fact.page ?? '?'})`)
       .join('\n');
   }
 
@@ -3467,7 +3459,7 @@ function formatCurrentFacts(factsHistory: Record<string, FactHistory[]>, groupBy
     const items = groups[type];
     if (!items || items.length === 0) continue;
 
-    const lines = items.map(([key, fact]) => `• ${key}: ${fact.value} (from page ${fact.page})`);
+    const lines = items.map(([key, fact]) => `• ${key}: ${fact.value} (from page ${fact.page ?? '?'})`);
     parts.push(`${ucfirst(type)}:\n${lines.join('\n')}`);
   }
 

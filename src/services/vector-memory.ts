@@ -256,7 +256,7 @@ export async function embedStateDeltaEntities(page: PersistedStoryPage): Promise
     }
   }
 
-  for (const note of stateDelta.futureNoteUpdates?.add ?? []) {
+  for (const note of stateDelta.futureNoteAdd ?? []) {
     jobs.push(embedFutureNote(page, note));
   }
 

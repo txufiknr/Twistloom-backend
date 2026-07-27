@@ -1224,10 +1224,14 @@ export type StoryPageMeta = Pick<DBNewPage, 'bookId' | 'branchId' | 'parentId'> 
 export type StateDelta = {
   /** Updates to psychological flags (trust, fear, guilt, curiosity) */
   flagUpdates?: FlagUpdate[];
-  /** Updates to trauma tags (add/remove) based on page events */
-  traumaTagUpdates?: TagUpdates<string>;
-  /** Updates to future notes (add/remove) based on story progression */
-  futureNoteUpdates?: TagUpdates<FutureNote>;
+  /** Trauma tags to add based on page events */
+  traumaTagAdd?: string[];
+  /** Trauma tags to remove based on page events */
+  traumaTagRemove?: string[];
+  /** Future notes to add (with keys assigned by extractStateDelta) */
+  futureNoteAdd?: FutureNote[];
+  /** Future note keys to remove based on story progression */
+  futureNoteRemove?: string[];
   /** Updates to plot flags (add) for story progression */
   addPlotFlags?: InitialPlotFlag[];
   /** What durable facts about the story world changed */
@@ -1303,11 +1307,9 @@ export type PsychologicalStateDelta = Pick<StateDelta, 'psychologicalProfileUpda
  * AI-output shape of a state delta — excludes engine-owned psych fields
  * (`PsychologicalStateDelta`) and server-assigned future-note keys.
  */
-export type StateDeltaGeneration = Omit<StateDelta, keyof PsychologicalStateDelta | 'futureNoteUpdates' | 'isMajorEvent'> & {
-  futureNoteUpdates?: {
-    add?: FutureNoteGeneration[];
-    remove?: string[];
-  }
+export type StateDeltaGeneration = Omit<StateDelta, keyof PsychologicalStateDelta | 'isMajorEvent'> & {
+  /** Future notes to add (server assigns keys) */
+  futureNoteAdd?: FutureNoteGeneration[];
 };
 export type StoryPageGeneration = Omit<StoryPage, ResourceAIProvider | 'stateDelta' | 'momentum' | 'elapsedDays'>;
 export type StoryGeneration = StoryPageGeneration & StateDeltaGeneration & {
@@ -1983,10 +1985,16 @@ export type PastEvent = {
   placeId?: string;
 };
 
-export type TraitItem = {
-  key: string;
-  value: string;
-};
+/**
+ * A key-value trait pair formatted as a single string "key: value".
+ * 
+ * Flattened from `{key, value}` object to `string` to reduce schema depth
+ * by 1 level for Gemini constrained-decoder compatibility. Server-side code
+ * can parse with `splitFirst(': ')` when the individual key/value are needed.
+ * 
+ * @example "color: red", "smell: musty", "material: wood"
+ */
+export type TraitItem = string;
 
 export type StoryPlan = {
   /** Detected language code (ISO 639-1) */

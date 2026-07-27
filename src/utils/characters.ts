@@ -6,7 +6,7 @@ import type { StoryMCState, StoryState } from "../types/story.js";
 import type { KnownGender } from "../types/user.js";
 import { ucfirst } from "./formatter.js";
 import { getStoryStateInfo } from "./story.js";
-import { slugify } from "./text-processing.js";
+import { slugify, getTraitKey } from "./text-processing.js";
 
 // ============================================================================
 // CHARACTER MEMORY MANAGEMENT SYSTEM
@@ -140,7 +140,7 @@ export function updateCharacter(existing: CharacterMemory, update: CharacterUpda
   // Update traits if provided
   if (updateTraits.length) {
     updated.traits = [
-      ...traits.filter(t => !updateTraits.some(u => u.key === t.key)),
+      ...traits.filter(t => !updateTraits.some(u => getTraitKey(u) === getTraitKey(t))),
       ...updateTraits
     ];
   }
@@ -148,7 +148,7 @@ export function updateCharacter(existing: CharacterMemory, update: CharacterUpda
   // Remove traits
   if (removeTraits.length) {
     updated.traits = [
-      ...traits.filter(t => !removeTraits.includes(t.key)),
+      ...traits.filter(t => !removeTraits.includes(getTraitKey(t))),
     ];
   }
 
@@ -377,7 +377,7 @@ export function getMainCharacterInfo(params: {
 
   // Format inventory items with detailed nested information
   pushIndentedListSection(mcInfo, 'Inventory', inventory, item => {
-    const traitEntries = item.traits?.map(t => `${t.key}: ${t.value}`) ?? [];
+    const traitEntries = item.traits ?? [];
     const itemInfo = [item.where, ...traitEntries].filter(Boolean);
     const acquired = item.pageAcquired ? ` - acquired: page ${item.pageAcquired}` : '';
     return `${item.amount}x ${item.name}${itemInfo.length ? ` (${itemInfo.join(', ')})` : ''}${acquired}`;
@@ -582,7 +582,7 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
       });
 
       // Traits with nested bullets
-      pushListSection(details, 'Traits', traits, trait => `${trait.key}: ${trait.value}`);
+      pushListSection(details, 'Traits', traits, trait => trait);
 
       return `${mainInfo}\n${details.join('\n')}`;
     })

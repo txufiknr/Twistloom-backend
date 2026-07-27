@@ -94,6 +94,34 @@ export type AIPromptOptions = Partial<AIPromptDocuments> & {
   outputJsonRequired?: string[];
   /** Key to use when JSON parsing fails entirely (string value) */
   outputJsonFallbackField?: string;
+  /**
+   * Controls the evaluator's `output` schema strategy.
+   *
+   * - `'auto'` (default): Automatically picks the best strategy based on the evaluator's
+   *   provider chain. When Gemini is in the evaluator model selection, uses `true` (string
+   *   mode) to avoid Gemini's constrained-decoder limits. When Gemini is absent, uses
+   *   `false` (structured mode) for tighter provider-enforced validation. This is the
+   *   **recommended** setting — it adapts to the provider configuration.
+   *
+   * - `true`: The evaluator schema's `output` field is `{ type: 'string' }`.
+   *   The AI outputs corrected JSON as an escaped string. The server parses it with
+   *   `JSON.parse`. Keeps the evaluator schema small (~5 KB, passes all providers).
+   *   **Downside:** The provider only validates that `output` is a valid JSON string, not
+   *   that the JSON inside matches the expected structure. Structurally wrong output
+   *   (e.g. `{"mood": 123, "actions": "not_an_array"}`) passes through `JSON.parse`
+   *   and silently corrupts downstream processing until caught at a later stage.
+   *
+   * - `false`: The evaluator schema's `output` field wraps the full generation schema
+   *   (e.g. STORY_GENERATION's 30 properties, required fields). The AI provider enforces
+   *   field names, types, and required fields at token-generation time — the corrected
+   *   output is guaranteed to match the expected structure. Schema grows to ~56 props /
+   *   depth 7 / ~17 KB. **Downside:** Gemini may be skipped by the `isSchemaTooComplex`
+   *   gate (depth 7 > threshold 6), reducing evaluator provider diversity. Non-Gemini
+   *   providers handle this schema without issues.
+   *
+   * @default 'auto'
+   */
+  useStringEvaluatorOutput?: boolean | 'auto';
   /** Whether to log the generated prompts */
   logPrompts?: boolean;
   /** Whether to log the evaluation result */

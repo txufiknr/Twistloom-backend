@@ -259,7 +259,7 @@ function formatFactsForValidation(
   for (const [key, history] of Object.entries(factsHistory)) {
     const last = history.at(-1);
     if (last) {
-      entries.push(`  · ${key}: ${last.value} (from page ${last.page})`);
+      entries.push(`  · ${key}: ${last.value} (from page ${last.page ?? '?'})`);
     }
   }
   if (!entries.length) return '  No facts discovered yet.';

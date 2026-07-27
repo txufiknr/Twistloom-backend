@@ -10,7 +10,7 @@ import { classifyGenAIError, getErrorMessage, isGenAIErrorRetryable } from "./er
 import { retryWithBackoff } from "./retry.js";
 import { AI_CHAT_MODEL_RETRY_COUNT } from "../config/ai-chat.js";
 import { createTextChunkEvent, createErrorEvent, createStartEvent, createEndEvent, handleBackpressure } from "./sse.js";
-import { formatDocumentsToPrompt, formatSystemPromptWithDocuments, logPromptWithSeparators } from "./ai-chat.js";
+import { formatDocumentsToPrompt, formatSystemPromptWithDocuments, isSchemaTooComplex, logPromptWithSeparators } from "./ai-chat.js";
 import { type GenerateContentConfig, type GenerateContentParameters } from "@google/genai";
 import type { AIChatStreamProvider, AIChatStreamResult } from "../types/sse.js";
 import type { Cohere } from "cohere-ai";
@@ -186,6 +186,12 @@ export async function aiStreamSSE(
             };
             
             try {
+              // Pre-call check: Skip Gemini if the schema exceeds its constrained decoder limits.
+              if (provider === 'gemini' && isSchemaTooComplex(options.outputJsonStructure)) {
+                console.warn(`[gemini] ⏩ Skipping Gemini — schema exceeds complexity limits that Gemini's constrained decoder can compile`);
+                continue;
+              }
+
               // Establish stream connection with retry for retryable errors.
               // The generator creation + first .next() is retried together so that
               // each attempt gets a fresh HTTP connection. Only on success do we
