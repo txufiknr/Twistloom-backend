@@ -905,10 +905,7 @@ export type WorldClock = {
 export type SanityState = {
   /** Current composure 0–100. At 0 the reader is in crisis. */
   composure: number;
-  /**
-   * Maximum composure (starts at 100). Permanently reduced by accumulated
-   * trauma tags so recovery never fully restores pre-trauma capacity.
-   */
+  /** Maximum composure (starts at 100). Permanently reduced by accumulated trauma tags so recovery never fully restores pre-trauma capacity. */
   maxComposure: number;
   /** Base decay per page when momentum is critical (default ~5). */
   decayRate: number;

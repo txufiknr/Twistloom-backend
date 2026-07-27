@@ -27,6 +27,8 @@
 [ ] enrich initialize book with generated mc image
 [ ] enrich page 1 with imagePrompt -> generate page image cron
 
+ApiError: {"error":{"code":429,"message":"TotalCachedContentStorageTokensPerModelFreeTier limit exceeded for model gemini-2.5-flash: limit=0, requested=7558","status":"RESOURCE_EXHAUSTED"}}
+
 ---
 
 TO PURCHASE:
