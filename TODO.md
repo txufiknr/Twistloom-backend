@@ -31,59 +31,6 @@
 
 ---
 
-[ ] PUT /api/books/019f97ee-6daa-76ca-b34d-af3fab005756 (500)
-cause: error: insert or update on table "books" violates foreign key constraint "books_image_id_uploaded_images_image_id_fk"
-
-2026-07-27 11:34:19.336 [error] [cApiError] ❌ Failed to update book: DrizzleQueryError: Failed query: update "books" set "image_id" = $1, "updated_at" = $2 where "books"."id" = $3 returning "id", "user_id", "slug", "title", "total_pages", "language", "hook", "summary", "image_id", "trending_score", "is_original", "keywords", "mode", "status", "visibility", "mc", "likes_count", "read_count", "branches_count", "comments_count", "complete_count", "completion_rate", "top_pick", "credits_price", "original_theme_input", "story_start_date", "advanced_options", "ending", "created_at", "updated_at"
-params: 6a6742385c7cd75eb8a10dae,2026-07-27T11:34:18.328Z,019f97ee-6daa-76ca-b34d-af3fab005756
-    at NeonPreparedQuery.queryWithCache (file:///var/task/node_modules/.pnpm/drizzle-orm@0.45.2_@neondatabase+serverless@1.1.0_@upstash+redis@1.38.0/node_modules/drizzle-orm/pg-core/session.js:41:15)
-    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
-    at async NeonPreparedQuery.execute (file:///var/task/node_modules/.pnpm/drizzle-orm@0.45.2_@neondatabase+serverless@1.1.0_@upstash+redis@1.38.0/node_modules/drizzle-orm/neon-serverless/session.js:109:20)
-    ... 4 lines matching cause stack trace ...
-    at async dispatch (file:///var/task/node_modules/.pnpm/hono@4.12.31/node_modules/hono/dist/compose.js:22:17)
-    at async <anonymous> (/vercel/path0/src/middleware/nextauth.ts:207:3)
-    at async dispatch (file:///var/task/node_modules/.pnpm/hono@4.12.31/node_modules/hono/dist/compose.js:22:17) {
-  query: 'update "books" set "image_id" = $1, "updated_at" = $2 where "books"."id" = $3 returning "id", "user_id", "slug", "title", "total_pages", "language", "hook", "summary", "image_id", "trending_score", "is_original", "keywords", "mode", "status", "visibility", "mc", "likes_count", "read_count", "branches_count", "comments_count", "complete_count", "completion_rate", "top_pick", "credits_price", "original_theme_input", "story_start_date", "advanced_options", "ending", "created_at", "updated_at"',
-  params: [
-    '6a6742385c7cd75eb8a10dae',
-    '2026-07-27T11:34:18.328Z',
-    '019f97ee-6daa-76ca-b34d-af3fab005756'
-  ],
-  cause: error: insert or update on table "books" violates foreign key constraint "books_image_id_uploaded_images_image_id_fk"
-      at file:///var/task/node_modules/.pnpm/@neondatabase+serverless@1.1.0/node_modules/@neondatabase/serverless/index.mjs:1087:33
-      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
-      at async file:///var/task/node_modules/.pnpm/drizzle-orm@0.45.2_@neondatabase+serverless@1.1.0_@upstash+redis@1.38.0/node_modules/drizzle-orm/neon-serverless/session.js:110:14
-      at async NeonPreparedQuery.queryWithCache (file:///var/task/node_modules/.pnpm/drizzle-orm@0.45.2_@neondatabase+serverless@1.1.0_@upstash+redis@1.38.0/node_modules/drizzle-orm/pg-core/session.js:39:16)
-      at async NeonPreparedQuery.execute (file:///var/task/node_modules/.pnpm/drizzle-orm@0.45.2_@neondatabase+serverless@1.1.0_@upstash+redis@1.38.0/node_modules/drizzle-orm/neon-serverless/session.js:109:20)
-      at async updateBook (/vercel/path0/src/services/book.ts:968:21)
-      at async <anonymous> (/vercel/path0/src/routes/books.ts:1482:25)
-      at async dispatch (file:///var/task/node_modules/.pnpm/hono@4.12.31/node_modules/hono/dist/compose.js:22:17)
-      at async <anonymous> (/vercel/path0/src/middleware/upload.ts:55:7)
-      at async dispatch (file:///var/task/node_modules/.pnpm/hono@4.12.31/node_modules/hono/dist/compose.js:22:17) {
-    length: 324,
-    severity: 'ERROR',
-    code: '23503',
-    detail: 'Key (image_id)=(6a6742385c7cd75eb8a10dae) is not present in table "uploaded_images".',
-    hint: undefined,
-    position: undefined,
-    internalPosition: undefined,
-    internalQuery: undefined,
-    where: undefined,
-    schema: 'public',
-    table: 'books',
-    column: undefined,
-    dataType: undefined,
-    constraint: 'books_image_id_uploaded_images_image_id_fk',
-    file: 'ri_triggers.c',
-    line: '2772',
-    routine: 'ri_ReportViolation'
-  }
-}
-2026-07-27 11:34:18.328 [info] [uploadImageKit] 📸 Image uploaded: https://ik.imagekit.io/tarra/twistloom/books/2026/07/27/cover-019f97ee-6daa-76ca-b34d-af3fab005756.webp (ID: 6a6742385c7cd75eb8a10dae)
-2026-07-27 11:34:18.328 [info] [uploadBookCoverImage] 🌐 Uploaded to ImageKit: https://ik.imagekit.io/tarra/twistloom/books/2026/07/27/cover-019f97ee-6daa-76ca-b34d-af3fab005756.webp
-
----
-
 ApiError: {"error":{"code":429,"message":"TotalCachedContentStorageTokensPerModelFreeTier limit exceeded for model gemini-2.5-flash: limit=0, requested=7558","status":"RESOURCE_EXHAUSTED"}}
 
 ApiError: {"error":{"code":400,"message":"The specified schema produces a constraint that has too many states for serving. Typical causes of this error are schemas with lots of text (for example, very long property or enum names), schemas with long array length limits (especially when nested), or schemas using complex value matchers (for example, integers or numbers with minimum/maximum bounds or strings with complex formats like date-time)","status":"INVALID_ARGUMENT"}}

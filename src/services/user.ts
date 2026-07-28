@@ -634,13 +634,12 @@ export async function performDailyCheckIn(userId: string, claimType: CheckinClai
           eq(userCheckins.userId, userId),
           ne(userCheckins.checkInDate, todayUTC)
         ))
-        .orderBy(desc(userCheckins.checkInDate))
-        .limit(DAILY_CHECKIN_DAYS);
+        .orderBy(desc(userCheckins.checkInDate));
 
       const dateSet = new Set(recent.map(r => r.checkInDate));
       const utcToday = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()));
       let prevStreak = 0;
-      for (let i = 1; i <= DAILY_CHECKIN_DAYS; i++) {
+      for (let i = 1; i <= 366; i++) {
         const d = new Date(utcToday);
         d.setUTCDate(d.getUTCDate() - i);
         const iso = d.toISOString().slice(0, 10);
@@ -776,11 +775,11 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
     const utcToday = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()));
 
     // Raw consecutive day count from the DB trigger (unbounded), with a
-    // fallback to capped loop-based computation for users without a counter row.
+    // fallback to loop-based computation for users without a counter row.
     const rawStreak = counter?.activeCheckinStreak ?? (() => {
       let s = 0;
       const startOffset = canCheckInStatus.canCheckIn ? 1 : 0;
-      for (let i = startOffset; i < DAILY_CHECKIN_DAYS + startOffset; i++) {
+      for (let i = startOffset; i <= 366; i++) {
         const d = new Date(utcToday);
         d.setUTCDate(d.getUTCDate() - i);
         const iso = d.toISOString().slice(0, 10);
@@ -813,7 +812,7 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
       let streakPosition: number;
       if (!claimedRewards.includes('regular')) {
         let streakBackwards = 0;
-        for (let i = 1; i <= DAILY_CHECKIN_DAYS; i++) {
+        for (let i = 1; i <= 366; i++) {
           const d = new Date(utcToday);
           d.setUTCDate(d.getUTCDate() - i);
           const iso = d.toISOString().slice(0, 10);
