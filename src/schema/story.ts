@@ -1,10 +1,10 @@
 import { FACT_KEY_FORMAT, HOOK_LENGTH, SUMMARY_LENGTH, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MAX_TRAUMA_TAGS, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT, RELATIONSHIP_TO_MC_LENGTH, BOOK_MAX_PAGES, BOOK_MIN_PAGES, BOOK_TITLE_LENGTH, MAX_CHARACTER_AGE, MIN_CHARACTER_AGE, VIABLE_ENDING_LENGTH, KEYWORDS_COUNT } from "../config/story.js";
 import { characterImportances, characterRecognitionLevels, characterStatuses, healthConditions, injuryCategories, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
-import type { NarrativeFlags, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter, CharacterRelationshipContext, CharacterUpdate, CharacterSchedule, StoryMCGeneration } from "../types/character.js";
+import type { RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter, CharacterRelationshipContext, CharacterUpdate, CharacterSchedule, StoryMCGeneration } from "../types/character.js";
 import { canonicalPlaceTypes, type NewPlace, type PlaceUpdate, placeWeathers, type PlaceConnectionUpdate, placeAccessibilities } from "../types/places.js";
 import { actionHintTypes, actionTypes, characterSceneRoles, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, sceneTypes, difficulties, endingTypes, storyMomentums, stabilityLevels, storyPhaseKeys, futureNoteTriggerTypes, memoryIntegrities } from "../types/story.js";
 import type { AIJsonActionFlag, AIJsonEvaluation, AIJsonEvaluationFix, AIJsonEvaluationIssue, AIJsonIntegrityFlag, AIJsonProperty, AIJsonScoreAfter, AIJsonScoreBefore, AIJsonScoreBreakdown, AIPromptOptions } from "../types/ai-chat.js";
-import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, TagItem, FactUpdate, StateDeltaGeneration, ActionGeneration, FutureNoteGeneration, FlagUpdate, PlotFlagType, InitialPlotFlag, SceneCharacter, SanityState } from "../types/story.js";
+import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, FactUpdate, StateDeltaGeneration, ActionGeneration, FutureNoteGeneration, FlagUpdate, PlotFlagType, InitialPlotFlag, SceneCharacter, SanityState } from "../types/story.js";
 import { threadPriorities, threadStatuses, threadTruths, type UpdateThread, type NewThread, type AddThreadClue, type InitialThreadClue } from "../types/story-thread.js";
 import type { CandidatePagesGeneration } from "../types/candidate-generation.js";
 import { genders } from "../types/user.js";
@@ -94,15 +94,6 @@ export const INJURY_SCHEMA: AIJsonProperty = {
   required: [...INITIAL_INJURY_KEYS, 'pageAcquired'] satisfies (keyof Injury)[],
 };
 
-export const CHARACTER_NARRATIVE_FLAGS_SCHEMA: AIJsonProperty = {
-  type: 'object',
-  description: 'Future-facing plot planning and mechanical twists',
-  properties: {
-    potentialTwist: { type: 'string', enum: [...potentialTwistTypes] }
-  } satisfies Record<keyof NarrativeFlags, AIJsonProperty>,
-  required: ['potentialTwist'] satisfies (keyof NarrativeFlags)[],
-  additionalProperties: false
-};
 
 export const PLACE_KEY_OBJECT_SCHEMA: AIJsonProperty = {
   type: 'object',
@@ -418,7 +409,7 @@ export const INITIAL_CHARACTER_PROPERTIES: Record<keyof NewCharacter, AIJsonProp
     additionalProperties: false
   },
   secrets: { type: 'array', items: { type: 'string' }, description: `Any secrets the character has unknown to MC (max ${MAX_CHARACTER_SECRETS}).` },
-  narrativeFlags: CHARACTER_NARRATIVE_FLAGS_SCHEMA,
+  potentialTwist: { type: 'string', enum: [...potentialTwistTypes], description: 'Future-facing plot planning and mechanical twists' },
   injuries: { type: 'array', items: INITIAL_INJURY_SCHEMA },
   schedules: { type: 'array', description: 'When/where this character can be found. Multiple entries for different availability windows per place.', items: CHARACTER_SCHEDULE_SCHEMA },
   pastInteractions: { type: 'array', items: { type: 'string' }, description: 'Interactions happened in this page' },
@@ -436,7 +427,7 @@ const { realName: _cn, pastInteractions: _pin, schedules: _schedules, ...updateC
 export const INITIAL_CHARACTER_SCHEMA: AIJsonProperty = {
   type: 'object',
   properties: INITIAL_CHARACTER_PROPERTIES,
-  required: ['characterId', 'knownName', 'realName', 'recognitionLevel', 'role', 'gender', 'status', 'importance', 'relationshipToMC', 'bio', 'appearance', 'injuries', 'secrets', 'narrativeFlags'] satisfies (keyof NewCharacter)[],
+  required: ['characterId', 'knownName', 'realName', 'recognitionLevel', 'role', 'gender', 'status', 'importance', 'relationshipToMC', 'bio', 'appearance', 'injuries', 'secrets', 'potentialTwist'] satisfies (keyof NewCharacter)[],
   additionalProperties: false
 };
 
@@ -485,26 +476,13 @@ export const PLACE_CONNECTION_UPDATE_SCHEMA: AIJsonProperty = {
     travelTime: { type: 'string', description: 'Narrative travel duration (e.g., "5 minutes walk", "20 minutes drive").' },
     routeType: { type: 'string', description: 'Main route used between places (e.g., "alley")' },
     accessibility: { type: 'string', enum: [...placeAccessibilities] },
-    updateObstacles: getTagUpdatesSchema<string>({ description: 'Relevant barriers, hazards, or restrictions (e.g., "police checkpoint", "flooded alley")' }),
+    addObstacles: { type: 'array', items: { type: 'string' }, description: 'Relevant barriers, hazards, or restrictions to add (e.g., "police checkpoint", "flooded alley")' },
+    removeObstacles: { type: 'array', items: { type: 'string' }, description: 'Obstacle keys to remove' },
     bidirectional: { type: 'boolean', description: `false if we can't go back to source place` },
     notes: { type: 'string', description: 'Optional route-specific details.' },
   } satisfies Record<keyof PlaceConnectionUpdate, AIJsonProperty>,
   required: ['sourceId', 'targetId', 'travelTime'] satisfies (keyof PlaceConnectionUpdate)[],
   additionalProperties: false
-};
-
-function getTagUpdatesSchema<T extends TagItem>(params: {description?: string, items?: AIJsonProperty}): AIJsonProperty {
-  const { description, items } = params;
-  return {
-    type: 'object',
-    description,
-    properties: {
-      add:    { type: 'array', items: items ?? { type: 'string' } },
-      remove: { type: 'array', items: { type: 'string' } },
-    } satisfies Record<keyof TagUpdates<T>, AIJsonProperty>,
-    required: ['add', 'remove'] satisfies (keyof TagUpdates<T>)[],
-    additionalProperties: false
-  };
 };
 
 export const STORY_PAGE_GENERATION_SCHEMA: Record<keyof StoryPageGeneration, AIJsonProperty> = {

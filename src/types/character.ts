@@ -189,17 +189,6 @@ export const potentialTwistTypes = [
  */
 export type PotentialTwistType = typeof potentialTwistTypes[number];
 
-/**
- * Narrative flags for character plot control and twist setup
- * 
- * These flags control character behavior patterns and enable narrative twists.
- * They serve as the control layer for character-driven plot developments.
- */
-export type NarrativeFlags = {
-  /** Potential twist type planned for this character */
-  potentialTwist: PotentialTwistType;
-  // Any other non-status mechanical flags (e.g., isPlotEssential: boolean)
-};
 
 /**
  * Complete character memory structure for narrative consistency
@@ -249,8 +238,8 @@ export type CharacterMemory = {
   relationships: CharacterRelationship[];
   /** Recent important interactions (max MAX_PAST_INTERACTIONS, sliding window) */
   pastInteractions: PastInteraction[];
-  /** Narrative control flags (strict structural plot setup) */
-  narrativeFlags: NarrativeFlags;
+  /** Potential twist type planned for this character */
+  potentialTwist: PotentialTwistType;
   /** Whether character has injury */
   injuries: Injury[];
   /** The page number at which the character was introduced */

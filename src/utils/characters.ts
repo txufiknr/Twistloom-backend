@@ -129,12 +129,9 @@ export function updateCharacter(existing: CharacterMemory, update: CharacterUpda
     ].slice(-MAX_PAST_INTERACTIONS);
   }
 
-  // Merge narrative flags if provided
-  if (update.narrativeFlags) {
-    updated.narrativeFlags = {
-      ...existing.narrativeFlags,
-      ...update.narrativeFlags
-    };
+  // Merge potentialTwist if provided
+  if (update.potentialTwist) {
+    updated.potentialTwist = update.potentialTwist;
   }
 
   // Update traits if provided
@@ -489,7 +486,7 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
       const {
         knownName, realName, recognitionLevel, role, gender, status,
         bio, appearance, introducedAtPage, pastInteractions, importance,
-        secrets, relationships, relationshipToMC, narrativeFlags, injuries, traits, schedules
+        secrets, relationships, relationshipToMC, potentialTwist, injuries, traits, schedules
       } = character;
 
       const useDifferentReference = knownName !== realName;
@@ -566,12 +563,8 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
       });
       
       // Narrative mechanics (Strictly plot planning constraints now)
-      const narrativeInfo = [];
-      if (narrativeFlags?.potentialTwist && narrativeFlags.potentialTwist !== 'none') {
-        narrativeInfo.push(`potential twist: ${narrativeFlags.potentialTwist}`);
-      }
-      if (narrativeInfo.length) {
-        details.push(`  - Narrative mechanics: ${narrativeInfo.join(', ')}`);
+      if (potentialTwist && potentialTwist !== 'none') {
+        details.push(`  - Potential twist: ${potentialTwist}`);
       }
       
       // Concluding Physical Status

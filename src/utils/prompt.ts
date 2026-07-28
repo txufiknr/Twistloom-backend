@@ -185,7 +185,7 @@ export const RULES_PLACE = `PLACE RULES:
 export const RULES_CHARACTER = `CHARACTER RULES:
 - NEVER reveal hidden character data unless explicitly discovered. Refer to characters per their recognitionLevel (below) — never their real name unless that level permits it.
 - Respect each character's bio and appearance — preserve dialect, tone, and personality; use pastInteractions to shape dialogue, reflect current status in behavior, and reintroduce naturally after an absence.
-- Characters may shift suddenly if narrativeFlags suggest it — never explain the change. Use relationships to build tension triangles; characters may also misunderstand, reinforcing illusion or false theory through dialogue or action.`;
+- Characters may shift suddenly if their potentialTwist suggests it — never explain the change. Use relationships to build tension triangles; characters may also misunderstand, reinforcing illusion or false theory through dialogue or action.`;
 
 /**
  * Defines the naming vocabulary ("the tall man", "The Janitor", etc.) tied
@@ -252,33 +252,6 @@ ${formatKeyValueList(storyMomentums)}`;
  */
 export const RULES_SCENE_TYPES = `SCENE TYPES (sorted by most important):
 ${formatKeyValueList(sceneTypes)}`;
-
-/**
- * @deprecated Unused — buildFirstPageRuleSet() (below) builds the live
- * rule set directly, using RULES_PAGE_TEXT_BY_PRESET[preset] in place of
- * RULES_PAGE_TEXT. This array (and RULES_NEXT_PAGE_GENERATION, which
- * wraps it) predate the writing-preset system.
- */
-// export const RULES_FIRST_PAGE_GENERATION = [
-//   RULES_DIFFICULTY_SCALING,
-//   RULES_ENDING_ARCHETYPES,
-//   RULES_STORY_MOMENTUMS,
-//   RULES_SCENE_TYPES,
-//   RULES_PLACE,
-//   RULES_CHARACTER,
-//   RULES_CHARACTER_RECOGNITION,
-//   RULES_PAGE_TEXT,
-//   RULES_ACTIONS,
-// ].join('\n\n---\n');
-
-/** @deprecated Unused — see RULES_FIRST_PAGE_GENERATION above. */
-// export const RULES_NEXT_PAGE_GENERATION = [
-//   RULES_ROUTE_MEMORY, // based on past actions
-//   RULES_STORY_CONSISTENCY, // for next page continuity
-//   RULES_FUTURE_NOTES, // after future notes exists
-//   RULES_FALSE_PREVIEW, // after future notes exists
-//   RULES_FIRST_PAGE_GENERATION
-// ].join('\n\n---\n');
 
 // ============================================================================
 // WRITING PRESET PROMPT BUILDERS
@@ -381,10 +354,10 @@ const firstBookOutputFormat: string = `{
   },
   "initialState": {
     "flags": {
-      "trust": "One of: low | medium | high",
-      "fear": "One of: low | medium | high",
-      "guilt": "One of: low | medium | high",
-      "curiosity": "One of: low | medium | high"
+      "trust": "${flagLevelValues}",
+      "fear": "${flagLevelValues}",
+      "guilt": "${flagLevelValues}",
+      "curiosity": "${flagLevelValues}"
     },
     "memoryIntegrity": "${memoryIntegrityValues}",
     "difficulty": "${difficultyValues}",
@@ -506,9 +479,7 @@ const firstBookOutputFormat: string = `{
         "recognitionLevel": "${recognitionLevelValues}"
       },
       "pastInteractions": ["..."],
-      "narrativeFlags": {
-        "potentialTwist": "${twistTypeValues}"
-      },
+      "potentialTwist": "${twistTypeValues}",
       "traits": [
         "...: ..."
       ],
@@ -745,9 +716,7 @@ const nextPageOutputFormat: string = `{
         "recognitionLevel": "${recognitionLevelValues}"
       },
       "pastInteractions": ["..."],
-      "narrativeFlags": {
-        "potentialTwist": "${twistTypeValues}"
-      },
+      "potentialTwist": "${twistTypeValues}",
       "schedules": [
         {
           "placeId": "<place_id>",
@@ -780,9 +749,7 @@ const nextPageOutputFormat: string = `{
         "recognitionLevel": "${recognitionLevelValues}"
       },
       "newInteractions": ["..."],
-      "narrativeFlags": {
-        "potentialTwist": "${twistTypeValues}"
-      },
+      "potentialTwist": "${twistTypeValues}",
       "updateSchedules": [
         {
           "placeId": "<place_id>",
@@ -835,9 +802,7 @@ const nextPageOutputFormat: string = `{
         "...: ..."
       ],
       "knownCharacters": [
-        {
-          "<character_id>: <Context or interaction>"
-        }
+        "<character_id>: <Context or interaction>"
       ]
     }
   ],
@@ -869,7 +834,8 @@ const nextPageOutputFormat: string = `{
       "travelTime": "...",
       "routeType": "...",
       "accessibility": "${accessibilityValues}",
-      "updateObstacles": { "add": [], "remove": [] },
+      "addObstacles": [],
+      "removeObstacles": [],
       "bidirectional": <boolean>,
       "notes": "..."
     }
@@ -1132,7 +1098,7 @@ ${isLatePhase || isFinale
   - status: ${formatOneOf(characterStatuses)}
   - importance: ${formatOneOf(characterImportances)}
   - relationshipToMC: based on interaction and story progression.
-  - narrativeFlags: adjust to reflect plot developments.
+  - potentialTwist: adjust to reflect plot developments.
   - secrets: spoiler/hints (new) or remove revealed ones (update).
   - traits: only story-relevant. Remove or update.
   - injuries: add or update. Set severity to zero to remove.
@@ -1174,7 +1140,7 @@ placeConnections
   - travelTime: travel duration (e.g., "5 minutes walk", "20 minutes drive").
   - routeType: route description (e.g., "main street", "alley", "tunnel").
   - accessibility: ${accessibilityValues}.
-  - updateObstacles: story-relevant barriers, hazards, or access requirements.
+  - addObstacles/removeObstacles: story-relevant barriers, hazards, or access requirements.
   - notes: short route details not covered elsewhere.
 
 newThreads
@@ -3044,10 +3010,8 @@ function formatNextPageNarrativePrompt(params: BuildNextPagePromptParams): strin
   const { advancedState: state, actionedPage, relevantFutureNoteKeys, book, clueRecallBlocks } = params;
   const { flags, psychologicalProfile, hiddenState, threads, memoryIntegrity, futureNotes, healthStatus, sanityState } = state;
   const stateInfo = getStoryStateInfo(state);
-  const { currentPage, phase, isFinale } = stateInfo;
+  const { currentPage, phase } = stateInfo;
   const { calendarDate, elapsedDays } = actionedPage;
-
-  console.log(`[formatNextPageNarrativePrompt] 🥂 isFinale?`, {phase, isFinale});
 
   return `NARRATIVE STYLE & PROSE ATMOSPHERE:
 ${createNarrativeStyle(state).instructions}
@@ -3713,7 +3677,7 @@ initialCharacters:
 - Include only side characters who meaningfully exist at story start.
 - At least one should have a relationship that can be corrupted.
 - bio: must include one trait that could become a source of threat or betrayal.
-- narrativeFlags: set to match behavior and twist setup.
+- potentialTwist: set to match behavior and twist setup.
 - traits: only story-relevant (e.g., skills, hobbies).
 - Every initial character should serve at least one purpose: deepen the MC, increase tension, introduce information, create conflict, or foreshadow future events.
 - Avoid background characters that have no narrative value.
@@ -4082,10 +4046,7 @@ export async function initializeBook(
       {
         ...char,
         pastInteractions: char.pastInteractions?.map<PastInteraction>(i => ({ page: 1, interaction: i, placeId })) ?? [],
-        narrativeFlags: {
-          ...{ potentialTwist: 'none' },
-          ...char.narrativeFlags
-        },
+        potentialTwist: char.potentialTwist ?? 'none',
         introducedAtPage: 1,
         relationships: initialRelationships.filter(r => r.sourceId === char.characterId).map<CharacterRelationship>(r => {
           return {

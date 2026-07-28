@@ -1,29 +1,5 @@
 import type { ObjectItem } from "./character.js";
-import type { Mood, PastEvent, TagUpdates, TraitItem } from "./story.js";
-
-// /**
-//  * Available place types for categorizing locations
-//  * 
-//  * These types help the AI understand the nature and function
-//  * of each place within the narrative world.
-//  */
-// export const placeTypes = [
-//   "house",        // Residential buildings, homes
-//   "school",       // Educational institutions
-//   "forest",       // Natural wooded areas
-//   "river",        // Water bodies, streams
-//   "road",         // Transportation routes
-//   "building",     // General structures
-//   "room",         // Indoor spaces
-//   "outdoor",      // Open areas
-//   "unknown",      // Mysterious/unidentified places
-//   "other"         // Catch-all for unique locations
-// ] as const;
-
-// /**
-//  * Union type of all possible place type values
-//  */
-// export type PlaceType = typeof placeTypes[number];
+import type { Mood, PastEvent, TraitItem } from "./story.js";
 
 /**
  * Canonical place types aligned with frontend BGM system
@@ -197,7 +173,7 @@ export type PlaceConnection = {
   updatedAtPage?: number;
 }
 
-export type PlaceConnectionUpdate = Omit<PlaceConnection, 'updatedAtPage' | 'obstacles'> & { updateObstacles: TagUpdates<string>; sourceId: string; };
+export type PlaceConnectionUpdate = Omit<PlaceConnection, 'updatedAtPage' | 'obstacles'> & { addObstacles?: string[]; removeObstacles?: string[]; sourceId: string; };
 
 export type PlaceMemoryTranslation = Pick<PlaceMemory, 'knownName' | 'realName' | 'context' | 'traits'> & { placeId: string; type?: string };
 

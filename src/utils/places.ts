@@ -234,7 +234,7 @@ export function updateConnection(place: PlaceMemory, update: PlaceConnectionUpda
     };
 
     // Update obstacles
-    const { add: addObstacles = [], remove: removeObstacles = [] } = update.updateObstacles;
+    const { addObstacles = [], removeObstacles = [] } = update;
     updated.knownConnections[existingIndex].obstacles = [
       ...updated.knownConnections[existingIndex].obstacles.filter(o => !removeObstacles.includes(o)),
       ...addObstacles
@@ -246,7 +246,7 @@ export function updateConnection(place: PlaceMemory, update: PlaceConnectionUpda
       travelTime: update.travelTime,
       routeType: update.routeType,
       accessibility: update.accessibility || "open",
-      obstacles: update.updateObstacles.add ?? [],
+      obstacles: update.addObstacles ?? [],
       bidirectional: update.bidirectional ?? true,
       notes: update.notes,
       updatedAtPage: currentPage,
