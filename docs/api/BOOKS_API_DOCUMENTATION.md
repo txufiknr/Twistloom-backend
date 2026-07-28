@@ -321,8 +321,10 @@ type BookSortingOptions =
    - [Get Active Generations](#get-apibooksgenerationsactive)
    - [Get User's Library](#get-apibooks)
    - [Get Book by Identifier](#get-apibooksidentifier)
-   - [Update Book](#put-apibooksid)
-   - [Update Book Visibility](#patch-apibooksidvisibility)
+    - [Update Book Metadata](#put-apibooksid)
+    - [Upload Cover Image](#put-apibooksidcover-image)
+    - [Upload Character Avatar](#put-apibooksidcharacter-image)
+    - [Update Book Visibility](#patch-apibooksidvisibility)
    - [Archive Book](#patch-apibooksidarchive)
    - [Delete Book](#delete-apibooksid)
    - [Purchase Book](#post-apibooksidentifierpurchase)
@@ -736,7 +738,9 @@ Retrieves a book by slug or UUID v7 identifier. Returns complete book informatio
 
 ### PUT /api/books/:id
 
-Updates book information, cover image, main character (MC) profile/avatar, and ending data. Supports partial updates and multiple image upload methods (URL, base64, or multipart file).
+Updates book metadata (title, hook, summary, keywords, visibility, status, MC text fields, ending). Supports partial updates — only provided fields will be modified.
+
+Does **not** handle image uploads. Use `PUT /api/books/:id/cover-image` and `PUT /api/books/:id/character-image` for image operations.
 
 **Authentication:** Required (via `requireAuth`)
 
@@ -749,20 +753,19 @@ All text fields (`title`, `hook`, `summary`) are sanitized via `sanitizeBookText
 - Double-width quotes are normalised
 - Empty/whitespace-only values are treated as "not provided" (field is skipped)
 
-**Request Body (JSON):**
+**Request Body:**
 ```json
 {
   "title": "Updated Title",
   "hook": "Updated hook text",
   "summary": "Updated summary",
   "keywords": ["thriller", "mystery"],
-  "imageUrl": "https://example.com/new-cover.jpg",
+  "visibility": "public",
   "mc": {
     "name": "Sarah",
     "age": 28,
     "gender": "female",
-    "bio": "Updated bio",
-    "imageUrl": "https://example.com/mc-avatar.jpg"
+    "bio": "Updated bio"
   },
   "ending": {
     "text": "Sarah finally confronts her past...",
@@ -774,15 +777,6 @@ All text fields (`title`, `hook`, `summary`) are sanitized via `sanitizeBookText
 }
 ```
 
-**Or multipart/form-data:**
-- `imageFile` (file, optional): Cover image file
-- `title` (string, optional): Updated title
-- `hook` (string, optional): Updated hook
-- `summary` (string, optional): Updated summary
-- `keywords` (string, optional): Comma-separated keywords
-- `imageUrl` (string, optional): Cover image URL
-- `mc.imageUrl` (string, optional): MC avatar URL or base64 — uploaded to ImageKit's `book-characters` folder
-
 **Parameters:**
 - `title` (string, optional): Book title (sanitised for XSS)
 - `hook` (string, optional): Hook text (sanitised for XSS)
@@ -790,13 +784,7 @@ All text fields (`title`, `hook`, `summary`) are sanitized via `sanitizeBookText
 - `keywords` (string[], optional): Keyword list (sanitised via `sanitizeKeywords`)
 - `visibility` (string, optional): One of `private`, `unlisted`, `followers`, `public`
 - `status` (string, optional): One of `active`, `archived`, `draft`
-- `imageUrl` (string, optional): Cover image URL
-- `mc` (object, optional): Full MC object (replaces existing)
-  - `name` (string, optional): Character name
-  - `age` (number, optional): Character age
-  - `gender` (string, optional): `male` or `female`
-  - `bio` (string, optional): Character biography
-  - `imageUrl` (string, optional): Avatar image source — triggers upload to ImageKit's `book-characters` folder on update
+- `mc` (object, optional): MC text fields only (`name`, `age`, `gender`, `bio`). Image fields (`imageUrl`, `imageId`) are silently ignored — use `PUT /api/books/:id/character-image` for avatar operations
 - `ending` (object, optional): Full ending object (replaces existing)
   - `text` (string, optional): Ending description
   - `type` (string, optional): Ending type (`good`, `bad`, `ambiguous`, etc.)
@@ -812,35 +800,124 @@ All text fields (`title`, `hook`, `summary`) are sanitized via `sanitizeBookText
     "hook": "Updated hook text",
     "summary": "Updated summary",
     "keywords": ["thriller", "mystery"],
-    "imageUrl": "https://ik.imagekit.io/abc123/cover.jpg",
     "mc": {
       "name": "Sarah",
       "age": 28,
       "gender": "female",
-      "imageUrl": "https://ik.imagekit.io/abc123/characters/avatar.jpg"
+      "bio": "Updated bio"
     },
     "ending": {
       "text": "Sarah finally confronts her past...",
       "type": "ambiguous"
     },
     "updatedAt": "2023-01-15T12:00:00.000Z"
-  },
-  "imageUploaded": true,
-  "mcAvatarUploaded": true,
-  "uploadSource": "file",
-  "oldImageQueuedForDeletion": true
+  }
 }
 ```
 
 **Behavior:**
 - Text fields (`title`, `hook`, `summary`) are always sanitised — empty-string values are treated as "not provided" and the field retains its existing value
 - `keywords` are sanitised via `sanitizeKeywords` (deduplication, length limits)
-- When `mc.imageUrl` is provided, the image is uploaded to ImageKit's `book-characters` folder and the URL is replaced with the ImageKit-hosted version (old cover images are *not* deleted automatically). The upload record is persisted to the `uploaded_images` table with `type: 'mc'` for audit and cron-based cleanup
+- MC `imageUrl`/`imageId` are silently stripped — use the dedicated cover-image or character-image endpoints
 - `ending` replaces the entire JSONB value — partial merges are not performed
 - Cache is invalidated for user books, explore listings, and popular tags (when keywords change)
 
 **Error Responses:**
-- `400 Bad Request`: Invalid image upload
+- `403 Forbidden`: Not the book author
+- `404 Not Found`: Book not found
+
+---
+
+### PUT /api/books/:id/cover-image
+
+Uploads or replaces a book's cover image. Accepts multipart file upload, URL, or base64-encoded image data. Uploads to ImageKit, persists the upload record, updates the book's `imageId`, and cleans up the old cover image.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Path Parameters:**
+- `id` (string, required): Book ID
+
+**Request Body (multipart/form-data):**
+- `imageFile` (file, optional): Cover image file
+
+**Request Body (JSON):**
+```json
+{
+  "imageUrl": "https://example.com/new-cover.jpg"
+}
+```
+
+**Parameters:**
+- `imageUrl` (string, optional): Cover image URL or base64 data string
+- `imageFile` (file, optional): Cover image file (multipart upload via `imageUploadMiddleware`)
+
+**Response (200 OK):**
+```json
+{
+  "imageUrl": "https://ik.imagekit.io/abc123/cover.jpg",
+  "imageId": "file123",
+  "imageUploaded": true,
+  "oldImageQueuedForDeletion": false,
+  "uploadSource": "file"
+}
+```
+
+**Behavior:**
+- Accepts one of: multipart `imageFile`, URL string, or base64 string via `imageUrl`
+- Uploads to ImageKit and persists the upload record in `uploaded_images` with `type: 'cover'`
+- Updates the book record with the new `imageId`
+- Deletes the old cover image from ImageKit (queues for cron-based deletion if immediate deletion fails)
+- Invalidates user books cache and explore cache
+
+**Error Responses:**
+- `400 Bad Request`: No image provided or upload failed
+- `403 Forbidden`: Not the book author
+- `404 Not Found`: Book not found
+
+---
+
+### PUT /api/books/:id/character-image
+
+Uploads or replaces the main character's avatar image. Accepts multipart file upload, URL, or base64-encoded image data. Uploads to ImageKit's `book-characters` folder, persists the upload record, updates the book's `mc.imageUrl`/`mc.imageId`, and cleans up the old avatar.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Path Parameters:**
+- `id` (string, required): Book ID
+
+**Request Body (multipart/form-data):**
+- `imageFile` (file, optional): Character avatar image file
+
+**Request Body (JSON):**
+```json
+{
+  "imageUrl": "https://example.com/avatar.jpg"
+}
+```
+
+**Parameters:**
+- `imageUrl` (string, optional): Avatar image URL or base64 data string
+- `imageFile` (file, optional): Avatar image file (multipart upload via `imageUploadMiddleware`)
+
+**Response (200 OK):**
+```json
+{
+  "imageUrl": "https://ik.imagekit.io/abc123/characters/avatar.jpg",
+  "imageId": "file456",
+  "mcAvatarUploaded": true,
+  "uploadSource": "file"
+}
+```
+
+**Behavior:**
+- Accepts one of: multipart `imageFile`, URL string, or base64 string via `imageUrl`
+- Uploads to ImageKit's `book-characters` folder and persists the upload record in `uploaded_images` with `type: 'mc'`
+- Updates the book's `mc.imageUrl` and `mc.imageId` fields
+- Deletes the old MC avatar from ImageKit
+- Invalidates user books cache and explore cache
+
+**Error Responses:**
+- `400 Bad Request`: No image provided or upload failed
 - `403 Forbidden`: Not the book author
 - `404 Not Found`: Book not found
 

@@ -32,7 +32,9 @@
  * - GET /api/books - Retrieve user's book library (requires auth)
  * - GET /api/books/explore - Explore published books with search and pagination (optional auth)
  * - GET /api/books/:identifier - Retrieve specific book by slug or id (optional auth)
- * - PUT /api/books/:id - Update book information and cover image (requires auth)
+ * - PUT /api/books/:id - Update book metadata (title, hook, summary, keywords, ending, etc.) (requires auth)
+ * - PUT /api/books/:id/cover-image - Upload/replace book cover image (requires auth)
+ * - PUT /api/books/:id/character-image - Upload/replace main character avatar image (requires auth)
  * - PATCH /api/books/:id/visibility - Update book visibility level (requires auth)
  * - PATCH /api/books/:id/archive - Archive or unarchive a book (requires auth)
  * - DELETE /api/books/:id - Delete a book and queue image for deletion (requires auth)
@@ -1354,9 +1356,16 @@ router.post("/insert", requireAuth, async (c) => {
 /**
  * PUT /api/books/:id
  * 
- * Updates book information including title, hook, summary, keywords, and cover image.
+ * Updates book metadata (title, hook, summary, keywords, visibility, status, MC text fields, ending).
  * Supports partial updates - only provided fields will be modified.
- * Handles multiple image upload sources: URL, base64, or multipart file.
+ * Does NOT handle image uploads - use PUT /api/books/:id/cover-image and
+ * PUT /api/books/:id/character-image for image operations.
+ * 
+ * Field Sanitization:
+ * All text fields (title, hook, summary) are sanitized via sanitizeBookTextField:
+ * - XSS tags are stripped
+ * - Double-width quotes are normalised
+ * - Empty/whitespace-only values are treated as "not provided" (field is skipped)
  * 
  * @param id - Book ID to update
  * @param title - Updated book title (optional)
@@ -1365,15 +1374,15 @@ router.post("/insert", requireAuth, async (c) => {
  * @param keywords - Updated book keywords array (optional)
  * @param visibility - New visibility value (optional)
  * @param status - New status value (optional)
- * @param imageUrl - New cover image URL to upload (optional)
- * @param imageFile - New cover image file from multipart upload (optional)
+ * @param mc - MC text fields (name, age, gender, bio) - image fields are ignored (optional)
+ * @param ending - Ending configuration (optional)
  * @returns Updated book information
  */
-router.put("/:id", requireAuth, imageUploadMiddleware(), async (c) => {
+router.put("/:id", requireAuth, async (c) => {
   try {
     const { id } = c.req.param();
     const userId = c.get("userId")!;
-    const { title, hook, summary, keywords, visibility, status: newStatus, imageUrl, mc, ending } = c.get("body");
+    const { title, hook, summary, keywords, visibility, status: newStatus, mc, ending } = c.get("body");
 
     // Verify book ownership
     const [book] = await dbRead.select({ 
@@ -1396,61 +1405,6 @@ router.put("/:id", requireAuth, imageUploadMiddleware(), async (c) => {
 
     if (!book) return cNotFoundError(c, "Book not found");
 
-    let newImageUrl: string | undefined;
-    let newImageId: string | undefined;
-    let oldImageIdQueued = false;
-
-    // Handle image upload from different sources
-    let imageSource: ImageUploadSource | undefined;
-
-    if (c.get("file")) {
-      // Multipart file upload
-      imageSource = c.get("file");
-    } else if (imageUrl) {
-      // URL or base64 string upload
-      imageSource = imageUrl;
-    }
-
-    let coverUploadResult: Awaited<ReturnType<typeof uploadBookCoverImage>> | null = null;
-    let mcAvatarUploadResult: Awaited<ReturnType<typeof uploadBookCharacterAvatarImage>> | null = null;
-
-    // Process image upload if source is provided
-    if (imageSource) {
-      coverUploadResult = await uploadBookCoverImage(
-        {
-          id: book.id,
-          slug: book.slug ?? undefined,
-          title: title || book.title,
-          keywords: keywords || book.keywords
-        },
-        imageSource
-      );
-
-      if (!coverUploadResult) {
-        return c.json({
-          error: "Failed to upload cover image"
-        }, 400);
-      }
-
-      newImageUrl = coverUploadResult.url;
-      newImageId = coverUploadResult.fileId;
-    }
-
-    // --- MC avatar image upload ---
-    let mcAvatarUploaded = false;
-    const oldMcImageId = book.mc?.imageId;
-    if (mc?.imageUrl && typeof mc.imageUrl === 'string') {
-      mcAvatarUploadResult = await uploadBookCharacterAvatarImage(
-        { id: book.id, title: title || book.title, keywords: keywords || book.keywords },
-        mc.imageUrl,
-      );
-      if (mcAvatarUploadResult?.url) {
-        mc.imageUrl = mcAvatarUploadResult.url;
-        if (mcAvatarUploadResult.fileId) mc.imageId = mcAvatarUploadResult.fileId;
-        mcAvatarUploaded = true;
-      }
-    }
-
     // Prepare update data (only include provided fields)
     const updateData: DBUpdateBook = {
       updatedAt: new Date(),
@@ -1467,45 +1421,14 @@ router.put("/:id", requireAuth, imageUploadMiddleware(), async (c) => {
     if (keywords !== undefined) updateData.keywords = sanitizeKeywords(keywords);
     if (visibility !== undefined && bookVisibilities.includes(visibility as BookVisibility)) updateData.visibility = visibility;
     if (newStatus !== undefined && bookStatuses.includes(newStatus as BookStatus)) updateData.status = newStatus;
-    if (newImageId) updateData.imageId = newImageId;
-    if (mc !== undefined) updateData.mc = mc;
+    if (mc !== undefined) {
+      // Strip image fields from mc — use character-image route for avatar uploads
+      const { imageUrl: _imgUrl, imageId: _imgId, ...mcTextFields } = mc;
+      updateData.mc = mcTextFields;
+    }
     if (ending !== undefined) updateData.ending = ending;
 
-    let updatedBook: Awaited<ReturnType<typeof updateBook>>;
-
-    try {
-      updatedBook = await dbWrite.transaction(async (tx) => {
-        if (coverUploadResult?.fileId) {
-          await persistUploadedImage({
-            imageId: coverUploadResult.fileId,
-            imageUrl: coverUploadResult.url!,
-            type: 'cover',
-            userId,
-            client: tx,
-          });
-        }
-
-        if (mcAvatarUploadResult?.fileId) {
-          await persistUploadedImage({
-            imageId: mcAvatarUploadResult.fileId,
-            imageUrl: mcAvatarUploadResult.url!,
-            type: 'mc',
-            userId,
-            client: tx,
-          });
-        }
-
-        return updateBook(book.id, updateData, { client: tx, invalidateCache: false });
-      });
-    } catch (error) {
-      if (coverUploadResult?.fileId) {
-        await deleteFileFromImageKit(coverUploadResult.fileId);
-      }
-      if (mcAvatarUploadResult?.fileId) {
-        await deleteFileFromImageKit(mcAvatarUploadResult.fileId);
-      }
-      throw error;
-    }
+    const updatedBook = await updateBook(book.id, updateData);
 
     // Invalidate user's book cache
     await invalidateUserBooksCache(userId);
@@ -1518,17 +1441,6 @@ router.put("/:id", requireAuth, imageUploadMiddleware(), async (c) => {
     // Invalidate explore cache only if this public+active book's metadata changed,
     // or if visibility/status changed in a way that affects explore visibility
     await invalidateExploreCache({ before: book, after: updatedBook });
-
-    // Delete old image from ImageKit (with fallback to deletion queue)
-    if (coverUploadResult && book.imageId) {
-      await deleteFileFromImageKit(book.imageId);
-      oldImageIdQueued = true;
-    }
-
-    // Delete old MC avatar from ImageKit
-    if (mcAvatarUploadResult && oldMcImageId) {
-      await deleteFileFromImageKit(oldMcImageId);
-    }
 
     notifyForumOfBookChange({
       before: book,
@@ -1543,19 +1455,282 @@ router.put("/:id", requireAuth, imageUploadMiddleware(), async (c) => {
         visibility: updatedBook.visibility,
         mode: updatedBook.mode,
         language: updatedBook.language,
-        imageUrl: newImageUrl ?? undefined,
       },
     });
 
     return c.json({
       book: updatedBook,
-      imageUploaded: !!newImageUrl,
-      oldImageQueuedForDeletion: oldImageIdQueued,
-      mcAvatarUploaded,
-      uploadSource: c.get("file") ? 'file' : (isBase64Upload(imageUrl) ? 'base64' : 'url'),
     });
   } catch (error) {
     return cApiError(c, "Failed to update book", error);
+  }
+});
+
+/**
+ * PUT /api/books/:id/cover-image
+ * 
+ * Uploads or replaces a book's cover image. Accepts multipart file upload
+ * (imageFile), URL string, or base64-encoded image data.
+ * Uploads to ImageKit, persists the upload record, updates the book's
+ * imageId, and cleans up the old cover image from ImageKit.
+ * 
+ * @param id - Book ID
+ * @param imageFile - Cover image file (multipart) (optional)
+ * @param imageUrl - Cover image URL or base64 string (optional)
+ * @returns Upload result with image URL and metadata
+ * 
+ * @example
+ * // Multipart upload
+ * PUT /api/books/book123/cover-image
+ * Body: FormData with imageFile field
+ * 
+ * // URL upload
+ * PUT /api/books/book123/cover-image
+ * Body: { "imageUrl": "https://example.com/cover.jpg" }
+ * 
+ * Response (200):
+ * {
+ *   "imageUrl": "https://ik.imagekit.io/abc123/cover.jpg",
+ *   "imageId": "file123",
+ *   "imageUploaded": true,
+ *   "oldImageQueuedForDeletion": false,
+ *   "uploadSource": "file"
+ * }
+ */
+router.put("/:id/cover-image", requireAuth, imageUploadMiddleware(), async (c) => {
+  try {
+    const { id } = c.req.param();
+    const userId = c.get("userId")!;
+    const { imageUrl } = c.get("body");
+
+    // Verify book ownership
+    const [book] = await dbRead.select({
+      id: books.id,
+      userId: books.userId,
+      slug: books.slug,
+      title: books.title,
+      keywords: books.keywords,
+      imageId: books.imageId,
+      status: books.status,
+      visibility: books.visibility,
+    })
+    .from(books)
+    .where(and(
+      eq(books.id, id as string),
+      eq(books.userId, userId)
+    ))
+    .limit(1);
+
+    if (!book) return cNotFoundError(c, "Book not found");
+
+    // Handle image upload from different sources
+    let imageSource: ImageUploadSource | undefined;
+
+    if (c.get("file")) {
+      imageSource = c.get("file");
+    } else if (imageUrl) {
+      imageSource = imageUrl;
+    }
+
+    if (!imageSource) {
+      return cValidationError(c, "No image provided. Send imageFile (multipart) or imageUrl (URL/base64).");
+    }
+
+    const coverUploadResult = await uploadBookCoverImage(
+      {
+        id: book.id,
+        slug: book.slug ?? undefined,
+        title: book.title,
+        keywords: book.keywords,
+      },
+      imageSource,
+    );
+
+    if (!coverUploadResult) {
+      return c.json({ error: "Failed to upload cover image" }, 400);
+    }
+
+    const newImageUrl = coverUploadResult.url;
+    const newImageId = coverUploadResult.fileId;
+
+    // Transaction: persist uploaded image record + update book
+    let oldImageIdQueued = false;
+    try {
+      await dbWrite.transaction(async (tx) => {
+        if (newImageId) {
+          await persistUploadedImage({
+            imageId: newImageId,
+            imageUrl: newImageUrl!,
+            type: 'cover',
+            userId,
+            client: tx,
+          });
+        }
+        await updateBook(book.id, { imageId: newImageId }, { client: tx, invalidateCache: false });
+      });
+    } catch (error) {
+      if (newImageId) {
+        await deleteFileFromImageKit(newImageId);
+      }
+      throw error;
+    }
+
+    // Cache invalidation
+    await invalidateUserBooksCache(userId);
+    await invalidateExploreCache({
+      before: { status: book.status, visibility: book.visibility },
+      after:  { status: book.status, visibility: book.visibility },
+    });
+
+    // Delete old image from ImageKit (with fallback to deletion queue)
+    if (book.imageId) {
+      const oldCoverDeleted = await deleteFileFromImageKit(book.imageId);
+      oldImageIdQueued = !oldCoverDeleted;
+    }
+
+    return c.json({
+      imageUrl: newImageUrl,
+      imageId: newImageId,
+      imageUploaded: true,
+      oldImageQueuedForDeletion: oldImageIdQueued,
+      uploadSource: c.get("file") ? 'file' : (isBase64Upload(imageUrl) ? 'base64' : 'url'),
+    });
+  } catch (error) {
+    return cApiError(c, "Failed to upload cover image", error);
+  }
+});
+
+/**
+ * PUT /api/books/:id/character-image
+ * 
+ * Uploads or replaces the main character's avatar image. Accepts multipart
+ * file upload (imageFile), URL string, or base64-encoded image data.
+ * Uploads to ImageKit's book-characters folder, persists the upload record,
+ * updates the book's mc.imageUrl/mc.imageId, and cleans up the old avatar.
+ * 
+ * @param id - Book ID
+ * @param imageFile - Character avatar image file (multipart) (optional)
+ * @param imageUrl - Character avatar image URL or base64 string (optional)
+ * @returns Upload result with image URL and metadata
+ * 
+ * @example
+ * // Multipart upload
+ * PUT /api/books/book123/character-image
+ * Body: FormData with imageFile field
+ * 
+ * // URL upload
+ * PUT /api/books/book123/character-image
+ * Body: { "imageUrl": "https://example.com/avatar.jpg" }
+ * 
+ * Response (200):
+ * {
+ *   "imageUrl": "https://ik.imagekit.io/abc123/characters/avatar.jpg",
+ *   "imageId": "file456",
+ *   "mcAvatarUploaded": true,
+ *   "uploadSource": "file"
+ * }
+ */
+router.put("/:id/character-image", requireAuth, imageUploadMiddleware(), async (c) => {
+  try {
+    const { id } = c.req.param();
+    const userId = c.get("userId")!;
+    const { imageUrl } = c.get("body");
+
+    // Verify book ownership
+    const [book] = await dbRead.select({
+      id: books.id,
+      userId: books.userId,
+      slug: books.slug,
+      title: books.title,
+      keywords: books.keywords,
+      mc: books.mc,
+      status: books.status,
+      visibility: books.visibility,
+    })
+    .from(books)
+    .where(and(
+      eq(books.id, id as string),
+      eq(books.userId, userId)
+    ))
+    .limit(1);
+
+    if (!book) return cNotFoundError(c, "Book not found");
+
+    // Handle image upload from different sources
+    let imageSource: ImageUploadSource | undefined;
+
+    if (c.get("file")) {
+      imageSource = c.get("file");
+    } else if (imageUrl) {
+      imageSource = imageUrl;
+    }
+
+    if (!imageSource) {
+      return cValidationError(c, "No image provided. Send imageFile (multipart) or imageUrl (URL/base64).");
+    }
+
+    const mcAvatarUploadResult = await uploadBookCharacterAvatarImage(
+      { id: book.id, title: book.title, keywords: book.keywords },
+      imageSource,
+    );
+
+    if (!mcAvatarUploadResult?.url) {
+      return c.json({ error: "Failed to upload MC avatar image" }, 400);
+    }
+
+    const newImageUrl = mcAvatarUploadResult.url;
+    const newImageId = mcAvatarUploadResult.fileId;
+    const oldMcImageId = book.mc?.imageId;
+
+    // Update the mc object with new image info
+    const updatedMc = {
+      ...book.mc,
+      ...(typeof book.mc === 'object' && book.mc !== null ? {} : {}),
+      imageUrl: newImageUrl,
+      ...(newImageId ? { imageId: newImageId } : {}),
+    };
+
+    // Transaction: persist uploaded image record + update book mc
+    try {
+      await dbWrite.transaction(async (tx) => {
+        if (newImageId) {
+          await persistUploadedImage({
+            imageId: newImageId,
+            imageUrl: newImageUrl!,
+            type: 'mc',
+            userId,
+            client: tx,
+          });
+        }
+        await updateBook(book.id, { mc: updatedMc }, { client: tx, invalidateCache: false });
+      });
+    } catch (error) {
+      if (newImageId) {
+        await deleteFileFromImageKit(newImageId);
+      }
+      throw error;
+    }
+
+    // Cache invalidation
+    await invalidateUserBooksCache(userId);
+    await invalidateExploreCache({
+      before: { status: book.status, visibility: book.visibility },
+      after:  { status: book.status, visibility: book.visibility },
+    });
+
+    // Delete old MC avatar from ImageKit
+    if (oldMcImageId) {
+      await deleteFileFromImageKit(oldMcImageId);
+    }
+
+    return c.json({
+      imageUrl: newImageUrl,
+      imageId: newImageId,
+      mcAvatarUploaded: true,
+      uploadSource: c.get("file") ? 'file' : (isBase64Upload(imageUrl) ? 'base64' : 'url'),
+    });
+  } catch (error) {
+    return cApiError(c, "Failed to upload MC avatar image", error);
   }
 });
 
