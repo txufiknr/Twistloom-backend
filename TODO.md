@@ -28,9 +28,25 @@
 [ ] enrich page 1 with imagePrompt -> generate page image cron
 [ ] reset db -> check "1.2 — Engine regression test suite"
 [ ] https://dashboard.xendit.co/settings/developers#api-keys
-[x] flatten updateObstacles -> addObstacles/removeObstacles
-[x] flatten narrativeFlags: { "potentialTwist": ... } -> potentialTwist
+[ ] pastInteractions -> interactions
 
+---
+
+[gemini/gemini-3.5-flash] ❗ Bad request (other):
+  ApiError: {"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}
+      at throwErrorIfNotOK (file:///home/runner/work/Twistloom-backend/Twistloom-backend/node_modules/.pnpm/@google+genai@2.7.0/node_modules/@google/genai/dist/node/index.mjs:13547:30)
+      at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+      at async file:///home/runner/work/Twistloom-backend/Twistloom-backend/node_modules/.pnpm/@google+genai@2.7.0/node_modules/@google/genai/dist/node/index.mjs:13247:13
+      at async Models.generateContent (file:///home/runner/work/Twistloom-backend/Twistloom-backend/node_modules/.pnpm/@google+genai@2.7.0/node_modules/@google/genai/dist/node/index.mjs:14655:24)
+      at async candidates (file:///home/runner/work/Twistloom-backend/Twistloom-backend/dist/utils/ai-chat.js:243:26)
+      at async retryWithBackoff (file:///home/runner/work/Twistloom-backend/Twistloom-backend/dist/utils/retry.js:119:20)
+      at async promptWithFallback (file:///home/runner/work/Twistloom-backend/Twistloom-backend/dist/utils/ai-chat.js:58:30)
+      at async aiPrompt (file:///home/runner/work/Twistloom-backend/Twistloom-backend/dist/utils/ai-chat.js:826:30)
+      at async executePromptForJSON (file:///home/runner/work/Twistloom-backend/Twistloom-backend/dist/utils/prompt.js:4497:22)
+      at async generateNextPage (file:///home/runner/work/Twistloom-backend/Twistloom-backend/dist/utils/prompt.js:4180:22) {
+    status: 400
+  }
+  
 ---
 
 ApiError: {"error":{"code":429,"message":"TotalCachedContentStorageTokensPerModelFreeTier limit exceeded for model gemini-2.5-flash: limit=0, requested=7558","status":"RESOURCE_EXHAUSTED"}}

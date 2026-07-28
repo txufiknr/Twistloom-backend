@@ -308,7 +308,7 @@ export async function geminiPrompt(
       // Penalty is not enabled for models/gemini-2.5-flash
       const { frequencyPenalty: _fp, ...geminiConfig } = config;
 
-      const response = await getGeminiClient().models.generateContent({
+      const params: GenerateContentParameters = {
         model,
         contents: [{ parts: [{ text: prompt }] }],
         config: {
@@ -322,8 +322,14 @@ export async function geminiPrompt(
             systemInstruction: { parts: [{ text: systemPromptWithDocuments }] },
           })
         } satisfies GenerateContentConfig,
-      } satisfies GenerateContentParameters);
-      
+      };
+
+      edgeGroup.wrap(`[geminiPrompt] 📝 Generate content params for ${model}:`, async () => {
+        console.log(JSON.stringify(params, null, 2));
+      });
+
+      const response = await getGeminiClient().models.generateContent(params);
+
       // Prompt-level safety block
       if (response.promptFeedback?.blockReason) {
         throw new Error(`Prompt blocked: ${response.promptFeedback.blockReason}`);
