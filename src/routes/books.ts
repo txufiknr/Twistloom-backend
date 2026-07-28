@@ -3653,6 +3653,81 @@ router.get("/:identifier/branches", optionalAuth, async (c) => {
 });
 
 /**
+ * Shared select shape that joins each testimonial with its author's public
+ * profile fields (name + avatar) so the frontend can render testimonials the
+ * same way it renders comments.
+ */
+const testimonialWithAuthorSelect = {
+  id: bookTestimonials.id,
+  userId: bookTestimonials.userId,
+  bookId: bookTestimonials.bookId,
+  rating: bookTestimonials.rating,
+  content: bookTestimonials.content,
+  status: bookTestimonials.status,
+  featured: bookTestimonials.featured,
+  createdAt: bookTestimonials.createdAt,
+  updatedAt: bookTestimonials.updatedAt,
+  name: users.name,
+  imageUrl: users.imageUrl,
+};
+
+/**
+ * @route GET /api/books/:identifier/testimonials
+ * @description List testimonials for a book
+ * 
+ * When authenticated as the book owner or the testimonial author, all statuses are returned.
+ * Otherwise only `approved` testimonials are returned. Supports optional `featured` filter.
+ * 
+ * @access Optional auth
+ * 
+ * @param {string} c.req.param().identifier - Book slug or id
+ * @param {string} [c.req.query().featured] - When "true", only featured testimonials
+ * 
+ * @returns {Object} 200 - Paginated list of testimonials
+ * @returns {Error} 404 - Book not found
+ */
+router.get("/:identifier/testimonials", optionalAuth, async (c) => {
+  const identifier = c.req.param().identifier as string;
+  const userId = c.get("userId");
+  const { limit = DEFAULT_ITEMS_PER_PAGE, page = 1 } = extractPaginationParams(c.req.query());
+  const offset = (page - 1) * limit;
+  const featuredOnly = c.req.query().featured === "true";
+
+  const book = await resolveBook(identifier);
+  if (!book) {
+    return cNotFoundError(c, "Book not found");
+  }
+
+  const conditions = [eq(bookTestimonials.bookId, book.id)];
+
+  // Non-privileged viewers only see approved testimonials
+  const isPrivileged = userId && (userId === book.userId);
+  if (!isPrivileged) {
+    conditions.push(eq(bookTestimonials.status, "approved"));
+  }
+  if (featuredOnly) {
+    conditions.push(eq(bookTestimonials.featured, true));
+  }
+
+  const rows = await dbRead
+    .select(testimonialWithAuthorSelect)
+    .from(bookTestimonials)
+    .leftJoin(users, eq(bookTestimonials.userId, users.userId))
+    .where(and(...conditions))
+    .orderBy(desc(bookTestimonials.createdAt))
+    .limit(limit)
+    .offset(offset);
+
+  const [{ count }] = await dbRead
+    .select({ count: sql<number>`count(*)::int` })
+    .from(bookTestimonials)
+    .where(and(...conditions));
+
+  const pagination = calculatePaginationMeta(page, limit, count);
+  c.status(200); return c.json(createPaginatedResponse(rows, pagination, 'testimonials'));
+});
+
+/**
  * GET /api/books/:identifier/:pageId
  * 
  * Retrieves a specific page within a book.
@@ -5083,25 +5158,6 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (c)
 });
 
 /**
- * Shared select shape that joins each testimonial with its author's public
- * profile fields (name + avatar) so the frontend can render testimonials the
- * same way it renders comments.
- */
-const testimonialWithAuthorSelect = {
-  id: bookTestimonials.id,
-  userId: bookTestimonials.userId,
-  bookId: bookTestimonials.bookId,
-  rating: bookTestimonials.rating,
-  content: bookTestimonials.content,
-  status: bookTestimonials.status,
-  featured: bookTestimonials.featured,
-  createdAt: bookTestimonials.createdAt,
-  updatedAt: bookTestimonials.updatedAt,
-  name: users.name,
-  imageUrl: users.imageUrl,
-};
-
-/**
  * @route GET /api/books/testimonials
  * @description Get the authenticated user's own book testimonials, enriched with book title and cover image.
  *              Supports optional `search` query parameter to filter by book title and/or testimonial content.
@@ -5165,62 +5221,6 @@ router.get("/testimonials", requireAuth, async (c) => {
 
   const pagination = calculatePaginationMeta(page, limit, count);
   c.status(200); return c.json(createPaginatedResponse(testimonials, pagination, 'testimonials'));
-});
-
-/**
- * @route GET /api/books/:identifier/testimonials
- * @description List testimonials for a book
- * 
- * When authenticated as the book owner or the testimonial author, all statuses are returned.
- * Otherwise only `approved` testimonials are returned. Supports optional `featured` filter.
- * 
- * @access Optional auth
- * 
- * @param {string} c.req.param().identifier - Book slug or id
- * @param {string} [c.req.query().featured] - When "true", only featured testimonials
- * 
- * @returns {Object} 200 - Paginated list of testimonials
- * @returns {Error} 404 - Book not found
- */
-router.get("/:identifier/testimonials", optionalAuth, async (c) => {
-  const identifier = c.req.param().identifier as string;
-  const userId = c.get("userId");
-  const { limit = DEFAULT_ITEMS_PER_PAGE, page = 1 } = extractPaginationParams(c.req.query());
-  const offset = (page - 1) * limit;
-  const featuredOnly = c.req.query().featured === "true";
-
-  const book = await resolveBook(identifier);
-  if (!book) {
-    return cNotFoundError(c, "Book not found");
-  }
-
-  const conditions = [eq(bookTestimonials.bookId, book.id)];
-
-  // Non-privileged viewers only see approved testimonials
-  const isPrivileged = userId && (userId === book.userId);
-  if (!isPrivileged) {
-    conditions.push(eq(bookTestimonials.status, "approved"));
-  }
-  if (featuredOnly) {
-    conditions.push(eq(bookTestimonials.featured, true));
-  }
-
-  const rows = await dbRead
-    .select(testimonialWithAuthorSelect)
-    .from(bookTestimonials)
-    .leftJoin(users, eq(bookTestimonials.userId, users.userId))
-    .where(and(...conditions))
-    .orderBy(desc(bookTestimonials.createdAt))
-    .limit(limit)
-    .offset(offset);
-
-  const [{ count }] = await dbRead
-    .select({ count: sql<number>`count(*)::int` })
-    .from(bookTestimonials)
-    .where(and(...conditions));
-
-  const pagination = calculatePaginationMeta(page, limit, count);
-  c.status(200); return c.json(createPaginatedResponse(rows, pagination, 'testimonials'));
 });
 
 /**

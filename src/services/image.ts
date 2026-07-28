@@ -1,5 +1,44 @@
 /**
- * Image Upload Services (ImageKit REST API v1)
+ * @fileoverview Image Upload Services (ImageKit REST API v1)
+ *
+ * Server-side integration with ImageKit for every image upload/delete in the
+ * app (book covers, character portraits, feedback screenshots, user
+ * avatars). This module owns all direct communication with ImageKit's REST
+ * API — auth, retries, request formatting — so the rest of the codebase
+ * only ever calls the exported `upload*` / `delete*` / `cleanup*` functions
+ * below.
+ *
+ * Key design decisions, for context on choices that aren't obvious from a
+ * single function in isolation:
+ *
+ * - **Auth header caching**: the Basic Auth header is computed once and
+ *   cached at module scope (`cachedAuthHeader`) rather than on every
+ *   request, since it's derived from an env var that's fixed for the life
+ *   of the process — this matters on serverless, where a module can be
+ *   re-invoked many times per cold start.
+ *
+ * - **Four upload source shapes, one entry point**: `uploadImageKit`
+ *   accepts a URL string, a base64 string, a raw Buffer/TypedArray/
+ *   ArrayBuffer, or a multipart file object, and normalizes whichever it
+ *   gets into FormData. See the branches inside it for how each is handled.
+ *
+ * - **Sniffed content over declared content**: wherever a caller-supplied
+ *   MIME type could be wrong or spoofed (a multipart part's Content-Type, a
+ *   data: URL's declared type) or is simply absent (raw buffers carry no
+ *   metadata at all), the actual bytes are sniffed via `detectImageMimeType`
+ *   and trusted over the declared value, falling back to the declared value
+ *   only when sniffing is inconclusive.
+ *
+ * - **Deletion is a two-tier system**: `deleteFileFromImageKit` /
+ *   `deleteFilesFromImageKit` attempt a live delete against ImageKit and
+ *   report exactly which file IDs were actually confirmed deleted vs. which
+ *   failed. Failures get a row in the `deleted_images` table (via
+ *   `queueImageForDeletion`) for `processQueuedImageDeletions` to retry
+ *   later on a cron. Every caller in this file follows the same rule:
+ *   **only clear your own DB bookkeeping for IDs confirmed deleted** —
+ *   clearing it for an unconfirmed ID permanently orphans that file on
+ *   ImageKit, since nothing would be left to ever retry it.
+ *
  * @see https://imagekit.io/docs/api-overview
  * @see https://imagekit.io/docs/api-reference/upload-file/upload-file
  */
@@ -14,14 +53,26 @@ import { dbRead } from "../db/client.js";
 import type { ImageKitUploadResponse, ImageUploadObject, ImageUploadOptions, ImageUploadSource } from "../types/image.js";
 import type { Book, UploadedImageType } from "../types/book.js";
 
-// Runtime environments: Node 20+ / Edge (both have globalThis.btoa)
+/**
+ * Base64-encodes an ASCII string (e.g. `"apiKey:"`) for a Basic Auth header.
+ * Uses the platform `btoa`, available as a global in both Node 20+ and Edge
+ * runtimes, so no extra base64 dependency is needed. Only safe for
+ * ASCII/Latin1 input — fine here since ImageKit's private key is always
+ * ASCII, but not a general-purpose base64 encoder for arbitrary text.
+ */
 const encodeBase64 = (str: string): string =>
   (globalThis as { btoa: (s: string) => string }).btoa(str);
 
+// Upload has its own subdomain; every other endpoint (delete, folder ops)
+// lives under the main API host.
 const IMAGEKIT_UPLOAD_URL = "https://upload.imagekit.io/api/v1/files/upload";
 const IMAGEKIT_API_BASE = "https://api.imagekit.io/v1";
 
-// Timeout per operation (ms). Uploads can be slower for large files.
+// Timeout per operation (ms), enforced via AbortController in imageKitFetch.
+// UPLOAD gets the longest budget since multi-MB image bodies over a slow
+// connection take longer than a metadata-only call; BULK_DELETE is longer
+// than a single DELETE since ImageKit processes many file IDs server-side
+// before responding.
 const TIMEOUTS = {
   UPLOAD: 60_000,
   DELETE: 15_000,
@@ -32,6 +83,11 @@ const TIMEOUTS = {
 const RETRY = {
   MAX_ATTEMPTS: 3,
   BASE_DELAY_MS: 1_000,
+  // Ceiling on the exponential backoff delay (see computeRetryDelayMs).
+  // Without a cap, later attempts grow unbounded (2s, 4s, 8s, ...) — this
+  // keeps worst-case retry latency predictable even if MAX_ATTEMPTS is
+  // raised later.
+  MAX_DELAY_MS: 5_000,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -41,8 +97,14 @@ const RETRY = {
 let cachedAuthHeader: string | null = null;
 
 /**
- * Returns a cached Basic Auth header for ImageKit API.
- * The token is computed once per module lifetime (serverless cold-start).
+ * Returns the Basic Auth header for the ImageKit API, computing and caching
+ * it on first call. The token is derived from `IMAGEKIT_API_KEY_PRIVATE` and
+ * cached at module scope for the process lifetime — see the file overview
+ * for why (serverless cold-start reuse).
+ *
+ * @returns A `{ Authorization: ... }` header object, or `null` if the
+ *   private key env var isn't set. Callers (imageKitFetch) treat `null` as
+ *   a hard failure rather than sending an unauthenticated request.
  */
 function getAuthHeaders(): Record<string, string> | null {
   if (cachedAuthHeader) {
@@ -64,8 +126,25 @@ function getAuthHeaders(): Record<string, string> | null {
 // ---------------------------------------------------------------------------
 
 /**
- * Authenticated fetch to ImageKit with timeout.
- * Does NOT set Content-Type for FormData bodies (browser/Edge auto-sets boundary).
+ * Authenticated fetch to ImageKit with a per-call timeout.
+ *
+ * Adds the Basic Auth header automatically and enforces `timeoutMs` (default
+ * `TIMEOUTS.DELETE`) via AbortController, so no caller needs to wire up its
+ * own abort/timeout handling. Any caller-supplied `headers` are merged on
+ * top of the auth header via the `Headers` constructor rather than
+ * `Object.entries`, so it works whether `headers` is a plain object, a
+ * `Headers` instance, or an array of `[key, value]` tuples — all valid
+ * `RequestInit['headers']` shapes.
+ *
+ * Deliberately does NOT set Content-Type for FormData bodies — the
+ * browser/Edge runtime sets it automatically with the correct multipart
+ * boundary, and setting it manually would break that.
+ *
+ * @param url - Full request URL.
+ * @param options - Standard `RequestInit`, plus an optional `timeoutMs`.
+ * @throws {Error} If ImageKit credentials aren't configured.
+ * @returns The raw `Response` — callers are responsible for checking
+ *   `response.ok` and reading the body themselves.
  */
 async function imageKitFetch(
   url: string,
@@ -119,8 +198,56 @@ class ImageKitHttpError extends Error {
 }
 
 /**
- * Upload form data to ImageKit with retry for transient failures.
- * Retries on 5xx, 429 (rate-limit), and network errors — but NOT on 4xx.
+ * Exponential backoff delay for a given retry attempt (0-indexed), capped at
+ * `RETRY.MAX_DELAY_MS`. Shared by both retry branches in `uploadWithRetry`
+ * (the inline 5xx/429 retry and the catch-block retry) so the formula lives
+ * in exactly one place.
+ */
+function computeRetryDelayMs(attempt: number): number {
+  return Math.min(RETRY.BASE_DELAY_MS * Math.pow(2, attempt), RETRY.MAX_DELAY_MS);
+}
+
+/** Builds the `"{label} failed ({status}): {body}"` error used across every ImageKit call site. */
+function buildHttpError(label: string, status: number, body: string): ImageKitHttpError {
+  return new ImageKitHttpError(status, `${label} failed (${status}): ${body}`);
+}
+
+/**
+ * Reads a non-ok response's body and throws `buildHttpError`'s result for
+ * it. Centralizes the "read body, format, throw" sequence that would
+ * otherwise be repeated at every ImageKit call site that isn't a retry loop
+ * (uploadWithRetry reads the body itself, since it sometimes needs to
+ * discard it and retry instead of throwing).
+ *
+ * @returns Never — always throws. Typed as `Promise<never>` so `await
+ *   throwForFailedResponse(...)` reads clearly as "this branch always ends
+ *   here."
+ */
+async function throwForFailedResponse(response: Response, label: string): Promise<never> {
+  const body = await response.text();
+  throw buildHttpError(label, response.status, body);
+}
+
+/**
+ * Uploads `formData` to ImageKit, retrying transient failures with
+ * exponential backoff.
+ *
+ * Retries on 5xx (server error) and 429 (rate-limited) responses, and on
+ * network-level errors (timeout, DNS, connection reset) — anything that's
+ * plausibly transient. Does NOT retry other 4xx responses: those mean the
+ * request itself was invalid, and retrying an invalid request just wastes
+ * `RETRY.MAX_ATTEMPTS` worth of time before failing anyway. The 4xx/5xx
+ * distinction is made on `ImageKitHttpError.status` (see its JSDoc for why
+ * that's a typed field rather than a string match).
+ * 
+ * @todo can it reuse `retryWithBackoff` from `src\utils\retry.ts`?
+ *
+ * @param formData - The multipart body to upload; reused as-is across
+ *   retry attempts (safe — FormData holds direct Blob/string references,
+ *   not a stream that gets consumed on first use).
+ * @returns The successful `Response` (guaranteed `response.ok`).
+ * @throws The last error encountered once `RETRY.MAX_ATTEMPTS` is exhausted,
+ *   or immediately for a non-retryable 4xx.
  */
 async function uploadWithRetry(formData: FormData): Promise<Response> {
   let lastError: Error | null = null;
@@ -140,13 +267,12 @@ async function uploadWithRetry(formData: FormData): Promise<Response> {
       // Retry on server errors (5xx) and rate-limit (429)
       if (response.status >= 500 || response.status === 429) {
         if (attempt < RETRY.MAX_ATTEMPTS - 1) {
-          const delay = Math.min(RETRY.BASE_DELAY_MS * Math.pow(2, attempt), 5_000);
-          await new Promise(r => setTimeout(r, delay));
+          await new Promise(r => setTimeout(r, computeRetryDelayMs(attempt)));
           continue;
         }
       }
 
-      throw new ImageKitHttpError(response.status, `ImageKit upload failed (${response.status}): ${body}`);
+      throw buildHttpError('ImageKit upload', response.status, body);
     } catch (error) {
       // Don't retry genuine 4xx client errors (429 is handled above and excluded here)
       if (error instanceof ImageKitHttpError && error.status >= 400 && error.status < 500 && error.status !== 429) {
@@ -156,8 +282,7 @@ async function uploadWithRetry(formData: FormData): Promise<Response> {
       lastError = error as Error;
 
       if (attempt < RETRY.MAX_ATTEMPTS - 1) {
-        const delay = Math.min(RETRY.BASE_DELAY_MS * Math.pow(2, attempt), 5_000);
-        await new Promise(r => setTimeout(r, delay));
+        await new Promise(r => setTimeout(r, computeRetryDelayMs(attempt)));
       }
     }
   }
@@ -170,7 +295,17 @@ async function uploadWithRetry(formData: FormData): Promise<Response> {
 // ---------------------------------------------------------------------------
 
 /**
- * Format keywords array for URL encoding
+ * Formats a list of keywords into a single URL-safe query segment: each
+ * keyword's internal whitespace is collapsed to `+` (the standard
+ * application/x-www-form-urlencoded space encoding), and keywords are
+ * joined with `|`. E.g. `["dark fantasy", "mystery"]` → `"dark+fantasy|mystery"`.
+ *
+ * Not called elsewhere in this file — exported for callers that need to
+ * build a keyword-based query parameter (e.g. an ImageKit search or
+ * transformation query) from a keyword list such as `Book.keywords`.
+ *
+ * @param keywords - Keywords to format; each is expected to be plain,
+ *   unescaped text (not pre-URL-encoded).
  */
 export function formatKeywordsForUrl(keywords: string[]): string {
   return keywords
@@ -179,7 +314,23 @@ export function formatKeywordsForUrl(keywords: string[]): string {
 }
 
 /**
- * Validate and extract file extension from MIME type
+ * Resolves a MIME type string down to a plain lowercase file extension,
+ * gated by an explicit whitelist of extensions this app expects to send to
+ * ImageKit. Anything that isn't a recognized `image/*` type — missing,
+ * malformed, non-image, or simply unsupported — falls back to `'jpg'`
+ * rather than propagating an arbitrary, unvalidated extension into a
+ * filename sent to the ImageKit API.
+ *
+ * Strips `;charset=...`-style parameters and normalizes case before
+ * matching (so e.g. `"image/svg+xml;charset=utf-8"` or `"Image/PNG"` both
+ * resolve correctly instead of falling through to the default), and maps
+ * SVG's real MIME subtype (`svg+xml`, per RFC 2854) to the plain `svg`
+ * extension that's actually in the whitelist.
+ *
+ * @param mimeType - A MIME type string, e.g. `"image/png"`. May be missing
+ *   or malformed — this function never throws.
+ * @returns A lowercase extension from the whitelist, or `'jpg'` when the
+ *   input can't be resolved to one.
  */
 function validateMimeType(mimeType: string): string {
   if (!mimeType || typeof mimeType !== 'string') {
@@ -216,7 +367,24 @@ function validateMimeType(mimeType: string): string {
 }
 
 /**
- * Generate sanitized filename for images
+ * Builds a `{prefix}-{entityId}.{extension}` filename for ImageKit, with
+ * both `prefix` and `entityId` sanitized to a safe `[a-z0-9-]` charset.
+ *
+ * The name is deterministic — no random suffix. That's intentional: paired
+ * with `useUniqueFileName: false` in `uploadImageKit` and the date-based
+ * folder path, a same-day re-upload for the same entity overwrites the
+ * previous file in place (ImageKit's documented behavior when
+ * useUniqueFileName is false) instead of accumulating duplicates.
+ * Cross-day re-uploads land in a new dated folder; the old file is picked up
+ * later by the cleanup jobs near the bottom of this file (e.g.
+ * `cleanupStaleUserUploads`).
+ *
+ * @param entityId - ID of the entity the image belongs to (book, user,
+ *   feedback report, etc.) — typically a DB-generated UUID/CUID.
+ * @param prefix - Short label for the image's role, e.g. `"cover"`, `"profile"`.
+ * @param extension - File extension without the leading dot. Defaults to
+ *   `'jpg'`; callers normally pass the result of `validateMimeType`.
+ * @returns The sanitized filename, e.g. `"cover-3fa85f64-....jpg"`.
  */
 function generateImageFilename(entityId: string, prefix: string, extension: string = 'jpg'): string {
   const sanitize = (value: string) => value
@@ -237,8 +405,15 @@ function generateImageFilename(entityId: string, prefix: string, extension: stri
  * rather than trusting caller-supplied metadata. A Content-Type header or
  * filename extension is trivially spoofed by a client, and raw Buffer /
  * ArrayBuffer sources carry no metadata at all — this is the only reliable
- * way to know what was actually uploaded. Returns null when the format isn't
- * recognized so callers can fall back to a sane default.
+ * way to know what was actually uploaded. Used across every upload source
+ * branch in `uploadImageKit` (and by `handleBase64Upload`) as the preferred
+ * source of truth over any declared MIME type.
+ *
+ * @param bytes - The raw file bytes (or at least the first ~256 of them —
+ *   every signature checked here lives within that range).
+ * @returns A MIME type like `"image/png"`, or `null` if the format isn't
+ *   one of the recognized signatures (JPEG, PNG, GIF, WEBP, BMP, AVIF,
+ *   HEIC, SVG). Callers fall back to a declared/default type on `null`.
  */
 function detectImageMimeType(bytes: Uint8Array): string | null {
   // JPEG: FF D8 FF
@@ -292,49 +467,105 @@ function detectImageMimeType(bytes: Uint8Array): string | null {
 const DEFAULT_FILENAME_PREFIX = 'image';
 
 /**
+ * Matches a base64-encoded image data URL, e.g.
+ * `"data:image/png;base64,iVBORw0KG..."`. Capture group 1 is the MIME type,
+ * group 2 is the payload — the payload itself is constrained to the base64
+ * charset (+ optional `=` padding) here, not just the overall shape, so a
+ * match guarantees decodable content.
+ *
+ * This is the single source of truth for the data-URL shape: both
+ * `isBase64Upload` (validation) and `handleBase64Upload` (extraction) test
+ * against this same constant instead of each keeping an independent copy
+ * that could quietly drift out of sync with the other.
+ */
+const BASE64_DATA_URL_PATTERN = /^data:(image\/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/]+={0,2})$/i;
+
+/** Matches the base64 charset with optional padding, with no `data:` wrapper. Length/padding validity is checked separately in `isRawBase64String`. */
+const RAW_BASE64_CHARSET_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
+
+/**
+ * True when `value` is well-formed base64 text on its own (no `data:` URL
+ * wrapper): valid base64 charset and correctly padded (length a multiple of
+ * 4). Shared by the raw-string branch of `isBase64Upload` and by
+ * `handleBase64Upload`, so both agree on exactly what counts as base64.
+ */
+function isRawBase64String(value: string): boolean {
+  return RAW_BASE64_CHARSET_PATTERN.test(value) && value.length % 4 === 0;
+}
+
+/**
  * Returns true when a value looks like an image payload supplied as base64.
  *
  * Supports both standard data URLs such as `data:image/png;base64,...` and
- * raw base64 strings. Regular URLs and other non-base64 values return false.
+ * raw base64 strings. Regular URLs and other non-base64 values return
+ * false — used in `uploadImageKit` to decide whether a string source should
+ * be parsed as base64 (via `handleBase64Upload`) or passed straight through
+ * to ImageKit as a URL.
  */
 export function isBase64Upload(value: unknown): value is string {
   if (typeof value !== 'string') return false;
 
   const trimmed = value.trim();
   if (trimmed.startsWith('data:')) {
-    return /^data:(image\/[a-zA-Z0-9.+-]+);base64,[A-Za-z0-9+/]+={0,2}$/i.test(trimmed);
+    return BASE64_DATA_URL_PATTERN.test(trimmed);
   }
 
-  return /^[A-Za-z0-9+/]+={0,2}$/.test(trimmed) && trimmed.length % 4 === 0;
+  return isRawBase64String(trimmed);
 }
 
 /**
- * Handle base64 data URL uploads — extracts the raw base64 payload and filename
+ * Parses a base64 image payload (data URL or bare base64 string) into a
+ * ready-to-upload Blob.
+ *
+ * Self-validates via `isBase64Upload` rather than trusting the caller to
+ * have checked first — so this function is correct to call on its own, and
+ * there's exactly one place (`isBase64Upload`) that defines what "valid
+ * base64" means, instead of this function keeping its own parallel
+ * validation that could disagree with it. In the current codebase
+ * `uploadImageKit` always checks `isBase64Upload` first anyway (it needs
+ * the boolean to decide which branch to take), so this is a cheap redundant
+ * check in practice — a second regex test on a short string — traded for a
+ * function that can't be misused by a future caller who skips that check.
+ *
+ * The declared MIME type (from the data: URL prefix, or the `image/jpeg`
+ * default for a bare base64 string with no type info at all) is only a
+ * starting guess: it's overridden by `detectImageMimeType` sniffing the
+ * decoded bytes wherever that succeeds, since a data: URL's declared type
+ * is caller-supplied and not guaranteed to match the actual content — same
+ * trust model as every other upload source in this module.
+ *
+ * @param base64Url - The base64 string or data URL to parse.
+ * @param prefix - Filename prefix, passed through to `generateImageFilename`.
+ * @param entityId - Entity ID, passed through to `generateImageFilename`.
+ * @returns The decoded file as a Blob plus its generated filename and
+ *   resolved MIME type, or `null` if the input isn't valid base64 or
+ *   decodes to zero bytes.
  */
 function handleBase64Upload(base64Url: string, prefix: string, entityId: string): {
   file: Blob;
   fileName: string;
   mimeType: string;
 } | null {
+  if (!isBase64Upload(base64Url)) {
+    console.error('[handleBase64Upload] ❌ Input is not a valid base64 image payload');
+    return null;
+  }
+
   const trimmed = base64Url.trim();
-  let mimeType = 'image/jpeg';
+  let declaredMimeType = 'image/jpeg';
   let payload = trimmed;
 
   if (trimmed.startsWith('data:')) {
-    const matches = trimmed.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/i);
-    if (!matches || matches.length !== 3) {
-      console.error('[handleBase64Upload] ❌ Invalid base64 data URL format');
+    const matches = trimmed.match(BASE64_DATA_URL_PATTERN);
+    if (!matches) {
+      // Unreachable given the isBase64Upload guard above (same pattern), but
+      // handled explicitly rather than asserted away — a function shouldn't
+      // need a non-null assertion to stay correct on its own.
+      console.error('[handleBase64Upload] ❌ Data URL failed re-parse after passing validation');
       return null;
     }
-
-    mimeType = matches[1];
+    declaredMimeType = matches[1];
     payload = matches[2];
-  } else if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith('blob:')) {
-    console.error('[handleBase64Upload] ❌ Expected base64 content but received a URL');
-    return null;
-  } else if (!/^[A-Za-z0-9+/]+={0,2}$/.test(trimmed) || trimmed.length % 4 !== 0) {
-    console.error('[handleBase64Upload] ❌ Invalid base64 content format');
-    return null;
   }
 
   const buffer = Buffer.from(payload, 'base64');
@@ -343,6 +574,7 @@ function handleBase64Upload(base64Url: string, prefix: string, entityId: string)
     return null;
   }
 
+  const mimeType = detectImageMimeType(buffer) ?? declaredMimeType;
   const extension = validateMimeType(mimeType);
   const fileName = generateImageFilename(entityId, prefix, extension);
 
@@ -358,15 +590,46 @@ function handleBase64Upload(base64Url: string, prefix: string, entityId: string)
 // ---------------------------------------------------------------------------
 
 /**
- * Universal image upload function
+ * Appends a file Blob and its filename to `formData` under the `file` and
+ * `fileName` fields ImageKit's upload API expects. Every source branch in
+ * `uploadImageKit` that produces a Blob (base64, TypedArray, ArrayBuffer,
+ * multipart) ends with this same two-line append — factored out so that
+ * pairing stays in one place. Not used for the plain-URL string branch,
+ * which appends a string rather than a Blob and has no filename to set on
+ * the append call itself.
+ */
+function appendFileToFormData(formData: FormData, file: Blob, fileName: string): void {
+  formData.append('file', file, fileName);
+  formData.append('fileName', fileName);
+}
+
+/**
+ * Universal image upload function — the single entry point all the
+ * `upload*` wrappers below (and any future caller) go through.
  *
- * Handles image uploads from multiple sources (URL, base64, multipart file) with customizable
- * folder structure, tags, and metadata.
+ * Accepts four shapes of `imageSource` and normalizes each into the
+ * multipart FormData ImageKit's upload API expects:
+ * - **URL string** (anything that isn't base64, per `isBase64Upload`) —
+ *   passed straight through in the `file` field; ImageKit fetches it.
+ * - **Base64 string / data URL** — decoded via `handleBase64Upload`.
+ * - **Raw Buffer / TypedArray / ArrayBuffer** — no metadata exists for
+ *   these at all, so the real format is sniffed from the bytes.
+ * - **Multipart file object** (`ImageUploadObject`) — the client-supplied
+ *   `mimetype`/`originalname` are untrusted (trivially spoofable), so the
+ *   sniffed format is preferred and only falls back to the declared
+ *   mimetype when sniffing is inconclusive; the extension always resolves
+ *   through `validateMimeType`'s whitelist rather than the raw filename.
  *
- * @param imageSource - Image source (URL, base64, or file object)
- * @param entityId - Entity ID for filename generation and metadata
- * @param options - Upload configuration options
- * @returns Promise resolving to ImageKit upload response with URL and file ID
+ * Every failure path (invalid source, failed parse, upload error after
+ * retries) returns `null` rather than throwing — callers get a uniform
+ * "did this work" signal without needing their own try/catch, and the
+ * specific failure reason is always logged via `console.error` first.
+ *
+ * @param imageSource - The image, in any of the four shapes above.
+ * @param entityId - Entity ID used for filename generation and tagging.
+ * @param options - Folder, filename prefix, tags, and uniqueness config.
+ * @returns The ImageKit upload response (URL, file ID, etc.), or `null` on
+ *   any failure.
  */
 export async function uploadImageKit(
   imageSource: ImageUploadSource,
@@ -382,31 +645,23 @@ export async function uploadImageKit(
       if (isBase64Upload(imageSource)) {
         const parsed = handleBase64Upload(imageSource, prefix, entityId);
         if (!parsed) return null;
-        formData.append('file', parsed.file, parsed.fileName);
-        formData.append('fileName', parsed.fileName);
+        appendFileToFormData(formData, parsed.file, parsed.fileName);
       } else {
         formData.append('file', imageSource);
         formData.append('fileName', generateImageFilename(entityId, prefix));
       }
-    } else if (ArrayBuffer.isView(imageSource)) {
-      // Raw TypedArray (including Node.js Buffer) — send as Blob.
-      // No metadata accompanies this source type, so sniff the real format
-      // from the bytes rather than assuming JPEG (which mislabeled every
-      // non-JPEG raw upload, e.g. a PNG would be sent as declared JPEG).
-      const bytes = new Uint8Array(imageSource.buffer, imageSource.byteOffset, imageSource.byteLength);
+    } else if (ArrayBuffer.isView(imageSource) || imageSource instanceof ArrayBuffer) {
+      // Raw TypedArray (including Node.js Buffer) or ArrayBuffer — send as
+      // Blob. No metadata accompanies either source type, so sniff the real
+      // format from the bytes rather than assuming JPEG (which previously
+      // mislabeled every non-JPEG raw upload).
+      const bytes = imageSource instanceof ArrayBuffer
+        ? new Uint8Array(imageSource)
+        : new Uint8Array(imageSource.buffer, imageSource.byteOffset, imageSource.byteLength);
       const mimeType = detectImageMimeType(bytes) ?? 'image/jpeg';
       const extension = validateMimeType(mimeType);
       const fileName = generateImageFilename(entityId, prefix, extension);
-      formData.append('file', new Blob([imageSource as BlobPart], { type: mimeType }), fileName);
-      formData.append('fileName', fileName);
-    } else if (imageSource instanceof ArrayBuffer) {
-      // Raw ArrayBuffer — send as Blob. Same reasoning as the TypedArray branch.
-      const bytes = new Uint8Array(imageSource);
-      const mimeType = detectImageMimeType(bytes) ?? 'image/jpeg';
-      const extension = validateMimeType(mimeType);
-      const fileName = generateImageFilename(entityId, prefix, extension);
-      formData.append('file', new Blob([imageSource], { type: mimeType }), fileName);
-      formData.append('fileName', fileName);
+      appendFileToFormData(formData, new Blob([imageSource as BlobPart], { type: mimeType }), fileName);
     } else if (imageSource && 'buffer' in imageSource) {
       // File object from multipart (ImageUploadObject) — extract buffer and metadata.
       // uploadObj.mimetype and uploadObj.originalname are client-supplied and
@@ -424,8 +679,7 @@ export async function uploadImageKit(
       const mimeType = detectImageMimeType(bufferBytes) ?? (uploadObj.mimetype || 'application/octet-stream');
       const extension = validateMimeType(mimeType);
       const fileName = generateImageFilename(entityId, prefix, extension);
-      formData.append('file', new Blob([uploadObj.buffer as BlobPart], { type: mimeType }), fileName);
-      formData.append('fileName', fileName);
+      appendFileToFormData(formData, new Blob([uploadObj.buffer as BlobPart], { type: mimeType }), fileName);
     } else {
       console.error('[uploadImageKit] ❌ Invalid image source type');
       return null;
@@ -453,7 +707,16 @@ export async function uploadImageKit(
 // ---------------------------------------------------------------------------
 
 /**
- * Upload book cover image to ImageKit.io
+ * Uploads a book's cover image, tagged with the book's own keywords plus a
+ * book-cover marker and the book's ID (so covers can be found/cleaned up by
+ * tag via the ImageKit dashboard or API without a DB round-trip).
+ *
+ * @param imageSource - The cover image, in any form `uploadImageKit` accepts.
+ * @param bookMeta - Only `id` and `keywords` are used; typed as a `Pick` so
+ *   callers can pass a full `Book` without this function depending on its
+ *   entire shape.
+ * @returns The ImageKit upload response, or `null` on failure — see
+ *   `uploadImageKit` for the full failure/retry behavior.
  */
 export async function uploadBookCover(
   imageSource: ImageUploadSource,
@@ -469,7 +732,16 @@ export async function uploadBookCover(
 }
 
 /**
- * Upload a book's main character avatar image to ImageKit.io
+ * Uploads a book's main character avatar image, tagged with the book ID and
+ * character name for lookup.
+ *
+ * @param imageSource - The avatar image, in any form `uploadImageKit` accepts.
+ * @param bookId - Book this character belongs to; used for filename
+ *   generation and the `book-id:` tag.
+ * @param characterName - Used only for the `character:` tag — not
+ *   sanitized here, since `generateImageFilename` never sees it (the
+ *   filename is keyed on `bookId`, not `characterName`).
+ * @returns The ImageKit upload response, or `null` on failure.
  */
 export async function uploadBookCharacterImage(
   imageSource: ImageUploadSource,
@@ -484,7 +756,11 @@ export async function uploadBookCharacterImage(
 }
 
 /**
- * Upload feedback screenshot image to ImageKit.io
+ * Uploads a screenshot attached to a user feedback report.
+ *
+ * @param imageSource - The screenshot, in any form `uploadImageKit` accepts.
+ * @param feedbackId - Feedback report this screenshot belongs to.
+ * @returns The ImageKit upload response, or `null` on failure.
  */
 export async function uploadFeedbackScreenshot(
   imageSource: ImageUploadSource,
@@ -498,7 +774,11 @@ export async function uploadFeedbackScreenshot(
 }
 
 /**
- * Upload user profile image to ImageKit.io
+ * Uploads a user's profile image.
+ *
+ * @param imageSource - The profile image, in any form `uploadImageKit` accepts.
+ * @param userId - User this image belongs to.
+ * @returns The ImageKit upload response, or `null` on failure.
  */
 export async function uploadUserImage(
   imageSource: ImageUploadSource,
@@ -540,8 +820,7 @@ export async function deleteFileFromImageKit(fileId: string): Promise<boolean> {
     }
 
     if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`ImageKit delete failed (${response.status}): ${body}`);
+      await throwForFailedResponse(response, 'ImageKit delete');
     }
 
     console.log(`[imagekit] 🗑️ Image ${fileId} deleted successfully.`);
@@ -603,8 +882,7 @@ export async function deleteFilesFromImageKit(
     });
 
     if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Bulk delete failed (${response.status}): ${body}`);
+      await throwForFailedResponse(response, 'Bulk delete');
     }
 
     const data = await response.json() as { successfullyDeletedFileIds: string[] };
@@ -630,7 +908,14 @@ export async function deleteFilesFromImageKit(
 }
 
 /**
- * Deletes a folder and all its contents from ImageKit
+ * Deletes a folder and everything inside it from ImageKit in one call.
+ *
+ * Unlike the file-delete functions above, there's no DB-side bookkeeping to
+ * reconcile here — folders aren't tracked in `uploaded_images` — so a
+ * failure is just logged rather than queued for retry (there's no queue
+ * entry type for "retry deleting this folder"). Intended for infrequent,
+ * explicitly-triggered cleanup (e.g. wiping an entire book's or user's
+ * image folder), not for the automated cleanup jobs below.
  *
  * @param folderPath - Path of the folder to delete (e.g., 'books/2024/01/15')
  */
@@ -644,8 +929,7 @@ export async function deleteFolderFromImageKit(folderPath: string) {
     });
 
     if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Folder delete failed (${response.status}): ${body}`);
+      await throwForFailedResponse(response, 'Folder delete');
     }
 
     console.log(`[imagekit] 🗑️ Folder "${folderPath}" and all its contents deleted.`);
@@ -769,12 +1053,25 @@ export async function processQueuedImageDeletions(batchSize: number = 50): Promi
 // ---------------------------------------------------------------------------
 
 /**
- * Clean up stale (outdated) user profile images for users who still exist.
+ * Cleans up stale (outdated) user profile images for users who still exist.
  *
- * When a user uploads a new avatar, a *new* `uploaded_images` row is inserted while
- * the old row is left in place. Over time a user accumulates multiple `type = 'user'`
- * rows with a non-null `userId`. This function finds those users, keeps only the
- * *most recent* row, deletes all older images from ImageKit, and removes their DB rows.
+ * When a user uploads a new avatar, a *new* `uploaded_images` row is
+ * inserted while the old row is left in place, so a user accumulates
+ * multiple `type = 'user'` rows with a non-null `userId` over time. This
+ * finds those users, keeps only the *most recent* row per user, and
+ * deletes the rest from both ImageKit and the DB.
+ *
+ * Follows the same confirm-before-clearing rule as the deletion-queue
+ * functions above: a user's DB rows are only removed for images
+ * `deleteFilesFromImageKit` actually confirmed deleted. Anything that
+ * fails stays in `uploaded_images` and simply reappears as a duplicate for
+ * that user on the next run — no separate retry queue is needed here since
+ * the "still has duplicates" query IS the retry mechanism.
+ *
+ * @param batchSize - Maximum number of distinct users (not images) to
+ *   process in one run (default: 50).
+ * @returns Stats: how many stale images were found (`processed`) and
+ *   actually removed (`deleted`), plus any errors encountered.
  */
 export async function cleanupStaleUserUploads(batchSize: number = 50): Promise<{
   processed: number;
@@ -838,11 +1135,25 @@ export async function cleanupStaleUserUploads(batchSize: number = 50): Promise<{
 }
 
 /**
- * Clean up orphaned user uploads whose linked user account no longer exists.
+ * Cleans up orphaned user uploads whose linked user account no longer exists.
  *
- * When a user account is deleted, the DB trigger sets `userId = NULL` on the
- * corresponding `uploaded_images` rows. This function finds those orphaned rows,
- * queues their ImageKit file IDs for deletion, and removes the orphaned DB rows.
+ * When a user account is deleted, a DB trigger sets `userId = NULL` on the
+ * corresponding `uploaded_images` rows rather than deleting them outright
+ * (deleting the image file itself is this function's job, on a schedule,
+ * not the trigger's). This finds those orphaned rows, queues their ImageKit
+ * file IDs for deletion via `queueImageForDeletion`, and removes the
+ * `uploaded_images` tracking row for each one it successfully queued.
+ *
+ * Actual ImageKit deletion happens later via `processQueuedImageDeletions`
+ * — this function's job is only to queue and untrack, not to delete
+ * directly, since orphan cleanup and the deletion queue are handled by
+ * separate scheduled jobs.
+ *
+ * @param batchSize - Maximum number of orphaned rows to process in one run
+ *   (default: 100).
+ * @returns Stats: how many orphaned rows were found (`processed`), how many
+ *   were successfully queued for deletion (`queued`), how many tracking
+ *   rows were removed (`removed`), plus any errors encountered.
  */
 export async function cleanupOrphanedUserUploads(batchSize: number = 100): Promise<{
   processed: number;
