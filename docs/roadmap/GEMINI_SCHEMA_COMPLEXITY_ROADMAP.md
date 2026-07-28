@@ -9,18 +9,6 @@
 
 ## Root Cause Analysis
 
-### ⚠️ Phase Numbering Note
-
-There is a **naming collision** between this roadmap and the AGENTS.md task plan:
-
-| Phase | This roadmap | AGENTS.md task plan |
-|-------|-------------|---------------------|
-| 1.5 | Flatten wrapper objects (`characterUpdates`/`placeUpdates`/`threadUpdates`) | Inline `storyFlags.characterRecognitionLevels` → `characterMemoryStrength`/`characterMemoryDecay` on `StoryState` |
-| 1.7 | Collapse duplicate field instructions in prompts | Add `pageCount` and `climaxPage` to `StoryState` (**evaluated & rejected** — `pageCount` is redundant with `page`; `climaxPage` is story-level metadata, not per-state data) |
-| 1.8 | Replace `formatOneOf` with list references (**rejected**) | Replace enum expansions with tag-placeholders (**rejected — same issue**) |
-
-Both sets of Phase numbers refer to their own plan documents. The AGENTS.md plan changes were scoped as "complexity reduction" tasks but some were found to be either redundant or harmful during implementation. This document represents the canonical schema complexity reduction plan.
-
 ### What "too many states for serving" means
 
 Gemini's structured output works by **constrained decoding** — at every token position, the model's output logits are restricted to only the tokens that could lead to a valid JSON matching the schema. This is computationally bounded. When the schema has too many **combinatorial possibilities** (enum values × optional fields × deep nesting), the decoder's state graph exceeds what Gemini can compile to a serving graph.
@@ -78,6 +66,12 @@ The `minify: true` mode already:
 ### Remaining Prompt-Side Cost
 
 Beyond the raw schema, each generation call appends ~10 KB of output format (`nextPageOutputFormat`) and ~280 lines of field instructions (`buildNextPageFieldInstructions`) to the system prompt. These inflate token consumption without affecting Gemini's constrained decoder. Phase 1.7 (deduplicate char/place instructions) and ~~Phase 1.8~~ **Phase 1.8-alt** (centralize enum arrays — see §1.8 correction below) cut per-call token cost.
+
+### Schema duplication (high priority)
+
+- nextPageOutputFormat and firstBookOutputFormat both contain nearly identical character/place/inventory schemas.
+- STORY_GENERATION_SCHEMA_DEFINITION + STORY_STATE_GENERATION_SCHEMA still duplicate a lot of structure.
+- INITIAL_*_SCHEMA and UPDATE_*_SCHEMA types are ~70% repetitive.
 
 ---
 
