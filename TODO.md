@@ -28,8 +28,8 @@
 [ ] enrich page 1 with imagePrompt -> generate page image cron
 [ ] reset db -> check "1.2 — Engine regression test suite"
 [ ] https://dashboard.xendit.co/settings/developers#api-keys
-[ ] flatten updateObstacles -> addObstacles/removeObstacles
-[ ] flatten narrativeFlags: { "potentialTwist": ... } -> potentialTwist
+[x] flatten updateObstacles -> addObstacles/removeObstacles
+[x] flatten narrativeFlags: { "potentialTwist": ... } -> potentialTwist
 
 ---
 

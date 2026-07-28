@@ -47,42 +47,6 @@ export function getInjurySeverityLabel(injury: Injury): InjurySeverity {
   return 'none';
 }
 
-// /**
-//  * Creates a new character with default values
-//  * 
-//  * @param newCharacter - Character creation parameters including name, gender, role, bio, appearance, status, narrativeFlags, and relationshipToMC
-//  * @returns New character memory structure
-//  * 
-//  * @example
-//  * ```typescript
-//  * const character = createCharacter({
-//  *   name: "Lina",
-//  *   gender: "female",
-//  *   role: "best friend",
-//  *   bio: "Cheerful but secretive",
-//  *   appearance: "tall, pale, messy black hair, hollow eyes",
-//  *   status: "trusting",
-//  *   narrativeFlags: { potentialTwist: "none" },
-//  *   relationshipToMC: { type: "friend", context: "Childhood best friend, incredibly loyal." }
-//  * });
-//  * ```
-//  */
-// export function createCharacter(
-//   newCharacter: NewCharacter
-// ): CharacterMemory {
-//   const { status, narrativeFlags } = newCharacter;
-//   return {
-//     ...newCharacter,
-//     relationships: [],
-//     pastInteractions: [],
-//     narrativeFlags: {
-//       ...narrativeFlags,
-//       potentialTwist: narrativeFlags.potentialTwist || (status === "suspicious" ? "betrayal" : "none")
-//     },
-//     injuries: [],
-//   };
-// }
-
 /**
  * Updates an existing character with new information.
  *
@@ -100,7 +64,7 @@ export function getInjurySeverityLabel(injury: Injury): InjurySeverity {
  * const updated = updateCharacter(existing, {
  *   status: "suspicious",
  *   newInteractions: ["Refused to explain what she saw"],
- *   narrativeFlags: { potentialTwist: "betrayal" }
+ *   potentialTwist: "betrayal"
  * }, page);
  * ```
  */

@@ -1,6 +1,6 @@
 # Gemini Schema Complexity Eradication Roadmap
 
-> **Revision:** v9 — Phase 1.7 completed: collapsed duplicate `newCharacters`/`updatedCharacters` and `newPlaces`/`updatedPlaces` instruction blocks into shared `characterEntries`/`placeEntries` blocks (~12 lines trimmed, full deduplication achieved). Prompt-side remaining phases: none.
+> **Revision:** v10 — Phase 1.7 completed + 5 flattens done. Prompt-side remaining phases: none.
 > **Target error:** `ApiError: {"error":{"code":400,"message":"The specified schema produces a constraint that has too many states for serving…","status":"INVALID_ARGUMENT"}}`
 > **Affects:** Gemini 2.5 Flash/Pro structured-output calls (`responseSchema`)
 > **Stack:** TypeScript / Node.js, Gemini, `convertToGeminiSchema` (minify: true)
@@ -62,6 +62,7 @@ All measurements from `src/schema/story.ts` live schema definitions.
 5. ~~**123 required constraints**~~ → **Reduced to ~50** by Phase 1.4.
 6. **32 KB of raw JSON schema** → **Reduced to ~10 KB** by Phases 1.1, 1.2, 1.4, 1.5, and 2.3.
 7. **3 unnecessary wrapper objects** (`characterUpdates`, `placeUpdates`, `threadUpdates`) → **Removed** by Phase 1.5.
+8. ~~**Obsolete `narrativeFlags` references**~~ → **Resolved** by flattening `potentialTwist` directly into character types (Phase 1.1 + `updateObstacles` flattening). All stale comments in `characters.ts` removed.
 
 ### Current `convertToGeminiSchema` Minification
 
@@ -102,11 +103,11 @@ Beyond the raw schema, each generation call appends ~10 KB of output format (`ne
 
 ---
 
-### 🟡 Pending — Medium Risk (1 item)
+### 🟡 Pending — Medium Risk (4 items)
 
 #### Phase 1.3 — Shorten property names to ≤ 15 chars
 
-**Status:** ✅ 4 renames completed: `plannedIntroduction→plannedIntro`, `importantObjects→keyObjects`, `placeConnectionUpdates→placeConnections`, `visualDescription→appearance`. Verified across types, schemas, prompts, services, and DB column mapping. Remaining 17 renames deferred.
+**Status:** ✅ 4 renames completed: `plannedIntroduction→plannedIntro`, `importantObjects→keyObjects`, `placeConnectionUpdates→placeConnections`, `visualDescription→appearance`. Verified across types, schemas, prompts, services, and DB column mapping. Remaining **17** renames deferred.
 
 **Problem:** 8 property names exceed 15 chars, adding structural overhead to the schema.
 
@@ -153,6 +154,7 @@ Beyond the raw schema, each generation call appends ~10 KB of output format (`ne
 **Risk assessment:** 🟢 Low — purely mechanical. TypeScript catches mismatches. ~0.5 day.
 
 ---
+
 #### Phase 1.8 — Replace `formatOneOf` with list references in output format strings
 
 **⛔ REJECTED — see §1.8-alt below for the alternative approach**
@@ -219,7 +221,7 @@ Depth 8 is acceptable for non-Gemini providers (they handle it without issues). 
 | Status | Count | Phases |
 |--------|------:|--------|
 | ✅ Completed | 13 | 1.1, 1.2, 1.4, 1.5, 1.6, 1.7, 1.8-alt (p1, p2), 1.3 (4 renames done), 2.3, 4.1, 4.2 |
-| 🟡 Pending (medium) | 2 | 3.1, 1.3 (remaining 17 renames — deferred) |
+| 🟡 Pending (medium) | 5 | 3.1, 1.3 (remaining 17 renames — deferred), 1.6, 1.8 (rejected), Phase 1.8 p3 (inject enum values into rules sections) |
 | 🔴 Skipped | 2 | 2.1 (high risk), 2.2 (intentional — 1 batch preserves RPM, fairness, parallel world consistency) |
 | 🔴 Rejected | 1 | 1.8 (harmful — removed enum values from AI context) |
 
@@ -449,4 +451,4 @@ These don't affect Gemini's constrained decoder. They reduce per-call token spen
 
 ---
 
-*Last updated: v9 — Phase 1.7 completed (collapsed duplicate char/place instructions). Completed phases: 1.1, 1.2, 1.4, 1.5, 1.6, 1.7, 1.8-alt (p1, p2), 1.3 (4 renames done), 2.3, 4.1, 4.2. Pending: 3.1, 1.3 (17 renames deferred). Skipped: 2.1, 2.2. Rejected: 1.8.*
+*Last updated: v10 — Phase 1.7 completed + 2 flattens done (updateObstacles → addObstacles/removeObstacles, narrativeFlags → potentialTwist). Completed phases: 1.1, 1.2, 1.4, 1.5, 1.6, 1.7, 1.8-alt (p1, p2), 1.3 (4 renames done), 2.3, 4.1, 4.2. Pending: 3.1, 1.3 (17 renames deferred), Phase 1.8 p3 (inject enum values into rules sections).*
