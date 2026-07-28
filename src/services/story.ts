@@ -225,7 +225,7 @@ export async function setActiveSession(params: SetActiveSessionParams, options?:
   // session (frontierPageId, etc.) rather than the stale cached version.
   invalidateEnrichedBookCache(bookId);
 
-  // Log user activity (session update)
+  // Log user activity (session update, deduplicated in logUserActivity)
   await logUserActivity({
     userId,
     activityType: 'session_updated',

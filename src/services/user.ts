@@ -227,6 +227,30 @@ export async function logUserActivity(params: DBNewUserActivityLog, options?: { 
   if (isInternal) return;
 
   try {
+    // Deduplicate: if the previous activity is also 'session_updated' with the
+    // same targetId (bookId), just bump its timestamp instead of inserting.
+    if (params.activityType === 'session_updated' && params.targetId) {
+      const [lastActivity] = await client
+        .select({
+          id: userActivityLogs.id,
+          activityType: userActivityLogs.activityType,
+          targetId: userActivityLogs.targetId,
+        })
+        .from(userActivityLogs)
+        .where(eq(userActivityLogs.userId, userId))
+        .orderBy(desc(userActivityLogs.createdAt))
+        .limit(1);
+
+      if (lastActivity?.activityType === 'session_updated' && lastActivity?.targetId === params.targetId) {
+        await client
+          .update(userActivityLogs)
+          .set({ createdAt: new Date() })
+          .where(eq(userActivityLogs.id, lastActivity.id));
+        await updateUserLastActivity(userId, client);
+        return;
+      }
+    }
+
     await client.insert(userActivityLogs).values({
       ...params,
       ipAddress: req?.ip,

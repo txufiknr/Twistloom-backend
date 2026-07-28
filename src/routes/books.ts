@@ -1379,6 +1379,7 @@ router.put("/:id", requireAuth, imageUploadMiddleware(), async (c) => {
     const [book] = await dbRead.select({ 
       id: books.id,
       userId: books.userId,
+      slug: books.slug,
       title: books.title,
       keywords: books.keywords,
       imageId: books.imageId,
@@ -1418,6 +1419,7 @@ router.put("/:id", requireAuth, imageUploadMiddleware(), async (c) => {
       coverUploadResult = await uploadBookCoverImage(
         {
           id: book.id,
+          slug: book.slug ?? undefined,
           title: title || book.title,
           keywords: keywords || book.keywords
         },

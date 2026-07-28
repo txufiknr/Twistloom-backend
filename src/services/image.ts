@@ -224,10 +224,12 @@ function generateImageFilename(entityId: string, prefix: string, extension: stri
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
 
-  // Both pieces end up in a filename sent to the ImageKit API, so both get the
-  // same sanitization — previously only the prefix was cleaned. This is a
-  // no-op for well-formed UUID/CUID entityIds, but closes the gap otherwise.
-  return `${sanitize(prefix)}-${sanitize(entityId)}.${extension}`;
+  const sanitizedPrefix = sanitize(prefix);
+  const sanitizedEntityId = sanitize(entityId);
+
+  return sanitizedPrefix
+    ? `${sanitizedPrefix}-${sanitizedEntityId}.${extension}`
+    : `${sanitizedEntityId}.${extension}`;
 }
 
 /**
@@ -374,7 +376,7 @@ export async function uploadImageKit(
   try {
     const formData = new FormData();
     const folderPath = `/${APP_NAME_SLUG}/${options.folder}/${getTodayDate().replace(/-/g, '/')}`;
-    const prefix = options.filenamePrefix || DEFAULT_FILENAME_PREFIX;
+    const prefix = options.filenamePrefix ?? DEFAULT_FILENAME_PREFIX;
 
     if (typeof imageSource === 'string') {
       if (isBase64Upload(imageSource)) {
@@ -455,13 +457,14 @@ export async function uploadImageKit(
  */
 export async function uploadBookCover(
   imageSource: ImageUploadSource,
-  bookMeta: Pick<Book, 'id' | 'title' | 'keywords'>,
+  bookMeta: Pick<Book, 'id' | 'title' | 'keywords' | 'slug'>,
 ): Promise<ImageKitUploadResponse | null> {
-  const { id, keywords } = bookMeta;
-  return uploadImageKit(imageSource, id, {
+  const { id, slug, keywords } = bookMeta;
+  const entityId = slug || id;
+  return uploadImageKit(imageSource, entityId, {
     folder: 'books',
     tags: [...keywords, 'book-cover', `book-id:${id}`],
-    filenamePrefix: 'cover',
+    filenamePrefix: slug ? '' : 'cover',
   });
 }
 

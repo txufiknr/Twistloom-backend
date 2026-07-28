@@ -1977,7 +1977,7 @@ export async function generateCoverImages(book: Book, state?: StoryState, total?
  * ```
  */
 export async function uploadBookCoverImage(
-  bookMeta: Pick<Book, 'id' | 'title' | 'keywords'>,
+  bookMeta: Pick<Book, 'id' | 'title' | 'keywords' | 'slug'>,
   image: ImageUploadSource,
 ): Promise<ImageKitUploadResponse | null> {
   try {
