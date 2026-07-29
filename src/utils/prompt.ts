@@ -4628,7 +4628,8 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
     throw new Error(`Failed to generate page: text too short (${response.result.text.length} < ${MIN_CHARS_PER_PAGE} chars)`);
   }
 
-  if (!response.result.actions?.length) {
+  const { isLastPage } = getStoryStateInfo(advancedState);
+  if (!isLastPage && !response.result.actions?.length) {
     throw new Error(`Failed to generate page: empty actions array`);
   }
 
@@ -4801,7 +4802,8 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
       continue;
     }
 
-    if (!generatedStoryPageResult.actions?.length) {
+    const { isLastPage } = getStoryStateInfo(advancedState);
+    if (!isLastPage && !generatedStoryPageResult.actions?.length) {
       lastError = new Error(`Alternative fate ${index + 1} has empty actions array`);
       console.warn(`[${fateLogContext}] ⚠️ Skipping: empty actions array`);
       continue;
