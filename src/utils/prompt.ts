@@ -4628,6 +4628,10 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
     throw new Error(`Failed to generate page: text too short (${response.result.text.length} < ${MIN_CHARS_PER_PAGE} chars)`);
   }
 
+  if (!response.result.actions?.length) {
+    throw new Error(`Failed to generate page: empty actions array`);
+  }
+
   // 5. Canon/consistency validation (roadmap 1.1) — after eval, before delta/persist
   let generatedStoryPage: StoryGeneration = {
     ...response.result,
@@ -4790,10 +4794,16 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
     const isFirstAlternative = index === 0;
     const fateLogContext = `${context}:fate-${index + 1}`;
 
-    // Skip undersized alternatives; outer retry covers full-batch failure when none remain
+    // Skip undersized or no-actions alternatives; outer retry covers full-batch failure when none remain
     if (generatedStoryPageResult.text.length < MIN_CHARS_PER_PAGE) {
       lastError = new Error(`Alternative fate ${index + 1} text too short (${generatedStoryPageResult.text.length} < ${MIN_CHARS_PER_PAGE} chars)`);
       console.warn(`[${fateLogContext}] ⚠️ Skipping: text too short (${generatedStoryPageResult.text.length} < ${MIN_CHARS_PER_PAGE} chars)`);
+      continue;
+    }
+
+    if (!generatedStoryPageResult.actions?.length) {
+      lastError = new Error(`Alternative fate ${index + 1} has empty actions array`);
+      console.warn(`[${fateLogContext}] ⚠️ Skipping: empty actions array`);
       continue;
     }
 

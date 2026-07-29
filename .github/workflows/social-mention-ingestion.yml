@@ -17,41 +17,28 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Setup package manager
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v3
+      # Setup Bun runtime
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          version: 10
+          bun-version: latest
 
-      # Setup Node.js runtime with caching
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      # Get pnpm cache directory for optimization
-      - name: Get pnpm store directory
-        id: pnpm-store
-        shell: bash
-        run: |
-          echo "path=$(pnpm store path --silent)" >> $GITHUB_OUTPUT
-
-      # Cache pnpm packages to speed up future runs
-      - name: Setup pnpm cache
+      # Cache Bun packages to speed up future runs
+      - name: Setup Bun cache
         uses: actions/cache@v4
         with:
-          path: ${{ steps.pnpm-store.outputs.path }}
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
           restore-keys: |
-            ${{ runner.os }}-pnpm-store-
+            ${{ runner.os }}-bun-
 
       # Install project dependencies
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile --prefer-offline
+        run: bun install --frozen-lockfile
 
       # Build TypeScript to JavaScript
       - name: Build project
-        run: pnpm build
+        run: bun run build
 
       # Ensure compiled file exists before running
       - name: Verify build
@@ -65,10 +52,12 @@ jobs:
       # Note: SYSTEM_USER_ID / AUTH_SECRET are NOT needed here — the cron writes
       # via dbWrite and never calls requireAuth/requireSystemAdmin.
       - name: Run social-mentions job
-        run: node dist/cron/social-mentions.js
+        run: bun dist/cron/social-mentions.js
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DATABASE_READ_URL: ${{ secrets.DATABASE_READ_URL || secrets.DATABASE_URL }}
           BRAVE_SEARCH_API_KEY: ${{ secrets.BRAVE_SEARCH_API_KEY }}
           NODE_ENV: production
         timeout-minutes: 15  # Conservative timeout for multi-source ingestion
+
+

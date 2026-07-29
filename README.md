@@ -250,7 +250,7 @@ bun lint:imports  # Validate import extensions
 
 ### **Production**
 ```bash
-bun build         # Build TypeScript to JavaScript
+bun run build         # Build TypeScript to JavaScript
 bun start         # Start production server
 bun start:api    # Start production API server
 bun start:cron:trending     # Run trending scores cron job in production

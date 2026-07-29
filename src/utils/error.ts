@@ -138,12 +138,31 @@ function getDeepErrorStringForClassification(err: unknown): string {
  *
  * Note: This is a best-effort classifier based on message text and object layout.
  *
- * @param err - The thrown value or error to classify
+ * Two call signatures:
+ *   classifyGenAIError(err)                             — provider defaults to 'openrouter'
+ *   classifyGenAIError(provider, model, err)            — full context for richer logging
+ *
  * @returns One of the `GenAIErrorCode` discriminants describing the category
  */
-export function classifyGenAIError(provider: AIChatProvider, model: string, err: unknown): GenAIErrorCode {
+export function classifyGenAIError(err: unknown): GenAIErrorCode;
+export function classifyGenAIError(provider: AIChatProvider, model: string, err: unknown): GenAIErrorCode;
+export function classifyGenAIError(providerOrErr: AIChatProvider | unknown, modelOrErr?: string | unknown, err?: unknown): GenAIErrorCode {
+  // Support both call signatures: classifyGenAIError(err) and classifyGenAIError(provider, model, err)
+  let provider: AIChatProvider;
+  let model: string;
+  let error: unknown;
+  if (typeof providerOrErr === 'string') {
+    provider = providerOrErr as AIChatProvider;
+    model = modelOrErr as string;
+    error = err as unknown;
+  } else {
+    provider = 'openrouter';
+    model = 'unknown';
+    error = providerOrErr;
+  }
+
   // Use deep string extraction to ensure we catch deeply nested raw JSON payloads
-  const msg = getDeepErrorStringForClassification(err);
+  const msg = getDeepErrorStringForClassification(error);
   const logPrefix = `${provider}/${model}`;
 
   // Check for timeout/transport aborts — treat as request timeout for retry/backoff
@@ -151,11 +170,11 @@ export function classifyGenAIError(provider: AIChatProvider, model: string, err:
     msg.includes('timeout') ||
     msg.includes('timed out') ||
     msg.includes('request timeout') ||
-    getErrorName(err).toLowerCase().includes('timeout') ||
-    isUndiciAbortError(err)
+    getErrorName(error).toLowerCase().includes('timeout') ||
+    isUndiciAbortError(error)
   ) {
     edgeGroup.wrap(`[${logPrefix}] ⌚ Request timeout:`, async () => {
-      console.log(err);
+      console.log(error);
     });
     return 'REQUEST_TIMEOUT';
   }
@@ -163,7 +182,7 @@ export function classifyGenAIError(provider: AIChatProvider, model: string, err:
   // Check for complex schema error BEFORE generic validation/schema
   if (msg.includes('too many states for serving')) {
     edgeGroup.wrap(`[${logPrefix}] 💢 Schema too complex:`, async () => {
-      console.log(err);
+      console.log(error);
     });
     return 'SCHEMA_TOO_COMPLEX';
   }
@@ -176,7 +195,7 @@ export function classifyGenAIError(provider: AIChatProvider, model: string, err:
     msg.includes('context length exceeded')
   ) {
     edgeGroup.wrap(`[${logPrefix}] 💥 Max tokens exceeded:`, async () => {
-      console.log(err);
+      console.log(error);
     });
     return 'MAX_TOKENS_EXCEEDED';
   }
@@ -190,7 +209,7 @@ export function classifyGenAIError(provider: AIChatProvider, model: string, err:
     msg.includes('array schema')
   ) {
     edgeGroup.wrap(`[${logPrefix}] ❗ Schema invalid:`, async () => {
-      console.log(err);
+      console.log(error);
     });
     return 'INVALID_SCHEMA';
   }
@@ -202,7 +221,7 @@ export function classifyGenAIError(provider: AIChatProvider, model: string, err:
     msg.includes('invalid_parameter')
   ) {
     edgeGroup.wrap(`[${logPrefix}] ❗ Validation error:`, async () => {
-      console.log(err);
+      console.log(error);
     });
     return 'VALIDATION_ERROR';
   }
@@ -215,7 +234,7 @@ export function classifyGenAIError(provider: AIChatProvider, model: string, err:
     msg.includes('billing')
   ) {
     edgeGroup.wrap(`[${logPrefix}] 💥 Quota exceeded:`, async () => {
-      console.log(err);
+      console.log(error);
     });
     return 'QUOTA_EXCEEDED';
   }
@@ -223,7 +242,7 @@ export function classifyGenAIError(provider: AIChatProvider, model: string, err:
   // Check for rate limiting
   if (msg.includes('429') || msg.includes('rate limit') || msg.includes('too many requests')) {
     edgeGroup.wrap(`[${logPrefix}] 💥 Rate limited:`, async () => {
-      console.log(err);
+      console.log(error);
     });
     return 'RATE_LIMITED';
   }
@@ -237,7 +256,7 @@ export function classifyGenAIError(provider: AIChatProvider, model: string, err:
     msg.includes('too large for')
   ) {
     edgeGroup.wrap(`[${logPrefix}] ❗ Bad request (too large):`, async () => {
-      console.log(err);
+      console.log(error);
     });
     return 'BAD_REQUEST';
   }
@@ -245,7 +264,7 @@ export function classifyGenAIError(provider: AIChatProvider, model: string, err:
   // Check for API key issues
   if (msg.includes('403') || msg.includes('401') || msg.includes('api key') || msg.includes('unauthorized')) {
     edgeGroup.wrap(`[${logPrefix}] ⚠️ API key invalid:`, async () => {
-      console.log(err);
+      console.log(error);
     });
     return 'INVALID_API_KEY';
   }
@@ -253,7 +272,7 @@ export function classifyGenAIError(provider: AIChatProvider, model: string, err:
   // Check for safety/content policy blocks
   if (msg.includes('safety') || msg.includes('content policy') || msg.includes('blocked')) {
     edgeGroup.wrap(`[${logPrefix}] ⚠️ Safety blocked:`, async () => {
-      console.log(err);
+      console.log(error);
     });
     return 'SAFETY_BLOCKED';
   }
@@ -261,7 +280,7 @@ export function classifyGenAIError(provider: AIChatProvider, model: string, err:
   // Check for network/fetch errors
   if (msg.includes('fetch') || msg.includes('network') || msg.includes('enetunreach') || msg.includes('econnrefused')) {
     edgeGroup.wrap(`[${logPrefix}] 🛜 Network error:`, async () => {
-      console.log(err);
+      console.log(error);
     });
     return 'NETWORK_ERROR';
   }
@@ -269,7 +288,7 @@ export function classifyGenAIError(provider: AIChatProvider, model: string, err:
   // Check for bad request errors (400)
   if (msg.includes('400') || msg.includes('bad request')) {
     edgeGroup.wrap(`[${logPrefix}] ❗ Bad request (other):`, async () => {
-      console.log(err);
+      console.log(error);
     });
     return 'BAD_REQUEST';
   }
@@ -282,13 +301,13 @@ export function classifyGenAIError(provider: AIChatProvider, model: string, err:
     msg.includes('try again later')
   ) {
     edgeGroup.wrap(`[${logPrefix}] 🛜 Service unavailable:`, async () => {
-      console.log(err);
+      console.log(error);
     });
     return 'SERVICE_UNAVAILABLE';
   }
 
   edgeGroup.wrap(`[${logPrefix}] ❓ Unknown error:`, async () => {
-    console.log(err);
+    console.log(error);
   });
   return 'UNKNOWN';
 }

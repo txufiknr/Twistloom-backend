@@ -301,7 +301,33 @@ export default [
 
   /**
    * =====================================================================
-   * 📝 9. DECLARATION FILES (.d.ts)
+   * 🚪 9. API ENTRY POINT (Vercel Serverless Adapter)
+   * =====================================================================
+   * 
+   * `api/index.ts` is the Vercel serverless function entry point.
+   * It bridges Hono requests to Vercel's HTTP handler format.
+   * Uses a custom IncomingMessage→Request adapter pattern.
+   * 
+   * Type-aware linting disabled because this file uses raw Node.js
+   * HTTP types that don't map cleanly to the tsconfig project.
+   */
+  {
+    files: ["api/**/*.ts"],
+    languageOptions: {
+      parserOptions: {
+        project: false,        // Not in tsconfig include — adapter uses raw Node.js HTTP types
+      },
+    },
+    rules: {
+      // Disable type-aware rules inherited from the base config
+      "@typescript-eslint/no-floating-promises": "off",
+      "no-useless-escape": "warn",
+    },
+  },
+
+  /**
+   * =====================================================================
+   * 📝 10. DECLARATION FILES (.d.ts)
    * =====================================================================
    * 
    * Type declaration files intentionally behave like `any`

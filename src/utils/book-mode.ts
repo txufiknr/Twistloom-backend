@@ -141,7 +141,8 @@ export function validatePageActionsForMode(mode: BookMode, actions: Action[]): v
  * @param actions - The actions to sanitize
  * @returns A new actions array that conforms to the mode's contract
  */
-export function sanitizeActionsForMode(mode: BookMode, actions: Action[]): Action[] {
+export function sanitizeActionsForMode(mode: BookMode, actions?: Action[]): Action[] {
+  if (!actions) return [];
   if (mode === 'novel' && actions.length > 1) {
     console.warn(
       `[sanitizeActionsForMode] ⚠️ Mode "${mode}" requires exactly 1 action; ` +

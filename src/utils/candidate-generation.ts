@@ -61,7 +61,7 @@ import { GITHUB_REPO_CONFIG } from '../config/env.js';
 import type { UserStoryPage, Action, PersistedStoryPage } from '../types/story.js';
 import type { Book } from '../types/book.js';
 import type { ActionProgressCallback, CandidateGenerationPage, CandidateGenerationPageValidation, CandidateGenerationResult, CandidateGenerationStrategy, CandidateGenerationValidation, GenerateCandidatePageParams, GenerateCandidatesInParallelParams, GenerateCandidatesOptions, GenerateCandidatesWithStrategyParams, GenerationStrategy } from '../types/candidate-generation.js';
-import { getErrorMessage } from './error.js';
+import { classifyGenAIError, getErrorMessage, isGenAIErrorRetryable } from './error.js';
 import { dbWrite } from '../db/client.js';
 import { pages } from '../db/schema.js';
 import { clearActionProgressEvents, storeActionProgressEvent } from './progress-tracking.js';
@@ -587,7 +587,7 @@ async function generateCandidatesInParallel(params: GenerateCandidatesInParallel
     console.log(`[generateCandidatesInParallel] ⏳ Starting generation for ${context}`);
     
     // Track the last error to determine if action should be removed
-    let lastError: unknown = null;
+    const lastErrorRef = { current: null as unknown };
     
     // Use new branch ID for all but the first action (if initial flag is false)
     // This matches sequential strategy logic: isPartial || generateNewBranchId || index > 0
@@ -604,44 +604,7 @@ async function generateCandidatesInParallel(params: GenerateCandidatesInParallel
           generateNewBranchId,
           candidateCount
         }),
-        {
-          maxRetries: MAX_BRANCHING_RETRIES,
-          baseDelayMs: 1000,
-          maxDelayMs: 4000,
-          onRetry: async (attempt, error) => {
-            lastError = error; // Capture the error for later analysis
-            const errorMessage = getErrorMessage(error);
-            
-            // Add extra delay for rate limit errors
-            if (errorMessage.includes('QUOTA_EXCEEDED') || errorMessage.includes('RATE_LIMITED') || errorMessage.includes('429')) {
-              console.warn(`[generateCandidatesInParallel] ⏸️ Rate limit error detected, adding 5 second delay before retry ${attempt}/${MAX_BRANCHING_RETRIES}:`, errorMessage);
-              await delay(5000);
-              console.log(`[generateCandidatesInParallel] ▶️ Retrying after rate limit delay`);
-            }
-            
-            console.error(`[generateCandidatesInParallel] ⚠️ Retry ${attempt}/${MAX_BRANCHING_RETRIES} for ${context}:`, error);
-          },
-          // Stop retrying if error is non-retryable (e.g. validation errors)
-          shouldRetry: (error) => {
-            try {
-              lastError = error; // Capture the error
-              const errorMessage = getErrorMessage(error);
-              
-              // Check if error is marked as non-retryable
-              // Also checks for wrapped non-retryable errors from retryWithUniqueConstraint
-              const err = error as ErrorWithCustomProperties;
-              if (err.shouldRetry === false || err.code === 'INVALID_ACTION' || errorMessage.includes('Non-retryable error')) {
-                console.warn(`[generateCandidatesInParallel] 👋 Non-retryable error detected:`, errorMessage);
-                return false;
-              }
-              
-              console.warn(`[generateCandidatesInParallel] ❓ Should retry for this error?`, errorMessage);
-              return true;
-            } catch {
-              return true;
-            }
-          }
-        }
+        createGenerationRetryOptions('generateCandidatesInParallel', context, lastErrorRef)
       ),
       new Promise<null>((_, reject) => 
         setTimeout(() => {
@@ -651,7 +614,7 @@ async function generateCandidatesInParallel(params: GenerateCandidatesInParallel
       )
     ]).catch(async error => {
       console.error(`[generateCandidatesInParallel] ❌ Generation failed for ${context}:`, getErrorMessage(error));
-      lastError = error;
+      lastErrorRef.current = error;
       // Notify failure immediately (awaited so the event is stored before we return).
       // The caller's handleInvalidActionRemoval handles removal logic separately — this
       // is the sole notification call so there is no double-fire.
@@ -674,7 +637,7 @@ async function generateCandidatesInParallel(params: GenerateCandidatesInParallel
       action,
       success: !!candidatePages.length,
       candidatePages,
-      error: lastError
+      error: lastErrorRef.current
     } satisfies CandidateGenerationResult;
   });
 
@@ -804,6 +767,68 @@ function triggerDeeperLevelGeneration(
       console.warn(`[${context}] ⚠️ ${rejectedCount} background generation operations failed at depth ${currentDepth + 1}`);
     }
   });
+}
+
+/**
+ * Shared retry configuration for candidate generation.
+ *
+ * Both the parallel and sequential paths use identical retry logic (3 attempts,
+ * exponential backoff, GenAI error classification for delay decisions, and
+ * non-retryable error detection). This factory eliminates the duplication.
+ */
+function createGenerationRetryOptions(
+  logPrefix: string,
+  actionContext: string,
+  lastErrorRef: { current: unknown }
+): {
+  maxRetries: typeof MAX_BRANCHING_RETRIES;
+  baseDelayMs: number;
+  maxDelayMs: number;
+  onRetry: (attempt: number, error: unknown) => Promise<void>;
+  shouldRetry: (error: unknown) => boolean;
+} {
+  return {
+    maxRetries: MAX_BRANCHING_RETRIES,
+    baseDelayMs: 1000,
+    maxDelayMs: 4000,
+    onRetry: async (attempt, error) => {
+      lastErrorRef.current = error;
+      const code = classifyGenAIError(error);
+
+      if (code === 'RATE_LIMITED' || code === 'QUOTA_EXCEEDED') {
+        console.warn(`[${logPrefix}] ⏸️ ${code} detected, adding 5 second delay before retry ${attempt}/${MAX_BRANCHING_RETRIES}:`, getErrorMessage(error));
+        await delay(5000);
+        console.log(`[${logPrefix}] ▶️ Retrying ${attempt}/${MAX_BRANCHING_RETRIES} after ${code} delay`);
+      } else {
+        console.warn(`[${logPrefix}] ⚠️ ${code} — Retry ${attempt}/${MAX_BRANCHING_RETRIES} for ${actionContext}:`, getErrorMessage(error));
+      }
+    },
+    shouldRetry: (error) => {
+      try {
+        lastErrorRef.current = error;
+        const errorMessage = getErrorMessage(error);
+
+        // Check for application-level non-retryable errors
+        const err = error as ErrorWithCustomProperties;
+        if (err.shouldRetry === false || err.code === 'INVALID_ACTION' || errorMessage.includes('Non-retryable error')) {
+          console.warn(`[${logPrefix}] 👋 Non-retryable error detected:`, errorMessage);
+          return false;
+        }
+
+        // Classify GenAI error and check if it's retryable
+        const code = classifyGenAIError(error);
+        if (!isGenAIErrorRetryable(code)) {
+          console.warn(`[${logPrefix}] 👋 GenAI non-retryable error (${code}):`, errorMessage);
+          return false;
+        }
+
+        console.warn(`[${logPrefix}] 🔄 Retrying (${code}):`, errorMessage);
+        return true;
+      } catch {
+        return true;
+      }
+    }
+  };
 }
 
 /**
@@ -1142,7 +1167,7 @@ export async function ensureCandidatesForPageWithStrategy(
         
         // Generate candidate page with retry logic (3 retries with exponential backoff: 1s, 2s, 4s)
         // Track the last error to determine if action should be removed
-        let lastError: unknown = null;
+        const lastErrorRef = { current: null as unknown };
         const candidatePages = await retryWithBackoffOrNull(
           () => generateCandidatePages({
             userId,
@@ -1153,40 +1178,9 @@ export async function ensureCandidatesForPageWithStrategy(
             generateNewBranchId: actionGenerateNewBranchId,
             candidateCount
           }),
-          {
-            maxRetries: MAX_BRANCHING_RETRIES,
-            baseDelayMs: 1000,
-            maxDelayMs: 4000,
-            onRetry: async (attempt, error) => {
-              lastError = error; // Capture the error for later analysis
-              const errorMessage = getErrorMessage(error);
-              
-              // Add extra delay for rate limit errors
-              if (errorMessage.includes('QUOTA_EXCEEDED') || errorMessage.includes('RATE_LIMITED') || errorMessage.includes('429')) {
-                console.warn(`[ensureCandidatesForPageWithStrategy] ⏸️ Rate limit error detected, adding 5 second delay before retry ${attempt}/${MAX_BRANCHING_RETRIES}:`, errorMessage);
-                await delay(5000);
-                console.log(`[ensureCandidatesForPageWithStrategy] ▶️ Retrying after rate limit delay`);
-              }
-              
-              console.error(`[ensureCandidatesForPageWithStrategy] ⚠️ Retry ${attempt}/${MAX_BRANCHING_RETRIES} for action "${action.text}":`, error);
-            },
-            // Stop retrying if error is non-retryable (e.g. validation errors)
-            shouldRetry: (error) => {
-              try {
-                const err = error as ErrorWithCustomProperties;
-                if (err.shouldRetry === false || err.code === 'INVALID_ACTION') {
-                  console.warn(`[ensureCandidatesForPageWithStrategy] ⛔ Non-retryable error detected:`, getErrorMessage(error));
-                  return false;
-                }
-                console.warn(`[ensureCandidatesForPageWithStrategy] ❓ Should retry for this error?`, getErrorMessage(error));
-                return true;
-              } catch {
-                return true;
-              }
-            }
-          }
+          createGenerationRetryOptions('ensureCandidatesForPageWithStrategy', `"${action.text}"`, lastErrorRef)
         ).catch(error => {
-          lastError = error;
+          lastErrorRef.current = error;
         });
 
         // Process the result (success or failure).
@@ -1199,9 +1193,9 @@ export async function ensureCandidatesForPageWithStrategy(
           await onActionProgress(action, 'completed', candidatePages);
         } else {
           // Failure notification first (mirrors parallel path where .catch() fires immediately)
-          await onActionProgress(action, 'failed', undefined, lastError);
+          await onActionProgress(action, 'failed', undefined, lastErrorRef.current);
           // Then handle any invalid-action removal (pure state mutation, no re-notification)
-          handleInvalidActionRemoval({ action, success: false, candidatePages: [], error: lastError });
+          handleInvalidActionRemoval({ action, success: false, candidatePages: [], error: lastErrorRef.current });
         }
       }
 
