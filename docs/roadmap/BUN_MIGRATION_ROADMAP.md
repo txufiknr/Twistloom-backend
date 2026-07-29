@@ -68,27 +68,34 @@ Replaced `tsx` + `@hono/node-server` dev server with Bun's native runtime. All `
 
 ---
 
-## Phase 3 — Vercel Deployment (Node.js Runtime via hono/vercel) ✅
+## Phase 3 — Vercel Deployment (Node.js Runtime with Custom Adapter) ✅
 
-**Initial attempt:** Vercel's native Bun runtime was tried first but hit persistent `TypeError: Requested module is not instantiated yet` errors during ESM module linking. The project's complex dependency graph (30+ type files, 9 AI SDKs) exposed a known Vercel Bun runtime limitation with circular dependency resolution.
+**Attempted approaches (all failed):**
 
-**Final approach:** The stable hybrid path was adopted — `hono/vercel` adapter on the Node.js runtime for production, while keeping Bun for local dev and package management.
+| Approach | Failure |
+|----------|---------|
+| Vercel Bun runtime (`"bunVersion": "1.x"`) | ESM module linking failed — `Requested module is not instantiated yet` with complex dependency graph |
+| `hono/vercel` `handle()` adapter | Doesn't convert `IncomingMessage` → `Request` — `c.req.raw.headers.get()` throws because plain object has no `.get()` |
+| `@hono/node-server` `getRequestListener` | Wraps body in `ReadableStream` which never fires on Vercel's pre-buffered body |
+
+**Final approach:** Custom `IncomingMessage` → `Request` conversion handler in `api/index.ts`. This is the same well-tested pattern from the pre-migration codebase (`src/app.ts`), now properly placed in Vercel's serverless entrypoint convention.
 
 ### Changes
 
 | File | Change |
 |------|--------|
-| `api/index.ts` | **New** — Vercel serverless function entrypoint using `handle(app)` from `hono/vercel` |
-| `vercel.json` | Removed `"bunVersion": "1.x"`, rewrites now point to `/api/index` |
-| `src/app.ts` | Simplified `vercelHandler()` replaced earlier; default export `app.fetch` retained for local dev compatibility |
+| `api/index.ts` | **New** — Vercel serverless function entrypoint with `IncomingMessage` → `Request` conversion, SSE streaming, `Set-Cookie` handling, and error recovery |
+| `vercel.json` | Removed `"bunVersion": "1.x"`, rewrites point to `/api/index` |
+| `src/app.ts` | `export default app.fetch` retained (unused by Vercel now but harmless) |
+| `package.json` | `@types/node` added back (needed for `IncomingMessage`/`ServerResponse` types) |
 
 ### Impact
 
-- **Stable production deployment** on Node.js runtime (battle-tested on Vercel's Fluid Compute)
+- **Stable production deployment** on Node.js runtime (battle-tested pattern)
 - **Full local DX benefits** preserved: `bun dev`, `bun install`, native TypeScript
-- **Vercel Bun runtime** evaluated and documented as a future option when the module linker matures
-- **-130 LOC** removed from `src/app.ts` (old Vercel handler)
-- **-2 runtime dependencies** (`@hono/node-server`, `undici`)
+- **-130 LOC** removed from `src/app.ts` (old handler) and placed in proper `api/` entrypoint
+- **-2 runtime dependencies** removed (`@hono/node-server`, `undici`)
+- `@types/node` reinstated for type safety in the adapter
 
 ---
 

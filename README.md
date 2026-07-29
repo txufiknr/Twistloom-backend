@@ -59,7 +59,7 @@ Twistloom is not merely a branching story platform. It is a multiverse storytell
 | 🔥 **Hono.js** | 4.12+ | Ultra-fast, runtime-agnostic web framework with first-class TypeScript and native Bun support |
 | 🗄️ **Neon (Postgres)** | 18 | Serverless, auto-scaling, and excellent TypeScript support |
 | 🔧 **Drizzle ORM** | 0.45+ | Type-safe, excellent migrations, and modern query builder |
-| 🚀 **Vercel** | Bun Runtime | Serverless deployment on Vercel's native Bun runtime for lower cold starts |
+| 🚀 **Vercel** | Node.js runtime | Stable serverless execution via custom `IncomingMessage` → `Request` adapter |
 
 ### **AI Providers**
 
@@ -117,9 +117,9 @@ The backend was migrated from **Node.js + pnpm + tsx** to **Bun** (runtime + pac
 |-------|--------|--------|
 | 1 — Package manager | `pnpm` → `bun install`, lockfile `pnpm-lock.yaml` → `bun.lock` | ✅ |
 | 2 — Local dev | `tsx watch` + `@hono/node-server` → `bun --watch` + `Bun.serve()` | ✅ |
-| 3 — Vercel deployment | Direct `app.fetch` → `hono/vercel` `handle()` adapter via `api/index.ts` | ✅ |
+| 3 — Vercel deployment | Custom `IncomingMessage` → `Request` adapter in `api/index.ts` | ✅ |
 
-> **Note on Bun runtime evaluation:** Vercel's Bun runtime was initially attempted but had ESM module linking failures with the project's complex dependency graph (30+ type files, 9 AI SDKs, multiple database adapters). The hybrid approach was adopted: **Bun for local dev + package management, Node.js runtime on Vercel** via the official `hono/vercel` adapter. This is the most stable path while still benefiting from Bun's faster dev cycle.
+> **Note on runtime decisions:** Vercel's Bun runtime was initially attempted but had ESM module linking failures. The `hono/vercel` adapter was also tried but its `handle()` doesn't properly convert `IncomingMessage` → `Request` on the Node.js runtime, causing `this.raw.headers.get()` to fail. The final architecture uses a **custom conversion handler** in `api/index.ts` — the same well-tested pattern from the pre-migration codebase. This is the most stable path while still benefiting from Bun's faster local dev cycle.
 
 ### Dependencies removed
 
@@ -127,7 +127,11 @@ The backend was migrated from **Node.js + pnpm + tsx** to **Bun** (runtime + pac
 
 ### Vercel deployment
 
-The app is deployed on the **Node.js runtime** via Hono's official Vercel adapter (`hono/vercel`). A thin `api/index.ts` entrypoint uses `handle(app)` to bridge Hono's Web-standard fetch to Vercel's Node.js serverless functions. This is the most stable deployment path — Vercel's Bun runtime was evaluated but had module linking issues with the project's complex dependency graph.
+The app is deployed on the **Node.js runtime** via a custom handler in `api/index.ts`. Vercel's Node.js Serverless functions receive `(IncomingMessage, ServerResponse)`, but Hono expects a Web API `Request`. The handler converts between the two — this is the same well-tested pattern from the pre-migration codebase, now properly placed in the Vercel entrypoint.
+
+**Why not `hono/vercel` `handle()`?** The adapter passes the raw request through without conversion. On the legacy Node.js Serverless path, the `IncomingMessage` reaches Hono as `c.req.raw`, and `c.req.raw.headers.get()` throws because `IncomingMessage.headers` is a plain object with no `.get()` method.
+
+**Why not `@hono/node-server` `getRequestListener`?** It wraps `IncomingMessage` in a `ReadableStream` via `Readable.toWeb()`. On Vercel's Node.js runtime the body is already pre-buffered, so the stream's end/data events never fire — the body-read promise hangs until Vercel's platform timeout.
 
 #### Hybrid architecture
 
@@ -152,7 +156,7 @@ The codebase was originally migrated to be Edge Runtime-compatible, systematical
 | `process.uptime()` / `.memoryUsage()` / `.version` | `typeof` guards + `Date.now()` startup timestamp |
 | Stripe default HTTP client | `Stripe.createFetchHttpClient()` |
 | Neon WebSocket (`ws` package) | `neonConfig.webSocketConstructor = globalThis.WebSocket` |
-| `@hono/node-server` entrypoint | Bun's `Bun.serve()` (local) / `hono/vercel` `handle()` (production) |
+| `@hono/node-server` entrypoint | Bun's `Bun.serve()` (local) / custom `IncomingMessage` → `Request` adapter (production) |
 
 #### Configuration
 
@@ -641,6 +645,9 @@ bun db:test --env-file=.env.local
 
 ### **Code Organization**
 ```
+api/
+├── index.ts         # Vercel serverless function entrypoint (IncomingMessage → Request adapter)
+
 src/
 ├── config/          # Configuration files and AI client setup
 │   ├── ai-chat.ts           # AI chat configuration
@@ -754,7 +761,7 @@ src/
 │   ├── time.ts              # Time utilities
 │   ├── translation.ts       # Translation utilities
 │   └── uuid.ts              # UUID utilities
-├── app.ts           # Hono app configuration and Vercel handler
+├── app.ts           # Hono app configuration (Vercel handler in api/index.ts)
 └── server.bun.ts    # Server entry point (Bun runtime)
 ```
 
