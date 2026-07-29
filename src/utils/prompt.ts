@@ -59,6 +59,13 @@ import { MAX_VECTOR_RESULTS_HIGH_VALUE } from "../config/embedding.js";
 // SYSTEM PROMPT
 // ============================================================================
 
+/**
+ * Core system prompt defining the AI writer's persona and fundamental behavior
+ * 
+ * This prompt establishes the psychological thriller writer persona inspired by
+ * R.L. Stine but darker, with specific rules for narrative manipulation and
+ * psychological horror elements.
+ */
 export const PROMPT_SYSTEM = PROMPT_SYSTEM_WRITING_STYLE.default;
 
 // ============================================================================
@@ -303,12 +310,145 @@ function buildPresetSystemPrompt(type: 'first' | 'next', preset: WritingPreset =
 // ============================================================================
 
 /**
- * Core system prompt defining the AI writer's persona and fundamental behavior
- * 
- * This prompt establishes the psychological thriller writer persona inspired by
- * R.L. Stine but darker, with specific rules for narrative manipulation and
- * psychological horror elements.
+ * Shared JSON-shape fragments for the AI-facing example templates below.
+ *
+ * firstBookOutputFormat (book creation) and nextPageOutputFormat (ongoing
+ * generation) each need to show the AI what a *newly created* character,
+ * place, thread, future note, and planned character look like -- and until
+ * now those were five separate hand-maintained copies, one per template.
+ * That's how the newPlaces.knownCharacters bug happened: the two copies
+ * drifted, and only one got fixed. Defining each shape once here and
+ * interpolating it into both templates makes that class of bug structurally
+ * impossible -- there's only one place left to get it wrong.
+ *
+ * Where the two original copies differed only in placeholder verbosity
+ * (e.g. "Real Full Name" vs "..."), the terser form was kept -- the fuller
+ * labels were restating what RULES_CHARACTER_RECOGNITION already establishes
+ * in the system prompt by the time either template is filled in. Where a
+ * difference was a genuine constraint (the secrets count cap, the
+ * relationshipToMC context length limit) or the *only* place in the whole
+ * schema demonstrating a shape (the injury object's fields), the fuller
+ * version was kept and now appears in both templates instead of just one.
  */
+const NEW_CHARACTER_SHAPE = `{
+      "characterId": "<new_character_id>",
+      "knownName": "...",
+      "realName": "...",
+      "recognitionLevel": "${recognitionLevelValues}",
+      "gender": "${genderValues}",
+      "role": "...",
+      "bio": "Brief character description. Include one trait that could become a source of threat or betrayal.",
+      "appearance": "...",
+      "status": "${characterStatusValues}",
+      "secrets": ["Any secrets unknown to MC (max ${MAX_CHARACTER_SECRETS})."],
+      "importance": "${characterImportanceValues}",
+      "relationshipToMC": {
+        "type": "${relationshipTypeValues}",
+        "status": "${relationshipStatusValues}",
+        "context": "${RELATIONSHIP_TO_MC_LENGTH}. Specific dynamic, not generic (e.g. 'Close childhood friend who knows too much.')",
+        "recognitionLevel": "${recognitionLevelValues}"
+      },
+      "pastInteractions": ["..."],
+      "potentialTwist": "${twistTypeValues}",
+      "traits": [
+        "...: ..."
+      ],
+      "schedules": [
+        {
+          "placeId": "<place_id>",
+          "availabilityWindow": "...",
+          "missedConsequence": "..."
+        }
+      ],
+      "injuries": [
+        {
+          "bodyPart": "...",
+          "description": "...",
+          "consequences": "...",
+          "category": "${injuryCategoryValues}",
+          "severity": <number between 0.0 and 1.0>,
+          "decayPerPage": <number between 0.0 and 1.0>
+        }
+      ]
+    }`;
+
+const NEW_PLACE_SHAPE = `{
+      "placeId": "<new_place_id>",
+      "parentPlaceId": "Optional. <parent_place_id>",
+      "knownName": "...",
+      "realName": "...",
+      "type": "...",
+      "category": "${canonicalPlaceTypeValues}",
+      "context": "...",
+      "familiarity": <number between 0.0 and 1.0>,
+      "isRealNameKnown": <boolean>,
+      "hints": ["..."],
+      "keyEvents": ["..."],
+      "keyObjects": [
+        {
+          "name": "...",
+          "traits": [
+            "...: ..."
+          ],
+          "amount": <number>,
+          "where": "..."
+        }
+      ],
+      "traits": [
+        "...: ..."
+      ],
+      "knownCharacters": [
+        "<character_id>: <Context or interaction>"
+      ]
+    }`;
+
+const NEW_THREAD_SHAPE = `{
+      "threadId": "<new_thread_id>",
+      "title": "...",
+      "question": "...",
+      "priority": "${threadPriorityValues}",
+      "truth": "${threadTruthValues}",
+      "importance": <number between 0.0 and 1.0>,
+      "summary": "...",
+      "clues": [
+        { "clue": "...", "isFalse": <boolean> }
+      ]
+    }`;
+
+const NEW_FUTURE_NOTE_SHAPE = `{
+      "note": "...",
+      "isMajor": <boolean>,
+      "tag": "${factTypeValues}",
+      "schedule": [
+        { "type": "phase", "phase": "${phaseValues}" },
+        { "type": "page", "range": "<min>-<max>" },
+        { "type": "day", "day": <integer> },
+        { "type": "date", "date": "YYYY-MM-DD" }
+      ],
+      "stateTrigger": [
+        { "type": "stability", "level": "${stabilityLevelValues}" },
+        { "type": "condition", "condition": "${healthConditionValues}" },
+        { "type": "healthPercent", "threshold": <0-100> },
+        { "type": "mobilityPercent", "threshold": <0-100> },
+        { "type": "actionPercent", "threshold": <0-100> },
+        { "type": "mentalPercent", "threshold": <0-100> }
+      ],
+      "relatedThreadId": "<thread_id> or 'none'"
+    }`;
+
+const NEW_PLANNED_CHARACTER_SHAPE = `{
+      "characterId": "<unique_id>",
+      "knownName": "...",
+      "realName": "...",
+      "gender": "${genderValues}",
+      "role": "...",
+      "bio": "...",
+      "appearance": "...",
+      "importance": "${characterImportanceValues}",
+      "storyPurpose": "...",
+      "plannedIntro": "..."
+    }`;
+
 const firstBookOutputFormat: string = `{
   "title": "Book Title",
   "alternativeTitles": ["Alternative Title", "..."],
@@ -391,18 +531,7 @@ const firstBookOutputFormat: string = `{
     ]
   },
   "initialThreads": [
-    {
-      "threadId": "<new_thread_id>",
-      "title": "...",
-      "question": "...",
-      "priority": "${threadPriorityValues}",
-      "truth": "${threadTruthValues}",
-      "importance": <number between 0.0 and 1.0>,
-      "summary": "...",
-      "clues": [
-        { "clue": "...", "isFalse": <boolean> }
-      ]
-    }
+    ${NEW_THREAD_SHAPE}
   ],
   "viableEnding": {
     "text": "Specific ending plan for this MC and theme (${VIABLE_ENDING_LENGTH})",
@@ -410,111 +539,14 @@ const firstBookOutputFormat: string = `{
     "outline": ["...", "..."]
   },
   "futureNotes": [
-    {
-      "note": "...",
-      "isMajor": <boolean>,
-      "tag": "${factTypeValues}",
-      "schedule": [
-        { "type": "phase", "phase": "${phaseValues}" },
-        { "type": "page", "range": "<min>-<max>" },
-        { "type": "day", "day": <integer> },
-        { "type": "date", "date": "YYYY-MM-DD" }
-      ],
-      "stateTrigger": [
-        { "type": "stability", "level": "${stabilityLevelValues}" },
-        { "type": "condition", "condition": "${healthConditionValues}" },
-        { "type": "healthPercent", "threshold": <0-100> },
-        { "type": "mobilityPercent", "threshold": <0-100> },
-        { "type": "actionPercent", "threshold": <0-100> },
-        { "type": "mentalPercent", "threshold": <0-100> }
-      ],
-      "relatedThreadId": "<thread_id> or 'none'"
-    }
+    ${NEW_FUTURE_NOTE_SHAPE}
   ],
-  "initialPlace": {
-    "placeId": "<new_place_id>",
-    "knownName": "...",
-    "realName": "...",
-    "type": "...",
-    "category": "${canonicalPlaceTypeValues}",
-    "context": "One evocative sentence.",
-    "familiarity": <number between 0.0 and 1.0>,
-    "isRealNameKnown": <boolean>,
-    "hints": ["..."],
-    "keyEvents": ["..."],
-    "keyObjects": [
-      {
-        "name": "...",
-        "traits": [
-          "...: ..."
-        ],
-        "amount": <number>,
-        "where": "..."
-      }
-    ],
-    "traits": [
-      "...: ..."
-    ],
-    "knownCharacters": [
-      "<character_id>: <Context or interaction>"
-    ]
-  },
+  "initialPlace": ${NEW_PLACE_SHAPE},
   "initialCharacters": [
-    {
-      "characterId": "<new_character_id>",
-      "knownName": "Narration Alias",
-      "realName": "Real Full Name",
-      "recognitionLevel": "${recognitionLevelValues}",
-      "gender": "${genderValues}",
-      "role": "Role or occupation (e.g. 'schoolmate', 'librarian')",
-      "bio": "Brief character description. Include one trait that could become a source of threat or betrayal.",
-      "appearance": "Visual appearance (e.g. height, skin color, eye color, hair, etc).",
-      "status": "${characterStatusValues}",
-      "secrets": ["Any secrets unknown to MC (max ${MAX_CHARACTER_SECRETS})."],
-      "importance": "${characterImportanceValues}",
-      "relationshipToMC": {
-        "type": "${relationshipTypeValues}",
-        "status": "${relationshipStatusValues}",
-        "context": "${RELATIONSHIP_TO_MC_LENGTH}. Specific dynamic, not generic (e.g. 'Close childhood friend who knows too much.')",
-        "recognitionLevel": "${recognitionLevelValues}"
-      },
-      "pastInteractions": ["..."],
-      "potentialTwist": "${twistTypeValues}",
-      "traits": [
-        "...: ..."
-      ],
-      "schedules": [
-        {
-          "placeId": "<place_id>",
-          "availabilityWindow": "...",
-          "missedConsequence": "..."
-        }
-      ],
-      "injuries": [
-        {
-          "bodyPart": "...",
-          "description": "...",
-          "consequences": "...",
-          "category": "${injuryCategoryValues}",
-          "severity": <number between 0.0 and 1.0>,
-          "decayPerPage": <number between 0.0 and 1.0>
-        }
-      ]
-    }
+    ${NEW_CHARACTER_SHAPE}
   ],
   "plannedCharacters": [
-    {
-      "characterId": "<character_id>",
-      "plannedIntro": "...",
-      "storyPurpose": "...",
-      "importance": "${characterImportanceValues}",
-      "knownName": "...",
-      "realName": "...",
-      "gender": "${genderValues}",
-      "role": "...",
-      "bio": "...",
-      "appearance": "..."
-    }
+    ${NEW_PLANNED_CHARACTER_SHAPE}
   ],
   "initialRelationships": [
     {
@@ -635,41 +667,11 @@ const nextPageOutputFormat: string = `{
   ],
   "contextHistory": "...",
   "futureNoteAdd": [
-    {
-      "note": "...",
-      "isMajor": <boolean>,
-      "tag": "${factTypeValues}",
-      "schedule": [
-        { "type": "phase", "phase": "${phaseValues}" },
-        { "type": "page", "range": "<min>-<max>" },
-        { "type": "day", "day": <integer> },
-        { "type": "date", "date": "YYYY-MM-DD" }
-      ],
-      "stateTrigger": [
-        { "type": "stability", "level": "${stabilityLevelValues}" },
-        { "type": "condition", "condition": "${healthConditionValues}" },
-        { "type": "healthPercent", "threshold": <0-100> },
-        { "type": "mobilityPercent", "threshold": <0-100> },
-        { "type": "actionPercent", "threshold": <0-100> },
-        { "type": "mentalPercent", "threshold": <0-100> }
-      ],
-      "relatedThreadId": "<thread_id> or 'none'"
-    }
+    ${NEW_FUTURE_NOTE_SHAPE}
   ],
   "futureNoteRemove": [<key>],
   "addPlannedCharacters": [
-    {
-      "characterId": "<unique_id>",
-      "knownName": "...",
-      "realName": "...",
-      "gender": "${genderValues}",
-      "role": "...",
-      "bio": "...",
-      "appearance": "...",
-      "importance": "${characterImportanceValues}",
-      "storyPurpose": "...",
-      "plannedIntro": "..."
-    }
+    ${NEW_PLANNED_CHARACTER_SHAPE}
   ],
   "factUpdates": [
     {
@@ -697,38 +699,7 @@ const nextPageOutputFormat: string = `{
     }
   ],
   "newCharacters": [
-    {
-      "characterId": "<new_character_id>",
-      "knownName": "...",
-      "realName": "...",
-      "recognitionLevel": "${recognitionLevelValues}",
-      "gender": "${genderValues}",
-      "role": "...",
-      "bio": "...",
-      "appearance": "...",
-      "status": "${characterStatusValues}",
-      "secrets": ["..."],
-      "importance": "${characterImportanceValues}",
-      "relationshipToMC": {
-        "type": "${relationshipTypeValues}",
-        "status": "${relationshipStatusValues}",
-        "context": "...",
-        "recognitionLevel": "${recognitionLevelValues}"
-      },
-      "pastInteractions": ["..."],
-      "potentialTwist": "${twistTypeValues}",
-      "schedules": [
-        {
-          "placeId": "<place_id>",
-          "availabilityWindow": "...",
-          "missedConsequence": "..."
-        }
-      ],
-      "traits": [
-        "...: ..."
-      ],
-      "injuries": []
-    }
+    ${NEW_CHARACTER_SHAPE}
   ],
   "updatedCharacters": [
     {
@@ -776,35 +747,7 @@ const nextPageOutputFormat: string = `{
     }
   ],
   "newPlaces": [
-    {
-      "placeId": "<new_place_id>",
-      "parentPlaceId": "Optional. <parent_place_id>",
-      "knownName": "...",
-      "realName": "...",
-      "type": "...",
-      "category": "${canonicalPlaceTypeValues}",
-      "context": "...",
-      "familiarity": <number between 0.0 and 1.0>,
-      "isRealNameKnown": <boolean>,
-      "hints": ["..."],
-      "keyEvents": ["..."],
-      "keyObjects": [
-        {
-          "name": "...",
-          "traits": [
-            "...: ..."
-          ],
-          "amount": <number>,
-          "where": "..."
-        }
-      ],
-      "traits": [
-        "...: ..."
-      ],
-      "knownCharacters": [
-        "<character_id>: <Context or interaction>"
-      ]
-    }
+    ${NEW_PLACE_SHAPE}
   ],
   "updatedPlaces": [
     {
@@ -841,18 +784,7 @@ const nextPageOutputFormat: string = `{
     }
   ],
   "newThreads": [
-    {
-      "threadId": "<new_thread_id>",
-      "title": "...",
-      "question": "...",
-      "priority": "${threadPriorityValues}",
-      "truth": "${threadTruthValues}",
-      "importance": <number between 0.0 and 1.0>,
-      "summary": "...",
-      "clues": [
-        { "clue": "...", "isFalse": <boolean> }
-      ]
-    }
+    ${NEW_THREAD_SHAPE}
   ],
   "updateThreads": [
     {
@@ -1143,13 +1075,8 @@ placeConnections
   - addObstacles/removeObstacles: story-relevant barriers, hazards, or access requirements.
   - notes: short route details not covered elsewhere.
 
-newThreads
-${isFinale ? `  - Do NOT introduce new threads. The story is in finale.`
-: isLatePhase ? `  - Avoid introducing new threads. Focus on resolving existing ones.`
-: isEarlyPhase ? `  - Introduce 1-2 core mysteries if this is early in the story. Each thread should have a compelling question that connects to the psychological premise.`
-: isMidPhase ? `  - Introduce new threads only if essential to plot (max 1 per page). New threads should branch from existing mysteries.`
-: `  - New threads should be rare now.`}
-${isEarlyPhase || isMidPhase ? `  - title: Short, evocative name for the mystery (e.g., "Lisa's Identity", "The River Incident")
+${!isFinale ? `newThreads (see ACTIVE THREADS for whether a new thread is warranted this page)
+  - title: Short, evocative name for the mystery (e.g., "Lisa's Identity", "The River Incident")
   - question: central mystery question (e.g., "Who is Lisa really?", "What happened at the river that night?")
   - priority: "main" for central mysteries, "secondary" for supporting mysteries, "minor" for background details
   - truth: "true" if the thread leads to genuine revelation, "false" if it's a deliberate misdirection, "unknown" if ambiguous
@@ -4628,11 +4555,6 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
     throw new Error(`Failed to generate page: text too short (${response.result.text.length} < ${MIN_CHARS_PER_PAGE} chars)`);
   }
 
-  const { isLastPage } = getStoryStateInfo(advancedState);
-  if (!isLastPage && !response.result.actions?.length) {
-    throw new Error(`Failed to generate page: empty actions array`);
-  }
-
   // 5. Canon/consistency validation (roadmap 1.1) — after eval, before delta/persist
   let generatedStoryPage: StoryGeneration = {
     ...response.result,
@@ -4795,17 +4717,10 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
     const isFirstAlternative = index === 0;
     const fateLogContext = `${context}:fate-${index + 1}`;
 
-    // Skip undersized or no-actions alternatives; outer retry covers full-batch failure when none remain
+    // Skip undersized alternatives; outer retry covers full-batch failure when none remain
     if (generatedStoryPageResult.text.length < MIN_CHARS_PER_PAGE) {
       lastError = new Error(`Alternative fate ${index + 1} text too short (${generatedStoryPageResult.text.length} < ${MIN_CHARS_PER_PAGE} chars)`);
       console.warn(`[${fateLogContext}] ⚠️ Skipping: text too short (${generatedStoryPageResult.text.length} < ${MIN_CHARS_PER_PAGE} chars)`);
-      continue;
-    }
-
-    const { isLastPage } = getStoryStateInfo(advancedState);
-    if (!isLastPage && !generatedStoryPageResult.actions?.length) {
-      lastError = new Error(`Alternative fate ${index + 1} has empty actions array`);
-      console.warn(`[${fateLogContext}] ⚠️ Skipping: empty actions array`);
       continue;
     }
 

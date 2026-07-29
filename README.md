@@ -123,7 +123,7 @@ The backend was migrated from **Node.js + pnpm + tsx** to **Bun** (runtime + pac
 
 ### Dependencies removed
 
-`@hono/node-server`, `undici`, `tsx`, `@types/node`, `@types/express` — all replaced by Bun's built-in capabilities.
+`@hono/node-server`, `undici`, `tsx`, `@types/express` — all replaced by Bun's built-in capabilities.
 
 ### Vercel deployment
 

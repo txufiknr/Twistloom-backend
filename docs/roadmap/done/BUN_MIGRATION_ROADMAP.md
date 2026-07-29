@@ -108,7 +108,7 @@ Replaced `tsx` + `@hono/node-server` dev server with Bun's native runtime. All `
 | `@hono/node-server` | Replaced by `Bun.serve()` in `src/server.bun.ts` |
 | `undici` | Bun has native `fetch`; was never imported in `src/` |
 | `tsx` | Bun runs TypeScript natively |
-| `@types/node` | Replaced by `@types/bun` |
+| `@types/node` | Replaced by `@types/bun` (brought back for Vercel custom `IncomingMessage` → `Request` adapter) |
 | `@types/express` | Leftover from Express era; Hono uses typed `Context` |
 | `pnpm-lock.yaml` | Replaced by `bun.lock` |
 
@@ -117,19 +117,6 @@ Replaced `tsx` + `@hono/node-server` dev server with Bun's native runtime. All `
 | Package | Version |
 |---------|---------|
 | `@types/bun` | ^1.3.14 |
-
----
-
-## TypeCheck Results
-
-```
-$ bun run typecheck
-src/utils/ai-chat.ts(659,28): error TS18049: 'response.usage' is possibly 'null' or 'undefined'.
-src/utils/ai-chat.ts(660,24): error TS18049: 'response.usage' is possibly 'null' or 'undefined'.
-src/utils/ai-chat.ts(661,23): error TS18049: 'response.usage' is possibly 'null' or 'undefined'.
-```
-
-**3 pre-existing errors** in `src/utils/ai-chat.ts` (strict null check on `response.usage` — unrelated to migration). Zero errors from migration changes.
 
 ---
 
