@@ -3,10 +3,5 @@
   "bunVersion": "1.x",
   "rewrites": [
     { "source": "/(.*)", "destination": "/src/app.ts" }
-  ],
-  "functions": {
-    "src/app.ts": {
-      "maxDuration": 300
-    }
-  }
+  ]
 }

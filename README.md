@@ -149,8 +149,7 @@ The codebase was originally migrated to be Edge Runtime-compatible, systematical
 - **Vercel dashboard → Framework Preset → "Other"** (not "Hono", not "Express"). The Hono preset assumes Node.js runtime.
 - **Build Command** — leave empty (Vercel auto-detects `bun run build` from `bun.lock`).
 - **Install Command** — leave empty (Vercel auto-detects `bun install` from `bun.lock`).
-- **`"bunVersion": "1.x"`** in `vercel.json` to deploy on Vercel's Bun runtime.
-- **`maxDuration: 300`** (5 min) in `vercel.json`. The active SSE prompt route (`GET /api/books/prompt`) uses streaming for sessions longer than 300s.
+- **`"bunVersion": "1.x"`** in `vercel.json` to deploy on Vercel's Bun runtime (note: `functions.maxDuration` is not supported on Bun runtime — SSE streaming is handled natively by Bun).
 
 ## 🚀 Features
 
