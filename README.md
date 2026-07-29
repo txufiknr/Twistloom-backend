@@ -156,7 +156,7 @@ The codebase was originally migrated to be Edge Runtime-compatible, systematical
 
 #### Configuration
 
-- **Vercel dashboard → Framework Preset → "Other"** (not "Hono", not "Express").
+- **Vercel dashboard → Framework Preset → "Hono"**.
 - **Build Command** — leave empty (Vercel auto-detects `bun install` from `bun.lock`).
 - **Install Command** — leave empty.
 - **Output Directory** — leave default (no override).
