@@ -536,3 +536,21 @@ export function getTraitKey(trait: string): string {
   const colonIndex = trait.indexOf(': ');
   return colonIndex === -1 ? trait : trait.slice(0, colonIndex).trim();
 }
+
+/**
+ * Parses a flattened trait string "key: value" into a {key, value} object.
+ * Falls back to using the full string as key with empty value if no `: ` separator is found.
+ * 
+ * @param trait - A TraitItem string in "key: value" format
+ * @returns Object with key and value properties
+ */
+export function parseTrait(trait: string): { key: string; value: string } {
+  const colonIndex = trait.indexOf(': ');
+  if (colonIndex === -1) {
+    return { key: trait.trim(), value: '' };
+  }
+  return {
+    key: trait.slice(0, colonIndex).trim(),
+    value: trait.slice(colonIndex + 2).trim()
+  };
+}

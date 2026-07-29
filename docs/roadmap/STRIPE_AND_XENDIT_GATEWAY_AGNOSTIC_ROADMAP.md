@@ -24,6 +24,80 @@
 
 ---
 
+## 0. Xendit API Key Setup — Required Features
+
+Before creating a Xendit API key in the Dashboard (**Settings → API Keys**), you must understand which Xendit product features the key needs access to. This depends on which integration you are enabling.
+
+### 0.1 Feature Mapping by Integration
+
+| Integration | Xendit Product Features Required | Backend Code Reference |
+|---|---|---|
+| **Credit pack purchases (one-time payments)** | **Invoices** only | `src/utils/xendit.ts:324` — `POST /v2/invoices` to create invoices; `src/routes/payments.ts:1191` — `POST /xendit/webhook` receives `invoice.paid` callbacks |
+| **VIP subscriptions** | **Customers** + **Invoices** (for Recurring Plans) | `src/utils/xendit.ts:191` — `POST /customers`; `src/utils/xendit.ts:234` — `POST /recurring/plans`; `src/routes/payments.ts:1257-1279` — recurring lifecycle webhooks |
+| **Both (full integration)** | **Invoices** + **Customers** + **Recurring Plans** | All of the above |
+
+### 0.2 Which Features to Enable on the API Key
+
+When creating or updating a Xendit API key in the Dashboard, you are presented with a checklist of product features. Here is exactly which ones to tick:
+
+#### Minimum for receiving credit pack purchase payments:
+
+| Feature | Required? | Why |
+|---------|-----------|-----|
+| **Invoices** | ✅ **Required** | This is the core feature. The backend creates a Xendit Invoice (`POST /v2/invoices`) for every credit pack checkout. When the user pays, Xendit sends an `invoice.paid` webhook callback — the backend listens at `POST /payments/xendit/webhook`, verifies the `x-callback-token` header, and awards credits to the user. Without this feature, the API key cannot create invoices or receive payment webhooks. |
+| **Balance** | ❌ Optional | Not needed for creating invoices or receiving payments. Useful for manual reconciliation in the dashboard. |
+| **Transaction** | ❌ Optional | Not needed programmatically. Useful for viewing payment history in the Xendit dashboard. |
+| **Report** | ❌ Optional | Not needed. |
+| **Credit Card** | ❌ Not a separate key feature | Payment methods are selected inside the Invoice payload (`available_channels` in `XENDIT_CONFIG`) — they do not require separate API key permissions. |
+| **Virtual Accounts** | ❌ Not a separate key feature | Same as above — controlled via `available_channels` config, not API key scoping. |
+| **E-wallets** | ❌ Not a separate key feature | Same as above. |
+| **QRIS** | ❌ Not a separate key feature | Same as above. |
+| **Retail Outlets (OTC)** | ❌ Not a separate key feature | Same as above. |
+| **PayLater** | ❌ Not a separate key feature | Same as above. |
+| **Disbursements** | ❌ Not needed | Money-out product — not used by this integration. |
+| **Batch Disbursements** | ❌ Not needed | Money-out product — not used. |
+| **Payout Link** | ❌ Not needed | Money-out product — not used. |
+| **xenPlatform** | ❌ Not needed | Marketplace/Split Payments — not used. |
+| **xenShield** | ❌ Not needed | Fraud assessment — not integrated. |
+| **Identity Proofing** | ❌ Not needed | KYC verification — not integrated. |
+
+#### Additional features needed if enabling subscriptions too:
+
+| Feature | Required? | Why |
+|---------|-----------|-----|
+| **Customers** | ✅ **Required for subscriptions** | The backend creates a Xendit Customer (`POST /customers`) as a prerequisite for creating a Recurring Plan. Required for VIP subscription checkout. |
+| **Invoices** (already required above) | ✅ **Still required** | The Recurring Plans API uses invoice infrastructure for billing cycles. |
+
+### 0.3 Quick Setup Checklist
+
+```
+☐ Create a Xendit merchant account (requires Indonesian business entity — see §Q10)
+☐ Go to Dashboard → Settings → API Keys
+☐ Create a new API key
+☐ Enable: [✅ Invoices] (and [✅ Customers] if using subscriptions)
+☐ Copy the Secret Key → set as XENDIT_SECRET_KEY in your .env
+☐ Go to Dashboard → Settings → Callbacks
+☐ Set the Invoice callback URL to: https://<your-backend>/api/payments/xendit/webhook
+☐ Copy the Callback Token → set as XENDIT_WEBHOOK_TOKEN in your .env
+☐ Set XENDIT_ENABLED=true in your .env
+```
+
+### 0.4 API Key Authentication (How it Works)
+
+The codebase authenticates with Xendit using **HTTP Basic Auth** — the secret key is sent as the username with an empty password:
+
+```typescript
+// src/utils/xendit.ts:23-26
+function getXenditAuth(): string {
+  const secretKey = requireEnv("XENDIT_SECRET_KEY");
+  return Buffer.from(`${secretKey}:`).toString("base64");
+}
+```
+
+No API key ID is needed — only the secret key value. The features (Invoices, Customers, etc.) are gated on the Xendit side per API key permissions. If a feature is not enabled on the key, the API call will return a 403/Forbidden error.
+
+---
+
 ## 1. Feasibility Assessment
 
 ### Verdict: Fully Feasible, Moderate Effort (~2–3 weeks for a single developer)

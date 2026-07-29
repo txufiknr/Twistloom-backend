@@ -1376,11 +1376,13 @@ export type EnrichedSanityState = Pick<
   'composure' | 'maxComposure' | 'hasCrashed' | 'crashedAtPage'
 >;
 
+export type EnrichedInventoryItem = Omit<InventoryItem, 'traits'> & { traits?: { key: string; value: string }[] };
+
 export type EnrichedStoryPageContext = {
   /** Current story phase classification */
   phase: StoryPhase;
   /** Collection of items and resources present in the world at the current page */
-  inventory: InventoryItem[];
+  inventory: EnrichedInventoryItem[];
   /** Represents injuries sustained by the MC */
   injuries: Injury[];
   /** Deterministically derived health status of the MC */
@@ -1407,8 +1409,8 @@ export type EnrichedStoryPageContext = {
   ending?: Omit<Ending, 'changeReason' | 'changeViabilityBefore' | 'changeViabilityAfter'>;
 };
 
-export type EnrichedStoryPagePlace = Pick<PlaceMemory, 'type' | 'category' | 'context'> & { placeId: string; name: string; };
-export type EnrichedStoryPageCharacter = Pick<CharacterMemory, 'gender' | 'role' | 'bio'> & { characterId: string; name: string; };
+export type EnrichedStoryPagePlace = Pick<PlaceMemory, 'type' | 'category' | 'context'> & { placeId: string; name: string; traits?: { key: string; value: string }[] };
+export type EnrichedStoryPageCharacter = Pick<CharacterMemory, 'gender' | 'role' | 'bio'> & { characterId: string; name: string; traits?: { key: string; value: string }[] };
 
 /**
  * | System          | Purpose                     |

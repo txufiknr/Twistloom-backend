@@ -35,7 +35,7 @@ import { geminiGenerateImage } from "../utils/ai-image.js";
 import { retryWithBranchConflict, isUniqueConstraintError } from "../utils/retry.js";
 import { generateBranchId } from "./story-branch.js";
 import { deleteFileFromImageKit, persistUploadedImage, uploadBookCover, uploadBookCharacterImage } from "./image.js";
-import { sanitizeText, generateSlug, sanitizeKeywords } from "../utils/text-processing.js";
+import { sanitizeText, generateSlug, sanitizeKeywords, parseTrait } from "../utils/text-processing.js";
 import { generateId, isValidUuid } from "../utils/uuid.js";
 import { calculateActionTendency, calculateStoryMomentum, getStoryStateInfo } from "../utils/story.js";
 import { applyPageTranslation, getPageToTranslate, getPageTranslation, shouldTranslate } from "./translation.js";
@@ -1565,7 +1565,10 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
       healthStatus,
       sanityState: enrichedSanity,
       injuries,
-      inventory,
+      inventory: inventory.map(item => ({
+        ...item,
+        traits: item.traits?.map(parseTrait)
+      })),
       contextHistory,
       actionsHistory,
       plotFlags,
@@ -1577,14 +1580,16 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
         name: place.isRealNameKnown ? place.realName : place.knownName,
         type: place.type,
         category: place.category,
-        context: place.context
+        context: place.context,
+        traits: place.traits?.map(parseTrait)
       }) satisfies Record<keyof EnrichedStoryPagePlace, unknown>),
       characters: Object.entries(characters).map(([characterId, character]) => ({
         characterId,
         name: ['full_name_known', 'first_name_known'].includes(character.recognitionLevel) ? character.realName : character.knownName,
         gender: character.gender,
         role: character.role,
-        bio: character.bio
+        bio: character.bio,
+        traits: character.traits?.map(parseTrait)
       }) satisfies Record<keyof EnrichedStoryPageCharacter, unknown>)
     } satisfies Record<keyof EnrichedStoryPageContext, unknown>;
   }
@@ -1623,7 +1628,23 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
     selectedActions,
     sourceAction, // sourceAction is the convenience shortcut for the single action that led to this page.
     branchName: branchName ?? undefined,
-    translation,
+    translation: translation
+      ? ({
+          ...translation,
+          characters: translation.characters?.map(ch => ({
+            ...ch,
+            traits: (ch.traits as string[] | undefined)?.map(parseTrait)
+          })),
+          places: translation.places?.map(place => ({
+            ...place,
+            traits: (place.traits as string[] | undefined)?.map(parseTrait)
+          })),
+          inventory: translation.inventory?.map(item => ({
+            ...item,
+            traits: (item.traits as string[] | undefined)?.map(parseTrait)
+          }))
+        } as typeof translation)
+      : undefined,
     shownActionHint,
     context, // context is the SSOT for full action + plot-flag history
     communityActions: communityActions.length > 0 ? communityActions : undefined,
