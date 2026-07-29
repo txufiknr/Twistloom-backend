@@ -1,8 +1,16 @@
 # Bun Migration — Completion Report
 
-## Status: ✅ Fully Migrated (All 3 Phases Complete)
+## Status: ✅ Hybrid Architecture (Bun Local + Node.js Production)
 
-The Twistloom backend has been fully migrated from Node.js + pnpm to the Bun runtime, covering local development, all dev scripts, and Vercel production deployment.
+The Twistloom backend has been migrated to a **hybrid architecture**:
+
+| Layer | Runtime | Benefit |
+|-------|---------|---------|
+| Local development | **Bun** | `bun --watch` dev server, native TypeScript, fast hot reload |
+| Package management | **Bun** | `bun install` — ~80% faster installs than pnpm |
+| Production (Vercel) | **Node.js** | Stable serverless execution via `hono/vercel` adapter |
+
+> **Vercel Bun runtime was evaluated but had ESM module linking failures** with the project's complex dependency graph. The hybrid approach delivers the best of both worlds: Bun's fast developer experience locally with Node.js production stability.
 
 ---
 
@@ -60,35 +68,27 @@ Replaced `tsx` + `@hono/node-server` dev server with Bun's native runtime. All `
 
 ---
 
-## Phase 3 — Bun Runtime on Vercel ✅
+## Phase 3 — Vercel Deployment (Node.js Runtime via hono/vercel) ✅
 
-Switched Vercel deployment from Node.js Fluid Compute to the Bun runtime. Simplified the Vercel handler from a 90-line `IncomingMessage`/`ServerResponse` adapter to a single `export default app.fetch`.
+**Initial attempt:** Vercel's native Bun runtime was tried first but hit persistent `TypeError: Requested module is not instantiated yet` errors during ESM module linking. The project's complex dependency graph (30+ type files, 9 AI SDKs) exposed a known Vercel Bun runtime limitation with circular dependency resolution.
+
+**Final approach:** The stable hybrid path was adopted — `hono/vercel` adapter on the Node.js runtime for production, while keeping Bun for local dev and package management.
 
 ### Changes
 
 | File | Change |
 |------|--------|
-| `vercel.json:3` | Added `"bunVersion": "1.x"` |
-| `src/app.ts:163-291` | Replaced `vercelHandler()` function (90 lines, `Buffer` + `node:http`) with `export default app.fetch` (1 line) |
-| `package.json:62` | Removed `@hono/node-server` (no longer needed anywhere) |
-| `package.json:83` | Removed `undici` (no longer needed — Bun has native `fetch`) |
-
-### What Was Removed from `src/app.ts`
-
-- `import type { IncomingMessage, ServerResponse } from "node:http"`
-- Entire `vercelHandler()` function with:
-  - `Buffer`-based body reader (`Buffer.isBuffer`, `Buffer.from`, `Buffer.concat`)
-  - `IncomingMessage` → `Request` conversion logic
-  - Legacy `ServerResponse` writer for SSE streaming
-- ~130 lines of comments explaining the Node.js handler workaround
+| `api/index.ts` | **New** — Vercel serverless function entrypoint using `handle(app)` from `hono/vercel` |
+| `vercel.json` | Removed `"bunVersion": "1.x"`, rewrites now point to `/api/index` |
+| `src/app.ts` | Simplified `vercelHandler()` replaced earlier; default export `app.fetch` retained for local dev compatibility |
 
 ### Impact
 
-- **Cold starts: ~50-200ms** (was ~300-800ms on Node.js)
-- **-130 LOC** removed from `src/app.ts`
+- **Stable production deployment** on Node.js runtime (battle-tested on Vercel's Fluid Compute)
+- **Full local DX benefits** preserved: `bun dev`, `bun install`, native TypeScript
+- **Vercel Bun runtime** evaluated and documented as a future option when the module linker matures
+- **-130 LOC** removed from `src/app.ts` (old Vercel handler)
 - **-2 runtime dependencies** (`@hono/node-server`, `undici`)
-- **Simpler code** — Vercel passes a standard `Request` directly to `app.fetch`
-- **Rollback path** — Remove `"bunVersion": "1.x"` from `vercel.json` to revert to Node.js runtime
 
 ---
 
@@ -137,9 +137,9 @@ src/utils/ai-chat.ts(661,23): error TS18049: 'response.usage' is possibly 'null'
 - [x] All 40+ scripts updated to use `bun`/`bunx`
 
 ### Vercel Deployment
-- [x] `bun.lock` tracked in git (Vercel auto-detects)
-- [x] `"bunVersion": "1.x"` in `vercel.json`
-- [x] `export default app.fetch` as Vercel handler (no legacy Node.js adapter)
+- [x] `bun.lock` tracked in git (Vercel auto-detects for `bun install`)
+- [x] `api/index.ts` uses `hono/vercel` `handle()` adapter (Node.js runtime)
+- [x] `vercel.json` rewrites all traffic to `/api/index`
 - [x] No `@hono/node-server` or `undici` in dependencies
 
 ---
@@ -148,26 +148,31 @@ src/utils/ai-chat.ts(661,23): error TS18049: 'response.usage' is possibly 'null'
 
 ```
 A  bun.lock                    # Bun lockfile (replaces pnpm-lock.yaml)
+A  api/index.ts                # Vercel entrypoint (hono/vercel adapter)
 A  src/server.bun.ts           # Bun dev server entry
 A  docs/roadmap/BUN_MIGRATION_ROADMAP.md  # This report
 M  package.json                # Scripts, deps, packageManager
-M  vercel.json                 # Added bunVersion
-M  src/app.ts                  # Simplified to export default app.fetch
+M  vercel.json                 # Rewrites to /api/index, no bunVersion
+M  src/app.ts                  # Simplified Vercel handler
 M  scripts/build.js            # pnpm exec → bunx
-M  tsconfig.json               # (minor — no net change after final iteration)
 D  pnpm-lock.yaml              # Removed from git
 D  pnpm-workspace.yaml         # Removed from git (Bun ignores)
+D  src/server.ts               # Replaced by server.bun.ts
 ```
 
 ---
 
 ## Rollback
 
-If any issues arise in production:
+If issues arise with the `hono/vercel` adapter:
 
-1. **Remove** `"bunVersion": "1.x"` from `vercel.json` → Vercel reverts to Node.js runtime
-2. **Restore** the old `vercelHandler` in `src/app.ts` from git history:
+1. **Restore** the old `vercelHandler` in `src/app.ts` from git history:
    ```
-   git checkout HEAD~1 -- src/app.ts
+   git checkout <pre-migration-hash> -- src/app.ts
+   ```
+2. **Update** `api/index.ts` to use `app.fetch` directly instead of `handle(app)`:
+   ```typescript
+   import { app } from "../src/app.js";
+   export default app.fetch;
    ```
 3. No other changes need reverting — all scripts and code are backwards-compatible with Node.js 24+

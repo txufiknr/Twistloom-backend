@@ -1,10 +1,11 @@
 /**
- * Vercel serverless function entrypoint.
+ * Vercel serverless function entrypoint (Node.js runtime).
  *
- * The `api/` directory is Vercel's convention — files here are automatically
- * compiled and executed as Serverless Functions. This thin wrapper imports
- * the Hono app and delegates to its native `fetch`.
+ * Uses Hono's official Vercel adapter for stable Node.js deployment.
+ * Local development continues using Bun via src/server.bun.ts.
  */
+import { handle } from "hono/vercel";
 import { app } from "../src/app.js";
 
-export default app.fetch;
+export const config = { runtime: "nodejs" };
+export default handle(app);

@@ -117,7 +117,9 @@ The backend was migrated from **Node.js + pnpm + tsx** to **Bun** (runtime + pac
 |-------|--------|--------|
 | 1 — Package manager | `pnpm` → `bun install`, lockfile `pnpm-lock.yaml` → `bun.lock` | ✅ |
 | 2 — Local dev | `tsx watch` + `@hono/node-server` → `bun --watch` + `Bun.serve()` | ✅ |
-| 3 — Vercel runtime | Node.js Fluid Compute → Bun runtime via `"bunVersion": "1.x"` | ✅ |
+| 3 — Vercel deployment | Direct `app.fetch` → `hono/vercel` `handle()` adapter via `api/index.ts` | ✅ |
+
+> **Note on Bun runtime evaluation:** Vercel's Bun runtime was initially attempted but had ESM module linking failures with the project's complex dependency graph (30+ type files, 9 AI SDKs, multiple database adapters). The hybrid approach was adopted: **Bun for local dev + package management, Node.js runtime on Vercel** via the official `hono/vercel` adapter. This is the most stable path while still benefiting from Bun's faster dev cycle.
 
 ### Dependencies removed
 
@@ -125,11 +127,19 @@ The backend was migrated from **Node.js + pnpm + tsx** to **Bun** (runtime + pac
 
 ### Vercel deployment
 
-The app is deployed on the **Bun runtime** on Vercel. `src/app.ts` exports `app.fetch` directly — no legacy Node.js adapter is needed because Bun always passes a standard Web API `Request`. `vercel.json` rewrites all traffic to that entrypoint with `"bunVersion": "1.x"`.
+The app is deployed on the **Node.js runtime** via Hono's official Vercel adapter (`hono/vercel`). A thin `api/index.ts` entrypoint uses `handle(app)` to bridge Hono's Web-standard fetch to Vercel's Node.js serverless functions. This is the most stable deployment path — Vercel's Bun runtime was evaluated but had module linking issues with the project's complex dependency graph.
+
+#### Hybrid architecture
+
+| Layer | Runtime | Purpose |
+|-------|---------|---------|
+| Local development | **Bun** | Fast dev server (`bun --watch`), native TypeScript |
+| Package management | **Bun** | `bun install` (~80% faster than pnpm) |
+| Production (Vercel) | **Node.js** | Stable, battle-tested serverless execution |
 
 #### Web API migration (pre-existing)
 
-The codebase was originally migrated to be Edge Runtime-compatible, systematically replacing Node.js-only APIs. This foundation made the Bun migration trivial:
+The codebase was originally migrated to be Edge Runtime-compatible, systematically replacing Node.js-only APIs. This foundation made the Hono migration seamless and keeps the door open for future runtime changes:
 
 | Blockers Replaced | Web API-Compatible Alternative |
 |-------------------|-------------------------------|
@@ -142,14 +152,14 @@ The codebase was originally migrated to be Edge Runtime-compatible, systematical
 | `process.uptime()` / `.memoryUsage()` / `.version` | `typeof` guards + `Date.now()` startup timestamp |
 | Stripe default HTTP client | `Stripe.createFetchHttpClient()` |
 | Neon WebSocket (`ws` package) | `neonConfig.webSocketConstructor = globalThis.WebSocket` |
-| `@hono/node-server` entrypoint | Bun's `Bun.serve()` |
+| `@hono/node-server` entrypoint | Bun's `Bun.serve()` (local) / `hono/vercel` `handle()` (production) |
 
 #### Configuration
 
-- **Vercel dashboard → Framework Preset → "Other"** (not "Hono", not "Express"). The Hono preset assumes Node.js runtime.
-- **Build Command** — leave empty (Vercel auto-detects `bun run build` from `bun.lock`).
-- **Install Command** — leave empty (Vercel auto-detects `bun install` from `bun.lock`).
-- **`"bunVersion": "1.x"`** in `vercel.json` to deploy on Vercel's Bun runtime (note: `functions.maxDuration` is not supported on Bun runtime — SSE streaming is handled natively by Bun).
+- **Vercel dashboard → Framework Preset → "Other"** (not "Hono", not "Express").
+- **Build Command** — leave empty (Vercel auto-detects `bun install` from `bun.lock`).
+- **Install Command** — leave empty.
+- **Output Directory** — leave default (no override).
 
 ## 🚀 Features
 
