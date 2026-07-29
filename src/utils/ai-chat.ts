@@ -656,9 +656,9 @@ export async function cerebrasPrompt(
     },
     (response) => {
       return {
-        completion_tokens: response.usage.completion_tokens,
-        prompt_tokens: response.usage.prompt_tokens,
-        total_tokens: response.usage.total_tokens,
+        completion_tokens: response.usage?.completion_tokens,
+        prompt_tokens: response.usage?.prompt_tokens,
+        total_tokens: response.usage?.total_tokens,
       };
     },
     (response) => response.choices?.[0]?.finish_reason ?? 'unknown'

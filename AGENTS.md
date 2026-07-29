@@ -9,19 +9,19 @@ This document outlines the coding standards, conventions, and best practices for
 ## 🛠️ Technology Stack
 
 ### Core Technologies
-- **Runtime**: Node.js 20+
-- **API Framework**: Express.js
+- **Runtime**: Bun 1.3+
+- **API Framework**: Hono.js
 - **Database**: Neon (PostgreSQL)
 - **ORM**: Drizzle ORM
 - **Language**: TypeScript
-- **Package Manager**: pnpm
+- **Package Manager**: Bun (via `bun install`)
 
 ### Development Tools
-- **Build**: TypeScript compiler
+- **Build**: Bun (native TypeScript execution)
 - **Linting**: ESLint
 - **Database Management**: Drizzle Kit
 - **Migrations**: Drizzle migrations
-- **Hosting**: Vercel (serverless)
+- **Hosting**: Vercel (Bun runtime)
 
 ---
 
@@ -310,7 +310,7 @@ import { formatFeedRows } from '../services/feed.js';
 > 
 > ```powershell
 > # Example: Navigate to project and run test script
-> cd "e:\Flutter\Twistloom\twistloom-backend"; pnpm tsx test-hero-image.js
+> cd "e:\Flutter\Twistloom\twistloom-backend"; bun test-hero-image.ts
 > 
 > # Example: Test API request
 > (Invoke-WebRequest -Uri "https://twistloom-backend.vercel.app/api/endpoint?limit=15" -Method GET -Headers @{"Content-Type"="application/json"; "X-App-Version"="1.0.0"; "X-Platform"="web"} -UseBasicParsing).Content
@@ -319,54 +319,54 @@ import { formatFeedRows } from '../services/feed.js';
 > Invoke-WebRequest -Uri "http://192.168.1.6:3000/api/books/prompt" -Method GET -Headers @{"Content-Type"="text/event-stream"} -UseBasicParsing
 > 
 > # Example: Clean up test files and run type checking
-> Remove-Item test-*.js; pnpm typecheck
+> Remove-Item test-*.ts; bun run typecheck
 > ```
 
 ### Development Scripts
 ```bash
-pnpm dev          # Start development server with hot reload
-pnpm dev:api       # Start API server only
-pnpm dev:cron:trending    # Run trending scores cron job locally
-pnpm dev:cron:generate    # Run originals generation cron job locally
-pnpm dev:cron:candidate      # Run actions candidate generations cron job locally
+bun dev          # Start development server with hot reload
+bun dev:api       # Start API server only
+bun dev:cron:trending    # Run trending scores cron job locally
+bun dev:cron:generate    # Run originals generation cron job locally
+bun dev:cron:candidate      # Run actions candidate generations cron job locally
 ```
 
 ### Production Scripts
 ```bash
-pnpm build         # Build TypeScript to JavaScript
-pnpm start          # Start production server
-pnpm start:api    # Start production API server
-pnpm start:cron:trending     # Run trending scores cron job in production
-pnpm start:cron:generate     # Run originals generation cron job in production
-pnpm start:cron:candidate       # Run actions candidate generations cron job in production
+bun build         # Build TypeScript to JavaScript
+bun start          # Start production server
+bun start:api    # Start production API server
+bun start:cron:trending     # Run trending scores cron job in production
+bun start:cron:generate     # Run originals generation cron job in production
+bun start:cron:candidate       # Run actions candidate generations cron job in production
 ```
 
 ### Build & Quality Scripts
 ```bash
-pnpm build         # Build TypeScript to JavaScript
-pnpm typecheck      # Run TypeScript type checking
-pnpm lint          # Run ESLint on all files
-pnpm lint:fix       # Auto-fix ESLint issues
-pnpm lint:fast      # Run ESLint without promise checks
-pnpm lint:imports  # Validate import extensions
-pnpm check         # Run lint, import validation, and typecheck
+bun build         # Build TypeScript to JavaScript
+bun typecheck      # Run TypeScript type checking
+bun lint          # Run ESLint on all files
+bun lint:fix       # Auto-fix ESLint issues
+bun lint:fast      # Run ESLint without promise checks
+bun lint:imports  # Validate import extensions
+bun check         # Run lint, import validation, and typecheck
 ```
 
 ### Database Scripts
 ```bash
-pnpm db:generate   # Generate database migrations
-pnpm db:migrate    # Run database migrations
-pnpm db:migrate:prod    # Apply database migrations in production
-pnpm db:studio      # Open Drizzle Studio GUI
-pnpm db:test       # Test database connection
-pnpm db:extensions    # Install database extensions
-pnpm db:extensions:prod    # Install database extensions in production
-pnpm db:triggers    # Create database triggers
-pnpm db:triggers:prod    # Create database triggers in production
-pnpm db:clear      # Clear all database data
-pnpm db:clear:prod      # Clear all database data in production
-pnpm db:reset      # Reset database (clear + migrate + seed)
-pnpm db:reset:prod      # Reset database in production
+bun db:generate   # Generate database migrations
+bun db:migrate    # Run database migrations
+bun db:migrate:prod    # Apply database migrations in production
+bun db:studio      # Open Drizzle Studio GUI
+bun db:test       # Test database connection
+bun db:extensions    # Install database extensions
+bun db:extensions:prod    # Install database extensions in production
+bun db:triggers    # Create database triggers
+bun db:triggers:prod    # Create database triggers in production
+bun db:clear      # Clear all database data
+bun db:clear:prod      # Clear all database data in production
+bun db:reset      # Reset database (clear + migrate + seed)
+bun db:reset:prod      # Reset database in production
 ```
 
 ## 🧪 Testing Guidelines
@@ -379,10 +379,10 @@ Use Node.js testing approach with TypeScript and ES modules.
 ### Test Execution Format
 ```bash
 # Windows PowerShell (use semicolon separator)
-cd "e:\Flutter\Twistloom\twistloom-backend"; pnpm tsx test-something.js
-cd "e:\Flutter\Twistloom\twistloom-backend"; Remove-Item test-*.js
-# Or use pnpm for package scripts
-pnpm dev:cron
+cd "e:\Flutter\Twistloom\twistloom-backend"; bun test-something.ts
+cd "e:\Flutter\Twistloom\twistloom-backend"; Remove-Item test-*.ts
+# Or use bun for package scripts
+bun dev:cron
 ```
 
 ### Test Best Practices

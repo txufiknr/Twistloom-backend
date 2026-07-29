@@ -19,12 +19,11 @@
 [![Stack](https://img.shields.io/badge/Stack-Next.js_16_•_Hono_•_Neon_•_Upstash-a78bfa?style=for-the-badge&labelColor=0d0d1a)](https://twistloom-web.vercel.app)
 [![AI](https://img.shields.io/badge/AI-9_LLM_Providers-6d28d9?style=for-the-badge&labelColor=0d0d1a)](https://twistloom-web.vercel.app)
 
-![Node.js Version](https://img.shields.io/badge/node-24+-green?logo=node.js)
+![Bun](https://img.shields.io/badge/Bun-1.3+-f9f9f9?logo=bun&logoColor=white&labelColor=14151a)
 ![TypeScript](https://img.shields.io/badge/typescript-blue?logo=typescript)
 ![Hono](https://img.shields.io/badge/hono-E36002?logo=hono&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/postgresql-336791?logo=postgresql)
 ![Drizzle ORM](https://img.shields.io/badge/drizzle-ff6b00?logo=drizzle)
-![pnpm](https://img.shields.io/badge/pnpm-10+-f69220?logo=pnpm)
 ![Vercel](https://img.shields.io/badge/vercel-000000?logo=vercel)
 ![License](https://img.shields.io/badge/license-proprietary-red)
 
@@ -56,12 +55,11 @@ Twistloom is not merely a branching story platform. It is a multiverse storytell
 | Choice | Version | Why |
 |--------|---------|-----|
 | 💻 **TypeScript** | 6.0+ | Type safety, modern features, and excellent IDE support |
-| 🧩 **Node.js** | 24+ | Proven runtime with excellent async/await support and large ecosystem |
-| 🔥 **Hono.js** | 4.12+ | Ultra-fast, runtime-agnostic web framework with first-class TypeScript and native serverless adapters |
+| 🐰 **Bun** | 1.3+ | All-in-one JS runtime — fast dev server, native TypeScript, package manager, and test runner |
+| 🔥 **Hono.js** | 4.12+ | Ultra-fast, runtime-agnostic web framework with first-class TypeScript and native Bun support |
 | 🗄️ **Neon (Postgres)** | 18 | Serverless, auto-scaling, and excellent TypeScript support |
 | 🔧 **Drizzle ORM** | 0.45+ | Type-safe, excellent migrations, and modern query builder |
-| 🚀 **Vercel** | Serverless | Perfect for serverless TypeScript apps with zero-config deployment |
-| 📦 **pnpm** | 10+ | Fast, efficient, and monorepo support |
+| 🚀 **Vercel** | Bun Runtime | Serverless deployment on Vercel's native Bun runtime for lower cold starts |
 
 ### **AI Providers**
 
@@ -80,13 +78,13 @@ Twistloom is not merely a branching story platform. It is a multiverse storytell
 
 ## 🔥 Why Hono over Express
 
-The backend was migrated from **Express.js** to **Hono.js** while keeping every feature intact (Stripe payments, NextAuth/Auth.js session verification, Drizzle ORM, Server-Sent Events, and multipart image uploads). The app runs on the **Vercel Edge Runtime** via `hono/vercel`'s `handle()` adapter — no Node.js-specific server shim needed in production. Local development uses `@hono/node-server`'s `serve`.
+The backend was migrated from **Express.js** to **Hono.js** while keeping every feature intact (Stripe payments, NextAuth/Auth.js session verification, Drizzle ORM, Server-Sent Events, and multipart image uploads). Hono's runtime-agnostic design made the subsequent Bun migration seamless.
 
 ### Why we switched
 
 - **Runtime freedom.** Hono runs on any JavaScript runtime (Node.js, Bun, Deno, Workers, Vercel Edge) from a single codebase. Express is effectively Node-only, which locked deployment choices in.
-- **Serverless-native.** Hono ships first-class adapters. The same app serves as a Vercel Edge Function (`hono/vercel`) and a local dev server (`@hono/node-server`) without custom shims. Express's monolithic `listen()` model fights the short-lived, per-request serverless model.
-- **Performance & cold starts.** Hono's tiny surface and zero-dependency core start faster and use less memory than Express + its middleware chain — critical on Vercel's cold-start-sensitive Edge Functions.
+- **Serverless-native.** Hono ships first-class adapters. The same app serves as a Vercel deployment and a local dev server (`Bun.serve()`) without custom shims. Express's monolithic `listen()` model fights the short-lived, per-request serverless model.
+- **Performance & cold starts.** Hono's tiny surface and zero-dependency core start faster and use less memory than Express + its middleware chain.
 - **First-class TypeScript.** Route params, query, body, environment, and middleware bindings are inferred through `AppEnv` (`src/hono/env.ts`), so handlers get a fully typed `c` instead of loosely-typed `req`/`res` augmentation.
 - **Batteries included.** Built-in CORS, streaming/SSE (`hono/streaming`), and `@hono/auth-js` for cookie-based Auth.js verification replaced hand-rolled Express middleware.
 - **Ergonomic helpers.** `c.json()`, `c.req.param()/query()/header()`, and typed `c.get()/c.set()` variables remove the boilerplate of `req.body`/`res.status().json()` and `wrapAsync`.
@@ -99,15 +97,39 @@ The backend was migrated from **Express.js** to **Hono.js** while keeping every 
 - SSE routes (`POST /api/books/stream`, `GET /api/books/prompt`, `GET /api/books/:identifier/:pageId/candidates`) use Hono's native `streamSSE`.
 - `multer` uploads were replaced by a small `parseBody`-based middleware that exposes the file on `c.get("file")`.
 
+## 🐰 Bun Migration
+
+The backend was migrated from **Node.js + pnpm + tsx** to **Bun** (runtime + package manager + dev server). The migration took advantage of the existing Web API-compliant codebase (already migrated from Express to Hono) and Hono's runtime-agnostic architecture.
+
+### Why Bun
+
+| Reason | Impact |
+|--------|--------|
+| **Native TypeScript** | No `tsx` transpilation step — Bun runs `.ts` files directly |
+| **Faster installs** | `bun install` is ~80% faster than `pnpm install` on cold cache |
+| **Lower cold starts** | Bun runtime on Vercel starts in ~50-200ms vs ~300-800ms on Node.js |
+| **Single toolchain** | Bun replaces pnpm + tsx + node with one binary |
+| **Web API native** | Bun's `Bun.serve()` and native `fetch` align perfectly with Hono's Request/Response model |
+
+### Migration scope
+
+| Phase | Change | Status |
+|-------|--------|--------|
+| 1 — Package manager | `pnpm` → `bun install`, lockfile `pnpm-lock.yaml` → `bun.lock` | ✅ |
+| 2 — Local dev | `tsx watch` + `@hono/node-server` → `bun --watch` + `Bun.serve()` | ✅ |
+| 3 — Vercel runtime | Node.js Fluid Compute → Bun runtime via `"bunVersion": "1.x"` | ✅ |
+
+### Dependencies removed
+
+`@hono/node-server`, `undici`, `tsx`, `@types/node`, `@types/express` — all replaced by Bun's built-in capabilities.
+
 ### Vercel deployment
 
-The app is deployed on the **Node.js runtime**. Vercel's Fluid Compute architecture makes the Node.js runtime the superior choice over Edge, offering identical performance and pricing while eliminating cold starts and offering full Node.js API support. See https://vercel.com/docs/functions/runtimes/edge
+The app is deployed on the **Bun runtime** on Vercel. `src/app.ts` exports `app.fetch` directly — no legacy Node.js adapter is needed because Bun always passes a standard Web API `Request`. `vercel.json` rewrites all traffic to that entrypoint with `"bunVersion": "1.x"`.
 
-`src/app.ts` exports a custom handler that works on both Vercel's Fluid Compute (passes Web API `Request`) and legacy Node.js Serverless (passes `IncomingMessage`). `vercel.json` rewrites all traffic to that entrypoint.
+#### Web API migration (pre-existing)
 
-#### Web API migration
-
-The codebase was originally migrated to be Edge Runtime-compatible, systematically replacing Node.js-only APIs. This work was not wasted — the app is now fully Web API compliant, which means the `hono/vercel` adapter maps requests seamlessly regardless of the underlying runtime:
+The codebase was originally migrated to be Edge Runtime-compatible, systematically replacing Node.js-only APIs. This foundation made the Bun migration trivial:
 
 | Blockers Replaced | Web API-Compatible Alternative |
 |-------------------|-------------------------------|
@@ -120,13 +142,15 @@ The codebase was originally migrated to be Edge Runtime-compatible, systematical
 | `process.uptime()` / `.memoryUsage()` / `.version` | `typeof` guards + `Date.now()` startup timestamp |
 | Stripe default HTTP client | `Stripe.createFetchHttpClient()` |
 | Neon WebSocket (`ws` package) | `neonConfig.webSocketConstructor = globalThis.WebSocket` |
-| `@hono/node-server` entrypoint | `hono/vercel` `handle()` adapter |
+| `@hono/node-server` entrypoint | Bun's `Bun.serve()` |
 
 #### Configuration
 
-- **Framework Preset → "Hono"** (not "Express"). Vercel's Express preset looks for `import express` at build time; with Express removed, leaving it set breaks the build.
+- **Vercel dashboard → Framework Preset → "Other"** (not "Hono", not "Express"). The Hono preset assumes Node.js runtime.
+- **Build Command** — leave empty (Vercel auto-detects `bun run build` from `bun.lock`).
+- **Install Command** — leave empty (Vercel auto-detects `bun install` from `bun.lock`).
+- **`"bunVersion": "1.x"`** in `vercel.json` to deploy on Vercel's Bun runtime.
 - **`maxDuration: 300`** (5 min) in `vercel.json`. The active SSE prompt route (`GET /api/books/prompt`) uses streaming for sessions longer than 300s.
-- Local development still runs via `@hono/node-server` (`src/server.ts`) — no changes to the dev workflow.
 
 ## 🚀 Features
 
@@ -199,53 +223,53 @@ The codebase was originally migrated to be Edge Runtime-compatible, systematical
 
 ### **Development**
 ```bash
-pnpm dev          # Start development server with hot reload
-pnpm dev:api       # Start API server only
-pnpm dev:cron:trending    # Run trending scores cron job locally
-pnpm dev:cron:generate    # Run originals generation cron job locally
-pnpm dev:cron:retry      # Run retry pending generations cron job locally
-pnpm typecheck    # Run TypeScript type checking
-pnpm lint          # Run ESLint
-pnpm lint:fix      # Auto-fix ESLint issues
-pnpm lint:fast      # Run ESLint without promise checks
-pnpm lint:imports  # Validate import extensions
+bun dev          # Start development server with hot reload
+bun dev:api       # Start API server only
+bun dev:cron:trending    # Run trending scores cron job locally
+bun dev:cron:generate    # Run originals generation cron job locally
+bun dev:cron:retry      # Run retry pending generations cron job locally
+bun typecheck    # Run TypeScript type checking
+bun lint          # Run ESLint
+bun lint:fix      # Auto-fix ESLint issues
+bun lint:fast      # Run ESLint without promise checks
+bun lint:imports  # Validate import extensions
 ```
 
 ### **Production**
 ```bash
-pnpm build         # Build TypeScript to JavaScript
-pnpm start         # Start production server
-pnpm start:api    # Start production API server
-pnpm start:cron:trending     # Run trending scores cron job in production
-pnpm start:cron:generate     # Run originals generation cron job in production
-pnpm start:cron:retry       # Run retry pending generations cron job in production
+bun build         # Build TypeScript to JavaScript
+bun start         # Start production server
+bun start:api    # Start production API server
+bun start:cron:trending     # Run trending scores cron job in production
+bun start:cron:generate     # Run originals generation cron job in production
+bun start:cron:retry       # Run retry pending generations cron job in production
 ```
 
 ### **Database Management**
 ```bash
-pnpm db:generate   # Generate database migrations
-pnpm db:migrate    # Apply database migrations
-pnpm db:migrate:prod    # Apply database migrations in production
-pnpm db:studio     # Open Drizzle Studio GUI
-pnpm db:test       # Test database connection
-pnpm db:extensions    # Install database extensions
-pnpm db:extensions:prod    # Install database extensions in production
-pnpm db:triggers    # Create database triggers
-pnpm db:triggers:prod    # Create database triggers in production
-pnpm db:clear      # Clear all database data
-pnpm db:clear:prod      # Clear all database data in production
-pnpm db:reset      # Reset database (clear + migrate + seed)
-pnpm db:reset:prod      # Reset database in production
+bun db:generate   # Generate database migrations
+bun db:migrate    # Apply database migrations
+bun db:migrate:prod    # Apply database migrations in production
+bun db:studio     # Open Drizzle Studio GUI
+bun db:test       # Test database connection
+bun db:extensions    # Install database extensions
+bun db:extensions:prod    # Install database extensions in production
+bun db:triggers    # Create database triggers
+bun db:triggers:prod    # Create database triggers in production
+bun db:clear      # Clear all database data
+bun db:clear:prod      # Clear all database data in production
+bun db:reset      # Reset database (clear + migrate + seed)
+bun db:reset:prod      # Reset database in production
 ```
 
 ### **Quality Assurance**
 ```bash
-pnpm check         # Run lint, import validation, and typecheck
-pnpm lint          # Run ESLint on all files
-pnpm lint:fix       # Auto-fix ESLint issues
-pnpm lint:fast      # Run ESLint without promise checks
-pnpm lint:imports  # Validate import extensions
-pnpm typecheck      # Run TypeScript type checking
+bun check         # Run lint, import validation, and typecheck
+bun lint          # Run ESLint on all files
+bun lint:fix       # Auto-fix ESLint issues
+bun lint:fast      # Run ESLint without promise checks
+bun lint:imports  # Validate import extensions
+bun typecheck      # Run TypeScript type checking
 ```
 
 ## 🧠 AI Prompt System
@@ -498,8 +522,7 @@ https://twistloom-backend.vercel.app/api/user/users/txufiknr
 ## 🚀 Getting Started
 
 ### **Prerequisites**
-- Node.js 20+
-- pnpm package manager
+- Bun 1.3+
 - Neon database account
 - AI provider API keys
 
@@ -510,7 +533,7 @@ git clone <repository-url>
 cd twistloom-backend
 
 # Install dependencies
-pnpm install
+bun install
 
 # Configure environment
 cp .env.example .env.local
@@ -519,14 +542,14 @@ cp .env.example .env.local
 
 ### **Development Setup**
 ```bash
-# Start development server
-pnpm dev
+# Start development server (Bun native, hot reload)
+bun dev
 
 # Run database migrations
-pnpm db:migrate
+bun db:migrate
 
 # Open database studio
-pnpm db:studio
+bun db:studio
 ```
 
 ### **Environment Variables**
@@ -584,25 +607,25 @@ UPSTASH_REDIS_REST_TOKEN=...
 ### **Quality Assurance**
 ```bash
 # Type checking
-pnpm typecheck
+bun typecheck
 
 # Linting
-pnpm lint
+bun lint
 
 # Fast linting (no promise checks)
-pnpm lint:fast
+bun lint:fast
 
 # Import validation
-pnpm lint:imports
+bun lint:imports
 ```
 
 ### **Database Testing**
 ```bash
 # Test connection
-pnpm db:test
+bun db:test
 
 # Run with local environment
-pnpm db:test --env-file=.env.local
+bun db:test --env-file=.env.local
 ```
 
 ## 📚 Documentation
@@ -722,8 +745,8 @@ src/
 │   ├── time.ts              # Time utilities
 │   ├── translation.ts       # Translation utilities
 │   └── uuid.ts              # UUID utilities
-├── app.ts           # Express app configuration
-└── server.ts        # Server entry point
+├── app.ts           # Hono app configuration and Vercel handler
+└── server.bun.ts    # Server entry point (Bun runtime)
 ```
 
 ### **Key Modules**
