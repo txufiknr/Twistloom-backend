@@ -330,124 +330,129 @@ function buildPresetSystemPrompt(type: 'first' | 'next', preset: WritingPreset =
  * schema demonstrating a shape (the injury object's fields), the fuller
  * version was kept and now appears in both templates instead of just one.
  */
-const NEW_CHARACTER_SHAPE = `{
-      "characterId": "<new_character_id>",
-      "knownName": "...",
-      "realName": "...",
-      "recognitionLevel": "${recognitionLevelValues}",
-      "gender": "${genderValues}",
-      "role": "...",
-      "bio": "Brief character description. Include one trait that could become a source of threat or betrayal.",
-      "appearance": "...",
-      "status": "${characterStatusValues}",
-      "secrets": ["Any secrets unknown to MC (max ${MAX_CHARACTER_SECRETS})."],
-      "importance": "${characterImportanceValues}",
-      "relationshipToMC": {
-        "type": "${relationshipTypeValues}",
-        "status": "${relationshipStatusValues}",
-        "context": "${RELATIONSHIP_TO_MC_LENGTH}. Specific dynamic, not generic (e.g. 'Close childhood friend who knows too much.')",
-        "recognitionLevel": "${recognitionLevelValues}"
-      },
-      "pastInteractions": ["..."],
-      "potentialTwist": "${twistTypeValues}",
+function indentLines(text: string, spaces: number): string {
+  const indent = ' '.repeat(spaces);
+  return text.split('\n').join('\n' + indent);
+}
+
+const NEW_CHARACTER_SHAPE = `{\n${indentLines(`\
+  "characterId": "<new_character_id>",
+  "knownName": "...",
+  "realName": "...",
+  "recognitionLevel": "${recognitionLevelValues}",
+  "gender": "${genderValues}",
+  "role": "...",
+  "bio": "Brief character description. Include one trait that could become a source of threat or betrayal.",
+  "appearance": "...",
+  "status": "${characterStatusValues}",
+  "secrets": ["Any secrets unknown to MC (max ${MAX_CHARACTER_SECRETS})."],
+  "importance": "${characterImportanceValues}",
+  "relationshipToMC": {
+    "type": "${relationshipTypeValues}",
+    "status": "${relationshipStatusValues}",
+    "context": "${RELATIONSHIP_TO_MC_LENGTH}. Specific dynamic, not generic (e.g. 'Close childhood friend who knows too much.')",
+    "recognitionLevel": "${recognitionLevelValues}"
+  },
+  "pastInteractions": ["..."],
+  "potentialTwist": "${twistTypeValues}",
+  "traits": [
+    "...: ..."
+  ],
+  "schedules": [
+    {
+      "placeId": "<place_id>",
+      "availabilityWindow": "...",
+      "missedConsequence": "..."
+    }
+  ],
+  "injuries": [
+    {
+      "bodyPart": "...",
+      "description": "...",
+      "consequences": "...",
+      "category": "${injuryCategoryValues}",
+      "severity": <number between 0.0 and 1.0>,
+      "decayPerPage": <number between 0.0 and 1.0>
+    }
+  ]
+}`, 4)}`;
+
+const NEW_PLACE_SHAPE = `{\n${indentLines(`\
+  "placeId": "<new_place_id>",
+  "parentPlaceId": "Optional. <parent_place_id>",
+  "knownName": "...",
+  "realName": "...",
+  "type": "...",
+  "category": "${canonicalPlaceTypeValues}",
+  "context": "...",
+  "familiarity": <number between 0.0 and 1.0>,
+  "isRealNameKnown": <boolean>,
+  "hints": ["..."],
+  "keyEvents": ["..."],
+  "keyObjects": [
+    {
+      "name": "...",
       "traits": [
         "...: ..."
       ],
-      "schedules": [
-        {
-          "placeId": "<place_id>",
-          "availabilityWindow": "...",
-          "missedConsequence": "..."
-        }
-      ],
-      "injuries": [
-        {
-          "bodyPart": "...",
-          "description": "...",
-          "consequences": "...",
-          "category": "${injuryCategoryValues}",
-          "severity": <number between 0.0 and 1.0>,
-          "decayPerPage": <number between 0.0 and 1.0>
-        }
-      ]
-    }`;
+      "amount": <number>,
+      "where": "..."
+    }
+  ],
+  "traits": [
+    "...: ..."
+  ],
+  "knownCharacters": [
+    "<character_id>: <Context or interaction>"
+  ]
+}`, 4)}`;
 
-const NEW_PLACE_SHAPE = `{
-      "placeId": "<new_place_id>",
-      "parentPlaceId": "Optional. <parent_place_id>",
-      "knownName": "...",
-      "realName": "...",
-      "type": "...",
-      "category": "${canonicalPlaceTypeValues}",
-      "context": "...",
-      "familiarity": <number between 0.0 and 1.0>,
-      "isRealNameKnown": <boolean>,
-      "hints": ["..."],
-      "keyEvents": ["..."],
-      "keyObjects": [
-        {
-          "name": "...",
-          "traits": [
-            "...: ..."
-          ],
-          "amount": <number>,
-          "where": "..."
-        }
-      ],
-      "traits": [
-        "...: ..."
-      ],
-      "knownCharacters": [
-        "<character_id>: <Context or interaction>"
-      ]
-    }`;
+const NEW_THREAD_SHAPE = `{\n${indentLines(`\
+  "threadId": "<new_thread_id>",
+  "title": "...",
+  "question": "...",
+  "priority": "${threadPriorityValues}",
+  "truth": "${threadTruthValues}",
+  "importance": <number between 0.0 and 1.0>,
+  "summary": "...",
+  "clues": [
+    { "clue": "...", "isFalse": <boolean> }
+  ]
+}`, 4)}`;
 
-const NEW_THREAD_SHAPE = `{
-      "threadId": "<new_thread_id>",
-      "title": "...",
-      "question": "...",
-      "priority": "${threadPriorityValues}",
-      "truth": "${threadTruthValues}",
-      "importance": <number between 0.0 and 1.0>,
-      "summary": "...",
-      "clues": [
-        { "clue": "...", "isFalse": <boolean> }
-      ]
-    }`;
+const NEW_FUTURE_NOTE_SHAPE = `{\n${indentLines(`\
+  "note": "...",
+  "isMajor": <boolean>,
+  "tag": "${factTypeValues}",
+  "schedule": [
+    { "type": "phase", "phase": "${phaseValues}" },
+    { "type": "page", "range": "<min>-<max>" },
+    { "type": "day", "day": <integer> },
+    { "type": "date", "date": "YYYY-MM-DD" }
+  ],
+  "stateTrigger": [
+    { "type": "stability", "level": "${stabilityLevelValues}" },
+    { "type": "condition", "condition": "${healthConditionValues}" },
+    { "type": "healthPercent", "threshold": <0-100> },
+    { "type": "mobilityPercent", "threshold": <0-100> },
+    { "type": "actionPercent", "threshold": <0-100> },
+    { "type": "mentalPercent", "threshold": <0-100> }
+  ],
+  "relatedThreadId": "<thread_id> or 'none'"
+}`, 4)}`;
 
-const NEW_FUTURE_NOTE_SHAPE = `{
-      "note": "...",
-      "isMajor": <boolean>,
-      "tag": "${factTypeValues}",
-      "schedule": [
-        { "type": "phase", "phase": "${phaseValues}" },
-        { "type": "page", "range": "<min>-<max>" },
-        { "type": "day", "day": <integer> },
-        { "type": "date", "date": "YYYY-MM-DD" }
-      ],
-      "stateTrigger": [
-        { "type": "stability", "level": "${stabilityLevelValues}" },
-        { "type": "condition", "condition": "${healthConditionValues}" },
-        { "type": "healthPercent", "threshold": <0-100> },
-        { "type": "mobilityPercent", "threshold": <0-100> },
-        { "type": "actionPercent", "threshold": <0-100> },
-        { "type": "mentalPercent", "threshold": <0-100> }
-      ],
-      "relatedThreadId": "<thread_id> or 'none'"
-    }`;
-
-const NEW_PLANNED_CHARACTER_SHAPE = `{
-      "characterId": "<unique_id>",
-      "knownName": "...",
-      "realName": "...",
-      "gender": "${genderValues}",
-      "role": "...",
-      "bio": "...",
-      "appearance": "...",
-      "importance": "${characterImportanceValues}",
-      "storyPurpose": "...",
-      "plannedIntro": "..."
-    }`;
+const NEW_PLANNED_CHARACTER_SHAPE = `{\n${indentLines(`\
+  "characterId": "<unique_id>",
+  "knownName": "...",
+  "realName": "...",
+  "gender": "${genderValues}",
+  "role": "...",
+  "bio": "...",
+  "appearance": "...",
+  "importance": "${characterImportanceValues}",
+  "storyPurpose": "...",
+  "plannedIntro": "..."
+}`, 4)}`;
 
 const firstBookOutputFormat: string = `{
   "title": "Book Title",
@@ -825,8 +830,8 @@ const nextPageOutputFormat: string = `{
 
 const multiNextPageOutputFormat: string = `{
   "generatedPages": [
-    ${nextPageOutputFormat.split(`\n`).join(`\n    `)},
-    ${nextPageOutputFormat.split(`\n`).join(`\n    `)}
+    ${indentLines(nextPageOutputFormat, 4)},
+    ${indentLines(nextPageOutputFormat, 4)}
   ],
   "output": "..."
 }`;

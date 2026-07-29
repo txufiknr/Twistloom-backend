@@ -364,7 +364,7 @@ export const CHARACTER_PLAN_PROPERTIES: Record<keyof CharacterPlan, AIJsonProper
   characterId: { type: 'string', description: 'Lowercase slug identifier (e.g., "Lisa Park" → "lisa_p")' },
   knownName: { type: 'string', description: `Preferred alias, known as, nick, or reference based on recognitionLevel. If really unknown, use descriptions, pronouns, roles, or words interpreted by MC.` },
   realName: { type: 'string', description: 'Real full name, even if undisclosed yet.' },
-  role: { type: 'string', description: 'Role or occupation known to the MC.' },
+  role: { type: 'string', description: 'Role or occupation known to the MC (e.g. "schoolmate", "librarian").' },
   gender: { type: 'string', enum: [...genders] },
   bio: { type: 'string', description: "Brief character description in detected language. Include one trait that could become a source of threat or betrayal." },
   appearance: { type: 'string', description: "Visual appearance (e.g., height, skin color, eye color, hair)." },
