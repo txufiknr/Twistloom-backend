@@ -3,6 +3,5 @@
   "bunVersion": "1.x",
   "rewrites": [
     { "source": "/(.*)", "destination": "/src/app.ts" }
-  ],
-  "buildCommand": null
+  ]
 }
