@@ -6,8 +6,7 @@ import fs from "node:fs";
 const start = performance.now();
 
 try {
-  // Use pnpm exec to ensure TypeScript is available in PATH
-  execSync("pnpm exec tsc -p tsconfig.build.json", { 
+  execSync("bunx tsc -p tsconfig.build.json", { 
     stdio: "inherit",
     cwd: process.cwd() // Ensure we run from project root
   });
