@@ -2,6 +2,6 @@
   "version": 2,
   "bunVersion": "1.x",
   "rewrites": [
-    { "source": "/(.*)", "destination": "/src/app.ts" }
+    { "source": "/(.*)", "destination": "/api/index" }
   ]
 }
