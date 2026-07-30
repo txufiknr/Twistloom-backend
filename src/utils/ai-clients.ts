@@ -114,3 +114,23 @@ export function getCloudflareClient(): OpenAI {
   });
   return cloudflareClient;
 }
+
+/**
+ * Pre-warms all AI provider SDKs so the first real request doesn't pay
+ * the cold-start penalty of initialising every client.
+ *
+ * Safe to call at any time — each get*Client() lazy-initialises once
+ * and returns the cached singleton on subsequent calls.
+ *
+ * Called by the /health endpoint (see src/app.ts) which Vercel's
+ * monitor pings every 5 minutes, keeping the function warm.
+ */
+export function warmAIProviders(): void {
+  getGitHubClient();
+  getGeminiClient();
+  getMistralClient();
+  getGroqClient();
+  getCerebrasClient();
+  getOpenRouterClient();
+  getCloudflareClient();
+}

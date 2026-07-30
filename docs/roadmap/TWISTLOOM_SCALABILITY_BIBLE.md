@@ -18,6 +18,25 @@
 
 ---
 
+> **Quick Wins Implementation (July 2026):**
+>
+> | Item | Status | Details |
+> |------|--------|---------|
+> | Auth rate limiting | ✅ Already done | `checkRateLimitByIP` on all sensitive auth routes |
+> | Response compression | ✅ Implemented | `hono/compress` middleware in `src/app.ts` |
+> | `noUncheckedIndexedAccess` | ⏭️ Skipped | Flagged ~50-200 errors; not a quick win |
+> | PR quality CI workflow | ✅ Implemented | `.github/workflows/ci.yml` (typecheck + lint + imports) |
+> | Provider warm-up | ✅ Implemented | `warmAIProviders()` in `/api/health` |
+> | HTTP cache headers | ✅ Implemented | `src/middleware/cache.ts` middleware |
+> | Structured JSON logger | ✅ Implemented | `src/utils/logger.ts` (utility created; migration pending) |
+> | TanStack Query persistence | ✅ Expanded | Added `userProfile`, `readerProgress` keys (frontend) |
+> | Bundle analyzer | ✅ Installed | `@next/bundle-analyzer` configured in `next.config.ts` (frontend) |
+> | Debounce search hook | ✅ Exists | `utils/useDebounce.ts` already present (frontend; confirmed no action needed) |
+>
+> All items are documented below with their updated status markers.
+
+---
+
 ## Layer 1 — Project Architecture
 
 ### 1.1 Feature-first structure ⚠️
@@ -156,11 +175,13 @@ Best candidates:
 **Impact:** Near-instant first paint with dynamic slots streaming in.  
 **Effort:** 📋 Medium — requires `React.use()` at the boundary.
 
-### 2.4 Bundle analysis & tree shaking ⚠️
+### 2.4 Bundle analysis & tree shaking ✅/⚠️
 
 **Current state:** No bundle analyzer configured. The project uses `lucide-react` (tree-shakeable) but has a large `messages/en.json` (2965 lines) loaded per locale.
 
-**Recommendation:** Add `@next/bundle-analyzer` and track:
+**Status:** ✅ `@next/bundle-analyzer` is now installed and configured in `next.config.ts`. Run with `ANALYZE=true pnpm build` to generate interactive bundle reports. Tree-shaking opportunities (key opportunities below) are still actionable.
+
+**Recommendation:** Track:
 ```
 Initial JS bundle: target < 150 KB (currently ~200-250 KB with reader bundle)
 ```
@@ -170,7 +191,7 @@ Key opportunities:
 - **Dynamic import** heavy components: `const Editor = dynamic(() => import('./Editor'))`
 - **Audit** `serwist` (service worker) to ensure it's not inflating the main bundle
 
-**Effort:** 📋 Low — one-time analysis + targeted fixes.
+**Effort:** ✅ Analyzer installed, ⚠️ Tree-shaking still 📋.
 
 ### 2.5 Image optimization ✅
 
@@ -366,7 +387,7 @@ Store consumed keys in Redis with TTL. Return cached response on repeat.
 **Current state:** Both cursor and offset pagination are implemented. `extractPaginationParams()` handles both. `createPaginatedResponse()` formats consistently.  
 **No changes needed** — already best-practice.
 
-### 5.6 Response compression 📋
+### 5.6 Response compression ✅
 
 **Current state:** No gzip/brotli compression on API responses.
 
@@ -377,7 +398,7 @@ app.use('*', compress());
 ```
 
 **Impact:** Reduces response size by 60-80% for JSON payloads (book data, page data). Especially beneficial for the rich narrative text payloads.  
-**Effort:** 📋 Low.  
+**Effort:** ✅ Implemented in `src/app.ts` with `hono/compress` middleware.  
 **Note:** Verify with Vercel — they may already compress at the edge proxy.
 
 ### 5.7 N+1 query prevention ✅
@@ -571,7 +592,7 @@ await db.insert(schema.usage).values(usageRows); // array of rows = single query
 
 **No changes needed.**
 
-### 8.3 Frontend caching ⚠️
+### 8.3 Frontend caching ✅/⚠️
 
 **Current state:** TanStack Query with `staleTime: 60s`, `gcTime: 300s`, localStorage persistence (24h max age) for `books` and `stats` keys.
 
@@ -591,9 +612,9 @@ Extend persisted query keys beyond just `books` and `stats`:
 - `exploreBooks` — browse catalogue offline
 
 **Impact:** Instant loads on return visits, offline support for previously-visited content.  
-**Effort:** 📋 Low.
+**Effort:** ✅ Added `userProfile` and `readerProgress` to persisted query keys. ⚠️ `exploreBooks` still 📋 if needed.
 
-### 8.4 HTTP cache headers 💡
+### 8.4 HTTP cache headers ✅
 
 **Current state:** No explicit `Cache-Control` or `ETag` headers on API responses.
 
@@ -617,7 +638,7 @@ app.get('/api/user/*', async (c) => {
 ```
 
 **Files affected:** Route handlers in `src/routes/*.ts`.  
-**Effort:** 📋 Low — add middleware.
+**Effort:** ✅ Implemented as reusable middleware `src/middleware/cache.ts` registered in `src/app.ts`.
 
 ---
 
@@ -666,7 +687,7 @@ This three-tier strategy is already mature. **No changes needed.**
 
 ## Layer 10 — Observability
 
-### 10.1 Structured logging ⚠️
+### 10.1 Structured logging ✅/⚠️
 
 **Current state:** Console logging uses `console.error()` and `console.log()` with template strings. No structured JSON logging.
 
@@ -681,9 +702,9 @@ const logger = {
 };
 ```
 
-Replace 50+ `console.*` calls across the codebase.  
+**Status:** ✅ `src/utils/logger.ts` utility created with structured JSON output + dev colourised fallback. ⚠️ Migration of existing `console.*` calls (50+) is still 📋 — see Phase 2.  
 **Impact:** Structured logs are searchable in Vercel Logs, parseable by log aggregation tools.  
-**Effort:** 📋 Medium.
+**Effort:** ✅ Utility created, ⚠️ Migration 📋.
 
 ### 10.2 AI provider tracing ✅
 
@@ -791,7 +812,7 @@ Every cron workflow:
 
 **No CI for PR quality checks.** The `bun check` command (`lint` + `lint:imports` + `typecheck`) exists but is not run in CI.
 
-### 12.2 Recommendation — PR quality gates 📋
+### 12.2 Recommendation — PR quality gates ✅
 
 Add a new workflow `.github/workflows/ci.yml`:
 
@@ -814,7 +835,7 @@ jobs:
 ```
 
 **Impact:** Catch type errors, lint issues, and import path errors before deployment.  
-**Effort:** 📋 Low — single workflow file.
+**Effort:** ✅ `.github/workflows/ci.yml` created with typecheck + lint + import validation steps.
 
 ### 12.3 Dependency audit 💡
 
@@ -894,7 +915,7 @@ if (!alreadyGenerating) {
 
 **Effort:** 📋 Medium.
 
-### 13.4 Provider warm-up strategy 💡
+### 13.4 Provider warm-up strategy ✅
 
 **Current state:** Cold starts load all 10 AI provider SDKs. First request pays a 300-800ms penalty.
 
@@ -916,7 +937,7 @@ app.get('/health', async (c) => {
 });
 ```
 
-**Effort:** 📋 Low.
+**Effort:** ✅ Implemented — `warmAIProviders()` called in `/api/health` endpoint (see `src/app.ts` + `src/utils/ai-clients.ts`).
 
 ---
 
@@ -928,17 +949,17 @@ app.get('/health', async (c) => {
 | ⭐⭐⭐⭐⭐ | Request validation with Zod | Extremely High | High | 5 |
 | ⭐⭐⭐⭐⭐ | Rate limiting on auth/AI endpoints | Extremely High | Low | 5, 11 |
 | ⭐⭐⭐⭐⭐ | Circuit breaker for AI providers | Extremely High | Medium | 13 |
-| ⭐⭐⭐⭐ | Response compression (gzip/brotli) | High | Low | 5 |
+| ⭐⭐⭐⭐ | Response compression (gzip/brotli) | ✅ Done | Low | 5 |
 | ⭐⭐⭐⭐ | Materialized views for leaderboards | High | Medium | 7 |
-| ⭐⭐⭐⭐ | Structured logging (JSON) | High | Medium | 10 |
+| ⭐⭐⭐⭐ | Structured logging (JSON) | ✅/⚠️ Utility done | Medium | 10 |
 | ⭐⭐⭐⭐ | Idempotency for mutation endpoints | High | Medium | 5 |
 | ⭐⭐⭐⭐ | Partial Prerendering (PPR) | High | Medium | 2 |
 | ⭐⭐⭐⭐ | AI cost tracking & alerts | High | Low | 13 |
-| ⭐⭐⭐⭐ | PR quality CI workflow | High | Low | 12 |
-| ⭐⭐⭐ | Bundle analysis + tree shaking | Medium | Low | 2 |
+| ⭐⭐⭐⭐ | PR quality CI workflow | ✅ Done | Low | 12 |
+| ⭐⭐⭐ | Bundle analysis + tree shaking | ✅/⚠️ Analyzer done | Low | 2 |
 | ⭐⭐⭐ | Translation namespace splitting | Medium | Medium | 4 |
 | ⭐⭐⭐ | Index audit & partial indexes | Medium | Medium | 7 |
-| ⭐⭐⭐ | Provider warm-up strategy | Medium | Low | 13 |
+| ⭐⭐⭐ | Provider warm-up strategy | ✅ Done | Low | 13 |
 | ⭐⭐⭐ | Request deduplication for AI gen | Medium | Medium | 13 |
 | ⭐⭐ | Distributed tracing (OTEL) | Medium | High | 10 |
 | ⭐⭐ | Feature-first migration | Low | High | 1 |
@@ -949,17 +970,17 @@ app.get('/health', async (c) => {
 ## Implementation Order (Recommended)
 
 ### Phase 1 — Quick Wins (1-2 days)
-1. Add rate limiting to auth routes (`POST /login`, `POST /signup`)
-2. Add response compression middleware
-3. Enable `noUncheckedIndexedAccess` on backend
-4. Add PR quality CI workflow
-5. Implement provider warm-up via `/health` cron
+1. ✅ Add rate limiting to auth routes (`POST /login`, `POST /signup`) — already done (`checkRateLimitByIP`)
+2. ✅ Add response compression middleware — `hono/compress` in `src/app.ts`
+3. ⏭️ Enable `noUncheckedIndexedAccess` on backend — SKIPPED (would flag ~50-200 errors, not quick win)
+4. ✅ Add PR quality CI workflow — `.github/workflows/ci.yml`
+5. ✅ Implement provider warm-up via `/health` cron — `warmAIProviders()` in `/api/health`
 
 ### Phase 2 — Reliability (1 week)
 1. Circuit breaker for AI provider fallback
 2. Idempotency for mutation endpoints
 3. Request deduplication for AI generation
-4. Structured JSON logging
+4. ⚠️ Structured JSON logging — utility created (`src/utils/logger.ts`), migration of 50+ `console.*` calls still pending
 5. Translation namespace splitting
 
 ### Phase 3 — Performance (2 weeks)

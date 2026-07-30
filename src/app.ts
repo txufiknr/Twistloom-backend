@@ -8,15 +8,18 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { csrf } from "hono/csrf";
+import { compress } from "hono/compress";
 import { HTTPException } from "hono/http-exception";
 import { initAuthConfig } from "@hono/auth-js";
 import { parseJsonBody } from "./middleware/body.js";
 import { extractLocale } from "./middleware/locale.js";
+import { cacheControl } from "./middleware/cache.js";
 import { rateLimitByUser } from "./middleware/rate-limit.js";
 import { verifyNextAuthToken } from "./middleware/nextauth.js";
 import routes from "./routes/index.js";
 import { APP_NAME, VERSION } from "./config/constants.js";
 import { IS_PRODUCTION } from "./config/env.js";
+import { warmAIProviders } from "./utils/ai-clients.js";
 import type { AppEnv } from "./hono/env.js";
 
 // Initialize Hono app with shared environment bindings.
@@ -35,6 +38,17 @@ app.use("*", async (c, next) => {
   c.header("X-XSS-Protection", "0");
   await next();
 });
+
+// Response compression (gzip/deflate) for API responses.
+// Compresses JSON payloads (book data, page content) by 60-80%.
+// Vercel Edge may already compress, but this ensures compression
+// for direct function invocations and self-hosted scenarios.
+app.use("*", compress());
+
+// Cache-Control headers for CDN + browser caching.
+// Public catalogue endpoints get multi-minute cache, authenticated
+// responses are private, and mutations/errors skip cache entirely.
+app.use("*", cacheControl);
 
 // Allow multiple origins: production frontend and local development
 const allowedOrigins = new Set([
@@ -135,7 +149,11 @@ app.get("/", (c) => {
 const startedAt = Date.now();
 
 // Health check endpoint
+// Vercel monitor pings this every 5 minutes, keeping the function warm.
+// We take the opportunity to pre-warm AI SDKs so the first real request
+// doesn't pay the cold-start penalty.
 app.get("/health", (c) => {
+  warmAIProviders();
   return c.json({ ok: true, uptime: (Date.now() - startedAt) / 1000 });
 });
 
