@@ -549,7 +549,7 @@ export function convertToGeminiSchema(
   };
 
   const appendDescription = (existing: string | undefined, extra: string): string => {
-    return existing ? `${existing} ${extra}` : extra;
+    return existing ? `${existing.replace(/\.$/, '')}. ${extra}` : extra;
   };
 
   /** Recursive worker — reuses the helpers above instead of re-deriving them at every node. */

@@ -485,8 +485,8 @@ const firstBookOutputFormat: string = `{
       }
     ],
     "momentum": "${momentumValues}",
-    "keyEvents": [],
-    "keyObjects": [],
+    "keyEvents": ["..."],
+    "keyObjects": ["..."],
     "actions": [
       {
         "text": "First-person action or dialogue",
@@ -3798,7 +3798,7 @@ export async function initializeBook(
   try {
     // ── 1. Signal initialisation start ───────────────────────────────────────
     await onProgress?.({ type: 'book_initialization_start' });
-    await onGenerationProgress('book_initialization');
+    await onGenerationProgress('book_initialization'); // TODO: redundant book_initialization (processBookGeneration)
 
     // ── 2. Build and execute AI prompt for full book creation ─────────────────
     let prompt = buildBookCreationPrompt(params);

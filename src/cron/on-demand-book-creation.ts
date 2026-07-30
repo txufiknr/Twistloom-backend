@@ -183,7 +183,7 @@ async function processBookGeneration(bookId: string): Promise<void> {
     console.log('[book-creation] ✒️ Writing the book...', params);
 
     // Fire-and-forget intermediate progress update (debounced, non-critical)
-    void updateBookGenerationStatus({ bookId, step: 'book_initialization' });
+    void updateBookGenerationStatus({ bookId, step: 'book_initialization' }); // TODO: redundant book_initialization (initializeBook)
 
     // Initialize book (this is the long-running AI generation)
     // Pass bookId to update existing draft instead of creating duplicate
