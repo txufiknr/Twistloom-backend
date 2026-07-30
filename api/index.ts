@@ -29,47 +29,59 @@ export default async function vercelHandler(
   req: Request | IncomingMessage,
   maybeRes?: ServerResponse,
 ): Promise<Response | void> {
-  // Fast path — Fluid Compute passes a standard Web API Request
-  if (req instanceof Request) {
-    return app.fetch(req);
-  }
-
-  // ------------------------------------------------------------------
-  // Legacy Node.js Serverless path — convert IncomingMessage → Request
-  // ------------------------------------------------------------------
   try {
-    const protocol =
-      (req.headers["x-forwarded-proto"] as string) ||
-      ((req.socket as { encrypted?: boolean } | undefined)?.encrypted ? "https" : "http");
-    const host =
-      (req.headers["x-forwarded-host"] as string) ||
-      (req.headers["host"] as string) ||
-      "localhost";
-    const url = `${protocol}://${host}${req.url ?? "/"}`;
+    // ------------------------------------------------------------------
+    // Normalise any incoming request into a spec-compliant Request so
+    // Hono (including its middleware such as CORS) can always rely on
+    // raw.headers.get() being present.  Vercel's Fluid Compute Request
+    // can have headers as a plain object rather than the Web API Headers.
+    // ------------------------------------------------------------------
+    const isIncomingMessage =
+      typeof (req as IncomingMessage).rawHeaders !== "undefined";
 
-    const chunks: Buffer[] = [];
-    for await (const chunk of req) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    let honoRequest: Request;
+
+    if (isIncomingMessage) {
+      // Legacy Node.js Serverless path — IncomingMessage → Request
+      const incoming = req as IncomingMessage;
+      const protocol =
+        (incoming.headers["x-forwarded-proto"] as string) ||
+        ((incoming.socket as { encrypted?: boolean } | undefined)?.encrypted ? "https" : "http");
+      const host =
+        (incoming.headers["x-forwarded-host"] as string) ||
+        (incoming.headers["host"] as string) ||
+        "localhost";
+      const url = `${protocol}://${host}${incoming.url ?? "/"}`;
+
+      const chunks: Buffer[] = [];
+      for await (const chunk of incoming) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      const body =
+        incoming.method !== "GET" && incoming.method !== "HEAD" && chunks.length > 0
+          ? Buffer.concat(chunks)
+          : null;
+
+      const headers: Record<string, string> = {};
+      const rawHeaders = incoming.rawHeaders;
+      for (let i = 0; i < rawHeaders.length; i += 2) {
+        const key = rawHeaders[i];
+        if (key.charCodeAt(0) !== 58) headers[key] = rawHeaders[i + 1];
+      }
+
+      honoRequest = new Request(url, { method: incoming.method, headers, body });
+    } else {
+      // Fluid Compute path — rebuild from the existing Request to
+      // guarantee spec-compliant Headers
+      const webReq = req as unknown as Request;
+      honoRequest = new Request(webReq.url, {
+        method: webReq.method,
+        headers: webReq.headers,
+        body: webReq.body,
+      });
     }
-    const bodyBuffer =
-      req.method !== "GET" && req.method !== "HEAD" && chunks.length > 0
-        ? Buffer.concat(chunks)
-        : null;
 
-    const headers: Record<string, string> = {};
-    const rawHeaders = req.rawHeaders;
-    for (let i = 0; i < rawHeaders.length; i += 2) {
-      const key = rawHeaders[i];
-      if (key.charCodeAt(0) !== 58) headers[key] = rawHeaders[i + 1];
-    }
-
-    const response = await app.fetch(
-      new Request(url, {
-        method: req.method,
-        headers,
-        body: bodyBuffer,
-      }),
-    );
+    const response = await app.fetch(honoRequest);
 
     if (maybeRes && typeof maybeRes.statusCode === "number") {
       maybeRes.statusCode = response.status;
