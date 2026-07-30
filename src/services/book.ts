@@ -17,6 +17,7 @@ import type { ImageKitUploadResponse } from "../types/image.js";
 import { and, eq, asc, or, desc, ne, sql, isNull, lt } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
 import { sanitizeActionsForMode } from "../utils/book-mode.js";
+import { validateGeneratedPage } from "../utils/page-validation.js";
 import { MAX_GENERATION_DURATION_MS } from "../config/book-creation.js";
 import { isPublicActiveBook, notifyForumBranchAdded } from "./forum-queue.js";
 import { getEnrichedBookSelect } from "./book-controller.js";
@@ -513,6 +514,10 @@ export async function persistPageWithState(params: {
   // Throws loudly if the AI produced a page that breaks its book's mode,
   // rather than silently persisting an invalid story graph.
   generatedStoryPage.actions = sanitizeActionsForMode(mode, generatedStoryPage.actions);
+
+  // Double-defense: revalidate the page before persisting (text length, JSON
+  // leaks, actions). Throw here rather than silently inserting bad data.
+  validateGeneratedPage(generatedStoryPage, mode, 'persistPageWithState');
 
   const { momentum: calculatedMomentum } = calculateStoryMomentum({
     state: newState,

@@ -5,7 +5,7 @@ import { actionTypes, archetypes, stabilityLevels, manipulationAffinities, truth
 import type { StoryState, Action, PsychologicalFlags, PsychologicalProfile, HiddenState, PersistedStoryPage, ActionHintType, AIActionConfig, StabilityLevel } from "../types/story.js";
 import { moodValues, weatherValues, sceneTypeValues, sceneRoleValues, momentumValues, actionTypeValues, hintTypeValues, memoryIntegrityValues, difficultyValues, plotFlagTypeValues, injuryCategoryValues, threadPriorityValues, threadTruthValues, threadStatusValues, endingTypeValues, factTypeValues, phaseValues, stabilityLevelValues, healthConditionValues, canonicalPlaceTypeValues, accessibilityValues, recognitionLevelValues, genderValues, characterStatusValues, characterImportanceValues, relationshipTypeValues, relationshipStatusValues, twistTypeValues, psychologicalFlagTypeValues, flagLevelValues } from "../config/enums.js";
 import { createNonRetryableError } from "./retry.js";
-import { TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS, MAX_THREADS_CLUES, MAX_ACTION_CHOICES_FINALE, FUTURE_NOTE_LOOKAHEAD_DAYS } from "../config/story.js";
+import { TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS, MAX_THREADS_CLUES, MAX_ACTION_CHOICES_FINALE, FUTURE_NOTE_LOOKAHEAD_DAYS } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
 import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, applyStateDelta, advanceStoryState, calculatePsychologicalDeltas, mapFutureNoteWithKey, createStoryThread } from "./story.js";
@@ -15,6 +15,7 @@ import { getPreviousPages } from "../services/story.js";
 import { BOOK_MAX_PAGES, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/story.js";
 import { getErrorMessage } from "./error.js";
 import { validatePageActionsForMode } from "./book-mode.js";
+import { validateGeneratedPage, checkGeneratedPage } from "./page-validation.js";
 import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, insertBook, insertStoryPage, mapBookFromDb, getPageFromDB, getBookFromDB, persistPageWithState, mapToPersistedStoryPage, updateBook, invalidatePopularTagsCache } from "../services/book.js";
 import { runCanonValidationPass, insertCanonValidationAudit } from "../services/canon-validation.js";
 import { dbWrite, dbRead } from "../db/client.js";
@@ -3865,10 +3866,8 @@ export async function initializeBook(
       aiFinalComment,
     } = response.result;
 
-    // Validate first page text length
-    if (generatedFirstPage.text.length < MIN_CHARS_PER_PAGE) {
-      throw new Error('Failed to generate book: first page text is too short');
-    }
+    // Validate first page (text length, JSON leaks, actions)
+    validateGeneratedPage(generatedFirstPage, mode, 'initializeBook:firstPage');
 
     // ── Novel-mode first-page contract ───────────────────────────────────────
     // Novel mode is a single linear path: the opening page must present exactly
@@ -4556,9 +4555,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
     throw new Error('Failed to generate page: no result');
   }
 
-  if (response.result.text.length < MIN_CHARS_PER_PAGE) {
-    throw new Error(`Failed to generate page: text too short (${response.result.text.length} < ${MIN_CHARS_PER_PAGE} chars)`);
-  }
+  validateGeneratedPage(response.result, book.mode, 'generateNextPage');
 
   // 5. Canon/consistency validation (roadmap 1.1) — after eval, before delta/persist
   let generatedStoryPage: StoryGeneration = {
@@ -4722,10 +4719,9 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
     const isFirstAlternative = index === 0;
     const fateLogContext = `${context}:fate-${index + 1}`;
 
-    // Skip undersized alternatives; outer retry covers full-batch failure when none remain
-    if (generatedStoryPageResult.text.length < MIN_CHARS_PER_PAGE) {
-      lastError = new Error(`Alternative fate ${index + 1} text too short (${generatedStoryPageResult.text.length} < ${MIN_CHARS_PER_PAGE} chars)`);
-      console.warn(`[${fateLogContext}] ⚠️ Skipping: text too short (${generatedStoryPageResult.text.length} < ${MIN_CHARS_PER_PAGE} chars)`);
+    // Skip invalid alternatives; outer retry covers full-batch failure when none remain
+    if (!checkGeneratedPage(generatedStoryPageResult, undefined, fateLogContext)) {
+      lastError = new Error(`Alternative fate ${index + 1} failed validation`);
       continue;
     }
 
