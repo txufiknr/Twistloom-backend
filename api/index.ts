@@ -34,6 +34,21 @@ import { app } from "../src/app.js";
 
 /**
  * Tells Vercel to use the Node.js runtime (not Edge / Deno / Bun).
+ *
+ * **Why not the Bun runtime?**  Vercel's Bun runtime was attempted during
+ * the Bun migration (Phase 3 — see `docs/roadmap/done/BUN_MIGRATION_ROADMAP.md`
+ * and the "Vercel deployment" section of `README.md`). It failed with ESM
+ * module linking errors (`Requested module is not instantiated yet`) due to
+ * the project's complex dependency graph. The `hono/vercel` adapter also
+ * didn't work because its `handle()` doesn't convert `IncomingMessage` →
+ * `Request` on the Node.js runtime.
+ *
+ * The final architecture is **hybrid**:
+ *   - **Local dev** uses Bun (`src/server.bun.ts`) — fast dev server,
+ *     native TypeScript, `bun --watch`.
+ *   - **Production** uses Node.js via this custom adapter — the same
+ *     battle-tested pattern from the pre-migration codebase.
+ *
  * The `vercel.json` rewrite directs all paths to this handler.
  */
 export const config = { runtime: "nodejs" };
