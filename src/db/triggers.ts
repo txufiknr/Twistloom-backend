@@ -1254,10 +1254,88 @@ export async function ensureTriggers(): Promise<void> {
     // Update user's profile image when they upload an image with type 'user'
     await ensureUploadedUserImageTrigger();
 
+    // Create trigger to clean up orphaned destinationPageIds when a page is deleted
+    await ensureDestinationPageIdsCleanupTrigger();
+
     const mode = process.env['NODE_ENV'] || "development";
     console.log(`✅ All triggers created successfully in ${mode} mode!`);
   } catch (error) {
     console.error("❌ Failed to create triggers:", getErrorMessage(error));
+    throw error;
+  }
+}
+
+/**
+ * Creates trigger to clean up orphaned destinationPageIds when a page is deleted
+ * 
+ * This trigger fires AFTER DELETE on pages table:
+ * 1. Removes the deleted page's ID from all actions' destinationPageIds arrays
+ *    (JSONB) in the remaining pages of the same book
+ * 2. Removes the deleted page's ID from all action_progress.destination_page_ids
+ *    text arrays that reference it
+ * 
+ * Without this trigger, deleting a page would leave stale page ID references
+ * in other pages' action data and in action_progress tracking rows, which
+ * could cause issues in candidate polling and progress tracking logic.
+ * 
+ * Idempotency:
+ * - Uses CREATE OR REPLACE FUNCTION
+ * - Safe to run multiple times without errors
+ */
+async function ensureDestinationPageIdsCleanupTrigger(): Promise<void> {
+  try {
+    // Create the trigger function
+    await dbWrite.execute(`
+      CREATE OR REPLACE FUNCTION cleanup_destination_page_ids_on_delete()
+      RETURNS TRIGGER AS $$
+      BEGIN
+        -- 1. Remove OLD.id from every action's destinationPageIds in remaining pages of the same book
+        UPDATE pages
+        SET actions = (
+          SELECT COALESCE(jsonb_agg(
+            CASE
+              WHEN action ? 'destinationPageIds' THEN
+                jsonb_set(action, '{destinationPageIds}',
+                  (SELECT COALESCE(jsonb_agg(elem), '[]'::jsonb)
+                   FROM jsonb_array_elements(action->'destinationPageIds') elem
+                   WHERE elem <> to_jsonb(OLD.id::text))
+                )
+              ELSE action
+            END
+          ), '[]'::jsonb)
+          FROM jsonb_array_elements(pages.actions) AS action
+        )
+        WHERE book_id = OLD.book_id
+          AND id != OLD.id
+          AND jsonb_path_exists(actions, '$[*].destinationPageIds ? (@ == $id)',
+            jsonb_build_object('id', OLD.id));
+
+        -- 2. Remove OLD.id from action_progress.destination_page_ids text arrays
+        UPDATE action_progress
+        SET destination_page_ids = array_remove(destination_page_ids, OLD.id::text)
+        WHERE OLD.id = ANY(destination_page_ids);
+
+        RETURN OLD;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+
+    // Drop existing trigger if it exists
+    await dbWrite.execute(`
+      DROP TRIGGER IF EXISTS pages_destination_cleanup_trigger ON pages;
+    `);
+
+    // Create the trigger
+    await dbWrite.execute(`
+      CREATE TRIGGER pages_destination_cleanup_trigger
+        AFTER DELETE ON pages
+        FOR EACH ROW
+        EXECUTE FUNCTION cleanup_destination_page_ids_on_delete();
+    `);
+
+    console.log("✅ Destination page IDs cleanup trigger created successfully!");
+  } catch (error) {
+    console.error("❌ Failed to create destination page IDs cleanup trigger:", getErrorMessage(error));
     throw error;
   }
 }
