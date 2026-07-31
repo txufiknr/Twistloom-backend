@@ -4900,9 +4900,14 @@ Do not explain, summarize, or mention this review process.` : '';
  * @returns Object containing systemPrompt and userPrompt for book creation
  */
 function getBookCreationPrompts(headerLanguage?: string | null): { systemPrompt: string; userPrompt: string } {
+  const lang = formatLanguage(headerLanguage || 'en');
   const systemPrompt = `You are a creative writing assistant specializing in generating engaging story concept for interactive thriller, mystery, horror, and psychological fiction novels.
 
 TASK: Generate a compelling story concept that another AI will use as the foundation for generating an entire branching novel (max ${MAX_THEME_LENGTH_PROMPT} characters).
+
+LANGUAGE:
+- The entire output MUST be written in the target language: ${lang}.
+- All story content, character details, and labels must be in ${lang}.
 
 The story concept should naturally provide enough information to infer:
 - The core premise and central conflict (required)
@@ -4944,8 +4949,7 @@ OUTPUT FORMAT:
 - Output plain text only. Do not use Markdown formatting.
 - The overall output must not exceed ${MAX_THEME_LENGTH_PROMPT} characters.`;
 
-  const lang = formatLanguage(headerLanguage || 'en');
-  const userPrompt = `Generate a creative and engaging story prompt for a thriller/horror interactive fiction novel. Be specific and intriguing. Write the prompt in the target language: ${lang}.`;
+  const userPrompt = `Generate a creative and engaging story prompt for a thriller/horror interactive fiction novel. Be specific and intriguing. Write the entire prompt in the target language: ${lang}.`;
 
   return { systemPrompt, userPrompt };
 }

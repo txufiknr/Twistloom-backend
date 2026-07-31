@@ -64,6 +64,7 @@ export async function getUserViewedPromptIds(userId: string): Promise<string[]> 
  * Fallback when no fresh prompts are available.
  * 
  * @param userId - User ID to find LRV prompt for
+ * @param language - Optional language code to filter by (default: any language)
  * @returns Promise resolving to the prompt or null
  * 
  * @example
@@ -74,7 +75,13 @@ export async function getUserViewedPromptIds(userId: string): Promise<string[]> 
  * }
  * ```
  */
-export async function getLeastRecentlyViewedPrompt(userId: string): Promise<typeof storyPrompts.$inferSelect | null> {
+export async function getLeastRecentlyViewedPrompt(userId: string, language?: string | null): Promise<typeof storyPrompts.$inferSelect | null> {
+  const whereClauses = [
+    eq(storyPrompts.isActive, true),
+    eq(userPromptHistory.userId, userId),
+  ];
+  if (language) whereClauses.push(eq(storyPrompts.language, language));
+
   const result = await dbRead
     .select()
     .from(storyPrompts)
@@ -82,12 +89,7 @@ export async function getLeastRecentlyViewedPrompt(userId: string): Promise<type
       userPromptHistory,
       eq(storyPrompts.id, userPromptHistory.promptId)
     )
-    .where(
-      and(
-        eq(storyPrompts.isActive, true),
-        eq(userPromptHistory.userId, userId)
-      )
-    )
+    .where(and(...whereClauses))
     .orderBy(userPromptHistory.viewedAt)
     .limit(1);
   
@@ -130,8 +132,9 @@ export async function getFreshPromptForUser(userId: string, language?: string | 
     return freshPrompt;
   }
   
-  // Fallback to least recently viewed
-  return getLeastRecentlyViewedPrompt(userId);
+  // Fallback to least recently viewed (restricted to the same language so the
+  // served theme always matches the Accept-Language header)
+  return getLeastRecentlyViewedPrompt(userId, language);
 }
 
 /**
