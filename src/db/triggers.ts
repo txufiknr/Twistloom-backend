@@ -1311,9 +1311,15 @@ async function ensureDestinationPageIdsCleanupTrigger(): Promise<void> {
             jsonb_build_object('id', OLD.id));
 
         -- 2. Remove OLD.id from action_progress.destination_page_ids text arrays
-        UPDATE action_progress
-        SET destination_page_ids = array_remove(destination_page_ids, OLD.id::text)
-        WHERE OLD.id = ANY(destination_page_ids);
+        --    NOTE: destination_page_ids is text[], so OLD.id must be cast to text
+        --    before the = ANY() comparison (uuid = ANY(text[]) has no operator)
+        --    NOTE: skip rows whose page was already cascade-deleted during this
+        --    book delete; the FK (action_progress_page_id_pages_id_fk) fires on
+        --    UPDATE and would otherwise raise a foreign-key violation
+        UPDATE action_progress ap
+        SET destination_page_ids = array_remove(ap.destination_page_ids, OLD.id::text)
+        WHERE OLD.id::text = ANY(ap.destination_page_ids)
+          AND EXISTS (SELECT 1 FROM pages p WHERE p.id = ap.page_id);
 
         RETURN OLD;
       END;
