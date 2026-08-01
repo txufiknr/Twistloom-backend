@@ -520,6 +520,61 @@ async function ensureBookCommentsCountTrigger(): Promise<void> {
 }
 
 /**
+ * Creates trigger to update book testimonials count when testimonials are inserted or deleted
+ * 
+ * This trigger fires AFTER INSERT OR DELETE on book_testimonials table:
+ * 1. When a testimonial is added or removed
+ * 2. Updates testimonials_count to match count of testimonials for the book
+ * 3. Ensures denormalized count stays synchronized
+ * 
+ * Note: Counts all testimonials (regardless of status), mirroring the
+ * `comments_count` trigger semantics.
+ * 
+ * Idempotency:
+ * - Uses CREATE OR REPLACE FUNCTION
+ * - Safe to run multiple times without errors
+ */
+async function ensureBookTestimonialsCountTrigger(): Promise<void> {
+  try {
+    // Create the trigger function
+    await dbWrite.execute(`
+      CREATE OR REPLACE FUNCTION update_book_testimonials_count()
+      RETURNS TRIGGER AS $$
+      BEGIN
+        UPDATE books
+        SET testimonials_count = (
+          SELECT COUNT(*)
+          FROM book_testimonials
+          WHERE book_id = COALESCE(NEW.book_id, OLD.book_id)
+        ),
+            updated_at = NOW()
+        WHERE id = COALESCE(NEW.book_id, OLD.book_id);
+        RETURN COALESCE(NEW, OLD);
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    
+    // Drop existing trigger if it exists
+    await dbWrite.execute(`
+      DROP TRIGGER IF EXISTS book_testimonials_count_trigger ON book_testimonials;
+    `);
+    
+    // Create the trigger
+    await dbWrite.execute(`
+      CREATE TRIGGER book_testimonials_count_trigger
+        AFTER INSERT OR DELETE ON book_testimonials
+        FOR EACH ROW
+        EXECUTE FUNCTION update_book_testimonials_count();
+    `);
+    
+    console.log("✅ Book testimonials count trigger created successfully!");
+  } catch (error) {
+    console.error("❌ Failed to create book testimonials count trigger:", getErrorMessage(error));
+    throw error;
+  }
+}
+
+/**
  * Creates trigger to update book complete count when users complete books
  * 
  * This trigger fires AFTER INSERT on user_completed_books table:
@@ -1243,6 +1298,7 @@ export async function ensureTriggers(): Promise<void> {
     await ensureBookBranchesDecrementTrigger();
     await ensurePageVisitCountIncrementTrigger();
     await ensureBookCommentsCountTrigger();
+    await ensureBookTestimonialsCountTrigger();
     await ensureBookCompleteCountTrigger();
 
     // Create user_counters synchronization triggers

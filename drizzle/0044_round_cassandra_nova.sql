@@ -1,0 +1,1 @@
+ALTER TABLE "books" ADD COLUMN "testimonials_count" integer DEFAULT 0 NOT NULL;

@@ -114,6 +114,8 @@ export interface BookStats {
   readCount: number;
   completeCount: number;
   commentsCount: number;
+  /** Total testimonials (maintained by database triggers) */
+  testimonialsCount: number;
   /** Completion rate: completed/started percentage (maintained by database triggers) */
   completionRate: number | null;
   /** Total unique branches (maintained by database triggers) */

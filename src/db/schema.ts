@@ -439,6 +439,7 @@ export const books = pgTable(
     readCount: integer("read_count").notNull().default(0), // Total reads/sessions for this book
     branchesCount: integer("branches_count").notNull().default(0), // Total unique branches (maintained by trigger)
     commentsCount: integer("comments_count").notNull().default(0), // Total parent comments (maintained by trigger)
+    testimonialsCount: integer("testimonials_count").notNull().default(0), // Total testimonials (maintained by trigger)
     completeCount: integer("complete_count").notNull().default(0), // Total unique users who completed the book (maintained by trigger)
     completionRate: real("completion_rate"), // Completed/started percentage (maintained by trigger)
     topPick: timestamp("top_pick", { withTimezone: true }), // Editor's pick

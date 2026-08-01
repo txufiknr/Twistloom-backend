@@ -117,6 +117,7 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
       likesCount: books.likesCount,
       readCount: books.readCount,
       commentsCount: books.commentsCount,
+      testimonialsCount: books.testimonialsCount,
       branchesCount: books.branchesCount,
       completeCount: books.completeCount,
       completionRate: books.completionRate,
