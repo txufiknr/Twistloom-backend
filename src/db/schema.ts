@@ -434,12 +434,14 @@ export const books = pgTable(
     mode: text("mode").$type<BookMode>().notNull().default('interactive'), // Book creation mode (story format)
     status: text("status").$type<BookStatus>().notNull().default('draft'),
     visibility: text("visibility").$type<BookVisibility>().notNull().default('private'),
-    mc: jsonb("mc").$type<StoryMC>().notNull(), // Main character profile with name, age, gender
+    mc: jsonb("mc").$type<StoryMC>().notNull(), // Main character profile with name, age, gender, bio, and image
     likesCount: integer("likes_count").notNull().default(0), // Total likes for this book
     readCount: integer("read_count").notNull().default(0), // Total reads/sessions for this book
     branchesCount: integer("branches_count").notNull().default(0), // Total unique branches (maintained by trigger)
     commentsCount: integer("comments_count").notNull().default(0), // Total parent comments (maintained by trigger)
     testimonialsCount: integer("testimonials_count").notNull().default(0), // Total testimonials (maintained by trigger)
+    rating: real("rating"), // Average rating (1-5 scale, 1 decimal) of approved testimonials (maintained by trigger)
+    ratingCount: integer("rating_count"), // Count of approved testimonials carrying a rating (maintained by trigger)
     completeCount: integer("complete_count").notNull().default(0), // Total unique users who completed the book (maintained by trigger)
     completionRate: real("completion_rate"), // Completed/started percentage (maintained by trigger)
     topPick: timestamp("top_pick", { withTimezone: true }), // Editor's pick
@@ -458,6 +460,10 @@ export const books = pgTable(
     index("books_created_at_idx").on(t.createdAt.desc()),
     // Optimize top-picks sorting
     index("books_top_pick_idx").on(t.topPick.desc()).where(sql`${t.topPick} IS NOT NULL`),
+    // Optimize rating threshold filtering (rating >= X / rating <= X) and future "top-rated"
+    // sorting. Partial: only rated books qualify for any rating filter, and the predicate is
+    // implied by every rating filter condition so Postgres can always use this index.
+    index("books_rating_idx").on(t.rating.desc()).where(sql`${t.rating} IS NOT NULL`),
     // Optimize originals sorting (filter by isOriginal, sort by createdAt)
     index("books_is_original_idx").on(t.isOriginal, t.createdAt.desc()),
     // Optimize time-window queries

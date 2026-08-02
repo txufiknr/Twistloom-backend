@@ -263,6 +263,137 @@ export function validateGender(gender: string | undefined): { isValid: boolean; 
 }
 
 /**
+ * Validates the rating filter parameter for explore queries.
+ *
+ * The filter uses a **minimum-threshold** model (Amazon-style "X★ & up" buckets),
+ * not exact per-star matching — our rating is a 1-decimal real (4.0, 4.1 … 4.9),
+ * so exact buckets would be undefined and fragment the catalog. A threshold is
+ * also how Google-scale platforms (Amazon, Letterboxd, Yelp) filter by rating.
+ *
+ * Accepted formats (values on the 1–5 scale, optional single decimal):
+ * - `"4"`     → minimum 4 stars (the "4★ & up" bucket)
+ * - `"3.5"`   → minimum 3.5 stars
+ * - `"4-5"`   → between 4 and 5 stars
+ * - `"0-3"`   → maximum 3 stars (the "below 3 stars" bucket; min 0 is a no-op)
+ * - `"-3"`    → maximum 3 stars (explicit max-only form)
+ *
+ * @param rating - Rating filter string from the query param
+ * @returns Validation result with minRating/maxRating or error
+ *
+ * @example
+ * ```typescript
+ * const result = validateRatingFilter("4");
+ * // { isValid: true, minRating: 4 }
+ *
+ * const result = validateRatingFilter("4-5");
+ * // { isValid: true, minRating: 4, maxRating: 5 }
+ *
+ * const result = validateRatingFilter("-3");
+ * // { isValid: true, maxRating: 3 }
+ *
+ * const invalid = validateRatingFilter("6");
+ * // { isValid: false, error: "Invalid rating filter. Minimum rating must be between 1 and 5" }
+ * ```
+ */
+export function validateRatingFilter(rating: string | undefined): { isValid: boolean; minRating?: number; maxRating?: number; error?: string } {
+  if (!rating) return { isValid: true };
+
+  const trimmed = rating.trim();
+
+  // Max-only: "-3" → rating <= 3 (explicit "below X" form)
+  if (trimmed.startsWith('-')) {
+    const maxRating = parseFloat(trimmed.slice(1));
+    if (isNaN(maxRating) || maxRating < 1 || maxRating > 5) {
+      return {
+        isValid: false,
+        error: 'Invalid rating filter. Maximum rating must be between 1 and 5'
+      };
+    }
+    return { isValid: true, maxRating };
+  }
+
+  const parts = trimmed.split('-');
+
+  // Min-only: "4" or "3.5" → rating >= X (the "X★ & up" bucket)
+  if (parts.length === 1) {
+    const minRating = parseFloat(parts[0]);
+    if (isNaN(minRating) || minRating < 1 || minRating > 5) {
+      return {
+        isValid: false,
+        error: 'Invalid rating filter. Minimum rating must be between 1 and 5'
+      };
+    }
+    return { isValid: true, minRating };
+  }
+
+  // Range: "4-5" or "0-3" → rating BETWEEN min AND max
+  if (parts.length === 2) {
+    const minRating = parseFloat(parts[0]);
+    const maxRating = parseFloat(parts[1]);
+    if (
+      isNaN(minRating) || isNaN(maxRating) ||
+      minRating < 0 || minRating > 5 ||
+      maxRating < 1 || maxRating > 5
+    ) {
+      return {
+        isValid: false,
+        error: 'Invalid rating filter. Values must be between 0 and 5'
+      };
+    }
+    if (minRating > maxRating) {
+      return {
+        isValid: false,
+        error: 'Invalid rating filter. Minimum rating cannot be greater than maximum rating'
+      };
+    }
+    return {
+      isValid: true,
+      // min 0 means "everything at the low end" → treat as max-only ("below X")
+      ...(minRating > 0 ? { minRating } : {}),
+      maxRating,
+    };
+  }
+
+  return {
+    isValid: false,
+    error: 'Invalid rating filter format. Use e.g. rating=4, rating=4-5, or rating=-3'
+  };
+}
+
+/**
+ * Validates the minimum rating count filter parameter for explore queries.
+ *
+ * Gates results on how many approved testimonials carry a rating, e.g.
+ * `minRatingCount=5` with `rating=4` means "4★ & up by at least 5 people".
+ * This prevents a lone 5-star vote from dominating the "4★ & up" bucket.
+ *
+ * @param minRatingCount - Minimum rating count string from the query param
+ * @returns Validation result with minRatingCount or error
+ *
+ * @example
+ * ```typescript
+ * const result = validateRatingCountFilter("5");
+ * // { isValid: true, minRatingCount: 5 }
+ *
+ * const invalid = validateRatingCountFilter("0");
+ * // { isValid: false, error: "Invalid minimum rating count. Must be a positive integer" }
+ * ```
+ */
+export function validateRatingCountFilter(minRatingCount: string | undefined): { isValid: boolean; minRatingCount?: number; error?: string } {
+  if (!minRatingCount) return { isValid: true };
+
+  const count = parseInt(minRatingCount, 10);
+  if (isNaN(count) || count < 1 || !/^\d+$/.test(minRatingCount.trim())) {
+    return {
+      isValid: false,
+      error: 'Invalid minimum rating count. Must be a positive integer'
+    };
+  }
+
+  return { isValid: true, minRatingCount: count };
+}
+
+/**
  * Calculates Jaccard similarity between two strings
  * Jaccard similarity = |intersection| / |union|
  * 

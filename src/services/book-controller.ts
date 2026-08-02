@@ -19,7 +19,7 @@
  * - Avoids N+1 query problem
  */
 
-import { sql, and, eq, desc, arrayOverlaps } from "drizzle-orm";
+import { sql, and, eq, desc, arrayOverlaps, isNotNull } from "drizzle-orm";
 import type { Context } from "hono";
 import { books, users } from '../db/schema.js';
 import { applySorting } from '../utils/pagination.js';
@@ -118,6 +118,8 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
       readCount: books.readCount,
       commentsCount: books.commentsCount,
       testimonialsCount: books.testimonialsCount,
+      rating: books.rating,
+      ratingCount: books.ratingCount,
       branchesCount: books.branchesCount,
       completeCount: books.completeCount,
       completionRate: books.completionRate,
@@ -432,6 +434,50 @@ export function buildModeFilterCondition(mode?: BookMode) {
 }
 
 /**
+ * Builds rating filter condition (minimum/maximum threshold + optional rating count gate).
+ *
+ * Uses the denormalized `books.rating` / `books.ratingCount` columns (O(1) reads),
+ * accelerated by the partial `books_rating_idx` index when rating is non-null.
+ *
+ * Semantics:
+ * - `rating = NULL` means "not yet rated" → **always excluded** from rating
+ *   filters. The explicit `isNotNull` guard also makes the partial-index
+ *   predicate unambiguous to the query planner.
+ * - `minRating` "4" means `rating >= 4` (the "4★ & up" bucket).
+ * - `maxRating` "3" means `rating <= 3` (the "below 3" bucket).
+ * - `minRatingCount` gates on the number of approved ratings (e.g. "4★ & up by
+ *   at least 5 people") so a lone 5-star vote can't dominate a bucket.
+ *
+ * @param minRating - Minimum rating (inclusive), 1-5
+ * @param maxRating - Maximum rating (inclusive), 1-5
+ * @param minRatingCount - Minimum number of approved ratings (inclusive)
+ * @returns SQL condition or null if no rating filter
+ */
+export function buildRatingFilterCondition(minRating?: number, maxRating?: number, minRatingCount?: number) {
+  if (minRating === undefined && maxRating === undefined && minRatingCount === undefined) {
+    return null;
+  }
+
+  const conditions: ReturnType<typeof sql>[] = [];
+
+  // A rating filter implies "has a rating" — NULL (not-yet-rated) books must
+  // never match, and this makes the partial books_rating_idx predicate explicit.
+  conditions.push(isNotNull(books.rating));
+
+  if (minRating !== undefined) {
+    conditions.push(sql`${books.rating} >= ${minRating}`);
+  }
+  if (maxRating !== undefined) {
+    conditions.push(sql`${books.rating} <= ${maxRating}`);
+  }
+  if (minRatingCount !== undefined) {
+    conditions.push(sql`${books.ratingCount} >= ${minRatingCount}`);
+  }
+
+  return and(...conditions);
+}
+
+/**
  * Builds search condition with ILIKE patterns for title, hook, summary, and keywords.
  *
  * Note: `books.keywords` is `text[]` — ILIKE cannot be applied directly to an array.
@@ -510,13 +556,19 @@ export function buildBookQuery<T>(
     gender?: string;
     /** Mode filter (novel|interactive|multiverse) */
     mode?: BookMode;
+    /** Minimum rating threshold (inclusive), 1-5 — "X★ & up" */
+    minRating?: number;
+    /** Maximum rating threshold (inclusive), 1-5 — "below X" */
+    maxRating?: number;
+    /** Minimum number of approved ratings (inclusive) — gates small samples */
+    minRatingCount?: number;
     /** Current user ID for user-specific sorting (reads, recommendations) */
     currentUserId?: string | null;
     /** Collection name to filter favorites (only applies when sortBy=favorites) */
     collection?: string;
   }
 ) {
-  const { baseQuery, baseCondition, search, bookSortBy, genericSortBy, sortOrder, tags, language, lastUpdated, minAge, maxAge, gender, mode, currentUserId, collection } = params;
+  const { baseQuery, baseCondition, search, bookSortBy, genericSortBy, sortOrder, tags, language, lastUpdated, minAge, maxAge, gender, mode, minRating, maxRating, minRatingCount, currentUserId, collection } = params;
 
   // Build filter conditions using shared helpers
   const timeCondition      = buildTimeFilterCondition(lastUpdated);
@@ -526,6 +578,7 @@ export function buildBookQuery<T>(
   const ageRangeCondition  = buildAgeRangeFilterCondition(minAge, maxAge);
   const genderCondition    = buildGenderFilterCondition(gender);
   const modeCondition      = buildModeFilterCondition(mode);
+  const ratingCondition    = buildRatingFilterCondition(minRating, maxRating, minRatingCount);
 
   // Combine all conditions with base condition
   const finalCondition = combineFilterConditions(
@@ -536,7 +589,8 @@ export function buildBookQuery<T>(
     tagsCondition,
     ageRangeCondition,
     genderCondition,
-    modeCondition
+    modeCondition,
+    ratingCondition
   );
 
   // Apply secondary sorting: contextual sorting

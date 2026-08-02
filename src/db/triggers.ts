@@ -520,15 +520,27 @@ async function ensureBookCommentsCountTrigger(): Promise<void> {
 }
 
 /**
- * Creates trigger to update book testimonials count when testimonials are inserted or deleted
+ * Creates trigger to keep book testimonials aggregates in sync with `book_testimonials`
  * 
- * This trigger fires AFTER INSERT OR DELETE on book_testimonials table:
- * 1. When a testimonial is added or removed
- * 2. Updates testimonials_count to match count of testimonials for the book
- * 3. Ensures denormalized count stays synchronized
+ * This trigger fires AFTER INSERT OR UPDATE OR DELETE on book_testimonials table:
+ * 1. When a testimonial is added or removed, recomputes `books.testimonials_count`
+ * 2. Recomputes `books.rating` (average of approved, rated testimonials) and
+ *    `books.rating_count` (count of approved testimonials carrying a rating)
+ * 3. Ensures denormalized aggregates stay synchronized
  * 
- * Note: Counts all testimonials (regardless of status), mirroring the
- * `comments_count` trigger semantics.
+ * Note on the status filter divergence (deliberate):
+ * - `testimonials_count` counts ALL testimonials regardless of status, mirroring
+ *   the `comments_count` trigger semantics (schema.ts:442).
+ * - `rating` / `rating_count` only consider `status = 'approved'` AND a non-null
+ *   rating, because the public rating is SEO-exposed and the public testimonial
+ *   wall only surfaces approved (+ featured) rows. Pending/rejected stars must
+ *   never leak into a public rating.
+ * 
+ * Note on the event list:
+ * - The trigger must fire on UPDATE (not just INSERT/DELETE) because both the
+ *   user-facing PATCH (rating edits, resets status to pending) and the admin
+ *   curation routes (pending → approved) mutate rows in ways that change the
+ *   aggregates. The count recompute is idempotent, so UPDATE is harmless to it.
  * 
  * Idempotency:
  * - Uses CREATE OR REPLACE FUNCTION
@@ -536,40 +548,64 @@ async function ensureBookCommentsCountTrigger(): Promise<void> {
  */
 async function ensureBookTestimonialsCountTrigger(): Promise<void> {
   try {
-    // Create the trigger function
+    // Create the trigger function (renamed from update_book_testimonials_count to
+    // reflect the wider scope: it now maintains count + rating + rating_count)
     await dbWrite.execute(`
-      CREATE OR REPLACE FUNCTION update_book_testimonials_count()
+      CREATE OR REPLACE FUNCTION update_book_testimonials_stats()
       RETURNS TRIGGER AS $$
+      DECLARE
+        v_book_id UUID;
       BEGIN
+        v_book_id := COALESCE(NEW.book_id, OLD.book_id);
+
         UPDATE books
         SET testimonials_count = (
           SELECT COUNT(*)
           FROM book_testimonials
-          WHERE book_id = COALESCE(NEW.book_id, OLD.book_id)
+          WHERE book_id = v_book_id
         ),
+            rating = (
+              SELECT ROUND(AVG(rating)::numeric, 1)
+              FROM book_testimonials
+              WHERE book_id = v_book_id
+                AND status = 'approved'
+                AND rating IS NOT NULL
+            ),
+            rating_count = (
+              SELECT NULLIF(COUNT(*), 0)
+              FROM book_testimonials
+              WHERE book_id = v_book_id
+                AND status = 'approved'
+                AND rating IS NOT NULL
+            ),
             updated_at = NOW()
-        WHERE id = COALESCE(NEW.book_id, OLD.book_id);
+        WHERE id = v_book_id;
         RETURN COALESCE(NEW, OLD);
       END;
       $$ LANGUAGE plpgsql;
     `);
-    
-    // Drop existing trigger if it exists
+
+    // Drop the legacy-named function (kept as orphan by CREATE OR REPLACE on a
+    // new name) plus any existing trigger under the old or new name
+    await dbWrite.execute(`
+      DROP FUNCTION IF EXISTS update_book_testimonials_count();
+    `);
     await dbWrite.execute(`
       DROP TRIGGER IF EXISTS book_testimonials_count_trigger ON book_testimonials;
     `);
-    
-    // Create the trigger
+
+    // Create the trigger — fires on INSERT/UPDATE/DELETE so rating edits and
+    // admin status flips (pending → approved) recompute the aggregates too
     await dbWrite.execute(`
       CREATE TRIGGER book_testimonials_count_trigger
-        AFTER INSERT OR DELETE ON book_testimonials
+        AFTER INSERT OR UPDATE OR DELETE ON book_testimonials
         FOR EACH ROW
-        EXECUTE FUNCTION update_book_testimonials_count();
+        EXECUTE FUNCTION update_book_testimonials_stats();
     `);
-    
-    console.log("✅ Book testimonials count trigger created successfully!");
+
+    console.log("✅ Book testimonials count/rating trigger created successfully!");
   } catch (error) {
-    console.error("❌ Failed to create book testimonials count trigger:", getErrorMessage(error));
+    console.error("❌ Failed to create book testimonials count/rating trigger:", getErrorMessage(error));
     throw error;
   }
 }

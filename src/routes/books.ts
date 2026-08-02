@@ -113,7 +113,7 @@ import { imageUploadMiddleware } from "../middleware/upload.js";
 import { deleteFileFromImageKit, isBase64Upload, persistUploadedImage } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, calculatePaginationMeta } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
-import { validateSearchQuery, validateLanguageCode, validateAgeRange, validateGender, createRelevanceExpression, buildTokenizedSearchCondition } from "../utils/search.js";
+import { validateSearchQuery, validateLanguageCode, validateAgeRange, validateGender, validateRatingFilter, validateRatingCountFilter, createRelevanceExpression, buildTokenizedSearchCondition } from "../utils/search.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { updateBook, updateBookVisibility, insertBook, uploadBookCoverImage, uploadBookCharacterAvatarImage, sanitizeBookTextField, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage, mapBookFromDb, invalidatePopularTagsCache, invalidateBookCache, invalidateEnrichedBookCache } from "../services/book.js";
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
@@ -2009,6 +2009,11 @@ router.get("/:id/similar", optionalAuth, async (c) => {
  * @query ageRange - Filter by main character age range (format: n-m, e.g., 18-30)
  * @query gender - Filter by main character gender (male/female)
  * @query mode - Filter by book creation mode (story format): novel|interactive|multiverse
+ * @query rating - Filter by average rating (min-threshold model). Formats:
+ *                 "4" (≥ 4★ & up), "3.5" (≥ 3.5), "4-5" (between), "-3" (below 3).
+ *                 Books with no ratings yet (NULL) are always excluded.
+ * @query minRatingCount - Minimum number of approved ratings (e.g. 5) to gate on;
+ *                 combine with rating for "4★ & up by at least 5 people"
  * @query status - Filter by comma-separated statuses (only applies with sortBy=creations). Values: active, draft, archived. E.g., "active,draft"
  * @returns Paginated list of books
  * 
@@ -2028,6 +2033,15 @@ router.get("/:id/similar", optionalAuth, async (c) => {
  * 
  * // Combine mode with other filters
  * GET /api/books/explore?mode=interactive&language=en&ageRange=18-30&tags=thriller,mystery&sortBy=newest
+ *
+ * // Filter by rating threshold (4★ & up)
+ * GET /api/books/explore?rating=4&sortBy=trending&page=1&limit=20
+ *
+ * // Filter by rating range and require at least 5 approved ratings
+ * GET /api/books/explore?rating=4-5&minRatingCount=5&sortBy=newest&page=1&limit=20
+ *
+ * // Filter by "below 3 stars"
+ * GET /api/books/explore?rating=-3&sortBy=newest&page=1&limit=20
  * 
  * // Response
  * {
@@ -2108,6 +2122,30 @@ router.get("/explore", optionalAuth, async (c) => {
       sanitizedGender = genderValidation.sanitized;
     }
 
+    // Validate rating filter if provided (min-threshold model, e.g. "4", "3.5", "4-5", "-3")
+    let minRating: number | undefined;
+    let maxRating: number | undefined;
+    const ratingParam = c.req.query().rating as string | undefined;
+    if (ratingParam) {
+      const ratingValidation = validateRatingFilter(ratingParam);
+      if (!ratingValidation.isValid) {
+        return cValidationError(c, ratingValidation.error || 'Invalid rating filter');
+      }
+      minRating = ratingValidation.minRating;
+      maxRating = ratingValidation.maxRating;
+    }
+
+    // Validate minimum rating count if provided ("4★ & up by at least N people")
+    let minRatingCount: number | undefined;
+    const ratingCountParam = c.req.query().minRatingCount as string | undefined;
+    if (ratingCountParam) {
+      const countValidation = validateRatingCountFilter(ratingCountParam);
+      if (!countValidation.isValid) {
+        return cValidationError(c, countValidation.error || 'Invalid minimum rating count');
+      }
+      minRatingCount = countValidation.minRatingCount;
+    }
+
     // Validate mode if provided
     let sanitizedMode: BookMode | undefined;
     if (mode) {
@@ -2173,7 +2211,7 @@ router.get("/explore", optionalAuth, async (c) => {
         : and(eq(books.status, 'active'), eq(books.visibility, 'public'))!;
 
     // Cache strategy: don't cache user-specific or filtered queries
-    const shouldCache = page === 1 && !profileUserId && !isCreations && !search && tagsArray.length === 0 && !language && !lastUpdated && !ageRange && !gender && !mode && !statusFilter && bookSortBy !== 'reads' && bookSortBy !== 'favorites' && bookSortBy !== 'recommendations' && bookSortBy !== 'for-you';
+    const shouldCache = page === 1 && !profileUserId && !isCreations && !search && tagsArray.length === 0 && !language && !lastUpdated && !ageRange && !gender && !mode && !statusFilter && !ratingParam && !ratingCountParam && bookSortBy !== 'reads' && bookSortBy !== 'favorites' && bookSortBy !== 'recommendations' && bookSortBy !== 'for-you';
     const cacheKey = isCreations
       ? `books:user:${targetUserId}:page:${page}`
       : bookSortBy === 'trending'
@@ -2210,6 +2248,9 @@ router.get("/explore", optionalAuth, async (c) => {
         maxAge,
         gender: sanitizedGender,
         mode: sanitizedMode,
+        minRating,
+        maxRating,
+        minRatingCount,
         currentUserId: profileUserId || userId, // Use profileUserId for viewing another user's list
         collection, // Filter favorites by collection name
       });
@@ -5461,6 +5502,10 @@ router.post("/:identifier/testimonials", requireAuth, async (c) => {
     .where(eq(bookTestimonials.id, created.id))
     .limit(1);
 
+  // Rating/count aggregates changed → drop the enriched-book LRU entry so the
+  // freshly-inserted testimonial's rating is served without a 5-minute lag.
+  invalidateEnrichedBookCache(book.id);
+
   c.status(201); return c.json({ testimonial });
 });
 
@@ -5589,6 +5634,10 @@ router.patch("/:identifier/testimonials/:id", requireAuth, async (c) => {
     .where(eq(bookTestimonials.id, id))
     .limit(1);
 
+  // Rating edits reset status to 'pending' → aggregates (may) change → drop the
+  // enriched-book LRU entry so the rating reflects the re-curation immediately.
+  invalidateEnrichedBookCache(book.id);
+
   c.status(200); return c.json({ testimonial: updated });
 });
 
@@ -5633,6 +5682,10 @@ router.delete("/:identifier/testimonials/:id", requireAuth, async (c) => {
   await dbWrite
     .delete(bookTestimonials)
     .where(eq(bookTestimonials.id, id));
+
+  // Deleting a rated testimonial changes the aggregates → drop the
+  // enriched-book LRU entry so the rating reflects the deletion immediately.
+  invalidateEnrichedBookCache(book.id);
 
   c.status(200); return c.json({ message: "Testimonial deleted successfully" });
 });

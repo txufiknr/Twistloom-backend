@@ -25,7 +25,7 @@ import { requireAuth } from "../middleware/nextauth.js";
 import { requireSuperAdmin, requirePermission, resolveAdminAccess, normalizePermissions, isSuperAdminUserId, ADMIN_PERMISSIONS } from "../middleware/admin-auth.js";
 import { cApiError, cValidationError, cNotFoundError } from "../utils/error.js";
 import { reconstructStoryState } from "../utils/branch-traversal.js";
-import { getBookFromDB, getPageFromDB } from "../services/book.js";
+import { getBookFromDB, getPageFromDB, invalidateEnrichedBookCache } from "../services/book.js";
 import { getStoryState } from "../services/story.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { socialMentions, bookTestimonials, adminUsers, usage, users, userFeedbacks, books, portalBlogPosts } from "../db/schema.js";
@@ -771,6 +771,10 @@ router.patch("/testimonials/:id",
         .where(eq(bookTestimonials.id, id))
         .returning();
 
+      // Status flips (pending → approved) change the public rating/count
+      // aggregates → drop the affected book's enriched-book LRU entry.
+      invalidateEnrichedBookCache(updated.bookId);
+
       return c.json(updated);
     } catch (error) {
       return cApiError(c, "Failed to update testimonial", error);
@@ -803,7 +807,13 @@ router.post("/testimonials/bulk-status",
         .update(bookTestimonials)
         .set({ status })
         .where(inArray(bookTestimonials.id, validIds))
-        .returning({ id: bookTestimonials.id });
+        .returning({ id: bookTestimonials.id, bookId: bookTestimonials.bookId });
+
+      // Status flips change the public rating/count aggregates → drop the
+      // enriched-book LRU entry for every affected book.
+      for (const row of result) {
+        invalidateEnrichedBookCache(row.bookId);
+      }
 
       return c.json({ success: true, updated: result.length });
     } catch (error) {

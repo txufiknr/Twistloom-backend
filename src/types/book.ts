@@ -116,6 +116,10 @@ export interface BookStats {
   commentsCount: number;
   /** Total testimonials (maintained by database triggers) */
   testimonialsCount: number;
+  /** Average rating (1-5 scale, 1 decimal) of approved testimonials (maintained by database trigger). Null = no approved rated testimonials yet */
+  rating: number | null;
+  /** Number of approved testimonials carrying a rating (maintained by database trigger) */
+  ratingCount: number | null;
   /** Completion rate: completed/started percentage (maintained by database triggers) */
   completionRate: number | null;
   /** Total unique branches (maintained by database triggers) */

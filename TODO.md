@@ -31,6 +31,14 @@
 [ ] pastInteractions -> interactions
 
 ---
+    "db:generate": "bunx drizzle-kit generate",
+    "db:migrate": "bunx drizzle-kit migrate",
+    "db:migrate:prod": "bunx --env-file=.env.production drizzle-kit migrate",
+    "db:studio": "bunx drizzle-kit studio",
+
+    "db:migrate": "node --env-file=.env.local node_modules/drizzle-kit/bin.cjs migrate",
+
+---
 
 [gemini/gemini-3.5-flash] ❗ Bad request (other):
   ApiError: {"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}

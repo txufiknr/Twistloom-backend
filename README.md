@@ -116,8 +116,25 @@ The backend was migrated from **Node.js + pnpm + tsx** to **Bun** (runtime + pac
 | 1 — Package manager | `pnpm` → `bun install`, lockfile `pnpm-lock.yaml` → `bun.lock` | ✅ |
 | 2 — Local dev | `tsx watch` + `@hono/node-server` → `bun --watch` + `Bun.serve()` | ✅ |
 | 3 — Vercel deployment | Custom `IncomingMessage` → `Request` adapter in `api/index.ts` | ✅ |
+| 4 — DB migrations | Drizzle Kit runs under Node.js (`node --env-file=... node_modules/drizzle-kit/bin.cjs`) | ✅ |
 
 > **Note on runtime decisions:** Vercel's Bun runtime was initially attempted but had ESM module linking failures. The `hono/vercel` adapter was also tried but its `handle()` doesn't properly convert `IncomingMessage` → `Request` on the Node.js runtime, causing `this.raw.headers.get()` to fail. The final architecture uses a **custom conversion handler** in `api/index.ts` — the same well-tested pattern from the pre-migration codebase. This is the most stable path while still benefiting from Bun's faster local dev cycle.
+
+#### DB migrations run under Node.js (drizzle-kit)
+
+The `db:*` scripts (`db:generate`, `db:migrate`, `db:migrate:prod`, `db:studio`) execute **Drizzle Kit under Node.js** via `node --env-file=... node_modules/drizzle-kit/bin.cjs`, not the Bun runtime. Two Bun-runtime incompatibilities with drizzle-kit drove this:
+
+- **`process.loadEnvFile` is missing in Bun.** `drizzle.config.ts` used `loadEnvFile('.env.local')` to load env; Bun's `node:process` doesn't export it (`Export named 'loadEnvFile' not found in module 'node:process'`). Node.js has had it since v20.12.
+- **Bun's `node:http` breaks drizzle-kit's bundled `ws` WebSocket driver.** Against Neon's WebSocket endpoint the handshake fails with `Unexpected server response: 101` (Bun emits the 101 upgrade as a `response` event instead of `upgrade`), so the `@neondatabase/serverless` driver can't connect under Bun.
+
+`bunx drizzle-kit ...` had always worked because `bunx` executes `bin.cjs` under Node.js (shebang `#!/usr/bin/env node`); the breakage appeared when `--bun` forced the Bun runtime. Plain `node --env-file=...` is the final choice because it needs **zero extra dependencies** (no `pg`/`postgres` — the WebSocket driver works fine under Node), loads env reliably (`bunx --env-file=X <pkg>` does *not* forward env into the Node child, while `tsx`/`node --env-file` do), and has no shebang/runtime ambiguity.
+
+| Script | Command |
+|--------|---------|
+| `db:generate` | `node --env-file=.env.local node_modules/drizzle-kit/bin.cjs generate` |
+| `db:migrate` | `node --env-file=.env.local node_modules/drizzle-kit/bin.cjs migrate` |
+| `db:migrate:prod` | `node --env-file=.env.production node_modules/drizzle-kit/bin.cjs migrate` |
+| `db:studio` | `node --env-file=.env.local node_modules/drizzle-kit/bin.cjs studio` |
 
 ### Dependencies removed
 
@@ -684,6 +701,8 @@ bun db:clear:prod                # Clear all database data in production
 bun db:reset                     # Reset database (clear + migrate + seed)
 bun db:reset:prod                # Reset database in production
 ```
+
+> `db:*` commands run Drizzle Kit under **Node.js** (not Bun) — see [DB migrations under Node.js](#db-migrations-run-under-nodejs-drizzle-kit).
 
 ### **Quality Assurance**
 ```bash
