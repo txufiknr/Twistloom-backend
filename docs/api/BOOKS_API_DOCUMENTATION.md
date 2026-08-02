@@ -47,6 +47,7 @@ interface BookStats {
   readCount: number;           // Unique users who have started reading the book (from userPageProgress)
   completeCount: number;       // Unique users who have completed the book (reached the last page)
   commentsCount: number;       // Total comments
+  testimonialsCount: number;   // Total testimonials (denormalized column, maintained by database triggers)
   branchesCount: number;       // Total branches in this book (denormalized column)
   completionRate: number | null; // Completion rate (calculated, currently unused)
 }
@@ -454,6 +455,7 @@ Creates a new psychological thriller book with AI-generated content. Accepts a s
       "likesCount": 0,
       "readCount": 0,
       "commentsCount": 0,
+      "testimonialsCount": 0,
       "branchesCount": 1
     },
     "isLiked": false,
@@ -701,6 +703,7 @@ Retrieves a book by slug or UUID v7 identifier. Returns complete book informatio
       "readCount": 156,
       "completeCount": 23,
       "commentsCount": 25,
+      "testimonialsCount": 7,
       "branchesCount": 12
     },
     "isLiked": false,
@@ -1313,6 +1316,7 @@ Retrieves similar books based on keyword Jaccard similarity. Uses PostgreSQL's n
         "readCount": 100,
         "completeCount": 12,
         "commentsCount": 10,
+        "testimonialsCount": 3,
         "branchesCount": 8
       },
       "isLiked": false,
@@ -2722,6 +2726,7 @@ GET /api/books/explore?mode=interactive&language=en&ageRange=18-30&tags=thriller
         "likesCount": 42,
         "readCount": 156,
         "commentsCount": 25,
+        "testimonialsCount": 7,
         "branchesCount": 12
       },
       "trendingScore": 0.85,
@@ -3110,6 +3115,9 @@ curl https://api.twistloom.com/api/books \
 ---
 
 ## Changelog
+
+### v2.12.0 (2026-08-02)
+- **Added `testimonialsCount` to `BookStats`** — `books.testimonials_count` denormalized column counted from `book_testimonials` and maintained by a database trigger (`AFTER INSERT OR DELETE ON book_testimonials`), mirroring `commentsCount`. The field is now returned in the `stats` object of enriched book responses (`GET /api/books/:identifier`, explore, similar books, user library).
 
 ### v2.11.0 (2026-07-16)
 - **Fully documented all Books API routes** — added complete documentation for every endpoint missing from the spec:

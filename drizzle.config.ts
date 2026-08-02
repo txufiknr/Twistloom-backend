@@ -8,16 +8,13 @@
  * Example: DATABASE_URL=postgresql://user:password@host:port/database
  * 
  * After changes, run:
- * - `pnpm db:generate` to generate schema files
- * - `pnpm db:migrate` to apply migrations
- * - `pnpm db:studio` to open the database studio
- * - `pnpm db:test` to test the database connection
+ * - `bun db:generate` to generate schema files
+ * - `bun db:migrate` to apply migrations
+ * - `bun db:studio` to open the database studio
+ * - `bun db:test` to test the database connection
  */
 
 import type { Config } from "drizzle-kit";
-import { loadEnvFile } from 'node:process';
-
-loadEnvFile('.env.local');
 
 export default {
   schema: "./src/db/schema.ts",
