@@ -717,7 +717,7 @@ function triggerDeeperLevelGeneration(
   allowDeeperLevel: boolean = false
 ): void {
   if (currentDepth >= maxDepth || candidatePages.length === 0) return;
-  const { id: bookId, title: bookTitle } = currentBook;
+  const { id: bookId, title: bookTitle, mode } = currentBook;
   const nextDepth = currentDepth + 1;
 
   console.log(`[${context}] 👩‍🚀 Starting deeper level generation for "${bookTitle}" with ${candidatePages.length} candidate pages`);
@@ -738,9 +738,10 @@ function triggerDeeperLevelGeneration(
         
         const { id: pageId, page: pageNumber, branchId } = candidatePage;
         const jobDetails = { bookTitle, depth: `${nextDepth}/${maxDepth}`, pageId, branchId, pageNumber };
+        const pageAllowDeeperLevel = mode === 'novel' || pageNumber <= ALLOW_DEEPER_LEVEL_UNTIL_PAGE;
 
         // Only trigger if page number <= allowed to prevent too many concurrent workflows
-        if (nextDepth <= MAX_BRANCHING_PREGENERATION_DEPTH && (allowDeeperLevel || pageNumber <= ALLOW_DEEPER_LEVEL_UNTIL_PAGE)) {
+        if (nextDepth <= MAX_BRANCHING_PREGENERATION_DEPTH && (allowDeeperLevel || pageAllowDeeperLevel)) {
           // No need for validation as this is a certain candidate generation for a valid new page
           console.log(`[${context}] 📡 Triggering GitHub Workflow for "${bookTitle}" level ${nextDepth} (page ${pageNumber})`);
           triggerCandidateGenerationWorkflow({
