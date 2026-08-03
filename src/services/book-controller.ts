@@ -444,7 +444,8 @@ export function buildModeFilterCondition(mode?: BookMode) {
  *   filters. The explicit `isNotNull` guard also makes the partial-index
  *   predicate unambiguous to the query planner.
  * - `minRating` "4" means `rating >= 4` (the "4★ & up" bucket).
- * - `maxRating` "3" means `rating <= 3` (the "below 3" bucket).
+ * - `maxRating` is only ever set together with `minRating` as a range from the
+ *   route (e.g. "4-5"); the route no longer supports max-only "below X" forms.
  * - `minRatingCount` gates on the number of approved ratings (e.g. "4★ & up by
  *   at least 5 people") so a lone 5-star vote can't dominate a bucket.
  *

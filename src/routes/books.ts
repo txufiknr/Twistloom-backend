@@ -2009,8 +2009,9 @@ router.get("/:id/similar", optionalAuth, async (c) => {
  * @query ageRange - Filter by main character age range (format: n-m, e.g., 18-30)
  * @query gender - Filter by main character gender (male/female)
  * @query mode - Filter by book creation mode (story format): novel|interactive|multiverse
- * @query rating - Filter by average rating (min-threshold model). Formats:
- *                 "4" (≥ 4★ & up), "3.5" (≥ 3.5), "4-5" (between), "-3" (below 3).
+ * @query rating - Filter by average rating (min-threshold model, whole stars only). Formats:
+ *                 "4" (≥ 4★ & up), "4-5" (between 4 and 5 stars).
+ *                 Decimals ("3.5") and max-only forms ("-3", "0-3") are not accepted.
  *                 Books with no ratings yet (NULL) are always excluded.
  * @query minRatingCount - Minimum number of approved ratings (e.g. 5) to gate on;
  *                 combine with rating for "4★ & up by at least 5 people"
@@ -2040,9 +2041,6 @@ router.get("/:id/similar", optionalAuth, async (c) => {
  * // Filter by rating range and require at least 5 approved ratings
  * GET /api/books/explore?rating=4-5&minRatingCount=5&sortBy=newest&page=1&limit=20
  *
- * // Filter by "below 3 stars"
- * GET /api/books/explore?rating=-3&sortBy=newest&page=1&limit=20
- * 
  * // Response
  * {
  *   "books": [
@@ -2122,7 +2120,7 @@ router.get("/explore", optionalAuth, async (c) => {
       sanitizedGender = genderValidation.sanitized;
     }
 
-    // Validate rating filter if provided (min-threshold model, e.g. "4", "3.5", "4-5", "-3")
+    // Validate rating filter if provided (whole-star min-threshold model, e.g. "4" or "4-5")
     let minRating: number | undefined;
     let maxRating: number | undefined;
     const ratingParam = c.req.query().rating as string | undefined;

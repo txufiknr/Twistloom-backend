@@ -270,12 +270,12 @@ export function validateGender(gender: string | undefined): { isValid: boolean; 
  * so exact buckets would be undefined and fragment the catalog. A threshold is
  * also how Google-scale platforms (Amazon, Letterboxd, Yelp) filter by rating.
  *
- * Accepted formats (values on the 1–5 scale, optional single decimal):
+ * Accepted formats (whole-star values on the 1–5 scale only):
  * - `"4"`     → minimum 4 stars (the "4★ & up" bucket)
- * - `"3.5"`   → minimum 3.5 stars
  * - `"4-5"`   → between 4 and 5 stars
- * - `"0-3"`   → maximum 3 stars (the "below 3 stars" bucket; min 0 is a no-op)
- * - `"-3"`    → maximum 3 stars (explicit max-only form)
+ *
+ * Everything else is rejected: decimals (`"3.5"`), max-only forms (`"-3"`,
+ * `"0-3"`), values outside 1–5, and malformed strings.
  *
  * @param rating - Rating filter string from the query param
  * @returns Validation result with minRating/maxRating or error
@@ -288,11 +288,11 @@ export function validateGender(gender: string | undefined): { isValid: boolean; 
  * const result = validateRatingFilter("4-5");
  * // { isValid: true, minRating: 4, maxRating: 5 }
  *
- * const result = validateRatingFilter("-3");
- * // { isValid: true, maxRating: 3 }
+ * const invalid = validateRatingFilter("3.5");
+ * // { isValid: false, error: "Invalid rating filter format. Use a single star value (1-5) or a range (e.g. rating=4-5)" }
  *
- * const invalid = validateRatingFilter("6");
- * // { isValid: false, error: "Invalid rating filter. Minimum rating must be between 1 and 5" }
+ * const invalid = validateRatingFilter("-3");
+ * // { isValid: false, error: "Invalid rating filter format. Use a single star value (1-5) or a range (e.g. rating=4-5)" }
  * ```
  */
 export function validateRatingFilter(rating: string | undefined): { isValid: boolean; minRating?: number; maxRating?: number; error?: string } {
@@ -300,24 +300,20 @@ export function validateRatingFilter(rating: string | undefined): { isValid: boo
 
   const trimmed = rating.trim();
 
-  // Max-only: "-3" → rating <= 3 (explicit "below X" form)
-  if (trimmed.startsWith('-')) {
-    const maxRating = parseFloat(trimmed.slice(1));
-    if (isNaN(maxRating) || maxRating < 1 || maxRating > 5) {
-      return {
-        isValid: false,
-        error: 'Invalid rating filter. Maximum rating must be between 1 and 5'
-      };
-    }
-    return { isValid: true, maxRating };
+  // Strict format: a single digit "X" or a range "X-Y" (both single digits)
+  if (!/^\d-\d$/.test(trimmed) && !/^\d$/.test(trimmed)) {
+    return {
+      isValid: false,
+      error: 'Invalid rating filter format. Use a single star value (1-5) or a range (e.g. rating=4-5)'
+    };
   }
 
   const parts = trimmed.split('-');
 
-  // Min-only: "4" or "3.5" → rating >= X (the "X★ & up" bucket)
+  // Min-only: "4" → rating >= 4 (the "4★ & up" bucket)
   if (parts.length === 1) {
-    const minRating = parseFloat(parts[0]);
-    if (isNaN(minRating) || minRating < 1 || minRating > 5) {
+    const minRating = parseInt(parts[0], 10);
+    if (minRating < 1 || minRating > 5) {
       return {
         isValid: false,
         error: 'Invalid rating filter. Minimum rating must be between 1 and 5'
@@ -326,38 +322,22 @@ export function validateRatingFilter(rating: string | undefined): { isValid: boo
     return { isValid: true, minRating };
   }
 
-  // Range: "4-5" or "0-3" → rating BETWEEN min AND max
-  if (parts.length === 2) {
-    const minRating = parseFloat(parts[0]);
-    const maxRating = parseFloat(parts[1]);
-    if (
-      isNaN(minRating) || isNaN(maxRating) ||
-      minRating < 0 || minRating > 5 ||
-      maxRating < 1 || maxRating > 5
-    ) {
-      return {
-        isValid: false,
-        error: 'Invalid rating filter. Values must be between 0 and 5'
-      };
-    }
-    if (minRating > maxRating) {
-      return {
-        isValid: false,
-        error: 'Invalid rating filter. Minimum rating cannot be greater than maximum rating'
-      };
-    }
+  // Range: "4-5" → rating BETWEEN 4 AND 5
+  const minRating = parseInt(parts[0], 10);
+  const maxRating = parseInt(parts[1], 10);
+  if (minRating < 1 || minRating > 5 || maxRating < 1 || maxRating > 5) {
     return {
-      isValid: true,
-      // min 0 means "everything at the low end" → treat as max-only ("below X")
-      ...(minRating > 0 ? { minRating } : {}),
-      maxRating,
+      isValid: false,
+      error: 'Invalid rating filter. Values must be between 1 and 5'
     };
   }
-
-  return {
-    isValid: false,
-    error: 'Invalid rating filter format. Use e.g. rating=4, rating=4-5, or rating=-3'
-  };
+  if (minRating > maxRating) {
+    return {
+      isValid: false,
+      error: 'Invalid rating filter. Minimum rating cannot be greater than maximum rating'
+    };
+  }
+  return { isValid: true, minRating, maxRating };
 }
 
 /**

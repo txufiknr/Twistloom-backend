@@ -21,7 +21,7 @@
 | — | E2E trigger verification (INSERT / UPDATE flip / DELETE, pending-exclusion, NULLIF empty-state) | `test-rating-*.ts` (run + cleaned up) | ✅ |
 | — | Rating-filter verification (parsers + threshold/count SQL behavior against real rows) | `test-rating-filter.ts` (run + cleaned up) | ✅ |
 | — | Typecheck + lint | `bun run typecheck`, `bun run lint:fast` | ✅ |
-| — | Google `AggregateRating` JSON-LD on the book detail page | (Frontend/SEO, out of scope) | ◻️ |
+| — | Google `AggregateRating` JSON-LD on the book detail page | (Frontend/SEO, out of scope) | ✅ |
 | — | Bayesian "top-rated" ranking (§9) | (Future work) | ◻️ |
 
 **Deviations from the plan (all deliberate, see Open Questions):**
@@ -373,19 +373,18 @@ The frontend's book **explore** now supports filtering by rating via two query p
 
 ```
 ?rating=4          → rating >= 4            ("4★ & up" bucket)
-?rating=3.5        → rating >= 3.5
-?rating=4-5        → 4 <= rating <= 5
-?rating=0-3        → rating <= 3            ("below 3 stars"; min 0 is a no-op)
-?rating=-3         → rating <= 3            (explicit max-only form)
+?rating=4-5        → 4 <= rating <= 5       (range)
 ?minRatingCount=5  → rating_count >= 5      ("by at least 5 people")
 ```
 
-**The chosen model is a minimum-threshold ("X★ & up") ladder, not exact per-star buckets and not a single "4+" binary.** Rationale:
+The API accepts **whole stars only** — a single digit (`"4"`) or an integer range (`"4-5"`). Decimals (`"3.5"`) and max-only forms (`"0-3"`, `"-3"`) are **rejected** by `validateRatingFilter`. Users think in whole stars, so the filter surface is exactly what the UI's star selector offers.
+
+**The chosen model is a minimum-threshold ("X★ & up") ladder with optional ranges, not exact per-star buckets and not a single "4+" binary.** Rationale:
 
 - **Decimals make exact buckets undefined.** `books.rating` is a 1-decimal `real` (4.0, 4.1 … 4.9). An exact "4-star" filter has no meaning — is 4.2 a "4"? Users think in whole stars, so exact-matching a decimal reads as a bug.
 - **Thresholds match the industry idiom.** Amazon's canonical star sidebar is all thresholds ("4★ & up" = `rating >= 4`); Letterboxd's rating filter is a minimum ("3.5 and above"); Yelp uses a "at least X" slider. No major platform filters by exact-match star buckets — exact matching is only used for *displaying* a distribution histogram, never for filtering.
-- **A single "4+" binary is too narrow.** It removes the "1★ & up" floor and the "worst-rated / below 3" exploration intent, and on a young catalog with sparse ratings "4+ only" often returns an empty page that reads as "broken filter". The threshold ladder degrades gracefully.
-- **Range is a superset.** The "below 3" / "4 and above" range formulation is exactly the threshold model expressed two ways (`maxRating` / `minRating`), mirroring the existing `ageRange=min-max` API pattern.
+- **A single "4+" binary is too narrow.** It removes the "1★ & up" floor, and on a young catalog with sparse ratings "4+ only" often returns an empty page that reads as "broken filter". The whole-star threshold ladder (1★–5★) degrades gracefully.
+- **Range mirrors the existing API pattern.** `"4-5"` is the same `min-max` shape as `ageRange=18-30`, and lets users bound a window (e.g. the "4–5 sweet spot") while the single digit covers "X★ & up".
 
 **Semantics:**
 
@@ -405,7 +404,7 @@ The partial b-tree serves both the `rating >= X` / `rating <= X` range filters (
 
 | Layer | File | Change |
 |---|---|---|
-| Validation | `utils/search.ts` | `validateRatingFilter` (all formats above, clamps 1–5, rejects `min > max`) + `validateRatingCountFilter` (positive integer) |
+| Validation | `utils/search.ts` | `validateRatingFilter` (single digit or integer range `"n-m"`, whole stars 1–5 only, rejects decimals/max-only/`min > max`) + `validateRatingCountFilter` (positive integer) |
 | Condition | `services/book-controller.ts` | `buildRatingFilterCondition(minRating?, maxRating?, minRatingCount?)` → `rating IS NOT NULL` + `>=`/`<=`/`rating_count >=`; wired into `combineFilterConditions` inside `buildBookQuery` |
 | Route | `routes/books.ts` | Parse `?rating=` + `?minRatingCount=`, validate, pass into `buildBookQuery`, add `!ratingParam && !ratingCountParam` to `shouldCache` |
 
@@ -452,6 +451,8 @@ This can live in the existing `trendingScore` cron (schema.ts:431), writing a cr
 | D1 | Denormalized column vs. subquery | **Denormalized (trigger-maintained)** | O(1) reads, indexed sorting, pattern consistency; subquery's only advantage (no migration) is one-time (§3) |
 | D2 | Separate trigger vs. fold into existing | **Fold into `ensureBookTestimonialsCountTrigger`** | Same table/source; single recompute; no double bookkeeping |
 | D3 | Which testimonials feed the rating | **`approved` only, with non-null rating** | Public/SEO exposure; curation bar; Google quality guidelines (§4.3, §6.1) |
+| D3.1 | AggregateRating gate rating threshold | **`rating >= 3`** | Aligns with Google Rich Results requirement that rating must be at least 3 to be eligible |
+
 | D4 | Empty state | **`NULL`, not `0`** | "No ratings yet" is honest; avoids misleading 0/5 |
 | D5 | Precision | **1 decimal** (`ROUND(AVG(...), 1)`) | Google decimal-dot format; matches column style (§4.2) |
 | D6 | `ratingCount` semantics | **Count of approved rated testimonials** (per-rating, not per-user) | Matches AVG numerator/denominator; distinct from `testimonialsCount` (§6.3) |

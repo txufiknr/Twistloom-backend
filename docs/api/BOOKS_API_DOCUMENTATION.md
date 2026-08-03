@@ -2661,12 +2661,10 @@ Retrieves books for exploration or user's own creations. Supports both authentic
 - `lastUpdated` (string, optional): Filter by last update time: anytime|today|this-week|this-month|this-year
 - `status` (string, optional): Filter by comma-separated statuses (only applies with `sortBy=creations`). Values: active, draft, archived. E.g., "active,draft"
 - `mode` (string, optional): Filter by book creation mode (story format). Values: `novel`, `interactive`, `multiverse`. E.g., "multiverse"
-- `rating` (string, optional): Filter by average rating using a **minimum-threshold** model ("X★ & up" buckets, Amazon-style). Formats:
+- `rating` (string, optional): Filter by average rating using a **minimum-threshold** model ("X★ & up" buckets, Amazon-style). Accepts **whole stars only** — a single digit or an integer range:
   - `"4"` → rating ≥ 4 ("4★ & up")
-  - `"3.5"` → rating ≥ 3.5
   - `"4-5"` → 4 ≤ rating ≤ 5 (range)
-  - `"0-3"` → rating ≤ 3 ("below 3 stars")
-  - `"-3"` → rating ≤ 3 (explicit max-only)
+  Decimals (`"3.5"`) and max-only forms (`"0-3"`, `"-3"`) are **not** accepted.
   Books with **no ratings yet** (`rating` is `null`) are always excluded from rating-filtered results.
 - `minRatingCount` (number, optional): Minimum number of approved ratings a book must have to qualify. Combine with `rating` for "4★ & up by at least 5 people" (e.g. `rating=4&minRatingCount=5`). Prevents a lone 5-star vote from dominating a bucket.
 - `profileUserId` (string, optional): User ID to scope books to — used with `sortBy=creations`, `sortBy=reads`, or `sortBy=favorites` to view another user's authored/read/favorited books. When set, authentication is not required for those sort options. Cache is skipped when `profileUserId` is used.
@@ -2729,11 +2727,6 @@ GET /api/books/explore?rating=4&sortBy=trending&page=1&limit=20
 **Example — Filter by rating range and require at least 5 approved ratings:**
 ```
 GET /api/books/explore?rating=4-5&minRatingCount=5&sortBy=newest&page=1&limit=20
-```
-
-**Example — Filter by "below 3 stars":**
-```
-GET /api/books/explore?rating=-3&sortBy=newest&page=1&limit=20
 ```
 
 **Response (200 OK) — Published books (explore):**
@@ -3355,7 +3348,7 @@ Rate limits are enforced on a per-user basis to prevent abuse:
 
 ### v1.6.0 (2026-08-02)
 - Added `rating` and `ratingCount` to `BookStats` (denormalized `books.rating` / `books.ratingCount`, maintained by a trigger from approved testimonials carrying a rating). Both are `null` when a book has no approved ratings. Exposed in `GET /api/books/:identifier`, `GET /api/books/explore`, `GET /api/books/:id/similar`, and every enriched-book response.
-- Added `rating` query param to `GET /api/books/explore` for **minimum-threshold** rating filtering: `"4"` (≥ 4★ & up), `"3.5"`, `"4-5"` (range), `"0-3"` / `"-3"` (below 3). Books with no ratings (`rating` null) are excluded from rating-filtered results.
+- Added `rating` query param to `GET /api/books/explore` for **minimum-threshold** rating filtering. Accepts whole stars only: `"4"` (≥ 4★ & up) or an integer range `"4-5"`. Decimals (`"3.5"`) and max-only forms (`"0-3"`, `"-3"`) are rejected. Books with no ratings (`rating` null) are excluded from rating-filtered results.
 - Added `minRatingCount` query param to `GET /api/books/explore` to gate on the number of approved ratings (e.g. `rating=4&minRatingCount=5` = "4★ & up by at least 5 people").
 - Rating-filtered explore queries bypass the page-1 cache (`shouldCache` exclusion), consistent with every other filter.
 - Added partial `books_rating_idx` index (`rating DESC WHERE rating IS NOT NULL`) to accelerate rating thresholds and future "top-rated" sorting.
