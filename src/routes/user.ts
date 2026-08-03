@@ -55,7 +55,7 @@ import { users, books, userAuth, userLikes, userFavorites, userFollows, userActi
 import { getErrorMessage, cApiError, cNotFoundError, cValidationError } from "../utils/error.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { calculatePaginationMeta } from "../utils/pagination.js";
-import { updateUserLastActivity, getCheckInStatus, logUserActivity, sanitizeProfileUpdate, enrichActivityLogs } from "../services/user.js";
+import { updateUserLastActivity, getCheckInStatus, getCheckInStreaks, logUserActivity, sanitizeProfileUpdate, enrichActivityLogs } from "../services/user.js";
 import { invalidateCachePattern } from "../utils/cache.js";
 import { invalidateExploreCache, invalidateUserBooksCache, invalidateUserProfileCache, withCache, CACHE_KEYS, CACHE_TTL } from "../services/cache.js";
 import { getEnrichedUser, getEnrichedUserById, setReferrerForNewUser, handleCheckIn } from "../services/user-controller.js";
@@ -164,6 +164,10 @@ router.get('/', requireAuth, async (c: Context<AppEnv>) => {
 
     if (!user) return cNotFoundError(c, 'User not found');
 
+    // Streaks are date-sensitive — always recompute live from the check-in
+    // history instead of trusting the trigger-backed user_counters columns.
+    const streaks = await getCheckInStreaks(userId);
+
     const providers = await dbRead
       .select({ provider: userProviders.provider })
       .from(userProviders)
@@ -176,6 +180,8 @@ router.get('/', requireAuth, async (c: Context<AppEnv>) => {
     return c.json({
       user: {
         ...restUser,
+        activeCheckinStreak: streaks.activeStreak,
+        maxCheckinStreak: streaks.longestStreak,
         subscription: { tier },
         linkedMethods: providers.map(p => p.provider),
       }
@@ -706,10 +712,23 @@ router.get("/users/:identifier", optionalAuth, async (c: Context<AppEnv>) => {
     // Use cache with fallback to database
     const result = await withCache(cacheKey, fetchUserProfile, CACHE_TTL.USER_PROFILE);
 
+    // Streak fields are date-sensitive, so they must never be served from the
+    // profile cache. Recompute them live and overlay onto a fresh object (never
+    // mutate the cached entry, which may be reused by other viewers).
+    const liveStreaks = await getCheckInStreaks(result.user.id);
+    const liveUser = {
+      ...result.user,
+      stats: {
+        ...result.user.stats,
+        activeCheckinStreak: liveStreaks.activeStreak,
+        maxCheckinStreak: liveStreaks.longestStreak,
+      },
+    };
+
     // Add HTTP cache headers for CDN/edge caching
     c.header('Cache-Control', 'public, max-age=60, stale-while-revalidate=30');
 
-    return c.json(result);
+    return c.json({ user: liveUser });
   } catch (error) {
     if (getErrorMessage(error) === "User profile not found") {
       return cNotFoundError(c, "User profile not found");

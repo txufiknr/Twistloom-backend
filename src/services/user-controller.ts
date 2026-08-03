@@ -87,6 +87,10 @@ export function getEnrichedUserSelect() {
     topupCredits: sql<number>`COALESCE(${userCounters.topupCredits},0)`,
     referredUsers: sql<number>`COALESCE(${userCounters.referredUsers},0)`,
     followersCount: sql<number>`COALESCE(${userCounters.followersCount},0)`,
+    // NOTE: check-in streaks are date-sensitive — the trigger-maintained
+    // user_counters values can go stale when a day is skipped. These columns are
+    // kept only to satisfy the EnrichedUserSelect shape; every consumer must
+    // override them with live values from getCheckInStreaks() before responding.
     activeCheckinStreak: sql<number>`COALESCE(${userCounters.activeCheckinStreak},0)`,
     maxCheckinStreak: sql<number>`COALESCE(${userCounters.maxCheckinStreak},0)`,
     customActionsWritten: sql<number>`COALESCE(${userCounters.customActionsWritten},0)`,

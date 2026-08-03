@@ -15,7 +15,7 @@ import type { Context } from "hono";
 import type { DBNewUser, DBNewUserActivityLog, DBUserActivityLog, DBUserForAuth } from "../types/schema.js";
 import type { CheckinClaimType, CheckinPostResponse, CheckinStatusResponse, Gender } from "../types/user.js";
 import { type DBClient, dbRead, dbWrite } from "../db/client.js";
-import { users, books, userComments, userAuth, userCheckins, userCounters, userActivityLogs } from "../db/schema.js";
+import { users, books, userComments, userAuth, userCheckins, userActivityLogs } from "../db/schema.js";
 import { eq, and, gt, ne, sql, desc, or, inArray } from "drizzle-orm";
 import { debounceAsync } from "../utils/debounce.js";
 import { sanitizeTextForDB } from '../utils/text-processing.js';
@@ -492,6 +492,97 @@ async function getLastCheckInDate(userId: string): Promise<string | null> {
 }
 
 /**
+ * Shifts a YYYY-MM-DD date string by a number of days (positive or negative).
+ *
+ * @param iso - Date in YYYY-MM-DD format
+ * @param days - Number of days to shift (negative goes back in time)
+ * @returns Shifted date in YYYY-MM-DD format
+ *
+ * @example
+ * shiftIsoDate('2026-08-03', -1) // '2026-08-02'
+ * shiftIsoDate('2026-08-03', 1)  // '2026-08-04'
+ */
+function shiftIsoDate(iso: string, days: number): string {
+  const [year, month, day] = iso.split('-').map(Number);
+  const shifted = new Date(Date.UTC(year, month - 1, day));
+  shifted.setUTCDate(shifted.getUTCDate() + days);
+  return shifted.toISOString().slice(0, 10);
+}
+
+/**
+ * Computes a user's current and longest check-in streaks directly from their
+ * check-in history.
+ *
+ * This is the single source of truth for streak state. It deliberately does
+ * NOT read `user_counters.active_checkin_streak`: that value is maintained by
+ * a DB trigger that only fires when a check-in row is written, so it can never
+ * reflect a *broken* streak caused simply by skipping days (e.g. last check-in
+ * 1 Aug, now 3 Aug — no trigger fires, the counter stays stale).
+ *
+ * - `activeStreak`: consecutive check-in days ending at today if the user
+ *   already checked in today, otherwise ending at yesterday (a streak stays
+ *   "alive" only until a full day is missed). Returns 0 after any skipped day.
+ * - `longestStreak`: the longest run of consecutive check-in days in history.
+ * - `isCheckedInToday`: whether a check-in exists for the current UTC day.
+ * - `lastCheckInDate`: the most recent check-in date (YYYY-MM-DD) or null.
+ *
+ * @param userId - The user ID to compute streaks for
+ * @returns Active/longest streak, today flag, and last check-in date
+ *
+ * @example
+ * ```typescript
+ * const { activeStreak, longestStreak, isCheckedInToday } = await getCheckInStreaks('user123');
+ * ```
+ */
+export async function getCheckInStreaks(userId: string): Promise<{
+  activeStreak: number;
+  longestStreak: number;
+  isCheckedInToday: boolean;
+  lastCheckInDate: string | null;
+}> {
+  // Full, unbounded history (indexed on user_id). Per-user row count is small
+  // (at most a few hundred over years), so loading all distinct dates is cheap.
+  const dates = await dbRead
+    .selectDistinct({ checkInDate: userCheckins.checkInDate })
+    .from(userCheckins)
+    .where(eq(userCheckins.userId, userId))
+    .orderBy(desc(userCheckins.checkInDate));
+
+  const todayIso = getCurrentUTCDay();
+  const dateSet = new Set(dates.map(d => d.checkInDate));
+  const isCheckedInToday = dateSet.has(todayIso);
+
+  // Active streak: walk consecutive days backwards from today (if checked in
+  // today) or from yesterday (streak alive but today not yet claimed). A gap
+  // at the very first step means the streak was broken — activeStreak stays 0.
+  let activeStreak = 0;
+  const startOffset = isCheckedInToday ? 0 : 1;
+  for (let i = startOffset; i <= 366; i++) {
+    if (dateSet.has(shiftIsoDate(todayIso, -i))) activeStreak++;
+    else break;
+  }
+
+  // Longest streak: scan the full history ascending, counting consecutive runs.
+  let longestStreak = 0;
+  let run = 0;
+  let prevIso: string | null = null;
+  const ascendingDates = [...dates].sort((a, b) => a.checkInDate.localeCompare(b.checkInDate));
+  for (const { checkInDate } of ascendingDates) {
+    if (prevIso === null || checkInDate === shiftIsoDate(prevIso, 1)) run++;
+    else run = 1;
+    if (run > longestStreak) longestStreak = run;
+    prevIso = checkInDate;
+  }
+
+  return {
+    activeStreak,
+    longestStreak,
+    isCheckedInToday,
+    lastCheckInDate: dates[0]?.checkInDate ?? null,
+  };
+}
+
+/**
  * Checks if user can perform daily check-in today
  * 
  * @param userId - The user ID to check
@@ -678,14 +769,12 @@ export async function performDailyCheckIn(userId: string, claimType: CheckinClai
 
       const totalCreditsClaimed = totals[0]?.totalCreditsClaimed || 0;
 
-      // Read the raw streak from counters (trigger already updated it after INSERT)
-      const [counterRow] = await tx
-        .select({ activeCheckinStreak: userCounters.activeCheckinStreak })
-        .from(userCounters)
-        .where(eq(userCounters.userId, userId))
-        .limit(1);
-
-      const newStreak = counterRow?.activeCheckinStreak ?? prevStreak + 1;
+      // New streak = consecutive days ending yesterday (prevStreak) + today's
+      // check-in. This is always correct regardless of whether the user skipped
+      // a day or claimed twice today, and avoids trusting the trigger-maintained
+      // user_counters value (which can be stale). The trigger still updates the
+      // counter for record-keeping, but no read path depends on it.
+      const newStreak = prevStreak + 1;
 
       console.log(`[checkin] 🎁 User ${userId} checked in (${claimType}) and claimed ${creditsToAward} credits!`);
       return {
@@ -759,34 +848,12 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
       .where(eq(userCheckins.userId, userId))
       .limit(1);
 
-    // Get active & longest streak from user counters (trigger computes raw counts
-    // across all check-ins, not capped to DAILY_CHECKIN_DAYS)
-    const [counter] = await dbRead
-      .select({
-        activeCheckinStreak: userCounters.activeCheckinStreak,
-        maxCheckinStreak:    userCounters.maxCheckinStreak,
-      })
-      .from(userCounters)
-      .where(eq(userCounters.userId, userId))
-      .limit(1);
+    // Get live streaks from the check-in history (never read the trigger-backed
+    // user_counters streak columns — they can go stale when a day is skipped).
+    const streaks = await getCheckInStreaks(userId);
 
-    // Build date set and UTC today for streak computations
-    const dateSet = new Set(checkInHistory.map(c => c.checkInDate));
-    const utcToday = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()));
-
-    // Raw consecutive day count from the DB trigger (unbounded), with a
-    // fallback to loop-based computation for users without a counter row.
-    const rawStreak = counter?.activeCheckinStreak ?? (() => {
-      let s = 0;
-      const startOffset = canCheckInStatus.canCheckIn ? 1 : 0;
-      for (let i = startOffset; i <= 366; i++) {
-        const d = new Date(utcToday);
-        d.setUTCDate(d.getUTCDate() - i);
-        const iso = d.toISOString().slice(0, 10);
-        if (dateSet.has(iso)) s++; else break;
-      }
-      return s;
-    })();
+    // Raw consecutive day count from the check-in history.
+    const rawStreak = streaks.activeStreak;
 
     // Raw streak displayed as-is (grid uses todayCycleDay, not currentStreak)
     const displayStreak = rawStreak;
@@ -809,19 +876,12 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
       // Determine streak position for today's slot using modulo arithmetic so
       // that cycles wrap correctly (day 7 → position 7 = big bonus, day 8 →
       // position 1 = regular bonus).
+      // rawStreak = consecutive days ending at yesterday when regular hasn't
+      // been claimed yet; it includes today once the user has already claimed.
       let streakPosition: number;
       if (!claimedRewards.includes('regular')) {
-        let streakBackwards = 0;
-        for (let i = 1; i <= 366; i++) {
-          const d = new Date(utcToday);
-          d.setUTCDate(d.getUTCDate() - i);
-          const iso = d.toISOString().slice(0, 10);
-          if (dateSet.has(iso)) streakBackwards++; else break;
-        }
-        streakPosition = (streakBackwards % DAILY_CHECKIN_DAYS) + 1;
+        streakPosition = (rawStreak % DAILY_CHECKIN_DAYS) + 1;
       } else {
-        // rawStreak includes today's check-in — subtract 1 to find the cycle
-        // position of the day that was just claimed with regular.
         streakPosition = ((rawStreak - 1) % DAILY_CHECKIN_DAYS) + 1;
       }
 
@@ -844,7 +904,7 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
       totalCheckIns: totals[0]?.totalCheckIns || 0,
       totalCreditsClaimed: totals[0]?.totalCreditsClaimed || 0,
       currentStreak: displayStreak,
-      longestStreak: counter?.maxCheckinStreak || 0,
+      longestStreak: streaks.longestStreak,
       todayCycleDay,
       recentCheckIns: checkInHistory,
       isVip,
