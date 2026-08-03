@@ -20,6 +20,7 @@ import routes from "./routes/index.js";
 import { APP_NAME, VERSION } from "./config/constants.js";
 import { IS_PRODUCTION } from "./config/env.js";
 import { warmAIProviders } from "./utils/ai-clients.js";
+import { checkDailyCostSpike } from "./utils/ai-cost.js";
 import type { AppEnv } from "./hono/env.js";
 
 // Initialize Hono app with shared environment bindings.
@@ -152,9 +153,17 @@ const startedAt = Date.now();
 // Vercel monitor pings this every 5 minutes, keeping the function warm.
 // We take the opportunity to pre-warm AI SDKs so the first real request
 // doesn't pay the cold-start penalty.
-app.get("/health", (c) => {
+app.get("/health", async (c) => {
   warmAIProviders();
-  return c.json({ ok: true, uptime: (Date.now() - startedAt) / 1000 });
+  const spendReport = await checkDailyCostSpike();
+  return c.json({
+    ok: true,
+    uptime: (Date.now() - startedAt) / 1000,
+    aiCost: {
+      todayUsd: spendReport.totalCost,
+      overBudget: spendReport.overBudget,
+    },
+  });
 });
 
 // Backward-compatible redirects

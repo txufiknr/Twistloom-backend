@@ -29,6 +29,43 @@ const SEARCH_KEYWORD = "Twistloom";
 /** Hard ceiling for any single upstream fetch (ms). Prevents a hung source from stalling the run. */
 const SOURCE_FETCH_TIMEOUT_MS = 15_000;
 
+/** Base exponential backoff delay (ms) before retrying a transient upstream failure. */
+const RETRY_BASE_DELAY_MS = 1_000;
+
+/**
+ * HTTP statuses treated as transient and worth retrying with backoff.
+ * 403 is included because some public APIs (e.g. Bluesky) intermittently
+ * throttle datacenter IPs; the cost of one retry is negligible.
+ */
+const TRANSIENT_HTTP_STATUSES = new Set([403, 408, 425, 429, 500, 502, 503, 504]);
+
+/**
+ * Pauses execution for the given duration, used to space out retry attempts.
+ *
+ * @param ms - Number of milliseconds to wait
+ * @returns Promise that resolves once the wait elapses
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Determines whether a fetch failure is transient enough to warrant a retry.
+ * Retries timeouts, aborts, network errors, and transient HTTP statuses; all
+ * other errors (e.g. JSON parse failures) are treated as permanent.
+ *
+ * @param error - Error captured from a failed fetch attempt
+ * @returns True when retrying may help; false for permanent failures
+ */
+function isTransientFetchFailure(error: unknown): boolean {
+  const message = getErrorMessage(error).toLowerCase();
+  const statusMatch = message.match(/http error status received: (\d{3})/);
+  if (statusMatch) {
+    return TRANSIENT_HTTP_STATUSES.has(Number(statusMatch[1]));
+  }
+  return /abort|timeout|timed out|network|econn|enet|und_err|socket|fetch failed/i.test(message);
+}
+
 interface NormalizedMention {
   platform: string;
   author: string;
@@ -42,26 +79,40 @@ interface NormalizedMention {
 
 /**
  * Wraps a fetch call with an abort timeout so a single slow upstream cannot
- * block the entire ingestion pipeline. Returns `null` on timeout/network error
- * so the caller can treat it as "no data from this source" without crashing.
+ * block the entire ingestion pipeline. Optionally retries transient failures
+ * with exponential backoff. Returns `null` on final failure so the caller can
+ * treat it as "no data from this source" without crashing.
  *
  * @param url - Target URL
  * @param options - Standard fetch options (headers, method, etc.)
+ * @param retries - Number of additional attempts after the first failure (default: 0)
  * @returns Parsed JSON response, or null if the request failed or timed out
  */
-async function fetchWithTimeout(url: string, options: RequestInit = {}): Promise<any | null> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), SOURCE_FETCH_TIMEOUT_MS);
-  try {
-    const response = await fetch(url, { ...options, signal: controller.signal });
-    if (!response.ok) throw new Error(`HTTP error status received: ${response.status}`);
-    return await response.json();
-  } catch (error) {
-    console.error(`[social-ingest] ⚠️ Fetch failed (${url}):`, getErrorMessage(error));
-    return null;
-  } finally {
-    clearTimeout(timer);
+async function fetchWithTimeout(url: string, options: RequestInit = {}, retries = 0): Promise<any | null> {
+  let lastError: unknown = null;
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), SOURCE_FETCH_TIMEOUT_MS);
+    try {
+      const response = await fetch(url, { ...options, signal: controller.signal });
+      if (!response.ok) throw new Error(`HTTP error status received: ${response.status}`);
+      return await response.json();
+    } catch (error) {
+      lastError = error;
+      if (attempt < retries && isTransientFetchFailure(error)) {
+        await sleep(RETRY_BASE_DELAY_MS * 2 ** attempt);
+      } else if (attempt < retries) {
+        // Permanent failure (e.g. JSON parse error): skip remaining attempts
+        break;
+      }
+    } finally {
+      clearTimeout(timer);
+    }
   }
+
+  console.error(`[social-ingest] ⚠️ Fetch failed (${url}):`, getErrorMessage(lastError));
+  return null;
 }
 
 /**
@@ -104,15 +155,29 @@ function computeLocalHeuristics(textToAnalyze: string, title?: string | null): {
 }
 
 /**
- * Collects mentions from Reddit's unauthenticated public JSON endpoints
+ * Collects mentions from Reddit's unauthenticated public JSON endpoints.
+ * Reddit frequently 403s datacenter requests, so a mirror on old.reddit.com
+ * is tried as a fallback before giving up on this source.
  */
 async function fetchRedditMentions(): Promise<NormalizedMention[]> {
   try {
     console.log("[social-ingest] 🟠 Querying Reddit public search standard endpoints...");
-    const data = await fetchWithTimeout(
-      `https://www.reddit.com/search.json?q=${encodeURIComponent(SEARCH_KEYWORD)}&sort=new&limit=25`,
-      { headers: { "User-Agent": "TwistloomSocialProofBot/1.0.0" } }
-    );
+    const redditUserAgent =
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+
+    const queryUrl = (baseHost: string) =>
+      `https://${baseHost}/search.json?q=${encodeURIComponent(SEARCH_KEYWORD)}&sort=new&limit=25`;
+
+    let data = await fetchWithTimeout(queryUrl("www.reddit.com"), {
+      headers: { "User-Agent": redditUserAgent },
+    });
+
+    if (!data) {
+      console.log("[social-ingest] 🟠 Retrying Reddit via old.reddit.com mirror endpoint...");
+      data = await fetchWithTimeout(queryUrl("old.reddit.com"), {
+        headers: { "User-Agent": redditUserAgent },
+      });
+    }
 
     if (!data) return [];
 
@@ -182,15 +247,18 @@ async function fetchBraveSearchMentions(apiKey?: string): Promise<NormalizedMent
 
   try {
     console.log("[social-ingest] 🦁 Evaluating generic web indexing tables via Brave Search API...");
-    const response = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(SEARCH_KEYWORD)}&count=20`, {
-      headers: { 
-        "Accept": "application/json",
-        "X-Subscription-Token": apiKey 
-      }
-    });
+    const data = await fetchWithTimeout(
+      `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(SEARCH_KEYWORD)}&count=20`,
+      {
+        headers: {
+          "Accept": "application/json",
+          "X-Subscription-Token": apiKey,
+        },
+      },
+      1
+    );
 
-    if (!response.ok) throw new Error(`HTTP error status received: ${response.status}`);
-    const data = await response.json() as any;
+    if (!data) return [];
 
     const results = data?.web?.results || [];
     return results.map((result: any): NormalizedMention => {
@@ -263,8 +331,11 @@ async function fetchGitHubMentions(): Promise<NormalizedMention[]> {
 async function fetchBlueskyMentions(): Promise<NormalizedMention[]> {
   try {
     console.log("[social-ingest] 🦋 Querying Bluesky public AT Protocol search endpoint...");
+    // Retry transient 403/5xx throttling from datacenter IPs with exponential backoff
     const data = await fetchWithTimeout(
-      `https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts?q=${encodeURIComponent(SEARCH_KEYWORD)}&limit=25`
+      `https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts?q=${encodeURIComponent(SEARCH_KEYWORD)}&limit=25`,
+      {},
+      2
     );
 
     if (!data) return [];
@@ -330,7 +401,9 @@ export async function runSocialMentionCollection(): Promise<void> {
 
     console.log(`[social-ingest] 🔨 Processing ${unifiedCollection.length} raw inbound nodes for validation...`);
     const { extractAndResolveTwistloomLink } = await import("../services/social/extract-twistloom-link.js");
-    let loadedCount = 0;
+    let insertedCount = 0;
+    let skippedEmptyCount = 0;
+    let errorCount = 0;
     let autoLinkedCount = 0;
 
     for (const mention of unifiedCollection) {
@@ -342,7 +415,10 @@ export async function runSocialMentionCollection(): Promise<void> {
           .replace(/&#x27;/g, "'")
           .trim();
 
-        if (!strippedContent) continue;
+        if (!strippedContent) {
+          skippedEmptyCount++;
+          continue;
+        }
 
         // Run algorithmic sorting metrics local calculations
         const heuristics = computeLocalHeuristics(strippedContent, mention.title);
@@ -384,9 +460,10 @@ export async function runSocialMentionCollection(): Promise<void> {
           })
           .onConflictDoNothing({ target: socialMentions.url });
 
-        loadedCount++;
+        insertedCount++;
       } catch (innerError) {
-        // Shiled iterating items from general loops terminations
+        // Shield iterating items from general loop terminations
+        errorCount++;
         console.error(`[social-ingest] ⚠️ Encountered issues handling record point (${mention.url}):`, getErrorMessage(innerError));
       }
     }
@@ -394,8 +471,17 @@ export async function runSocialMentionCollection(): Promise<void> {
     const totalDuration = Date.now() - startedAt;
     console.log(`[social-ingest] ✅ Aggregation pipeline concluded safely in ${totalDuration}ms:`, {
       totalDiscovered: unifiedCollection.length,
-      processedWithoutExceptions: loadedCount,
+      inserted: insertedCount,
+      skippedEmptyContent: skippedEmptyCount,
+      itemErrors: errorCount,
       autoLinked: autoLinkedCount,
+      perSource: {
+        reddit: redditResults.length,
+        hackernews: hnResults.length,
+        brave: braveResults.length,
+        github: githubResults.length,
+        bluesky: blueskyResults.length,
+      },
     });
 
   } catch (error) {

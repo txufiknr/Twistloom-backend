@@ -879,21 +879,20 @@ async function aiPrompt(options) {
 **Files affected:** `src/utils/ai-chat.ts`, `src/utils/ai-limiters.ts`.  
 **Effort:** 📋 Medium.
 
-### 13.2 AI cost tracking 💡
+### 13.2 AI cost tracking ✅
 
-**Current state:** Token usage is tracked per provider in the `usage` table, but not cost.
+**Current state:** Token usage is tracked per provider in the `usage` table. Cost is now estimated and surfaced.
 
-**Recommendation:** Add cost estimation using provider-published per-token rates:
-```typescript
-const AI_COST_PER_TOKEN: Record<AIChatProvider, { input: number; output: number }> = {
-  gemini: { input: 0.000_000_125, output: 0.000_000_500 },  // $ per token
-  github: { input: 0.000_002_500, output: 0.000_010_000 },
-  // ...
-};
-```
+**Status:** ✅ Implemented — `src/utils/ai-cost.ts` adds:
+- `AI_COST_PER_MILLION_PREVIEW` per-provider input/output $/1M pricing + `AI_MODEL_COST_OVERRIDES` for pro tiers (`gpt-4o` vs `mini`, `gemini-flash` vs `pro`, `llama-70b` vs `8b`, etc.).
+- `estimateCost(provider, model, inputTokens, outputTokens)` — trivially-safe, pure helper.
+- `getDailyCostSummary(date?)` — read-only aggregation of the `usage` table grouped by (provider, model).
+- `checkDailyCostSpike(thresholdUsd)` — passive daily-budget alert (never blocks requests).
 
-Track estimated daily cost and alert on spikes.  
-**Effort:** 📋 Low.
+Wired into `/api/health` via `checkDailyCostSpike()`; the endpoint now returns `aiCost: { todayUsd, overBudget }`. No schema or migration changes required — it reuses the existing `usage` table.
+
+**Note:** Rates are estimates for budgeting/alerts (not billing) — adjust `AI_MODEL_COST_OVERRIDES` as provider pricing drifts.  
+**Effort:** ✅ Implemented (Low).
 
 ### 13.3 Request deduplication 💡
 
@@ -954,7 +953,7 @@ app.get('/health', async (c) => {
 | ⭐⭐⭐⭐ | Structured logging (JSON) | ✅/⚠️ Utility done | Medium | 10 |
 | ⭐⭐⭐⭐ | Idempotency for mutation endpoints | High | Medium | 5 |
 | ⭐⭐⭐⭐ | Partial Prerendering (PPR) | High | Medium | 2 |
-| ⭐⭐⭐⭐ | AI cost tracking & alerts | High | Low | 13 |
+| ⭐⭐⭐⭐ | AI cost tracking & alerts | ✅ Done | Low | 13 |
 | ⭐⭐⭐⭐ | PR quality CI workflow | ✅ Done | Low | 12 |
 | ⭐⭐⭐ | Bundle analysis + tree shaking | ✅/⚠️ Analyzer done | Low | 2 |
 | ⭐⭐⭐ | Translation namespace splitting | Medium | Medium | 4 |
@@ -992,7 +991,7 @@ app.get('/health', async (c) => {
 
 ### Phase 4 — Observability (1-2 weeks)
 1. Structured logging migration (replace all `console.*`)
-2. AI cost tracking dashboard
+2. ✅ AI cost tracking dashboard — `src/utils/ai-cost.ts` + `/health` spike alert
 3. Performance budget enforcement in CI
 4. Evaluate OpenTelemetry for distributed tracing
 
@@ -1009,6 +1008,7 @@ app.get('/health', async (c) => {
 | `src/db/client.ts` | Neon pool + read replica config |
 | `src/routes/` | 9 route modules |
 | `src/services/` | 26 business logic services |
+| `src/utils/ai-cost.ts` | AI cost estimation + daily spend tracking/alerts |
 | `src/utils/ai-chat.ts` | Multi-provider AI orchestration |
 | `src/utils/ai-clients.ts` | AI client initialization (lazy singletons) |
 | `src/utils/ai-limiters.ts` | Provider rate limiters |

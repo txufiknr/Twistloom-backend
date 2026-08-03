@@ -41,6 +41,9 @@ Defined in `src/db/schema.ts` as the `socialMentions` (table `social_mentions`):
 | `relevanceScore` | real | Local heuristic priority score; drives queue ordering |
 | `status` | enum | `pending` \| `approved` \| `rejected` (default `pending`) |
 | `featured` | boolean | Elevated to the public homepage wall by an admin (default `false`) |
+| `relatedBookId` | uuid \| null | FK → `books.id` (set null on delete); linked for "Read the story" CTA |
+| `relatedPageId` | uuid \| null | FK → `pages.id`; optional deep endpoint (CTA still defaults to book landing) |
+| `relatedBookSource` | enum | `auto` (cron-extracted) or `admin` (manual, sticky) |
 | `publishedAt` | timestamptz \| null | Original post time |
 | `createdAt` / `updatedAt` | timestamptz | Bookkeeping |
 
@@ -116,10 +119,15 @@ lifecycle, so the public wall can union them after admin review.
    self-contained and fault-tolerant — a network/parse failure returns `[]`
    rather than throwing, so one broken source never kills the run.
 2. For each collected mention:
-   - Strip HTML entities/markup from the body.
+   - Strip HTML entities/markup from the body; skip entries left empty.
    - Compute local relevance + sentiment heuristics.
+   - Best-effort extract + resolve a first-party public book link from the text
+     (`extractAndResolveTwistloomLink`, in `src/services/social/`) — only public
+     + active books, only first-party hosts; sets `relatedBook*` fields.
    - `INSERT ... ON CONFLICT DO NOTHING (url)` — idempotent across runs.
-3. Log a summary (discovered vs. successfully persisted counts) and duration.
+3. Log a rich summary: `totalDiscovered`, `inserted`, `skippedEmptyContent`,
+   `itemErrors`, `autoLinked`, and a per-source breakdown (`reddit`,
+   `hackernews`, `brave`, `github`, `bluesky`), plus the run duration.
 
 ### Sources
 
@@ -127,22 +135,26 @@ All sources are **keyless** except Brave Search.
 
 | Source | Endpoint | Key required | Notes |
 |--------|----------|--------------|-------|
-| Reddit | `reddit.com/search.json` | No | Public JSON search; `User-Agent` header required |
+| Reddit | `reddit.com/search.json` (with `old.reddit.com` mirror fallback) | No | Browser `User-Agent`; on `www` 403/0 results it retries `old.reddit.com` |
 | Hacker News | `hn.algolia.com/api/v1/search` | No | Algolia API; covers stories + comments |
 | GitHub | `api.github.com/search/issues` | No | Issues, PRs, and Discussions (10 req/min unauthenticated) |
-| Bluesky | `public.api.bsky.app/xrpc/app.bsky.feed.searchPosts` | No | Public AT Protocol search |
-| Brave Search | `api.search.brave.com/res/v1/web/search` | **Yes** (`BRAVE_SEARCH_API_KEY`) | Generic web results; platform label = source hostname |
+| Bluesky | `public.api.bsky.app/xrpc/app.bsky.feed.searchPosts` | No | Public AT Protocol search; retried (×2) on transient 403/5xx |
+| Brave Search | `api.search.brave.com/res/v1/web/search` | **Yes** (`BRAVE_SEARCH_API_KEY`) | Generic web results; platform label = source hostname; 1 retry |
 
 ### Safety mechanisms
 
 - **`fetchWithTimeout`** wraps every upstream call with an `AbortController`
   (15s ceiling). A hung source yields `null` → treated as "no data", never a
-  stall.
+  stall. It also supports **retry with exponential backoff** for transient
+  failures (403/408/425/429/5xx, timeouts, network errors): the first attempt
+  fails, sleeps `1s · 2^n`, then retries (per-source retry counts above). 
 - **Local-only scoring** — relevance/sentiment are computed with deterministic
   string heuristics (keyword matches, word-boundary sentiment lexicon). No
   external LLM/semantic calls, so the cron is cheap and offline-safe.
 - **Idempotent writes** — unique `url` constraint + `onConflictDoNothing`
   prevents duplicates across repeated runs.
+- **Per-item try/catch** — each record is processed independently; a failure on
+  one row is logged as an `itemError` and never aborts the loop.
 
 ### Heuristics (`computeLocalHeuristics`)
 
@@ -159,8 +171,9 @@ All sources are **keyless** except Brave Search.
 ## Scheduling
 
 `.github/workflows/social-mention-ingestion.yml` runs the compiled
-`dist/cron/social-mentions.js` on a **weekly** schedule (Monday 02:00 UTC) and
-supports `workflow_dispatch` for manual runs. Required secrets:
+`dist/cron/social-mentions.js` on a **weekly** schedule (Monday **06:00 UTC**,
+cron `0 6 * * 1`) and supports `workflow_dispatch` for manual runs. Required
+secrets:
 
 - `DATABASE_URL` / `DATABASE_READ_URL` — write connection (the cron uses
   `dbWrite`).
@@ -172,8 +185,10 @@ exists before executing.
 ## Admin Curation API
 
 All routes under `/admin/social-mentions` require `requireAuth` **and**
-`requireSystemAdmin` (the requester's `req.userId` must equal
-`process.env.SYSTEM_USER_ID`, else `403`).
+`requirePermission("social_mentions")` (defined in
+`src/middleware/admin-auth.ts`). The requester must be the system super admin
+(`userId === process.env.SYSTEM_USER_ID`) or an admin row in `admin_users`
+granted the `social_mentions` capability — otherwise `401`/`403`.
 
 | Method | Path | Purpose |
 |--------|------|---------|
@@ -201,8 +216,9 @@ Homepage wall query (status='approved' AND featured=true)
 To add a new source:
 
 1. Add a `fetchXMentions(): Promise<NormalizedMention[]>` function modeled on the
-   existing ones — use `fetchWithTimeout`, normalize to `NormalizedMention`,
-   catch errors and return `[]`.
+   existing ones — use `fetchWithTimeout` (pass a `retries` count for sources with
+   transient 403/5xx behavior), normalize to `NormalizedMention`, catch errors
+   and return `[]`.
 2. Add it to the `Promise.all` array in `runSocialMentionCollection`.
 3. Map the source to a stable `platform` string (used for filtering and labels).
 4. No schema/migration change is needed unless you add a new stored column.
@@ -229,7 +245,7 @@ All variables used by the ingestion cron and the admin curation API.
 |----------|---------|-----------------|
 | `DATABASE_URL` | Primary (write) Neon Postgres connection string | [Neon Console](https://console.neon.tech) → project → Connection Details |
 | `DATABASE_READ_URL` | Read-replica connection (falls back to `DATABASE_URL` if unset) | Same as `DATABASE_URL`; optional but recommended in production |
-| `SYSTEM_USER_ID` | UUID of the single admin user; gates all `/admin` curation routes | Your own DB `users.id` for the admin account |
+| `SYSTEM_USER_ID` | UUID of the super-admin user; grants full admin + bypasses per-capability RBAC | Your own DB `users.id` for the admin account |
 
 ### Optional (enhances ingestion)
 
