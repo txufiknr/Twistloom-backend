@@ -342,7 +342,7 @@ This follows the recommended pattern exactly. **No changes needed.**
 
 **One consideration:** `parseJsonBody` runs **before** rate limiting. If a malicious client sends a huge JSON payload, the body is parsed before rate limiting kicks in. Consider moving rate limiting earlier in the chain.
 
-### 5.3 Rate limiting — granular controls ⚠️
+### 5.3 Rate limiting — granular controls ✅
 
 **Current state:**
 - Global: 100 req/min per authenticated user (Upstash sliding window) — ✅
@@ -350,21 +350,15 @@ This follows the recommended pattern exactly. **No changes needed.**
 - Per-route: `rateLimit(config)` available — ✅
 - AI provider throttle: `RateLimiter.throttle()` serializes concurrent calls — ✅
 
-**Gap:** No per-route rate limits on:
-- `POST /api/auth/login` — brute-force target
-- `POST /api/auth/signup` — account creation abuse
-- AI generation endpoints — cost amplification risk
+**Per-route limits now in place:** ✅
+- `POST /api/books` — 5/min (`BOOK_CREATION_RATE_LIMIT`)
+- `POST /api/books/stream` — 10/min (`BOOK_STREAM_RATE_LIMIT`)
+- `POST /api/books/async` — 10/min (`BOOK_ASYNC_RATE_LIMIT`)
+- `POST /api/books/:id/:pageId/actions/hint` — 30/min (`ACTION_HINT_RATE_LIMIT`)
+- `POST /api/books/:id/:pageId/custom-actions/preview` — 20/min (`CUSTOM_ACTION_PREVIEW_RATE_LIMIT`)
+- `POST /api/books/:id/:pageId/custom-actions/submit` — 10/min (`CUSTOM_ACTION_SUBMIT_RATE_LIMIT`)
 
-**Recommendation:** Add explicit `rateLimit()` calls to sensitive routes:
-```typescript
-// src/routes/auth.ts
-app.post('/api/auth/login',
-  rateLimit({ windowMs: 60_000, max: 5 }),  // 5 attempts/minute
-  async (c) => { ... }
-);
-```
-
-**Effort:** 📋 Low.
+All tunable at deploy time via env vars (`RLIST_MAX_<NAME>` / `RLIST_SECONDS_<NAME>`) with "why this value" rationale in `src/config/ai-rate-limits.ts`. Limits key on the authenticated `userId` via `rateLimit()` (Upstash sliding window, fail-open without Redis). Auth routes were already covered by `checkRateLimitByIP` (in-memory LRU).
 
 ### 5.4 Idempotency for mutations 📋
 
@@ -946,7 +940,7 @@ app.get('/health', async (c) => {
 |------|------------|--------|--------|-------|
 | ⭐⭐⭐⭐⭐ | Multi-layer caching (already 90% done) | Extremely High | Low | 8 |
 | ⭐⭐⭐⭐⭐ | Request validation with Zod | Extremely High | High | 5 |
-| ⭐⭐⭐⭐⭐ | Rate limiting on auth/AI endpoints | Extremely High | Low | 5, 11 |
+| ⭐⭐⭐⭐⭐ | Rate limiting on auth/AI endpoints | ✅ Done (auth IP + AI per-route) | Low | 5, 11 |
 | ⭐⭐⭐⭐⭐ | Circuit breaker for AI providers | Extremely High | Medium | 13 |
 | ⭐⭐⭐⭐ | Response compression (gzip/brotli) | ✅ Done | Low | 5 |
 | ⭐⭐⭐⭐ | Materialized views for leaderboards | High | Medium | 7 |
@@ -1016,6 +1010,7 @@ app.get('/health', async (c) => {
 | `src/utils/prompt.ts` | Prompt templates (5045 lines) |
 | `src/utils/error.ts` | Error helpers + GenAI error classification |
 | `src/utils/retry.ts` | Exponential backoff with jitter |
+| `src/config/ai-rate-limits.ts` | Per-route AI generation rate limits (env-tunable) |
 | `src/config/redis.ts` | Upstash Redis config + cache TTLs |
 | `src/cron/` | 15 cron job scripts |
 | `.github/workflows/` | 8 GitHub Actions workflow files |

@@ -6,6 +6,51 @@ import { LRUCache } from "lru-cache";
 import { getErrorMessage } from "./error.js";
 
 /**
+ * HTTP statuses treated as transient network failures worth retrying with
+ * backoff (timeouts, throttling, upstream 5xx). 403 is included because some
+ * public APIs intermittently throttle datacenter IPs before re-issuing the
+ * response on the next attempt.
+ */
+export const TRANSIENT_HTTP_STATUS_CODES = new Set([403, 408, 425, 429, 500, 502, 503, 504]);
+
+/**
+ * Pauses execution for the given duration, used to space out retry attempts.
+ *
+ * @param ms - Number of milliseconds to wait
+ * @returns Promise that resolves once the wait elapses
+ */
+export function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Returns whether an HTTP status code is considered transient and retryable.
+ *
+ * @param status - HTTP status code to evaluate
+ * @returns True when the status is worth a retry with backoff
+ */
+export function isTransientHttpStatus(status: number): boolean {
+  return TRANSIENT_HTTP_STATUS_CODES.has(status);
+}
+
+/**
+ * Determines whether a fetch failure is transient enough to warrant a retry.
+ * Retries timeouts, aborts, network errors, and transient HTTP statuses; all
+ * other errors (e.g. JSON parse failures) are treated as permanent.
+ *
+ * @param error - Error captured from a failed fetch attempt
+ * @returns True when retrying may help; false for permanent failures
+ */
+export function isTransientFetchFailure(error: unknown): boolean {
+  const message = getErrorMessage(error).toLowerCase();
+  const statusMatch = message.match(/http error status received: (\d{3})/);
+  if (statusMatch) {
+    return isTransientHttpStatus(Number(statusMatch[1]));
+  }
+  return /abort|timeout|timed out|network|econn|enet|und_err|socket|fetch failed/i.test(message);
+}
+
+/**
  * Retry configuration options
  */
 export interface RetryOptions {
@@ -176,7 +221,7 @@ export async function retryWithBackoff<T>(
       opts.onRetry(attempt + 1, error);
 
       // Wait before retrying
-      await new Promise(resolve => setTimeout(resolve, delay));
+      await sleep(delay);
     }
   }
 
@@ -392,7 +437,7 @@ export async function retryWithUniqueConstraint<T, D = any>(
       // Call retry callback if provided
       retryOptions.onRetry?.(attempt + 1, error);
 
-      await new Promise(resolve => setTimeout(resolve, delay));
+      await sleep(delay);
     }
   }
 

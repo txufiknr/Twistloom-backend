@@ -99,6 +99,7 @@ import { streamSSE } from "hono/streaming";
 import { getClientIp } from "../hono/express-shim.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
+import { rateLimit } from "../middleware/rate-limit.js";
 import { books, branches, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress, userCompletedBooks, uploadedImages, userActivityLogs, pages, bookTestimonials } from "../db/schema.js";
 import { getErrorMessage, cApiError, cForbiddenError, cNotFoundError, cRateLimitError, cUnauthorizedError, cValidationError } from "../utils/error.js";
 import { sanitizeTextForDB, sanitizeKeywords } from '../utils/text-processing.js';
@@ -156,6 +157,7 @@ import { requireEnv } from "../utils/env.js";
 import type { UserComment } from "../types/user.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
 import { MAX_CONCURRENT_GENERATIONS, AI_VALIDATION_TIMEOUT_MS } from "../config/book-creation.js";
+import { BOOK_CREATION_RATE_LIMIT, BOOK_STREAM_RATE_LIMIT, BOOK_ASYNC_RATE_LIMIT, ACTION_HINT_RATE_LIMIT, CUSTOM_ACTION_PREVIEW_RATE_LIMIT, CUSTOM_ACTION_SUBMIT_RATE_LIMIT } from "../config/ai-rate-limits.js";
 import { generateRandomCharacter } from "../utils/characters.js";
 
 const router = new Hono<AppEnv>();
@@ -225,7 +227,7 @@ async function isConcurrentGenerationLimitReached(userId: string, c: Context<App
  *   "initialState": { "page": 1, "maxPage": 120, "flags": { "trust": "medium", "fear": "low" }, "threads": [], "traumaTags": [], "psychologicalProfile": { "archetype": "investigator" } }
  * }
  */
-router.post("/", requireAuth, async (c) => {
+router.post("/", requireAuth, rateLimit(BOOK_CREATION_RATE_LIMIT), async (c) => {
   try {
     const { theme, mcCandidate, generateCoverImage, advancedOptions, mode } = c.get("body");
     const userId = c.get("userId")!;
@@ -347,7 +349,7 @@ router.post('/workflow-webhook', async (c) => {
  * event: error
  * data: {"error":"Theme validation failed"}
  */
-router.post("/stream", requireAuth, async (c) => {
+router.post("/stream", requireAuth, rateLimit(BOOK_STREAM_RATE_LIMIT), async (c) => {
   try {
     const { theme, mcCandidate, generateCoverImage, advancedOptions, mode } = c.get("body");
     const userId = c.get("userId")!;
@@ -429,7 +431,7 @@ router.post("/stream", requireAuth, async (c) => {
  * // Response 202
  * { "bookId": "01912345-6789-1234-5678-123456789012", "message": "Book creation started..." }
  */
-router.post('/async', requireAuth, async (c) => {
+router.post('/async', requireAuth, rateLimit(BOOK_ASYNC_RATE_LIMIT), async (c) => {
   try {
     const { theme, mcCandidate: initialMCCandidate, generateCoverImage, advancedOptions, mode: requestedMode } = c.get("body");
     const userId = c.get("userId")!;
@@ -4381,7 +4383,7 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
  *   "alreadyPurchased": false
  * }
  */
-router.post("/:identifier/:pageId/actions/hint", requireAuth, async (c) => {
+router.post("/:identifier/:pageId/actions/hint", requireAuth, rateLimit(ACTION_HINT_RATE_LIMIT), async (c) => {
   try {
     const { identifier, pageId: pageIdParam } = c.req.param();
     const { actionText: rawActionText } = c.get("body");
@@ -5003,7 +5005,7 @@ router.get("/:identifier/locked-paths", requireAuth, async (c) => {
  *   "message": "That doesn't match what's true in this story so far."
  * }
  */
-router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, async (c) => {
+router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, rateLimit(CUSTOM_ACTION_PREVIEW_RATE_LIMIT), async (c) => {
   try {
     const { identifier, pageId: pageIdParam } = c.req.param();
     const { text: rawText } = c.get("body");
@@ -5159,7 +5161,7 @@ router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, async (c
  *   }
  * }
  */
-router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (c) => {
+router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit(CUSTOM_ACTION_SUBMIT_RATE_LIMIT), async (c) => {
   let creditsCost: number = CREDIT_COSTS.CUSTOM_ACTION;
   try {
     const { identifier, pageId: pageIdParam } = c.req.param();

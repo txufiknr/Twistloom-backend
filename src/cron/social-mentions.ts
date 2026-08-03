@@ -22,49 +22,13 @@
  * Schedule: Recommended to execute every 12 to 24 hours.
  */
 import { getErrorMessage } from "../utils/error.js";
+import { retryWithBackoff, isTransientFetchFailure } from "../utils/retry.js";
 
 // Canonical search configurations
 const SEARCH_KEYWORD = "Twistloom";
 
 /** Hard ceiling for any single upstream fetch (ms). Prevents a hung source from stalling the run. */
 const SOURCE_FETCH_TIMEOUT_MS = 15_000;
-
-/** Base exponential backoff delay (ms) before retrying a transient upstream failure. */
-const RETRY_BASE_DELAY_MS = 1_000;
-
-/**
- * HTTP statuses treated as transient and worth retrying with backoff.
- * 403 is included because some public APIs (e.g. Bluesky) intermittently
- * throttle datacenter IPs; the cost of one retry is negligible.
- */
-const TRANSIENT_HTTP_STATUSES = new Set([403, 408, 425, 429, 500, 502, 503, 504]);
-
-/**
- * Pauses execution for the given duration, used to space out retry attempts.
- *
- * @param ms - Number of milliseconds to wait
- * @returns Promise that resolves once the wait elapses
- */
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
- * Determines whether a fetch failure is transient enough to warrant a retry.
- * Retries timeouts, aborts, network errors, and transient HTTP statuses; all
- * other errors (e.g. JSON parse failures) are treated as permanent.
- *
- * @param error - Error captured from a failed fetch attempt
- * @returns True when retrying may help; false for permanent failures
- */
-function isTransientFetchFailure(error: unknown): boolean {
-  const message = getErrorMessage(error).toLowerCase();
-  const statusMatch = message.match(/http error status received: (\d{3})/);
-  if (statusMatch) {
-    return TRANSIENT_HTTP_STATUSES.has(Number(statusMatch[1]));
-  }
-  return /abort|timeout|timed out|network|econn|enet|und_err|socket|fetch failed/i.test(message);
-}
 
 interface NormalizedMention {
   platform: string;
@@ -80,8 +44,9 @@ interface NormalizedMention {
 /**
  * Wraps a fetch call with an abort timeout so a single slow upstream cannot
  * block the entire ingestion pipeline. Optionally retries transient failures
- * with exponential backoff. Returns `null` on final failure so the caller can
- * treat it as "no data from this source" without crashing.
+ * with exponential backoff (delegated to {@link retryWithBackoff}).
+ * Returns `null` on final failure so the caller can treat it as "no data from
+ * this source" without crashing.
  *
  * @param url - Target URL
  * @param options - Standard fetch options (headers, method, etc.)
@@ -89,30 +54,28 @@ interface NormalizedMention {
  * @returns Parsed JSON response, or null if the request failed or timed out
  */
 async function fetchWithTimeout(url: string, options: RequestInit = {}, retries = 0): Promise<any | null> {
-  let lastError: unknown = null;
-
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), SOURCE_FETCH_TIMEOUT_MS);
-    try {
-      const response = await fetch(url, { ...options, signal: controller.signal });
-      if (!response.ok) throw new Error(`HTTP error status received: ${response.status}`);
-      return await response.json();
-    } catch (error) {
-      lastError = error;
-      if (attempt < retries && isTransientFetchFailure(error)) {
-        await sleep(RETRY_BASE_DELAY_MS * 2 ** attempt);
-      } else if (attempt < retries) {
-        // Permanent failure (e.g. JSON parse error): skip remaining attempts
-        break;
+  try {
+    return await retryWithBackoff(
+      async () => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), SOURCE_FETCH_TIMEOUT_MS);
+        try {
+          const response = await fetch(url, { ...options, signal: controller.signal });
+          if (!response.ok) throw new Error(`HTTP error status received: ${response.status}`);
+          return await response.json();
+        } finally {
+          clearTimeout(timer);
+        }
+      },
+      {
+        maxRetries: retries,
+        shouldRetry: isTransientFetchFailure,
       }
-    } finally {
-      clearTimeout(timer);
-    }
+    );
+  } catch (error) {
+    console.error(`[social-ingest] ⚠️ Fetch failed (${url}):`, getErrorMessage(error));
+    return null;
   }
-
-  console.error(`[social-ingest] ⚠️ Fetch failed (${url}):`, getErrorMessage(lastError));
-  return null;
 }
 
 /**
