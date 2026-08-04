@@ -796,6 +796,28 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
       ) DESC`);
     }
 
+    case 'likes': {
+      // Filter to books the user has liked (from user_likes where target_type = 'book')
+      // Sort by like creation date (most recent first)
+      if (!currentUserId) {
+        const noop = query.where(sql`1=0`);
+        if (countQuery) countQuery.where(sql`1=0`);
+        return noop;
+      }
+      const likeCondition = sql`EXISTS (
+        SELECT 1 FROM user_likes ul
+        WHERE ul.user_id = ${currentUserId}
+          AND ul.target_type = 'book'
+          AND ul.target_id = books.id
+      )`;
+      query = query.where(likeCondition);
+      if (countQuery) countQuery.where(likeCondition);
+      return query.orderBy(sql`(
+        SELECT ul.created_at FROM user_likes ul
+        WHERE ul.user_id = ${currentUserId} AND ul.target_type = 'book' AND ul.target_id = books.id
+      ) DESC`);
+    }
+
     case 'recommendations': {
       // Recommend books based on user likes
       // Get books similar to what the user has liked using keyword similarity

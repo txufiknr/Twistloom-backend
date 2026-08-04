@@ -22,7 +22,7 @@
 
 import { type DBTransaction, dbWrite, dbRead } from '../db/client.js';
 import { users, transactions, userNotifications } from '../db/schema.js';
-import { CREDIT_COSTS, type CreditCostKey } from '../config/credits.js';
+import { CREDIT_COSTS, getCreditCostForUser, isDemoUser, type CreditCostKey } from '../config/credits.js';
 import { generateId } from '../utils/uuid.js';
 import { eq, and, sql } from 'drizzle-orm';
 import { CREDIT_ERRORS } from '../config/errors.js';
@@ -63,7 +63,7 @@ export async function consumeCredits(
     return { remainingCredits: 0, transactionId: generateId() };
   }
 
-  const cost = CREDIT_COSTS[costKey];
+  const cost = getCreditCostForUser(userId, costKey);
   if (cost < 0) throw new Error(`Invalid credit cost: ${costKey} must be greater than or equal to 0`);
 
   // Free demo / zero-cost actions — no balance change or usage row
@@ -187,7 +187,7 @@ export async function hasSufficientCredits(
   userId: string,
   costKey: CreditCostKey
 ): Promise<boolean> {
-  const cost = CREDIT_COSTS[costKey];
+  const cost = getCreditCostForUser(userId, costKey);
   if (cost < 0) throw new Error(`Invalid credit cost: ${costKey} must be greater than or equal to 0`);
   if (cost === 0) return true;
 
@@ -310,7 +310,7 @@ export async function refundCredits(
   costKey: CreditCostKey,
   options: ConsumeCreditsOptions = {}
 ): Promise<number> {
-  const amount = CREDIT_COSTS[costKey];
+  const amount = getCreditCostForUser(userId, costKey);
   if (amount < 0) throw new Error(`Invalid credit cost: ${costKey} must be greater than or equal to 0`);
 
   // Nothing was charged (free demo / zero-cost) — no refund needed
@@ -375,7 +375,7 @@ export async function refundCreditsIdempotent(
   correlationId: string,
   options: ConsumeCreditsOptions = {}
 ): Promise<number> {
-  const amount = CREDIT_COSTS[costKey];
+  const amount = getCreditCostForUser(userId, costKey);
   if (amount < 0) throw new Error(`Invalid credit cost: ${costKey} must be greater than or equal to 0`);
 
   // Nothing was charged (free demo / zero-cost) — no refund needed
@@ -481,7 +481,7 @@ export async function executeWithCredits<T>(
   operation: (tx: DBTransaction) => Promise<T>,
   options: ConsumeCreditsOptions = {}
 ): Promise<ConsumeCreditsResult<T>> {
-  const cost = typeof costKey === 'number' ? costKey : CREDIT_COSTS[costKey];
+  const cost = typeof costKey === 'number' ? (isDemoUser(userId) ? 0 : costKey) : getCreditCostForUser(userId, costKey);
   if (cost < 0) throw new Error(`Invalid credit cost: ${costKey} must be greater than or equal to 0`);
 
   const correlationId = options.correlationId || generateId();

@@ -45,14 +45,39 @@ import type { BookMode } from "../types/book.js";
 export const FEATURE_FREE_DEMO = process.env.FEATURE_FREE_DEMO !== "false";
 
 /**
- * Applies free-demo pricing: zeros every cost when {@link FEATURE_FREE_DEMO} is on.
+ * User ID of the dedicated demo account.
  *
- * @param costs - Base (paid) credit cost map
- * @returns Zeroed map in free demo, otherwise the original costs
+ * The demo user is always treated as if {@link FEATURE_FREE_DEMO} is enabled —
+ * every credit cost resolves to zero for this user regardless of the global
+ * flag (used to demo the platform without spending credits).
  */
-function applyFreeDemoPricing<T extends Record<string, number>>(costs: T): { [K in keyof T]: number } {
-  if (!FEATURE_FREE_DEMO) return costs;
+export const DEMO_USER_ID = process.env.DEMO_USER_ID;
+
+/**
+ * Applies free-demo pricing: zero every cost when {@link FEATURE_FREE_DEMO} is on.
+ *
+ * @param costs - Reduced (paid) credit cost map
+ * @param forceZero - When true, always zero the costs (ignores the feature flag)
+ * @returns Zeroed map when free demo is on (or `forceZero`), otherwise the original costs
+ */
+export function applyFreeDemoPricing<T extends Record<string, number>>(
+  costs: T,
+  forceZero = false
+): { [K in keyof T]: number } {
+  if (!forceZero && !FEATURE_FREE_DEMO) return costs;
   return Object.fromEntries(Object.keys(costs).map((key) => [key, 0])) as { [K in keyof T]: number };
+}
+
+/**
+ * Returns whether the given user is the configured demo account.
+ *
+ * `false` when `DEMO_USER_ID` is not configured or the id does not match.
+ *
+ * @param userId - User id to test
+ * @returns True when the user is the demo account
+ */
+export function isDemoUser(userId: string | null | undefined): boolean {
+  return Boolean(userId && DEMO_USER_ID && userId === DEMO_USER_ID);
 }
 
 /**
@@ -136,6 +161,39 @@ export function getBookModeCreditCost(mode: BookMode | null | undefined): number
     return BOOK_MODE_CREDIT_COSTS[mode as BookMode];
   }
   return BOOK_MODE_CREDIT_COSTS.interactive;
+}
+
+/**
+ * Returns the credit cost for a book creation mode for a specific user.
+ *
+ * Always `0` for the demo user (see {@link isDemoUser}), otherwise delegates
+ * to {@link getBookModeCreditCost}.
+ *
+ * @param userId - User (demo users always pay 0)
+ * @param mode - Book creation mode, or undefined to use the default
+ * @returns Credit cost for that mode for the given user
+ */
+export function getBookModeCreditCostForUser(
+  userId: string | null | undefined,
+  mode: BookMode | null | undefined
+): number {
+  if (isDemoUser(userId)) return 0;
+  return getBookModeCreditCost(mode);
+}
+
+/**
+ * Returns the numeric credit cost for an action key for a specific user.
+ *
+ * Always `0` for the demo user (see {@link isDemoUser}), otherwise the
+ * configured {@link CREDIT_COSTS} value.
+ *
+ * @param userId - User (or (always pay 0) for the demo account)
+ * @param costKey - Key into `CREDIT_COSTS` configuration
+ * @returns Credit cost for that key for the given user
+ */
+export function getCreditCostForUser(userId: string | null | undefined, costKey: CreditCostKey): number {
+  if (isDemoUser(userId)) return 0;
+  return CREDIT_COSTS[costKey];
 }
 
 /** Credits bonus for first-time users */

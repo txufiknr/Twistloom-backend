@@ -87,6 +87,10 @@ export function getEnrichedUserSelect() {
     topupCredits: sql<number>`COALESCE(${userCounters.topupCredits},0)`,
     referredUsers: sql<number>`COALESCE(${userCounters.referredUsers},0)`,
     followersCount: sql<number>`COALESCE(${userCounters.followersCount},0)`,
+    followingCount: sql<number>`COALESCE(${userCounters.followingCount},0)`,
+    // Comments the user wrote (top-level, parent_comment_id IS NULL) — SSOT-backed
+    // by the `user_comments_user_count_trigger` (see triggers.ts).
+    commentsCount: sql<number>`COALESCE(${userCounters.commentsCount},0)`,
     // NOTE: check-in streaks are date-sensitive — the trigger-maintained
     // user_counters values can go stale when a day is skipped. These columns are
     // kept only to satisfy the EnrichedUserSelect shape; every consumer must
@@ -112,6 +116,10 @@ export function getEnrichedUserSelect() {
       WHERE books.user_id = users.user_id AND user_likes.target_type = 'book'
     ), 0)`,
     accountDaysOld: sql<number>`CURRENT_DATE - ${users.createdAt}::date`,
+    // TODO(D4): totalWords — SQL approximation first (SUM of char_length(pages.text)
+    // across the author's active books), served behind the profile cache. Shipping a
+    // stored `books.word_count` generated column is an O(1) follow-up backfill. See
+    // docs/roadmap/USER_PROFILE_ENHANCEMENT_ROADMAP.md Q7.
     havePurchased: sql<boolean>`EXISTS (
       SELECT 1
       FROM transactions t

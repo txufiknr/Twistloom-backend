@@ -1,0 +1,41 @@
+name: Dependency Audit
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'   # Weekly, Mondays at 6 AM UTC
+  workflow_dispatch:      # Allow manual triggering
+
+jobs:
+  audit:
+    name: npm dependency vulnerability audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-audit-${{ hashFiles('**/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-audit-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run dependency audit
+        env:
+          # Toggle to 'true' to fail only on critical advisories instead of high+critical.
+          FAIL_ON_CRITICAL_ONLY: 'false'
+        run: |
+          bun audit --json > audit.json
+          bun scripts/ci-dependency-audit.js

@@ -148,7 +148,7 @@ import { BOOK_MIN_PAGES } from "../config/story.js";
 import type { CustomActionValidationResult, CustomActionPreviewResponse, CustomActionSubmitResponse } from "../types/custom-action.js";
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { MAX_BRANCHING_PREGENERATION_DEPTH } from "../config/story.js";
-import { CREDIT_COSTS, getBookModeCreditCost } from "../config/credits.js";
+import { getBookModeCreditCostForUser, getCreditCostForUser } from "../config/credits.js";
 import { CREDIT_ERRORS } from "../config/errors.js";
 import { getRefundForStep, isAtPointOfNoReturn, BOOK_GENERATION_COST } from "../config/generation-refund.js";
 import { triggerBookGenerationWorkflow, isGenerationStale } from "../services/book-creation.js";
@@ -529,7 +529,7 @@ router.post('/async', requireAuth, rateLimit(BOOK_ASYNC_RATE_LIMIT), async (c) =
     // automatically. The runner picks up all generation params from the DB row.
     const { result: dbBook } = await executeWithCredits<DBBook>(
       userId,
-      getBookModeCreditCost(mode),
+      getBookModeCreditCostForUser(userId, mode),
       async (tx) => {
         const [insertedBook] = await tx.insert(books).values(initialBookData).returning();
         await tx.insert(bookGenerations).values(initialBookGenerationData);
@@ -1135,7 +1135,7 @@ router.post('/:bookId/retry', requireAuth, async (c) => {
     // so retrying re-deducts them. Cost matches the book's original mode.
     await executeWithCredits(
       userId,
-      getBookModeCreditCost(data.mode),
+      getBookModeCreditCostForUser(userId, data.mode),
       async (tx) => {
         await tx
           .update(bookGenerations)
@@ -1165,7 +1165,7 @@ router.post('/:bookId/retry', requireAuth, async (c) => {
 
     triggerBookGenerationWorkflow(bookId, 'POST /api/books/:bookId/retry');
 
-    const message = `Book generation retry initiated. ${getBookModeCreditCost(data.mode)} credits consumed.`;
+    const message = `Book generation retry initiated. ${getBookModeCreditCostForUser(userId, data.mode)} credits consumed.`;
     return c.json({ success: true, message });
   } catch (error) {
     console.error('[POST /api/books/:bookId/retry] ❌ Error:', error);
@@ -2166,12 +2166,12 @@ router.get("/explore", optionalAuth, async (c) => {
       : 'newest';
 
     // Check if authentication is required for this sort option.
-    // When profileUserId is provided for 'creations', 'reads', or 'favorites',
-    // we are viewing another user's list — no auth needed since the target user
-    // is explicit. 'recommendations' and 'for-you' still require auth because
-    // they use the viewer's own reading history.
-    const sortNeedsAuth = ['creations', 'reads', 'recommendations', 'favorites', 'for-you'].includes(bookSortBy);
-    const profileUserIdBypasses = ['creations', 'reads', 'favorites'];
+    // When profileUserId is provided for 'creations', 'reads', 'favorites', or
+    // 'likes', we are viewing another user's list — no auth needed since the
+    // target user is explicit. 'recommendations' and 'for-you' still require
+    // auth because they use the viewer's own reading history.
+    const sortNeedsAuth = ['creations', 'reads', 'recommendations', 'favorites', 'likes', 'for-you'].includes(bookSortBy);
+    const profileUserIdBypasses = ['creations', 'reads', 'favorites', 'likes'];
     const requiresAuth = sortNeedsAuth && !(profileUserId && profileUserIdBypasses.includes(bookSortBy));
     if (requiresAuth && !userId) {
       const emptyBooks: EnrichedBookData[] = [];
@@ -2199,14 +2199,14 @@ router.get("/explore", optionalAuth, async (c) => {
     // When profileUserId is provided (from ?userId=X), we are viewing books
     // by/for a specific user:
     //   - 'creations' → that user's own books (any status)
-    //   - 'favorites'/'reads' → public books, filtered by that user's list (handled in sort)
+    //   - 'favorites'/'reads'/'likes' → public books, filtered by that user's list (handled in sort)
     //   - other sorts → public books authored by that user
     const targetUserId = profileUserId || userId;
     const baseCondition: ReturnType<typeof sql> = isCreations
       ? statusFilter
         ? and(eq(books.userId, targetUserId!), inArray(books.status, statusFilter))!
         : eq(books.userId, targetUserId!) // User's own books regardless of status
-      : profileUserId && bookSortBy !== 'favorites' && bookSortBy !== 'reads'
+      : profileUserId && bookSortBy !== 'favorites' && bookSortBy !== 'reads' && bookSortBy !== 'likes'
         ? and(eq(books.status, 'active'), eq(books.visibility, 'public'), eq(books.userId, profileUserId))!
         : and(eq(books.status, 'active'), eq(books.visibility, 'public'))!;
 
@@ -4495,7 +4495,7 @@ router.post("/:identifier/:pageId/actions/hint", requireAuth, rateLimit(ACTION_H
     if (errorMessage.includes(CREDIT_ERRORS.INSUFFICIENT_CREDITS)) {
       return c.json({
         error: "Insufficient credits",
-        message: `You need at least ${CREDIT_COSTS.SHOW_ACTION_HINT} credit to purchase an action hint`
+        message: `You need at least ${getCreditCostForUser(c.get("userId"), 'SHOW_ACTION_HINT')} credit to purchase an action hint`
       }, 402);
     }
 
@@ -5077,8 +5077,8 @@ router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, rateLimi
       .limit(1);
 
     const creditsCost = hasExistingChoice
-      ? CREDIT_COSTS.CUSTOM_ACTION_AFTER_CHOICE
-      : CREDIT_COSTS.CUSTOM_ACTION;
+      ? getCreditCostForUser(userId, 'CUSTOM_ACTION_AFTER_CHOICE')
+      : getCreditCostForUser(userId, 'CUSTOM_ACTION');
 
     // Gate 2 — AI validation (light tier)
     const userPrompt = buildCustomActionValidationPrompt(text, storyState, dbPage);
@@ -5162,7 +5162,7 @@ router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, rateLimi
  * }
  */
 router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit(CUSTOM_ACTION_SUBMIT_RATE_LIMIT), async (c) => {
-  let creditsCost: number = CREDIT_COSTS.CUSTOM_ACTION;
+  let creditsCost: number = getCreditCostForUser(c.get("userId") || null, 'CUSTOM_ACTION');
   try {
     const { identifier, pageId: pageIdParam } = c.req.param();
     const { text: rawText } = c.get("body");
@@ -5216,8 +5216,8 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit
       .limit(1);
 
     creditsCost = hasExistingChoice
-      ? CREDIT_COSTS.CUSTOM_ACTION_AFTER_CHOICE
-      : CREDIT_COSTS.CUSTOM_ACTION;
+      ? getCreditCostForUser(userId, 'CUSTOM_ACTION_AFTER_CHOICE')
+      : getCreditCostForUser(userId, 'CUSTOM_ACTION');
 
     // Gate 0 — Eligibility with credit check
     const gate0Result = runGate0(storyState, userId, book.id, pageId);
@@ -5505,6 +5505,8 @@ router.post("/:identifier/testimonials", requireAuth, async (c) => {
   // Rating/count aggregates changed → drop the enriched-book LRU entry so the
   // freshly-inserted testimonial's rating is served without a 5-minute lag.
   invalidateEnrichedBookCache(book.id);
+  // The author's profile testimonial aggregate changed too.
+  if (book.userId) await invalidateUserProfileCache(book.userId);
 
   c.status(201); return c.json({ testimonial });
 });
@@ -5637,6 +5639,8 @@ router.patch("/:identifier/testimonials/:id", requireAuth, async (c) => {
   // Rating edits reset status to 'pending' → aggregates (may) change → drop the
   // enriched-book LRU entry so the rating reflects the re-curation immediately.
   invalidateEnrichedBookCache(book.id);
+  // The author's profile testimonial aggregate may change on re-curation.
+  if (book.userId) await invalidateUserProfileCache(book.userId);
 
   c.status(200); return c.json({ testimonial: updated });
 });
@@ -5686,6 +5690,8 @@ router.delete("/:identifier/testimonials/:id", requireAuth, async (c) => {
   // Deleting a rated testimonial changes the aggregates → drop the
   // enriched-book LRU entry so the rating reflects the deletion immediately.
   invalidateEnrichedBookCache(book.id);
+  // The author's profile testimonial aggregate changed too.
+  if (book.userId) await invalidateUserProfileCache(book.userId);
 
   c.status(200); return c.json({ message: "Testimonial deleted successfully" });
 });

@@ -492,24 +492,19 @@ WHERE seq_scan > 1000;
 **Current state:** Composite indexes are used throughout (verified in schema).  
 **No changes needed.**
 
-### 7.3 Partial indexes 💡
+### 7.3 Partial indexes ✅
 
 **Current state:** A few partial indexes exist (e.g., VIP expiration). Not systematically applied.
 
-**Recommendation:** Add partial indexes for common filtered queries:
-```sql
--- Books with active VIP subscriptions
-CREATE INDEX CONCURRENTLY idx_books_vip_active 
-ON books (vip_expires_at) 
-WHERE vip_expires_at IS NOT NULL;
+**Status:** ✅ Applied where it matters. The audit found the roadmap's two example partial indexes were already covered or didn't map to the actual schema:
+- `users_vip_expires_idx` (`vip_expires_at IS NOT NULL`) — already exists.
+- `user_sessions` has no `ended_at`/`last_activity_at` columns — the existing `user_sessions_user_active_idx` (`user_id WHERE status = 'active'`) already covers that query.
 
--- Active user sessions (not ended)
-CREATE INDEX CONCURRENTLY idx_user_sessions_active
-ON user_sessions (user_id, last_activity_at)
-WHERE ended_at IS NULL;
-```
+Added in migration `drizzle/0046_colorful_shinko_yamashiro.sql` (both target real hot cron scans):
+- `pages_pending_generation_active_idx` — `(pending_generation_count) WHERE pending_generation_count > 0`, serving the `retry-pending-generations` cron (`WHERE pending_generation_count > 0`). Far smaller than the existing full-column `pages_pending_generation_idx`.
+- `pages_is_generating_started_active_idx` — `(is_generating_started_at) WHERE is_generating_started_at IS NOT NULL`, serving `cleanupStuckGenerations()` (was previously only a commented-out TODO).
 
-**Effort:** 📋 Low — one-time migration additions.
+**Effort:** ✅ Implemented (Low) — schema + migration generated via `bun db:generate`.
 
 ### 7.4 Read replica routing ✅
 
@@ -795,7 +790,7 @@ lighthouse-ci https://twistloom-web.vercel.app --budget=budget.json
 ### 12.1 Current pipeline ✅
 
 ```yaml
-GitHub Actions workflow files: 8 files in .github/workflows/
+GitHub Actions workflow files: 10 files in .github/workflows/
 ```
 
 Every cron workflow:
@@ -831,16 +826,14 @@ jobs:
 **Impact:** Catch type errors, lint issues, and import path errors before deployment.  
 **Effort:** ✅ `.github/workflows/ci.yml` created with typecheck + lint + import validation steps.
 
-### 12.3 Dependency audit 💡
+### 12.3 Dependency audit ✅
 
-**Recommendation:** Add weekly dependency audit to CI:
-```yaml
-- name: Check dependencies
-  run: bun audit  # or npm audit, depending on Bun support
-```
+**Status:** Implemented — `.github/workflows/dependency-audit.yml` + `scripts/ci-dependency-audit.js`:
+- Runs weekly (Mondays 6 AM UTC) and on `workflow_dispatch`.
+- `bun audit --json` → parser prints a low/moderate/high/critical summary, emits `::warning::` annotations per advisory, and fails the job on any `high`/`critical` advisory (set `FAIL_ON_CRITICAL_ONLY=true` to fail only on critical).
+- Verified: current tree has 1 `moderate` advisory (esbuild dev-server), so the workflow passes.
 
-Track known vulnerabilities in the 100+ npm dependencies.  
-**Effort:** 📋 Low.
+**Effort:** ✅ Implemented (Low).
 
 ---
 
@@ -951,7 +944,7 @@ app.get('/health', async (c) => {
 | ⭐⭐⭐⭐ | PR quality CI workflow | ✅ Done | Low | 12 |
 | ⭐⭐⭐ | Bundle analysis + tree shaking | ✅/⚠️ Analyzer done | Low | 2 |
 | ⭐⭐⭐ | Translation namespace splitting | Medium | Medium | 4 |
-| ⭐⭐⭐ | Index audit & partial indexes | Medium | Medium | 7 |
+| ⭐⭐⭐ | Index audit & partial indexes | ✅ Partial indexes done (7.3) | Medium | 7 |
 | ⭐⭐⭐ | Provider warm-up strategy | ✅ Done | Low | 13 |
 | ⭐⭐⭐ | Request deduplication for AI gen | Medium | Medium | 13 |
 | ⭐⭐ | Distributed tracing (OTEL) | Medium | High | 10 |
@@ -981,7 +974,7 @@ app.get('/health', async (c) => {
 2. Materialized views for trending/leaderboards
 3. Bundle analysis + tree shaking
 4. Request validation with Zod (pilot on one route group)
-5. Index audit + partial indexes
+5. ✅ Index audit + partial indexes — `pages_pending_generation_active_idx` + `pages_is_generating_started_active_idx` (migration `0046`)
 
 ### Phase 4 — Observability (1-2 weeks)
 1. Structured logging migration (replace all `console.*`)
@@ -1013,7 +1006,8 @@ app.get('/health', async (c) => {
 | `src/config/ai-rate-limits.ts` | Per-route AI generation rate limits (env-tunable) |
 | `src/config/redis.ts` | Upstash Redis config + cache TTLs |
 | `src/cron/` | 15 cron job scripts |
-| `.github/workflows/` | 8 GitHub Actions workflow files |
+| `scripts/ci-dependency-audit.js` | `bun audit --json` parser + severity gate for the dependency-audit workflow |
+| `.github/workflows/` | 10 GitHub Actions workflow files (incl. `ci.yml`, `dependency-audit.yml`) |
 
 ### Frontend (Twistloom-web)
 | File | Role |

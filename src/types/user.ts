@@ -58,6 +58,8 @@ export interface UserStats {
   topupCredits: number;
   referredUsers: number;
   followersCount: number;
+  followingCount: number;
+  commentsCount: number;
   customActionsWritten: number;
   activeCheckinStreak: number;
   maxCheckinStreak: number;

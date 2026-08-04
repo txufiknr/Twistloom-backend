@@ -111,8 +111,18 @@ export const pages = pgTable(
     unique("pages_parent_branch_unique").on(t.parentId, t.branchId),
     // Index for pending generation cron job
     index("pages_pending_generation_idx").on(t.pendingGenerationCount),
-    // -- 4) Optionally add an index for queries:
-    // CREATE INDEX pages_is_generating_started_at_idx ON pages (is_generating_started_at);
+    // Partial index for the retry-pending-generations cron: only pages that need
+    // candidate generation are scanned (`WHERE pending_generation_count > 0`),
+    // keeping the index far smaller than the full-column index above.
+    index("pages_pending_generation_active_idx")
+      .on(t.pendingGenerationCount)
+      .where(sql`${t.pendingGenerationCount} > 0`),
+    // Partial index for stuck-generation cleanup (`cleanupStuckGenerations()`):
+    // only in-flight rows (`WHERE is_generating_started_at IS NOT NULL`) are
+    // scanned when resetting stale generation markers.
+    index("pages_is_generating_started_active_idx")
+      .on(t.isGeneratingStartedAt)
+      .where(sql`${t.isGeneratingStartedAt} IS NOT NULL`),
   ]
 );
 
@@ -1396,6 +1406,8 @@ export const userCounters = pgTable(
     topupCredits: integer("topup_credits").notNull().default(0),
     referredUsers: integer("referred_users").notNull().default(0),
     followersCount: integer("followers_count").notNull().default(0),
+    followingCount: integer("following_count").notNull().default(0),
+    commentsCount: integer("comments_count").notNull().default(0),
 
     // Custom actions authored (outcome = 'allow' in custom_actions table)
     customActionsWritten: integer("custom_actions_written").notNull().default(0),
@@ -2171,6 +2183,71 @@ export const adminUsers = pgTable(
     permissions: text("permissions").array().notNull().default([]),
     createdAt,
   }
+);
+
+/**
+ * User reports — moderation inbox for reported user profiles.
+ *
+ * Mirrors the `user_feedbacks` / `book_testimonials` curation model: a public
+ * reporter submits a report which lands in an admin queue with a resolution
+ * status. Rate-limited at the route layer.
+ *
+ * @example
+ * {
+ *   "id": "0194f2d1-...",
+ *   "reporter_id": "user-uuid",
+ *   "reported_user_id": "user-uuid",
+ *   "report_type": "harassment",
+ *   "message": "Repeatedly spamming my comment threads.",
+ *   "status": "open",
+ *   "created_at": "2026-08-01T10:00:00.000Z"
+ * }
+ */
+export const userReports = pgTable(
+  "user_reports",
+  {
+    id: id(),
+    reporterId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    reportedUserId: uuid("reported_user_id").notNull().references(() => users.userId, { onDelete: "cascade" }),
+    reportType: text("report_type").$type<'spam' | 'harassment' | 'impersonation' | 'inappropriate' | 'other'>().notNull(),
+    message: text("message"),
+    status: text("status").$type<'open' | 'under_review' | 'resolved' | 'dismissed'>().notNull().default('open'),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    index("user_reports_status_idx").on(t.status),
+    index("user_reports_target_idx").on(t.reportedUserId),
+    index("user_reports_reporter_idx").on(t.reporterId),
+    index("user_reports_created_idx").on(t.createdAt.desc()),
+  ]
+);
+
+/**
+ * User blocks — content gating between two users.
+ *
+ * When user A blocks user B: A cannot see B's public profile content, B's
+ * follows/comments/likes toward A are suppressed, and the block is enforced at
+ * the route/service layer (see block gating). Composite PK prevents duplicates.
+ *
+ * @example
+ * {
+ *   "user_id": "blocker-uuid",
+ *   "blocked_user_id": "blocked-uuid",
+ *   "created_at": "2026-08-01T10:00:00.000Z"
+ * }
+ */
+export const userBlocks = pgTable(
+  "user_blocks",
+  {
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    blockedUserId: uuid("blocked_user_id").notNull().references(() => users.userId, { onDelete: "cascade" }),
+    createdAt,
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.blockedUserId] }),
+    index("user_blocks_target_idx").on(t.blockedUserId),
+  ]
 );
 
 /**

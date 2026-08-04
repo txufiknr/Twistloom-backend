@@ -51,10 +51,11 @@ import type { FeedbackCategory, LikeTargetType, Source, User, UserAchievement, U
 import { feedbackCategories, sources } from "../types/user.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { requireAuth, optionalAuth } from "../middleware/nextauth.js";
-import { users, books, userAuth, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, userSessions, userCompletedBooks, userComments, transactions, userProviders, userFeedbacks } from "../db/schema.js";
-import { getErrorMessage, cApiError, cNotFoundError, cValidationError } from "../utils/error.js";
+import { users, books, userAuth, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, userSessions, userCompletedBooks, userComments, transactions, userProviders, userFeedbacks, bookTestimonials, uploadedImages, userReports, userBlocks } from "../db/schema.js";
+import { getErrorMessage, cApiError, cNotFoundError, cValidationError, cUnauthorizedError } from "../utils/error.js";
 import { eq, and, desc, sql } from "drizzle-orm";
-import { calculatePaginationMeta } from "../utils/pagination.js";
+import { calculatePaginationMeta, extractPaginationParams } from "../utils/pagination.js";
+import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import { updateUserLastActivity, getCheckInStatus, getCheckInStreaks, logUserActivity, sanitizeProfileUpdate, enrichActivityLogs } from "../services/user.js";
 import { invalidateCachePattern } from "../utils/cache.js";
 import { invalidateExploreCache, invalidateUserBooksCache, invalidateUserProfileCache, withCache, CACHE_KEYS, CACHE_TTL } from "../services/cache.js";
@@ -63,12 +64,18 @@ import { uploadUserImage, uploadFeedbackScreenshot, persistUploadedImage } from 
 import { isValidUuid } from "../utils/uuid.js";
 import { getStoryProgressWithBranch } from '../services/story-branch.js';
 import { checkAndAwardAchievements, getUserAchievements, getUserMetrics } from '../services/achievements.js';
+import { verifyPassword } from "../utils/password.js";
+import { OAuth2Client } from "google-auth-library";
 import type { PaginationMeta } from '../types/api.js';
 import { ACHIEVEMENT_REGISTRY } from '../config/achievements.js';
 import type { AppEnv } from "../hono/env.js";
 import { getClientIp } from "../hono/express-shim.js";
 
 const router = new Hono<AppEnv>();
+
+// Google OAuth client used to re-verify a Google ID token during the
+// account-deletion re-authentication gate (see DELETE /user below).
+const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 /**
  * GET /api/user
@@ -252,7 +259,41 @@ router.get('/export', requireAuth, async (c: Context<AppEnv>) => {
       activityLogsResult,
       achievementsResult,
     ] = await Promise.all([
-      dbRead.select().from(users).where(eq(users.userId, userId)),
+      dbRead
+        .select({
+          // Explicit column allow-list (NOT `select().from(users)`): per GDPR/CCPA
+          // rules, an export should contain the user's *personal data*, not auth
+          // internals. The full `users` row includes passwordHash, tokenVersion,
+          // customerId (Stripe/Xendit), subscriptionId, referrerId and imageId —
+          // all of which are stripped here. The bcrypt hash in particular has no
+          // legitimate use for the user and would become a credential-stuffing
+          // aid if the exported file ever leaked.
+          userId: users.userId,
+          name: users.name,
+          username: users.username,
+          email: users.email,
+          credits: users.credits,
+          penName: users.penName,
+          bio: users.bio,
+          gender: users.gender,
+          imageUrl: users.imageUrl,
+          tier: users.tier,
+          isNewUser: users.isNewUser,
+          source: users.source,
+          preferredLocale: users.preferredLocale,
+          emailPreferences: users.emailPreferences,
+          referralRewardedAt: users.referralRewardedAt,
+          vipExpiresAt: users.vipExpiresAt,
+          vipTrialUsedAt: users.vipTrialUsedAt,
+          termsAcceptedAt: users.termsAcceptedAt,
+          termsVersion: users.termsVersion,
+          ageConfirmedAt: users.ageConfirmedAt,
+          lastActive: users.lastActive,
+          createdAt: users.createdAt,
+          updatedAt: users.updatedAt,
+        })
+        .from(users)
+        .where(eq(users.userId, userId)),
       dbRead.select().from(userAuth).where(eq(userAuth.userId, userId)),
       dbRead.select().from(books).where(eq(books.userId, userId)),
       dbRead.select().from(userSessions).where(eq(userSessions.userId, userId)),
@@ -682,6 +723,8 @@ router.get("/users/:identifier", optionalAuth, async (c: Context<AppEnv>) => {
           topupCredits: userData.topupCredits,
           referredUsers: userData.referredUsers,
           followersCount: userData.followersCount,
+          followingCount: userData.followingCount,
+          commentsCount: userData.commentsCount,
           activeCheckinStreak: userData.activeCheckinStreak,
           maxCheckinStreak: userData.maxCheckinStreak,
           customActionsWritten: userData.customActionsWritten,
@@ -776,6 +819,71 @@ router.get("/users/:identifier", optionalAuth, async (c: Context<AppEnv>) => {
 router.delete("/", requireAuth, async (c: Context<AppEnv>) => {
   try {
     const userId = c.get("userId")!;
+
+    // ── Account-deletion re-authentication gate ───────────────────────────
+    // Per Q1 of GDPR_FEATURES_BUG_REPORT.md, deletion is an irreversible,
+    // high-value action and must NOT be a one-click operation on an open
+    // session (anyone with a live session could otherwise destroy the account,
+    // including credits/purchases/VIP). We require proof of ownership:
+    //  - credentials-linked users → the current password (bcrypt-verified)
+    //  - Google-only users        → a fresh Google ID token whose `sub` matches
+    //    the linked provider account id (a genuine Google re-auth)
+    // The client-side typed "DELETE" phrase is UX-only (guards against
+    // accidental clicks) and is deliberately NOT validated here — a literal
+    // string cannot act as a security proof.
+    const { currentPassword, idToken } = c.get("body") as {
+      currentPassword?: string;
+      idToken?: string;
+    };
+
+    const [authUser] = await dbRead
+      .select({ passwordHash: users.passwordHash })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1);
+
+    const providers = await dbRead
+      .select({
+        provider: userProviders.provider,
+        providerAccountId: userProviders.providerAccountId,
+      })
+      .from(userProviders)
+      .where(eq(userProviders.userId, userId));
+
+    const hasCredentials = !!authUser?.passwordHash;
+    const googleProvider = providers.find((p) => p.provider === 'google');
+
+    if (hasCredentials) {
+      // Credentials-linked: password is the proof of ownership.
+      if (!currentPassword) {
+        return cUnauthorizedError(c, 'Current password is required to delete your account');
+      }
+      const isValid = await verifyPassword(currentPassword, authUser!.passwordHash!);
+      if (!isValid) {
+        return cUnauthorizedError(c, 'Current password is incorrect');
+      }
+    } else if (googleProvider?.providerAccountId) {
+      // Google-only: re-verify a fresh Google ID token and require its `sub`
+      // to match the provider account this user is actually linked to.
+      if (!idToken) {
+        return cUnauthorizedError(c, 'Google re-authentication is required to delete your account');
+      }
+      try {
+        const ticket = await googleClient.verifyIdToken({
+          idToken,
+          audience: process.env.GOOGLE_CLIENT_ID,
+        });
+        const payload = ticket.getPayload();
+        if (!payload?.sub || payload.sub !== googleProvider.providerAccountId) {
+          return cUnauthorizedError(c, 'Google re-authentication failed');
+        }
+      } catch {
+        return cUnauthorizedError(c, 'Google re-authentication failed');
+      }
+    } else {
+      // No known provider record — cannot prove ownership, refuse to delete.
+      return cUnauthorizedError(c, 'Unable to verify account ownership');
+    }
 
     // Capture contact + locale before cascade delete for confirmation email
     const { resolveEmailLocale } = await import('../services/email-preferences.js');
@@ -2336,6 +2444,292 @@ router.get('/users/:id/achievements', async (c: Context<AppEnv>) => {
     return c.json({ success: true, badges });
   } catch (error) {
     return cApiError(c, 'Failed to fetch user achievements', error);
+  }
+});
+
+/**
+ * Shared helper: resolve a user by UUID or username to their userId.
+ *
+ * Mirrors the `/users/:identifier` profile route's identifier handling so the
+ * public testimonial/comments endpoints accept both forms.
+ */
+async function resolveProfileUserId(c: Context<AppEnv>): Promise<{ userId: string } | null> {
+  const { identifier } = c.req.param();
+  const identifierStr = Array.isArray(identifier) ? identifier[0] : identifier;
+
+  const isUuid = isValidUuid(identifierStr);
+  const whereCondition = isUuid ? eq(users.userId, identifierStr) : eq(users.username, identifierStr);
+
+  const [row] = await dbRead
+    .select({ userId: users.userId })
+    .from(users)
+    .where(whereCondition)
+    .limit(1);
+
+  if (!row) return null;
+  return { userId: row.userId };
+}
+
+/**
+ * GET /api/users/:identifier/testimonials
+ * Public testimonials the author RECEIVED across all their books.
+ *
+ * - Public viewers see only `approved` testimonials.
+ * - The profile owner (authenticated viewer === target user) sees all statuses,
+ *   mirroring the book-scoped endpoint's owner privilege.
+ * - Includes a ratingSummary (count, avg, 5→1 distribution) computed over the
+ *   same visible set.
+ */
+router.get('/users/:identifier/testimonials', optionalAuth, async (c: Context<AppEnv>) => {
+  try {
+    const resolved = await resolveProfileUserId(c);
+    if (!resolved) return cNotFoundError(c, 'User not found');
+
+    const viewerId = c.get('userId');
+    const isOwner = viewerId === resolved.userId;
+    const { limit = DEFAULT_ITEMS_PER_PAGE, page = 1 } = extractPaginationParams(c.req.query());
+    const offset = (page - 1) * limit;
+
+    const conditions = [
+      eq(books.userId, resolved.userId),
+      eq(bookTestimonials.bookId, books.id),
+    ];
+    if (!isOwner) conditions.push(eq(bookTestimonials.status, 'approved'));
+
+    const rows = await dbRead
+      .select({
+        id: bookTestimonials.id,
+        userId: bookTestimonials.userId,
+        bookId: bookTestimonials.bookId,
+        rating: bookTestimonials.rating,
+        content: bookTestimonials.content,
+        status: bookTestimonials.status,
+        featured: bookTestimonials.featured,
+        createdAt: bookTestimonials.createdAt,
+        updatedAt: bookTestimonials.updatedAt,
+        name: users.name,
+        imageUrl: users.imageUrl,
+        bookTitle: books.title,
+        bookSlug: books.slug,
+        bookImageUrl: uploadedImages.imageUrl,
+      })
+      .from(bookTestimonials)
+      .innerJoin(books, eq(bookTestimonials.bookId, books.id))
+      .innerJoin(users, eq(bookTestimonials.userId, users.userId))
+      .leftJoin(uploadedImages, eq(books.imageId, uploadedImages.imageId))
+      .where(and(...conditions))
+      .orderBy(desc(bookTestimonials.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    const [{ count }] = await dbRead
+      .select({ count: sql<number>`count(*)::int` })
+      .from(bookTestimonials)
+      .innerJoin(books, eq(bookTestimonials.bookId, books.id))
+      .where(and(...conditions));
+
+    // Rating summary over the same visible set (ignores the `featured` flag).
+    const summaryRows = await dbRead
+      .select({ rating: bookTestimonials.rating })
+      .from(bookTestimonials)
+      .innerJoin(books, eq(bookTestimonials.bookId, books.id))
+      .where(and(...conditions, sql`${bookTestimonials.rating} IS NOT NULL`));
+
+    const distribution: Record<number, number> = { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
+    let total = 0;
+    let rated = 0;
+    for (const { rating } of summaryRows) {
+      const r = Number(rating);
+      total += r;
+      rated += 1;
+      distribution[r] = (distribution[r] ?? 0) + 1;
+    }
+
+    const ratingSummary = {
+      count: rated,
+      avg: rated > 0 ? Number((total / rated).toFixed(1)) : 0,
+      distribution,
+    };
+
+    const pagination = calculatePaginationMeta(page, limit, count);
+    c.header('Cache-Control', 'public, max-age=300, stale-while-revalidate=60');
+    return c.json({
+      testimonials: rows,
+      ratingSummary,
+      pagination,
+    });
+  } catch (error) {
+    return cApiError(c, 'Failed to fetch user testimonials', error);
+  }
+});
+
+/**
+ * GET /api/users/:identifier/testimonials/given
+ * Public testimonials the user has WRITTEN on other people's books.
+ *
+ * - Public viewers see only `approved` testimonials.
+ * - The profile owner (authenticated viewer === target user) sees all statuses.
+ */
+router.get('/users/:identifier/testimonials/given', optionalAuth, async (c: Context<AppEnv>) => {
+  try {
+    const resolved = await resolveProfileUserId(c);
+    if (!resolved) return cNotFoundError(c, 'User not found');
+
+    const viewerId = c.get('userId');
+    const isOwner = viewerId === resolved.userId;
+    const { limit = DEFAULT_ITEMS_PER_PAGE, page = 1 } = extractPaginationParams(c.req.query());
+    const offset = (page - 1) * limit;
+
+    const conditions = [eq(bookTestimonials.userId, resolved.userId)];
+    if (!isOwner) conditions.push(eq(bookTestimonials.status, 'approved'));
+
+    const rows = await dbRead
+      .select({
+        id: bookTestimonials.id,
+        userId: bookTestimonials.userId,
+        bookId: bookTestimonials.bookId,
+        rating: bookTestimonials.rating,
+        content: bookTestimonials.content,
+        status: bookTestimonials.status,
+        featured: bookTestimonials.featured,
+        createdAt: bookTestimonials.createdAt,
+        updatedAt: bookTestimonials.updatedAt,
+        name: users.name,
+        imageUrl: users.imageUrl,
+        bookTitle: books.title,
+        bookSlug: books.slug,
+        bookImageUrl: uploadedImages.imageUrl,
+      })
+      .from(bookTestimonials)
+      .innerJoin(books, eq(bookTestimonials.bookId, books.id))
+      .leftJoin(users, eq(bookTestimonials.userId, users.userId))
+      .leftJoin(uploadedImages, eq(books.imageId, uploadedImages.imageId))
+      .where(and(...conditions))
+      .orderBy(desc(bookTestimonials.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    const [{ count }] = await dbRead
+      .select({ count: sql<number>`count(*)::int` })
+      .from(bookTestimonials)
+      .where(and(...conditions));
+
+    const pagination = calculatePaginationMeta(page, limit, count);
+    c.header('Cache-Control', 'public, max-age=300, stale-while-revalidate=60');
+    return c.json({ testimonials: rows, pagination });
+  } catch (error) {
+    return cApiError(c, 'Failed to fetch user given testimonials', error);
+  }
+});
+
+/**
+ * POST /api/users/:identifier/report
+ * Report a user profile to the moderation queue.
+ *
+ * @access Private (requires auth)
+ * @param {string} c.req.param().identifier - UUID or username of the reported user
+ * @param {string} c.get("body").reportType - spam | harassment | impersonation | inappropriate | other
+ * @param {string} [c.get("body").message] - Optional detail message (≤ 2000 chars)
+ * @returns {Object} 201 - Created report
+ * @returns {Error} 400 - Validation error
+ * @returns {Error} 401 - Unauthorized
+ */
+router.post('/users/:identifier/report', requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const reporterId = c.get('userId')!;
+    const resolved = await resolveProfileUserId(c);
+    if (!resolved) return cNotFoundError(c, 'User not found');
+    if (resolved.userId === reporterId) {
+      return cValidationError(c, 'You cannot report yourself');
+    }
+
+    const { reportType, message } = c.get('body') as { reportType?: string; message?: string };
+    const validTypes = ['spam', 'harassment', 'impersonation', 'inappropriate', 'other'];
+    if (!reportType || !validTypes.includes(reportType)) {
+      return cValidationError(c, `reportType must be one of: ${validTypes.join(', ')}`);
+    }
+    const cleanMessage = typeof message === 'string' ? message.trim() : '';
+    if (cleanMessage.length > 2000) {
+      return cValidationError(c, 'Message must be at most 2000 characters');
+    }
+
+    const [report] = await dbWrite
+      .insert(userReports)
+      .values({
+        reporterId,
+        reportedUserId: resolved.userId,
+        reportType: reportType as 'spam' | 'harassment' | 'impersonation' | 'inappropriate' | 'other',
+        message: cleanMessage || null,
+        status: 'open',
+      })
+      .returning({ id: userReports.id });
+
+    c.status(201);
+    return c.json({ success: true, report: { id: report.id } });
+  } catch (error) {
+    return cApiError(c, 'Failed to submit report', error);
+  }
+});
+
+/**
+ * POST /api/users/:identifier/block
+ * Block a user so their content is hidden from you.
+ *
+ * @access Private (requires auth)
+ * @returns {Object} 200 - Success
+ */
+router.post('/users/:identifier/block', requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get('userId')!;
+    const resolved = await resolveProfileUserId(c);
+    if (!resolved) return cNotFoundError(c, 'User not found');
+    if (resolved.userId === userId) {
+      return cValidationError(c, 'You cannot block yourself');
+    }
+
+    await dbWrite
+      .insert(userBlocks)
+      .values({ userId, blockedUserId: resolved.userId })
+      .onConflictDoNothing();
+
+    // A block implicitly removes any follow relationship between the two.
+    await dbWrite
+      .delete(userFollows)
+      .where(and(
+        eq(userFollows.followerId, userId),
+        eq(userFollows.followingId, resolved.userId),
+      ));
+
+    await invalidateUserProfileCache(resolved.userId);
+    return c.json({ success: true, message: 'User blocked' });
+  } catch (error) {
+    return cApiError(c, 'Failed to block user', error);
+  }
+});
+
+/**
+ * DELETE /api/users/:identifier/block
+ * Unblock a user.
+ *
+ * @access Private (requires auth)
+ * @returns {Object} 200 - Success
+ */
+router.delete('/users/:identifier/block', requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get('userId')!;
+    const resolved = await resolveProfileUserId(c);
+    if (!resolved) return cNotFoundError(c, 'User not found');
+
+    await dbWrite
+      .delete(userBlocks)
+      .where(and(
+        eq(userBlocks.userId, userId),
+        eq(userBlocks.blockedUserId, resolved.userId),
+      ));
+
+    return c.json({ success: true, message: 'User unblocked' });
+  } catch (error) {
+    return cApiError(c, 'Failed to unblock user', error);
   }
 });
 

@@ -232,18 +232,125 @@ async function ensureBookReadCountTrigger(): Promise<void> {
 }
 
 /**
- * Creates initial Admin user in the database
+ * Describes a system-seeded account that is created when the users table is
+ * first written.
  * 
- * Creates a default admin user with name "Admin" only if the users table is empty.
- * This user can be used for system administration and testing purposes.
+ * @example
+ * ```typescript
+ * const admin = {
+ *   username: 'twistloom',
+ *   email: 'admin@twistloom.com',
+ *   name: 'Twistloom',
+ *   ...,
+ *   passwordEnvVar: 'SYSTEM_USER_PASSWORD',
+ *   label: 'Admin',
+ * };
+ * ```
+ */
+interface SeedAccount {
+  /** Stable login username / identity key */
+  username: string;
+  /** Unique login email */
+  email: string;
+  /** Display name */
+  name: string;
+  /** Pen name shown on written works */
+  penName: string;
+  /** Short bio / tagline */
+  bio: string;
+  /** Env var holding this account's password */
+  passwordEnvVar: string;
+  /** Human-readable label used in log output */
+  label: string;
+  /** Optional fixed userId to use on creation (falls back to a generated id) */
+  userId?: string;
+}
+
+/** Root admin / system account (username + password configurable via env) */
+const ADMIN_SEED_ACCOUNT: SeedAccount = {
+  username: process.env['SYSTEM_USER_USERNAME'] || APP_NAME_SLUG,
+  email: APP_EMAIL,
+  name: APP_NAME,
+  penName: APP_NAME,
+  bio: APP_TAGLINE,
+  passwordEnvVar: 'SYSTEM_USER_PASSWORD',
+  label: 'Admin',
+};
+
+/**
+ * Demo end-user account (username + password configurable via env)
  * 
- * @returns Promise that resolves with the created user object or null if table not empty
+ * Null when DEMO_USERNAME is not configured — the demo account is fully
+ * opt-in and is only ever created once the operator sets up its env vars.
+ */
+const DEMO_SEED_ACCOUNT: SeedAccount | null = process.env['DEMO_USERNAME']
+  ? {
+      username: process.env['DEMO_USERNAME']!,
+      email: process.env['DEMO_EMAIL'] || 'demo@twistloom.com',
+      name: 'Demo User',
+      penName: 'Demo Writer',
+      bio: 'A demo account for exploring Twistloom.',
+      passwordEnvVar: 'DEMO_USER_PASSWORD',
+      label: 'Demo',
+      userId: process.env['DEMO_USER_ID'] || undefined,
+    }
+  : null;
+
+/** Non-null seed accounts to iterate over (demo omitted if unconfigured) */
+const SEED_ACCOUNTS: SeedAccount[] = [ADMIN_SEED_ACCOUNT, DEMO_SEED_ACCOUNT].filter(
+  (account): account is SeedAccount => account !== null
+);
+
+/**
+ * Inserts a single seed user from a {@link SeedAccount} config
+ * 
+ * @param account - Seed account descriptor (username, email, display data)
+ * @returns Promise that resolves with the created user object
+ * 
+ * Behavior:
+ * - Hashes the account's password from its env var (if provided), otherwise
+ *   leaves `passwordHash` null and logs a warning (the account still exists,
+ *   but cannot log in with a password until one is set).
+ */
+async function createSeedUser(account: SeedAccount): Promise<DBUser> {
+  const password = process.env[account.passwordEnvVar];
+  let passwordHash: string | undefined;
+  if (password) {
+    passwordHash = await hashPassword(password);
+  } else {
+    console.warn(`⚠️ ${account.passwordEnvVar} not set — ${account.label} account will not support password login.`);
+  }
+
+  const [createdUser] = await dbWrite
+    .insert(users)
+    .values({
+      userId: account.userId || generateId(),
+      username: account.username,
+      email: account.email,
+      name: account.name,
+      penName: account.penName,
+      bio: account.bio,
+      passwordHash,
+    })
+    .returning();
+
+  return createdUser;
+}
+
+/**
+ * Creates the initial Admin (system) user in the database
+ * 
+ * Creates the root admin user only if the users table is completely empty.
+ * This is the very first user row, under which system-generated content is
+ * attributed. On every subsequent run it is a no-op.
+ * 
+ * @returns Promise that resolves with the created user object or null if the
+ * users table was not empty
  * 
  * Behavior:
  * - Checks if users table is empty
- * - Generates a unique userId using generateId()
- * - Inserts user with name "Admin" only if table is empty
- * - Returns the complete user object from database or null
+ * - Generates a unique userId via generateId()
+ * - Inserts the Admin user (username/password from env, defaults to the app slug)
  */
 async function createInitialAdminUser(): Promise<DBUser | null> {
   // Check if users table is empty
@@ -255,30 +362,51 @@ async function createInitialAdminUser(): Promise<DBUser | null> {
     console.log("ℹ️ Users table not empty, skipping initial Admin user creation.");
     return null;
   }
-  
-  // Hash system password if provided in env (enables email/password login for system account)
-  const systemPassword = process.env['SYSTEM_USER_PASSWORD'];
-  let passwordHash: string | undefined;
-  if (systemPassword) {
-    passwordHash = await hashPassword(systemPassword);
-  } else {
-    console.warn("⚠️ SYSTEM_USER_PASSWORD not set — system account will not support password login.");
+
+  const createdUser = await createSeedUser(ADMIN_SEED_ACCOUNT);
+  console.log("✅ Initial Admin user created successfully!");
+  return createdUser;
+}
+
+/**
+ * Creates the demo user account if it does not already exist
+ * 
+ * Idempotent and independent of whether the users table is empty: the demo
+ * account is created whenever its configured username is absent, and skipped
+ * when the username already exists.
+ * 
+ * The entire check is skipped when DEMO_USERNAME is not configured — the demo
+ * account is opt-in and only seeded once its env vars are set up.
+ * 
+ * @returns Promise that resolves with the created user object, or null if the
+ * demo account is not configured or already exists
+ * 
+ * Behavior:
+ * - Skips entirely when DEMO_USERNAME env var is not set
+ * - Looks up the configured username in the users table
+ * - Inserts the demo user only if no row with that username exists
+ * - Returns the complete user object from database or null
+ */
+async function createDemoUserIfNotExists(): Promise<DBUser | null> {
+  if (!DEMO_SEED_ACCOUNT) {
+    console.log("ℹ️ DEMO_USERNAME not configured, skipping demo account.");
+    return null;
   }
 
-  const [createdUser] = await dbWrite
-    .insert(users)
-    .values({
-      userId: generateId(),
-      username: APP_NAME_SLUG,
-      email: APP_EMAIL,
-      name: APP_NAME,
-      penName: APP_NAME,
-      bio: APP_TAGLINE,
-      passwordHash,
-    })
-    .returning();
-  
-  console.log("✅ Initial Admin user created successfully!");
+  const account = DEMO_SEED_ACCOUNT;
+  const [existingUser] = await dbWrite
+    .select({ userId: users.userId })
+    .from(users)
+    .where(eq(users.username, account.username))
+    .limit(1);
+
+  if (existingUser) {
+    console.log(`ℹ️ Demo user "${account.username}" already exists, skipping creation.`);
+    return null;
+  }
+
+  const createdUser = await createSeedUser(account);
+  console.log("✅ Demo user created successfully!");
   return createdUser;
 }
 
@@ -894,6 +1022,65 @@ export async function ensureUserCountersTriggers(): Promise<void> {
     console.log("✅ Trigger created: Followers Count (Current State)");
 
     // ==========================================
+    // 5b. FOLLOWING COUNT (Type B: Current State)
+    // ==========================================
+    // Targets follower_id (the user doing the following). A follow INSERT
+    // bumps the actor's `following_count`; a follow DELETE decrements it.
+    // Mirrors update_user_followers_count in shape, flipped direction.
+    await dbWrite.execute(`
+      CREATE OR REPLACE FUNCTION update_user_following_count() RETURNS TRIGGER AS $$
+      BEGIN
+        IF TG_OP = 'INSERT' THEN
+          INSERT INTO user_counters (user_id, following_count, updated_at) VALUES (NEW.follower_id, 1, NOW())
+          ON CONFLICT (user_id) DO UPDATE SET following_count = user_counters.following_count + 1, updated_at = NOW();
+          RETURN NEW;
+        ELSIF TG_OP = 'DELETE' THEN
+          UPDATE user_counters SET following_count = GREATEST(0, following_count - 1), updated_at = NOW() WHERE user_id = OLD.follower_id;
+          RETURN OLD;
+        END IF;
+        RETURN NULL;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    await dbWrite.execute(`DROP TRIGGER IF EXISTS user_follows_following_count_trigger ON user_follows;`);
+    await dbWrite.execute(`
+      CREATE TRIGGER user_follows_following_count_trigger
+        AFTER INSERT OR DELETE ON user_follows
+        FOR EACH ROW EXECUTE FUNCTION update_user_following_count();
+    `);
+    console.log("✅ Trigger created: Following Count (Current State)");
+
+    // ==========================================
+    // 5c. COMMENTS COUNT (Type B: Current State)
+    // ==========================================
+    // Counts top-level comments the user has written on books/pages
+    // (parent_comment_id IS NULL, mirroring books.comments_count semantics).
+    // INSERT bumps, DELETE decrements — comments are removable content, so
+    // this is a fluctuating "current" metric, not a lifetime one.
+    await dbWrite.execute(`
+      CREATE OR REPLACE FUNCTION update_user_comments_count() RETURNS TRIGGER AS $$
+      BEGIN
+        IF TG_OP = 'INSERT' AND NEW.parent_comment_id IS NULL THEN
+          INSERT INTO user_counters (user_id, comments_count, updated_at) VALUES (NEW.user_id, 1, NOW())
+          ON CONFLICT (user_id) DO UPDATE SET comments_count = user_counters.comments_count + 1, updated_at = NOW();
+          RETURN NEW;
+        ELSIF TG_OP = 'DELETE' AND OLD.parent_comment_id IS NULL THEN
+          UPDATE user_counters SET comments_count = GREATEST(0, comments_count - 1), updated_at = NOW() WHERE user_id = OLD.user_id;
+          RETURN OLD;
+        END IF;
+        RETURN COALESCE(NEW, OLD);
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    await dbWrite.execute(`DROP TRIGGER IF EXISTS user_comments_user_count_trigger ON user_comments;`);
+    await dbWrite.execute(`
+      CREATE TRIGGER user_comments_user_count_trigger
+        AFTER INSERT OR DELETE ON user_comments
+        FOR EACH ROW EXECUTE FUNCTION update_user_comments_count();
+    `);
+    console.log("✅ Trigger created: Comments Count (Current State)");
+
+    // ==========================================
     // 6. TOPUP CREDITS (Type A: Lifetime)
     // ==========================================
     await dbWrite.execute(`
@@ -1439,58 +1626,67 @@ async function ensureDestinationPageIdsCleanupTrigger(): Promise<void> {
 }
 
 /**
- * Updates system user's password hash if null and SYSTEM_USER_PASSWORD is set
+ * Fills in password hashes for seed accounts whose env password was set
  * 
- * This enables re-running `pnpm db:triggers` to set the system account password
- * for an existing system user that was created before SYSTEM_USER_PASSWORD support
- * was added.
+ * Re-running `pnpm db:triggers` syncs passwords for both the Admin and Demo
+ * seed accounts (including accounts created before password support existed).
+ * Only accounts found by their configured username and whose env password is
+ * set are touched.
  * 
- * @returns Promise that resolves when the update is complete
+ * @returns Promise that resolves when all updates are complete
  */
-async function updateSystemUserPassword(): Promise<void> {
-  const systemPassword = process.env['SYSTEM_USER_PASSWORD'];
-  if (!systemPassword) {
-    console.log("ℹ️ SYSTEM_USER_PASSWORD not set, skipping password update.");
-    return;
+async function updateSeedUserPasswords(): Promise<void> {
+  for (const account of SEED_ACCOUNTS) {
+    const password = process.env[account.passwordEnvVar];
+    if (!password) {
+      console.log(`ℹ️ ${account.passwordEnvVar} not set, skipping ${account.label} password update.`);
+      continue;
+    }
+
+    const [seedUser] = await dbWrite
+      .select({ userId: users.userId, passwordHash: users.passwordHash })
+      .from(users)
+      .where(eq(users.username, account.username))
+      .limit(1);
+
+    if (!seedUser) {
+      console.log(`ℹ️ ${account.label} user not found, skipping password update.`);
+      continue;
+    }
+
+    const passwordHash = await hashPassword(password);
+    await dbWrite
+      .update(users)
+      .set({ passwordHash, updatedAt: new Date() })
+      .where(eq(users.userId, seedUser.userId));
+
+    console.log(`✅ ${account.label} user password hash updated successfully!`);
   }
-
-  const [systemUser] = await dbWrite
-    .select({ userId: users.userId, passwordHash: users.passwordHash })
-    .from(users)
-    .where(eq(users.username, APP_NAME_SLUG))
-    .limit(1);
-
-  if (!systemUser) {
-    console.log("ℹ️ System user not found, skipping password update.");
-    return;
-  }
-
-  const passwordHash = await hashPassword(systemPassword);
-  await dbWrite
-    .update(users)
-    .set({ passwordHash, updatedAt: new Date() })
-    .where(eq(users.userId, systemUser.userId));
-
-  console.log("✅ System user password hash updated successfully!");
 }
 
 /**
  * Main execution block for standalone script execution.
- * Initializes database triggers and creates initial Admin user when run directly.
+ * Initializes database triggers and creates initial seed users when run directly.
  */
 if (process.argv[1] === __filename) {
   (async () => {
     await ensureTriggers();
     console.log("✅ Database triggers initialization complete!");
     
-    // Create initial Admin user (if users table is empty)
+    // Create the initial Admin user (only when the users table is empty)
     const adminUser = await createInitialAdminUser();
     if (adminUser) {
-      console.log("🕵️‍♂️ Created Admin user:", adminUser);
+      console.log("🕵️‍♂️ Created seed user:", adminUser);
+    }
+
+    // Create the demo user idempotently (skipped if unconfigured or existing)
+    const demoUser = await createDemoUserIfNotExists();
+    if (demoUser) {
+      console.log("🕵️‍♂️ Created demo user:", demoUser);
     }
     
-    // Fill system user password hash if it's null (idempotent on re-run)
-    await updateSystemUserPassword();
+    // Fill seed user password hashes if they're null (idempotent on re-run)
+    await updateSeedUserPasswords();
     
     process.exit(0);
   })().catch((err) => {
