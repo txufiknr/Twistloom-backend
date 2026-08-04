@@ -35,6 +35,7 @@ import { feedbackAdminStatuses, feedbackCategories, type FeedbackAdminStatus, ty
 import { extractAndResolveTwistloomLink, parseTwistloomProductUrl, resolveBookByIdForAdmin, resolvePublicBookBySlug } from "../services/social/extract-twistloom-link.js";
 import { sanitizeBlogHtml } from "../utils/sanitize-html.js";
 import { notifyForumUserBanned, notifyForumUserUnbanned } from "../services/forum-queue.js";
+import { invalidateUserProfileCache } from "../services/cache.js";
 
 const router = new Hono<AppEnv>();
 
@@ -1606,6 +1607,7 @@ router.patch(
 
       console.log(`[admin] 🚫 User banned: ${userId} by ${c.get("userId")}`);
       notifyForumUserBanned(userId, "admin_ban");
+      await invalidateUserProfileCache(userId);
 
       return c.json({ userId: updated.userId, bannedAt: updated.bannedAt, alreadyBanned: false });
     } catch (error) {
@@ -1657,6 +1659,7 @@ router.patch(
 
       console.log(`[admin] ✅ User unbanned: ${userId} by ${c.get("userId")}`);
       notifyForumUserUnbanned(userId);
+      await invalidateUserProfileCache(userId);
 
       return c.json({ userId: updated.userId, bannedAt: updated.bannedAt, alreadyUnbanned: false });
     } catch (error) {

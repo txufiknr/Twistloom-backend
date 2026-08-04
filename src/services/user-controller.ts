@@ -78,6 +78,8 @@ export function getEnrichedUserSelect() {
     isNewUser: users.isNewUser,
     // SSOT for welcome-modal: hide referrer input when already set at signup
     hasReferrer: sql<boolean>`(${users.referrerId} IS NOT NULL)`,
+    // Moderation state — banned accounts get their public profile noindexed.
+    isBanned: sql<boolean>`(${users.bannedAt} IS NOT NULL)`,
     // Expose the rest of the `user_counters` columns as SSOT-backed fields.
     booksGenerated: sql<number>`COALESCE(${userCounters.booksGenerated},0)`,
     booksCompleted: sql<number>`COALESCE(${userCounters.booksCompleted},0)`,

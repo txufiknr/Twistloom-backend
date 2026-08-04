@@ -733,6 +733,7 @@ router.get("/users/:identifier", optionalAuth, async (c: Context<AppEnv>) => {
 
       // Check if the viewer follows this user
       let isFollowing = false;
+      let isBlocked = false;
       if (viewerId && viewerId !== formattedUser.id) {
         const [followRow] = await dbRead
           .select({ id: userFollows.followerId })
@@ -743,8 +744,20 @@ router.get("/users/:identifier", optionalAuth, async (c: Context<AppEnv>) => {
           ))
           .limit(1);
         isFollowing = !!followRow;
+
+        const [blockRow] = await dbRead
+          .select({ id: userBlocks.userId })
+          .from(userBlocks)
+          .where(and(
+            eq(userBlocks.userId, viewerId),
+            eq(userBlocks.blockedUserId, formattedUser.id)
+          ))
+          .limit(1);
+        isBlocked = !!blockRow;
       }
       formattedUser.isFollowing = isFollowing;
+      formattedUser.isBlocked = isBlocked;
+      formattedUser.isBanned = userData.isBanned;
 
       console.log(`[GET /users/${identifierStr}] ✅ Fetched user profile from DB:`, formattedUser);
       return {

@@ -103,6 +103,10 @@ export interface User {
   updatedAt: Date;
   /** Whether the authenticated viewer follows this user (only set on public profile view) */
   isFollowing?: boolean;
+  /** Whether the authenticated viewer has blocked this user (only set on public profile view) */
+  isBlocked?: boolean;
+  /** Whether this user is banned (moderation state; used to noindex their profile) */
+  isBanned?: boolean;
 }
 
 export type UserActivityType =
@@ -181,6 +185,7 @@ export type UserAchievement = {
   isNotified: boolean;
 };
 
-export type EnrichedUserSelect = Omit<User, 'stats' | 'subscription' | 'isFollowing' | 'hasReferrer'> & UserStats & UserSubscription & {
+export type EnrichedUserSelect = Omit<User, 'stats' | 'subscription' | 'isFollowing' | 'isBlocked' | 'hasReferrer'> & UserStats & UserSubscription & {
   hasReferrer: boolean;
+  isBanned: boolean;
 };
