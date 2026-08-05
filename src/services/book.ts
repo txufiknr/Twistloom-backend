@@ -24,7 +24,7 @@ import { getEnrichedBookSelect } from "./book-controller.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage, DBUpdateBook } from "../types/schema.js";
 import type { Book, BookSlugGenerationResult, BookStatus, BookVisibility, EnrichedBookData, EnrichedPageOptions, PublicStats } from "../types/book.js";
 import { bookVisibilities } from "../types/book.js";
-import type { StoryPage, PersistedStoryPage, UserStoryPage, StoryState, StoryPageMeta, EnrichedStoryPage, StateDelta, StoryGeneration, SelectedAction, Action, EnrichedStoryPageContext, TranslatedStoryPage, EnrichedStoryPagePlace, EnrichedStoryPageCharacter, CommunityAction } from "../types/story.js";
+import type { StoryPage, PersistedStoryPage, UserStoryPage, StoryState, StoryPageMeta, EnrichedStoryPage, StateDelta, StoryGeneration, SelectedAction, Action, EnrichedStoryPageContext, TranslatedStoryPage, EnrichedStoryPagePlace, EnrichedStoryPageCharacter } from "../types/story.js";
 import type { CanonValidationSummary } from "../types/canon-validation.js";
 import { getStoryStateFromPage, insertStoryState } from "./story.js";
 import { formatPlacesForPrompt } from "../utils/places.js";
@@ -1391,8 +1391,11 @@ export async function mapToTranslatedPage(
  *
  * Exported so the frontend's lazy-load endpoint
  * `GET /:id/pages/:pageId/community-actions` (used to fetch community actions
- * after the fast page 1 render) reuses the exact same query — including the
- * current user's own actions being excluded.
+ * once the reader scrolls down to the action area, on any page) reuses the
+ * exact same query — including the current user's own actions being excluded.
+ *
+ * Community actions are intentionally NOT loaded in the enriched page path;
+ * this query is only ever run by the dedicated lazy-load endpoint.
  *
  * @param bookId - Book identifier
  * @param pageId - Page identifier
@@ -1490,9 +1493,12 @@ function loadLatestCanonValidation(pageId: string) {
  *   performs ZERO database queries.
  * - Page 1 always omits per-user/deferrable fields: `selectedActions` and
  *   `shownActionHint` are empty (no prior choice to hint — the reader may
- *   freely pick any action), and `communityActions` is omitted (deferred to a
- *   frontend lazy-load of the dedicated community-actions endpoint after the
- *   fast first render).
+ *   freely pick any action).
+ * - Community actions are omitted from EVERY page's payload (page 1 and
+ *   beyond). They live at the very bottom of the page, so the frontend
+ *   lazy-loads them from the dedicated community-actions endpoint once the
+ *   reader scrolls down to the action area — keeping that query off every
+ *   page's hot path and keeping cached payloads user-independent.
  * - All other pages use the in-memory LRU cache.
  * - Only caches pages with no incomplete actions (all actions have destinations)
  * - Pages with pending generation are not cached since they change frequently
@@ -1599,13 +1605,12 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
   // (they may be regenerated) and must not poison the long-lived cache.
   //
   // The payload is user-independent because page 1 has no parent action, so
-  // selectedActions is always empty. Page 1 also omits per-user fields that are
-  // meaningless or deferrable on the first page:
-  //   - shownActionHint is empty (no prior choice to hint — the reader may still
-  //     freely pick any action).
-  //   - communityActions are omitted; they live at the very bottom of the page
-  //     (after the story text and actions), so the frontend lazy-loads them from
-  //     a dedicated endpoint after the fast first render.
+  // selectedActions is always empty. Page 1 also omits shownActionHint (no
+  // prior choice to hint — the reader may still freely pick any action).
+  // Community actions are omitted from every page's payload — see the note at
+  // the Promise.all below; they live at the very bottom of the page, so the
+  // frontend lazy-loads them from a dedicated endpoint once the reader scrolls
+  // down to the action area.
   // The stored payload includes the static paragraphCommentCounts and
   // canonValidation as best-effort instant-render data; on a hit we only fix up
   // updatedAt. A Redis hit therefore needs ZERO database queries. On a miss we
@@ -1661,8 +1666,15 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
         .limit(1)
         .then(rows => rows[0]?.displayName ?? book?.title ?? null);
 
-  // Parallelize independent database queries and API calls
-  const [selectedActions, storyState, translation, shownActionHint, communityActions, branchName, paragraphCommentCountsRows, latestCanonValidation] = await Promise.all([
+  // Parallelize independent database queries and API calls.
+  //
+  // NOTE: communityActions are intentionally NOT loaded here for any page.
+  // They live at the very bottom of the page (after the story text and the
+  // reader's own choices), so the frontend lazy-loads them from the dedicated
+  // community-actions endpoint once the reader scrolls down to the action
+  // area — removing the query from every page's hot path across all page
+  // numbers, not just page 1.
+  const [selectedActions, storyState, translation, shownActionHint, branchName, paragraphCommentCountsRows, latestCanonValidation] = await Promise.all([
     // Query user's chosen action for this page (if authenticated).
     // Page 1 has no parent page → no previously-selected action is possible.
     isPageOne
@@ -1686,13 +1698,6 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
     isPageOne
       ? Promise.resolve<string[]>([])
       : (userId ? getUserActionHints(userId, pageId) : Promise.resolve<string[]>([])),
-
-    // Fetch community custom actions for this page — same language, non-rejected,
-    // highest plausibility first. Page 1 omits them (deferred to a frontend
-    // lazy-load of the dedicated endpoint after the fast first render).
-    isPageOne
-      ? Promise.resolve<CommunityAction[]>([])
-      : loadCommunityActions(bookId, pageId, userId, headerLanguage ?? language ?? 'en'),
 
     // Resolve human-readable branch name
     branchNamePromise,
@@ -1816,7 +1821,13 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
       : undefined,
     shownActionHint,
     context, // context is the SSOT for full action + plot-flag history
-    communityActions: communityActions.length > 0 ? communityActions : undefined,
+    // Community actions are never bundled into the page payload. They live at
+    // the very bottom of the page, so the frontend lazy-loads them from the
+    // dedicated community-actions endpoint once the reader scrolls down to the
+    // action area — for every page, not just page 1. Keeps the query off every
+    // page's hot path and keeps cached payloads user-independent (community
+    // actions otherwise vary per-user by excluding their own submissions).
+    communityActions: undefined,
 
     // Per-paragraph comment counts for this page (key 0 = page-level comments)
     paragraphCommentCounts: paragraphCommentCountsRows.length > 0

@@ -1433,7 +1433,8 @@ Retrieves a specific page by book identifier (slug or UUID) and page ID. Support
 - Returns originalActionsCount to show total actions before filtering
 - Returns `paragraphCommentCounts`, a map of comment counts keyed by paragraph number (1-based). Page-level comments (no paragraph scope) are reported under the key `0`. Only paragraphs with at least one comment are included. Use this for per-paragraph comment badges. Comments themselves are fetched via the page/paragraph comment endpoints.
   - **Page 1 (fast path):** counts are served from the Redis-cached payload as best-effort instant-render data and may be up to the cache TTL stale. For the authoritative "new comments" badge values, poll `GET /api/books/:id/pages/:pageId/comment-counts` in the background after first paint and update the badges with its response (book UUID from the `book.id` field in this response).
-  - **Page 1 omits `shownActionHint`** (always `[]` — the reader may freely choose any action, so there is nothing to hint) **and `communityActions`** (deferred — they appear at the very bottom of the page after the story text). Lazy-load community actions via `GET /api/books/:id/pages/:pageId/community-actions`.
+  - **`communityActions` is omitted from EVERY page's payload** (they appear at the very bottom of the page, after the story text and the reader's own choices). Lazy-load them via `GET /api/books/:id/pages/:pageId/community-actions` once the reader scrolls down to the action area — on any page, not just page 1.
+  - **Page 1 omits `shownActionHint`** (always `[]` — the reader may freely choose any action, so there is nothing to hint). Non-page-1 pages ship `shownActionHint` as before.
 
 **Error Responses:**
 - `404 Not Found`: Book or page not found
@@ -2195,7 +2196,7 @@ Keys are paragraph numbers (1-based); key `0` represents page-level comments (no
 
 ### GET /api/books/:id/pages/:pageId/community-actions
 
-Returns the community custom actions for a page (same language, non-rejected, highest plausibility first, capped at `MAX_ACTION_CHOICES_COMMUNITY`). This is the lazy-load companion to `paragraphCommentCounts`: the page payload omits `communityActions` on page 1 (they appear at the very bottom of the page, after the story text and the reader's choices), so the frontend calls this endpoint after the fast first render.
+Returns the community custom actions for a page (same language, non-rejected, highest plausibility first, capped at `MAX_ACTION_CHOICES_COMMUNITY`). This is the lazy-load companion to `paragraphCommentCounts`: the page payload omits `communityActions` on EVERY page (they appear at the very bottom of the page, after the story text and the reader's choices), so the frontend calls this endpoint once the reader scrolls down to the action area — on any page, not just page 1.
 
 **Authentication:** Optional (via `optionalAuth`) — the viewer's own submissions are excluded
 

@@ -3471,9 +3471,9 @@ router.get("/:id/pages/:pageId/comment-counts", optionalAuth, async (c) => {
  *
  * Returns the community custom actions for a page (same language, non-rejected,
  * highest plausibility first, capped at `MAX_ACTION_CHOICES_COMMUNITY`). Used by
- * the frontend to lazy-load the community-action suggestions after the fast page
- * 1 first render — they appear at the very bottom of the page, after the story
- * text and the reader's own choices.
+ * the frontend to lazy-load the community-action suggestions once the reader
+ * scrolls down to the action area — on ANY page, not just page 1. They appear at
+ * the very bottom of the page, after the story text and the reader's own choices.
  *
  * @route GET /api/books/:id/pages/:pageId/community-actions
  * @description Get community custom actions for a page (lazy-loaded)
