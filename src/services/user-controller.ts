@@ -12,7 +12,7 @@
  * - OAuth user creation
  */
 
-import { users, userAuth, userCounters, userProviders } from '../db/schema.js';
+import { users, userAuth, userCounters, userProviders, transactions } from '../db/schema.js';
 import { sql, eq, and, type SQL } from 'drizzle-orm';
 import { type DBClient, dbRead, dbWrite } from '../db/client.js';
 import { generateId } from '../utils/uuid.js';
@@ -22,7 +22,7 @@ import { uploadUserImage } from './image.js';
 import { cApiError, cNotFoundError, cValidationError } from '../utils/error.js';
 import { sanitizeUsername } from '../utils/username.js';
 import { invalidateUserProfileCache } from './cache.js';
-import { REFERRAL_BONUS } from '../config/credits.js';
+import { REFERRAL_BONUS, BETA_TESTER_REWARD_CREDITS } from '../config/credits.js';
 import { CURRENT_TERMS_VERSION } from '../config/legal.js';
 import { awardCredits } from './credits.js';
 import type { Context } from 'hono';
@@ -80,6 +80,8 @@ export function getEnrichedUserSelect() {
     hasReferrer: sql<boolean>`(${users.referrerId} IS NOT NULL)`,
     // Moderation state — banned accounts get their public profile noindexed.
     isBanned: sql<boolean>`(${users.bannedAt} IS NOT NULL)`,
+    // Beta tester program membership flag (one-time join + reward).
+    isBetaTester: users.isBetaTester,
     // Expose the rest of the `user_counters` columns as SSOT-backed fields.
     booksGenerated: sql<number>`COALESCE(${userCounters.booksGenerated},0)`,
     booksCompleted: sql<number>`COALESCE(${userCounters.booksCompleted},0)`,
@@ -640,4 +642,91 @@ export async function handleCheckIn(
   } catch (error) {
     return cApiError(c, `Failed to perform ${label}`, error);
   }
+}
+
+/**
+ * Joins the authenticated user to the beta tester program and awards the
+ * one-time credit bonus.
+ *
+ * **Single-join guarantee:** the join and the reward run inside ONE transaction.
+ * The claim is an atomic `UPDATE ... WHERE is_beta_tester = false` — if the
+ * flag was already set (including by a concurrent request), the update affects
+ * zero rows and the reward is skipped. A user can therefore only join — and be
+ * rewarded — exactly once.
+ *
+ * On a successful join the transaction also inserts a `reward` transaction
+ * record (context `beta_tester_join`) and bumps the balance by
+ * {@link BETA_TESTER_REWARD_CREDITS}.
+ *
+ * @param userId - User to enroll
+ * @returns
+ * - `status: 'joined'` — the user was newly enrolled and rewarded
+ * - `status: 'already_joined'` — the user was already a beta tester (no reward)
+ * @throws When the user does not exist (the claim update would affect zero rows
+ *         for a missing user, so the caller must ensure the user exists first)
+ *
+ * @example
+ * ```typescript
+ * const result = await joinBetaTesterProgram(userId);
+ * // { status: 'joined', isBetaTester: true, creditsAwarded: 500, newBalance: 1234 }
+ * ```
+ */
+export async function joinBetaTesterProgram(userId: string): Promise<{
+  status: 'joined' | 'already_joined';
+  isBetaTester: boolean;
+  creditsAwarded: number;
+  newBalance: number;
+}> {
+  return dbWrite.transaction(async (tx) => {
+    // Atomic one-shot claim: only succeeds when the user is not yet a beta tester.
+    const [claimed] = await tx
+      .update(users)
+      .set({
+        isBetaTester: true,
+        betaTesterJoinedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(and(eq(users.userId, userId), eq(users.isBetaTester, false)))
+      .returning({ credits: users.credits });
+
+    if (!claimed) {
+      const [existing] = await tx
+        .select({ credits: users.credits })
+        .from(users)
+        .where(eq(users.userId, userId))
+        .limit(1);
+
+      if (!existing) throw new Error(`User not found: ${userId}`);
+
+      return {
+        status: 'already_joined',
+        isBetaTester: true,
+        creditsAwarded: 0,
+        newBalance: existing.credits,
+      };
+    }
+
+    // Award the one-time bonus in the same transaction (atomic with the claim).
+    await tx
+      .update(users)
+      .set({ credits: sql`${users.credits} + ${BETA_TESTER_REWARD_CREDITS}` })
+      .where(eq(users.userId, userId));
+
+    await tx.insert(transactions).values({
+      userId,
+      type: 'reward',
+      credits: BETA_TESTER_REWARD_CREDITS,
+      amountCents: null,
+      context: 'beta_tester_join',
+      metadata: { program: 'beta_tester' },
+      createdAt: new Date(),
+    });
+
+    return {
+      status: 'joined',
+      isBetaTester: true,
+      creditsAwarded: BETA_TESTER_REWARD_CREDITS,
+      newBalance: claimed.credits + BETA_TESTER_REWARD_CREDITS,
+    };
+  });
 }

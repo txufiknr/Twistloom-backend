@@ -53,13 +53,13 @@ import { dbRead, dbWrite } from "../db/client.js";
 import { requireAuth, optionalAuth } from "../middleware/nextauth.js";
 import { users, books, userAuth, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, userSessions, userCompletedBooks, userComments, transactions, userProviders, userFeedbacks, bookTestimonials, uploadedImages, userReports, userBlocks } from "../db/schema.js";
 import { getErrorMessage, cApiError, cNotFoundError, cValidationError, cUnauthorizedError } from "../utils/error.js";
-import { eq, and, desc, sql } from "drizzle-orm";
+import { eq, and, desc, sql, gte } from "drizzle-orm";
 import { calculatePaginationMeta, extractPaginationParams } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import { updateUserLastActivity, getCheckInStatus, getCheckInStreaks, logUserActivity, sanitizeProfileUpdate, enrichActivityLogs } from "../services/user.js";
 import { invalidateCachePattern } from "../utils/cache.js";
 import { invalidateExploreCache, invalidateUserBooksCache, invalidateUserProfileCache, withCache, CACHE_KEYS, CACHE_TTL } from "../services/cache.js";
-import { getEnrichedUser, getEnrichedUserById, setReferrerForNewUser, handleCheckIn } from "../services/user-controller.js";
+import { getEnrichedUser, getEnrichedUserById, setReferrerForNewUser, handleCheckIn, joinBetaTesterProgram } from "../services/user-controller.js";
 import { uploadUserImage, uploadFeedbackScreenshot, persistUploadedImage } from "../services/image.js";
 import { isValidUuid } from "../utils/uuid.js";
 import { getStoryProgressWithBranch } from '../services/story-branch.js';
@@ -288,6 +288,8 @@ router.get('/export', requireAuth, async (c: Context<AppEnv>) => {
           termsAcceptedAt: users.termsAcceptedAt,
           termsVersion: users.termsVersion,
           ageConfirmedAt: users.ageConfirmedAt,
+          isBetaTester: users.isBetaTester,
+          betaTesterJoinedAt: users.betaTesterJoinedAt,
           lastActive: users.lastActive,
           createdAt: users.createdAt,
           updatedAt: users.updatedAt,
@@ -590,6 +592,94 @@ router.put('/', requireAuth, async (c: Context<AppEnv>) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// GET /api/users/top-creators
+// ---------------------------------------------------------------------------
+
+/** Length of the "this week" window (7 days) used by the top creators query. */
+const TOP_CREATORS_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * GET /api/users/top-creators
+ *
+ * Returns the users who created the most books in the last 7 days. Powers the
+ * "Creators writing this week" section on the homepage.
+ *
+ * Only books with `status = 'active'` and `visibility = 'public'` are counted,
+ * so the ranking reflects creators actively publishing stories visible to the
+ * community, not private drafts or archived books.
+ *
+ * Results are ordered by `booksCreated` descending and capped by `limit`.
+ * The query result is cached (30 min TTL) since the weekly window changes
+ * slowly and this endpoint is served on the high-traffic homepage.
+ *
+ * @route GET /api/users/top-creators
+ * @description Get top creators by books created in the last 7 days
+ *
+ * @query {number} [limit] - Maximum number of creators to return (default: 10, max: 50)
+ *
+ * @returns {Object} Top creators response
+ * @returns {Array} creators - Array of top creators, ordered by booksCreated desc
+ * @returns {string} creators[].userId - Creator's unique identifier
+ * @returns {string} creators[].name - Creator's display name
+ * @returns {string} creators[].username - Creator's username
+ * @returns {string|null} creators[].imageUrl - Creator's profile image URL
+ * @returns {number} creators[].booksCreated - Number of public books created in the last 7 days
+ *
+ * @example
+ * // Request
+ * GET /api/users/top-creators?limit=5
+ *
+ * // Response
+ * {
+ *   "creators": [
+ *     { "userId": "uuid", "name": "John Doe", "username": "johndoe", "imageUrl": "https://...", "booksCreated": 3 }
+ *   ]
+ * }
+ */
+router.get("/users/top-creators", async (c: Context<AppEnv>) => {
+  try {
+    const rawLimit = parseInt(c.req.query("limit") || "10", 10);
+    const limit = Math.min(Math.max(Number.isFinite(rawLimit) ? rawLimit : 10, 1), 50);
+
+    const cutoff = new Date(Date.now() - TOP_CREATORS_WINDOW_MS);
+    const cacheKey = CACHE_KEYS.TOP_CREATORS(limit);
+
+    const fetchTopCreators = async () => {
+      const rows = await dbRead
+        .select({
+          userId: users.userId,
+          name: users.name,
+          username: users.username,
+          imageUrl: users.imageUrl,
+          booksCreated: sql<number>`COUNT(${books.id})::int`,
+        })
+        .from(users)
+        .innerJoin(books, eq(books.userId, users.userId))
+        .where(
+          and(
+            gte(books.createdAt, cutoff),
+            eq(books.status, 'active'),
+            eq(books.visibility, 'public'),
+          )
+        )
+        .groupBy(users.userId, users.name, users.username, users.imageUrl)
+        .orderBy(sql`COUNT(${books.id})::int DESC`)
+        .limit(limit);
+
+      return rows;
+    };
+
+    const creators = await withCache(cacheKey, fetchTopCreators, CACHE_TTL.THIRTY_MINUTES);
+
+    c.header('Cache-Control', 'public, max-age=1800, stale-while-revalidate=300');
+    return c.json({ creators });
+  } catch (error) {
+    console.error('[GET /api/users/top-creators] ❌', error);
+    return cApiError(c, 'Failed to retrieve top creators', error);
+  }
+});
+
 /**
  * GET /users/:identifier
  * 
@@ -758,6 +848,7 @@ router.get("/users/:identifier", optionalAuth, async (c: Context<AppEnv>) => {
       formattedUser.isFollowing = isFollowing;
       formattedUser.isBlocked = isBlocked;
       formattedUser.isBanned = userData.isBanned;
+      formattedUser.isBetaTester = userData.isBetaTester;
 
       console.log(`[GET /users/${identifierStr}] ✅ Fetched user profile from DB:`, formattedUser);
       return {
@@ -2164,6 +2255,96 @@ router.post("/checkin", requireAuth, (c) => handleCheckIn(c));
  * }
  */
 router.post("/checkin/double", requireAuth, (c) => handleCheckIn(c, 'vip_2x'));
+
+// ===== BETA TESTER PROGRAM =====
+
+/**
+ * POST /user/beta-tester
+ *
+ * Joins the authenticated user to the beta tester program and awards a one-time
+ * credit bonus ({@link BETA_TESTER_REWARD_CREDITS} = 500).
+ *
+ * The join and the reward are atomic (single transaction): the flag claim is an
+ * `UPDATE ... WHERE is_beta_tester = false`, so a user can only join — and be
+ * rewarded — exactly once, even under concurrent requests. A second attempt
+ * returns HTTP 409 with `creditsAwarded: 0`.
+ *
+ * @route POST /user/beta-tester
+ * @description Join the beta tester program and claim the one-time reward
+ * @auth Required
+ *
+ * @returns {Object} Beta tester join response
+ * @returns {boolean} success - Whether the join was newly processed
+ * @returns {string} message - Status message
+ * @returns {boolean} isBetaTester - Always true after this call
+ * @returns {number} creditsAwarded - Credits added (500 on first join, 0 if already joined)
+ * @returns {number} credits - New credit balance
+ *
+ * @example
+ * // Request
+ * POST /user/beta-tester
+ *
+ * // Response (201 Created — first join)
+ * {
+ *   "success": true,
+ *   "message": "Welcome to the beta tester program! 500 credits added",
+ *   "isBetaTester": true,
+ *   "creditsAwarded": 500,
+ *   "credits": 550
+ * }
+ *
+ * // Response (409 Conflict — already joined)
+ * {
+ *   "success": false,
+ *   "message": "You are already a beta tester",
+ *   "isBetaTester": true,
+ *   "creditsAwarded": 0,
+ *   "credits": 550
+ * }
+ */
+router.post("/beta-tester", requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get("userId")!;
+    const result = await joinBetaTesterProgram(userId);
+
+    await Promise.all([
+      invalidateUserProfileCache(userId),
+      updateUserLastActivity(userId),
+    ]);
+
+    if (result.status === 'already_joined') {
+      return c.json({
+        success: false,
+        message: 'You are already a beta tester',
+        isBetaTester: result.isBetaTester,
+        creditsAwarded: result.creditsAwarded,
+        credits: result.newBalance,
+      }, 409);
+    }
+
+    await logUserActivity(
+      {
+        userId,
+        activityType: 'beta_tester_joined',
+        targetType: 'user',
+        targetId: userId,
+        metadata: { creditsAwarded: result.creditsAwarded },
+      },
+      { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } },
+    );
+
+    return c.json({
+      success: true,
+      message: `Welcome to the beta tester program! ${result.creditsAwarded} credits added`,
+      isBetaTester: result.isBetaTester,
+      creditsAwarded: result.creditsAwarded,
+      credits: result.newBalance,
+    }, 201);
+  } catch (error) {
+    console.error('[POST /user/beta-tester] ❌', error);
+    return cApiError(c, 'Failed to join beta tester program', error);
+  }
+});
 
 /**
  * GET /user/activity-logs

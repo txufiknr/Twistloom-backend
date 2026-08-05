@@ -107,6 +107,8 @@ export interface User {
   isBlocked?: boolean;
   /** Whether this user is banned (moderation state; used to noindex their profile) */
   isBanned?: boolean;
+  /** Whether this user is a member of the beta tester program (one-time join + reward) */
+  isBetaTester?: boolean;
 }
 
 export type UserActivityType =
@@ -122,7 +124,8 @@ export type UserActivityType =
   'session_updated' |
   'onboarding_complete' |
   'referrer_set' |
-  'shared_ending';
+  'shared_ending' |
+  'beta_tester_joined';
 
 export type CheckinClaimType = 'regular' | 'vip_2x';
 

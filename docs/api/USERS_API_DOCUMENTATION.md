@@ -25,51 +25,53 @@ The Users API provides endpoints for managing user profiles, social interactions
    - [Complete Onboarding](#post-user)
    - [Update User Profile](#put-user)
    - [Delete User Profile](#delete-user)
-3. [Likes](#likes)
+3. [Creator Discovery](#creator-discovery)
+   - [Get Top Creators (This Week)](#get-users-top-creators)
+4. [Likes](#likes)
    - [Like Target](#post-userlikes)
    - [Unlike Target](#delete-userlikes)
    - [Get User Likes](#get-userlikes)
-4. [Favorites](#favorites)
+5. [Favorites](#favorites)
    - [Add Book to Favorites](#post-userfavorites)
    - [Remove Book from Favorites](#delete-userfavorites)
    - [Get User Collections](#get-usercollections)
-5. [Comments](#comments)
+6. [Comments](#comments)
    - [Create Comment](#post-usercomments)
    - [Update Comment](#put-usercommentscommentid)
    - [Delete Comment](#delete-usercommentscommentid)
    - [Get User Comments](#get-usercomments)
-6. [Follows](#follows)
+7. [Follows](#follows)
    - [Follow User](#post-usersidfollow)
    - [Unfollow User](#delete-usersidfollow)
    - [Get User Followers](#get-usersidfollowers)
    - [Get User Following](#get-usersidfollowing)
    - [Get Authenticated User's Followers](#get-userfollowers)
    - [Get Authenticated User's Following](#get-userfollowing)
- 7. [Daily Check-in](#daily-check-in)
+ 8. [Daily Check-in](#daily-check-in)
     - [Get Check-in Status](#get-usercheckinstatus)
     - [Perform Daily Check-in](#post-usercheckin)
     - [VIP Double Claim](#post-usercheckindouble)
-  8. [Referral System](#referral-system)
+  9. [Referral System](#referral-system)
      - [Set Referrer (via POST /user — complete onboarding)](#setting-referrer-via-post-user--complete-onboarding)
      - [POST /user/referrer (DEPRECATED)](#post-userreferrer-deprecated)
- 9. [Activity Logs](#activity-logs)
-    - [Get User Activity Logs](#get-useractivity-logs)
- 10. [Reading Progress](#reading-progress)
+ 10. [Activity Logs](#activity-logs)
+     - [Get User Activity Logs](#get-useractivity-logs)
+ 11. [Reading Progress](#reading-progress)
      - [Get Story Progress](#get-userprogress)
- 11. [Achievements](#achievements)
+ 12. [Achievements](#achievements)
       - [Get Achievements](#get-userachievements)
       - [Get Unnotified Achievements](#get-userachievementsunnotified)
       - [Acknowledge Achievement](#post-userachievementsacknowledge)
       - [Get User Public Achievements](#get-usersidachievements)
- 12. [User Feedback](#user-feedback)
+ 13. [User Feedback](#user-feedback)
      - [Submit Feedback](#post-userfeedbacks)
-13. [Error Handling](#error-handling)
-14. [HTTP Headers](#http-headers)
-15. [Caching Strategy](#caching-strategy)
-16. [Authentication](#authentication)
-17. [Database Schema](#database-schema)
-18. [Testing](#testing)
-19. [Changelog](#changelog)
+14. [Error Handling](#error-handling)
+15. [HTTP Headers](#http-headers)
+16. [Caching Strategy](#caching-strategy)
+17. [Authentication](#authentication)
+18. [Database Schema](#database-schema)
+19. [Testing](#testing)
+20. [Changelog](#changelog)
 
 ---
 
@@ -195,6 +197,20 @@ interface FollowUser {
   username: string | null;   // Username
   imageUrl: string | null;   // Profile image URL
   followedAt: string;        // When the follow was created (ISO 8601)
+}
+```
+
+### TopCreator
+
+Creator entry returned by the "Creators writing this week" homepage section (GET /users/top-creators).
+
+```typescript
+interface TopCreator {
+  userId: string;              // Creator's unique identifier (UUID)
+  name: string;                // Creator's display name
+  username: string;            // Creator's username
+  imageUrl: string | null;     // Creator's profile image URL
+  booksCreated: number;        // Number of public books created in the last 7 days
 }
 ```
 
@@ -640,6 +656,50 @@ Books created by the user are preserved (userId set to null) to maintain content
 
 **Error Responses:**
 - `404 Not Found`: User profile not found
+
+---
+
+## Creator Discovery
+
+### GET /users/top-creators
+
+Returns the users who created the most books in the last 7 days. Powers the "Creators writing this week" section on the homepage.
+
+Only books with `status = 'active'` and `visibility = 'public'` are counted, so the ranking reflects creators actively publishing stories visible to the community — not private drafts or archived books. Results are ordered by `booksCreated` descending and capped by `limit`.
+
+**Authentication:** Not required (public — no middleware)
+
+**Query Parameters:**
+- `limit` (number, optional): Maximum number of creators to return (default: `10`, clamped to `1–50`)
+
+**Response (200 OK):**
+```json
+{
+  "creators": [
+    {
+      "userId": "user-uuid",
+      "name": "John Doe",
+      "username": "johndoe",
+      "imageUrl": "https://ik.imagekit.io/abc123/profile.jpg",
+      "booksCreated": 3
+    },
+    {
+      "userId": "user-uuid-2",
+      "name": "Jane Smith",
+      "username": "jane-smith",
+      "imageUrl": "https://ik.imagekit.io/abc123/profile2.jpg",
+      "booksCreated": 2
+    }
+  ]
+}
+```
+
+**Cache:** HTTP `Cache-Control: public, max-age=1800, stale-while-revalidate=300` (30-minute in-memory TTL via `CACHE_KEYS.TOP_CREATORS(limit)`)
+
+**Behavior:**
+- Queries `users` joined to `books` where `books.created_at >= now() - 7 days`
+- Counts only `status = 'active'` and `visibility = 'public'` books, grouped by user
+- Returns an empty `creators` array if no user published books this week
 
 ---
 
@@ -1735,6 +1795,7 @@ All endpoints follow consistent error response formats:
 - `Cache-Control`: Varies by endpoint
   - `private` for authenticated user data
   - `public, max-age=60, stale-while-revalidate=30` for public user profiles (`GET /users/:identifier`) — cache is only applied for guest viewers; skipped when authenticated
+  - `public, max-age=1800, stale-while-revalidate=300` for top creators (`GET /users/top-creators`)
 
 ---
 
@@ -1747,10 +1808,12 @@ The API implements multi-level caching for performance:
 
 **Cache TTLs:**
 - User profile: 5 minutes (configurable via `CACHE_TTL.USER_PROFILE`)
+- Top creators (`GET /users/top-creators`): 30 minutes (via `CACHE_TTL.THIRTY_MINUTES`, keyed by `users:top-creators:{limit}`)
 
 **Notes:**
 - `GET /users/:identifier` now uses `optionalAuth` (was no middleware). When the viewer is authenticated, the cache is skipped to return fresh `isFollowing` data.
 - `GET /users/:id/achievements` is not cached (always fetches fresh).
+- `GET /users/top-creators` is cached server-side (30 min) plus CDN/edge (Cache-Control). The weekly window changes slowly, so a 30-minute TTL is safe. It is not actively invalidated on book creation — new creators appear within the TTL window.
 
 **Invalidation Triggers:**
 - Profile update (PUT /user): Invalidates `user:{userId}:profile`
@@ -1920,6 +1983,11 @@ curl https://api.twistloom.com/api/user \
 curl https://api.twistloom.com/api/users/johndoe
 ```
 
+**Get top creators this week (homepage "Creators writing this week" section):**
+```bash
+curl "https://api.twistloom.com/api/users/top-creators?limit=10"
+```
+
 **Like a book:**
 ```bash
 curl -X POST https://api.twistloom.com/api/user/likes \
@@ -2036,6 +2104,12 @@ curl -X POST https://api.twistloom.com/api/user/feedbacks \
 ---
 
 ## Changelog
+
+### v3.5.0 (2026-08-05)
+- Added `GET /users/top-creators` public endpoint — returns the users who created the most public books (`status='active'`, `visibility='public'`) in the last 7 days, powers the homepage "Creators writing this week" section
+- Added `TopCreator` type definition (`userId`, `name`, `username`, `imageUrl`, `booksCreated`)
+- Accepts optional `limit` query param (default: 10, clamped to 1–50); results ordered by `booksCreated` desc
+- Added Creator Discovery section, HTTP Cache-Control docs, cURL example, and caching strategy entry (30-min server TTL keyed by `users:top-creators:{limit}`)
 
 ### v3.4.1 (2026-08-05)
 - **Docs correction:** referrer attribution is set via `POST /user` (complete onboarding) or `POST /auth/signup` — **not** via `PUT /user`. Updated the Referral System section, `POST /user` parameters, `PUT /user` parameters, cURL example, and deprecation message accordingly.

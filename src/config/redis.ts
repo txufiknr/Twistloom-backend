@@ -50,6 +50,8 @@ export const REDIS_CACHE_KEYS = {
   EXPLORE_PAGE_1_TRENDING: 'books:explore:page:1:trending',
   /** User profile: user:profile:{userId} */
   USER_PROFILE: (userId: string) => `user:profile:${userId}`,
+  /** Top creators this week (homepage): users:top-creators:{limit} */
+  TOP_CREATORS: (limit: number) => `users:top-creators:${limit}`,
   /** Static page 1 payload for a book: book:page1:{bookId}:{contentLanguage}
    * (contentLanguage is the effective page language, i.e. book language or the
    * translation target — page 1 content differs per language). */

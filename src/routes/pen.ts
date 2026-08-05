@@ -9,6 +9,8 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../hono/env.js";
 import { requireAuth } from "../middleware/nextauth.js";
+import { rateLimit } from "../middleware/rate-limit.js";
+import { PEN_SUGGEST_RATE_LIMIT } from "../config/ai-rate-limits.js";
 import { cApiError, cNotFoundError, cValidationError } from "../utils/error.js";
 import {
   createPenSession,
@@ -17,9 +19,13 @@ import {
   updatePenSession,
   closePenSession,
   discardPenDraft,
+  continuePenDraft,
   PenSessionNotFoundError,
   PenSessionConflictError,
+  PenBookOwnershipError,
+  PenContinueError,
 } from "../services/pen.js";
+import type { PenContinueInput } from "../services/pen.js";
 import type { AuthoringMode, PenSessionStatus } from "../types/pen.js";
 
 const router = new Hono<AppEnv>();
@@ -61,6 +67,7 @@ router.post("/sessions", requireAuth, async (c) => {
     return c.json({ session });
   } catch (error) {
     if (error instanceof PenSessionConflictError) return cApiError(c, error.message, undefined, 409);
+    if (error instanceof PenBookOwnershipError) return cApiError(c, error.message, undefined, 403);
     if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
     return cApiError(c, "Failed to create pen session", error);
   }
@@ -160,6 +167,56 @@ router.post("/sessions/:id/discard", requireAuth, async (c) => {
 });
 
 /**
+ * POST /api/pen/sessions/:id/continue
+ * Runs the single-request validate-and-generate continuation for an active
+ * session the user owns. Body (discriminated by `type`):
+ *   storyteller   -> { type: 'storyteller', prose, directionHint? }
+ *   text_adventure-> { type: 'text_adventure', command }
+ * Returns { span, edit, draft } where span is validated/dirty.
+ */
+router.post("/sessions/:id/continue", requireAuth, rateLimit(PEN_SUGGEST_RATE_LIMIT), async (c) => {
+  try {
+    const userId = c.get("userId");
+    if (!userId) return cApiError(c, "Authentication required", undefined, 401);
+    const sessionId = c.req.param("id");
+    const body = await c.req.json();
+
+    if (!body || typeof body !== "object") {
+      return cValidationError(c, "Request body must be a JSON object");
+    }
+
+    let input: PenContinueInput;
+    const raw = body as Record<string, unknown>;
+
+    if (raw.type === "text_adventure") {
+      if (typeof raw.command !== "string" || raw.command.trim().length === 0) {
+        return cValidationError(c, "command is required for text_adventure");
+      }
+      input = { type: "text_adventure", command: raw.command };
+    } else if (raw.type === "storyteller") {
+      if (typeof raw.prose !== "string" || raw.prose.trim().length === 0) {
+        return cValidationError(c, "prose is required for storyteller");
+      }
+      input = {
+        type: "storyteller",
+        prose: raw.prose,
+        directionHint: typeof raw.directionHint === "string" ? raw.directionHint : undefined,
+      };
+    } else {
+      return cValidationError(c, "type must be 'storyteller' or 'text_adventure'");
+    }
+
+    const result = await continuePenDraft(userId, sessionId, input);
+    return c.json(result);
+  } catch (error) {
+    if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
+    if (error instanceof PenBookOwnershipError) return cApiError(c, error.message, undefined, 403);
+    if (error instanceof PenContinueError) return cApiError(c, error.message, undefined, 422);
+    return cApiError(c, "Failed to continue pen draft", error);
+  }
+});
+
+/** 
  * GET /api/pen/sessions/:id
  * Return a single session by id (ownership verified).
  */

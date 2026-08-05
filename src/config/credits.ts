@@ -107,6 +107,26 @@ const CREDIT_COSTS_BASE = {
   TIME_TRAVEL_PER_PAGE: 5, // TODO: use
   /** Cost to unlock alternate endings (future feature) */
   UNLOCK_ALTERNATE_ENDING: 10, // TODO: use
+
+  /* ── Pen (AI co-writing) — §8 of the Pen roadmap ─────────────────── */
+  /** AI continues prose when assistance > 0.9 (auto-continue). */
+  PEN_AUTO_CONTINUE: 3,
+  /** AI assists human prose when assistance ≤ 0.9. */
+  PEN_ASSIST: 1,
+  /** Lightweight inline suggestion (assistance < 0.3). */
+  PEN_SUGGEST: 0,
+  /** Text adventure command resolution. */
+  PEN_COMMAND: 2,
+  /** Story bible entry create/edit (free, encourages worldbuilding). */
+  PEN_LORE_ENTRY: 0,
+  /** Lore-bible amendment on forced publish (free, one batched call). */
+  PEN_LORE_AMEND: 0,
+  /** Future note create/edit (free). */
+  PEN_FUTURE_NOTE: 0,
+  /** Scene plan generation. */
+  PEN_SCENE_PLAN: 1,
+  /** Finalize delta-verification — charged only when an LLM judgment runs. */
+  PEN_FINALIZE_VERIFY: 0,
 } as const;
 
 /**
@@ -220,6 +240,9 @@ export const DAILY_CHECKIN_BIG_BONUS = 20; // Bonus applied on the 7th consecuti
 
 export const REFERRAL_BONUS = 10; // Bonus for both users
 export const FIRST_PURCHASE_BONUS = 50; // Bonus for first purchase
+
+/** One-time credit reward granted to a user when they join the beta tester program. */
+export const BETA_TESTER_REWARD_CREDITS = 500;
 
 export const CREDIT_PACKS: CreditPack[] = [
   {
