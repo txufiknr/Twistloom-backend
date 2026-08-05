@@ -1208,6 +1208,12 @@ function buildNextPageReviewChecklist(state: StoryState, language: string): stri
   □ No trailing commas? → Fix any.`.trim();
 }
 
+function buildEvaluatorOuputFormatBlurb(useStringEvaluatorOutput: boolean): string {
+  return useStringEvaluatorOutput
+    ? 'CRITICAL — the "output" field must be the FULL corrected JSON serialized as a VALID JSON STRING (see "EXPECTED JSON SCHEMA"). Begin with "{" and end exactly with "}" (raw JSON text, properly escaped inside the string).'
+    : '';
+}
+
 function buildNextPageEvaluatorPrompt(params: BuildNextPagePromptParams): string {
   const { advancedState: state, actionedPage, candidateCount, book } = params;
   const { isEarlyPhase, isMidPhase, isLatePhase, isFinale, charactersSlot } = getStoryStateInfo(state);
@@ -1216,9 +1222,7 @@ function buildNextPageEvaluatorPrompt(params: BuildNextPagePromptParams): string
   const formattedLanguage = formatLanguage(language);
   const useStringEvaluatorOutput = params.useStringEvaluatorOutput ?? resolveUseStringEvaluator({ modelSelection: AI_CHAT_MODELS_EVALUATION });
 
-  const outputFormatBlurb = useStringEvaluatorOutput
-    ? 'CRITICAL — the "output" field must be the FULL corrected JSON serialized as a VALID JSON STRING. It must begin with "{" and end exactly with "}" (the raw JSON text, properly escaped inside the string) — NOT a plain sentence, NOT a bare object reference, and NOT explanatory prose. The corrected JSON is placed inside that string; only "output" is string-encoded. All other fields below (scoreBefore, scoreAfter, actionFlags, integrityFlags) are real JSON objects. Output the corrected JSON as a valid JSON string in the "output" field.'
-    : 'The "output" field holds the corrected JSON directly as a JSON object (see "EXPECTED JSON SCHEMA") — no quoting, no escaping.';
+  const outputFormatBlurb = buildEvaluatorOuputFormatBlurb(useStringEvaluatorOutput);
 
   const outputLine = useStringEvaluatorOutput
     ? '"output": "...", // full corrected JSON as a JSON string: begins with "{", ends with "}"'
@@ -1392,9 +1396,7 @@ function buildFirstBookEvaluatorPrompt(params: InitializeBookParams): string {
   const formattedLanguage = formatLanguage(language);
   const useStringEvaluatorOutput = resolveUseStringEvaluator({ modelSelection: AI_CHAT_MODELS_EVALUATION });
 
-  const outputFormatBlurb = useStringEvaluatorOutput
-    ? 'CRITICAL — the "output" field must be the FULL corrected JSON serialized as a VALID JSON STRING. It must begin with "{" and end exactly with "}" (the raw JSON text, properly escaped inside the string) — NOT a plain sentence, NOT a bare object reference, and NOT explanatory prose. All other fields below (scoreBefore, scoreAfter, actionFlags, integrityFlags) are real JSON objects; only "output" is string-encoded. Output the corrected JSON as a valid JSON string in the "output" field.'
-    : 'The "output" field holds the corrected JSON directly as a JSON object (see "EXPECTED JSON SCHEMA") — no quoting, no escaping.';
+  const outputFormatBlurb = buildEvaluatorOuputFormatBlurb(useStringEvaluatorOutput);
 
   const outputLine = useStringEvaluatorOutput
     ? '"output": "...", // full corrected JSON as a JSON string: begins with "{", ends with "}"'
