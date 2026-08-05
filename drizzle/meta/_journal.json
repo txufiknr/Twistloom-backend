@@ -330,6 +330,13 @@
       "when": 1785821126450,
       "tag": "0046_old_the_spike",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1785900727213,
+      "tag": "0047_curly_shaman",
+      "breakpoints": true
     }
   ]
 }
