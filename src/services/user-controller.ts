@@ -649,9 +649,10 @@ export async function handleCheckIn(
  * one-time credit bonus.
  *
  * **Single-join guarantee:** the join and the reward run inside ONE transaction.
- * The claim is an atomic `UPDATE ... WHERE is_beta_tester = false` — if the
- * flag was already set (including by a concurrent request), the update affects
- * zero rows and the reward is skipped. A user can therefore only join — and be
+ * The claim is an atomic `UPDATE ... WHERE beta_tester_joined_at IS NULL` (the
+ * SSOT column; `is_beta_tester` is a generated derivative). If the user already
+ * joined — including from a concurrent request — the update affects zero rows
+ * and the reward is skipped. A user can therefore only join — and be
  * rewarded — exactly once.
  *
  * On a successful join the transaction also inserts a `reward` transaction
@@ -679,14 +680,18 @@ export async function joinBetaTesterProgram(userId: string): Promise<{
 }> {
   return dbWrite.transaction(async (tx) => {
     // Atomic one-shot claim: only succeeds when the user is not yet a beta tester.
+    // `is_beta_tester` is a generated column derived from `beta_tester_joined_at`,
+    // so we claim by writing `beta_tester_joined_at` (SSOT) and matching on its
+    // NULL-ness — never writing to the generated column directly.
     const [claimed] = await tx
       .update(users)
-      .set({
-        isBetaTester: true,
-        betaTesterJoinedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(and(eq(users.userId, userId), eq(users.isBetaTester, false)))
+      .set({ betaTesterJoinedAt: new Date(), updatedAt: new Date() })
+      .where(
+        and(
+          eq(users.userId, userId),
+          sql`${users.betaTesterJoinedAt} IS NULL`,
+        ),
+      )
       .returning({ credits: users.credits });
 
     if (!claimed) {

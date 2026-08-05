@@ -1,0 +1,2 @@
+ALTER TABLE "users" ADD COLUMN "beta_tester_joined_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "users" ADD COLUMN "is_beta_tester" boolean GENERATED ALWAYS AS ((beta_tester_joined_at IS NOT NULL)) STORED NOT NULL;

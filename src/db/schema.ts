@@ -271,14 +271,20 @@ export const users = pgTable(
      */
     bannedAt: timestamp("banned_at", { withTimezone: true }),
     /**
-     * Whether the user joined the beta tester program.
-     * Set once per user — the atomic claim (WHERE is_beta_tester = false) plus
-     * the one-time reward transaction guarantee a user can only join (and be
-     * rewarded) a single time, even under concurrent requests.
+     * When the user joined the beta tester program (audit trail; NULL = never).
+     * **SSOT** for beta tester status: writes must only ever touch this column,
+     * never the derived `is_beta_tester` below.
      */
-    isBetaTester: boolean("is_beta_tester").notNull().default(false),
-    /** When the user joined the beta tester program (audit trail; null = never). */
     betaTesterJoinedAt: timestamp("beta_tester_joined_at", { withTimezone: true }),
+    /**
+     * Whether the user is a beta tester. **Generated column** derived from
+     * `beta_tester_joined_at` (true when that column is non-null). Never write
+     * to this column — the database maintains it automatically, so there is a
+     * single source of truth for beta-tester membership.
+     */
+    isBetaTester: boolean("is_beta_tester").notNull().generatedAlwaysAs(
+      sql`(beta_tester_joined_at IS NOT NULL)`,
+    ),
     /**
      * Account / app language of record (`en` | `id`).
      * Synced fire-and-forget from frontend language picker. Email uses this
