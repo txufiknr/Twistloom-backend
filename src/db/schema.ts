@@ -1882,7 +1882,7 @@ export const userFeedbacks = pgTable(
  *   "book_id": "book789",
  *   "branch_id": "main",
  *   "page": 18,
- *   "source_text": "Page 18:\nScene: You found an old brass key...\nMood: eerie\nKey events: found key, heard voice",
+ *   "source_text": "Scene: You found an old brass key...\nMood: eerie\nKey events: found key, heard voice",
  *   "created_at": "2026-07-11T00:00:00.000Z"
  * }
  */

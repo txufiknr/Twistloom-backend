@@ -1,5 +1,5 @@
 import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_CREATIVE, DEFAULT_MAX_OUTPUT_TOKEN } from "../config/ai-chat.js";
-import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
+import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING, AI_CHAT_MODELS_EVALUATION } from "../config/ai-clients.js";
 import { characterImportances, characterStatuses } from "../config/enums.js";
 import { actionTypes, archetypes, stabilityLevels, manipulationAffinities, truthLevels, threatProximities, realityStabilities, endingTypes, finalePhases, factTypes, sceneTypes, storyMomentums } from "../config/enums.js";
 import type { StoryState, Action, PsychologicalFlags, PsychologicalProfile, HiddenState, PersistedStoryPage, ActionHintType, AIActionConfig, StabilityLevel } from "../types/story.js";
@@ -7,7 +7,7 @@ import { moodValues, weatherValues, sceneTypeValues, sceneRoleValues, momentumVa
 import { createNonRetryableError } from "./retry.js";
 import { TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS, MAX_THREADS_CLUES, MAX_ACTION_CHOICES_FINALE, FUTURE_NOTE_LOOKAHEAD_DAYS } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
-import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
+import { aiPrompt, createAIOptionsWithSchema, resolveUseStringEvaluator } from "./ai-chat.js";
 import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, applyStateDelta, advanceStoryState, calculatePsychologicalDeltas, mapFutureNoteWithKey, createStoryThread } from "./story.js";
 import { ensureCandidatesForPageWithStrategy, triggerCandidateGenerationWorkflow } from "./candidate-generation.js";
 import { calculateHealthStatus, generateRandomCharacter, getMainCharacterInfo } from "./characters.js";
@@ -1214,6 +1214,15 @@ function buildNextPageEvaluatorPrompt(params: BuildNextPagePromptParams): string
   const { action, sceneType } = actionedPage;
   const { language } = book;
   const formattedLanguage = formatLanguage(language);
+  const useStringEvaluatorOutput = params.useStringEvaluatorOutput ?? resolveUseStringEvaluator({ modelSelection: AI_CHAT_MODELS_EVALUATION });
+
+  const outputFormatBlurb = useStringEvaluatorOutput
+    ? 'CRITICAL — the "output" field must be the FULL corrected JSON serialized as a VALID JSON STRING. It must begin with "{" and end exactly with "}" (the raw JSON text, properly escaped inside the string) — NOT a plain sentence, NOT a bare object reference, and NOT explanatory prose. The corrected JSON is placed inside that string; only "output" is string-encoded. All other fields below (scoreBefore, scoreAfter, actionFlags, integrityFlags) are real JSON objects. Output the corrected JSON as a valid JSON string in the "output" field.'
+    : 'The "output" field holds the corrected JSON directly as a JSON object (see "EXPECTED JSON SCHEMA") — no quoting, no escaping.';
+
+  const outputLine = useStringEvaluatorOutput
+    ? '"output": "...", // full corrected JSON as a JSON string: begins with "{", ends with "}"'
+    : '"output": { ...reconstructed and corrected JSON ... }';
 
   const taskPrompt = `TASK: Evaluate a newly generated branching story page from selected action, refine output, and re-evaluate — in that order.
 
@@ -1337,8 +1346,9 @@ JSON INTEGRITY CHECKS (flag any violation):
 
 ---
 OUTPUT FORMAT (strict JSON, no extra text):
+${outputFormatBlurb}
 {
-  "output": { ...reconstructed and corrected page JSON },
+  ${outputLine},
   "scoreBefore": {
     "total": <number>,
     "breakdown": [
@@ -1380,6 +1390,16 @@ OUTPUT FORMAT (strict JSON, no extra text):
 function buildFirstBookEvaluatorPrompt(params: InitializeBookParams): string {
   const { theme, language, mcCandidate, titleIdea } = params;
   const formattedLanguage = formatLanguage(language);
+  const useStringEvaluatorOutput = resolveUseStringEvaluator({ modelSelection: AI_CHAT_MODELS_EVALUATION });
+
+  const outputFormatBlurb = useStringEvaluatorOutput
+    ? 'CRITICAL — the "output" field must be the FULL corrected JSON serialized as a VALID JSON STRING. It must begin with "{" and end exactly with "}" (the raw JSON text, properly escaped inside the string) — NOT a plain sentence, NOT a bare object reference, and NOT explanatory prose. All other fields below (scoreBefore, scoreAfter, actionFlags, integrityFlags) are real JSON objects; only "output" is string-encoded. Output the corrected JSON as a valid JSON string in the "output" field.'
+    : 'The "output" field holds the corrected JSON directly as a JSON object (see "EXPECTED JSON SCHEMA") — no quoting, no escaping.';
+
+  const outputLine = useStringEvaluatorOutput
+    ? '"output": "...", // full corrected JSON as a JSON string: begins with "{", ends with "}"'
+    : '"output": { ...reconstructed and corrected JSON }';
+
   return `TASK: Evaluate a newly generated book initialization, refine it, and re-score — in that order.
 
 ---
@@ -1514,8 +1534,9 @@ JSON INTEGRITY CHECKS (flag any violation):
 
 ---
 OUTPUT FORMAT (strict JSON, no extra text):
+${outputFormatBlurb}
 {
-  "output": { ...reconstructed and corrected book initialization JSON },
+  ${outputLine},
   "scoreBefore": {
     "total": <number>,
     "breakdown": [
@@ -4370,6 +4391,12 @@ async function prepareNextPageGenerationSetup(params: BuildNextPageParams, candi
     relevantPastEventsBlock,
     relevantFutureNoteKeys,
     clueRecallBlocks,
+    // Evaluator string mode is the default whenever Gemini is in the evaluator
+    // chain (matches resolveUseStringEvaluator's auto resolution). Threaded so
+    // buildNextPageEvaluatorPrompt's OUTPUT FORMAT example matches the schema.
+    useStringEvaluatorOutput: resolveUseStringEvaluator({
+      modelSelection: AI_CHAT_MODELS_EVALUATION,
+    }),
   };
 
   let prompt = buildNextPagePrompt(promptParams);

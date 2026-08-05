@@ -43,10 +43,16 @@ import type { PersistedStoryPage, FutureNote } from '../types/story.js';
 /**
  * Builds the text that gets embedded for a page. Field names confirmed
  * against StoryPage/StoryScene in types/story.ts.
+ *
+ * Deliberately NOT prefixed with a "Page N:" label — the page number already
+ * lives in the structured `page` column (used for `page < currentPage`
+ * filtering) and is added contextually when the retrieved sourceText is
+ * rendered into a prompt (e.g. "- Page 18 (similarity: 0.91): Scene: …").
+ * Baking it into the embedded string would duplicate a display concern into
+ * what should be pure semantic content.
  */
 export function buildPageEmbeddingText(page: PersistedStoryPage): string {
   return [
-    `Page ${page.page}:`,
     `Scene: ${page.text}`,
     page.mood ? `Mood: ${page.mood}` : '',
     page.keyEvents?.length ? `Key events: ${page.keyEvents.join(', ')}` : '',

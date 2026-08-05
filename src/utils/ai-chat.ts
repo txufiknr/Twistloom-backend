@@ -1242,7 +1242,7 @@ export function isSchemaTooComplex(schema: Record<string, AIJsonProperty> | unde
  * @param options - Prompt options containing the raw flag value and model selection
  * @returns Resolved boolean for use in schema building and result parsing
  */
-function resolveUseStringEvaluator(options: { useStringEvaluatorOutput?: boolean | 'auto'; modelSelection?: AIModelSelection }): boolean {
+export function resolveUseStringEvaluator(options: { useStringEvaluatorOutput?: boolean | 'auto'; modelSelection?: AIModelSelection }): boolean {
   const setting = options.useStringEvaluatorOutput;
   if (setting === false) return false;
   if (setting === true) return true;

@@ -71,4 +71,13 @@ export type BuildNextPagePromptParams = {
    * formatThreadsPrompt to formatActiveThreads.
    */
   clueRecallBlocks?: Record<string, string>;
+  /**
+   * Resolved evaluator strategy — whether the evaluation schema's `output`
+   * field is a JSON string (true) or a structured object (false). Defaults
+   * to the auto resolution used by aiPrompt: true when Gemini is in the
+   * evaluator chain (see resolveUseStringEvaluator). Threaded into
+   * buildNextPageEvaluatorPrompt so its OUTPUT FORMAT example matches the
+   * schema actually sent to the AI.
+   */
+  useStringEvaluatorOutput?: boolean;
 }

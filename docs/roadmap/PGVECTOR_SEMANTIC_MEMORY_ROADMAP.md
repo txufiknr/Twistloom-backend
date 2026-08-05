@@ -354,13 +354,15 @@ export interface EmbeddingProvider {
 | Action text alone | Too short; embed with surrounding context |
 | flag levels (trust: low) | Structured data, better in prompt directly |
 
-### Embedding content format (unchanged, confirmed field names)
+### Embedding content format (confirmed field names)
 
 ```typescript
 // buildPageEmbeddingText — field names confirmed against StoryPage/StoryScene in story_types.ts
+// Deliberately no "Page N:" label: the page number lives in the structured `page` column and is
+// added contextually at render time ("- Page 18 (similarity: 0.91): Scene: …"), so the embedded
+// text stays pure semantic content.
 function buildPageEmbeddingText(page: StoryPage): string {
   return [
-    `Page ${page.page}:`,
     `Scene: ${page.text}`,
     `Mood: ${page.mood ?? ''}`,
     `Key events: ${page.keyEvents?.join(', ') ?? ''}`,
@@ -703,7 +705,7 @@ import { sql } from "drizzle-orm";
  *   "branch_id": "main",
  *   "page": 18,
  *   "content_type": "page",
- *   "source_text": "Page 18:\nScene: ...",
+ *   "source_text": "Scene: ...",
  *   "created_at": "2026-07-10T00:00:00.000Z"
  * }
  */
