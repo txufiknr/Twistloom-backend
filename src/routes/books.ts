@@ -55,6 +55,7 @@
  * Custom Actions:
  * - POST /api/books/:identifier/:pageId/custom-actions/preview - Preview a custom action without charging (requires auth)
  * - POST /api/books/:identifier/:pageId/custom-actions/submit - Submit a custom action and generate page (requires auth + credits)
+ * - GET /api/books/:id/pages/:pageId/community-actions - Get community custom actions for a page, lazy-loaded after fast page-1 render (optional auth)
  * 
  * Psychological Features:
  * - GET /api/books/:identifier/psychological-profile - Get psychological "autopsy" of the MC (requires auth)
@@ -73,6 +74,7 @@
  * - GET /api/books/:id/comments - Get book comments with pagination (optional auth)
  * - POST /api/books/:id/comments - Create comment on book (or page/paragraph) (requires auth)
  * - GET /api/books/:id/pages/:pageId/comments - Get comments for a page (optional auth)
+ * - GET /api/books/:id/pages/:pageId/comment-counts - Get per-paragraph comment counts for a page (optional auth)
  * - POST /api/books/:id/pages/:pageId/comments - Create comment on a page (requires auth)
  * - GET /api/books/:id/pages/:pageId/paragraphs/:paragraphNumber/comments - Get comments for a paragraph (optional auth)
  * - POST /api/books/:id/pages/:pageId/paragraphs/:paragraphNumber/comments - Create comment on a paragraph (requires auth)
@@ -116,7 +118,7 @@ import { extractPaginationParams, createPaginatedResponse, calculatePaginationMe
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import { validateSearchQuery, validateLanguageCode, validateAgeRange, validateGender, validateRatingFilter, validateRatingCountFilter, createRelevanceExpression, buildTokenizedSearchCondition } from "../utils/search.js";
 import type { ImageUploadSource } from "../types/image.js";
-import { updateBook, updateBookVisibility, insertBook, uploadBookCoverImage, uploadBookCharacterAvatarImage, sanitizeBookTextField, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage, mapBookFromDb, invalidatePopularTagsCache, invalidateBookCache, invalidateEnrichedBookCache } from "../services/book.js";
+import { updateBook, updateBookVisibility, insertBook, uploadBookCoverImage, uploadBookCharacterAvatarImage, sanitizeBookTextField, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage, mapBookFromDb, invalidatePopularTagsCache, invalidateBookCache, invalidateEnrichedBookCache, invalidatePageOneCache, loadParagraphCommentCounts, loadCommunityActions } from "../services/book.js";
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
 import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookPage } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache } from "../services/cache.js";
@@ -2383,6 +2385,9 @@ router.delete("/:id", requireAuth, async (c) => {
     // Invalidate explore cache only if the deleted book was publicly visible
     await invalidateExploreCache({ book: bookToDelete });
 
+    // Drop the long-lived Redis page 1 cache for this book (all languages)
+    await invalidatePageOneCache(bookToDelete.id);
+
     if (bookToDelete.status === 'active' && bookToDelete.visibility === 'public') {
       notifyForumStoryArchived(bookToDelete.id, bookToDelete.slug);
     }
@@ -3414,6 +3419,104 @@ router.get("/:id/pages/:pageId/comments", optionalAuth, async (c) => {
     return c.json({ comments, pagination });
   } catch (error) {
     return cApiError(c, "Failed to retrieve page comments", error);
+  }
+});
+
+/**
+ * GET /api/books/:id/pages/:pageId/comment-counts
+ *
+ * Lightweight per-paragraph comment counts for a page. The frontend renders
+ * page 1 instantly from the Redis-cached payload (whose counts are best-effort,
+ * up to the cache TTL stale) and then polls this endpoint in the background to
+ * refresh the comment badges with authoritative values.
+ *
+ * @route GET /api/books/:id/pages/:pageId/comment-counts
+ * @description Get authoritative per-paragraph comment counts for a page
+ * @auth Optional (optionalAuth) — counts are public, not user-scoped
+ *
+ * @param id - Book ID (UUID)
+ * @param pageId - Page ID
+ * @returns Object with counts keyed by paragraph number (key 0 = page-level)
+ *
+ * @example
+ * GET /api/books/book123/pages/page456/comment-counts
+ * Response (200): { "counts": { "0": 12, "3": 2, "5": 1 } }
+ */
+router.get("/:id/pages/:pageId/comment-counts", optionalAuth, async (c) => {
+  try {
+    const { id, pageId } = c.req.param();
+
+    const book = await getBookFromDB(id as string);
+    if (!book) return cNotFoundError(c, "Book not found");
+
+    const pageRow = await findPageInBook(pageId as string, id as string);
+    if (!pageRow) return cNotFoundError(c, "Page not found");
+
+    const rows = await loadParagraphCommentCounts(id as string, pageId as string);
+    const counts: Record<number, number> = {};
+    for (const row of rows) {
+      counts[row.paragraphNumber] = row.count;
+    }
+
+    // Counts change as readers comment, so keep it short-lived
+    c.header('Cache-Control', 'public, max-age=60');
+    return c.json({ counts });
+  } catch (error) {
+    return cApiError(c, "Failed to retrieve comment counts", error);
+  }
+});
+
+/**
+ * GET /api/books/:id/pages/:pageId/community-actions
+ *
+ * Returns the community custom actions for a page (same language, non-rejected,
+ * highest plausibility first, capped at `MAX_ACTION_CHOICES_COMMUNITY`). Used by
+ * the frontend to lazy-load the community-action suggestions after the fast page
+ * 1 first render — they appear at the very bottom of the page, after the story
+ * text and the reader's own choices.
+ *
+ * @route GET /api/books/:id/pages/:pageId/community-actions
+ * @description Get community custom actions for a page (lazy-loaded)
+ * @auth Optional (optionalAuth) — the viewer's own submissions are excluded
+ *
+ * @param id - Book ID (UUID)
+ * @param pageId - Page ID
+ * @header Accept-Language - Filters actions to the effective content language
+ * @returns Object with a `communityActions` array
+ *
+ * @example
+ * GET /api/books/book123/pages/page456/community-actions
+ * Response (200): {
+ *   "communityActions": [
+ *     { "text": "Try the locked door again.", "plausibilityScore": 0.87 },
+ *     { "text": "Call for help.", "plausibilityScore": 0.52 }
+ *   ]
+ * }
+ */
+router.get("/:id/pages/:pageId/community-actions", optionalAuth, async (c) => {
+  try {
+    const { id, pageId } = c.req.param();
+    const headerLanguage = c.get("headerLanguage");
+
+    const book = await getBookFromDB(id as string);
+    if (!book) return cNotFoundError(c, "Book not found");
+
+    const pageRow = await findPageInBook(pageId as string, id as string);
+    if (!pageRow) return cNotFoundError(c, "Page not found");
+
+    const userId = c.get("userId");
+    const communityActions = await loadCommunityActions(
+      id as string,
+      pageId as string,
+      userId,
+      headerLanguage ?? book.language ?? 'en',
+    );
+
+    // Community actions change as readers submit, so keep it short-lived
+    c.header('Cache-Control', 'public, max-age=60');
+    return c.json({ communityActions });
+  } catch (error) {
+    return cApiError(c, "Failed to retrieve community actions", error);
   }
 });
 

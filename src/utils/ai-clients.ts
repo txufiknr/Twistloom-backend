@@ -29,6 +29,15 @@ export const AI_PROVIDER_API_KEYS: Record<AIChatProvider, string> = {
   openrouter: 'OPENROUTER_API_KEY',
   cloudflare: 'CLOUDFLARE_API_TOKEN',
   jina: 'JINA_API_KEY',
+  ovhcloud: 'OVHCLOUD_API_KEY',
+  sambanova: 'SAMBANOVA_API_KEY',
+  ollama: 'OLLAMA_API_KEY',
+  modelscope: 'MODELSCOPE_API_KEY',
+  zai: 'ZAI_API_KEY',
+  siliconflow: 'SILICONFLOW_API_KEY',
+  aionlabs: 'AIONLABS_API_KEY',
+  chutes: 'CHUTES_API_KEY',
+  llm7: 'LLM7_API_KEY',
 };
 
 // GitHub client singleton

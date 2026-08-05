@@ -350,8 +350,17 @@ export async function createOrUpdateOAuthUser(oAuthUser: {
  * 3. Form signups typically link here and pay later via
  *    {@link tryAwardReferralBonus} on `POST /auth/verify-email`.
  *
- * **Referrer eligibility:** the referrer's email must be verified. Unverified
- * accounts cannot share invite links (username rejected as not found / not eligible).
+ * **Referrer eligibility (INTENDED):** only users with a **verified email**
+ * (`user_auth.email_verified` set) can be a referrer. Unverified accounts are
+ * rejected exactly like a nonexistent username ("Referrer user not found") so
+ * account state is never leaked. This is by design — it prevents spam/self-
+ * amplification from throwaway accounts and guarantees the referrer can be
+ * reached (invites and bonus notifications are email-driven). Consequences:
+ *  - A brand-new account that signed up but never verified its email (e.g.
+ *    skipped OTP) cannot be a referrer yet; its invite links silently no-op
+ *    (`referralApplied: false`) until the email is verified.
+ *  - Invitees are never blocked or alerted on this — attribution is
+ *    best-effort and non-blocking by design.
  *
  * **`referredUsers` counter:** the DB trigger increments
  * `user_counters.referred_users` only when `referral_rewarded_at` is first

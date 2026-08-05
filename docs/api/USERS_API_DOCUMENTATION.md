@@ -50,7 +50,7 @@ The Users API provides endpoints for managing user profiles, social interactions
     - [Perform Daily Check-in](#post-usercheckin)
     - [VIP Double Claim](#post-usercheckindouble)
   8. [Referral System](#referral-system)
-     - [Set Referrer (via PUT /user)](#setting-referrer-via-put-user)
+     - [Set Referrer (via POST /user — complete onboarding)](#setting-referrer-via-post-user--complete-onboarding)
      - [POST /user/referrer (DEPRECATED)](#post-userreferrer-deprecated)
  9. [Activity Logs](#activity-logs)
     - [Get User Activity Logs](#get-useractivity-logs)
@@ -510,14 +510,16 @@ This is NOT a general-purpose create/replace endpoint — it only works for user
 {
   "name": "John Doe",
   "gender": "male",
-  "referrer": "referrer-username-or-id"
+  "referrer": "johndoe"
 }
 ```
 
 **Parameters:**
 - `name` (string, optional): User's display name
 - `gender` (string, optional): User's gender ("male", "female", "unknown")
-- `referrer` (string, optional): Referrer username or user ID
+- `referrer` (string, optional): Referrer **username** — only applied if the user is new (`isNewUser === true`), has no referrer set, and the referrer's email is verified. See [Referral System](#referral-system).
+
+> **Note:** Referrer attribution is also accepted at signup via `POST /auth/signup` (see AUTH_API_DOCUMENTATION.md). This endpoint is the canonical fallback for completing attribution during onboarding.
 
 **Response (200 OK):**
 ```json
@@ -551,8 +553,7 @@ Partially updates the authenticated user's profile. Only provided fields are upd
   "name": "John Doe",
   "bio": "Psychological thriller enthusiast",
   "gender": "male",
-  "imageUrl": "https://example.com/new-avatar.jpg",
-  "referrer": "referrer-username"
+  "imageUrl": "https://example.com/new-avatar.jpg"
 }
 ```
 
@@ -561,7 +562,6 @@ Partially updates the authenticated user's profile. Only provided fields are upd
 - `bio` (string, optional): Updated bio
 - `gender` (string, optional): Updated gender
 - `imageUrl` (string, optional): Profile image URL or base64 data
-- `referrer` (string, optional): Referrer username — only takes effect if user is new (`isNewUser === true`) and has no referrer set
 
 **Or multipart/form-data:**
 - `imageFile` (file, optional): Profile image file
@@ -1318,9 +1318,17 @@ VIP-only double claim that awards 2x the daily check-in credits. Can be claimed 
 
 The referral system allows new users to attribute their signup to an existing user (referrer). Both the referrer and the new user receive a referral bonus.
 
-### Setting Referrer (via PUT /user)
+**How referral attribution works (current implementation):**
+- Referrers are looked up **by username** (case-insensitive, sanitized server-side).
+- **The referrer's email must be verified** to be eligible. Unverified accounts cannot be a referrer — they are rejected exactly like a nonexistent username, and attribution silently no-ops. This is intentional (prevents throwaway-account abuse).
+- Attribution is **best-effort and non-blocking**: an invalid/unverified referrer never blocks signup or onboarding and never raises an error.
+- The credit payout for both parties is deferred until the referred user verifies their email (`POST /auth/verify-email`). Linking the `referrer_id` alone does not pay anything.
 
-A referrer can be set during profile update via `PUT /user` by including a `referrer` field. This only takes effect for users who are still new (`isNewUser === true`) and don't already have a referrer set.
+### Setting Referrer (via POST /user — complete onboarding)
+
+The canonical endpoint for setting a referrer on an existing account. Attribution also happens at signup time via `POST /auth/signup`; this endpoint is the fallback for flows that reach onboarding without a referrer attached.
+
+Only takes effect for users who are still new (`isNewUser === true`) and don't already have a referrer set.
 
 **Authentication:** Required (via `requireAuth`)
 
@@ -1332,23 +1340,26 @@ A referrer can be set during profile update via `PUT /user` by including a `refe
 ```
 
 **Parameters:**
-- `referrer` (string, optional): Referrer username — silently ignored if user is not new or already has a referrer
+- `referrer` (string, optional): Referrer **username** — silently ignored if user is not new, already has a referrer, or the referrer's email is not verified
 
 **Behavior:**
 - Checks the user is a new user (`isNewUser === true`) and has no existing `referrerId`
-- Looks up the referrer by username
-- Sets `referrerId` on the user and awards referral bonus credits to both parties
+- Looks up the referrer by username and checks the referrer's email is verified
+- Sets `referrerId` on the user (attribution only — no credits paid yet)
+- Credits are awarded to both parties later, when the referred user verifies their email via `POST /auth/verify-email`
 - Silently no-ops (no error) if the conditions are not met
+
+**Not accepted by `PUT /user`:** Referrer attribution is **not** supported on `PUT /user` (profile updates). Any `referrer` field sent to `PUT /user` is rejected/ignored.
 
 ### POST /user/referrer (DEPRECATED)
 
-**This endpoint is deprecated.** Use `PUT /user` with the `referrer` field instead.
+**This endpoint is deprecated.** Use `POST /user` with a `referrer` field (complete onboarding) instead.
 
 Calling this endpoint returns HTTP `410 Gone`:
 
 ```json
 {
-  "error": "This endpoint is deprecated. Use PUT /user with a \"referrer\" field instead."
+  "error": "This endpoint is deprecated. Use POST /user with a \"referrer\" field instead."
 }
 ```
 
@@ -1965,9 +1976,9 @@ curl -X POST https://api.twistloom.com/api/user/checkin/double \
   -H "Cookie: next-auth.session-token=YOUR_TOKEN"
 ```
 
-**Set referrer (via profile update):**
+**Set referrer (via complete onboarding):**
 ```bash
-curl -X PUT https://api.twistloom.com/api/user \
+curl -X POST https://api.twistloom.com/api/user \
   -H "Content-Type: application/json" \
   -H "Cookie: next-auth.session-token=YOUR_TOKEN" \
   -d '{
@@ -2026,6 +2037,10 @@ curl -X POST https://api.twistloom.com/api/user/feedbacks \
 
 ## Changelog
 
+### v3.4.1 (2026-08-05)
+- **Docs correction:** referrer attribution is set via `POST /user` (complete onboarding) or `POST /auth/signup` — **not** via `PUT /user`. Updated the Referral System section, `POST /user` parameters, `PUT /user` parameters, cURL example, and deprecation message accordingly.
+- Clarified referral eligibility: the referrer's email must be verified, and credit payout is deferred until the referred user verifies their email.
+
 ### v3.4.0 (2026-07-21)
 - Changed `GET /users/:identifier` auth from no middleware to `optionalAuth` — returns `isFollowing` field when viewer is authenticated
 - Added `isFollowing` field to `User` type (optional boolean)
@@ -2044,6 +2059,8 @@ curl -X POST https://api.twistloom.com/api/user/feedbacks \
 - Added `referrer` field support to PUT /user — sets referrer for new users without a referrer
 - Deprecated POST /user/referrer — returns 410 Gone
 - Updated documentation to reflect PUT /user as the canonical way to set a referrer
+
+> **Correction (see v3.4.1):** the `referrer` field on `PUT /user` was later found to be inert/rejected. The canonical paths are `POST /auth/signup` and `POST /user` (complete onboarding).
 
 ### v3.1.0 (2026-07-04)
 - Added POST /user/checkin/double endpoint (VIP 2x daily check-in claim)

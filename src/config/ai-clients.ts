@@ -16,6 +16,25 @@ import type { AIChatProvider, AIModelSelection, AIProviderRateLimit } from "../t
  * | Cloudflare    | 30   | 10,000      | Rate limited by 10,000 free "Neurons" per day. |
  * | Jina (embed)  | 100  | n/a (TPM)   | 100K TPM, 2 concurrent — not a chat provider.  |
  * 
+ * New additions (added 2026-08-04, from the new free-tier provider batch assessment.
+ * Every figure below is a conservative estimate reconciled from third-party trackers
+ * that visibly disagree with each other, NOT a number pulled from a stable, versioned
+ * API contract the way the original 9 mostly are. Re-verify each one in the provider's
+ * own console before trusting it as a hard ceiling — see the per-provider comments
+ * below for exactly what's uncertain about each figure.
+ * 
+ * | Provider    | RPM  | RPD    | Notes                                             |
+ * |-------------|------|--------|----------------------------------------------------|
+ * | OVHcloud    | 400  | n/a    | 400 RPM authenticated (per project per model); no published daily cap yet. 2 RPM anonymous/no-signup tier also exists. |
+ * | SambaNova   | 15   | n/a    | Published figures conflict wildly (20 vs 600 RPM across sources) — using a conservative floor. Free tier = no payment method on file. |
+ * | Ollama      | 10   | 50     | Not actually RPM/RPD — real quota is GPU-time on a 5h session / 7d weekly cycle. Both numbers here are an ESTIMATED safety proxy, not an official figure. |
+ * | ModelScope  | 30   | 500    | 500 RPD is the *per-model* cap (2,000 RPD total across all models) — using the safer per-model number as the ceiling, same reasoning as the Groq entry below. |
+ * | Z.ai        | 5    | 100    | Third-party figures range from "1 concurrent request" to "~1,000/day" — deliberately conservative until confirmed. Use the z.ai (international) endpoint, not bigmodel.cn. |
+ * | SiliconFlow | 10   | 50     | 50 RPD is the true no-cost default; rises to 1,000 RPD only after a ~$10 credit top-up (spent or not). Assumes the siliconflow.com platform, not .cn. |
+ * | Aion Labs   | 15   | n/a    | Real constraint is ~20K tokens/day, not a request count — same "token budget, not RPD" pattern as Mistral/NVIDIA below. Deliberately tiny; reserved for IDEA/THEME-scale calls only. |
+ * | Chutes      | 10   | 200    | No official ceiling published ("no hard cap" per one tracker) — this is a cautious made-up number pending real traffic data. Decentralized/miner-served; prefer TEE-flagged models. |
+ * | LLM7.io     | 60   | n/a    | 60 RPM / 2 req/sec matches the registered-token tier; real daily gate is a 1M-token/day budget, not a request count. Treat as last-resort — unofficial mirror, no SLA. |
+ * 
  * RPM = Requests Per Minute
  * RPD = Requests Per Day
  * 
@@ -30,6 +49,15 @@ import type { AIChatProvider, AIModelSelection, AIProviderRateLimit } from "../t
  * @see https://docs.api.nvidia.com/nim/reference/rate-limits
  * @see https://github.com/marketplace/models
  * @see https://docs.mistral.ai/getting-started/models/
+ * @see https://docs.ovhcloud.com/en/guides/public-cloud/ai-machine-learning/ai-endpoints-capabilities
+ * @see https://docs.sambanova.ai/docs/en/models/rate-limits
+ * @see https://ollama.com/pricing
+ * @see https://modelscope.ai/docs/model-service/API-Inference/limits
+ * @see https://docs.z.ai (international) — do not use open.bigmodel.cn, it requires China phone verification
+ * @see https://docs.siliconflow.com/en/userguide/rate-limits/rate-limit-and-upgradation
+ * @see https://www.aionlabs.ai/docs/pricing/
+ * @see https://chutes.ai/terms
+ * @see https://docs.llm7.io/limits
  */
 export const AI_RATE_LIMITS: Record<AIChatProvider, AIProviderRateLimit> = {
   // High tier (gpt-4o): 10 RPM / 50 RPD. Low tier (gpt-4o-mini): 10 RPM / 150 RPD.
@@ -103,6 +131,113 @@ export const AI_RATE_LIMITS: Record<AIChatProvider, AIProviderRateLimit> = {
   // RPM throttling is what actually protects this provider.
   // @see https://jina.ai/embeddings/
   jina:       { rpm: 100 },
+
+  // --- New additions (2026-08-04 provider assessment) ---
+  // Every entry below is a *conservative estimate*, not a figure pulled from
+  // a stable versioned contract. Re-verify in each provider's own console
+  // before raising any of these — see /areas/twistloom.md for the full
+  // provider-by-provider writeup these numbers come from.
+
+  // 400 RPM authenticated, per Public Cloud project per model — a real,
+  // published ceiling (not an estimate, unlike most of the entries below).
+  // No daily request cap currently published; OVHcloud's docs explicitly
+  // state AI Endpoints imposes no usage limit beyond rate/payload size as
+  // of today, but note they reserve the right to add one later — omitting
+  // rpd rather than inventing a number, same reasoning as mistral/nvidia.
+  // A 2 RPM/IP anonymous tier also exists (no signup) if you ever need a
+  // zero-setup emergency fallback, but 400 RPM authenticated is what you'd
+  // actually build the waterfall against.
+  ovhcloud:   { rpm: 400 },
+
+  // Free tier = automatic whenever no payment method is linked to the
+  // account (no opt-in needed, but also easy to accidentally lose by
+  // adding a card later for something else). Published RPM figures
+  // conflict hard across sources — SambaNova's own launch blog cited
+  // ~600 RPM, but recent per-model trackers show 20 RPM/20 RPD/200K TPD,
+  // and that lower figure may specifically be for "Preview" models
+  // (SambaNova explicitly says Preview ≠ Production tier limits). Using
+  // 15 RPM as a deliberately conservative floor and omitting rpd until
+  // you've confirmed which figure applies to the Production models you
+  // actually intend to call.
+  sambanova:  { rpm: 15 },
+
+  // Not really RPM/RPD-shaped at all: Ollama Cloud bills free-tier usage
+  // against GPU-time on a 5-hour session cycle *and* a 7-day weekly cycle,
+  // not a calendar day — so canUseAIToday()'s daily-reset assumption is a
+  // mismatch for this provider specifically. Both numbers below are an
+  // invented safety proxy (mirroring how `cerebras` below turns a token
+  // budget into an rpd estimate), deliberately conservative given there's
+  // no published SLA and one independent tracker reported a ~95%
+  // failure-rate window on Ollama Cloud in April 2026. Free tier is also
+  // restricted to lighter "level 1-2" models — don't route heavy models
+  // like the 480B-class coder variants through this entry.
+  ollama:     { rpm: 10,  rpd: 50 },
+
+  // 2,000 RPD total across all models, capped at 500 RPD per individual
+  // model — using the safer per-model number as the ceiling here, same
+  // reasoning as the Groq entry above (a provider-wide daily gate set to
+  // the aggregate figure would stay open long after any single model's
+  // real quota is exhausted). RPM isn't published; 30 is an estimate.
+  // Registration may require an Alibaba Cloud account and possibly a
+  // Chinese phone number — confirm before depending on this in prod.
+  modelscope: { rpm: 30,  rpd: 500 },
+
+  // GLM-4.7-Flash / GLM-4.5-Flash free tier. Third-party figures disagree
+  // sharply — anywhere from "1 concurrent request" to "~1,000 req/day" —
+  // so 5 RPM / 100 RPD here is a deliberately conservative floor, not a
+  // confirmed number. IMPORTANT: register through the international
+  // z.ai/model-api platform, not open.bigmodel.cn (the China-domestic
+  // platform, which reportedly requires a Chinese phone number to sign
+  // up) — same underlying GLM models either way.
+  zai:        { rpm: 5,   rpd: 100 },
+
+  // True no-cost default is ~50 RPD on the $0 models. SiliconFlow also
+  // offers a credit-gated upgrade to ~1,000 RPD once you've added roughly
+  // $10 of credit to the account — even unspent, having it on file raises
+  // the ceiling. Left at the true-free 50 RPD here; bump this if you
+  // decide the $10 top-up is worth it. Assumes the international
+  // siliconflow.com platform — the .cn domain is the China-domestic
+  // platform and reportedly needs a Chinese phone number to register.
+  siliconflow:{ rpm: 10,  rpd: 50 },
+
+  // The real constraint here is a token budget (~20,000 tokens/day), not
+  // a request count — omitting rpd for the same reason mistral/nvidia
+  // omit it above. 15 RPM is the published per-minute figure. This is
+  // Aion Labs' whole free tier, and it's intentionally tiny — it's wired
+  // into AI_CHAT_MODELS_IDEA below (theme/brainstorm-scale calls only),
+  // not AI_CHAT_MODELS_WRITING, because a 20K token/day budget would be
+  // exhausted by a single full-page generation. Aion Labs' actual
+  // differentiator is that its models are fine-tuned specifically for
+  // dark/mature narrative fiction — closest thematic fit to Twistloom of
+  // any provider on this list — but commercial-use terms aren't clearly
+  // published anywhere, so confirm that directly before leaning on it.
+  aionlabs:   { rpm: 15 },
+
+  // No official ceiling published anywhere found ("no hard cap" per one
+  // tracker, which isn't the same as an SLA) — 10 RPM / 200 RPD is an
+  // invented, cautious placeholder pending real traffic data. Chutes runs
+  // on a decentralized Bittensor compute market: your actual request is
+  // served by whichever anonymous third-party "miner" node wins that
+  // request's auction, and free/cheap availability is subsidized by
+  // Bittensor token economics that can shift without notice. Prefer
+  // models flagged `confidential_compute: true` (TEE-protected) if you
+  // route real story content through this provider — non-TEE requests
+  // aren't logged by Chutes itself, but do transit an unvetted operator.
+  chutes:     { rpm: 10,  rpd: 200 },
+
+  // Registered-token tier (free, no card): 250 req/hr, 60 req/min,
+  // 2 req/sec, 1,000,000 tokens/day. Using the 60 RPM figure directly;
+  // omitting rpd since the real daily gate is the token budget, not a
+  // request count (same reasoning as mistral/nvidia/aionlabs above).
+  // IMPORTANT caveat: LLM7.io is an independent mirror/proxy that states
+  // plainly it has no affiliation with the model owners it proxies —
+  // including branded ones (its catalog lists gpt-4o-mini and
+  // gemini-2.5-flash-lite alongside open models). That's a business model
+  // that can be cut off without notice, and independent reviewers
+  // describe it as "not recommended for production." Positioned as an
+  // absolute last resort in the waterfall below, not a rung you'd expect
+  // to hit often.
+  llm7:       { rpm: 60 },
 };
 
 /**
@@ -130,6 +265,22 @@ export const AI_RATE_LIMIT_SAFETY_BUFFER_PERCENT = 8;
  * | Cerebras      | llama-3.3-70b              | 128K       | 8K tokens    | ~32,000         |
  * | GitHub        | gpt-4o                     | 128K       | 8K tokens    | ~30,000         |
  * | Groq          | llama-3.3-70b-versatile    | 128K       | 6K tokens    | ~24,000         |
+ * 
+ * New additions — figures are conservative, model-dependent estimates (see
+ * per-entry comments below), not confirmed hard ceilings the way most of
+ * the table above is:
+ * 
+ * | Provider    | Model                    | Context (typ.) | Max Input Chars |
+ * |-------------|--------------------------|-----------------|------------------|
+ * | Z.ai        | glm-4.7-flash            | 200K tokens     | ~600,000         |
+ * | SambaNova   | DeepSeek-V3.2 / Llama    | 128K tokens     | ~450,000         |
+ * | ModelScope  | Qwen3.5-family           | ~128K tokens    | ~400,000         |
+ * | Chutes      | DeepSeek-R1 / GLM-5.1    | ~128K tokens    | ~300,000         |
+ * | OVHcloud    | Qwen3.6-27B / gpt-oss    | ~128K tokens    | ~120,000 (conservative — payload-size, not context, is the documented constraint) |
+ * | SiliconFlow | Qwen3-8B ($0 tier)       | ~32-128K tokens | ~120,000         |
+ * | LLM7.io     | gpt-4o-mini / deepseek   | 128K tokens     | ~100,000 (kept small — this is a last-resort provider, not a primary one) |
+ * | Ollama      | gpt-oss:20b (free tier)  | model-dependent | ~32,000 (free tier is level 1-2 models only — stay light) |
+ * | Aion Labs   | aion-2.5                 | 128K tokens     | ~40,000 (capped hard by the ~20K token/DAY budget, not the model's context window) |
  * 
  * @see https://ai.google.dev/gemini-api/docs/models
  * @see https://docs.cohere.com/docs/models
@@ -167,6 +318,34 @@ export const AI_MAX_PROMPT_LENGTH: Record<AIChatProvider, number> = {
   // requires every key. Value documents jina-embeddings-v5-text-small's
   // real 32,768-token input cap in characters (~4 chars/token).
   jina:       131_000,
+
+  // --- New additions (2026-08-04 provider assessment) — see AI_RATE_LIMITS
+  // above for the matching per-provider reasoning on why each of these is
+  // conservative rather than confirmed.
+
+  zai:        600_000,   // 200K tokens - GLM-4.7-Flash's published context; left headroom below the true ceiling.
+  sambanova:  450_000,   // 128K tokens - Conservative for the Llama/DeepSeek-class models on the free tier.
+  modelscope: 400_000,   // ~128K tokens - Qwen3.5-family typical context; verify per specific model.
+  chutes:     300_000,   // ~128K tokens - Model-dependent (decentralized); kept conservative given variable serving.
+  ovhcloud:   120_000,   // Conservative — OVHcloud's documented constraint is a 2MB request-body size, not a token count; this is deliberately well under that so you're bound by the model's real context, not guessing at the body-size math.
+  siliconflow:120_000,   // ~32K tokens - The $0-tier models (Qwen3-8B class) skew smaller-context than the paid catalog.
+
+  // Kept deliberately small — LLM7.io is positioned as a last-resort
+  // fallback, not a provider you'd want handling your largest prompts.
+  llm7:       100_000,
+
+  // Free tier is restricted to lighter "level 1-2" models — treat like
+  // the cerebras/groq free-tier caps above rather than the model's
+  // theoretical max context.
+  ollama:     32_000,
+
+  // Hard-capped well below aion-2.5's real 128K context window, because
+  // the actual binding constraint is the ~20,000 token/DAY budget, not
+  // the model's context size — a single request anywhere near the
+  // model's real max would blow the entire day's quota in one call. This
+  // value assumes small IDEA/THEME-scale prompts, matching where
+  // AI_CHAT_MODELS_IDEA below actually uses this provider.
+  aionlabs:   40_000,
 };
 
 /**
@@ -250,6 +429,51 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
   cohere: [
     'command-r-08-2024' // Reads like an academic summary. Use only as a last resort for prose.
   ],
+
+  // --- New additions (2026-08-04) ---
+  // Deliberately appended below the hierarchy above rather than sorted
+  // into it. The ordering above (mistral > gemini > openrouter > cerebras
+  // > groq > nvidia > cloudflare > cohere) reflects actual observed prose
+  // quality on your story content — these providers don't have that track
+  // record yet, so they start at the bottom of the waterfall on capacity/
+  // reliability grounds instead. Once you've seen real output quality from
+  // each, move the good ones up.
+  ovhcloud: [
+    'Qwen3.6-27B', // 262K+ token context, strong multilingual/structured output. Verify exact catalog slug — OVHcloud's naming can differ slightly from the upstream Hugging Face ID.
+    'gpt-oss-120b', // Same model family already used via cerebras/groq above; a third, independent rate-limit pool for it is genuinely useful capacity, not just redundant coverage.
+  ],
+  sambanova: [
+    'DeepSeek-V3.2', // Confirmed available on SambaNova's free tier per their own docs; verify current model-list slug before wiring in.
+    'MiniMax-M2.7', // Also confirmed free-tier available; MiniMax models are generally strong at long-form narrative pacing.
+  ],
+  modelscope: [
+    'Qwen/Qwen3.5-27B', // ModelScope's Qwen access tends to get new releases first — worth checking their catalog periodically for newer variants than what's listed here.
+  ],
+  zai: [
+    'glm-4.7-flash', // Same GLM family already praised in AI_CHAT_MODELS_TRANSLATION below (via cerebras/openrouter) for warm, theatrical prose — this gives you a first-party, independently-rate-limited path to it instead of relying on those routes.
+  ],
+  siliconflow: [
+    'Qwen/Qwen3-8B', // One of the permanently-$0 models on SiliconFlow; smaller model, treat as light-duty fallback capacity, not a primary rung.
+  ],
+
+  // The two entries below are intentionally last. Ollama's free tier has
+  // no SLA and a documented reliability incident; Chutes' free capacity
+  // is served by anonymous decentralized operators. Both are "better than
+  // nothing when everything else is exhausted," not providers to route
+  // real volume through by default.
+  ollama: [
+    'gpt-oss:20b', // Stay on "level 1-2" free-tier-safe models — do not pin the larger cloud-only variants (e.g. 480B-class coder models) here, they're outside the free tier.
+  ],
+  chutes: [
+    'zai-org/GLM-5.1-TEE', // Prefer TEE (confidential-compute)-flagged models specifically for real story content — this one keeps your prompts out of the non-TEE decentralized logging path described in the AI_RATE_LIMITS comment above.
+  ],
+
+  // Absolute last resort. LLM7.io is an unaffiliated mirror with no SLA —
+  // this entry exists so the waterfall has one more rung before failing
+  // outright, not because it's a provider you'd want serving real volume.
+  llm7: [
+    'gpt-4o-mini', // The one genuinely notable thing LLM7.io offers: a named closed model, free. Treat its availability as fragile — it can disappear without notice since LLM7.io isn't OpenAI's partner.
+  ],
 };
 
 /**
@@ -264,6 +488,14 @@ export const AI_CHAT_MODELS_FAST: AIModelSelection = {
   cerebras: [
     // TODO: is it really available now?
     'llama3.1-8b', // Fast, punchy — closest in spirit to the old llama-3.3-70b pick.
+  ],
+
+  // SambaNova's whole differentiator is inference speed (custom RDU
+  // hardware, not GPUs) — a direct fit for this category. Free-tier RPM
+  // is conservative (see AI_RATE_LIMITS above) so this won't carry heavy
+  // volume, but for latency-sensitive validation calls it's worth having.
+  sambanova: [
+    'Meta-Llama-3.3-70B-Instruct', // Verify exact slug casing in SambaNova's model list — their naming convention differs from most other providers here.
   ],
 };
 
@@ -304,6 +536,23 @@ export const AI_CHAT_MODELS_IDEA: AIModelSelection = {
   ],
   nvidia: ['meta/llama-3.3-70b-instruct'], // Creative writing, roleplay, brainstorming, and generating natural-sounding, lengthy prose.
   cohere: ['command-r-08-2024'],
+
+  // --- New additions (2026-08-04) ---
+  // This category is exactly where the smallest-quota new providers
+  // belong: short, structured, low-token brainstorm calls, not full page
+  // generation.
+  aionlabs: [
+    'aion-2.5', // Fine-tuned for narrative tension/dark themes specifically — the whole point of pulling it in here despite the tiny ~20K token/day budget. Capped hard by AI_MAX_PROMPT_LENGTH.aionlabs above; keep calls short so this quota stretches across a full day of theme generation rather than one request.
+  ],
+  llm7: [
+    'gpt-4o-mini', // Low-stakes brainstorm text is a reasonable place to spend an unaffiliated-mirror provider's capacity — worth less if it disappears than it would be as a primary writing rung.
+  ],
+  modelscope: [
+    'Qwen/Qwen3.5-27B',
+  ],
+  siliconflow: [
+    'Qwen/Qwen3-8B',
+  ],
 };
 
 /**
@@ -370,6 +619,24 @@ export const AI_CHAT_MODELS_TRANSLATION: AIModelSelection = {
   cohere: [
     'command-r-08-2024' // Natively optimized for 10 core global languages.
   ],
+
+  // --- New additions (2026-08-04) ---
+  // The GLM and Qwen praise already written above (via cerebras/groq/
+  // openrouter routes) now has a first-party path too — same model
+  // families, but on an independent rate-limit pool instead of riding on
+  // cerebras/groq/openrouter's shared capacity.
+  zai: [
+    'glm-4.7-flash', // Same GLM family praised above under cerebras for "warm, theatrical, naturally human" translated dialogue.
+  ],
+  modelscope: [
+    'Qwen/Qwen3.5-27B', // Same reasoning as the qwen3.6-27b praise above under groq — Alibaba's own platform tends to get new Qwen releases first.
+  ],
+  ovhcloud: [
+    'Qwen3.6-27B', // Direct path to the same 262K-context Qwen variant already used via groq above.
+  ],
+  siliconflow: [
+    'Qwen/Qwen3-8B', // Smaller/lighter than the other Qwen entries here — treat as fallback capacity, not primary.
+  ],
 };
 
 /**
@@ -405,5 +672,20 @@ export const AI_CHAT_MODELS_EVALUATION: AIModelSelection = {
   ],
   cohere: [
     'command-r-08-2024'
+  ],
+
+  // --- New additions (2026-08-04) ---
+  // High-RPM-ceiling, well-documented providers are the better fit here —
+  // evaluation runs against every generated page, so this rung needs
+  // throughput more than it needs the tiny-quota providers (aionlabs,
+  // llm7) added to AI_CHAT_MODELS_IDEA above.
+  ovhcloud: [
+    'gpt-oss-120b', // Same reasoning as the groq/cerebras gpt-oss-120b picks above — a third independent rate-limit pool for a model already proven here for schema adherence.
+  ],
+  sambanova: [
+    'DeepSeek-V3.2', // DeepSeek's reasoning-heavy training tends to translate well to structured-output scoring, consistent with the deepseek-r1 pick under openrouter above.
+  ],
+  modelscope: [
+    'Qwen/Qwen3.5-27B', // Same qwen3.6-27b bracket-matching reliability noted under groq above.
   ],
 };

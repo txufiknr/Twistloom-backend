@@ -33,6 +33,15 @@ const AI_RATE_LIMITS_WITH_BUFFER: Record<AIChatProvider, { rpm: number; delayMs:
   openrouter: getRateLimitConfig('openrouter'),
   cloudflare: getRateLimitConfig('cloudflare'),
   jina: getRateLimitConfig('jina'),
+  ovhcloud: getRateLimitConfig('ovhcloud'),
+  sambanova: getRateLimitConfig('sambanova'),
+  ollama: getRateLimitConfig('ollama'),
+  modelscope: getRateLimitConfig('modelscope'),
+  zai: getRateLimitConfig('zai'),
+  siliconflow: getRateLimitConfig('siliconflow'),
+  aionlabs: getRateLimitConfig('aionlabs'),
+  chutes: getRateLimitConfig('chutes'),
+  llm7: getRateLimitConfig('llm7'),
 };
 
 /**

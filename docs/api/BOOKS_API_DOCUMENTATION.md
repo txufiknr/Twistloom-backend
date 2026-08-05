@@ -1432,6 +1432,8 @@ Retrieves a specific page by book identifier (slug or UUID) and page ID. Support
 - Supports translation via Accept-Language header (cached for performance)
 - Returns originalActionsCount to show total actions before filtering
 - Returns `paragraphCommentCounts`, a map of comment counts keyed by paragraph number (1-based). Page-level comments (no paragraph scope) are reported under the key `0`. Only paragraphs with at least one comment are included. Use this for per-paragraph comment badges. Comments themselves are fetched via the page/paragraph comment endpoints.
+  - **Page 1 (fast path):** counts are served from the Redis-cached payload as best-effort instant-render data and may be up to the cache TTL stale. For the authoritative "new comments" badge values, poll `GET /api/books/:id/pages/:pageId/comment-counts` in the background after first paint and update the badges with its response (book UUID from the `book.id` field in this response).
+  - **Page 1 omits `shownActionHint`** (always `[]` — the reader may freely choose any action, so there is nothing to hint) **and `communityActions`** (deferred — they appear at the very bottom of the page after the story text). Lazy-load community actions via `GET /api/books/:id/pages/:pageId/community-actions`.
 
 **Error Responses:**
 - `404 Not Found`: Book or page not found
@@ -2157,6 +2159,67 @@ Retrieves all comments scoped to a specific page of a book, optionally narrowed 
 
 **Error Responses:**
 - `400 Bad Request`: `paragraphNumber` is not an integer
+- `404 Not Found`: Book not found, or page does not belong to this book
+
+---
+
+### GET /api/books/:id/pages/:pageId/comment-counts
+
+Lightweight per-paragraph comment counts for a page. This is the authoritative badge source for the "fast load, then badge updates like new comments" UX: the page payload's `paragraphCommentCounts` (page 1) is best-effort cached, and the frontend polls this endpoint after first paint to refresh the badges with current values.
+
+**Authentication:** Optional (via `optionalAuth`) — counts are public, not user-scoped
+
+**Path Parameters:**
+- `id` (string, required): Book ID (UUID — use the `book.id` from the page response)
+- `pageId` (string, required): Page ID
+
+**Response (200 OK):**
+```json
+{
+  "counts": {
+    "0": 12,
+    "3": 2,
+    "5": 1
+  }
+}
+```
+Keys are paragraph numbers (1-based); key `0` represents page-level comments (no paragraph scope). Only paragraphs with at least one comment are included.
+
+**Headers:**
+- `Cache-Control: public, max-age=60` — counts change as readers comment
+
+**Error Responses:**
+- `404 Not Found`: Book not found, or page does not belong to this book
+
+---
+
+### GET /api/books/:id/pages/:pageId/community-actions
+
+Returns the community custom actions for a page (same language, non-rejected, highest plausibility first, capped at `MAX_ACTION_CHOICES_COMMUNITY`). This is the lazy-load companion to `paragraphCommentCounts`: the page payload omits `communityActions` on page 1 (they appear at the very bottom of the page, after the story text and the reader's choices), so the frontend calls this endpoint after the fast first render.
+
+**Authentication:** Optional (via `optionalAuth`) — the viewer's own submissions are excluded
+
+**Path Parameters:**
+- `id` (string, required): Book ID (UUID — use the `book.id` from the page response)
+- `pageId` (string, required): Page ID
+
+**Headers:**
+- `Accept-Language` (optional): Filters actions to the effective content language
+
+**Response (200 OK):**
+```json
+{
+  "communityActions": [
+    { "text": "Try the locked door again.", "plausibilityScore": 0.87 },
+    { "text": "Call for help.", "plausibilityScore": 0.52 }
+  ]
+}
+```
+
+**Headers:**
+- `Cache-Control: public, max-age=60` — community actions change as readers submit
+
+**Error Responses:**
 - `404 Not Found`: Book not found, or page does not belong to this book
 
 ---

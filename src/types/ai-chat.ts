@@ -32,7 +32,25 @@ export type AIChatProvider =
   // provider. Included here because rate limiting (RateLimiter, AI_RATE_LIMITS)
   // is shared infrastructure across both chat and embedding providers.
   // @see https://jina.ai/embeddings/
-  | 'jina';
+  | 'jina'
+  // @see https://docs.ovhcloud.com/en/guides/public-cloud/ai-machine-learning/ai-endpoints-capabilities
+  | 'ovhcloud'
+  // @see https://docs.sambanova.ai/docs/en/models/rate-limits
+  | 'sambanova'
+  // @see https://ollama.com/pricing
+  | 'ollama'
+  // @see https://modelscope.ai/docs/model-service/API-Inference/limits
+  | 'modelscope'
+  // @see https://docs.z.ai (international) — do not use open.bigmodel.cn, it requires China phone verification
+  | 'zai'
+  // @see https://docs.siliconflow.com/en/userguide/rate-limits/rate-limit-and-upgradation
+  | 'siliconflow'
+  // @see https://www.aionlabs.ai/docs/pricing/
+  | 'aionlabs'
+  // @see https://chutes.ai/terms
+  | 'chutes'
+  // @see https://docs.llm7.io/limits
+  | 'llm7';
 
 /**
  * AI response structure returned from chat completion APIs

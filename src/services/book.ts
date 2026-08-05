@@ -24,7 +24,7 @@ import { getEnrichedBookSelect } from "./book-controller.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage, DBUpdateBook } from "../types/schema.js";
 import type { Book, BookSlugGenerationResult, BookStatus, BookVisibility, EnrichedBookData, EnrichedPageOptions, PublicStats } from "../types/book.js";
 import { bookVisibilities } from "../types/book.js";
-import type { StoryPage, PersistedStoryPage, UserStoryPage, StoryState, StoryPageMeta, EnrichedStoryPage, StateDelta, StoryGeneration, SelectedAction, Action, EnrichedStoryPageContext, TranslatedStoryPage, EnrichedStoryPagePlace, EnrichedStoryPageCharacter } from "../types/story.js";
+import type { StoryPage, PersistedStoryPage, UserStoryPage, StoryState, StoryPageMeta, EnrichedStoryPage, StateDelta, StoryGeneration, SelectedAction, Action, EnrichedStoryPageContext, TranslatedStoryPage, EnrichedStoryPagePlace, EnrichedStoryPageCharacter, CommunityAction } from "../types/story.js";
 import type { CanonValidationSummary } from "../types/canon-validation.js";
 import { getStoryStateFromPage, insertStoryState } from "./story.js";
 import { formatPlacesForPrompt } from "../utils/places.js";
@@ -42,6 +42,8 @@ import { calculateActionTendency, calculateStoryMomentum, getStoryStateInfo } fr
 import { applyPageTranslation, getPageToTranslate, getPageTranslation, shouldTranslate } from "./translation.js";
 import { LRUCache } from "lru-cache";
 import { createCacheKey } from "../utils/cache.js";
+import { getFromCache, setCache, deleteCachePattern, CACHE_KEYS, CACHE_TTL } from "./cache.js";
+import { isRedisAvailable } from "../utils/redis.js";
 import { daysBetween } from "../utils/time.js";
 import type { CandidateGenerationPage } from "../types/candidate-generation.js";
 import type { AIDocument, AIPromptDocuments, AIResponseProvider } from "../types/ai-chat.js";
@@ -168,6 +170,34 @@ export function invalidateEnrichedPageCache(pageId: string): void {
       enrichedPageCache.delete(key);
     }
   }
+}
+
+/**
+ * Generates the Redis cache key for a book's static page 1 payload.
+ *
+ * Keyed by book ID + effective content language because translation changes
+ * the page content. The payload is shared across all users (page 1 has no
+ * parent action, so per-user fields are re-merged on read instead).
+ *
+ * @param bookId - Book identifier
+ * @param contentLanguage - Effective content language (book language or translation target)
+ * @returns Redis cache key for the page 1 payload
+ */
+function getPageOneCacheKey(bookId: string, contentLanguage: string): string {
+  return CACHE_KEYS.PAGE_ONE(bookId, contentLanguage);
+}
+
+/**
+ * Invalidates the Redis page 1 cache for a book (all languages).
+ *
+ * Page 1 content is immutable for active books, so this is primarily a safety
+ * net for when a book is deleted (the payload would otherwise linger until the
+ * PAGE_ONE TTL expires).
+ *
+ * @param bookId - Book identifier
+ */
+export async function invalidatePageOneCache(bookId: string): Promise<void> {
+  await deleteCachePattern(`book:page1:${bookId}:*`);
 }
 
 /**
@@ -980,6 +1010,9 @@ export async function updateBook(
     // Invalidate cache for this book
     invalidateBookCache(bookId);
     invalidateEnrichedBookCache(bookId);
+    // Book metadata changes (e.g. title → main-branch branchName) must not
+    // leave a stale 30-day page 1 payload behind
+    await invalidatePageOneCache(bookId);
   }
 
   return updated;
@@ -1347,6 +1380,101 @@ export async function mapToTranslatedPage(
 }
 
 /**
+ * Builds the query for community custom actions on a page.
+ *
+ * Same language, non-rejected, highest plausibility first, capped at
+ * `MAX_ACTION_CHOICES_COMMUNITY`. The current user's own actions are excluded
+ * when authenticated.
+ *
+ * The returned Drizzle builder is lazy — it only executes when awaited, so it
+ * can be created up-front and awaited exactly once per request path.
+ *
+ * Exported so the frontend's lazy-load endpoint
+ * `GET /:id/pages/:pageId/community-actions` (used to fetch community actions
+ * after the fast page 1 render) reuses the exact same query — including the
+ * current user's own actions being excluded.
+ *
+ * @param bookId - Book identifier
+ * @param pageId - Page identifier
+ * @param userId - Optional current user ID (their own actions are excluded)
+ * @param language - Content language to filter on
+ * @returns Lazy Drizzle query for community custom actions
+ */
+export function loadCommunityActions(bookId: string, pageId: string, userId?: string | null, language = 'en') {
+  return dbRead
+    .select({
+      text: customActions.originalText,
+      plausibilityScore: sql<number>`COALESCE(${customActions.plausibilityScore}, 0)`,
+      nextPageId: customActions.nextPageId,
+    })
+    .from(customActions)
+    .where(and(
+      eq(customActions.bookId, bookId),
+      eq(customActions.pageId, pageId),
+      ...(userId ? [ne(customActions.userId, userId)] : []),
+      ne(customActions.outcome, 'reject'),
+      eq(customActions.language, language),
+    ))
+    .orderBy(desc(customActions.plausibilityScore))
+    .limit(MAX_ACTION_CHOICES_COMMUNITY);
+}
+
+/**
+ * Builds the query for per-paragraph comment counts on a page.
+ *
+ * Page-level comments (no paragraph scope) are reported under key `0`. Grouped
+ * server-side to avoid transferring full comment rows for the count badges.
+ *
+ * Exported so the lightweight `GET /:id/pages/:pageId/comment-counts` endpoint
+ * (used by the frontend to refresh badge values in the background) can reuse
+ * the exact same aggregation as the enriched page payload.
+ *
+ * The returned Drizzle builder is lazy — it only executes when awaited, so it
+ * can be created up-front and awaited exactly once per request path.
+ *
+ * @param bookId - Book identifier
+ * @param pageId - Page identifier
+ * @returns Lazy Drizzle query returning `{ paragraphNumber, count }` rows
+ */
+export function loadParagraphCommentCounts(bookId: string, pageId: string) {
+  return dbRead
+    .select({
+      paragraphNumber: sql<number>`COALESCE(${userComments.paragraphNumber}, 0)`,
+      count: sql<number>`COUNT(*)::int`,
+    })
+    .from(userComments)
+    .where(and(
+      eq(userComments.bookId, bookId),
+      eq(userComments.pageId, pageId),
+    ))
+    .groupBy(sql`COALESCE(${userComments.paragraphNumber}, 0)`);
+}
+
+/**
+ * Builds the query for the latest canon validation audit on a page.
+ *
+ * The returned Drizzle builder is lazy — it only executes when awaited, so it
+ * can be created up-front and awaited exactly once per request path.
+ *
+ * @param pageId - Page identifier
+ * @returns Lazy Drizzle query returning the most recent audit row or null
+ */
+function loadLatestCanonValidation(pageId: string) {
+  return dbRead
+    .select({
+      outcome: canonValidations.outcome,
+      violationType: canonValidations.violationType,
+      severityScore: canonValidations.severityScore,
+      wasRevised: canonValidations.wasRevised,
+    })
+    .from(canonValidations)
+    .where(eq(canonValidations.pageId, pageId))
+    .orderBy(desc(canonValidations.createdAt))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+}
+
+/**
  * Maps database page data to enriched page format with caching
  *
  * This function transforms raw database page data into a frontend-ready format,
@@ -1354,10 +1482,22 @@ export async function mapToTranslatedPage(
  * story context. Uses LRU cache for performance when pages have complete actions.
  *
  * **Caching Behavior:**
+ * - Page 1 of an active book is cached in Redis (keyed by bookId + content
+ *   language, 30-day TTL). The full static payload is stored including
+ *   paragraphCommentCounts and canonValidation (best-effort instant-render
+ *   data that may be up to the TTL stale — the frontend polls the dedicated
+ *   comment-counts endpoint for the authoritative badge values). A Redis hit
+ *   performs ZERO database queries.
+ * - Page 1 always omits per-user/deferrable fields: `selectedActions` and
+ *   `shownActionHint` are empty (no prior choice to hint — the reader may
+ *   freely pick any action), and `communityActions` is omitted (deferred to a
+ *   frontend lazy-load of the dedicated community-actions endpoint after the
+ *   fast first render).
+ * - All other pages use the in-memory LRU cache.
  * - Only caches pages with no incomplete actions (all actions have destinations)
  * - Pages with pending generation are not cached since they change frequently
- * - Cache key includes: pageId, userId, translate, headerLanguage
- * - Cache TTL: 2 minutes to balance freshness with performance
+ * - LRU cache key includes: pageId, userId, translate, headerLanguage
+ * - LRU cache TTL: 2 minutes to balance freshness with performance
  *
  * **User-Specific Data:**
  * - selectedActions: User's chosen actions for this page (varies per user)
@@ -1446,16 +1586,65 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
   const visibleActions = allActions.filter(action => action.destinationPageIds?.length);
   const hasIncompleteActions = allActions.length > visibleActions.length;
   const { id: pageId, bookId } = dbPage;
+  const isPageOne = dbPage.page === 1;
 
-  // Check cache first (only for pages with complete actions)
+  // Determine if translation is needed (synchronous check)
+  const targetLanguage = translate ? shouldTranslate(language, headerLanguage) : undefined;
+
+  // ── Page 1 → Redis cache (static content shared across all users) ───────────
+  //
+  // Page 1 content is immutable per book, so the fully-enriched payload is
+  // cached in Redis keyed by bookId + effective content language (translation
+  // changes the content). Only active books qualify — draft books are transient
+  // (they may be regenerated) and must not poison the long-lived cache.
+  //
+  // The payload is user-independent because page 1 has no parent action, so
+  // selectedActions is always empty. Page 1 also omits per-user fields that are
+  // meaningless or deferrable on the first page:
+  //   - shownActionHint is empty (no prior choice to hint — the reader may still
+  //     freely pick any action).
+  //   - communityActions are omitted; they live at the very bottom of the page
+  //     (after the story text and actions), so the frontend lazy-loads them from
+  //     a dedicated endpoint after the fast first render.
+  // The stored payload includes the static paragraphCommentCounts and
+  // canonValidation as best-effort instant-render data; on a hit we only fix up
+  // updatedAt. A Redis hit therefore needs ZERO database queries. On a miss we
+  // fall through to the shared enrichment path and store the full static payload
+  // back into Redis.
+  const useRedisForPageOne = isPageOne && !hasIncompleteActions && book?.status === 'active' && isRedisAvailable();
+  const pageOneRedisKey = useRedisForPageOne
+    ? getPageOneCacheKey(bookId, (targetLanguage || language || 'en').toLowerCase())
+    : null;
+
+  if (useRedisForPageOne) {
+    const cached = await getFromCache<EnrichedStoryPage>(pageOneRedisKey!);
+    if (cached.hit && cached.data) {
+      // Re-merge only the cheap constants over the cached static payload.
+      // paragraphCommentCounts and canonValidation ship from cache as
+      // best-effort data; the frontend polls the comment-counts endpoint for
+      // the authoritative badge values and lazy-loads community actions.
+      return {
+        ...cached.data,
+        // Keep the payload's updatedAt in sync with the always-fresh DB row
+        // (the route derives its ETag from dbPage.updatedAt).
+        updatedAt: dbPage.updatedAt,
+        selectedActions: [],
+        shownActionHint: [],
+        communityActions: undefined,
+      };
+    }
+  }
+
+  // Check the in-memory LRU cache first (pages > 1, or page 1 when Redis is not
+  // eligible/unavailable — preserves the pre-Redis behaviour for those cases)
   const cacheKey = getEnrichedPageCacheKey(pageId, userId, translate, headerLanguage);
   if (!hasIncompleteActions) {
     const cached = enrichedPageCache.get(cacheKey);
     if (cached) return cached;
   }
 
-  // Determine if translation is needed (synchronous check)
-  const targetLanguage = translate ? shouldTranslate(language, headerLanguage) : undefined;
+  // Fetch the page document to translate (only when translation is requested).
+  // Runs after the cache checks so LRU hits stay query-free.
   const pageToTranslate = targetLanguage ? await getPageToTranslate(dbPage) : undefined;
 
   // Resolve human-readable branch name: query branches table for non-main branches,
@@ -1474,8 +1663,11 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
 
   // Parallelize independent database queries and API calls
   const [selectedActions, storyState, translation, shownActionHint, communityActions, branchName, paragraphCommentCountsRows, latestCanonValidation] = await Promise.all([
-    // Query user's chosen action for this page (if authenticated)
-    userId ? getPageActionsFromDB(userId, bookId, pageId) : Promise.resolve([]),
+    // Query user's chosen action for this page (if authenticated).
+    // Page 1 has no parent page → no previously-selected action is possible.
+    isPageOne
+      ? Promise.resolve<SelectedAction[]>([])
+      : (userId ? getPageActionsFromDB(userId, bookId, pageId) : Promise.resolve<SelectedAction[]>([])),
 
     // Get story state for context — actionsHistory and plotFlags are fully
     // accumulated from page 1 to current by persistPageWithState
@@ -1488,26 +1680,19 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
       targetLanguage
     }).then(result => result.translation) : Promise.resolve(undefined),
 
-    // Fetch user's purchased action hints for this page (if authenticated)
-    userId ? getUserActionHints(userId, dbPage.id) : Promise.resolve([]),
+    // Fetch user's purchased action hints for this page (if authenticated).
+    // Page 1 omits hints — the reader may freely choose, so there is nothing
+    // to reveal/reveal.
+    isPageOne
+      ? Promise.resolve<string[]>([])
+      : (userId ? getUserActionHints(userId, pageId) : Promise.resolve<string[]>([])),
 
-    // Fetch community custom actions for this page — same language, non-rejected, highest plausibility first
-    dbRead
-      .select({
-        text: customActions.originalText,
-        plausibilityScore: sql<number>`COALESCE(${customActions.plausibilityScore}, 0)`,
-        nextPageId: customActions.nextPageId,
-      })
-      .from(customActions)
-      .where(and(
-        eq(customActions.bookId, bookId),
-        eq(customActions.pageId, pageId),
-        ...(userId ? [ne(customActions.userId, userId)] : []),
-        ne(customActions.outcome, 'reject'),
-        eq(customActions.language, headerLanguage ?? language ?? 'en'),
-      ))
-      .orderBy(desc(customActions.plausibilityScore))
-      .limit(MAX_ACTION_CHOICES_COMMUNITY),
+    // Fetch community custom actions for this page — same language, non-rejected,
+    // highest plausibility first. Page 1 omits them (deferred to a frontend
+    // lazy-load of the dedicated endpoint after the fast first render).
+    isPageOne
+      ? Promise.resolve<CommunityAction[]>([])
+      : loadCommunityActions(bookId, pageId, userId, headerLanguage ?? language ?? 'en'),
 
     // Resolve human-readable branch name
     branchNamePromise,
@@ -1515,31 +1700,10 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
     // Fetch per-paragraph comment counts for this page (page-level comments
     // use paragraphNumber = 0). Grouped server-side to avoid transferring
     // full comment rows for the count badges.
-    dbRead
-      .select({
-        paragraphNumber: sql<number>`COALESCE(${userComments.paragraphNumber}, 0)`,
-        count: sql<number>`COUNT(*)::int`,
-      })
-      .from(userComments)
-      .where(and(
-        eq(userComments.bookId, bookId),
-        eq(userComments.pageId, pageId),
-      ))
-      .groupBy(sql`COALESCE(${userComments.paragraphNumber}, 0)`),
+    loadParagraphCommentCounts(bookId, pageId),
 
     // Latest canon validation audit for this page (roadmap 1.1)
-    dbRead
-      .select({
-        outcome: canonValidations.outcome,
-        violationType: canonValidations.violationType,
-        severityScore: canonValidations.severityScore,
-        wasRevised: canonValidations.wasRevised,
-      })
-      .from(canonValidations)
-      .where(eq(canonValidations.pageId, pageId))
-      .orderBy(desc(canonValidations.createdAt))
-      .limit(1)
-      .then((rows) => rows[0] ?? null),
+    loadLatestCanonValidation(pageId),
   ]);
 
   if (targetLanguage && translation) {
@@ -1679,7 +1843,25 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
 
   // Cache the result only if page has complete actions (no pending generation)
   if (!hasIncompleteActions) {
-    enrichedPageCache.set(cacheKey, enrichedPage);
+    if (useRedisForPageOne) {
+      // Page 1 → Redis (static identity per book + language: text, context,
+      // translations, actions, metadata, comment counts, canon validation).
+      // Page 1 always carries empty per-user fields (no hints, no community
+      // actions, no selected actions), so the payload is safe to share across
+      // all readers unchanged.
+      await setCache(
+        pageOneRedisKey!,
+        {
+          ...enrichedPage,
+          selectedActions: [],
+          shownActionHint: [],
+          communityActions: undefined,
+        },
+        CACHE_TTL.PAGE_ONE,
+      );
+    } else {
+      enrichedPageCache.set(cacheKey, enrichedPage);
+    }
   }
 
   return enrichedPage;
