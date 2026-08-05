@@ -14,6 +14,7 @@ import type { ActionProgressStatus } from "../types/candidate-generation.js";
 import type { StoryThread, StoryThreadTranslation } from "../types/story-thread.js";
 import type { CustomActionOutcome, CustomActionRejectionCategory } from "../types/custom-action.js";
 import type { CanonValidationOutcome, CanonViolation, CanonViolationType } from "../types/canon-validation.js";
+import type { AuthorshipOrigin, AuthoringMode, DraftSpan, EditorPrefs, PenEditType, PenSessionStatus } from "../types/pen.js";
 import type { TransactionType } from "../types/credits.js";
 import { PAYMENT_GATEWAY, type PaymentGateway } from "../types/payment.js";
 import type { SubscriptionStatus, SubscriptionTransactionType } from "../types/subscription.js";
@@ -75,6 +76,17 @@ export const pages = pgTable(
     keyObjects: text("key_objects").array().notNull().default(sql`ARRAY[]::text[]`),
     actions: jsonb("actions").$type<Action[]>().notNull().default(sql`'[]'::jsonb`), // 2-3 branching actions
     stateDelta: jsonb("delta").$type<StateDelta>().notNull().default(sql`'{}'::jsonb`), // Incremental delta (chronological)
+    /**
+     * Rolled-up authorship of this page (roadmap 1.10 / Pen Phase 0.b).
+     * `pen_edits` is the source of truth; these columns are rollups. Defaults to
+     * 'ai' — virtually every page today is AI-authored by design — and only
+     * becomes meaningful once Pen pages exist.
+     */
+    authorshipOrigin: text("authorship_origin").$type<AuthorshipOrigin>().default('ai'),
+    /** Author (Pen) user who produced human spans on this page, when any. */
+    humanAuthorUserId: uuid("human_author_user_id").references(() => users.userId, { onDelete: "set null" }),
+    /** 0–100, character-count share of non-AI text on this page. */
+    aiContributionPercent: integer("ai_contribution_percent"),
     aiProvider: text("ai_provider").$type<AIChatProvider | 'none'>(),
     aiModel: text("ai_model"),
     aiEvalProvider: text("ai_eval_provider").$type<AIChatProvider | 'none'>(),
@@ -97,7 +109,7 @@ export const pages = pgTable(
     visitCount: integer("visit_count").notNull().default(0), // Count of times this page has been visited (denormalized for performance)
     createdAt,
     updatedAt,
-  } satisfies Record<keyof StoryPage | 'id' | 'userId' | 'parentId' | 'branchId' | 'bookId' | 'page' | 'pendingGenerationCount' | 'isGeneratingStartedAt' | 'visitCount' | 'elapsedDays' | ResourceAIProvider | ResourceAIScore | ResourceTimestamp, unknown>,
+  } satisfies Record<keyof StoryPage | 'id' | 'userId' | 'parentId' | 'branchId' | 'bookId' | 'page' | 'pendingGenerationCount' | 'isGeneratingStartedAt' | 'visitCount' | 'elapsedDays' | 'authorshipOrigin' | 'humanAuthorUserId' | 'aiContributionPercent' | ResourceAIProvider | ResourceAIScore | ResourceTimestamp, unknown>,
   (t) => [
     // Index for book pagination
     index("pages_book_page_idx").on(t.bookId, t.page),
@@ -276,6 +288,12 @@ export const users = pgTable(
       productAnnouncements: boolean;
       emailLocale?: "en" | "id" | null;
     }>(),
+    /**
+     * Author's persisted Pen editor preferences (§6.5, Phase 0.c). Global per
+     * user in v1 — no per-book override column. Default must match
+     * `DEFAULT_EDITOR_PREFS` in `src/types/pen.ts`.
+     */
+    editorPrefs: jsonb("editor_prefs").$type<EditorPrefs>().notNull().default(sql`'{"background":"default","fontFamily":"serif","fontSize":17,"textColor":"default","lineHeight":1.7,"contentWidth":"medium"}'::jsonb`),
     lastActive,
     createdAt,
     updatedAt,
@@ -458,6 +476,15 @@ export const books = pgTable(
     creditsPrice: integer("credits_price"),
     originalThemeInput: text("original_theme_input"),
     storyStartDate: text("story_start_date"),
+    /**
+     * Monotonic "state of the world" clock (Pen Phase 0.d / §6.7). Incremented
+     * inside `persistPageWithState()` (a new published page), on any
+     * `lore_entries` create/edit, and on new `factsHistory` entries.
+     * `DraftSpan.validatedAgainst` stores the value at check time; a span is
+     * stale at finalize when `validatedAgainst !== books.canonVersion`. Stored
+     * on `books` (not `pen_sessions`) so all sessions over one book share it.
+     */
+    canonVersion: integer("canon_version").notNull().default(0),
     advancedOptions: jsonb("advanced_options").$type<AdvancedOptionsConfig>(),
     ending: jsonb("ending").$type<Ending>(),
     createdAt,
@@ -2326,5 +2353,77 @@ export const portalBlogPosts = pgTable(
     unique("portal_blog_posts_slug_unique").on(t.slug),
     index("portal_blog_posts_status_idx").on(t.status),
     index("portal_blog_posts_published_idx").on(t.status, t.publishedAt.desc()),
+  ]
+);
+
+/**
+ * Pen (AI Co-Writing) sessions — Phase 0.a (Model C, draft-then-finalize).
+ *
+ * One active session per (user, book). The draft is a private JSONB span buffer
+ * (`draftBuffer`), NOT plain text. `/finalize` is the only way a draft becomes
+ * a published page; `/discard` throws it away for free.
+ *
+ * @see docs/roadmap/AI_CO_WRITING_PEN_ROADMAP.md §5.3, Phase 0.a
+ */
+export const penSessions = pgTable(
+  "pen_sessions",
+  {
+    id: id(),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    bookId: bookId("cascade"),
+    authoringMode: text("authoring_mode").$type<AuthoringMode>().notNull(),
+    /** Published page the author is continuing from (null until page 1 finalizes). */
+    currentPageId: uuid("current_page_id").references(() => pages.id, { onDelete: "set null" }),
+    /** Draft workspace — JSONB spans, NOT plain text (Model C). */
+    draftBuffer: jsonb("draft_buffer").$type<DraftSpan[]>().notNull().default(sql`'[]'::jsonb`),
+    /** 0 (all human) to 1 (all AI) — maps to credit cost tiers (§8). */
+    assistanceLevel: real("assistance_level").notNull().default(0.5),
+    status: text("status").$type<PenSessionStatus>().notNull().default('active'),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    unique("pen_sessions_user_book_unique").on(t.userId, t.bookId),
+    index("pen_sessions_status_idx").on(t.status),
+  ]
+);
+
+/**
+ * Pen edit audit trail — Phase 0.a.
+ *
+ * One row per AI/human interaction inside a session. This is the source of
+ * truth for authorship attribution; `pages.authorshipOrigin`/`aiContributionPercent`
+ * are rollups. `charOffsetStart/End` are written at /finalize, per span.
+ *
+ * @see docs/roadmap/AI_CO_WRITING_PEN_ROADMAP.md §5.3, §5.6, Phase 0.a
+ */
+export const penEdits = pgTable(
+  "pen_edits",
+  {
+    id: id(),
+    sessionId: uuid("session_id").notNull().references(() => penSessions.id, { onDelete: "cascade" }),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    bookId: bookId("cascade"),
+    /** Published page this edit contributed to (null until its draft finalizes). */
+    pageId: uuid("page_id").references(() => pages.id, { onDelete: "set null" }),
+    editType: text("edit_type").$type<PenEditType>().notNull(),
+    /** The author's input (prose fragment or action command) — null for AI-initiated edits. */
+    authorInput: text("author_input"),
+    /** The AI-generated continuation/revision before any human changes. */
+    aiOutput: text("ai_output"),
+    /** The final text after human editing within the draft. */
+    finalText: text("final_text"),
+    /** Narrative position: which page this edit conceptually follows. */
+    contextPageId: uuid("context_page_id").references(() => pages.id, { onDelete: "set null" }),
+    /** Character offsets in the final page text — written at /finalize. */
+    charOffsetStart: integer("char_offset_start"),
+    charOffsetEnd: integer("char_offset_end"),
+    authoringMode: text("authoring_mode").$type<AuthoringMode>().notNull(),
+    createdAt,
+  },
+  (t) => [
+    index("pen_edits_session_idx").on(t.sessionId),
+    index("pen_edits_book_idx").on(t.bookId),
+    index("pen_edits_page_idx").on(t.pageId),
   ]
 );

@@ -179,6 +179,8 @@ export type Book = {
   originalThemeInput?: string;
   /** Calendar date of the first page (auto-filled via insertStoryPage) */
   storyStartDate?: string;
+  /** Monotonic "state of the world" clock for Pen delta validation (Phase 0.d). */
+  canonVersion: number;
   /** Advanced options config (writing preset, developer overrides) persisted for ongoing page generation */
   advancedOptions?: AdvancedOptionsConfig;
   /** Author-edited ending text/outline for the story (overrides derived ending) */

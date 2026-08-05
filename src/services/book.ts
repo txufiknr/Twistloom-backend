@@ -337,7 +337,7 @@ export async function insertStoryPage(
     scoreAfter,
     createdAt: new Date(),
     updatedAt: new Date()
-  } satisfies Record<keyof Omit<DBNewPage, 'id' | 'isGeneratingStartedAt' | 'visitCount'>, unknown>;
+  } satisfies Record<keyof Omit<DBNewPage, 'id' | 'isGeneratingStartedAt' | 'visitCount' | 'authorshipOrigin' | 'humanAuthorUserId' | 'aiContributionPercent'>, unknown>;
   // } satisfies DBNewPage;
 
   if (isTransaction(client)) {
@@ -634,6 +634,16 @@ export async function persistPageWithState(params: {
 
         // If this throws, the transaction auto-rolls back — no orphan page
         await insertStoryState(newPage.bookId, newPage.id, newState, 'original', { client: tx });
+
+        // Pen delta-validation clock (Phase 0.d / §6.7): a published page is new
+        // canon, so later draft spans validated against the old world are stale.
+        // factsHistory entries only ever arrive via this same page-publish path,
+        // so one increment per persisted page covers both cases. The lore-entries
+        // create/edit path (Phase 5) increments here-equivalent when it lands.
+        await tx
+          .update(books)
+          .set({ canonVersion: sql`${books.canonVersion} + 1`, updatedAt: new Date() })
+          .where(eq(books.id, actionedPage.bookId));
 
         return {
           page: newPage,
@@ -2009,6 +2019,7 @@ export function mapBookFromDb(dbBook: DBBook): Book {
     creditsPrice: dbBook.creditsPrice || 0,
     originalThemeInput: dbBook.originalThemeInput || undefined,
     storyStartDate: dbBook.storyStartDate || undefined,
+    canonVersion: dbBook.canonVersion ?? 0,
     advancedOptions: dbBook.advancedOptions || undefined,
     ending: dbBook.ending || undefined,
     createdAt: dbBook.createdAt,
