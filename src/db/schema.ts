@@ -2224,6 +2224,55 @@ export const userReports = pgTable(
 );
 
 /**
+ * Page reactions table
+ * @summary Anonymous per-page emoji reactions (one active reaction per user per page).
+ *
+ * The `UNIQUE (page_id, user_id)` constraint enforces the "one active reaction per
+ * user per page" invariant at the database level. A "swap" is a single transaction
+ * that deletes the prior row for the same user+page and inserts the new emoji, so a
+ * user can never be counted on two emojis for the same page simultaneously.
+ * Counts are computed at read time via `COUNT` over the `(page_id, emoji)` index —
+ * no denormalized counter table in v1.
+ *
+ * `emoji` stores the stable string id (e.g. `'shocked'`, `'loved'`), NOT the display
+ * glyph. The glyph is a pure frontend concern keyed by that id, so the set can be
+ * re-skinned without a migration.
+ *
+ * @example
+ * {
+ *   "id": "0194f2d1-...",
+ *   "book_id": "book456",
+ *   "page_id": "page789",
+ *   "user_id": "user789",
+ *   "emoji": "shocked",
+ *   "created_at": "2026-01-01T00:00:00.000Z",
+ *   "updated_at": "2026-01-01T00:00:00.000Z"
+ * }
+ */
+export const pageReactions = pgTable(
+  "page_reactions",
+  {
+    id: id(),
+    bookId: bookId("cascade"), // Delete if book is deleted
+    pageId: pageId("cascade"), // Delete if page is deleted
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    emoji: text("emoji").notNull(), // Whitelisted stable reaction id (NOT the display glyph)
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    // One active reaction per user per page — enforces swap semantics at the DB layer
+    unique("page_reactions_user_page_unique").on(t.userId, t.pageId),
+    // Fast count reads per page + emoji (the hot read path)
+    index("page_reactions_page_emoji_idx").on(t.pageId, t.emoji),
+    // Per-book aggregates (e.g. future "most shocking pages" analytics)
+    index("page_reactions_book_idx").on(t.bookId),
+    // User's own reactions (used to find the user's active row for swap/remove)
+    index("page_reactions_user_idx").on(t.userId),
+  ]
+);
+
+/**
  * User blocks — content gating between two users.
  *
  * When user A blocks user B: A cannot see B's public profile content, B's

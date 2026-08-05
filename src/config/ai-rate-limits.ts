@@ -147,3 +147,17 @@ export const CUSTOM_ACTION_PREVIEW_RATE_LIMIT: AIRateLimitConfig = buildRateLimi
 export const CUSTOM_ACTION_SUBMIT_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
   "CUSTOM_ACTION_SUBMIT", 10, 60
 );
+
+/**
+ * PUT/DELETE /api/books/:identifier/:pageId/reactions — page emoji reactions.
+ *
+ * Reactions are the cheapest and most spam-prone social interaction: a single
+ * DB upsert with no AI cost or credit gate. The emoji whitelist already narrows
+ * the abuse surface, but a scripted client could still churn swap/remove rapidly
+ * to inflate counts. 30/min is far above legitimate reading while capping that.
+ *
+ * why: cheap (no credits/AI), low-friction to spam; 30/min bounds churn.
+ */
+export const PAGE_REACTION_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
+  "PAGE_REACTION", 30, 60
+);

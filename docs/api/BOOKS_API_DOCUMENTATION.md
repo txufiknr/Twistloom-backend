@@ -1476,6 +1476,90 @@ Confirms a user's visit to a specific page and records it in the user's reading 
 
 ---
 
+### GET /api/books/:identifier/:pageId/reactions
+
+Fetches anonymous per-page emoji reaction counts. Counts are public (guests can see how many readers reacted), but the viewer's own active reaction (`myReaction`) is only returned when authenticated. One active reaction per user per page.
+
+**Authentication:** Optional (via `optionalAuth`)
+
+**Path Parameters:**
+- `identifier` (string, required): Book slug or UUID v7
+- `pageId` (string, required): UUID v7
+
+**Response (200 OK):**
+```json
+{
+  "reactions": [
+    { "emoji": "shocked", "count": 3 },
+    { "emoji": "mind-blown", "count": 1 },
+    { "emoji": "emotional", "count": 0 },
+    { "emoji": "tense", "count": 0 },
+    { "emoji": "loved", "count": 2 },
+    { "emoji": "peak", "count": 0 }
+  ],
+  "totalReactors": 6,
+  "myReaction": "shocked"
+}
+```
+
+**Cache-Control:** anonymous `public, max-age=60, stale-while-revalidate=30`; authenticated `no-cache` (per-viewer `myReaction`).
+
+**Error Responses:**
+- `400 Bad Request`: Invalid pageId (must be UUID v7)
+- `404 Not Found`: Book or page not found
+
+**Note:** `emoji` is a stable string id (not the display glyph). The whitelisted set is `shocked | mind-blown | emotional | tense | loved | peak`.
+
+---
+
+### PUT /api/books/:identifier/:pageId/reactions
+
+Sets (or atomically swaps) the authenticated user's active reaction on a page. Changing to a different emoji removes the previous one in the same transaction, so a user is never double-counted. Setting the same emoji is idempotent.
+
+**Authentication:** Required (via `requireAuth`) — rate limited (30/min)
+
+**Path Parameters:**
+- `identifier` (string, required): Book slug or UUID v7
+- `pageId` (string, required): UUID v7
+
+**Request Body:**
+```json
+{
+  "emoji": "shocked"
+}
+```
+
+**Parameters:**
+- `emoji` (string, required): One of `shocked | mind-blown | emotional | tense | loved | peak`
+
+**Response (200 OK):** Same shape as the `GET` response above with the viewer's `myReaction` set to the submitted emoji (`no-cache`).
+
+**Error Responses:**
+- `400 Bad Request`: Invalid pageId or non-whitelisted emoji
+- `401 Unauthorized`: Guest attempting to react
+- `404 Not Found`: Book or page not found
+
+---
+
+### DELETE /api/books/:identifier/:pageId/reactions
+
+Removes the authenticated user's active reaction on a page (if any). Idempotent — deleting with no existing reaction returns the current state unchanged.
+
+**Authentication:** Required (via `requireAuth`) — rate limited (30/min)
+
+**Path Parameters:**
+- `identifier` (string, required): Book slug or UUID v7
+- `pageId` (string, required): UUID v7
+
+**Response (200 OK):** Same shape as the `GET` response above with `myReaction: null` (`no-cache`).
+
+**Error Responses:**
+- `400 Bad Request`: Invalid pageId
+- `401 Unauthorized`: Guest attempting to remove a reaction
+- `404 Not Found`: Book or page not found
+
+---
+
 ### GET /api/books/:identifier/branches
 
 Retrieves all branches (id & display name) for a book. Accepts both slug and UUID v7 as book identifier. Returns the main branch (using the book's title) followed by all non-main branches.

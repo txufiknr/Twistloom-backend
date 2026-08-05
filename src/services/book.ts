@@ -1641,11 +1641,13 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
   }
 
   // Check the in-memory LRU cache first (pages > 1, or page 1 when Redis is not
-  // eligible/unavailable — preserves the pre-Redis behaviour for those cases)
+  // eligible/unavailable — preserves the pre-Redis behaviour for those cases).
+  // Re-merge `communityActions` to undefined in case a stale entry (written before
+  // the lazy-load change, or by the shared path) still carries an old list.
   const cacheKey = getEnrichedPageCacheKey(pageId, userId, translate, headerLanguage);
   if (!hasIncompleteActions) {
     const cached = enrichedPageCache.get(cacheKey);
-    if (cached) return cached;
+    if (cached) return { ...cached, communityActions: undefined };
   }
 
   // Fetch the page document to translate (only when translation is requested).

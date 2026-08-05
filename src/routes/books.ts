@@ -47,6 +47,9 @@
  * - GET /api/books/:identifier/:pageId - Retrieve specific pages with translation support (optional auth)
  * - POST /api/books/:identifier/:pageId/confirm-visit - Confirm page visit and record progress (requires auth)
  * - POST /api/books/:identifier/:pageId/touch - Lightweight "last read" heartbeat updating session updatedAt (requires auth)
+ * - GET /api/books/:identifier/:pageId/reactions - Get anonymous per-page emoji reaction counts (optional auth)
+ * - PUT /api/books/:identifier/:pageId/reactions - Set/swap the user's active reaction on a page (requires auth)
+ * - DELETE /api/books/:identifier/:pageId/reactions - Remove the user's active reaction on a page (requires auth)
  * - GET /api/books/:identifier/branches - List all branches for a book (optional auth)
  * - GET /api/books/:identifier/:pageId/candidates - Pre-generate candidate pages via SSE (requires auth)
  * - GET /api/books/:identifier/:pageId/candidates/status - Poll candidate generation status (optional auth)
@@ -55,7 +58,7 @@
  * Custom Actions:
  * - POST /api/books/:identifier/:pageId/custom-actions/preview - Preview a custom action without charging (requires auth)
  * - POST /api/books/:identifier/:pageId/custom-actions/submit - Submit a custom action and generate page (requires auth + credits)
- * - GET /api/books/:id/pages/:pageId/community-actions - Get community custom actions for a page, lazy-loaded after fast page-1 render (optional auth)
+ * - GET /api/books/:id/pages/:pageId/community-actions - Get community custom actions for a page, lazy-loaded on scroll to the action area (any page, optional auth)
  * 
  * Psychological Features:
  * - GET /api/books/:identifier/psychological-profile - Get psychological "autopsy" of the MC (requires auth)
@@ -102,7 +105,7 @@ import { getClientIp } from "../hono/express-shim.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
 import { rateLimit } from "../middleware/rate-limit.js";
-import { books, branches, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress, userCompletedBooks, uploadedImages, userActivityLogs, pages, bookTestimonials } from "../db/schema.js";
+import { books, branches, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress, userCompletedBooks, uploadedImages, userActivityLogs, pages, bookTestimonials, pageReactions } from "../db/schema.js";
 import { getErrorMessage, cApiError, cForbiddenError, cNotFoundError, cRateLimitError, cUnauthorizedError, cValidationError } from "../utils/error.js";
 import { sanitizeTextForDB, sanitizeKeywords } from '../utils/text-processing.js';
 import { stripHtml } from '../utils/sanitize-html.js';
@@ -159,7 +162,8 @@ import { requireEnv } from "../utils/env.js";
 import type { UserComment } from "../types/user.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
 import { MAX_CONCURRENT_GENERATIONS, AI_VALIDATION_TIMEOUT_MS } from "../config/book-creation.js";
-import { BOOK_CREATION_RATE_LIMIT, BOOK_STREAM_RATE_LIMIT, BOOK_ASYNC_RATE_LIMIT, ACTION_HINT_RATE_LIMIT, CUSTOM_ACTION_PREVIEW_RATE_LIMIT, CUSTOM_ACTION_SUBMIT_RATE_LIMIT } from "../config/ai-rate-limits.js";
+import { BOOK_CREATION_RATE_LIMIT, BOOK_STREAM_RATE_LIMIT, BOOK_ASYNC_RATE_LIMIT, ACTION_HINT_RATE_LIMIT, CUSTOM_ACTION_PREVIEW_RATE_LIMIT, CUSTOM_ACTION_SUBMIT_RATE_LIMIT, PAGE_REACTION_RATE_LIMIT } from "../config/ai-rate-limits.js";
+import { isValidReactionEmoji, REACTION_IDS, reactionIdList } from "../config/reactions.js";
 import { generateRandomCharacter } from "../utils/characters.js";
 
 const router = new Hono<AppEnv>();
@@ -3446,10 +3450,13 @@ router.get("/:id/pages/:pageId/comment-counts", optionalAuth, async (c) => {
   try {
     const { id, pageId } = c.req.param();
 
-    const book = await getBookFromDB(id as string);
+    // Run the book/page existence checks in parallel and use the LRU-cached
+    // getBook so repeated 60s polls don't pay for a full uncached book row.
+    const [book, pageRow] = await Promise.all([
+      getBook(id as string),
+      findPageInBook(pageId as string, id as string),
+    ]);
     if (!book) return cNotFoundError(c, "Book not found");
-
-    const pageRow = await findPageInBook(pageId as string, id as string);
     if (!pageRow) return cNotFoundError(c, "Page not found");
 
     const rows = await loadParagraphCommentCounts(id as string, pageId as string);
@@ -3458,7 +3465,8 @@ router.get("/:id/pages/:pageId/comment-counts", optionalAuth, async (c) => {
       counts[row.paragraphNumber] = row.count;
     }
 
-    // Counts change as readers comment, so keep it short-lived
+    // Counts change as readers comment, so keep it short-lived.
+    // Counts are public (not user-scoped), so `public` is safe here.
     c.header('Cache-Control', 'public, max-age=60');
     return c.json({ counts });
   } catch (error) {
@@ -3498,10 +3506,13 @@ router.get("/:id/pages/:pageId/community-actions", optionalAuth, async (c) => {
     const { id, pageId } = c.req.param();
     const headerLanguage = c.get("headerLanguage");
 
-    const book = await getBookFromDB(id as string);
+    // Parallelize existence checks and use the LRU-cached getBook so the
+    // scroll-triggered lazy load stays lightweight.
+    const [book, pageRow] = await Promise.all([
+      getBook(id as string),
+      findPageInBook(pageId as string, id as string),
+    ]);
     if (!book) return cNotFoundError(c, "Book not found");
-
-    const pageRow = await findPageInBook(pageId as string, id as string);
     if (!pageRow) return cNotFoundError(c, "Page not found");
 
     const userId = c.get("userId");
@@ -3512,8 +3523,12 @@ router.get("/:id/pages/:pageId/community-actions", optionalAuth, async (c) => {
       headerLanguage ?? book.language ?? 'en',
     );
 
-    // Community actions change as readers submit, so keep it short-lived
-    c.header('Cache-Control', 'public, max-age=60');
+    // Community actions change as readers submit, so keep it short-lived.
+    // The response is USER-SCOPED (the viewer's own submissions are excluded),
+    // so it must NOT be cacheable by shared/CDN caches — `private` allows the
+    // browser to cache per-user without leaking one reader's filtered list to
+    // another.
+    c.header('Cache-Control', 'private, max-age=60');
     return c.json({ communityActions });
   } catch (error) {
     return cApiError(c, "Failed to retrieve community actions", error);
@@ -4662,6 +4677,199 @@ router.post("/:identifier/:pageId/touch", requireAuth, async (c) => {
   });
 
   return c.json({ success: true, lastReadAt: session?.updatedAt ?? now });
+});
+
+/**
+ * Shared helper: load the current reaction state for a page.
+ *
+ * Returns the count per whitelisted emoji (always including zero-count rows so
+ * the frontend renders the full fixed row), the total distinct reactors, and the
+ * authenticated viewer's own active reaction (null for guests / none).
+ */
+async function loadPageReactionState(bookId: string, pageId: string, userId?: string | null) {
+  const rows = await dbRead
+    .select({ emoji: pageReactions.emoji, count: sql<number>`count(*)::int` })
+    .from(pageReactions)
+    .where(eq(pageReactions.pageId, pageId))
+    .groupBy(pageReactions.emoji);
+
+  const countByEmoji = new Map(rows.map((r) => [r.emoji, r.count]));
+  const reactions = REACTION_IDS.map((emoji) => ({
+    emoji,
+    count: countByEmoji.get(emoji) ?? 0,
+  }));
+
+  const totalReactors = rows.reduce((sum, r) => sum + r.count, 0);
+
+  let myReaction: string | null = null;
+  if (userId) {
+    const [mine] = await dbRead
+      .select({ emoji: pageReactions.emoji })
+      .from(pageReactions)
+      .where(and(eq(pageReactions.userId, userId), eq(pageReactions.pageId, pageId)))
+      .limit(1);
+    myReaction = mine?.emoji ?? null;
+  }
+
+  return { reactions, totalReactors, myReaction };
+}
+
+/**
+ * GET /api/books/:identifier/:pageId/reactions
+ *
+ * Fetches anonymous per-page emoji reaction counts. Counts are public (guests
+ * can see how many readers reacted), but the viewer's own reaction (`myReaction`)
+ * is private — so responses for authenticated viewers are `no-cache`, while
+ * anonymous responses are publicly cacheable.
+ *
+ * @route GET /api/books/:identifier/:pageId/reactions
+ * @auth Optional
+ * @param identifier - Book slug or UUID v7
+ * @param pageId - Page identifier (UUID v7)
+ * @returns 200 `{ reactions: [{ emoji, count }], totalReactors, myReaction }`
+ *
+ * @example
+ * GET /api/books/whispering-halls/page456/reactions
+ * → 200 { "reactions": [{ "emoji": "shocked", "count": 3 }, ...], "totalReactors": 5, "myReaction": "shocked" }
+ */
+router.get("/:identifier/:pageId/reactions", optionalAuth, async (c) => {
+  try {
+    const { identifier: bookIdentifier, pageId } = c.req.param();
+    const pageIdStr = Array.isArray(pageId) ? pageId[0] : pageId;
+    const bookIdentifierStr = Array.isArray(bookIdentifier) ? bookIdentifier[0] : bookIdentifier;
+    const userId = c.get("userId") ?? null;
+
+    if (!isValidUuid(pageIdStr)) {
+      return cValidationError(c, "Invalid pageId: must be valid uuid");
+    }
+
+    const book = await resolveBook(bookIdentifierStr);
+    if (!book) return cNotFoundError(c, "Book not found");
+    const dbPage = await getPageFromDB(pageIdStr, { bookIdentifier: book.id });
+    if (!dbPage) return cNotFoundError(c, "Page not found");
+
+    const state = await loadPageReactionState(book.id, pageIdStr, userId);
+
+    // Authenticated responses carry the viewer's private `myReaction` → no-cache.
+    // Anonymous responses are CDN-cacheable (counts only, no personal data).
+    if (userId) {
+      c.header("Cache-Control", "no-cache");
+    } else {
+      c.header("Cache-Control", "public, max-age=60, stale-while-revalidate=30");
+    }
+
+    return c.json(state);
+  } catch (error) {
+    console.error('[GET /api/books/:identifier/:pageId/reactions] ❌ Error:', error);
+    return cApiError(c, "Failed to get page reactions", error);
+  }
+});
+
+/**
+ * PUT /api/books/:identifier/:pageId/reactions
+ *
+ * Sets (or atomically swaps) the authenticated user's active reaction on a page.
+ * One active reaction per user per page — setting a different emoji removes the
+ * previous one in the same transaction, so a user can never be double-counted.
+ * Setting the same emoji is idempotent (no-op write that keeps the same state).
+ *
+ * @route PUT /api/books/:identifier/:pageId/reactions
+ * @auth Required
+ * @body `{ "emoji": "shocked" }` — one of the whitelisted reaction ids
+ * @param identifier - Book slug or UUID v7
+ * @param pageId - Page identifier (UUID v7)
+ * @returns 200 `{ reactions, totalReactors, myReaction }` (no-cache)
+ *
+ * @example
+ * PUT /api/books/whispering-halls/page456/reactions
+ * Body: { "emoji": "shocked" }
+ * → 200 { "reactions": [...], "totalReactors": 5, "myReaction": "shocked" }
+ */
+router.put("/:identifier/:pageId/reactions", requireAuth, rateLimit(PAGE_REACTION_RATE_LIMIT), async (c) => {
+  try {
+    const { identifier: bookIdentifier, pageId } = c.req.param();
+    const pageIdStr = Array.isArray(pageId) ? pageId[0] : pageId;
+    const bookIdentifierStr = Array.isArray(bookIdentifier) ? bookIdentifier[0] : bookIdentifier;
+    const userId = c.get("userId")!;
+
+    if (!isValidUuid(pageIdStr)) {
+      return cValidationError(c, "Invalid pageId: must be valid uuid");
+    }
+
+    const { emoji } = c.get("body") as { emoji?: unknown };
+    if (!isValidReactionEmoji(emoji)) {
+      return cValidationError(c, `Invalid emoji. Must be one of: ${reactionIdList()}`);
+    }
+
+    const book = await resolveBook(bookIdentifierStr);
+    if (!book) return cNotFoundError(c, "Book not found");
+    const dbPage = await getPageFromDB(pageIdStr, { bookIdentifier: book.id });
+    if (!dbPage) return cNotFoundError(c, "Page not found");
+
+    // Atomic swap: delete the user's prior reaction for this page, then insert the
+    // new one — all inside one transaction so counts never transiently double-count.
+    await dbWrite.transaction(async (tx) => {
+      await tx
+        .delete(pageReactions)
+        .where(and(eq(pageReactions.userId, userId), eq(pageReactions.pageId, pageIdStr)));
+      await tx.insert(pageReactions).values({
+        bookId: book.id,
+        pageId: pageIdStr,
+        userId,
+        emoji,
+      });
+    });
+
+    c.header("Cache-Control", "no-cache");
+    return c.json(await loadPageReactionState(book.id, pageIdStr, userId));
+  } catch (error) {
+    console.error('[PUT /api/books/:identifier/:pageId/reactions] ❌ Error:', error);
+    return cApiError(c, "Failed to react to page", error);
+  }
+});
+
+/**
+ * DELETE /api/books/:identifier/:pageId/reactions
+ *
+ * Removes the authenticated user's active reaction on a page (if any). Idempotent —
+ * deleting with no existing reaction returns the current state unchanged.
+ *
+ * @route DELETE /api/books/:identifier/:pageId/reactions
+ * @auth Required
+ * @param identifier - Book slug or UUID v7
+ * @param pageId - Page identifier (UUID v7)
+ * @returns 200 `{ reactions, totalReactors, myReaction: null }` (no-cache)
+ *
+ * @example
+ * DELETE /api/books/whispering-halls/page456/reactions
+ * → 200 { "reactions": [...], "totalReactors": 4, "myReaction": null }
+ */
+router.delete("/:identifier/:pageId/reactions", requireAuth, rateLimit(PAGE_REACTION_RATE_LIMIT), async (c) => {
+  try {
+    const { identifier: bookIdentifier, pageId } = c.req.param();
+    const pageIdStr = Array.isArray(pageId) ? pageId[0] : pageId;
+    const bookIdentifierStr = Array.isArray(bookIdentifier) ? bookIdentifier[0] : bookIdentifier;
+    const userId = c.get("userId")!;
+
+    if (!isValidUuid(pageIdStr)) {
+      return cValidationError(c, "Invalid pageId: must be valid uuid");
+    }
+
+    const book = await resolveBook(bookIdentifierStr);
+    if (!book) return cNotFoundError(c, "Book not found");
+    const dbPage = await getPageFromDB(pageIdStr, { bookIdentifier: book.id });
+    if (!dbPage) return cNotFoundError(c, "Page not found");
+
+    await dbWrite
+      .delete(pageReactions)
+      .where(and(eq(pageReactions.userId, userId), eq(pageReactions.pageId, pageIdStr)));
+
+    c.header("Cache-Control", "no-cache");
+    return c.json(await loadPageReactionState(book.id, pageIdStr, null));
+  } catch (error) {
+    console.error('[DELETE /api/books/:identifier/:pageId/reactions] ❌ Error:', error);
+    return cApiError(c, "Failed to remove page reaction", error);
+  }
 });
 
 /**
