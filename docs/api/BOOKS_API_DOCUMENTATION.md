@@ -1516,7 +1516,7 @@ Fetches anonymous per-page emoji reaction counts. Counts are public (guests can 
 
 Sets (or atomically swaps) the authenticated user's active reaction on a page. Changing to a different emoji removes the previous one in the same transaction, so a user is never double-counted. Setting the same emoji is idempotent.
 
-**Authentication:** Required (via `requireAuth`) — rate limited (30/min)
+**Authentication:** Required (via `requireAuth`) — covered by the global `rateLimitByUser` middleware (100 req/min)
 
 **Path Parameters:**
 - `identifier` (string, required): Book slug or UUID v7
@@ -1545,7 +1545,7 @@ Sets (or atomically swaps) the authenticated user's active reaction on a page. C
 
 Removes the authenticated user's active reaction on a page (if any). Idempotent — deleting with no existing reaction returns the current state unchanged.
 
-**Authentication:** Required (via `requireAuth`) — rate limited (30/min)
+**Authentication:** Required (via `requireAuth`) — covered by the global `rateLimitByUser` middleware (100 req/min)
 
 **Path Parameters:**
 - `identifier` (string, required): Book slug or UUID v7

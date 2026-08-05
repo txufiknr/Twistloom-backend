@@ -162,7 +162,7 @@ import { requireEnv } from "../utils/env.js";
 import type { UserComment } from "../types/user.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
 import { MAX_CONCURRENT_GENERATIONS, AI_VALIDATION_TIMEOUT_MS } from "../config/book-creation.js";
-import { BOOK_CREATION_RATE_LIMIT, BOOK_STREAM_RATE_LIMIT, BOOK_ASYNC_RATE_LIMIT, ACTION_HINT_RATE_LIMIT, CUSTOM_ACTION_PREVIEW_RATE_LIMIT, CUSTOM_ACTION_SUBMIT_RATE_LIMIT, PAGE_REACTION_RATE_LIMIT } from "../config/ai-rate-limits.js";
+import { BOOK_CREATION_RATE_LIMIT, BOOK_STREAM_RATE_LIMIT, BOOK_ASYNC_RATE_LIMIT, ACTION_HINT_RATE_LIMIT, CUSTOM_ACTION_PREVIEW_RATE_LIMIT, CUSTOM_ACTION_SUBMIT_RATE_LIMIT } from "../config/ai-rate-limits.js";
 import { isValidReactionEmoji, REACTION_IDS, reactionIdList } from "../config/reactions.js";
 import { generateRandomCharacter } from "../utils/characters.js";
 
@@ -4785,7 +4785,7 @@ router.get("/:identifier/:pageId/reactions", optionalAuth, async (c) => {
  * Body: { "emoji": "shocked" }
  * → 200 { "reactions": [...], "totalReactors": 5, "myReaction": "shocked" }
  */
-router.put("/:identifier/:pageId/reactions", requireAuth, rateLimit(PAGE_REACTION_RATE_LIMIT), async (c) => {
+router.put("/:identifier/:pageId/reactions", requireAuth, async (c) => {
   try {
     const { identifier: bookIdentifier, pageId } = c.req.param();
     const pageIdStr = Array.isArray(pageId) ? pageId[0] : pageId;
@@ -4844,7 +4844,7 @@ router.put("/:identifier/:pageId/reactions", requireAuth, rateLimit(PAGE_REACTIO
  * DELETE /api/books/whispering-halls/page456/reactions
  * → 200 { "reactions": [...], "totalReactors": 4, "myReaction": null }
  */
-router.delete("/:identifier/:pageId/reactions", requireAuth, rateLimit(PAGE_REACTION_RATE_LIMIT), async (c) => {
+router.delete("/:identifier/:pageId/reactions", requireAuth, async (c) => {
   try {
     const { identifier: bookIdentifier, pageId } = c.req.param();
     const pageIdStr = Array.isArray(pageId) ? pageId[0] : pageId;

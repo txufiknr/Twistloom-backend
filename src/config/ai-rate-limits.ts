@@ -1,6 +1,20 @@
 /**
  * AI Generation Rate Limits — per-endpoint, per-user throttles.
  *
+ * **Scope (important):** this file is ONLY for endpoints that trigger AI/LLM
+ * work or otherwise amplify spend (model calls, tokens, credits). Every entry
+ * below exists because a single request can burn real money, so each gets a
+ * stricter per-user ceiling than the global one.
+ *
+ * **Do NOT add non-AI endpoints here.** Endpoints that are pure DB I/O with no
+ * model calls and no credit gate (e.g. page emoji reactions, likes, comments)
+ * are already covered by the global `rateLimitByUser` middleware
+ * (100 req/min, see `src/app.ts`), and don't need an entry in this file. Adding
+ * one here would be misleading — these configs are tuned around AI cost, and
+ * conflating them with free social writes muddies the spend-protection story.
+ * If a non-AI endpoint ever needs a tighter cap, apply a `rateLimit()` config
+ * inline at the route (see `src/middleware/rate-limit.ts`) rather than here.
+ *
  * The global `rateLimitByUser` middleware (100 req/min) already guards every
  * `/api/*` route, but that ceiling is far too loose for the *cost‑amplifying*
  * AI endpoints. Each AI generation here can spin up expensive LLM calls (a
@@ -146,18 +160,4 @@ export const CUSTOM_ACTION_PREVIEW_RATE_LIMIT: AIRateLimitConfig = buildRateLimi
  */
 export const CUSTOM_ACTION_SUBMIT_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
   "CUSTOM_ACTION_SUBMIT", 10, 60
-);
-
-/**
- * PUT/DELETE /api/books/:identifier/:pageId/reactions — page emoji reactions.
- *
- * Reactions are the cheapest and most spam-prone social interaction: a single
- * DB upsert with no AI cost or credit gate. The emoji whitelist already narrows
- * the abuse surface, but a scripted client could still churn swap/remove rapidly
- * to inflate counts. 30/min is far above legitimate reading while capping that.
- *
- * why: cheap (no credits/AI), low-friction to spam; 30/min bounds churn.
- */
-export const PAGE_REACTION_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
-  "PAGE_REACTION", 30, 60
 );
