@@ -13,6 +13,7 @@ import { requireAuth } from "../middleware/nextauth.js";
 import { rateLimit } from "../middleware/rate-limit.js";
 import { PEN_SUGGEST_RATE_LIMIT } from "../config/ai-rate-limits.js";
 import { cApiError, cNotFoundError, cValidationError } from "../utils/error.js";
+import { PEN_ASSISTANCE_LEVEL_MAX, PEN_ASSISTANCE_LEVEL_MIN, PEN_AUTHORING_MODES, PEN_AUTHORING_POVS, PEN_DRAFT_CAST_LIMIT, PEN_FINALIZE_MAX_ACTIONS, PEN_SCENE_FOCUS_MAX, PEN_SCENE_FOCUS_MIN, PEN_SESSION_STATUSES } from "../config/story.js";
 import {
   createPenSession,
   getPenSessionForBook,
@@ -23,7 +24,6 @@ import {
   continuePenDraft,
   finalizePenDraft,
   getPenSessionState,
-  DRAFT_CAST_LIMIT,
   PenSessionNotFoundError,
   PenSessionConflictError,
   PenBookOwnershipError,
@@ -36,10 +36,6 @@ import { characterSceneRoles } from "../types/story.js";
 import type { CharacterSceneRole } from "../types/story.js";
 
 const router = new Hono<AppEnv>();
-
-const AUTHORING_MODES: readonly AuthoringMode[] = ["storyteller", "text_adventure"];
-const AUTHORING_POVS: readonly AuthoringPov[] = ["first", "second", "third"];
-const SESSION_STATUSES: readonly PenSessionStatus[] = ["active", "paused", "closed"];
 
 /**
  * Parses a JSON request body, returning `null` when the body is missing or
@@ -74,7 +70,7 @@ function validateDraftCastMember(member: unknown): string | null {
   if (m.sceneRole !== undefined && !characterSceneRoles.includes(m.sceneRole as CharacterSceneRole)) {
     return `sceneRole must be one of: ${characterSceneRoles.join(", ")}`;
   }
-  if (m.sceneFocus !== undefined && (typeof m.sceneFocus !== "number" || m.sceneFocus < 0 || m.sceneFocus > 1)) {
+  if (m.sceneFocus !== undefined && (typeof m.sceneFocus !== "number" || m.sceneFocus < PEN_SCENE_FOCUS_MIN || m.sceneFocus > PEN_SCENE_FOCUS_MAX)) {
     return "sceneFocus must be a number between 0 and 1";
   }
   return null;
@@ -104,14 +100,14 @@ router.post("/sessions", requireAuth, async (c) => {
     if (!bookId || typeof bookId !== "string") {
       return cValidationError(c, "bookId is required");
     }
-    if (!authoringMode || !AUTHORING_MODES.includes(authoringMode)) {
-      return cValidationError(c, `authoringMode must be one of: ${AUTHORING_MODES.join(", ")}`);
+    if (!authoringMode || !PEN_AUTHORING_MODES.includes(authoringMode)) {
+      return cValidationError(c, `authoringMode must be one of: ${PEN_AUTHORING_MODES.join(", ")}`);
     }
-    if (assistanceLevel !== undefined && (typeof assistanceLevel !== "number" || assistanceLevel < 0 || assistanceLevel > 1)) {
+    if (assistanceLevel !== undefined && (typeof assistanceLevel !== "number" || assistanceLevel < PEN_ASSISTANCE_LEVEL_MIN || assistanceLevel > PEN_ASSISTANCE_LEVEL_MAX)) {
       return cValidationError(c, "assistanceLevel must be a number between 0 and 1");
     }
-    if (authoringPov !== undefined && authoringPov !== null && !AUTHORING_POVS.includes(authoringPov)) {
-      return cValidationError(c, `authoringPov must be one of: ${AUTHORING_POVS.join(", ")} or null`);
+    if (authoringPov !== undefined && authoringPov !== null && !PEN_AUTHORING_POVS.includes(authoringPov)) {
+      return cValidationError(c, `authoringPov must be one of: ${PEN_AUTHORING_POVS.join(", ")} or null`);
     }
 
     const session = await createPenSession(userId, { bookId, authoringMode, assistanceLevel, authoringPov });
@@ -165,21 +161,21 @@ router.patch("/sessions/:id", requireAuth, async (c) => {
       draftCharactersPresent?: PenDraftCharacter[];
     };
 
-    if (assistanceLevel !== undefined && (typeof assistanceLevel !== "number" || assistanceLevel < 0 || assistanceLevel > 1)) {
+    if (assistanceLevel !== undefined && (typeof assistanceLevel !== "number" || assistanceLevel < PEN_ASSISTANCE_LEVEL_MIN || assistanceLevel > PEN_ASSISTANCE_LEVEL_MAX)) {
       return cValidationError(c, "assistanceLevel must be a number between 0 and 1");
     }
-    if (status !== undefined && !SESSION_STATUSES.includes(status)) {
-      return cValidationError(c, `status must be one of: ${SESSION_STATUSES.join(", ")}`);
+    if (status !== undefined && !PEN_SESSION_STATUSES.includes(status)) {
+      return cValidationError(c, `status must be one of: ${PEN_SESSION_STATUSES.join(", ")}`);
     }
     if (currentPageId !== undefined && currentPageId !== null && typeof currentPageId !== "string") {
       return cValidationError(c, "currentPageId must be a string or null");
     }
-    if (authoringPov !== undefined && authoringPov !== null && !AUTHORING_POVS.includes(authoringPov)) {
-      return cValidationError(c, `authoringPov must be one of: ${AUTHORING_POVS.join(", ")} or null`);
+    if (authoringPov !== undefined && authoringPov !== null && !PEN_AUTHORING_POVS.includes(authoringPov)) {
+      return cValidationError(c, `authoringPov must be one of: ${PEN_AUTHORING_POVS.join(", ")} or null`);
     }
     if (draftCharactersPresent !== undefined) {
-      if (!Array.isArray(draftCharactersPresent) || draftCharactersPresent.length > DRAFT_CAST_LIMIT) {
-        return cValidationError(c, `draftCharactersPresent must be an array of at most ${DRAFT_CAST_LIMIT} cast members`);
+      if (!Array.isArray(draftCharactersPresent) || draftCharactersPresent.length > PEN_DRAFT_CAST_LIMIT) {
+        return cValidationError(c, `draftCharactersPresent must be an array of at most ${PEN_DRAFT_CAST_LIMIT} cast members`);
       }
       for (const member of draftCharactersPresent) {
         const memberError = validateDraftCastMember(member);
@@ -254,8 +250,8 @@ router.post("/sessions/:id/continue", requireAuth, rateLimit(PEN_SUGGEST_RATE_LI
     const raw = body as Record<string, unknown>;
 
     const authoringPov = raw.authoringPov as AuthoringPov | null | undefined;
-    if (authoringPov !== undefined && authoringPov !== null && !AUTHORING_POVS.includes(authoringPov)) {
-      return cValidationError(c, `authoringPov must be one of: ${AUTHORING_POVS.join(", ")} or null`);
+    if (authoringPov !== undefined && authoringPov !== null && !PEN_AUTHORING_POVS.includes(authoringPov)) {
+      return cValidationError(c, `authoringPov must be one of: ${PEN_AUTHORING_POVS.join(", ")} or null`);
     }
 
     if (raw.type === "text_adventure") {
@@ -316,8 +312,8 @@ router.post("/sessions/:id/finalize", requireAuth, async (c) => {
     if (body.force !== undefined && typeof body.force !== "boolean") {
       return cValidationError(c, "force must be a boolean");
     }
-    if (body.actions !== undefined && (!Array.isArray(body.actions) || body.actions.length > 6)) {
-      return cValidationError(c, "actions must be an array of at most 6 items");
+    if (body.actions !== undefined && (!Array.isArray(body.actions) || body.actions.length > PEN_FINALIZE_MAX_ACTIONS)) {
+      return cValidationError(c, `actions must be an array of at most ${PEN_FINALIZE_MAX_ACTIONS} items`);
     }
 
     const result = await finalizePenDraft(userId, sessionId, body);

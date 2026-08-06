@@ -63,17 +63,21 @@ The Users API provides endpoints for managing user profiles, social interactions
       - [Get Unnotified Achievements](#get-userachievementsunnotified)
       - [Acknowledge Achievement](#post-userachievementsacknowledge)
       - [Get User Public Achievements](#get-usersidachievements)
- 13. [User Feedback](#user-feedback)
-     - [Submit Feedback](#post-userfeedbacks)
- 14. [Beta Tester Program](#beta-tester-program)
-     - [Join Beta Tester Program](#post-userbeta-tester)
- 15. [Error Handling](#error-handling)
- 16. [HTTP Headers](#http-headers)
- 17. [Caching Strategy](#caching-strategy)
- 18. [Authentication](#authentication)
- 19. [Database Schema](#database-schema)
- 20. [Testing](#testing)
- 21. [Changelog](#changelog)
+ 13. [Quests (The Prologue)](#quests-the-prologue)
+      - [Get Quest Log](#get-userquests)
+      - [Re-Check Quest Completion](#post-userquestsrecheck)
+      - [Claim Quest Reward](#post-userquestsquestidclaim)
+ 14. [User Feedback](#user-feedback)
+      - [Submit Feedback](#post-userfeedbacks)
+ 15. [Beta Tester Program](#beta-tester-program)
+      - [Join Beta Tester Program](#post-userbeta-tester)
+ 16. [Error Handling](#error-handling)
+ 17. [HTTP Headers](#http-headers)
+ 18. [Caching Strategy](#caching-strategy)
+ 19. [Authentication](#authentication)
+ 20. [Database Schema](#database-schema)
+ 21. [Testing](#testing)
+ 22. [Changelog](#changelog)
 
 ---
 
@@ -233,6 +237,40 @@ interface UserAchievement {
   isUnlocked: boolean;       // Whether the badge has been earned
   unlockedAt: string | null; // When the badge was unlocked (ISO 8601)
   isNotified: boolean;       // Whether user has seen the notification
+}
+```
+
+### UserQuest
+
+A single quest in the quest log ("The Prologue") with its per-user state. Title/description are API-provided strings from the backend `QUEST_REGISTRY` (mirroring achievements); the frontend renders them directly.
+
+```typescript
+interface UserQuest {
+  id: string;                // Quest identifier (e.g., "qs_01_2")
+  chapterId: string;         // Chapter the quest belongs to (e.g., "ch1")
+  title: string;             // Display title
+  description: string;       // One-line "why" description
+  rewardCredits: number;     // Credit payout on claim
+  currentProgress: number;   // Current detector value (0 for binary/profile)
+  threshold: number;         // Value needed to complete (0 = non-quantitative)
+  progressPercent: number;   // Progress as percentage (0-100)
+  status: 'in_progress' | 'completed' | 'claimed';  // Quest lifecycle state
+  completedAt: string | null;// When the quest was detected complete (ISO 8601)
+  claimedAt: string | null;  // When the reward was claimed (ISO 8601)
+  enabled: boolean;          // Whether the quest is shown (false = hidden)
+}
+```
+
+### QuestsSummary
+
+Aggregated summary of the quest log, used to derive the nav badge.
+
+```typescript
+interface QuestsSummary {
+  completed: number;         // Number of quests not yet claimed
+  claimable: number;         // Number of quests currently claimable
+  totalReward: number;       // Sum of rewardCredits across all returned quests
+  unclaimedReward: number;   // Sum of rewardCredits for claimable quests
 }
 ```
 
@@ -1696,6 +1734,169 @@ Returns a public user's achievements/badges for profile display. Unlike `GET /us
 
 ---
 
+## Quests (The Prologue)
+
+The Prologue is a chaptered, gamified onboarding quest log. Quests are defined
+in the backend `QUEST_REGISTRY` (mirroring `ACHIEVEMENT_REGISTRY`) and their
+completion is **detected** from real platform activity — never manual
+checkboxes. Every completed quest pays a claimable credit reward.
+
+- Completion is evaluated **on read**: `GET /user/quests` records newly-met
+  goals before returning (idempotent — already-completed/claimed quests are
+  never re-written).
+- Only `enabled: true` registry quests are returned; future/unshipped chapters
+  (e.g. Pen-dependent rows flagged `dependsOn`) stay hidden.
+- Rewards are paid via the existing `addCredits` service with
+  `context: 'quest_reward'`, so `transactions` and activity logs attribute the
+  source.
+
+### GET /user/quests
+
+Returns the authenticated user's quest log — every enabled quest with its
+current progress, status, and reward — plus a summary used to derive the
+"N claimable" nav badge.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "quests": [
+    {
+      "id": "qs_01_1",
+      "chapterId": "ch1",
+      "title": "Complete your profile",
+      "description": "Who you are makes your stories yours.",
+      "rewardCredits": 10,
+      "currentProgress": 1,
+      "threshold": 1,
+      "progressPercent": 100,
+      "status": "completed",
+      "completedAt": "2026-08-06T00:00:00.000Z",
+      "claimedAt": null,
+      "enabled": true
+    },
+    {
+      "id": "qs_01_2",
+      "chapterId": "ch1",
+      "title": "Create your first story with Spark",
+      "description": "Feel the magic in thirty seconds.",
+      "rewardCredits": 15,
+      "currentProgress": 1,
+      "threshold": 1,
+      "progressPercent": 100,
+      "status": "in_progress",
+      "completedAt": null,
+      "claimedAt": null,
+      "enabled": true
+    }
+  ],
+  "summary": {
+    "completed": 1,
+    "claimable": 1,
+    "totalReward": 385,
+    "unclaimedReward": 10
+  }
+}
+```
+
+**Notes:**
+- `summary.completed` and `summary.claimable` count quests with
+  `status === 'completed'` (not yet claimed); the nav badge renders
+  `summary.claimable`.
+- `summary.totalReward` is the sum of `rewardCredits` across **returned**
+  (enabled) quests.
+
+**Error Responses:**
+- `500 Internal Server Error`: Failed to fetch the quest log
+
+---
+
+### POST /user/quests/recheck
+
+Explicitly re-evaluates all quests against the user's live data and returns the
+ids of any quests newly marked `completed`. Call after events that don't move
+`user_counters` (e.g. favoriting a book, following a user, finishing a branch)
+when you want the quest log to update without waiting for the next read.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "newlyCompleted": ["qs_01_6", "qs_05_7"]
+}
+```
+
+**Notes:**
+- `newlyCompleted` lists quest ids whose status flipped to `completed` during
+  this call. Empty array means nothing new was met.
+
+**Error Responses:**
+- `500 Internal Server Error`: Failed to re-check quests
+
+---
+
+### POST /user/quests/:questId/claim
+
+Atomically claims a completed quest's credit reward and pays the credits via
+`addCredits` in the same transaction. The claim is idempotent: a guarded
+`UPDATE ... WHERE status = 'completed'` ensures a concurrent double-claim
+affects zero rows and returns `already_claimed` instead of paying twice.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Path Parameters:**
+- `questId` (string, required): Registry quest id (e.g. `qs_01_2`)
+
+**Response (200 OK — claimed):**
+```json
+{
+  "success": true,
+  "questId": "qs_01_2",
+  "status": "claimed",
+  "creditsAwarded": 15,
+  "newBalance": 345
+}
+```
+
+**Response (400 Bad Request — not yet completed):**
+```json
+{
+  "success": false,
+  "questId": "qs_01_4",
+  "status": "not_completed",
+  "creditsAwarded": 0,
+  "newBalance": 330
+}
+```
+
+**Response (409 Conflict — already claimed):**
+```json
+{
+  "success": false,
+  "questId": "qs_01_2",
+  "status": "already_claimed",
+  "creditsAwarded": 0,
+  "newBalance": 345
+}
+```
+
+**Error Responses:**
+- `404 Not Found`: Quest id does not exist in the registry (or is disabled)
+- `400 Bad Request`: Quest exists but is not yet completed (`not_completed`)
+- `409 Conflict`: Quest reward was already claimed (`already_claimed`)
+- `500 Internal Server Error`: Failed to claim the quest reward
+
+**Notes:**
+- On success the user's profile cache is invalidated so `CreditsChip` /
+  `useUser` reflect the new balance, and a `quest_reward_claimed` activity log
+  entry is recorded.
+
+---
+
 ## User Feedback
 
 ### POST /user/feedbacks
@@ -1869,8 +2070,10 @@ The API implements multi-level caching for performance:
 - Onboarding (POST /user): Invalidates profile cache
 - Like/unlike (book target): Invalidates explore cache, user books cache, and profile cache
 - Favorite/unfavorite: Invalidates profile cache (savedBooksCount)
-- Follow/unfollow: Invalidates profile cache for the target user (followersCount)
+- Follow/unfollow: Invalidates profile cache (followersCount)
 - Daily check-in: Invalidates profile cache (credits changed)
+- Quest reward claim (`POST /user/quests/:questId/claim`): Invalidates profile cache (credits changed)
+- `GET /user/quests` is `requireAuth` per-user data that changes on real activity — it uses the React Query `staleTime` on the client and is **not** HTTP-cached.
 
 ---
 
@@ -2017,6 +2220,28 @@ CREATE TABLE "user_feedbacks" (
 
 ---
 
+### User Quests Table
+```sql
+CREATE TABLE "user_quests" (
+  "id" uuid PRIMARY KEY DEFAULT uuidv7(),
+  "user_id" uuid NOT NULL REFERENCES users(user_id) ON DELETE cascade,
+  "quest_id" text NOT NULL, -- links to QUEST_REGISTRY ids (e.g. "qs_01_2")
+  "status" text NOT NULL DEFAULT 'in_progress', -- 'in_progress' | 'completed' | 'claimed'
+  "completed_at" timestamp with time zone,
+  "claimed_at" timestamp with time zone,
+  "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+  "updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+  UNIQUE ("user_id", "quest_id")
+);
+```
+
+**Indexes:**
+- `user_quests_user_quest_unique`: (user_id, quest_id)
+- `user_quests_user_idx`: (user_id)
+- `user_quests_status_idx`: (status)
+
+---
+
 ## Testing
 
 ### Example cURL Commands
@@ -2035,6 +2260,24 @@ curl https://api.twistloom.com/api/users/johndoe
 **Get top creators this week (homepage "Creators writing this week" section):**
 ```bash
 curl "https://api.twistloom.com/api/user/users/top-creators?limit=10"
+```
+
+**Get quest log ("The Prologue"):**
+```bash
+curl https://api.twistloom.com/api/user/quests \
+  -H "Cookie: next-auth.session-token=YOUR_TOKEN"
+```
+
+**Re-check quest completion (after non-counter events like favoriting/following):**
+```bash
+curl -X POST https://api.twistloom.com/api/user/quests/recheck \
+  -H "Cookie: next-auth.session-token=YOUR_TOKEN"
+```
+
+**Claim a quest reward:**
+```bash
+curl -X POST https://api.twistloom.com/api/user/quests/qs_01_2/claim \
+  -H "Cookie: next-auth.session-token=YOUR_TOKEN"
 ```
 
 **Like a book:**
@@ -2153,6 +2396,14 @@ curl -X POST https://api.twistloom.com/api/user/feedbacks \
 ---
 
 ## Changelog
+
+### v3.7.0 (2026-08-06)
+- Added the Quests ("The Prologue") section with three endpoints:
+  - `GET /user/quests` — returns the full quest log (enabled quests only) plus a `summary` (`completed`, `claimable`, `totalReward`, `unclaimedReward`) powering the nav badge
+  - `POST /user/quests/recheck` — explicitly re-evaluates all quests and returns newly-completed quest ids
+  - `POST /user/quests/:questId/claim` — atomically claims a completed quest's credit reward (`200` claimed, `400` not-completed, `409` already-claimed, `404` unknown/disabled quest)
+- Added `UserQuest` and `QuestsSummary` type definitions, documenting the `QuestStatus` lifecycle (`in_progress` → `completed` → `claimed`)
+- Quest completion is detected from real platform activity (evaluate-on-read against `user_counters` and derived aggregates); rewards pay via `addCredits` with `context: 'quest_reward'` inside the claim transaction, invalidating the profile cache afterwards
 
 ### v3.6.0 (2026-08-06)
 - Added `POST /user/beta-tester` documentation — joins the authenticated user to the beta tester program, awarding a one-time 500 credit bonus

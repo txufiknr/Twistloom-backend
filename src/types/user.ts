@@ -125,7 +125,9 @@ export type UserActivityType =
   'onboarding_complete' |
   'referrer_set' |
   'shared_ending' |
-  'beta_tester_joined';
+  'beta_tester_joined' |
+  'quest_completed' |
+  'quest_reward_claimed';
 
 export type CheckinClaimType = 'regular' | 'vip_2x';
 

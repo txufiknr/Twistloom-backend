@@ -149,7 +149,7 @@ import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 import { notifyForumOfBookChange, notifyForumStoryArchived } from "../services/forum-queue.js";
 import { createAIOptionsWithSchema, aiPrompt } from "../utils/ai-chat.js";
 import { AI_CHAT_MODELS_THEME } from "../config/ai-clients.js";
-import { BOOK_MIN_PAGES } from "../config/story.js";
+import { BOOK_MIN_PAGES, PEN_AUTHORING_MODES, PEN_DEFAULT_AUTHORING_MODE, PEN_DEFAULT_BOOK_MODE, PEN_DEFAULT_LANGUAGE, PEN_PLACEHOLDER_MC, PEN_TITLE_MAX_LENGTH, PEN_TITLE_MIN_LENGTH } from "../config/story.js";
 import type { CustomActionValidationResult, CustomActionPreviewResponse, CustomActionSubmitResponse } from "../types/custom-action.js";
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { MAX_BRANCHING_PREGENERATION_DEPTH } from "../config/story.js";
@@ -284,13 +284,13 @@ router.post("/pen", requireAuth, async (c) => {
   try {
     const body = (c.get("body") as Record<string, unknown>) ?? {};
     const title = typeof body.title === "string" ? body.title.trim() : "";
-    const authoringMode = body.authoringMode ?? "storyteller";
+    const authoringMode = body.authoringMode ?? PEN_DEFAULT_AUTHORING_MODE;
 
     if (!title) return cValidationError(c, "title is required");
-    if (title.length < 2) return cValidationError(c, "title must be at least 2 characters");
-    if (title.length > 120) return cValidationError(c, "title must be at most 120 characters");
-    if (authoringMode !== "storyteller" && authoringMode !== "text_adventure") {
-      return cValidationError(c, "authoringMode must be 'storyteller' or 'text_adventure'");
+    if (title.length < PEN_TITLE_MIN_LENGTH) return cValidationError(c, `title must be at least ${PEN_TITLE_MIN_LENGTH} characters`);
+    if (title.length > PEN_TITLE_MAX_LENGTH) return cValidationError(c, `title must be at most ${PEN_TITLE_MAX_LENGTH} characters`);
+    if (typeof authoringMode !== "string" || !PEN_AUTHORING_MODES.includes(authoringMode)) {
+      return cValidationError(c, `authoringMode must be 'storyteller' or 'text_adventure'`);
     }
 
     const userId = c.get("userId")!;
@@ -298,14 +298,14 @@ router.post("/pen", requireAuth, async (c) => {
     // `books.mc` is NOT NULL but the Pen lets the author shape the MC later
     // (SceneCastPanel registers `"mc"` into state on first use) — seed a
     // neutral placeholder whose UI label falls back to "MC" (§2.i).
-    const placeholderMc: StoryMC = { name: "MC", age: 0, gender: "male", bio: "" };
+    const placeholderMc: StoryMC = PEN_PLACEHOLDER_MC;
 
     const created = await insertBook({
       userId,
       title,
       mc: placeholderMc,
-      mode: "novel",
-      language: (c.get("headerLanguage") as string) || "en",
+      mode: PEN_DEFAULT_BOOK_MODE,
+      language: (c.get("headerLanguage") as string) || PEN_DEFAULT_LANGUAGE,
       keywords: [],
       isOriginal: true,
     });

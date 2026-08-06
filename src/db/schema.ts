@@ -13,6 +13,7 @@ import type { PlaceMemory, PlaceMemoryTranslation, PlaceWeather } from "../types
 import type { ActionProgressStatus } from "../types/candidate-generation.js";
 import type { StoryThread, StoryThreadTranslation } from "../types/story-thread.js";
 import type { CustomActionOutcome, CustomActionRejectionCategory } from "../types/custom-action.js";
+import type { QuestStatus } from "../types/quests.js";
 import type { CanonValidationOutcome, CanonViolation, CanonViolationType } from "../types/canon-validation.js";
 import type { AuthorshipOrigin, AuthoringMode, AuthoringPov, DraftSpan, EditorPrefs, PenDraftCharacter, PenEditType, PenSessionStatus } from "../types/pen.js";
 import type { TransactionType } from "../types/credits.js";
@@ -1481,6 +1482,34 @@ export const userAchievements = pgTable(
     index("user_achievements_user_idx").on(t.userId),
     // Structural guard preventing identical double badge entries 
     unique("user_achievement_unique").on(t.userId, t.achievementId),
+  ]
+);
+
+/**
+ * User Quests Table ("The Prologue")
+ * Records the per-user state machine for each quest: `in_progress` →
+ * `completed` (auto-detected) → `claimed` (credit reward redeemed).
+ *
+ * Only one row exists per (user, quest). Completion/claim timestamps are set
+ * by the quest evaluation / claim services. The unique constraint on
+ * `(user_id, quest_id)` is the structural guard that makes claims idempotent.
+ */
+export const userQuests = pgTable(
+  "user_quests",
+  {
+    id: id(),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    questId: text("quest_id").notNull(), // Links directly to QUEST_REGISTRY ids
+    status: text("status").$type<QuestStatus>().notNull().default('in_progress'),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    unique("user_quests_user_quest_unique").on(t.userId, t.questId),
+    index("user_quests_user_idx").on(t.userId),
+    index("user_quests_status_idx").on(t.status),
   ]
 );
 

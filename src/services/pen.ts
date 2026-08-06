@@ -29,6 +29,7 @@ import { aiPrompt, createAIOptionsWithSchema } from "../utils/ai-chat.js";
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
+import { PEN_DRAFT_CAST_LIMIT } from "../config/story.js";
 import { generateId } from "../utils/uuid.js";
 import { executeWithCredits } from "./credits.js";
 import { persistPageWithState, insertStoryPage, getPageFromDB, mapToPersistedStoryPage } from "./book.js";
@@ -879,8 +880,6 @@ function generatedFirstPage(
   };
 }
 
-export const DRAFT_CAST_LIMIT = 20;
-
 /**
  * Resolves the author's scene checklist into engine-valid `charactersPresent`
  * entries plus any `NewCharacter` registrations needed so every checked id
@@ -902,7 +901,7 @@ function resolveDraftCharacters(
   const newCharacters: NewCharacter[] = [];
   const seen = new Set<string>();
 
-  for (const item of inputs.slice(0, DRAFT_CAST_LIMIT)) {
+  for (const item of inputs.slice(0, PEN_DRAFT_CAST_LIMIT)) {
     const sceneRole: CharacterSceneRole = item.sceneRole ?? "supporting";
     const sceneFocus = typeof item.sceneFocus === "number" ? Math.min(1, Math.max(0, item.sceneFocus)) : 0.5;
     const isMc = item.characterId?.trim() === "mc";

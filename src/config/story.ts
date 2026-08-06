@@ -1,5 +1,6 @@
 import type { ActionHintType, ActionType, AIActionConfig, Archetype, CharacterSceneRole, ManipulationAffinity, SceneType, StoryMomentum, ThreatProximity } from "../types/story.js";
 import type { ThreadPriority } from "../types/story-thread.js";
+import type { StoryMC } from "../types/character.js";
 
 export const BOOK_MIN_PAGES = 80;
 export const BOOK_MAX_PAGES = 200;
@@ -409,3 +410,38 @@ export const MANIPULATION_HINT_AFFINITY: Record<ManipulationAffinity, Partial<Re
 
 /** Pages of actionsHistory to consider for frequency. */
 export const TENDENCY_RECENCY_WINDOW = 8;
+
+// ============================================================================
+// PEN (AI CO-WRITING) VALIDATION
+// ============================================================================
+
+/** Minimum allowed Pen book title length (chars, after trim). */
+export const PEN_TITLE_MIN_LENGTH = 2;
+/** Maximum allowed Pen book title length (chars, after trim). */
+export const PEN_TITLE_MAX_LENGTH = 120;
+/** Default authoring mode when the request omits one. */
+export const PEN_DEFAULT_AUTHORING_MODE = "storyteller";
+/** Pen-created books are always created in linear ('novel') mode. */
+export const PEN_DEFAULT_BOOK_MODE = "novel";
+/** Fallback language when the request has no usable header language. */
+export const PEN_DEFAULT_LANGUAGE = "en";
+/** Authoring modes accepted by the Pen routes. */
+export const PEN_AUTHORING_MODES: readonly string[] = ["storyteller", "text_adventure"];
+/** Authoring POVs accepted by the Pen routes. */
+export const PEN_AUTHORING_POVS: readonly string[] = ["first", "second", "third"];
+/** Session statuses accepted on PATCH. */
+export const PEN_SESSION_STATUSES: readonly string[] = ["active", "paused", "closed"];
+/** Lower bound for `assistanceLevel` (normalized 0-1). */
+export const PEN_ASSISTANCE_LEVEL_MIN = 0;
+/** Upper bound for `assistanceLevel` (normalized 0-1). */
+export const PEN_ASSISTANCE_LEVEL_MAX = 1;
+/** Lower bound for a scalar `sceneFocus` value in the draft cast checklist. */
+export const PEN_SCENE_FOCUS_MIN = 0;
+/** Upper bound for a scalar `sceneFocus` value in the draft cast checklist. */
+export const PEN_SCENE_FOCUS_MAX = 1;
+/** Maximum number of draft cast members (own characters + existing draft characters). */
+export const PEN_DRAFT_CAST_LIMIT = 20;
+/** Maximum number of author-supplied action choices accepted by /finalize. */
+export const PEN_FINALIZE_MAX_ACTIONS = 6;
+/** Placeholder MC seed for Pen-created books (schema NOT NULL); author shapes the real MC later. */
+export const PEN_PLACEHOLDER_MC: StoryMC = { name: "MC", age: 0, gender: "male", bio: "" };

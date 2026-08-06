@@ -40,6 +40,9 @@
  * - GET /user/achievements - Get user achievements
  * - GET /user/achievements/unnotified - Get newly unlocked badges
  * - POST /user/achievements/acknowledge - Mark achievements as viewed
+ * - GET /user/quests - Get the user's quest log ("The Prologue")
+ * - POST /user/quests/recheck - Re-evaluate quest completion
+ * - POST /user/quests/:questId/claim - Claim a completed quest's credit reward
  * 
  * Note: Comment CRUD endpoints are in books.ts, not this file.
  */
@@ -52,7 +55,7 @@ import { feedbackCategories, sources } from "../types/user.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { requireAuth, optionalAuth } from "../middleware/nextauth.js";
 import { users, books, userAuth, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, userSessions, userCompletedBooks, userComments, transactions, userProviders, userFeedbacks, bookTestimonials, uploadedImages, userReports, userBlocks } from "../db/schema.js";
-import { getErrorMessage, cApiError, cNotFoundError, cValidationError, cUnauthorizedError } from "../utils/error.js";
+import { getErrorMessage, cApiError, cNotFoundError, cConflictError, cValidationError, cUnauthorizedError } from "../utils/error.js";
 import { eq, and, desc, sql, gte } from "drizzle-orm";
 import { calculatePaginationMeta, extractPaginationParams } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
@@ -64,6 +67,7 @@ import { uploadUserImage, uploadFeedbackScreenshot, persistUploadedImage } from 
 import { isValidUuid } from "../utils/uuid.js";
 import { getStoryProgressWithBranch } from '../services/story-branch.js';
 import { checkAndAwardAchievements, getUserAchievements, getUserMetrics } from '../services/achievements.js';
+import { getUserQuests, summarizeQuests, recheckQuests, claimQuestRewardAndInvalidate } from '../services/quests.js';
 import { verifyPassword } from "../utils/password.js";
 import { OAuth2Client } from "google-auth-library";
 import type { PaginationMeta } from '../types/api.js';
@@ -3268,6 +3272,134 @@ router.patch('/preferred-locale', requireAuth, async (c: Context<AppEnv>) => {
   } catch (error) {
     console.error('[PATCH /user/preferred-locale] ❌', error);
     return cApiError(c, 'Failed to update preferred locale', error);
+  }
+});
+
+// ===== QUESTS ROUTES ("The Prologue") =====
+
+/**
+ * GET /user/quests
+ *
+ * Returns the authenticated user's quest log ("The Prologue") — every enabled
+ * registry quest with its current progress, status, and reward, plus a summary
+ * used to derive the nav badge.
+ *
+ * Mirrors `GET /user/achievements`: quests are evaluated on read, so newly-met
+ * goals are recorded before the response is assembled.
+ *
+ * @route GET /user/quests
+ * @description Get the user's quest log and summary
+ * @auth Required
+ *
+ * @returns {Object} Quest log response
+ * @returns {boolean} success - Always true
+ * @returns {Array} quests - Ordered list of UserQuest states
+ * @returns {Object} summary - completed / claimable / totalReward / unclaimedReward
+ *
+ * @example
+ * GET /user/quests
+ * {
+ *   "success": true,
+ *   "quests": [
+ *     {
+ *       "id": "qs_01_1",
+ *       "chapterId": "ch1",
+ *       "title": "Complete your profile",
+ *       "description": "Who you are makes your stories yours.",
+ *       "rewardCredits": 10,
+ *       "currentProgress": 1,
+ *       "threshold": 1,
+ *       "progressPercent": 100,
+ *       "status": "completed",
+ *       "completedAt": "2026-08-06T00:00:00.000Z",
+ *       "claimedAt": null,
+ *       "enabled": true
+ *     }
+ *   ],
+ *   "summary": {
+ *     "completed": 1,
+ *     "claimable": 1,
+ *     "totalReward": 385,
+ *     "unclaimedReward": 10
+ *   }
+ * }
+ */
+router.get('/quests', requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get("userId")!;
+    const quests = await getUserQuests(userId);
+    const summary = summarizeQuests(quests);
+    return c.json({ success: true, quests, summary });
+  } catch (error) {
+    return cApiError(c, 'Failed to fetch quest log', error);
+  }
+});
+
+/**
+ * POST /user/quests/recheck
+ *
+ * Explicitly re-evaluates all quests against the user's live data and returns
+ * the ids of any quests newly marked `completed`. Call after events that don't
+ * move `user_counters` (e.g. favoriting, following, finishing a branch).
+ *
+ * @route POST /user/quests/recheck
+ * @description Re-evaluate quest completion and return newly-completed ids
+ * @auth Required
+ *
+ * @returns {boolean} success - Always true
+ * @returns {Array} newlyCompleted - Quest ids completed by this re-check
+ */
+router.post('/quests/recheck', requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get("userId")!;
+    const newlyCompleted = await recheckQuests(userId);
+    return c.json({ success: true, newlyCompleted });
+  } catch (error) {
+    return cApiError(c, 'Failed to re-check quests', error);
+  }
+});
+
+/**
+ * POST /user/quests/:questId/claim
+ *
+ * Atomically claims a completed quest's credit reward. Idempotent: a quest that
+ * is already claimed returns `already_claimed` with no credit change; a quest
+ * that is not yet completed returns `not_completed`.
+ *
+ * @route POST /user/quests/:questId/claim
+ * @description Claim a completed quest's credit reward
+ * @auth Required
+ *
+ * @returns {boolean} success - Operation status
+ * @returns {string} questId - The claimed quest id
+ * @returns {string} status - 'claimed' | 'already_claimed' | 'not_completed' | 'not_found'
+ * @returns {number} creditsAwarded - Credits paid out (0 when not claimed)
+ * @returns {number} newBalance - User's credit balance after the claim
+ */
+router.post('/quests/:questId/claim', requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get("userId")!;
+    const { questId } = c.req.param();
+
+    const result = await claimQuestRewardAndInvalidate(userId, questId);
+
+    if (result.status === 'not_found') {
+      return cNotFoundError(c, 'Quest not found');
+    }
+    if (result.status === 'already_claimed') {
+      return cConflictError(c, 'Quest reward already claimed');
+    }
+
+    return c.json({
+      success: result.status === 'claimed',
+      questId,
+      status: result.status,
+      creditsAwarded: result.creditsAwarded,
+      newBalance: result.newBalance,
+    }, result.status === 'claimed' ? 200 : 400);
+  } catch (error) {
+    console.error('[POST /user/quests/:questId/claim] ❌', error);
+    return cApiError(c, 'Failed to claim quest reward', error);
   }
 });
 
