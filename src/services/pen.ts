@@ -169,6 +169,43 @@ export async function getPenSessionById(userId: string, sessionId: string): Prom
   return toPenSessionPayload(session);
 }
 
+/** Result of `GET /sessions/:id/state` (§1.e). */
+export type PenSessionStateOutput = {
+  /**
+   * Story state for the session's current published page — the same
+   * StoryState shape the reader companion consumes (characters, places,
+   * threads, flags, psychologicalProfile, memoryIntegrity, contextHistory,
+   * futureNotes). `null` before page 1 finalizes.
+   */
+  state: StoryState | null;
+  /** The published page this state belongs to (null pre-page-1). */
+  currentPageId: string | null;
+  /** Page number of the state (0 pre-page-1). */
+  pageNumber: number;
+};
+
+/**
+ * Returns the story state for a session's current published page (§1.e).
+ *
+ * Reuses `getStoryStateWithBranch` so the Pen drawer sees exactly what the
+ * reader companion consumes; no new response type. Before page 1 finalizes
+ * there is no state yet — `state` is `null`.
+ *
+ * @throws PenSessionNotFoundError if missing or owned by another user
+ */
+export async function getPenSessionState(userId: string, sessionId: string): Promise<PenSessionStateOutput> {
+  const session = await getPenSessionById(userId, sessionId);
+  const book: DBBook | null = await getBookFromDB(session.bookId);
+  if (!book) throw new PenSessionNotFoundError("Book not found for this session");
+
+  if (!session.currentPageId) {
+    return { state: null, currentPageId: null, pageNumber: 0 };
+  }
+
+  const state = await getStoryStateWithBranch(book.id, session.currentPageId);
+  return { state, currentPageId: session.currentPageId, pageNumber: state?.page ?? 0 };
+}
+
 /** Allowed PATCH fields on a pen session. */
 export type PenSessionUpdates = {
   assistanceLevel?: number;

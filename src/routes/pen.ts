@@ -22,6 +22,7 @@ import {
   discardPenDraft,
   continuePenDraft,
   finalizePenDraft,
+  getPenSessionState,
   DRAFT_CAST_LIMIT,
   PenSessionNotFoundError,
   PenSessionConflictError,
@@ -326,6 +327,26 @@ router.post("/sessions/:id/finalize", requireAuth, async (c) => {
     if (error instanceof PenBookOwnershipError) return cApiError(c, error.message, undefined, 403);
     if (error instanceof PenFinalizeError) return cApiError(c, error.message, undefined, 422);
     return cApiError(c, "Failed to finalize pen draft", error);
+  }
+});
+
+/**
+ * GET /api/pen/sessions/:id/state
+ * Story state for the session's current published page — the same StoryState
+ * the reader companion consumes (drawer panels + scene-cast suggestions).
+ * `{ state: null }` before page 1 finalizes (§1.e).
+ */
+router.get("/sessions/:id/state", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId");
+    if (!userId) return cApiError(c, "Authentication required", undefined, 401);
+    const sessionId = c.req.param("id");
+
+    const result = await getPenSessionState(userId, sessionId);
+    return c.json(result);
+  } catch (error) {
+    if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
+    return cApiError(c, "Failed to load pen session state", error);
   }
 });
 
