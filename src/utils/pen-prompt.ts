@@ -14,6 +14,16 @@
  * second-person. The engine's first-person thriller `PROMPT_SYSTEM` is
  * intentionally NOT reused here; it would violate both requirements.
  *
+ * Prompt caching: the system prompt is a STATIC per-mode string const
+ * (`PEN_STORYTELLER_SYSTEM` / `PEN_TEXT_ADVENTURE_SYSTEM`) so it forms a stable,
+ * globally-shared prefix that provider-side prompt caches hit across every book
+ * and session. ALL volatile fields (POV, persona, lore, narrative style,
+ * language, canonical state, prose, fragment/command) are deferred into the
+ * user prompt, which the system prompt instructs the model to read as mandatory
+ * sections. Within the user prompt, stable-per-book sections (POV, persona,
+ * lore, language) are emitted FIRST so the user-prompt prefix is also cacheable
+ * across a session's successive turns.
+ *
  * @see docs/roadmap/AI_CO_WRITING_PEN_ROADMAP.md §1.b, §1.f, §6.3, §6.7, §10 E
  */
 
@@ -52,74 +62,70 @@ function povDirective(authoringMode: AuthoringMode, authoringPov?: AuthoringPov)
 }
 
 /**
- * Author's persona overlay (Phase 6). Appended to the system prompt when the
- * book has a `coWritingPersona`.
+ * Author's persona overlay (Phase 6). Rendered as a user-prompt section when
+ * the book has a `coWritingPersona`.
  */
 function personaOverlay(persona?: CoWritingPersona): string {
   if (!persona) return "";
-  return `\nAUTHOR'S PERSONA: "${persona.description}"\nVoice: ${persona.voice}\nAdditional directives: ${persona.styleDirectives}`;
+  return `AUTHOR'S PERSONA: "${persona.description}"\nVoice: ${persona.voice}\nAdditional directives: ${persona.styleDirectives}`;
 }
 
 /**
- * Canonical lore block (Phase 5). Author-curated bible entries are injected as
- * the authoritative "do not contradict" source — they win over engine semantic
- * memory on conflict (§6.3).
+ * Canonical lore block (Phase 5). Author-curated bible entries are rendered as
+ * the authoritative "do not contradict" user-prompt section — they win over
+ * engine semantic memory on conflict (§6.3).
  */
 function loreBlock(lore?: LoreEntry[]): string {
   if (!lore?.length) return "";
-  return `\nCANONICAL LORE (author-curated, authoritative — do not contradict):\n${lore
+  return `CANONICAL LORE (author-curated, authoritative — do not contradict):\n${lore
     .map((e) => `- [${e.entryType}] ${e.name}: ${e.description}`)
     .join("\n")}`;
 }
 
 /**
- * Builds the genre-agnostic, POV-aware Pen system prompt.
+ * Static, cache-friendly system prompt for Storyteller mode (§1.f).
  *
- * Deliberately does NOT reuse the engine's `PROMPT_SYSTEM` (first-person
- * psychological-thriller persona) — the Pen must let an author write any genre
- * and any POV (§1.1 #4/#5). Narrative-style instructions (from the state engine)
- * are optional: they adapt tone to the current psychological state, but the
- * Pen is not required to force the engine's thriller house style.
+ * Deliberately NOT the engine's `PROMPT_SYSTEM` (first-person psychological-
+ * thriller persona) — the Pen must let an author write any genre and any POV
+ * (§1.1 #4/#5). It is a pure string const: no interpolation at request time, so
+ * the exact same system prompt ships on every Storyteller `/continue` call and
+ * stays a stable prefix for provider-side prompt caching.
  *
- * @param params - Mode, POV, persona/lore overlays, narrative-style instructions
- * @returns The system prompt string
+ * All volatile content (POV, persona, lore, narrative style, language, canon,
+ * prose, fragment) lives in the user prompt; this prompt tells the model those
+ * sections are mandatory reading.
  */
-export function buildPenSystemPrompt(params: {
-  authoringMode: AuthoringMode;
-  authoringPov?: AuthoringPov;
-  persona?: CoWritingPersona;
-  lore?: LoreEntry[];
-  narrativeStyleInstructions?: string;
-  language?: string;
-}): string {
-  const { authoringMode, authoringPov, persona, lore, narrativeStyleInstructions, language } = params;
-  const isTextAdventure = authoringMode === "text_adventure";
+export const PEN_STORYTELLER_SYSTEM = `You are a literary co-writer. (Genre-agnostic — follow the story's established genre and tone; do not force horror or thriller framing.)
+Continue the author's prose seamlessly — preserve their voice, tense, pacing, and characterization. Advance the scene naturally.
 
-  const role = isTextAdventure
-    ? `You are the game master / world simulator for the author's story. (Genre-agnostic — follow the story's established genre and tone; do not force horror or thriller framing.)
-Interpret the author's short command as a player action and resolve it INTO the story. Simulate consequences, advance the scene, stay in-character as the narrator.`
-    : `You are a literary co-writer. (Genre-agnostic — follow the story's established genre and tone; do not force horror or thriller framing.)
-Continue the author's prose seamlessly — preserve their voice, tense, pacing, and characterization. Advance the scene naturally.`;
+MANDATORY: the USER message contains labeled sections you MUST read and obey before generating: AUTHOR'S POV, AUTHOR'S PERSONA, CANONICAL LORE, NARRATIVE STYLE, WRITE IN LANGUAGE, CANONICAL STATE (do not contradict), RECENT STORY, and AUTHOR'S FRAGMENT. The CANONICAL STATE and CANONICAL LORE are authoritative — do not contradict them.
 
-  const parts = [
-    role,
-    `POV: ${povDirective(authoringMode, authoringPov)}`,
-    personaOverlay(persona),
-    loreBlock(lore),
-    narrativeStyleInstructions ? `NARRATIVE STYLE:\n${narrativeStyleInstructions}` : "",
-    language ? RULES_LANGUAGE_LOCALIZATION : "",
-    RULES_STORY_CONSISTENCY,
-  ].filter(Boolean);
+${RULES_STORY_CONSISTENCY}
 
-  return parts.join("\n\n");
-}
+${RULES_LANGUAGE_LOCALIZATION}`;
+
+/**
+ * Static, cache-friendly system prompt for Text Adventure mode (§1.f).
+ *
+ * Same caching contract as `PEN_STORYTELLER_SYSTEM`: pure string const, all
+ * volatile content deferred to the user prompt. Text Adventure is always
+ * second-person; the command arrives in the user prompt.
+ */
+export const PEN_TEXT_ADVENTURE_SYSTEM = `You are the game master / world simulator for the author's story. (Genre-agnostic — follow the story's established genre and tone; do not force horror or thriller framing.)
+Interpret the author's short command as a player action and resolve it INTO the story. Simulate consequences, advance the scene, stay in-character as the narrator.
+
+MANDATORY: the USER message contains labeled sections you MUST read and obey before generating: AUTHOR'S POV, AUTHOR'S PERSONA, CANONICAL LORE, NARRATIVE STYLE, WRITE IN LANGUAGE, CANONICAL STATE (do not contradict), RECENT STORY, and PLAYER COMMAND. The CANONICAL STATE and CANONICAL LORE are authoritative — do not contradict them.
+
+${RULES_STORY_CONSISTENCY}
+
+${RULES_LANGUAGE_LOCALIZATION}`;
 
 /**
  * Renders a compact canonical block from story state: established facts,
  * main character overview, memory integrity, and the current page number.
  * This is the "do not contradict" canon the generation must respect.
  */
-function buildCanonicalBlock(state: StoryState | null, mcName: string, language: string, canon?: {
+function buildCanonicalBlock(state: StoryState | null, mcName: string, canon?: {
   storyStartDate?: string | null;
   momentum?: string | null;
   sceneType?: string | null;
@@ -172,8 +178,6 @@ function buildCanonicalBlock(state: StoryState | null, mcName: string, language:
     lines.push(`PLOT FLAGS: ${flags.join(" | ")}`);
   }
 
-  if (language) lines.push(`WRITE IN LANGUAGE: ${language}`);
-
   return lines.join("\n");
 }
 
@@ -197,8 +201,13 @@ export type PenContinuePrompt = {
 /**
  * Builds the `/continue` prompts for a given authoring mode (§1.f).
  *
- * Returns both `systemPrompt` and `userPrompt` so persona, lore, narrative
- * style, POV, and genre framing can vary per book — the roadmap's §1.f shape.
+ * The system prompt is a STATIC per-mode const (`PEN_STORYTELLER_SYSTEM` /
+ * `PEN_TEXT_ADVENTURE_SYSTEM`) so it is a stable, globally-shared cache prefix.
+ * All volatile content — POV, persona, lore, narrative style, language,
+ * canonical state, recent prose, and the fragment/command — is deferred into the
+ * user prompt, ordered stable-per-session first (POV, persona, lore, style,
+ * language) so the user-prompt prefix is cacheable across a session's turns,
+ * then the per-page canon/prose, then the per-turn fragment/command last.
  *
  * @param state - Current story state (already advanced past the last page).
  * @param params - Shared context: last page texts, prose/command, mc name, language,
@@ -226,7 +235,7 @@ export function buildPenContinuePrompt(
 ): PenContinuePrompt {
   const { state, authoringMode, authoringPov, persona, lore, pageTexts, mcName, language } = params;
 
-  const canon = buildCanonicalBlock(state ?? null, mcName, language, {
+  const canon = buildCanonicalBlock(state ?? null, mcName, {
     storyStartDate: "storyStartDate" in params ? params.storyStartDate : undefined,
     momentum: "momentum" in params ? params.momentum : undefined,
     sceneType: "sceneType" in params ? params.sceneType : undefined,
@@ -234,29 +243,37 @@ export function buildPenContinuePrompt(
   const prose = buildProseContext(pageTexts);
   const narrativeStyleInstructions = state ? createNarrativeStyle(state).instructions : undefined;
 
-  const systemPrompt = buildPenSystemPrompt({
-    authoringMode,
-    authoringPov,
-    persona,
-    lore,
-    narrativeStyleInstructions,
-    language,
-  });
+  // Static per-mode system prompt — a stable, globally-shared cache prefix.
+  const systemPrompt =
+    authoringMode === "text_adventure" ? PEN_TEXT_ADVENTURE_SYSTEM : PEN_STORYTELLER_SYSTEM;
+
+  // Stable-per-session/book sections first (POV, persona, lore, narrative style,
+  // language) so the user-prompt PREFIX is also cacheable across a session's
+  // successive turns; canonical state + recent story (grow per page) and the
+  // fragment/command (changes per turn) come last.
+  const stableSections = [
+    `AUTHOR'S POV: ${povDirective(authoringMode, authoringPov)}`,
+    personaOverlay(persona),
+    loreBlock(lore),
+    narrativeStyleInstructions ? `NARRATIVE STYLE:\n${narrativeStyleInstructions}` : "",
+    `WRITE IN LANGUAGE: ${language}`,
+  ].filter(Boolean);
+
+  const contextSections = [
+    `CANONICAL STATE (do not contradict):\n${canon}`,
+    `RECENT STORY:\n${prose}`,
+  ];
 
   if (authoringMode === "text_adventure") {
     const command = "command" in params ? params.command : "";
     return {
       systemPrompt,
-      userPrompt: `CANONICAL STATE (do not contradict):
-${canon}
-
-RECENT STORY:
-${prose}
-
-PLAYER COMMAND:
-> ${command}
-
-Resolve the command into the story. Write ONLY the continuation text (no ">", no out-of-character notes).`,
+      userPrompt: [
+        ...stableSections,
+        ...contextSections,
+        `PLAYER COMMAND:\n> ${command}`,
+        'Resolve the command into the story. Write ONLY the continuation text (no ">", no out-of-character notes).',
+      ].join("\n\n"),
     };
   }
 
@@ -265,16 +282,12 @@ Resolve the command into the story. Write ONLY the continuation text (no ">", no
 
   return {
     systemPrompt,
-    userPrompt: `CANONICAL STATE (do not contradict):
-${canon}
-
-RECENT STORY:
-${prose}
-
-AUTHOR'S FRAGMENT:
-${proseParam}${hint}
-
-Continue the story. Write ONLY the continuation text — do not repeat the author's fragment.`,
+    userPrompt: [
+      ...stableSections,
+      ...contextSections,
+      `AUTHOR'S FRAGMENT:\n${proseParam}${hint}`,
+      "Continue the story. Write ONLY the continuation text — do not repeat the author's fragment.",
+    ].join("\n\n"),
   };
 }
 
