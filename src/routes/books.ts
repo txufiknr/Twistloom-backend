@@ -263,6 +263,70 @@ router.post("/", requireAuth, rateLimit(BOOK_CREATION_RATE_LIMIT), async (c) => 
 });
 
 /**
+ * POST /api/books/pen
+ *
+ * Minimal blank-book creation for the AI Co-Writing Pen (Phase 3 / §14.12).
+ * Creates a private, active book WITHOUT any AI generation and WITHOUT charging
+ * credits — the author writes the very first page in the Pen editor instead of
+ * generating one. The Pen's `authoringMode` (storyteller/text_adventure) lives
+ * on the pen session (§0.b), so it is accepted here only to shape the entry UX;
+ * the book's branching `mode` stays `'novel'` for a linear first draft.
+ *
+ * @body {string} title - Book title (2–120 chars, trimmed)
+ * @body {string} [authoringMode] - 'storyteller' | 'text_adventure' (default 'storyteller')
+ *
+ * @route POST /api/books/pen
+ * @auth requireAuth
+ * @returns {Object} 201 { book } - mapped book row (see `mapBookFromDb`); navigate
+ *   the client to `/books/{slug}/pen` where the existing start-session flow takes over.
+ */
+router.post("/pen", requireAuth, async (c) => {
+  try {
+    const body = (c.get("body") as Record<string, unknown>) ?? {};
+    const title = typeof body.title === "string" ? body.title.trim() : "";
+    const authoringMode = body.authoringMode ?? "storyteller";
+
+    if (!title) return cValidationError(c, "title is required");
+    if (title.length < 2) return cValidationError(c, "title must be at least 2 characters");
+    if (title.length > 120) return cValidationError(c, "title must be at most 120 characters");
+    if (authoringMode !== "storyteller" && authoringMode !== "text_adventure") {
+      return cValidationError(c, "authoringMode must be 'storyteller' or 'text_adventure'");
+    }
+
+    const userId = c.get("userId")!;
+
+    // `books.mc` is NOT NULL but the Pen lets the author shape the MC later
+    // (SceneCastPanel registers `"mc"` into state on first use) — seed a
+    // neutral placeholder whose UI label falls back to "MC" (§2.i).
+    const placeholderMc: StoryMC = { name: "MC", age: 0, gender: "male", bio: "" };
+
+    const created = await insertBook({
+      userId,
+      title,
+      mc: placeholderMc,
+      mode: "novel",
+      language: (c.get("headerLanguage") as string) || "en",
+      keywords: [],
+      isOriginal: true,
+    });
+
+    await logUserActivity({
+      userId,
+      activityType: "book_created",
+      targetType: "book",
+      targetId: created.id,
+      metadata: { source: "pen", authoringMode },
+    }, { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } });
+    void updateUserLastActivity(userId);
+
+    console.log(`[POST /books/pen] 📔 Blank Pen book created:`, { id: created.id, slug: created.slug, title: created.title, authoringMode });
+    return c.json({ book: mapBookFromDb(created) }, 201);
+  } catch (error) {
+    return cApiError(c, "Failed to create pen book", error);
+  }
+});
+
+/**
  * POST /api/books/workflow-webhook
  *
  * Internal webhook called by the GitHub Actions runner to push generation
