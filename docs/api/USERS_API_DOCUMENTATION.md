@@ -4,7 +4,7 @@
 
 The Users API provides endpoints for managing user profiles, social interactions (likes, favorites, comments, follows), daily check-ins, reading progress, achievements, and user discovery. All endpoints follow industry-standard public API patterns used by major platforms (Twitter/X, GitHub, Instagram, LinkedIn).
 
-**Base URL:** `/api/user` for authenticated user operations, `/api/users` for public user operations
+**Base URL:** All endpoints live under `/api/user`. Authenticated user operations sit directly under it (e.g. `/api/user/checkin`). Public / user-facing operations sit under the nested `/api/user/users/...` sub-path (e.g. `/api/user/users/:identifier`, `/api/user/users/top-creators`). Note there is no separate `/api/users` mount — the `/users/...` routes in this document resolve to `/api/user/users/...`.
 
 **Authentication:** Most endpoints require authentication via NextAuth JWT cookies (`requireAuth`). Some read-only endpoints use `optionalAuth` (returns data for authenticated users, empty/null for guests). Public endpoints require no auth.
 
@@ -1985,7 +1985,7 @@ curl https://api.twistloom.com/api/users/johndoe
 
 **Get top creators this week (homepage "Creators writing this week" section):**
 ```bash
-curl "https://api.twistloom.com/api/users/top-creators?limit=10"
+curl "https://api.twistloom.com/api/user/users/top-creators?limit=10"
 ```
 
 **Like a book:**

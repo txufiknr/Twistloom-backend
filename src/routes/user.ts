@@ -593,14 +593,14 @@ router.put('/', requireAuth, async (c: Context<AppEnv>) => {
 });
 
 // ---------------------------------------------------------------------------
-// GET /api/users/top-creators
+// GET /api/user/users/top-creators
 // ---------------------------------------------------------------------------
 
 /** Length of the "this week" window (7 days) used by the top creators query. */
 const TOP_CREATORS_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
- * GET /api/users/top-creators
+ * GET /api/user/users/top-creators
  *
  * Returns the users who created the most books in the last 7 days. Powers the
  * "Creators writing this week" section on the homepage.
@@ -613,7 +613,7 @@ const TOP_CREATORS_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
  * The query result is cached (30 min TTL) since the weekly window changes
  * slowly and this endpoint is served on the high-traffic homepage.
  *
- * @route GET /api/users/top-creators
+ * @route GET /api/user/users/top-creators
  * @description Get top creators by books created in the last 7 days
  *
  * @query {number} [limit] - Maximum number of creators to return (default: 10, max: 50)
@@ -628,7 +628,7 @@ const TOP_CREATORS_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
  *
  * @example
  * // Request
- * GET /api/users/top-creators?limit=5
+ * GET /api/user/users/top-creators?limit=5
  *
  * // Response
  * {
@@ -675,7 +675,7 @@ router.get("/users/top-creators", async (c: Context<AppEnv>) => {
     c.header('Cache-Control', 'public, max-age=1800, stale-while-revalidate=300');
     return c.json({ creators });
   } catch (error) {
-    console.error('[GET /api/users/top-creators] ❌', error);
+    console.error('[GET /api/user/users/top-creators] ❌', error);
     return cApiError(c, 'Failed to retrieve top creators', error);
   }
 });
