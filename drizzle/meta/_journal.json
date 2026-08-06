@@ -351,6 +351,13 @@
       "when": 1785971258704,
       "tag": "0049_acoustic_mathemanic",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1785988232150,
+      "tag": "0050_heavy_rhino",
+      "breakpoints": true
     }
   ]
 }

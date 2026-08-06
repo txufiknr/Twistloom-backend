@@ -21,6 +21,7 @@ import {
   discardPenDraft,
   continuePenDraft,
   finalizePenDraft,
+  DRAFT_CAST_LIMIT,
   PenSessionNotFoundError,
   PenSessionConflictError,
   PenBookOwnershipError,
@@ -28,13 +29,41 @@ import {
   PenFinalizeError,
 } from "../services/pen.js";
 import type { PenContinueInput, PenFinalizeInput } from "../services/pen.js";
-import type { AuthoringMode, AuthoringPov, PenSessionStatus } from "../types/pen.js";
+import type { AuthoringMode, AuthoringPov, PenDraftCharacter, PenSessionStatus } from "../types/pen.js";
+import { characterSceneRoles } from "../types/story.js";
+import type { CharacterSceneRole } from "../types/story.js";
 
 const router = new Hono<AppEnv>();
 
 const AUTHORING_MODES: readonly AuthoringMode[] = ["storyteller", "text_adventure"];
 const AUTHORING_POVS: readonly AuthoringPov[] = ["first", "second", "third"];
 const SESSION_STATUSES: readonly PenSessionStatus[] = ["active", "paused", "closed"];
+
+/** Validates a single `draftCharactersPresent` entry; returns an error string or null. */
+function validateDraftCastMember(member: unknown): string | null {
+  if (!member || typeof member !== "object" || Array.isArray(member)) {
+    return "each cast member must be an object";
+  }
+  const m = member as Record<string, unknown>;
+  const hasId = typeof m.characterId === "string" && m.characterId.trim().length > 0;
+  const hasName = typeof m.name === "string" && m.name.trim().length > 0;
+  if (!hasId && !hasName) {
+    return "each cast member needs a characterId or a name";
+  }
+  if (m.characterId !== undefined && typeof m.characterId !== "string") {
+    return "characterId must be a string";
+  }
+  if (m.name !== undefined && typeof m.name !== "string") {
+    return "name must be a string";
+  }
+  if (m.sceneRole !== undefined && !characterSceneRoles.includes(m.sceneRole as CharacterSceneRole)) {
+    return `sceneRole must be one of: ${characterSceneRoles.join(", ")}`;
+  }
+  if (m.sceneFocus !== undefined && (typeof m.sceneFocus !== "number" || m.sceneFocus < 0 || m.sceneFocus > 1)) {
+    return "sceneFocus must be a number between 0 and 1";
+  }
+  return null;
+}
 
 /**
  * POST /api/pen/sessions
@@ -113,11 +142,12 @@ router.patch("/sessions/:id", requireAuth, async (c) => {
     if (!body || typeof body !== "object") {
       return cValidationError(c, "Request body must be a JSON object");
     }
-    const { assistanceLevel, status, currentPageId, authoringPov } = body as {
+    const { assistanceLevel, status, currentPageId, authoringPov, draftCharactersPresent } = body as {
       assistanceLevel?: number;
       status?: PenSessionStatus;
       currentPageId?: string | null;
       authoringPov?: AuthoringPov | null;
+      draftCharactersPresent?: PenDraftCharacter[];
     };
 
     if (assistanceLevel !== undefined && (typeof assistanceLevel !== "number" || assistanceLevel < 0 || assistanceLevel > 1)) {
@@ -132,8 +162,17 @@ router.patch("/sessions/:id", requireAuth, async (c) => {
     if (authoringPov !== undefined && authoringPov !== null && !AUTHORING_POVS.includes(authoringPov)) {
       return cValidationError(c, `authoringPov must be one of: ${AUTHORING_POVS.join(", ")} or null`);
     }
+    if (draftCharactersPresent !== undefined) {
+      if (!Array.isArray(draftCharactersPresent) || draftCharactersPresent.length > DRAFT_CAST_LIMIT) {
+        return cValidationError(c, `draftCharactersPresent must be an array of at most ${DRAFT_CAST_LIMIT} cast members`);
+      }
+      for (const member of draftCharactersPresent) {
+        const memberError = validateDraftCastMember(member);
+        if (memberError) return cValidationError(c, memberError);
+      }
+    }
 
-    const session = await updatePenSession(userId, sessionId, { assistanceLevel, status, currentPageId, authoringPov });
+    const session = await updatePenSession(userId, sessionId, { assistanceLevel, status, currentPageId, authoringPov, draftCharactersPresent });
     return c.json({ session });
   } catch (error) {
     if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);

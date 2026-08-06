@@ -8,6 +8,8 @@
  * @see docs/roadmap/AI_CO_WRITING_PEN_ROADMAP.md
  */
 
+import type { CharacterSceneRole } from "./story.js";
+
 /** How the author works with the AI inside a Pen session. Independent of BookMode. */
 export type AuthoringMode = "storyteller" | "text_adventure";
 
@@ -66,6 +68,29 @@ export type DraftSpan = {
   validationState: DraftSpanValidationState;
   /** `books.canonVersion` at check time. Stale when it differs from the current value. */
   validatedAgainst?: number;
+  /** POV used for this interaction (§10 E). Null → session default applies. */
+  authoringPov?: AuthoringPov | null;
+};
+
+/**
+ * One cast member in the author's scene checklist (`draftCharactersPresent`).
+ *
+ * The author picks who is physically on scene before /finalize. Refer to a
+ * known character by `characterId`, or type a new name (`name`) — new names are
+ * slugged into an id and registered into story state as a minimal character at
+ * finalize. `"mc"` is the reserved id for the main character (registered into
+ * story state on first use). The main character IS included — there is no
+ * POV restriction that would exclude them.
+ */
+export type PenDraftCharacter = {
+  /** Known character id from story state, or the reserved `"mc"`. */
+  characterId?: string;
+  /** Free-text name of a not-yet-known character (page-1 casts, etc.). */
+  name?: string;
+  /** Role in this scene's dynamics (default `'supporting'`). */
+  sceneRole?: CharacterSceneRole;
+  /** Narrative focus weight 0..1 (default `0.5`; MC defaults to `1`). */
+  sceneFocus?: number;
 };
 
 /** Edit classification recorded per AI/human interaction inside a session. */
@@ -84,6 +109,8 @@ export type PenSession = {
   currentPageId: string | null;
   /** Draft workspace — JSONB spans, NOT plain text (Model C). */
   draftBuffer: DraftSpan[];
+  /** Author-curated cast for the current draft's scene (§10 Decision M). */
+  draftCharactersPresent: PenDraftCharacter[];
   /** 0 (all human) to 1 (all AI) — maps to credit cost tiers. */
   assistanceLevel: number;
   /**

@@ -65,13 +65,15 @@ The Users API provides endpoints for managing user profiles, social interactions
       - [Get User Public Achievements](#get-usersidachievements)
  13. [User Feedback](#user-feedback)
      - [Submit Feedback](#post-userfeedbacks)
-14. [Error Handling](#error-handling)
-15. [HTTP Headers](#http-headers)
-16. [Caching Strategy](#caching-strategy)
-17. [Authentication](#authentication)
-18. [Database Schema](#database-schema)
-19. [Testing](#testing)
-20. [Changelog](#changelog)
+ 14. [Beta Tester Program](#beta-tester-program)
+     - [Join Beta Tester Program](#post-userbeta-tester)
+ 15. [Error Handling](#error-handling)
+ 16. [HTTP Headers](#http-headers)
+ 17. [Caching Strategy](#caching-strategy)
+ 18. [Authentication](#authentication)
+ 19. [Database Schema](#database-schema)
+ 20. [Testing](#testing)
+ 21. [Changelog](#changelog)
 
 ---
 
@@ -1742,6 +1744,53 @@ Submit user feedback with optional screenshot attachment. Screenshots (base64 da
 
 ---
 
+## Beta Tester Program
+
+### POST /user/beta-tester
+
+Joins the authenticated user to the beta tester program and awards a one-time credit bonus (`BETA_TESTER_REWARD_CREDITS` = 500).
+
+The join and the reward are atomic (single transaction): the flag claim is an `UPDATE ... WHERE is_beta_tester = false`, so a user can only join — and be rewarded — exactly once, even under concurrent requests. A second attempt returns HTTP `409` with `creditsAwarded: 0`.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Request Body:** None
+
+**Response (201 Created — first join):**
+```json
+{
+  "success": true,
+  "message": "Welcome to the beta tester program! 500 credits added",
+  "isBetaTester": true,
+  "creditsAwarded": 500,
+  "credits": 550
+}
+```
+
+**Response (409 Conflict — already joined):**
+```json
+{
+  "success": false,
+  "message": "You are already a beta tester",
+  "isBetaTester": true,
+  "creditsAwarded": 0,
+  "credits": 550
+}
+```
+
+**Parameters (response):**
+- `success` (boolean): Whether the join was newly processed
+- `message` (string): Status message
+- `isBetaTester` (boolean): Always `true` after this call
+- `creditsAwarded` (number): Credits added (500 on first join, 0 if already joined)
+- `credits` (number): New credit balance
+
+**Behavior:**
+- Logs a `beta_tester_joined` activity entry on first join
+- Invalidates the user profile cache and updates the user's last activity timestamp
+
+---
+
 ## Error Handling
 
 All endpoints follow consistent error response formats:
@@ -2104,6 +2153,11 @@ curl -X POST https://api.twistloom.com/api/user/feedbacks \
 ---
 
 ## Changelog
+
+### v3.6.0 (2026-08-06)
+- Added `POST /user/beta-tester` documentation — joins the authenticated user to the beta tester program, awarding a one-time 500 credit bonus
+- Atomic first-join claim (`UPDATE ... WHERE is_beta_tester = false`); returns 201 on first join and 409 with `creditsAwarded: 0` on repeat attempts
+- Added Beta Tester Program section, response parameters, and behavior notes (activity log, profile cache invalidation)
 
 ### v3.5.0 (2026-08-05)
 - Added `GET /users/top-creators` public endpoint — returns the users who created the most public books (`status='active'`, `visibility='public'`) in the last 7 days, powers the homepage "Creators writing this week" section

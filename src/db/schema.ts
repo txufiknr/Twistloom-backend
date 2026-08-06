@@ -14,7 +14,7 @@ import type { ActionProgressStatus } from "../types/candidate-generation.js";
 import type { StoryThread, StoryThreadTranslation } from "../types/story-thread.js";
 import type { CustomActionOutcome, CustomActionRejectionCategory } from "../types/custom-action.js";
 import type { CanonValidationOutcome, CanonViolation, CanonViolationType } from "../types/canon-validation.js";
-import type { AuthorshipOrigin, AuthoringMode, AuthoringPov, DraftSpan, EditorPrefs, PenEditType, PenSessionStatus } from "../types/pen.js";
+import type { AuthorshipOrigin, AuthoringMode, AuthoringPov, DraftSpan, EditorPrefs, PenDraftCharacter, PenEditType, PenSessionStatus } from "../types/pen.js";
 import type { TransactionType } from "../types/credits.js";
 import { PAYMENT_GATEWAY, type PaymentGateway } from "../types/payment.js";
 import type { SubscriptionStatus, SubscriptionTransactionType } from "../types/subscription.js";
@@ -2391,6 +2391,13 @@ export const penSessions = pgTable(
     currentPageId: uuid("current_page_id").references(() => pages.id, { onDelete: "set null" }),
     /** Draft workspace — JSONB spans, NOT plain text (Model C). */
     draftBuffer: jsonb("draft_buffer").$type<DraftSpan[]>().notNull().default(sql`'[]'::jsonb`),
+    /**
+     * Author-curated cast physically present in the current draft's scene
+     * (§10 Decision M). Full on-scene cast INCLUDING the main character; the
+     * author checklists this in the editor before /finalize. Cleared with the
+     * draft on /finalize and /discard.
+     */
+    draftCharactersPresent: jsonb("draft_characters_present").$type<PenDraftCharacter[]>().notNull().default(sql`'[]'::jsonb`),
     /** 0 (all human) to 1 (all AI) — maps to credit cost tiers (§8). */
     assistanceLevel: real("assistance_level").notNull().default(0.5),
     /** Session-level POV default (§10 E). Null → derive from the author's prose. */

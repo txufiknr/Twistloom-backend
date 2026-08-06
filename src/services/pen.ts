@@ -8,17 +8,20 @@
  * @see docs/roadmap/AI_CO_WRITING_PEN_ROADMAP.md §5.3, Phase 1.a, Phase 1.b
  */
 
-import { eq, and } from "drizzle-orm";
+import { eq, and, desc } from "drizzle-orm";
 import { penSessions, penEdits } from "../db/schema.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { getBookFromDB } from "./book.js";
 import type { DBBook, DBPenSession } from "../types/schema.js";
-import type { AuthoringMode, AuthoringPov, DraftSpan, PenSessionStatus, FinalizeViolation, CanonAmendment, PenEditType } from "../types/pen.js";
+import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraftCharacter, PenEdit, PenSessionStatus, FinalizeViolation, CanonAmendment, PenEditType } from "../types/pen.js";
 import type { BookMode } from "../types/book.js";
-import type { StoryState, Action, StoryGeneration, PersistedStoryPage } from "../types/story.js";
+import type { StoryState, Action, StoryGeneration, PersistedStoryPage, SceneCharacter, CharacterSceneRole } from "../types/story.js";
 import type { CandidateGenerationPage } from "../types/candidate-generation.js";
 import type { AIResponseProvider } from "../types/ai-chat.js";
+import type { CharacterMemory, NewCharacter, StoryMC } from "../types/character.js";
+import type { Gender } from "../types/user.js";
 import { getBranchPath } from "../utils/branch-traversal.js";
+import { processCharacterUpdates, isMainCharacterValid } from "../utils/characters.js";
 import { getStoryStateWithBranch } from "./story-branch.js";
 import { buildPenContinuePrompt, PEN_CONTINUE_SCHEMA, PEN_CONTINUE_REQUIRED_FIELDS } from "../utils/pen-prompt.js";
 import type { PenContinueResult as PenContinueAIOutput } from "../utils/pen-prompt.js";
@@ -140,7 +143,7 @@ export async function getPenSessionForBook(userId: string, bookId: string): Prom
     .select()
     .from(penSessions)
     .where(and(eq(penSessions.userId, userId), eq(penSessions.bookId, bookId)))
-    .orderBy(penSessions.updatedAt)
+    .orderBy(desc(penSessions.updatedAt))
     .limit(1);
 
   if (!session) return null;
@@ -171,6 +174,7 @@ export type PenSessionUpdates = {
   status?: PenSessionStatus;
   currentPageId?: string | null;
   authoringPov?: AuthoringPov | null;
+  draftCharactersPresent?: PenDraftCharacter[];
 };
 
 /**
@@ -200,6 +204,9 @@ export async function updatePenSession(
   if (updates.authoringPov !== undefined) {
     values.authoringPov = updates.authoringPov;
   }
+  if (updates.draftCharactersPresent !== undefined) {
+    values.draftCharactersPresent = updates.draftCharactersPresent;
+  }
 
   const [updated] = await dbWrite
     .update(penSessions)
@@ -226,7 +233,7 @@ export async function closePenSession(userId: string, sessionId: string): Promis
 export async function discardPenDraft(userId: string, sessionId: string): Promise<PenSessionPayload> {
   const [updated] = await dbWrite
     .update(penSessions)
-    .set({ draftBuffer: [] })
+    .set({ draftBuffer: [], draftCharactersPresent: [] })
     .where(and(eq(penSessions.id, sessionId), eq(penSessions.userId, userId)))
     .returning();
 
@@ -251,14 +258,8 @@ export type PenContinueInput =
 export type PenContinueOutput = {
   /** The appended span record (validated vs dirty). */
   span: DraftSpan;
-  /** The audit row for this interaction. */
-  edit: {
-    id: string;
-    editType: "ai_continued";
-    authorInput: string | null;
-    aiOutput: string;
-    contextPageId: string | null;
-  };
+  /** The audit row for this interaction (full `PenEdit`, id = the persisted row id). */
+  edit: PenEdit;
   /** The full draft buffer after appending. */
   draft: DraftSpan[];
 };
@@ -353,28 +354,6 @@ export async function continuePenDraft(
     },
   };
 
-  const aiResponse = await aiPrompt<PenContinueAIOutput>(userPrompt, createAIOptionsWithSchema(promptConfig));
-  const output = aiResponse.result;
-
-  if (!output || typeof output.text !== "string" || output.text.trim().length === 0) {
-    throw new PenContinueError("AI returned no continuation text");
-  }
-
-  const issues = Array.isArray(output.issues) && output.issues.length > 0
-    ? output.issues.filter((i) => i && typeof i.expected === "string" && typeof i.found === "string")
-    : [];
-
-  // Clean AI output is considered validated against the current canon version;
-  // self-reported issues (or any flagged output) leave the span dirty.
-  const clean = issues.length === 0;
-  const span: DraftSpan = {
-    id: generateId(),
-    text: output.text.trim(),
-    origin: "ai",
-    validationState: clean ? "validated" : "dirty",
-    validatedAgainst: clean ? book.canonVersion : undefined,
-  };
-
   const authorInput = input.type === "text_adventure" ? input.command : input.prose;
 
   const { result } = await executeWithCredits(
@@ -388,6 +367,33 @@ export async function continuePenDraft(
         .limit(1);
       if (!current) throw new PenSessionNotFoundError();
 
+      // Credit enforcement precedes generation: executeWithCredits deducts
+      // (and throws INSUFFICIENT_CREDITS) before this callback runs, so a
+      // zero-balance user never spends provider tokens on a rejected request
+      // (roadmap §13 sketch: generate inside the credits transaction).
+      const aiResponse = await aiPrompt<PenContinueAIOutput>(userPrompt, createAIOptionsWithSchema(promptConfig));
+      const output = aiResponse.result;
+
+      if (!output || typeof output.text !== "string" || output.text.trim().length === 0) {
+        throw new PenContinueError("AI returned no continuation text");
+      }
+
+      const issues = Array.isArray(output.issues) && output.issues.length > 0
+        ? output.issues.filter((i) => i && typeof i.expected === "string" && typeof i.found === "string")
+        : [];
+
+      // Clean AI output is considered validated against the current canon version;
+      // self-reported issues (or any flagged output) leave the span dirty.
+      const clean = issues.length === 0;
+      const span: DraftSpan = {
+        id: generateId(),
+        text: output.text.trim(),
+        origin: "ai",
+        validationState: clean ? "validated" : "dirty",
+        validatedAgainst: clean ? book.canonVersion : undefined,
+        authoringPov: authoringPov ?? null,
+      };
+
       const nextBuffer = [...(current.draftBuffer ?? []), span];
 
       const [updated] = await tx
@@ -398,9 +404,8 @@ export async function continuePenDraft(
 
       if (!updated) throw new PenSessionNotFoundError();
 
-      const editId = generateId();
-      await tx.insert(penEdits).values({
-        id: editId,
+      const edit: PenEdit = {
+        id: generateId(),
         sessionId,
         userId,
         bookId: book.id,
@@ -410,26 +415,38 @@ export async function continuePenDraft(
         aiOutput: span.text,
         finalText: span.text,
         contextPageId: session.currentPageId,
+        charOffsetStart: null,
+        charOffsetEnd: null,
         authoringMode: session.authoringMode,
         authoringPov: authoringPov ?? null,
         createdAt: new Date(),
+      };
+
+      await tx.insert(penEdits).values({
+        id: edit.id,
+        sessionId: edit.sessionId,
+        userId: edit.userId,
+        bookId: edit.bookId,
+        pageId: null,
+        editType: edit.editType,
+        authorInput: edit.authorInput,
+        aiOutput: edit.aiOutput,
+        finalText: edit.finalText,
+        contextPageId: edit.contextPageId,
+        authoringMode: edit.authoringMode,
+        authoringPov: edit.authoringPov,
+        createdAt: edit.createdAt,
       });
 
-      return updated;
+      return { updated, span, edit };
     },
     { context: "pen_continue", metadata: { sessionId, bookId: book.id } }
   );
 
   return {
-    span,
-    edit: {
-      id: result.id,
-      editType: "ai_continued",
-      authorInput: authorInput || null,
-      aiOutput: span.text,
-      contextPageId: session.currentPageId,
-    },
-    draft: result.draftBuffer,
+    span: result.span,
+    edit: result.edit,
+    draft: result.updated.draftBuffer,
   };
 }
 
@@ -445,11 +462,12 @@ export class PenFinalizeError extends Error {
  * Body of `POST /api/pen/sessions/:id/finalize` (§6.7).
  *
  * `force` publishes even when the delta gate found high-severity findings
- * (the confirm sheet's "Proceed anyway"). `amendments` are optional
- * "adopt this override as the new canon" requests processed atomically with
- * the publish. `actions` supplies the author-defined next choices for the
- * new page in interactive/multiverse mode (novel always uses the single
- * default); clamped to the book's mode branching contract.
+ * (the confirm sheet's "Proceed anyway"). `amendments` are reserved for
+ * Phase 5 "adopt this override as the new canon" and are currently rejected
+ * with a 422 if provided — never silently dropped. `actions` supplies the
+ * author-defined next choices for the new page in interactive/multiverse
+ * mode (novel always uses the single default); clamped to the book's mode
+ * branching contract.
  */
 export type PenFinalizeInput = {
   force?: boolean;
@@ -615,6 +633,12 @@ export async function finalizePenDraft(
     throw new PenFinalizeError("Draft is empty; nothing to finalize");
   }
 
+  // Canon amendments require the lore bible (Phase 5) — `lore_entries` doesn't
+  // exist yet. Fail loudly instead of silently dropping them.
+  if (input.amendments !== undefined && input.amendments.length > 0) {
+    throw new PenFinalizeError("Canon amendments are not supported until the lore bible lands (Phase 5)");
+  }
+
   const { text: draftText, spans: positionedSpans } = assembleDraft(spans);
   const pageNumber = session.currentPageId
     ? ((await getPageFromDB(session.currentPageId))?.page ?? 0) + 1
@@ -645,6 +669,14 @@ export async function finalizePenDraft(
       const action: Action = currentPage.actions?.[0] ?? DEFAULT_CONTINUE_ACTION;
       const actionedPage: CandidateGenerationPage = { ...currentPage, action };
 
+      // Author-curated on-scene cast (full cast incl. MC). New/unknown names
+      // are registered into story state via stateDelta.newCharacters.
+      const { charactersPresent: castPresent, newCharacters: castNewCharacters } = resolveDraftCharacters(
+        session.draftCharactersPresent ?? [],
+        currentState.characters,
+        book.mc,
+      );
+
       const generatedStoryPage: StoryGeneration = {
         text: draftText,
         actions,
@@ -654,7 +686,8 @@ export async function finalizePenDraft(
         calendarDate: currentPage.calendarDate,
         timeOfDay: currentPage.timeOfDay,
         sceneType: currentPage.sceneType,
-        charactersPresent: currentPage.charactersPresent,
+        charactersPresent: castPresent,
+        ...(castNewCharacters.length ? { newCharacters: castNewCharacters } : {}),
       };
 
       const advancedState = await advanceStoryState(currentState, actionedPage);
@@ -695,8 +728,14 @@ export async function finalizePenDraft(
       });
     } else {
       // First page of the book (mirrors initializeBook's page-1 path).
+      const { charactersPresent: castPresent, newCharacters: castNewCharacters } = resolveDraftCharacters(
+        session.draftCharactersPresent ?? [],
+        {},
+        book.mc,
+      );
+
       const pageToInsert = {
-        ...generatedFirstPage(draftText, actions),
+        ...generatedFirstPage(draftText, actions, castPresent, castNewCharacters),
         stateDelta: {},
       };
       validateGeneratedPage(pageToInsert, book.mode, "pen-finalize");
@@ -713,6 +752,11 @@ export async function finalizePenDraft(
         ...createEmptyStoryState(newPage.id, 1, book.totalPages ?? newPage.page),
         hiddenState: createInitialHiddenState(),
       };
+      // The page-1 cast has no prior state, so newly-checked characters must be
+      // registered into the initial story state directly (no stateDelta to apply).
+      if (castNewCharacters.length) {
+        processCharacterUpdates(initialState, castNewCharacters);
+      }
       await insertStoryState(book.id, newPage.id, initialState, "original");
     }
   } catch (error) {
@@ -742,14 +786,14 @@ export async function finalizePenDraft(
         charOffsetStart: span.charOffsetStart ?? null,
         charOffsetEnd: span.charOffsetEnd ?? null,
         authoringMode: session.authoringMode,
-        authoringPov: session.authoringPov ?? null,
+        authoringPov: span.authoringPov ?? session.authoringPov ?? null,
         createdAt: new Date(),
       });
     }
 
     await tx
       .update(penSessions)
-      .set({ draftBuffer: [], currentPageId: newPage.id, status: "active", updatedAt: new Date() })
+      .set({ draftBuffer: [], draftCharactersPresent: [], currentPageId: newPage.id, status: "active", updatedAt: new Date() })
       .where(and(eq(penSessions.id, sessionId), eq(penSessions.userId, userId)));
   });
 
@@ -766,12 +810,137 @@ export async function finalizePenDraft(
 /**
  * Builds the minimal first-page `StoryGeneration` for a pen-authored page-1
  * publish. Scene context defaults to neutral until the author's first page
- * establishes it.
+ * establishes it. `charactersPresent` is the author's curated on-scene cast
+ * (full cast incl. MC); `newCharacters` registers any not-yet-known names.
  */
-function generatedFirstPage(text: string, actions: Action[]): StoryGeneration {
+function generatedFirstPage(
+  text: string,
+  actions: Action[],
+  charactersPresent?: SceneCharacter[],
+  newCharacters?: NewCharacter[],
+): StoryGeneration {
   return {
     text,
     actions,
     sceneType: "transition",
+    charactersPresent,
+    ...(newCharacters?.length ? { newCharacters } : {}),
+  };
+}
+
+export const DRAFT_CAST_LIMIT = 20;
+
+/**
+ * Resolves the author's scene checklist into engine-valid `charactersPresent`
+ * entries plus any `NewCharacter` registrations needed so every checked id
+ * resolves to a real character in story state.
+ *
+ * - `characterId` (a known id or the reserved `"mc"`) → used as-is.
+ * - Free-text `name` → slugged into an id and registered as a minimal character.
+ * - `"mc"` → guaranteed registration into story state on first use.
+ *
+ * The main character is INCLUDED — Pen has no POV restriction, so `charactersPresent`
+ * is the full on-scene cast, not a side-character-only subset.
+ */
+function resolveDraftCharacters(
+  inputs: PenDraftCharacter[],
+  knownCharacters: Record<string, CharacterMemory>,
+  mc: StoryMC | null,
+): { charactersPresent: SceneCharacter[]; newCharacters: NewCharacter[] } {
+  const charactersPresent: SceneCharacter[] = [];
+  const newCharacters: NewCharacter[] = [];
+  const seen = new Set<string>();
+
+  for (const item of inputs.slice(0, DRAFT_CAST_LIMIT)) {
+    const sceneRole: CharacterSceneRole = item.sceneRole ?? "supporting";
+    const sceneFocus = typeof item.sceneFocus === "number" ? Math.min(1, Math.max(0, item.sceneFocus)) : 0.5;
+    const isMc = item.characterId?.trim() === "mc";
+
+    let characterId = item.characterId?.trim();
+    if (!characterId && item.name?.trim()) {
+      characterId = slugifyCharacterName(item.name.trim());
+    }
+    if (!characterId || seen.has(characterId)) continue;
+    seen.add(characterId);
+
+    if (isMc) {
+      if (mc && isMainCharacterValid(mc) && !knownCharacters["mc"] && !newCharacters.some((n) => n.characterId === "mc")) {
+        newCharacters.push(buildMcNewCharacter(mc));
+      }
+      charactersPresent.push({ characterId: "mc", sceneRole, sceneFocus: typeof item.sceneFocus === "number" ? sceneFocus : 1 });
+      continue;
+    }
+
+    if (knownCharacters[characterId]) {
+      charactersPresent.push({ characterId, sceneRole, sceneFocus });
+      continue;
+    }
+
+    const name = item.name?.trim() || characterId;
+    if (!newCharacters.some((n) => n.characterId === characterId)) {
+      newCharacters.push(buildMinimalNewCharacter(characterId, name, { sceneRole, sceneFocus }));
+    }
+    charactersPresent.push({ characterId, sceneRole, sceneFocus });
+  }
+
+  return { charactersPresent, newCharacters };
+}
+
+/** Normalizes a free-text character name into a stable character id. */
+function slugifyCharacterName(name: string): string {
+  return (
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, "")
+      .trim()
+      .replace(/[\s-]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "character"
+  );
+}
+
+/**
+ * Minimal `NewCharacter` for a cast member the author checked who isn't in
+ * story state yet. Sparse but engine-valid; AI enrichment is a later phase.
+ */
+function buildMinimalNewCharacter(
+  characterId: string,
+  name: string,
+  opts: { sceneRole: CharacterSceneRole; sceneFocus: number },
+): NewCharacter {
+  const antagonist = opts.sceneRole === "threat" || opts.sceneRole === "opposition";
+  return {
+    characterId,
+    knownName: name,
+    realName: name,
+    gender: "unknown",
+    role: antagonist ? "antagonist" : "character",
+    bio: "",
+    appearance: "",
+    importance: antagonist ? "major" : "supporting",
+    status: "active",
+    secrets: [],
+    relationshipToMC: { type: "stranger", status: "neutral", context: "", recognitionLevel: "never_seen" },
+    potentialTwist: "none",
+    recognitionLevel: "never_seen",
+  };
+}
+
+/** Registers the reserved `"mc"` id into story state using the book's MC profile. */
+function buildMcNewCharacter(mc: StoryMC): NewCharacter {
+  const name = mc.name.trim();
+  return {
+    characterId: "mc",
+    knownName: mc.knownName?.trim() || name,
+    realName: name,
+    gender: mc.gender as Gender,
+    role: "main character",
+    bio: mc.bio ?? "",
+    appearance: "",
+    importance: "major",
+    status: "active",
+    secrets: [],
+    relationshipToMC: { type: "stranger", status: "neutral", context: "", recognitionLevel: "full_name_known" },
+    potentialTwist: "none",
+    recognitionLevel: "full_name_known",
   };
 }
