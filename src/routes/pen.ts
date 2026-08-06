@@ -20,17 +20,20 @@ import {
   closePenSession,
   discardPenDraft,
   continuePenDraft,
+  finalizePenDraft,
   PenSessionNotFoundError,
   PenSessionConflictError,
   PenBookOwnershipError,
   PenContinueError,
+  PenFinalizeError,
 } from "../services/pen.js";
-import type { PenContinueInput } from "../services/pen.js";
-import type { AuthoringMode, PenSessionStatus } from "../types/pen.js";
+import type { PenContinueInput, PenFinalizeInput } from "../services/pen.js";
+import type { AuthoringMode, AuthoringPov, PenSessionStatus } from "../types/pen.js";
 
 const router = new Hono<AppEnv>();
 
 const AUTHORING_MODES: readonly AuthoringMode[] = ["storyteller", "text_adventure"];
+const AUTHORING_POVS: readonly AuthoringPov[] = ["first", "second", "third"];
 const SESSION_STATUSES: readonly PenSessionStatus[] = ["active", "paused", "closed"];
 
 /**
@@ -47,10 +50,11 @@ router.post("/sessions", requireAuth, async (c) => {
     if (!body || typeof body !== "object") {
       return cValidationError(c, "Request body must be a JSON object");
     }
-    const { bookId, authoringMode, assistanceLevel } = body as {
+    const { bookId, authoringMode, assistanceLevel, authoringPov } = body as {
       bookId?: string;
       authoringMode?: AuthoringMode;
       assistanceLevel?: number;
+      authoringPov?: AuthoringPov | null;
     };
 
     if (!bookId || typeof bookId !== "string") {
@@ -62,8 +66,11 @@ router.post("/sessions", requireAuth, async (c) => {
     if (assistanceLevel !== undefined && (typeof assistanceLevel !== "number" || assistanceLevel < 0 || assistanceLevel > 1)) {
       return cValidationError(c, "assistanceLevel must be a number between 0 and 1");
     }
+    if (authoringPov !== undefined && authoringPov !== null && !AUTHORING_POVS.includes(authoringPov)) {
+      return cValidationError(c, `authoringPov must be one of: ${AUTHORING_POVS.join(", ")} or null`);
+    }
 
-    const session = await createPenSession(userId, { bookId, authoringMode, assistanceLevel });
+    const session = await createPenSession(userId, { bookId, authoringMode, assistanceLevel, authoringPov });
     return c.json({ session });
   } catch (error) {
     if (error instanceof PenSessionConflictError) return cApiError(c, error.message, undefined, 409);
@@ -106,10 +113,11 @@ router.patch("/sessions/:id", requireAuth, async (c) => {
     if (!body || typeof body !== "object") {
       return cValidationError(c, "Request body must be a JSON object");
     }
-    const { assistanceLevel, status, currentPageId } = body as {
+    const { assistanceLevel, status, currentPageId, authoringPov } = body as {
       assistanceLevel?: number;
       status?: PenSessionStatus;
       currentPageId?: string | null;
+      authoringPov?: AuthoringPov | null;
     };
 
     if (assistanceLevel !== undefined && (typeof assistanceLevel !== "number" || assistanceLevel < 0 || assistanceLevel > 1)) {
@@ -121,8 +129,11 @@ router.patch("/sessions/:id", requireAuth, async (c) => {
     if (currentPageId !== undefined && currentPageId !== null && typeof currentPageId !== "string") {
       return cValidationError(c, "currentPageId must be a string or null");
     }
+    if (authoringPov !== undefined && authoringPov !== null && !AUTHORING_POVS.includes(authoringPov)) {
+      return cValidationError(c, `authoringPov must be one of: ${AUTHORING_POVS.join(", ")} or null`);
+    }
 
-    const session = await updatePenSession(userId, sessionId, { assistanceLevel, status, currentPageId });
+    const session = await updatePenSession(userId, sessionId, { assistanceLevel, status, currentPageId, authoringPov });
     return c.json({ session });
   } catch (error) {
     if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
@@ -188,11 +199,16 @@ router.post("/sessions/:id/continue", requireAuth, rateLimit(PEN_SUGGEST_RATE_LI
     let input: PenContinueInput;
     const raw = body as Record<string, unknown>;
 
+    const authoringPov = raw.authoringPov as AuthoringPov | null | undefined;
+    if (authoringPov !== undefined && authoringPov !== null && !AUTHORING_POVS.includes(authoringPov)) {
+      return cValidationError(c, `authoringPov must be one of: ${AUTHORING_POVS.join(", ")} or null`);
+    }
+
     if (raw.type === "text_adventure") {
       if (typeof raw.command !== "string" || raw.command.trim().length === 0) {
         return cValidationError(c, "command is required for text_adventure");
       }
-      input = { type: "text_adventure", command: raw.command };
+      input = { type: "text_adventure", command: raw.command, authoringPov: authoringPov ?? undefined };
     } else if (raw.type === "storyteller") {
       if (typeof raw.prose !== "string" || raw.prose.trim().length === 0) {
         return cValidationError(c, "prose is required for storyteller");
@@ -201,6 +217,7 @@ router.post("/sessions/:id/continue", requireAuth, rateLimit(PEN_SUGGEST_RATE_LI
         type: "storyteller",
         prose: raw.prose,
         directionHint: typeof raw.directionHint === "string" ? raw.directionHint : undefined,
+        authoringPov: authoringPov ?? undefined,
       };
     } else {
       return cValidationError(c, "type must be 'storyteller' or 'text_adventure'");
@@ -216,7 +233,50 @@ router.post("/sessions/:id/continue", requireAuth, rateLimit(PEN_SUGGEST_RATE_LI
   }
 });
 
-/** 
+/**
+ * POST /api/pen/sessions/:id/finalize
+ * Publish the session's draft as the next story page (Phase 1.c).
+ *
+ * Phase A runs the advisory delta gate over dirty/stale spans only (§6.7). If
+ * the gate found high-severity findings and `force` was not passed, it returns
+ * `{ status: 'needs_review', violations }` with nothing written. With `force`
+ * (or a clean/author-consistent draft) it publishes via `persistPageWithState`
+ * / `insertStoryPage`, rolls the draft up into `penEdits` spans with character
+ * offsets, and clears the draft.
+ * Body: { force?, amendments?, actions? } — `actions` supplies author-defined
+ * next choices for interactive/multiverse; novel always uses the single default.
+ */
+router.post("/sessions/:id/finalize", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId");
+    if (!userId) return cApiError(c, "Authentication required", undefined, 401);
+    const sessionId = c.req.param("id");
+    let body: PenFinalizeInput = {};
+    try {
+      const raw = await c.req.json();
+      if (raw && typeof raw === "object") body = raw as PenFinalizeInput;
+    } catch {
+      // No body or non-JSON body → default to an empty finalize (publish clean).
+    }
+
+    if (body.force !== undefined && typeof body.force !== "boolean") {
+      return cValidationError(c, "force must be a boolean");
+    }
+    if (body.actions !== undefined && (!Array.isArray(body.actions) || body.actions.length > 6)) {
+      return cValidationError(c, "actions must be an array of at most 6 items");
+    }
+
+    const result = await finalizePenDraft(userId, sessionId, body);
+    return c.json(result);
+  } catch (error) {
+    if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
+    if (error instanceof PenBookOwnershipError) return cApiError(c, error.message, undefined, 403);
+    if (error instanceof PenFinalizeError) return cApiError(c, error.message, undefined, 422);
+    return cApiError(c, "Failed to finalize pen draft", error);
+  }
+});
+
+/**
  * GET /api/pen/sessions/:id
  * Return a single session by id (ownership verified).
  */

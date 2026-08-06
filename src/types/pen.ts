@@ -11,6 +11,27 @@
 /** How the author works with the AI inside a Pen session. Independent of BookMode. */
 export type AuthoringMode = "storyteller" | "text_adventure";
 
+/**
+ * Narrative person the Pen writes in (§1.1 #4, §10 Decision E).
+ *
+ * No first-person-only restriction: the author may draft in any POV and the
+ * Pen continues in that POV. Text adventure is always second-person regardless
+ * of this field.
+ */
+export type AuthoringPov = "first" | "second" | "third";
+
+/**
+ * Author's co-writing persona (§6, Phase 6). Injected into the Pen system
+ * prompt as a style overlay. `books.coWritingPersona` is the stored shape.
+ */
+export type CoWritingPersona = {
+  name: string;
+  description: string;
+  /** Appended to the system prompt. */
+  styleDirectives: string;
+  voice: "neutral" | "lyrical" | "terse" | "cinematic" | "academic";
+};
+
 /** Current lifecycle state of a Pen session. */
 export type PenSessionStatus = "active" | "paused" | "closed";
 
@@ -65,6 +86,12 @@ export type PenSession = {
   draftBuffer: DraftSpan[];
   /** 0 (all human) to 1 (all AI) — maps to credit cost tiers. */
   assistanceLevel: number;
+  /**
+   * Session-level POV default (§10 E). Derived from the author's prose by the
+   * editor; overridable per interaction. Text adventure ignores it (always
+   * second-person).
+   */
+  authoringPov?: AuthoringPov | null;
   status: PenSessionStatus;
   createdAt: Date;
   updatedAt: Date;
@@ -90,6 +117,8 @@ export type PenEdit = {
   /** Character offsets in the final page text — written at /finalize. */
   charOffsetStart: number | null;
   charOffsetEnd: number | null;
+  /** POV used for this interaction (§10 E). Null → session default applies. */
+  authoringPov?: AuthoringPov | null;
   authoringMode: AuthoringMode;
   createdAt: Date;
 };

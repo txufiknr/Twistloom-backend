@@ -14,7 +14,7 @@ import type { ActionProgressStatus } from "../types/candidate-generation.js";
 import type { StoryThread, StoryThreadTranslation } from "../types/story-thread.js";
 import type { CustomActionOutcome, CustomActionRejectionCategory } from "../types/custom-action.js";
 import type { CanonValidationOutcome, CanonViolation, CanonViolationType } from "../types/canon-validation.js";
-import type { AuthorshipOrigin, AuthoringMode, DraftSpan, EditorPrefs, PenEditType, PenSessionStatus } from "../types/pen.js";
+import type { AuthorshipOrigin, AuthoringMode, AuthoringPov, DraftSpan, EditorPrefs, PenEditType, PenSessionStatus } from "../types/pen.js";
 import type { TransactionType } from "../types/credits.js";
 import { PAYMENT_GATEWAY, type PaymentGateway } from "../types/payment.js";
 import type { SubscriptionStatus, SubscriptionTransactionType } from "../types/subscription.js";
@@ -2393,6 +2393,8 @@ export const penSessions = pgTable(
     draftBuffer: jsonb("draft_buffer").$type<DraftSpan[]>().notNull().default(sql`'[]'::jsonb`),
     /** 0 (all human) to 1 (all AI) — maps to credit cost tiers (§8). */
     assistanceLevel: real("assistance_level").notNull().default(0.5),
+    /** Session-level POV default (§10 E). Null → derive from the author's prose. */
+    authoringPov: text("authoring_pov").$type<AuthoringPov | null>().default(null),
     status: text("status").$type<PenSessionStatus>().notNull().default('active'),
     createdAt,
     updatedAt,
@@ -2433,6 +2435,8 @@ export const penEdits = pgTable(
     /** Character offsets in the final page text — written at /finalize. */
     charOffsetStart: integer("char_offset_start"),
     charOffsetEnd: integer("char_offset_end"),
+    /** POV used for this interaction (§10 E). Null → session default applies. */
+    authoringPov: text("authoring_pov").$type<AuthoringPov | null>().default(null),
     authoringMode: text("authoring_mode").$type<AuthoringMode>().notNull(),
     createdAt,
   },

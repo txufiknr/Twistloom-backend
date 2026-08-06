@@ -4263,7 +4263,7 @@ async function prepareNextPageGenerationContext(params: BuildNextPageParams): Pr
  * @param actionedPage         Parent page (read fresh from dbWrite for idempotency)
  * @param selectedAction       The action whose destination we are generating
  */
-async function determineBranchIdForPage(params: {
+export async function determineBranchIdForPage(params: {
   generateNewBranchId: boolean;
   isFirstAlternative: boolean;
   parentBranchId: string;
@@ -4453,7 +4453,7 @@ async function prepareNextPageGenerationSetup(params: BuildNextPageParams, candi
  * Shared logic to calculate state deltas, apply them, correct mismatches, 
  * and merge psychological states cleanly.
  */
-function resolvePageDelta(params: {
+export function resolvePageDelta(params: {
   generatedStoryPage: StoryGeneration,
   advancedState: StoryState,
   currentState: StoryState,
