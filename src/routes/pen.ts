@@ -7,6 +7,7 @@
  */
 
 import { Hono } from "hono";
+import type { Context } from "hono";
 import type { AppEnv } from "../hono/env.js";
 import { requireAuth } from "../middleware/nextauth.js";
 import { rateLimit } from "../middleware/rate-limit.js";
@@ -38,6 +39,19 @@ const router = new Hono<AppEnv>();
 const AUTHORING_MODES: readonly AuthoringMode[] = ["storyteller", "text_adventure"];
 const AUTHORING_POVS: readonly AuthoringPov[] = ["first", "second", "third"];
 const SESSION_STATUSES: readonly PenSessionStatus[] = ["active", "paused", "closed"];
+
+/**
+ * Parses a JSON request body, returning `null` when the body is missing or
+ * malformed so the route can answer 400 instead of crashing into a 500.
+ * The caller already rejects `null`/non-object bodies as a validation error.
+ */
+async function readJsonBody(c: Context<AppEnv>): Promise<unknown> {
+  try {
+    return await c.req.json();
+  } catch {
+    return null;
+  }
+}
 
 /** Validates a single `draftCharactersPresent` entry; returns an error string or null. */
 function validateDraftCastMember(member: unknown): string | null {
@@ -74,7 +88,7 @@ router.post("/sessions", requireAuth, async (c) => {
   try {
     const userId = c.get("userId");
     if (!userId) return cApiError(c, "Authentication required", undefined, 401);
-    const body = await c.req.json();
+    const body = await readJsonBody(c);
 
     if (!body || typeof body !== "object") {
       return cValidationError(c, "Request body must be a JSON object");
@@ -137,7 +151,7 @@ router.patch("/sessions/:id", requireAuth, async (c) => {
     const userId = c.get("userId");
     if (!userId) return cApiError(c, "Authentication required", undefined, 401);
     const sessionId = c.req.param("id");
-    const body = await c.req.json();
+    const body = await readJsonBody(c);
 
     if (!body || typeof body !== "object") {
       return cValidationError(c, "Request body must be a JSON object");
@@ -229,7 +243,7 @@ router.post("/sessions/:id/continue", requireAuth, rateLimit(PEN_SUGGEST_RATE_LI
     const userId = c.get("userId");
     if (!userId) return cApiError(c, "Authentication required", undefined, 401);
     const sessionId = c.req.param("id");
-    const body = await c.req.json();
+    const body = await readJsonBody(c);
 
     if (!body || typeof body !== "object") {
       return cValidationError(c, "Request body must be a JSON object");
@@ -316,10 +330,14 @@ router.post("/sessions/:id/finalize", requireAuth, async (c) => {
 });
 
 /**
- * GET /api/pen/sessions/:id
+ * GET /api/pen/session/:id
  * Return a single session by id (ownership verified).
+ *
+ * Uses the singular `/session` prefix so it does not collide with the
+ * `/sessions/:bookId` lookup — Hono resolves identical `:param` patterns to the
+ * first registered handler, which silently shadowed this route.
  */
-router.get("/sessions/:id", requireAuth, async (c) => {
+router.get("/session/:id", requireAuth, async (c) => {
   try {
     const userId = c.get("userId");
     if (!userId) return cApiError(c, "Authentication required", undefined, 401);

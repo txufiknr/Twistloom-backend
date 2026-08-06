@@ -37,6 +37,7 @@ import { advanceStoryState, createEmptyStoryState, createInitialHiddenState } fr
 import { resolvePageDelta, determineBranchIdForPage } from "../utils/prompt.js";
 import { sanitizeActionsForMode, validatePageActionsForMode } from "../utils/book-mode.js";
 import { validateGeneratedPage } from "../utils/page-validation.js";
+import { runGate1 } from "./custom-actions.js";
 
 /**
  * The API-facing session payload. Extends the stored session with the book's
@@ -303,6 +304,19 @@ export async function continuePenDraft(
 
   if (session.status !== "active") {
     throw new PenContinueError("Session is not active; reopen it before continuing");
+  }
+
+  // §3: text-adventure commands reuse the custom-actions Gate 1 — the
+  // deterministic injection/denylist security filter — so a jailbreak/denylisted
+  // command is rejected for the author to rephrase BEFORE any AI call or credit
+  // charge. Plausibility/phase gates (Gate 1's AI judge, Gate 0 eligibility) are
+  // intentionally NOT carried over: an author may legitimately redirect any
+  // scene at any phase, so only the security component of the pipeline applies.
+  if (input.type === "text_adventure") {
+    const gate1 = runGate1(input.command);
+    if (gate1.category === "injection_attempt" || gate1.category === "denylist") {
+      throw new PenContinueError("Command failed the safety gate — please rephrase it.");
+    }
   }
 
   // Story state + recent prose from the last published page, when one exists.
