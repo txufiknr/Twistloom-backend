@@ -2015,6 +2015,8 @@ export function mapBookFromDb(dbBook: DBBook): Book {
     mc: dbBook.mc,
     topPick: dbBook.topPick || undefined,
     isOriginal: dbBook.isOriginal ?? false,
+    isPenBook: dbBook.isPenBook ?? false,
+    authoringStatus: dbBook.authoringStatus ?? 'draft',
     mode: dbBook.mode ?? 'interactive',
     creditsPrice: dbBook.creditsPrice || 0,
     originalThemeInput: dbBook.originalThemeInput || undefined,

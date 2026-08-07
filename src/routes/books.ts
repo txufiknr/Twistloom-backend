@@ -308,6 +308,7 @@ router.post("/pen", requireAuth, async (c) => {
       language: (c.get("headerLanguage") as string) || PEN_DEFAULT_LANGUAGE,
       keywords: [],
       isOriginal: true,
+      isPenBook: true,
     });
 
     await logUserActivity({
@@ -1980,6 +1981,39 @@ router.patch("/:id/archive", requireAuth, async (c) => {
 });
 
 /**
+ * PATCH /api/books/:id/completion
+ *
+ * Marks a Pen book's authoring as complete (`authoring_status = 'complete'`).
+ * Owner-only. Flips the reading CTA from "Continue editing" to the reader.
+ *
+ * @route PATCH /api/books/:id/completion
+ * @auth requireAuth
+ * @returns {Object} 200 { book } — updated mapped book row
+ */
+router.patch("/:id/completion", requireAuth, async (c) => {
+  try {
+    const { id } = c.req.param();
+    const userId = c.get("userId")!;
+
+    const [book] = await dbRead
+      .select({ id: books.id, userId: books.userId })
+      .from(books)
+      .where(eq(books.id, id as string))
+      .limit(1);
+
+    if (!book) return cNotFoundError(c, "Book not found");
+    if (book.userId !== userId) return cForbiddenError(c, "You can only complete your own books");
+
+    const updatedBook = await updateBook(book.id, { authoringStatus: 'complete' });
+    await invalidateUserBooksCache(userId);
+
+    return c.json({ book: mapBookFromDb(updatedBook) });
+  } catch (error) {
+    return cApiError(c, "Failed to mark book complete", error);
+  }
+});
+
+/**
  * GET /api/books/:id/similar
  * 
  * Retrieves similar books based on keyword tags similarity.
@@ -2075,7 +2109,7 @@ router.get("/:id/similar", optionalAuth, async (c) => {
  * @query search - Search query for title, hook, summary, keywords
  * @query language - Filter by language code (e.g., "en", "es")
  * @query tags - Comma-separated tags for filtering (e.g., "thriller,mystery,horror"). Books matching ANY tag will be included (OR logic)
- * @query sortBy - Field to sort by (default: newest). Options: newest, popular, trending, top-picks, originals, reads, recommendations, creations
+ * @query sortBy - Field to sort by (default: newest). Options: newest, popular, trending, top-picks, originals, reads, recommendations, creations, pen-drafts
  * @query sortOrder - Sort direction (default: desc)
  * @query lastUpdated - Filter by last update time: anytime|today|this-week|this-month|this-year
  * @query ageRange - Filter by main character age range (format: n-m, e.g., 18-30)
@@ -2240,7 +2274,7 @@ router.get("/explore", optionalAuth, async (c) => {
     // 'likes', we are viewing another user's list — no auth needed since the
     // target user is explicit. 'recommendations' and 'for-you' still require
     // auth because they use the viewer's own reading history.
-    const sortNeedsAuth = ['creations', 'reads', 'recommendations', 'favorites', 'likes', 'for-you'].includes(bookSortBy);
+    const sortNeedsAuth = ['creations', 'reads', 'recommendations', 'favorites', 'likes', 'for-you', 'pen-drafts'].includes(bookSortBy);
     const profileUserIdBypasses = ['creations', 'reads', 'favorites', 'likes'];
     const requiresAuth = sortNeedsAuth && !(profileUserId && profileUserIdBypasses.includes(bookSortBy));
     if (requiresAuth && !userId) {
@@ -2251,6 +2285,11 @@ router.get("/explore", optionalAuth, async (c) => {
 
     // Determine whether these are user's created books (can apply status filtering)
     const isCreations = bookSortBy === 'creations';
+
+    // Determine whether these are the user's own in-progress Pen books.
+    // Treated like "creations" for access control (owner-scoped, auth-required)
+    // but the pen-draft predicate is applied inside applyBookSorting.
+    const isPenDrafts = bookSortBy === 'pen-drafts';
 
     // Extract and validate status filter (comma-separated, e.g. "active,draft")
     let statusFilter: BookStatus[] | undefined;
@@ -2272,8 +2311,8 @@ router.get("/explore", optionalAuth, async (c) => {
     //   - 'favorites'/'reads'/'likes' → public books, filtered by that user's list (handled in sort)
     //   - other sorts → public books authored by that user
     const targetUserId = profileUserId || userId;
-    const baseCondition: ReturnType<typeof sql> = isCreations
-      ? statusFilter
+    const baseCondition: ReturnType<typeof sql> = isCreations || isPenDrafts
+      ? statusFilter && isCreations
         ? and(eq(books.userId, targetUserId!), inArray(books.status, statusFilter))!
         : eq(books.userId, targetUserId!) // User's own books regardless of status
       : profileUserId && bookSortBy !== 'favorites' && bookSortBy !== 'reads' && bookSortBy !== 'likes'
@@ -2281,7 +2320,7 @@ router.get("/explore", optionalAuth, async (c) => {
         : and(eq(books.status, 'active'), eq(books.visibility, 'public'))!;
 
     // Cache strategy: don't cache user-specific or filtered queries
-    const shouldCache = page === 1 && !profileUserId && !isCreations && !search && tagsArray.length === 0 && !language && !lastUpdated && !ageRange && !gender && !mode && !statusFilter && !ratingParam && !ratingCountParam && bookSortBy !== 'reads' && bookSortBy !== 'favorites' && bookSortBy !== 'recommendations' && bookSortBy !== 'for-you';
+    const shouldCache = page === 1 && !profileUserId && !isCreations && !isPenDrafts && !search && tagsArray.length === 0 && !language && !lastUpdated && !ageRange && !gender && !mode && !statusFilter && !ratingParam && !ratingCountParam && bookSortBy !== 'reads' && bookSortBy !== 'favorites' && bookSortBy !== 'recommendations' && bookSortBy !== 'for-you';
     const cacheKey = isCreations
       ? `books:user:${targetUserId}:page:${page}`
       : bookSortBy === 'trending'

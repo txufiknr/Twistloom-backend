@@ -87,6 +87,8 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
     language:    books.language,
     topPick:     books.topPick,
     isOriginal:  books.isOriginal,
+    isPenBook:   books.isPenBook,
+    authoringStatus: books.authoringStatus,
     mode:        books.mode,
     creditsPrice: books.creditsPrice,
     originalThemeInput: books.originalThemeInput,
@@ -840,6 +842,29 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
       query = query.where(recCondition);
       if (countQuery) countQuery.where(recCondition);
       return query.orderBy(desc(books.trendingScore));
+    }
+
+    case 'creations': {
+      // User's own created books (any status) — baseCondition already scopes
+      // to the owner; here we only apply a deterministic sort (no filtering).
+      return query.orderBy(desc(books.createdAt));
+    }
+
+    case 'pen-drafts': {
+      // User's own in-progress Pen books (is_pen_book + authoring_status='draft').
+      // baseCondition already scopes to the owner via requireAuth, but we
+      // re-assert the pen-draft predicate on both query + countQuery so a
+      // completed pen book drops off the list as soon as it's marked complete.
+      if (!currentUserId) {
+        const noop = query.where(sql`1=0`);
+        if (countQuery) countQuery.where(sql`1=0`);
+        return noop;
+      }
+      const penDraftCondition = sql`${books.isPenBook} AND ${books.authoringStatus} = 'draft'`;
+      query = query.where(penDraftCondition);
+      if (countQuery) countQuery.where(penDraftCondition);
+      // Most recently edited in-progress draft first.
+      return query.orderBy(desc(books.updatedAt));
     }
 
     case 'newest':

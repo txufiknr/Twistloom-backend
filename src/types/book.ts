@@ -171,6 +171,10 @@ export type Book = {
   topPick?: Date;
   /** Whether this book is an auto-generated original (via cron job) */
   isOriginal: boolean;
+  /** Whether this book was authored in the Pen (human co-writing, POST /books/pen) */
+  isPenBook: boolean;
+  /** Author-completion state for Pen books ('draft' = still authoring, 'complete' = done). Always 'draft' for non-Pen books. */
+  authoringStatus: 'draft' | 'complete';
   /** Book creation mode (story format): 'novel' | 'interactive' | 'multiverse' */
   mode: BookMode;
   /** Credits to pay to continue reading */
@@ -209,6 +213,8 @@ export type EnrichedBookData = Pick<DBBook,
   | 'language'
   | 'topPick'
   | 'isOriginal'
+  | 'isPenBook'
+  | 'authoringStatus'
   | 'mode'
   | 'creditsPrice'
   | 'originalThemeInput'
@@ -424,6 +430,7 @@ export const bookSortOptions = [
   'reads', // Continue reading
   'recommendations', // You might like
   'creations', // User's created books
+  'pen-drafts', // User's own in-progress Pen books (is_pen_book + authoring_status='draft')
   'favorites', // User's saved books
   'likes', // Books the user liked (user_likes)
 ] as const;
