@@ -307,7 +307,7 @@ router.post("/pen", requireAuth, async (c) => {
       mode: PEN_DEFAULT_BOOK_MODE,
       language: (c.get("headerLanguage") as string) || PEN_DEFAULT_LANGUAGE,
       keywords: [],
-      isOriginal: true,
+      isOriginal: false,
       isPenBook: true,
     });
 

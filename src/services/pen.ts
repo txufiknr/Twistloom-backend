@@ -290,8 +290,8 @@ export class PenContinueError extends Error {
 
 /** Body of `POST /api/pen/sessions/:id/continue`. Discriminated by `type`. */
 export type PenContinueInput =
-  | { type: "storyteller"; prose: string; directionHint?: string; authoringPov?: AuthoringPov }
-  | { type: "text_adventure"; command: string; authoringPov?: AuthoringPov };
+  | { type: "storyteller"; prose: string; directionHint?: string; authoringPov?: AuthoringPov; assistanceLevel?: number }
+  | { type: "text_adventure"; command: string; authoringPov?: AuthoringPov; assistanceLevel?: number };
 
 /** Result of a `/continue` request. */
 export type PenContinueOutput = {
@@ -378,6 +378,17 @@ export async function continuePenDraft(
   // §10 E: per-interaction authoringPov overrides the session default.
   const authoringPov = input.authoringPov ?? session.authoringPov ?? undefined;
 
+  // The assistance tier is priced per request so the charge always matches what
+  // the author saw in the editor, closing the debounce race between the local
+  // toggle and the persisted session value. Clamped to [0, 1]; when absent the
+  // session default applies. The request value is also persisted (see the
+  // transaction below) so the session default stays convergent with the last
+  // tier the author actually used.
+  const assistanceLevel =
+    typeof input.assistanceLevel === "number"
+      ? Math.min(1, Math.max(0, input.assistanceLevel))
+      : session.assistanceLevel;
+
   const shared = {
     state,
     authoringMode: session.authoringMode,
@@ -410,7 +421,7 @@ export async function continuePenDraft(
 
   const { result } = await executeWithCredits(
     userId,
-    continueCreditKey(session),
+    continueCreditKey({ authoringMode: session.authoringMode, assistanceLevel }),
     async (tx) => {
       const [current] = await tx
         .select()
@@ -450,7 +461,12 @@ export async function continuePenDraft(
 
       const [updated] = await tx
         .update(penSessions)
-        .set({ draftBuffer: nextBuffer, status: "active", updatedAt: new Date() })
+        .set({
+          draftBuffer: nextBuffer,
+          status: "active",
+          ...(typeof input.assistanceLevel === "number" ? { assistanceLevel } : {}),
+          updatedAt: new Date(),
+        })
         .where(and(eq(penSessions.id, sessionId), eq(penSessions.userId, userId)))
         .returning();
 

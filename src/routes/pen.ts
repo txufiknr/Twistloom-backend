@@ -231,9 +231,11 @@ router.post("/sessions/:id/discard", requireAuth, async (c) => {
  * POST /api/pen/sessions/:id/continue
  * Runs the single-request validate-and-generate continuation for an active
  * session the user owns. Body (discriminated by `type`):
- *   storyteller   -> { type: 'storyteller', prose, directionHint? }
- *   text_adventure-> { type: 'text_adventure', command }
- * Returns { span, edit, draft } where span is validated/dirty.
+ *   storyteller   -> { type: 'storyteller', prose, directionHint?, assistanceLevel? }
+ *   text_adventure-> { type: 'text_adventure', command, assistanceLevel? }
+ * `assistanceLevel?` (0..1) sets the credit tier for this request and is
+ * persisted onto the session so the default stays convergent with what the
+ * author last used. Returns { span, edit, draft } where span is validated/dirty.
  */
 router.post("/sessions/:id/continue", requireAuth, rateLimit(PEN_SUGGEST_RATE_LIMIT), async (c) => {
   try {
@@ -254,11 +256,16 @@ router.post("/sessions/:id/continue", requireAuth, rateLimit(PEN_SUGGEST_RATE_LI
       return cValidationError(c, `authoringPov must be one of: ${PEN_AUTHORING_POVS.join(", ")} or null`);
     }
 
+    const assistanceLevel = raw.assistanceLevel as number | undefined;
+    if (assistanceLevel !== undefined && (typeof assistanceLevel !== "number" || assistanceLevel < PEN_ASSISTANCE_LEVEL_MIN || assistanceLevel > PEN_ASSISTANCE_LEVEL_MAX)) {
+      return cValidationError(c, "assistanceLevel must be a number between 0 and 1");
+    }
+
     if (raw.type === "text_adventure") {
       if (typeof raw.command !== "string" || raw.command.trim().length === 0) {
         return cValidationError(c, "command is required for text_adventure");
       }
-      input = { type: "text_adventure", command: raw.command, authoringPov: authoringPov ?? undefined };
+      input = { type: "text_adventure", command: raw.command, authoringPov: authoringPov ?? undefined, assistanceLevel };
     } else if (raw.type === "storyteller") {
       if (typeof raw.prose !== "string" || raw.prose.trim().length === 0) {
         return cValidationError(c, "prose is required for storyteller");
@@ -268,6 +275,7 @@ router.post("/sessions/:id/continue", requireAuth, rateLimit(PEN_SUGGEST_RATE_LI
         prose: raw.prose,
         directionHint: typeof raw.directionHint === "string" ? raw.directionHint : undefined,
         authoringPov: authoringPov ?? undefined,
+        assistanceLevel,
       };
     } else {
       return cValidationError(c, "type must be 'storyteller' or 'text_adventure'");
