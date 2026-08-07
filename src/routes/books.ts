@@ -119,7 +119,7 @@ import { imageUploadMiddleware } from "../middleware/upload.js";
 import { deleteFileFromImageKit, isBase64Upload, persistUploadedImage } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, calculatePaginationMeta } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
-import { validateSearchQuery, validateLanguageCode, validateAgeRange, validateGender, validateRatingFilter, validateRatingCountFilter, createRelevanceExpression, buildTokenizedSearchCondition } from "../utils/search.js";
+import { validateSearchQuery, validateLanguageCode, isValidLanguageCode, validateAgeRange, validateGender, validateRatingFilter, validateRatingCountFilter, createRelevanceExpression, buildTokenizedSearchCondition } from "../utils/search.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { updateBook, updateBookVisibility, insertBook, uploadBookCoverImage, uploadBookCharacterAvatarImage, sanitizeBookTextField, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage, mapBookFromDb, invalidatePopularTagsCache, invalidateBookCache, invalidateEnrichedBookCache, invalidatePageOneCache, loadParagraphCommentCounts, loadCommunityActions } from "../services/book.js";
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
@@ -149,7 +149,7 @@ import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 import { notifyForumOfBookChange, notifyForumStoryArchived } from "../services/forum-queue.js";
 import { createAIOptionsWithSchema, aiPrompt } from "../utils/ai-chat.js";
 import { AI_CHAT_MODELS_THEME } from "../config/ai-clients.js";
-import { BOOK_MIN_PAGES, PEN_AUTHORING_MODES, PEN_DEFAULT_AUTHORING_MODE, PEN_DEFAULT_BOOK_MODE, PEN_DEFAULT_LANGUAGE, PEN_PLACEHOLDER_MC, PEN_TITLE_MAX_LENGTH, PEN_TITLE_MIN_LENGTH } from "../config/story.js";
+import { BOOK_MIN_PAGES, PEN_AUTHORING_MODES, PEN_DEFAULT_AUTHORING_MODE, PEN_DEFAULT_BOOK_MODE, PEN_PLACEHOLDER_MC, PEN_SUMMARY_MAX_LENGTH, PEN_TITLE_MAX_LENGTH, PEN_TITLE_MIN_LENGTH } from "../config/story.js";
 import type { CustomActionValidationResult, CustomActionPreviewResponse, CustomActionSubmitResponse } from "../types/custom-action.js";
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { MAX_BRANCHING_PREGENERATION_DEPTH } from "../config/story.js";
@@ -285,6 +285,8 @@ router.post("/pen", requireAuth, async (c) => {
     const body = (c.get("body") as Record<string, unknown>) ?? {};
     const title = typeof body.title === "string" ? body.title.trim() : "";
     const authoringMode = body.authoringMode ?? PEN_DEFAULT_AUTHORING_MODE;
+    const language = typeof body.language === "string" ? body.language.trim().toLowerCase() : "";
+    const summary = typeof body.summary === "string" ? body.summary.trim() : "";
 
     if (!title) return cValidationError(c, "title is required");
     if (title.length < PEN_TITLE_MIN_LENGTH) return cValidationError(c, `title must be at least ${PEN_TITLE_MIN_LENGTH} characters`);
@@ -292,6 +294,9 @@ router.post("/pen", requireAuth, async (c) => {
     if (typeof authoringMode !== "string" || !PEN_AUTHORING_MODES.includes(authoringMode)) {
       return cValidationError(c, `authoringMode must be 'storyteller' or 'text_adventure'`);
     }
+    if (!language) return cValidationError(c, "language is required");
+    if (!isValidLanguageCode(language)) return cValidationError(c, "language must be a valid ISO 639-1 code");
+    if (summary.length > PEN_SUMMARY_MAX_LENGTH) return cValidationError(c, `summary must be at most ${PEN_SUMMARY_MAX_LENGTH} characters`);
 
     const userId = c.get("userId")!;
 
@@ -303,9 +308,10 @@ router.post("/pen", requireAuth, async (c) => {
     const created = await insertBook({
       userId,
       title,
+      summary: summary || null,
       mc: placeholderMc,
       mode: PEN_DEFAULT_BOOK_MODE,
-      language: (c.get("headerLanguage") as string) || PEN_DEFAULT_LANGUAGE,
+      language,
       keywords: [],
       isOriginal: false,
       isPenBook: true,
@@ -316,11 +322,11 @@ router.post("/pen", requireAuth, async (c) => {
       activityType: "book_created",
       targetType: "book",
       targetId: created.id,
-      metadata: { source: "pen", authoringMode },
+      metadata: { source: "pen", authoringMode, language },
     }, { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } });
     void updateUserLastActivity(userId);
 
-    console.log(`[POST /books/pen] 📔 Blank Pen book created:`, { id: created.id, slug: created.slug, title: created.title, authoringMode });
+    console.log(`[POST /books/pen] 📔 Blank Pen book created:`, { id: created.id, slug: created.slug, title: created.title, language, authoringMode });
     return c.json({ book: mapBookFromDb(created) }, 201);
   } catch (error) {
     return cApiError(c, "Failed to create pen book", error);

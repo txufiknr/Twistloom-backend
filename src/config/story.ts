@@ -419,6 +419,8 @@ export const TENDENCY_RECENCY_WINDOW = 8;
 export const PEN_TITLE_MIN_LENGTH = 2;
 /** Maximum allowed Pen book title length (chars, after trim). */
 export const PEN_TITLE_MAX_LENGTH = 120;
+/** Maximum allowed Pen book summary length (chars, after trim). */
+export const PEN_SUMMARY_MAX_LENGTH = 500;
 /** Default authoring mode when the request omits one. */
 export const PEN_DEFAULT_AUTHORING_MODE = "storyteller";
 /** Pen-created books are always created in linear ('novel') mode. */
@@ -443,5 +445,9 @@ export const PEN_SCENE_FOCUS_MAX = 1;
 export const PEN_DRAFT_CAST_LIMIT = 20;
 /** Maximum number of author-supplied action choices accepted by /finalize. */
 export const PEN_FINALIZE_MAX_ACTIONS = 6;
+/** Maximum number of trigger keywords accepted on a lore entry. */
+export const PEN_LORE_MAX_TRIGGERS = 20;
+/** Maximum length of a lore entry's description. */
+export const PEN_LORE_DESCRIPTION_MAX_LENGTH = 5000;
 /** Placeholder MC seed for Pen-created books (schema NOT NULL); author shapes the real MC later. */
 export const PEN_PLACEHOLDER_MC: StoryMC = { name: "MC", age: 0, gender: "male", bio: "" };

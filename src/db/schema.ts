@@ -15,7 +15,7 @@ import type { StoryThread, StoryThreadTranslation } from "../types/story-thread.
 import type { CustomActionOutcome, CustomActionRejectionCategory } from "../types/custom-action.js";
 import type { QuestStatus } from "../types/quests.js";
 import type { CanonValidationOutcome, CanonViolation, CanonViolationType } from "../types/canon-validation.js";
-import type { AuthorshipOrigin, AuthoringMode, AuthoringPov, DraftSpan, EditorPrefs, PenDraftCharacter, PenEditType, PenSessionStatus } from "../types/pen.js";
+import type { AuthorshipOrigin, AuthoringMode, AuthoringPov, DraftSpan, EditorPrefs, PenDraftCharacter, PenEditType, PenSessionStatus, LoreEntryType } from "../types/pen.js";
 import type { TransactionType } from "../types/credits.js";
 import { PAYMENT_GATEWAY, type PaymentGateway } from "../types/payment.js";
 import type { SubscriptionStatus, SubscriptionTransactionType } from "../types/subscription.js";
@@ -2482,5 +2482,41 @@ export const penEdits = pgTable(
     index("pen_edits_session_idx").on(t.sessionId),
     index("pen_edits_book_idx").on(t.bookId),
     index("pen_edits_page_idx").on(t.pageId),
+  ]
+);
+
+/**
+ * Pen story bible entries — Phase 5 (§6.3).
+ *
+ * Author-curated canonical overrides for a book. Entries carry a `entryType`,
+ * a `name`/`description`, and `triggerKeywords` used for (a) keyword-triggered
+ * prompt injection at `/continue` (via `loreBlock` in `pen-prompt.ts`) and
+ * (b) delta-gate entity matching at `/finalize`. `linkedCharacterId` /
+ * `linkedPlaceId` are soft refs to engine state rows (may be null). Creating or
+ * editing a row bumps `books.canonVersion` so previously-`validated` spans go
+ * stale and are re-checked at the next finalize.
+ *
+ * @see docs/roadmap/AI_CO_WRITING_PEN_ROADMAP.md §14.2, Phase 5
+ */
+export const loreEntries = pgTable(
+  "lore_entries",
+  {
+    id: id(),
+    bookId: bookId("cascade"),
+    entryType: text("entry_type").$type<LoreEntryType>().notNull(),
+    name: text("name").notNull(),
+    description: text("description").notNull(),
+    /** Keyword triggers for prompt injection + delta-gate entity matching. */
+    triggerKeywords: text("trigger_keywords").array().notNull().default(sql`'{}'::text[]`),
+    /** Soft ref to engine state rows (character/place ids in `story_states`), if this entry mirrors one. */
+    linkedCharacterId: uuid("linked_character_id"),
+    linkedPlaceId: uuid("linked_place_id"),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    index("lore_entries_book_idx").on(t.bookId),
+    index("lore_entries_trigger_gin_idx").using("gin", t.triggerKeywords),
   ]
 );

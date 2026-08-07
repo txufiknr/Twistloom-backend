@@ -12,6 +12,7 @@ import { eq, and, desc } from "drizzle-orm";
 import { penSessions, penEdits } from "../db/schema.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { getBookFromDB } from "./book.js";
+import { getTriggeredLoreEntries } from "./lore.js";
 import type { DBBook, DBPenSession } from "../types/schema.js";
 import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraftCharacter, PenEdit, PenSessionStatus, FinalizeViolation, CanonAmendment, PenEditType } from "../types/pen.js";
 import type { BookMode } from "../types/book.js";
@@ -375,6 +376,18 @@ export async function continuePenDraft(
   const mcName = book.mc?.knownName || book.mc?.name || "";
   const language = book.language || "en";
 
+  // §6.3: author-curated bible entries whose trigger keywords surface in the
+  // assembled continuation context (contextHistory + recent prose + the author's
+  // own fragment/command) are injected as the authoritative CANONICAL LORE block.
+  // Deterministic + author-controlled; semantic memory stays the fallback.
+  const authorInput = input.type === "text_adventure" ? input.command : input.prose;
+  const loreHaystack = [
+    state?.contextHistory ?? "",
+    ...pageTexts,
+    authorInput,
+  ].join("\n");
+  const lore = await getTriggeredLoreEntries(book.id, loreHaystack);
+
   // §10 E: per-interaction authoringPov overrides the session default.
   const authoringPov = input.authoringPov ?? session.authoringPov ?? undefined;
 
@@ -395,6 +408,7 @@ export async function continuePenDraft(
     pageTexts,
     mcName,
     language,
+    lore,
     storyStartDate: book.storyStartDate ?? null,
     momentum,
     sceneType,
@@ -416,8 +430,6 @@ export async function continuePenDraft(
       config: { ...AI_CHAT_CONFIG_DEFAULT, maxOutputToken: 1000 },
     },
   };
-
-  const authorInput = input.type === "text_adventure" ? input.command : input.prose;
 
   const { result } = await executeWithCredits(
     userId,

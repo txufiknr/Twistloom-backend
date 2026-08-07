@@ -11,7 +11,7 @@
 import type { CharacterSceneRole } from "./story.js";
 
 /** How the author works with the AI inside a Pen session. Independent of BookMode. */
-export type AuthoringMode = "storyteller" | "text_adventure";
+export type AuthoringMode = "storyteller" | "text_adventure"; // TODO: shouldn't it infer from `PEN_AUTHORING_MODES`?
 
 /**
  * Narrative person the Pen writes in (§1.1 #4, §10 Decision E).
@@ -176,6 +176,9 @@ export const DEFAULT_EDITOR_PREFS: EditorPrefs = {
 /** Story bible entry types (§6.3). */
 export type LoreEntryType = "character" | "place" | "item" | "rule" | "timeline_event" | "other";
 
+/** Valid `LoreEntryType` values, used for request validation. */
+export const loreEntryTypes: readonly LoreEntryType[] = ["character", "place", "item", "rule", "timeline_event", "other"];
+
 /** Author-curated canonical override entry in the story bible (§6.3, Phase 5). */
 export type LoreEntry = {
   id: string;
@@ -192,6 +195,20 @@ export type LoreEntry = {
   createdAt: Date;
   updatedAt: Date;
 };
+
+/** Create shape for a story-bible entry (POST /books/:bookId/lore). */
+export type LoreEntryInput = {
+  entryType: LoreEntryType;
+  name: string;
+  description: string;
+  /** Keyword triggers for prompt injection + delta-gate entity matching. */
+  triggerKeywords?: string[];
+  linkedCharacterId?: string | null;
+  linkedPlaceId?: string | null;
+};
+
+/** Update shape for a story-bible entry (PATCH /lore/:entryId). */
+export type LoreEntryUpdate = Partial<LoreEntryInput>;
 
 /** Severity class of a finalize-gate finding — friction, not permission. */
 export type FinalizeViolationSeverity = "high" | "medium" | "low";
