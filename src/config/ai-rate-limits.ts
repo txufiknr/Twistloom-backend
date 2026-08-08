@@ -165,16 +165,15 @@ export const CUSTOM_ACTION_SUBMIT_RATE_LIMIT: AIRateLimitConfig = buildRateLimit
 /**
  * POST /api/pen/sessions/:id/continue — AI continuation of a Pen draft.
  *
- * Credit-gated by the session's assistance tier (§8 of the Pen roadmap):
- * storyteller uses `PEN_AUTO_CONTINUE`/`PEN_ASSIST` (charged), text adventure
- * uses `PEN_COMMAND` (charged), but the lowest storyteller tier (`PEN_SUGGEST`,
- * assistance < 0.3) is free — so the free-cost amplification vector needs the
- * same protection as `CUSTOM_ACTION_PREVIEW_RATE_LIMIT`.
+ * Credit-gated by the continuation-length tier (§8 of the Pen roadmap): short/
+ * medium/long charge 1/2/3 credits, so all tiers are paid and the rate limit
+ * primarily bounds burst spend + retry churn around a charged generation.
  *
- * why: free tier carries zero credit cost — 20/min keeps suggestions usable
- * while closing the zero-cost grinding gap; charged tiers are additionally
- * gated by the credit check inside `continuePenDraft`.
+ * why: every `/continue` burns output tokens proportional to its length tier,
+ * and charged generations are additionally gated by the credit check inside
+ * `continuePenDraft` — this ceiling stops a client hammering a fresh model
+ * before its balance (or the credit check) catches up.
  */
-export const PEN_SUGGEST_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
-  "PEN_SUGGEST", 20, 60
+export const PEN_CONTINUE_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
+  "PEN_CONTINUE", 20, 60
 );

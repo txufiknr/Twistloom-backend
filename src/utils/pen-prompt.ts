@@ -34,6 +34,8 @@ import { getStoryStateInfo } from "./story.js";
 import { RULES_STORY_CONSISTENCY, RULES_LANGUAGE_LOCALIZATION } from "./prompt.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { formatLanguage } from "./translation.js";
+import { PEN_CONTINUE_WORDS } from "../config/story.js";
+import type { PenContinueLength } from "../config/story.js";
 
 /** Number of prior pages of context included in a `/continue` prompt. */
 const PEN_CONTEXT_PAGES = 2;
@@ -252,12 +254,14 @@ export function buildPenContinuePrompt(
     momentum?: string | null;
     sceneType?: string | null;
     essentials?: PenDraftSceneEssentials | null;
+    /** Continuation-length tier — added as a tail directive (§8 short/medium/long). */
+    length?: PenContinueLength;
   } & (
     | { prose: string; directionHint?: string }
     | { command: string }
   )
 ): PenContinuePrompt {
-  const { state, authoringMode, authoringPov, persona, lore, pageTexts, mcName, language, bookSummary } = params;
+  const { state, authoringMode, authoringPov, persona, lore, pageTexts, mcName, language, bookSummary, length } = params;
 
   const canon = buildCanonicalBlock(state ?? null, mcName, {
     storyStartDate: "storyStartDate" in params ? params.storyStartDate : undefined,
@@ -298,6 +302,7 @@ export function buildPenContinuePrompt(
         ...stableSections,
         ...contextSections,
         `PLAYER COMMAND:\n> ${command}`,
+        length ? `APPROXIMATE LENGTH: append about ${PEN_CONTINUE_WORDS[length]} words (${length.toUpperCase()}).` : "",
         'Resolve the command into the story. Write ONLY the continuation text (no ">", no out-of-character notes).',
       ].join("\n\n"),
     };
@@ -312,6 +317,7 @@ export function buildPenContinuePrompt(
       ...stableSections,
       ...contextSections,
       `AUTHOR'S FRAGMENT:\n${proseParam}${hint}`,
+      length ? `APPROXIMATE LENGTH: append about ${PEN_CONTINUE_WORDS[length]} words (${length.toUpperCase()}).` : "",
       "Continue the story. Write ONLY the continuation text — do not repeat the author's fragment.",
     ].join("\n\n"),
   };

@@ -33,7 +33,7 @@ import { aiPrompt, createAIOptionsWithSchema } from "../utils/ai-chat.js";
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
-import { PEN_DRAFT_CAST_LIMIT } from "../config/story.js";
+import { PEN_DRAFT_CAST_LIMIT, PEN_CONTINUE_MAX_TOKENS, penContinueLengthForAssistance } from "../config/story.js";
 import { generateId } from "../utils/uuid.js";
 import { executeWithCredits } from "./credits.js";
 import { persistPageWithState, insertStoryPage, getPageFromDB, mapToPersistedStoryPage } from "./book.js";
@@ -330,16 +330,16 @@ export type PenContinueOutput = {
 };
 
 /**
- * Credit key per authoring mode + assistance level (§8).
- * Text-adventure commands are a richer generation than a prose assist.
- * Storyteller cost scales with how much of the writing the AI does:
- *   > 0.9 auto-continue · ≤ 0.9 assisted prose · < 0.3 free suggestion.
+ * Credit key per continuation-length tier (§8).
+ * The tiers are renamed from the old Suggest/Assist/Auto-continue names because
+ * all three are the SAME "finish my thought" continuation — they differ only in
+ * output length (and therefore cost). Text adventure applies the same tiers.
+ *   > 0.9 long · ≤ 0.9 medium · < 0.3 short.
  */
-function continueCreditKey(session: { authoringMode: AuthoringMode; assistanceLevel: number }): "PEN_ASSIST" | "PEN_COMMAND" | "PEN_AUTO_CONTINUE" | "PEN_SUGGEST" {
-  if (session.authoringMode === "text_adventure") return "PEN_COMMAND";
-  if (session.assistanceLevel > 0.9) return "PEN_AUTO_CONTINUE";
-  if (session.assistanceLevel < 0.3) return "PEN_SUGGEST";
-  return "PEN_ASSIST";
+function continueCreditKey(session: { assistanceLevel: number }): "PEN_CONTINUE_LONG" | "PEN_CONTINUE_MEDIUM" | "PEN_CONTINUE_SHORT" {
+  if (session.assistanceLevel > 0.9) return "PEN_CONTINUE_LONG";
+  if (session.assistanceLevel < 0.3) return "PEN_CONTINUE_SHORT";
+  return "PEN_CONTINUE_MEDIUM";
 }
 
 /**
@@ -416,16 +416,17 @@ export async function continuePenDraft(
   // §10 E: per-interaction authoringPov overrides the session default.
   const authoringPov = input.authoringPov ?? session.authoringPov ?? undefined;
 
-  // The assistance tier is priced per request so the charge always matches what
-  // the author saw in the editor, closing the debounce race between the local
-  // toggle and the persisted session value. Clamped to [0, 1]; when absent the
-  // session default applies. The request value is also persisted (see the
-  // transaction below) so the session default stays convergent with the last
-  // tier the author actually used.
+// The assistance level snaps to a continuation-length tier (§8): short/medium/
+  // long. It is priced per request so the charge always matches what the author
+  // saw in the editor, closing the debounce race between the local toggle and the
+  // persisted session value. Clamped to [0, 1]; when absent the session default
+  // applies. The request value is also persisted (see the transaction below) so
+  // the persisted default stays convergent with the last tier used.
   const assistanceLevel =
     typeof input.assistanceLevel === "number"
       ? Math.min(1, Math.max(0, input.assistanceLevel))
       : session.assistanceLevel;
+  const continueLength = penContinueLengthForAssistance(assistanceLevel);
 
   const shared = {
     state,
@@ -443,8 +444,8 @@ export async function continuePenDraft(
 
   const { systemPrompt, userPrompt } =
     input.type === "text_adventure"
-      ? buildPenContinuePrompt({ ...shared, command: input.command, authoringPov })
-      : buildPenContinuePrompt({ ...shared, prose: input.prose, directionHint: input.directionHint, authoringPov });
+      ? buildPenContinuePrompt({ ...shared, command: input.command, authoringPov, length: continueLength })
+      : buildPenContinuePrompt({ ...shared, prose: input.prose, directionHint: input.directionHint, authoringPov, length: continueLength });
 
   const promptConfig: AIPromptForJson<PenContinueAIOutput> = {
     schema: PEN_CONTINUE_SCHEMA,
@@ -454,13 +455,13 @@ export async function continuePenDraft(
       modelSelection: AI_CHAT_MODELS_WRITING,
       context: "pen-continue",
       systemPrompt,
-      config: { ...AI_CHAT_CONFIG_DEFAULT, maxOutputToken: 1000 },
+      config: { ...AI_CHAT_CONFIG_DEFAULT, maxOutputToken: PEN_CONTINUE_MAX_TOKENS[continueLength] },
     },
   };
 
   const { result } = await executeWithCredits(
     userId,
-    continueCreditKey({ authoringMode: session.authoringMode, assistanceLevel }),
+    continueCreditKey({ assistanceLevel }),
     async (tx) => {
       const [current] = await tx
         .select()

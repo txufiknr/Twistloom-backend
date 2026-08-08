@@ -109,14 +109,12 @@ const CREDIT_COSTS_BASE = {
   UNLOCK_ALTERNATE_ENDING: 10, // TODO: use
 
   /* ── Pen (AI co-writing) — §8 of the Pen roadmap ─────────────────── */
-  /** AI continues prose when assistance > 0.9 (auto-continue). */
-  PEN_AUTO_CONTINUE: 3,
-  /** AI assists human prose when assistance ≤ 0.9. */
-  PEN_ASSIST: 1,
-  /** Lightweight inline suggestion (assistance < 0.3). */
-  PEN_SUGGEST: 0,
-  /** Text adventure command resolution. */
-  PEN_COMMAND: 2,
+  /** Long continuation (assistance > 0.9) — appends ~700 words. */
+  PEN_CONTINUE_LONG: 3,
+  /** Medium continuation (assistance ≤ 0.9) — appends ~250 words. */
+  PEN_CONTINUE_MEDIUM: 2,
+  /** Short continuation (assistance < 0.3) — appends ~40 words. */
+  PEN_CONTINUE_SHORT: 1,
   /** Story bible entry create/edit (free, encourages worldbuilding). */
   PEN_LORE_ENTRY: 0,
   /** Lore-bible amendment on forced publish (free, one batched call). */

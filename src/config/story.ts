@@ -446,6 +446,35 @@ export const PEN_TARGET_PAGES_MAX = 10000;
 export const PEN_ASSISTANCE_LEVEL_MIN = 0;
 /** Upper bound for `assistanceLevel` (normalized 0-1). */
 export const PEN_ASSISTANCE_LEVEL_MAX = 1;
+
+/**
+ * Continuation-length tiers for the Pen `/continue` (§8 — short/medium/long,
+ * renamed from the old Suggest/Assist/Auto-continue that implied behavior the
+ * tiers didn't have). All three tiers are the SAME "finish my thought" operation;
+ * they differ only in how many words the AI appends. The 0-1 stored value snaps
+ * to a tier: < 0.3 short · ≤ 0.9 medium · > 0.9 long.
+ */
+export type PenContinueLength = "short" | "medium" | "long";
+export const PEN_CONTINUE_LENGTHS: readonly PenContinueLength[] = ["short", "medium", "long"];
+/** Approximate target append size per tier (words the author can expect). */
+export const PEN_CONTINUE_WORDS: Record<PenContinueLength, number> = {
+  short: 40,
+  medium: 250,
+  long: 700,
+};
+/** Output-token budget per tier (≈1.3 tokens/word + headroom; caps generation). */
+export const PEN_CONTINUE_MAX_TOKENS: Record<PenContinueLength, number> = {
+  short: 120,
+  medium: 450,
+  long: 1200,
+};
+
+/** Snaps a stored 0-1 `assistanceLevel` to a continuation-length tier (§8). */
+export function penContinueLengthForAssistance(level: number): PenContinueLength {
+  if (level > 0.9) return "long";
+  if (level < 0.3) return "short";
+  return "medium";
+}
 /** Lower bound for a scalar `sceneFocus` value in the draft cast checklist. */
 export const PEN_SCENE_FOCUS_MIN = 0;
 /** Upper bound for a scalar `sceneFocus` value in the draft cast checklist. */

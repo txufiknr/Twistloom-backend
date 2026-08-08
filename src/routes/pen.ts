@@ -11,7 +11,7 @@ import type { Context } from "hono";
 import type { AppEnv } from "../hono/env.js";
 import { requireAuth } from "../middleware/nextauth.js";
 import { rateLimit } from "../middleware/rate-limit.js";
-import { PEN_SUGGEST_RATE_LIMIT } from "../config/ai-rate-limits.js";
+import { PEN_CONTINUE_RATE_LIMIT } from "../config/ai-rate-limits.js";
 import { cApiError, cNotFoundError, cValidationError } from "../utils/error.js";
 import { PEN_ASSISTANCE_LEVEL_MAX, PEN_ASSISTANCE_LEVEL_MIN, PEN_AUTHORING_MODES, PEN_AUTHORING_POVS, PEN_DRAFT_CAST_LIMIT, PEN_FINALIZE_MAX_ACTIONS, PEN_SCENE_FOCUS_MAX, PEN_SCENE_FOCUS_MIN, PEN_SESSION_STATUSES } from "../config/story.js";
 import {
@@ -262,11 +262,12 @@ router.post("/sessions/:id/discard", requireAuth, async (c) => {
  * session the user owns. Body (discriminated by `type`):
  *   storyteller   -> { type: 'storyteller', prose, directionHint?, assistanceLevel? }
  *   text_adventure-> { type: 'text_adventure', command, assistanceLevel? }
- * `assistanceLevel?` (0..1) sets the credit tier for this request and is
- * persisted onto the session so the default stays convergent with what the
+ * `assistanceLevel?` (0..1) snaps to the continuation-length tier (short/medium/
+ * long, §8) — it chooses how many words the AI appends and the credit cost, and
+ * is persisted onto the session so the default stays convergent with what the
  * author last used. Returns { span, edit, draft } where span is validated/dirty.
  */
-router.post("/sessions/:id/continue", requireAuth, rateLimit(PEN_SUGGEST_RATE_LIMIT), async (c) => {
+router.post("/sessions/:id/continue", requireAuth, rateLimit(PEN_CONTINUE_RATE_LIMIT), async (c) => {
   try {
     const userId = c.get("userId");
     if (!userId) return cApiError(c, "Authentication required", undefined, 401);
