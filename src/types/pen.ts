@@ -93,6 +93,31 @@ export type PenDraftCharacter = {
   sceneFocus?: number;
 };
 
+/**
+ * Author-curated scene essentials for the NEXT published page
+ * (`draftSceneEssentials`). Maps to the `pages` columns that persist a page's
+ * setting: `placeId`, `mood`, `weather`, `calendarDate`, `timeOfDay`,
+ * `keyEvents`, `keyObjects`. Blank fields are left undefined so `/finalize`
+ * falls back to the previous published page's values — the Pen never clears
+ * scene context the author didn't explicitly touch.
+ */
+export type PenDraftSceneEssentials = {
+  /** Current place ID where the story is taking place (`pages.place_id`). */
+  placeId?: string;
+  /** Current emotional atmosphere (`pages.mood`). */
+  mood?: string;
+  /** Current weather conditions (`pages.weather`). */
+  weather?: string;
+  /** Current in-world date, e.g. "2026-07-26" (`pages.calendar_date`). */
+  calendarDate?: string;
+  /** Current time mark, e.g. 'night' or 'HH:mm' (`pages.time_of_day`). */
+  timeOfDay?: string;
+  /** Key events that occur in the page (`pages.key_events`). */
+  keyEvents?: string[];
+  /** Important objects in the page (`pages.key_objects`). */
+  keyObjects?: string[];
+};
+
 /** Edit classification recorded per AI/human interaction inside a session. */
 export type PenEditType = "human_wrote" | "ai_continued" | "ai_revised" | "human_revised" | "plan";
 
@@ -111,6 +136,8 @@ export type PenSession = {
   draftBuffer: DraftSpan[];
   /** Author-curated cast for the current draft's scene (§10 Decision M). */
   draftCharactersPresent: PenDraftCharacter[];
+  /** Author-curated scene essentials for the next page (setting: place/mood/weather/date/time/keys). */
+  draftSceneEssentials?: PenDraftSceneEssentials | null;
   /** 0 (all human) to 1 (all AI) — maps to credit cost tiers. */
   assistanceLevel: number;
   /**

@@ -31,7 +31,7 @@ import {
   PenFinalizeError,
 } from "../services/pen.js";
 import type { PenContinueInput, PenFinalizeInput } from "../services/pen.js";
-import type { AuthoringMode, AuthoringPov, PenDraftCharacter, PenSessionStatus } from "../types/pen.js";
+import type { AuthoringMode, AuthoringPov, PenDraftCharacter, PenDraftSceneEssentials, PenSessionStatus } from "../types/pen.js";
 import { characterSceneRoles } from "../types/story.js";
 import type { CharacterSceneRole } from "../types/story.js";
 
@@ -72,6 +72,29 @@ function validateDraftCastMember(member: unknown): string | null {
   }
   if (m.sceneFocus !== undefined && (typeof m.sceneFocus !== "number" || m.sceneFocus < PEN_SCENE_FOCUS_MIN || m.sceneFocus > PEN_SCENE_FOCUS_MAX)) {
     return "sceneFocus must be a number between 0 and 1";
+  }
+  return null;
+}
+
+/** Validates the `draftSceneEssentials` payload; returns an error string or null. */
+function validateDraftSceneEssentials(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    return "draftSceneEssentials must be an object or null";
+  }
+  const e = value as Record<string, unknown>;
+  const textFields = ["placeId", "mood", "weather", "calendarDate", "timeOfDay"] as const;
+  for (const field of textFields) {
+    if (e[field] !== undefined && typeof e[field] !== "string") {
+      return `${field} must be a string`;
+    }
+  }
+  const listFields = ["keyEvents", "keyObjects"] as const;
+  for (const field of listFields) {
+    if (e[field] !== undefined) {
+      if (!Array.isArray(e[field])) return `${field} must be an array of strings`;
+      if (e[field].some((item) => typeof item !== "string")) return `${field} must contain only strings`;
+    }
   }
   return null;
 }
@@ -153,12 +176,13 @@ router.patch("/sessions/:id", requireAuth, async (c) => {
     if (!body || typeof body !== "object") {
       return cValidationError(c, "Request body must be a JSON object");
     }
-    const { assistanceLevel, status, currentPageId, authoringPov, draftCharactersPresent } = body as {
+    const { assistanceLevel, status, currentPageId, authoringPov, draftCharactersPresent, draftSceneEssentials } = body as {
       assistanceLevel?: number;
       status?: PenSessionStatus;
       currentPageId?: string | null;
       authoringPov?: AuthoringPov | null;
       draftCharactersPresent?: PenDraftCharacter[];
+      draftSceneEssentials?: PenDraftSceneEssentials | null;
     };
 
     if (assistanceLevel !== undefined && (typeof assistanceLevel !== "number" || assistanceLevel < PEN_ASSISTANCE_LEVEL_MIN || assistanceLevel > PEN_ASSISTANCE_LEVEL_MAX)) {
@@ -183,7 +207,12 @@ router.patch("/sessions/:id", requireAuth, async (c) => {
       }
     }
 
-    const session = await updatePenSession(userId, sessionId, { assistanceLevel, status, currentPageId, authoringPov, draftCharactersPresent });
+    if (draftSceneEssentials !== undefined) {
+      const essentialsError = validateDraftSceneEssentials(draftSceneEssentials);
+      if (essentialsError) return cValidationError(c, essentialsError);
+    }
+
+    const session = await updatePenSession(userId, sessionId, { assistanceLevel, status, currentPageId, authoringPov, draftCharactersPresent, draftSceneEssentials });
     return c.json({ session });
   } catch (error) {
     if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);

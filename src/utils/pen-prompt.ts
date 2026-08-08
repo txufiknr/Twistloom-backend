@@ -28,7 +28,7 @@
  */
 
 import type { StoryState } from "../types/story.js";
-import type { AuthoringMode, AuthoringPov, CoWritingPersona, LoreEntry } from "../types/pen.js";
+import type { AuthoringMode, AuthoringPov, CoWritingPersona, LoreEntry, PenDraftSceneEssentials } from "../types/pen.js";
 import type { AIJsonProperty } from "../types/ai-chat.js";
 import { getStoryStateInfo } from "./story.js";
 import { RULES_STORY_CONSISTENCY, RULES_LANGUAGE_LOCALIZATION } from "./prompt.js";
@@ -134,6 +134,7 @@ function buildCanonicalBlock(state: StoryState | null, mcName: string, canon?: {
   storyStartDate?: string | null;
   momentum?: string | null;
   sceneType?: string | null;
+  essentials?: PenDraftSceneEssentials | null;
 }): string {
   const lines: string[] = [];
 
@@ -146,6 +147,20 @@ function buildCanonicalBlock(state: StoryState | null, mcName: string, canon?: {
   if (canon?.storyStartDate) lines.push(`STORY DATE: ${canon.storyStartDate}`);
   if (canon?.momentum) lines.push(`MOMENTUM: ${canon.momentum}`);
   if (canon?.sceneType) lines.push(`SCENE TYPE: ${canon.sceneType}`);
+
+  const ess = canon?.essentials;
+  if (ess) {
+    // TODO: should we pretty format scene info using dash list?
+    const sceneParts: string[] = [];
+    if (ess.placeId) sceneParts.push(`place: ${ess.placeId}`);
+    if (ess.weather) sceneParts.push(`weather: ${ess.weather}`);
+    if (ess.timeOfDay) sceneParts.push(`time: ${ess.timeOfDay}`);
+    if (ess.calendarDate) sceneParts.push(`date: ${ess.calendarDate}`);
+    if (sceneParts.length > 0) lines.push(`SCENE: ${sceneParts.join(", ")}`);
+    if (ess.mood) lines.push(`SCENE MOOD: ${ess.mood}`);
+    if (ess.keyEvents?.length) lines.push(`KEY EVENTS THIS PAGE: ${ess.keyEvents.join(" | ")}`);
+    if (ess.keyObjects?.length) lines.push(`KEY OBJECTS THIS PAGE: ${ess.keyObjects.join(" | ")}`);
+  }
 
   if (state?.memoryIntegrity) {
     lines.push(`MEMORY INTEGRITY: ${String(state.memoryIntegrity)} (unreliable narration level)`);
@@ -236,6 +251,7 @@ export function buildPenContinuePrompt(
     storyStartDate?: string | null;
     momentum?: string | null;
     sceneType?: string | null;
+    essentials?: PenDraftSceneEssentials | null;
   } & (
     | { prose: string; directionHint?: string }
     | { command: string }
@@ -247,6 +263,7 @@ export function buildPenContinuePrompt(
     storyStartDate: "storyStartDate" in params ? params.storyStartDate : undefined,
     momentum: "momentum" in params ? params.momentum : undefined,
     sceneType: "sceneType" in params ? params.sceneType : undefined,
+    essentials: "essentials" in params ? params.essentials : undefined,
   });
   const prose = buildProseContext(pageTexts);
   const narrativeStyleInstructions = state ? createNarrativeStyle(state).instructions : undefined;

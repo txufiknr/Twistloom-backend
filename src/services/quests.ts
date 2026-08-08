@@ -544,8 +544,87 @@ export async function recheckQuests(userId: string): Promise<string[]> {
 export type { QuestMetricSnapshot };
 
 /**
- * Full claim pipeline used by the route: performs the atomic claim and then
- * invalidates the user's cached profile so the credits chip updates.
+ * Atomically claims EVERY currently-completed quest in one transaction —
+ * the bulk sibling of `claimQuestReward`. The reward total is the sum of the
+ * registry payout for each claimable quest; a single `addCredits` call pays
+ * it out and one activity log records the batch. Safely idempotent: with zero
+ * claimable quests it returns `none_claimable` with no writes.
+ *
+ * @param userId - Claiming user
+ * @returns claimedCount / creditsAwarded / newBalance plus a status flag
+ */
+export async function claimAllQuestRewards(
+  userId: string,
+): Promise<{
+  status: 'claimed' | 'none_claimable';
+  claimedCount: number;
+  creditsAwarded: number;
+  newBalance: number;
+}> {
+  return dbWrite.transaction(async (tx: DBTransaction) => {
+    const claimable = await tx
+      .select({ questId: userQuests.questId })
+      .from(userQuests)
+      .where(and(eq(userQuests.userId, userId), eq(userQuests.status, 'completed')));
+
+    if (claimable.length === 0) {
+      const [user] = await tx
+        .select({ credits: users.credits })
+        .from(users)
+        .where(eq(users.userId, userId))
+        .limit(1);
+      return { status: 'none_claimable', claimedCount: 0, creditsAwarded: 0, newBalance: user?.credits ?? 0 };
+    }
+
+    const questIds = claimable.map((r) => r.questId);
+    const rewardByQuestId = new Map(QUEST_REGISTRY.map((r) => [r.id, r.rewardCredits]));
+    const totalReward = questIds.reduce((sum, id) => sum + (rewardByQuestId.get(id) ?? 0), 0);
+
+    await tx
+      .update(userQuests)
+      .set({ status: 'claimed', claimedAt: new Date(), updatedAt: new Date() })
+      .where(and(eq(userQuests.userId, userId), eq(userQuests.status, 'completed')));
+
+    const newBalance = await addCredits(userId, totalReward, {
+      context: 'quest_reward',
+      metadata: { questIds },
+      tx,
+    });
+
+    await logUserActivity(
+      {
+        userId,
+        activityType: 'quest_reward_claimed',
+        targetType: 'quest',
+        targetId: questIds.length === 1 ? questIds[0] : 'quests',
+        metadata: { creditsAwarded: totalReward, questCount: questIds.length },
+      },
+      { client: tx },
+    );
+
+    return { status: 'claimed', claimedCount: questIds.length, creditsAwarded: totalReward, newBalance };
+  });
+}
+
+/**
+ * Full claim-all pipeline used by the route: performs the atomic bulk claim and
+ * then invalidates the user's cached profile so the credits chip updates.
+ *
+ * @param userId - Claiming user
+ */
+export async function claimAllQuestRewardsAndInvalidate(
+  userId: string,
+): Promise<Awaited<ReturnType<typeof claimAllQuestRewards>>> {
+  const result = await claimAllQuestRewards(userId);
+  if (result.status === 'claimed') {
+    await invalidateUserProfileCache(userId);
+  }
+  return result;
+}
+
+/**
+ * Full single-claim pipeline used by the route: performs the atomic claim and
+ * then invalidates the user's cached profile so the credits chip updates.
  *
  * @param userId - Claiming user
  * @param questId - Quest id to claim

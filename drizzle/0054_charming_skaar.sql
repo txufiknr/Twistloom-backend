@@ -1,0 +1,1 @@
+ALTER TABLE "pen_sessions" ADD COLUMN "draft_scene_essentials" jsonb DEFAULT 'null'::jsonb;

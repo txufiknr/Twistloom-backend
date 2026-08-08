@@ -14,9 +14,12 @@ import { dbRead, dbWrite } from "../db/client.js";
 import { getBookFromDB } from "./book.js";
 import { getTriggeredLoreEntries } from "./lore.js";
 import type { DBBook, DBPenSession } from "../types/schema.js";
-import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraftCharacter, PenEdit, PenSessionStatus, FinalizeViolation, CanonAmendment, PenEditType } from "../types/pen.js";
+import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraftCharacter, PenDraftSceneEssentials, PenEdit, PenSessionStatus, FinalizeViolation, CanonAmendment, PenEditType } from "../types/pen.js";
 import type { BookMode } from "../types/book.js";
-import type { StoryState, Action, StoryGeneration, PersistedStoryPage, SceneCharacter, CharacterSceneRole } from "../types/story.js";
+import type { StoryState, Action, StoryGeneration, PersistedStoryPage, SceneCharacter, CharacterSceneRole, Mood } from "../types/story.js";
+import { moods } from "../types/story.js";
+import type { PlaceWeather } from "../types/places.js";
+import { placeWeathers } from "../types/places.js";
 import type { CandidateGenerationPage } from "../types/candidate-generation.js";
 import type { AIResponseProvider } from "../types/ai-chat.js";
 import type { CharacterMemory, NewCharacter, StoryMC } from "../types/character.js";
@@ -184,6 +187,12 @@ export type PenSessionStateOutput = {
   currentPageId: string | null;
   /** Page number of the state (0 pre-page-1). */
   pageNumber: number;
+  /**
+   * Scene essentials of the session's current published page (placeId, mood,
+   * weather, calendarDate, timeOfDay, keyEvents, keyObjects) — prefills the
+   * drawer's Page Essentials panel for the next draft. `null` pre-page-1.
+   */
+  pageEssentials: PenDraftSceneEssentials | null;
 };
 
 /**
@@ -201,11 +210,23 @@ export async function getPenSessionState(userId: string, sessionId: string): Pro
   if (!book) throw new PenSessionNotFoundError("Book not found for this session");
 
   if (!session.currentPageId) {
-    return { state: null, currentPageId: null, pageNumber: 0 };
+    return { state: null, currentPageId: null, pageNumber: 0, pageEssentials: null };
   }
 
   const state = await getStoryStateWithBranch(book.id, session.currentPageId);
-  return { state, currentPageId: session.currentPageId, pageNumber: state?.page ?? 0 };
+  const dbPage = await getPageFromDB(session.currentPageId);
+  const pageEssentials: PenDraftSceneEssentials | null = dbPage
+    ? {
+        placeId: dbPage.placeId ?? undefined,
+        mood: dbPage.mood ?? undefined,
+        weather: dbPage.weather ?? undefined,
+        calendarDate: dbPage.calendarDate ?? undefined,
+        timeOfDay: dbPage.timeOfDay ?? undefined,
+        keyEvents: dbPage.keyEvents?.length ? dbPage.keyEvents : undefined,
+        keyObjects: dbPage.keyObjects?.length ? dbPage.keyObjects : undefined,
+      }
+    : null;
+  return { state, currentPageId: session.currentPageId, pageNumber: state?.page ?? 0, pageEssentials };
 }
 
 /** Allowed PATCH fields on a pen session. */
@@ -215,6 +236,7 @@ export type PenSessionUpdates = {
   currentPageId?: string | null;
   authoringPov?: AuthoringPov | null;
   draftCharactersPresent?: PenDraftCharacter[];
+  draftSceneEssentials?: PenDraftSceneEssentials | null;
 };
 
 /**
@@ -247,6 +269,9 @@ export async function updatePenSession(
   if (updates.draftCharactersPresent !== undefined) {
     values.draftCharactersPresent = updates.draftCharactersPresent;
   }
+  if (updates.draftSceneEssentials !== undefined) {
+    values.draftSceneEssentials = updates.draftSceneEssentials;
+  }
 
   const [updated] = await dbWrite
     .update(penSessions)
@@ -273,7 +298,7 @@ export async function closePenSession(userId: string, sessionId: string): Promis
 export async function discardPenDraft(userId: string, sessionId: string): Promise<PenSessionPayload> {
   const [updated] = await dbWrite
     .update(penSessions)
-    .set({ draftBuffer: [], draftCharactersPresent: [] })
+    .set({ draftBuffer: [], draftCharactersPresent: [], draftSceneEssentials: null })
     .where(and(eq(penSessions.id, sessionId), eq(penSessions.userId, userId)))
     .returning();
 
@@ -413,6 +438,7 @@ export async function continuePenDraft(
     momentum,
     sceneType,
     bookSummary: book.summary ?? null,
+    essentials: session.draftSceneEssentials ?? null,
   };
 
   const { systemPrompt, userPrompt } =
@@ -758,16 +784,23 @@ export async function finalizePenDraft(
         book.mc,
       );
 
+      const sceneEssentials = applySceneEssentials(session.draftSceneEssentials, {
+        mood: currentPage.mood,
+        weather: currentPage.weather,
+      });
+
       const generatedStoryPage: StoryGeneration = {
         text: draftText,
         actions,
-        mood: currentPage.mood,
-        placeId: currentPage.placeId,
-        weather: currentPage.weather,
-        calendarDate: currentPage.calendarDate,
-        timeOfDay: currentPage.timeOfDay,
+        mood: sceneEssentials.mood,
+        placeId: session.draftSceneEssentials?.placeId ?? currentPage.placeId,
+        weather: sceneEssentials.weather,
+        calendarDate: session.draftSceneEssentials?.calendarDate ?? currentPage.calendarDate,
+        timeOfDay: session.draftSceneEssentials?.timeOfDay ?? currentPage.timeOfDay,
         sceneType: currentPage.sceneType,
         charactersPresent: castPresent,
+        ...(session.draftSceneEssentials?.keyEvents?.length ? { keyEvents: session.draftSceneEssentials.keyEvents } : {}),
+        ...(session.draftSceneEssentials?.keyObjects?.length ? { keyObjects: session.draftSceneEssentials.keyObjects } : {}),
         ...(castNewCharacters.length ? { newCharacters: castNewCharacters } : {}),
       };
 
@@ -831,8 +864,17 @@ export async function finalizePenDraft(
         book.mc,
       );
 
+      const firstPageEssentials = applySceneEssentials(session.draftSceneEssentials, {});
+
       const pageToInsert = {
         ...generatedFirstPage(draftText, actions, castPresent, castNewCharacters),
+        ...(session.draftSceneEssentials?.placeId ? { placeId: session.draftSceneEssentials.placeId } : {}),
+        ...(firstPageEssentials.mood ? { mood: firstPageEssentials.mood } : {}),
+        ...(firstPageEssentials.weather ? { weather: firstPageEssentials.weather } : {}),
+        ...(session.draftSceneEssentials?.calendarDate ? { calendarDate: session.draftSceneEssentials.calendarDate } : {}),
+        ...(session.draftSceneEssentials?.timeOfDay ? { timeOfDay: session.draftSceneEssentials.timeOfDay } : {}),
+        ...(session.draftSceneEssentials?.keyEvents?.length ? { keyEvents: session.draftSceneEssentials.keyEvents } : {}),
+        ...(session.draftSceneEssentials?.keyObjects?.length ? { keyObjects: session.draftSceneEssentials.keyObjects } : {}),
         stateDelta: {},
       };
       validateGeneratedPage(pageToInsert, book.mode, "pen-finalize");
@@ -890,7 +932,7 @@ export async function finalizePenDraft(
 
     await tx
       .update(penSessions)
-      .set({ draftBuffer: [], draftCharactersPresent: [], currentPageId: newPage.id, status: "active", updatedAt: new Date() })
+      .set({ draftBuffer: [], draftCharactersPresent: [], draftSceneEssentials: null, currentPageId: newPage.id, status: "active", updatedAt: new Date() })
       .where(and(eq(penSessions.id, sessionId), eq(penSessions.userId, userId)));
   });
 
@@ -905,7 +947,41 @@ export async function finalizePenDraft(
 }
 
 /**
- * Builds the minimal first-page `StoryGeneration` for a pen-authored page-1
+ * Coerces an author-curated scene essentials string into the engine's
+ * canonical Mood union. Empty/invalid values return the inherited fallback so
+ * the Pen never drops scene context the author didn't explicitly set.
+ */
+function coerceMood(value: string | undefined, fallback: Mood | undefined): Mood | undefined {
+  if (value === undefined || value === "") return fallback;
+  return moods.includes(value as Mood) ? (value as Mood) : fallback;
+}
+
+/**
+ * Coerces an author-curated scene essentials string into the canonical
+ * PlaceWeather union (same semantics as {@link coerceMood}).
+ */
+function coerceWeather(value: string | undefined, fallback: PlaceWeather | undefined): PlaceWeather | undefined {
+  if (value === undefined || value === "") return fallback;
+  return placeWeathers.includes(value as PlaceWeather) ? (value as PlaceWeather) : fallback;
+}
+
+/**
+ * Applies the session's author-curated scene essentials (§10) over the page
+ * being published. Every field falls back to the inherited page value when
+ * blank, so the Pen never clears context the author didn't explicitly touch.
+ */
+function applySceneEssentials(
+  essentials: PenDraftSceneEssentials | null | undefined,
+  inherited: Pick<StoryGeneration, "mood" | "weather">,
+): Pick<StoryGeneration, "mood" | "weather"> {
+  return {
+    mood: coerceMood(essentials?.mood, inherited.mood),
+    weather: coerceWeather(essentials?.weather, inherited.weather),
+  };
+}
+
+/**
+ * Builds a minimal first-page `StoryGeneration` for a pen-authored page-1
  * publish. Scene context defaults to neutral until the author's first page
  * establishes it. `charactersPresent` is the author's curated on-scene cast
  * (full cast incl. MC); `newCharacters` registers any not-yet-known names.

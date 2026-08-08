@@ -42,6 +42,7 @@
  * - POST /user/achievements/acknowledge - Mark achievements as viewed
  * - GET /user/quests - Get the user's quest log ("The Prologue")
  * - POST /user/quests/recheck - Re-evaluate quest completion
+ * - POST /user/quests/claim-all - Claim all completed quest rewards at once
  * - POST /user/quests/:questId/claim - Claim a completed quest's credit reward
  * 
  * Note: Comment CRUD endpoints are in books.ts, not this file.
@@ -67,7 +68,7 @@ import { uploadUserImage, uploadFeedbackScreenshot, persistUploadedImage } from 
 import { isValidUuid } from "../utils/uuid.js";
 import { getStoryProgressWithBranch } from '../services/story-branch.js';
 import { checkAndAwardAchievements, getUserAchievements, getUserMetrics } from '../services/achievements.js';
-import { getUserQuests, summarizeQuests, recheckQuests, claimQuestRewardAndInvalidate } from '../services/quests.js';
+import { getUserQuests, summarizeQuests, recheckQuests, claimQuestRewardAndInvalidate, claimAllQuestRewardsAndInvalidate } from '../services/quests.js';
 import { verifyPassword } from "../utils/password.js";
 import { OAuth2Client } from "google-auth-library";
 import type { PaginationMeta } from '../types/api.js';
@@ -3356,6 +3357,35 @@ router.post('/quests/recheck', requireAuth, async (c: Context<AppEnv>) => {
     return c.json({ success: true, newlyCompleted });
   } catch (error) {
     return cApiError(c, 'Failed to re-check quests', error);
+  }
+});
+
+/**
+ * POST /user/quests/claim-all
+ *
+ * Atomically claims EVERY currently-completed quest in a single transaction —
+ * the user's aggregate claim button in "The Prologue". Payout is the sum of
+ * the registry rewards for the claimed quests, added in one `addCredits` call,
+ * so the user gets one balance bump instead of N. Idempotent: with nothing
+ * claimable it returns `status: 'none_claimable'` and no writes occur.
+ *
+ * @route POST /user/quests/claim-all
+ * @description Claim all completed quest rewards at once
+ * @auth Required
+ *
+ * @returns {boolean} success - Always true
+ * @returns {string} status - 'claimed' | 'none_claimable'
+ * @returns {number} claimedCount - Number of quests claimed in this batch
+ * @returns {number} creditsAwarded - Total credits paid out (0 when none)
+ * @returns {number} newBalance - User's credit balance after the claims
+ */
+router.post('/quests/claim-all', requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get("userId")!;
+    const result = await claimAllQuestRewardsAndInvalidate(userId);
+    return c.json({ success: true, ...result });
+  } catch (error) {
+    return cApiError(c, 'Failed to claim quest rewards', error);
   }
 });
 

@@ -63,9 +63,10 @@ The Users API provides endpoints for managing user profiles, social interactions
       - [Get Unnotified Achievements](#get-userachievementsunnotified)
       - [Acknowledge Achievement](#post-userachievementsacknowledge)
       - [Get User Public Achievements](#get-usersidachievements)
- 13. [Quests (The Prologue)](#quests-the-prologue)
+  13. [Quests (The Prologue)](#quests-the-prologue)
       - [Get Quest Log](#get-userquests)
       - [Re-Check Quest Completion](#post-userquestsrecheck)
+      - [Claim All Quest Rewards](#post-userquestsclaim-all)
       - [Claim Quest Reward](#post-userquestsquestidclaim)
  14. [User Feedback](#user-feedback)
       - [Submit Feedback](#post-userfeedbacks)
@@ -1897,6 +1898,49 @@ affects zero rows and returns `already_claimed` instead of paying twice.
 
 ---
 
+### POST /user/quests/claim-all
+
+Atomically claims EVERY currently-completed quest in a single transaction —
+the aggregate "Claim all rewards" action in The Prologue. Payout is the sum of
+the registry rewards for the claimed quests, applied via **one** `addCredits`
+call, so the user gets a single balance bump. Idempotent: with nothing
+claimable it returns `status: 'none_claimable'` and no rows are written.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Response (200 OK — claimed):**
+```json
+{
+  "success": true,
+  "status": "claimed",
+  "claimedCount": 3,
+  "creditsAwarded": 45,
+  "newBalance": 390
+}
+```
+
+**Response (200 OK — nothing to claim):**
+```json
+{
+  "success": true,
+  "status": "none_claimable",
+  "claimedCount": 0,
+  "creditsAwarded": 0,
+  "newBalance": 390
+}
+```
+
+**Error Responses:**
+- `500 Internal Server Error`: Failed to claim quest rewards
+
+**Notes:**
+- On success the user's profile cache is invalidated so `CreditsChip` /
+  `useUser` reflect the new aggregate balance, and a single
+  `quest_reward_claimed` activity log entry records the batch (`metadata:
+  { creditsAwarded, questCount }`).
+
+---
+
 ## User Feedback
 
 ### POST /user/feedbacks
@@ -2396,6 +2440,9 @@ curl -X POST https://api.twistloom.com/api/user/feedbacks \
 ---
 
 ## Changelog
+
+### v3.8.0 (2026-08-08)
+- Added `POST /user/quests/claim-all` — atomically claims **every completed quest** in one transaction, pays a single aggregate balance via `addCredits` (sum of the claimed quests' registry rewards), and records one `quest_reward` batch activity log. Idempotent: with nothing claimable it returns `{ status: 'none_claimable', claimedCount: 0, creditsAwarded: 0 }` and performs no writes. Invalidates the profile cache on success for the `CreditsChip`/`useUser` refresh.
 
 ### v3.7.0 (2026-08-06)
 - Added the Quests ("The Prologue") section with three endpoints:

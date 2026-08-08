@@ -15,7 +15,7 @@ import type { StoryThread, StoryThreadTranslation } from "../types/story-thread.
 import type { CustomActionOutcome, CustomActionRejectionCategory } from "../types/custom-action.js";
 import type { QuestStatus } from "../types/quests.js";
 import type { CanonValidationOutcome, CanonViolation, CanonViolationType } from "../types/canon-validation.js";
-import type { AuthorshipOrigin, AuthoringMode, AuthoringPov, DraftSpan, EditorPrefs, PenDraftCharacter, PenEditType, PenSessionStatus, LoreEntryType } from "../types/pen.js";
+import type { AuthorshipOrigin, AuthoringMode, AuthoringPov, DraftSpan, EditorPrefs, PenDraftCharacter, PenDraftSceneEssentials, PenEditType, PenSessionStatus, LoreEntryType } from "../types/pen.js";
 import type { TransactionType } from "../types/credits.js";
 import { PAYMENT_GATEWAY, type PaymentGateway } from "../types/payment.js";
 import type { SubscriptionStatus, SubscriptionTransactionType } from "../types/subscription.js";
@@ -2429,6 +2429,14 @@ export const penSessions = pgTable(
      * draft on /finalize and /discard.
      */
     draftCharactersPresent: jsonb("draft_characters_present").$type<PenDraftCharacter[]>().notNull().default(sql`'[]'::jsonb`),
+    /**
+     * Author-curated scene essentials for the NEXT page (setting: placeId,
+     * mood, weather, calendarDate, timeOfDay, keyEvents, keyObjects). Cleared
+     * with the draft on /finalize and /discard, mirroring
+     * `draftCharactersPresent`. Blank fields are undefined so /finalize falls
+     * back to the previous published page's values.
+     */
+    draftSceneEssentials: jsonb("draft_scene_essentials").$type<PenDraftSceneEssentials | null>().default(null),
     /** 0 (all human) to 1 (all AI) — maps to credit cost tiers (§8). */
     assistanceLevel: real("assistance_level").notNull().default(0.5),
     /** Session-level POV default (§10 E). Null → derive from the author's prose. */
