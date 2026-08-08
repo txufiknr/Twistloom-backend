@@ -423,6 +423,8 @@ export const PEN_TITLE_MAX_LENGTH = 120;
 export const PEN_SUMMARY_MAX_LENGTH = 500;
 /** Default authoring mode when the request omits one. */
 export const PEN_DEFAULT_AUTHORING_MODE = "storyteller";
+/** Default title for Pen books when the author skips naming one. */
+export const PEN_DEFAULT_TITLE = "New Story";
 /** Pen-created books are always created in linear ('novel') mode. */
 export const PEN_DEFAULT_BOOK_MODE = "novel";
 /** Fallback language when the request has no usable header language. */

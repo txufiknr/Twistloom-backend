@@ -149,7 +149,7 @@ import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 import { notifyForumOfBookChange, notifyForumStoryArchived } from "../services/forum-queue.js";
 import { createAIOptionsWithSchema, aiPrompt } from "../utils/ai-chat.js";
 import { AI_CHAT_MODELS_THEME } from "../config/ai-clients.js";
-import { BOOK_MIN_PAGES, PEN_AUTHORING_MODES, PEN_DEFAULT_AUTHORING_MODE, PEN_DEFAULT_BOOK_MODE, PEN_PLACEHOLDER_MC, PEN_SUMMARY_MAX_LENGTH, PEN_TARGET_PAGES_MAX, PEN_TARGET_PAGES_MIN, PEN_TITLE_MAX_LENGTH, PEN_TITLE_MIN_LENGTH } from "../config/story.js";
+import { BOOK_MIN_PAGES, PEN_AUTHORING_MODES, PEN_DEFAULT_AUTHORING_MODE, PEN_DEFAULT_BOOK_MODE, PEN_DEFAULT_TITLE, PEN_PLACEHOLDER_MC, PEN_SUMMARY_MAX_LENGTH, PEN_TARGET_PAGES_MAX, PEN_TARGET_PAGES_MIN, PEN_TITLE_MAX_LENGTH, PEN_TITLE_MIN_LENGTH } from "../config/story.js";
 import type { CustomActionValidationResult, CustomActionPreviewResponse, CustomActionSubmitResponse } from "../types/custom-action.js";
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { MAX_BRANCHING_PREGENERATION_DEPTH } from "../config/story.js";
@@ -272,7 +272,8 @@ router.post("/", requireAuth, rateLimit(BOOK_CREATION_RATE_LIMIT), async (c) => 
  * on the pen session (§0.b), so it is accepted here only to shape the entry UX;
  * the book's branching `mode` stays `'novel'` for a linear first draft.
  *
- * @body {string} title - Book title (2–120 chars, trimmed)
+ * @body {string} [title] - Book title (2–120 chars, trimmed). Optional — when
+ *   omitted or blank the book is titled "New Story" by default.
  * @body {string} [authoringMode] - 'storyteller' | 'text_adventure' (default 'storyteller')
  *
  * @route POST /api/books/pen
@@ -288,8 +289,7 @@ router.post("/pen", requireAuth, async (c) => {
     const language = typeof body.language === "string" ? body.language.trim().toLowerCase() : "";
     const summary = typeof body.summary === "string" ? body.summary.trim() : "";
 
-    if (!title) return cValidationError(c, "title is required");
-    if (title.length < PEN_TITLE_MIN_LENGTH) return cValidationError(c, `title must be at least ${PEN_TITLE_MIN_LENGTH} characters`);
+    if (title && title.length < PEN_TITLE_MIN_LENGTH) return cValidationError(c, `title must be at least ${PEN_TITLE_MIN_LENGTH} characters`);
     if (title.length > PEN_TITLE_MAX_LENGTH) return cValidationError(c, `title must be at most ${PEN_TITLE_MAX_LENGTH} characters`);
     if (typeof authoringMode !== "string" || !PEN_AUTHORING_MODES.includes(authoringMode)) {
       return cValidationError(c, `authoringMode must be 'storyteller' or 'text_adventure'`);
@@ -307,7 +307,7 @@ router.post("/pen", requireAuth, async (c) => {
 
     const created = await insertBook({
       userId,
-      title,
+      title: title || PEN_DEFAULT_TITLE,
       summary: summary || null,
       mc: placeholderMc,
       mode: PEN_DEFAULT_BOOK_MODE,
