@@ -149,7 +149,7 @@ import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 import { notifyForumOfBookChange, notifyForumStoryArchived } from "../services/forum-queue.js";
 import { createAIOptionsWithSchema, aiPrompt } from "../utils/ai-chat.js";
 import { AI_CHAT_MODELS_THEME } from "../config/ai-clients.js";
-import { BOOK_MIN_PAGES, PEN_AUTHORING_MODES, PEN_DEFAULT_AUTHORING_MODE, PEN_DEFAULT_BOOK_MODE, PEN_PLACEHOLDER_MC, PEN_SUMMARY_MAX_LENGTH, PEN_TITLE_MAX_LENGTH, PEN_TITLE_MIN_LENGTH } from "../config/story.js";
+import { BOOK_MIN_PAGES, PEN_AUTHORING_MODES, PEN_DEFAULT_AUTHORING_MODE, PEN_DEFAULT_BOOK_MODE, PEN_PLACEHOLDER_MC, PEN_SUMMARY_MAX_LENGTH, PEN_TARGET_PAGES_MAX, PEN_TARGET_PAGES_MIN, PEN_TITLE_MAX_LENGTH, PEN_TITLE_MIN_LENGTH } from "../config/story.js";
 import type { CustomActionValidationResult, CustomActionPreviewResponse, CustomActionSubmitResponse } from "../types/custom-action.js";
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { MAX_BRANCHING_PREGENERATION_DEPTH } from "../config/story.js";
@@ -1461,7 +1461,7 @@ router.put("/:id", requireAuth, async (c) => {
   try {
     const { id } = c.req.param();
     const userId = c.get("userId")!;
-    const { title, hook, summary, keywords, visibility, status: newStatus, mc, ending } = c.get("body");
+    const { title, hook, summary, keywords, visibility, status: newStatus, mc, ending, totalPages } = c.get("body");
 
     // Verify book ownership
     const [book] = await dbRead.select({ 
@@ -1474,6 +1474,7 @@ router.put("/:id", requireAuth, async (c) => {
       status: books.status,
       visibility: books.visibility,
       mc: books.mc,
+      isPenBook: books.isPenBook,
     })
     .from(books)
     .where(and(
@@ -1506,6 +1507,28 @@ router.put("/:id", requireAuth, async (c) => {
       updateData.mc = mcTextFields;
     }
     if (ending !== undefined) updateData.ending = ending;
+
+    // Decision R (§10): the editable "target length" is Pen-only — accepted only
+    // when the book is a Pen book, and ignored entirely for non-Pen
+    // (engine-authored, fixed-length) books. A target is a soft pacing estimate,
+    // never a hard gate: the auto-grow formula on /finalize writes
+    // `maxPage = max(target, publishedCount)`, so a stale target never walls.
+    if (totalPages !== undefined && book.isPenBook) {
+      const target =
+        typeof totalPages === "number" ? totalPages : parseInt(String(totalPages), 10);
+      if (
+        Number.isNaN(target) ||
+        !Number.isInteger(target) ||
+        target < PEN_TARGET_PAGES_MIN ||
+        target > PEN_TARGET_PAGES_MAX
+      ) {
+        return cValidationError(
+          c,
+          `totalPages must be an integer between ${PEN_TARGET_PAGES_MIN} and ${PEN_TARGET_PAGES_MAX}`,
+        );
+      }
+      updateData.totalPages = target;
+    }
 
     const updatedBook = await updateBook(book.id, updateData);
 

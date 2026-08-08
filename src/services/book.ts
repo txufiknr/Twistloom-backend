@@ -27,9 +27,9 @@ import { bookVisibilities } from "../types/book.js";
 import type { StoryPage, PersistedStoryPage, UserStoryPage, StoryState, StoryPageMeta, EnrichedStoryPage, StateDelta, StoryGeneration, SelectedAction, Action, EnrichedStoryPageContext, TranslatedStoryPage, EnrichedStoryPagePlace, EnrichedStoryPageCharacter } from "../types/story.js";
 import type { CanonValidationSummary } from "../types/canon-validation.js";
 import { getStoryStateFromPage, insertStoryState } from "./story.js";
-import { formatPlacesForPrompt } from "../utils/places.js";
+import { formatPlacesForPrompt, resolvePlaceLoreNames } from "../utils/places.js";
 import { formatBookMetaForPrompt } from "../utils/books.js";
-import { calculateHealthStatus, formatCharactersForPrompt, formatPlannedCharactersForPrompt } from "../utils/characters.js";
+import { calculateHealthStatus, formatCharactersForPrompt, formatPlannedCharactersForPrompt, resolveCharacterLoreNames } from "../utils/characters.js";
 import { formatSystemPromptWithDocuments } from "../utils/ai-chat.js";
 import { IS_PRODUCTION } from "../config/env.js";
 import { geminiGenerateImage } from "../utils/ai-image.js";
@@ -1767,7 +1767,8 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
         type: place.type,
         category: place.category,
         context: place.context,
-        traits: place.traits?.map(parseTrait)
+        traits: place.traits?.map(parseTrait),
+        names: resolvePlaceLoreNames(place),
       }) satisfies Record<keyof EnrichedStoryPagePlace, unknown>),
       characters: Object.entries(characters).map(([characterId, character]) => ({
         characterId,
@@ -1775,7 +1776,8 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
         gender: character.gender,
         role: character.role,
         bio: character.bio,
-        traits: character.traits?.map(parseTrait)
+        traits: character.traits?.map(parseTrait),
+        names: resolveCharacterLoreNames(character),
       }) satisfies Record<keyof EnrichedStoryPageCharacter, unknown>)
     } satisfies Record<keyof EnrichedStoryPageContext, unknown>;
   }

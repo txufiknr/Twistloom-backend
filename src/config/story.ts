@@ -433,7 +433,16 @@ export const PEN_AUTHORING_MODES: readonly string[] = ["storyteller", "text_adve
 export const PEN_AUTHORING_POVS: readonly string[] = ["first", "second", "third"];
 /** Session statuses accepted on PATCH. */
 export const PEN_SESSION_STATUSES: readonly string[] = ["active", "paused", "closed"];
-/** Lower bound for `assistanceLevel` (normalized 0-1). */
+/**
+ * Editable "target length" bounds for Pen books (Decision R, §10). Unlike the
+ * reader-facing engine bound `BOOK_MAX_PAGES` (200), this is a **soft** pacing
+ * estimate the author sets anytime and that never blocks: publishing past it
+ * auto-grows `maxPage = max(target, publishedCount)`. 10000 gives open-ended
+ * novels headroom while still bounding the phase denominator input.
+ */
+export const PEN_TARGET_PAGES_MIN = 1;
+export const PEN_TARGET_PAGES_MAX = 10000;
+/** Lower bounds for `assistanceLevel` (normalized 0-1). */
 export const PEN_ASSISTANCE_LEVEL_MIN = 0;
 /** Upper bound for `assistanceLevel` (normalized 0-1). */
 export const PEN_ASSISTANCE_LEVEL_MAX = 1;

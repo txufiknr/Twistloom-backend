@@ -552,6 +552,39 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
 }
 
 /**
+ * Resolves the reader-gated spellings a character may appear under in prose,
+ * used for lore on-hover matching.
+ *
+ * Gated by the same `recognitionLevel` that drives the enriched display name
+ * (`mapToEnrichedPage`) and the narrator's prose (RULES_CHARACTER_RECOGNITION):
+ * - `never_seen` / `seen` → `[]` — no name ever appears in prose, so nothing
+ *   can be tooltipped.
+ * - `alias_known` → `[knownName]` — the alias/codename only; the real name
+ *   must stay hidden until a reveal.
+ * - `first_name_known` / `full_name_known` → `[realName, knownName]` — identity
+ *   is known, so both the full identity and any distinct alias are legitimate
+ *   references.
+ *
+ * Shipping this as an explicit set keeps frontend hover matching from a
+ * different name than the display name, and keeps tooltips from pre-announcing
+ * an identity reveal the recognition gate is deliberately pacing.
+ *
+ * @param character - Character memory slice with the fields the gate needs.
+ * @returns Deduplicated, trimmed spellings; empty for masked/no-name levels.
+ */
+export function resolveCharacterLoreNames(
+  character: Pick<CharacterMemory, 'knownName' | 'realName' | 'recognitionLevel'>,
+): string[] {
+  if (character.recognitionLevel === 'never_seen' || character.recognitionLevel === 'seen') {
+    return [];
+  }
+  const names = character.recognitionLevel === 'alias_known'
+    ? [character.knownName]
+    : [character.realName, character.knownName];
+  return [...new Set(names.map((n) => n?.trim()).filter(Boolean))];
+}
+
+/**
  * Shared helper: builds the header line used by both introduced and planned
  * character formatters.
  *

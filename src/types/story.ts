@@ -1409,8 +1409,17 @@ export type EnrichedStoryPageContext = {
   ending?: Omit<Ending, 'changeReason' | 'changeViabilityBefore' | 'changeViabilityAfter'>;
 };
 
-export type EnrichedStoryPagePlace = Pick<PlaceMemory, 'type' | 'category' | 'context'> & { placeId: string; name: string; traits?: { key: string; value: string }[] };
-export type EnrichedStoryPageCharacter = Pick<CharacterMemory, 'gender' | 'role' | 'bio'> & { characterId: string; name: string; traits?: { key: string; value: string }[] };
+/**
+ * `name` is the single display name for this entity at the current
+ * recognition point (`realName`/`knownName` — see `mapToEnrichedPage`).
+ * `names` is the reader-gated set of ALL spellings the entity may
+ * legitimately appear under in prose at this point (alias only while masked;
+ * real name + alias once revealed). Lore on-hover matching (frontend
+ * `StoryText`) must use `names` over `name`, so tooltips never reveal an
+ * identity the recognition gate has not yet revealed.
+ */
+export type EnrichedStoryPagePlace = Pick<PlaceMemory, 'type' | 'category' | 'context'> & { placeId: string; name: string; names: string[]; traits?: { key: string; value: string }[] };
+export type EnrichedStoryPageCharacter = Pick<CharacterMemory, 'gender' | 'role' | 'bio'> & { characterId: string; name: string; names: string[]; traits?: { key: string; value: string }[] };
 
 /**
  * | System          | Purpose                     |

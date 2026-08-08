@@ -780,6 +780,22 @@ export async function finalizePenDraft(
         context: "pen-finalize",
       });
 
+      // Decision R (§10): soft target that never walls — and, for branched
+      // stories, never lets a shallow branch "shrink" the phase denominator of
+      // the branch chain it belongs to. maxPage = the best of three sources:
+      //   - currentState.maxPage: the inherited, path-local ceiling from the
+      //     branch chain (monotonic — advanceStoryState carries it forward), so
+      //     a deep spine keeps its scale while a shallow side-branch reads
+      //     "N of the same Y" instead of a suddenly-reset budget;
+      //   - book.totalPages: the author's editable target estimate (soft);
+      //   - pageNumber: the real page about to publish, so a book that runs
+      //     past its target never walls ("Mark complete" stays authoritative).
+      newState.maxPage = Math.max(
+        currentState.maxPage,
+        book.totalPages ?? pageNumber,
+        pageNumber,
+      );
+
       const parentBranchId = currentPage.branchId ?? "main";
       const usedBranchIds = new Set<string>();
       const branchId = await determineBranchIdForPage({

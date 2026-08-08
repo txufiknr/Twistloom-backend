@@ -393,6 +393,26 @@ export function formatPlacesForPrompt(places: Record<string, PlaceMemory>, curre
 }
 
 /**
+ * Resolves the reader-gated spellings a place may appear under in prose,
+ * used for lore on-hover matching.
+ *
+ * Mirrors `resolveCharacterLoreNames`: while a place's real name is hidden
+ * (`isRealNameKnown === false`) only the in-world `knownName` is legitimate;
+ * once revealed, both the real name and the alias are valid references.
+ *
+ * @param place - Place memory slice with the fields the gate needs.
+ * @returns Deduplicated, trimmed spellings.
+ */
+export function resolvePlaceLoreNames(
+  place: Pick<PlaceMemory, 'knownName' | 'realName' | 'isRealNameKnown'>,
+): string[] {
+  const names = place.isRealNameKnown
+    ? [place.realName, place.knownName]
+    : [place.knownName];
+  return [...new Set(names.map((n) => n?.trim()).filter(Boolean))];
+}
+
+/**
  * Calculates place familiarity score based on visit patterns
  *
  * Combines three independently-capped components so no single factor
