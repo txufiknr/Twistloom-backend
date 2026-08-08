@@ -416,7 +416,7 @@ export async function continuePenDraft(
   // §10 E: per-interaction authoringPov overrides the session default.
   const authoringPov = input.authoringPov ?? session.authoringPov ?? undefined;
 
-// The assistance level snaps to a continuation-length tier (§8): short/medium/
+  // The assistance level snaps to a continuation-length tier (§8): short/medium/
   // long. It is priced per request so the charge always matches what the author
   // saw in the editor, closing the debounce race between the local toggle and the
   // persisted session value. Clamped to [0, 1]; when absent the session default

@@ -57,8 +57,7 @@ const BASE_NARRATIVE_RULES = `STRICT POV & NARRATIVE RULE:
 - FIRST-PERSON CENTRAL POV ("I") only — the MC is the narrator. NEVER third-person ("he", "she", "they", or the MC's own name) for the MC's actions or feelings.
 - Unreliable narrator: show only what the MC perceives, believes, or wrongly assumes.`;
 
-const BASE_THRILLER_SYNTAX = `SYNTACTIC PACING:
-- Open sentences with "And," "But," or "So" for a punchy, breathless rhythm; avoid opening with "The" — lead with direct objects and active verbs instead.`;
+const BASE_THRILLER_SYNTAX = `- Open sentences with native conjunctions to create a punchy, breathless rhythm. Avoid opening with definite articles — lead with direct objects and active verbs that feel natural to the target language's grammar.`;
 
 const BASE_FORMAT_RULES = `- Max ${MAX_WORDS_PER_PAGE} words.
 - Write in the target language.

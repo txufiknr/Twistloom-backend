@@ -18,57 +18,22 @@
 
 [@] sync sampling formula with ai-sampling.ts
 [ ] implement trust and safety enforcement system (TODO-trust-safety.md & TRUST_AND_SAFETY_ENFORCEMENT_SYSTEM.md)
-[ ] Before insert page, correct futureNote keys
-[ ] Place categories list di prompt aja
-[ ] formatEndingPlan: if no `changeNote` (initial viable ending), use from `book.ending` instead
-[ ] on book.ending edit, evaluate with AI for security and viability score
+[ ] on book.ending edit, evaluate with AI for security and plausibility
 [ ] always generate AI illustration for page 1
 [ ] can you apply requireVerifiedEmail middleware on "Profile & account management routes" routes first, sequentially?
 [ ] enrich initialize book with generated mc image
 [ ] enrich page 1 with imagePrompt -> generate page image cron
-[ ] reset db -> check "1.2 — Engine regression test suite"
 [ ] https://dashboard.xendit.co/settings/developers#api-keys
 [ ] pastInteractions -> interactions
 
 ---
-    "db:generate": "bunx drizzle-kit generate",
-    "db:migrate": "bunx drizzle-kit migrate",
-    "db:migrate:prod": "bunx --env-file=.env.production drizzle-kit migrate",
-    "db:studio": "bunx drizzle-kit studio",
-
-    "db:migrate": "node --env-file=.env.local node_modules/drizzle-kit/bin.cjs migrate",
-
----
-
-[gemini/gemini-3.5-flash] ❗ Bad request (other):
-  ApiError: {"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}
-      at throwErrorIfNotOK (file:///home/runner/work/Twistloom-backend/Twistloom-backend/node_modules/.pnpm/@google+genai@2.7.0/node_modules/@google/genai/dist/node/index.mjs:13547:30)
-      at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
-      at async file:///home/runner/work/Twistloom-backend/Twistloom-backend/node_modules/.pnpm/@google+genai@2.7.0/node_modules/@google/genai/dist/node/index.mjs:13247:13
-      at async Models.generateContent (file:///home/runner/work/Twistloom-backend/Twistloom-backend/node_modules/.pnpm/@google+genai@2.7.0/node_modules/@google/genai/dist/node/index.mjs:14655:24)
-      at async candidates (file:///home/runner/work/Twistloom-backend/Twistloom-backend/dist/utils/ai-chat.js:243:26)
-      at async retryWithBackoff (file:///home/runner/work/Twistloom-backend/Twistloom-backend/dist/utils/retry.js:119:20)
-      at async promptWithFallback (file:///home/runner/work/Twistloom-backend/Twistloom-backend/dist/utils/ai-chat.js:58:30)
-      at async aiPrompt (file:///home/runner/work/Twistloom-backend/Twistloom-backend/dist/utils/ai-chat.js:826:30)
-      at async executePromptForJSON (file:///home/runner/work/Twistloom-backend/Twistloom-backend/dist/utils/prompt.js:4497:22)
-      at async generateNextPage (file:///home/runner/work/Twistloom-backend/Twistloom-backend/dist/utils/prompt.js:4180:22) {
-    status: 400
-  }
-  
----
-
-ApiError: {"error":{"code":429,"message":"TotalCachedContentStorageTokensPerModelFreeTier limit exceeded for model gemini-2.5-flash: limit=0, requested=7558","status":"RESOURCE_EXHAUSTED"}}
-
-ApiError: {"error":{"code":400,"message":"The specified schema produces a constraint that has too many states for serving. Typical causes of this error are schemas with lots of text (for example, very long property or enum names), schemas with long array length limits (especially when nested), or schemas using complex value matchers (for example, integers or numbers with minimum/maximum bounds or strings with complex formats like date-time)","status":"INVALID_ARGUMENT"}}
-
----
 
 TO PURCHASE:
-[ ] upstash redis & qstash
-[ ] upgrade vercel hobby -> pro
+[ ] purchase premium AI chat API keys
 [ ] beli domain twistloom.com -> buat email dev@twistloom.com
 [ ] migrate semua akun AI pake email dev@twistloom.com -> replace all API keys -> delete old api keys & project
-[ ] purchase premium AI chat API keys
+[ ] optional: upstash redis & qstash
+[ ] optional: upgrade vercel hobby -> pro
 [ ] migrate: GitHub models 8K context -> Official OpenAI 128K context
 [ ] migrate: LRU & in-memory cache (for static configurations or public API metadata) -> Vercel KV or Upstash Redis for true, shared cross-user in-memory storage.
 [ ] migrate: serverless environment -> single, always-on server Vercel VPS alternative (like Render, Railway, or Fly.io) if you want a true, traditional single-instance server.
