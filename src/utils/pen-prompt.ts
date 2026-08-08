@@ -33,6 +33,7 @@ import type { AIJsonProperty } from "../types/ai-chat.js";
 import { getStoryStateInfo } from "./story.js";
 import { RULES_STORY_CONSISTENCY, RULES_LANGUAGE_LOCALIZATION } from "./prompt.js";
 import { createNarrativeStyle } from "./narrative-style.js";
+import { formatLanguage } from "./translation.js";
 
 /** Number of prior pages of context included in a `/continue` prompt. */
 const PEN_CONTEXT_PAGES = 2;
@@ -98,7 +99,9 @@ function loreBlock(lore?: LoreEntry[]): string {
 export const PEN_STORYTELLER_SYSTEM = `You are a literary co-writer. (Genre-agnostic — follow the story's established genre and tone; do not force horror or thriller framing.)
 Continue the author's prose seamlessly — preserve their voice, tense, pacing, and characterization. Advance the scene naturally.
 
-MANDATORY: the USER message contains labeled sections you MUST read and obey before generating: AUTHOR'S POV, AUTHOR'S PERSONA, CANONICAL LORE, NARRATIVE STYLE, WRITE IN LANGUAGE, CANONICAL STATE (do not contradict), RECENT STORY, and AUTHOR'S FRAGMENT. The CANONICAL STATE and CANONICAL LORE are authoritative — do not contradict them.
+MANDATORY: the USER message contains labeled sections you MUST read and obey before generating: AUTHOR'S POV, AUTHOR'S PERSONA, STORY SUMMARY, CANONICAL LORE, NARRATIVE STYLE, WRITE IN LANGUAGE, CANONICAL STATE (do not contradict), RECENT STORY, and AUTHOR'S FRAGMENT. The CANONICAL STATE and CANONICAL LORE are authoritative — do not contradict them.
+
+WRITE ONLY IN THE LANGUAGE SPECIFIED IN THE WRITE IN LANGUAGE SECTION — the code there is the language of record for every user-facing word you output. Never switch to any other language, English included, unless English is the code specified.
 
 ${RULES_STORY_CONSISTENCY}
 
@@ -111,10 +114,12 @@ ${RULES_LANGUAGE_LOCALIZATION}`;
  * volatile content deferred to the user prompt. Text Adventure is always
  * second-person; the command arrives in the user prompt.
  */
-export const PEN_TEXT_ADVENTURE_SYSTEM = `You are the game master / world simulator for the author's story. (Genre-agnostic — follow the story's established genre and tone; do not force horror or thriller framing.)
-Interpret the author's short command as a player action and resolve it INTO the story. Simulate consequences, advance the scene, stay in-character as the narrator.
+export const PEN_TEXT_ADVENTURE_SYSTEM = `You are the game master / story simulator for the author's story. (Genre-agnostic — follow the story's established genre and tone; do not force horror or thriller framing.)
+Interpret the author's request as a player action and resolve it into the story. Simulate consequences, advance the scene, stay in-character as the narrator.
 
-MANDATORY: the USER message contains labeled sections you MUST read and obey before generating: AUTHOR'S POV, AUTHOR'S PERSONA, CANONICAL LORE, NARRATIVE STYLE, WRITE IN LANGUAGE, CANONICAL STATE (do not contradict), RECENT STORY, and PLAYER COMMAND. The CANONICAL STATE and CANONICAL LORE are authoritative — do not contradict them.
+MANDATORY: the USER message contains labeled sections you MUST read and obey before generating: AUTHOR'S POV, AUTHOR'S PERSONA, STORY SUMMARY, CANONICAL LORE, NARRATIVE STYLE, WRITE IN LANGUAGE, CANONICAL STATE (do not contradict), RECENT STORY, and PLAYER COMMAND. The CANONICAL STATE and CANONICAL LORE are authoritative — do not contradict them.
+
+WRITE ONLY IN THE LANGUAGE SPECIFIED IN THE WRITE IN LANGUAGE SECTION — the code there is the language of the story for every user-facing text you output. Never switch to any other language, including English, unless the code supplied there is English.
 
 ${RULES_STORY_CONSISTENCY}
 
@@ -134,7 +139,9 @@ function buildCanonicalBlock(state: StoryState | null, mcName: string, canon?: {
 
   if (state) {
     const info = getStoryStateInfo(state);
-    lines.push(`CURRENT PAGE: ${info.currentPage} of ${info.totalPages}`);
+    lines.push(
+      `CURRENT PAGE: ${info.currentPage} of ${info.totalPages} — ${info.phase} PHASE, ${info.remainingPages} page(s) remaining`,
+    );
   }
   if (canon?.storyStartDate) lines.push(`STORY DATE: ${canon.storyStartDate}`);
   if (canon?.momentum) lines.push(`MOMENTUM: ${canon.momentum}`);
@@ -225,6 +232,7 @@ export function buildPenContinuePrompt(
     pageTexts: string[];
     mcName: string;
     language: string;
+    bookSummary?: string | null;
     storyStartDate?: string | null;
     momentum?: string | null;
     sceneType?: string | null;
@@ -233,7 +241,7 @@ export function buildPenContinuePrompt(
     | { command: string }
   )
 ): PenContinuePrompt {
-  const { state, authoringMode, authoringPov, persona, lore, pageTexts, mcName, language } = params;
+  const { state, authoringMode, authoringPov, persona, lore, pageTexts, mcName, language, bookSummary } = params;
 
   const canon = buildCanonicalBlock(state ?? null, mcName, {
     storyStartDate: "storyStartDate" in params ? params.storyStartDate : undefined,
@@ -247,16 +255,17 @@ export function buildPenContinuePrompt(
   const systemPrompt =
     authoringMode === "text_adventure" ? PEN_TEXT_ADVENTURE_SYSTEM : PEN_STORYTELLER_SYSTEM;
 
-  // Stable-per-session/book sections first (POV, persona, lore, narrative style,
-  // language) so the user-prompt PREFIX is also cacheable across a session's
-  // successive turns; canonical state + recent story (grow per page) and the
-  // fragment/command (changes per turn) come last.
+  // Stable-per-session/book sections first (POV, persona, summary, lore,
+  // narrative style, language) so the user-prompt PREFIX is also cacheable across
+  // a session's successive turns; canonical state + recent story (grow per page)
+  // and the fragment/command (changes per turn) come last.
   const stableSections = [
     `AUTHOR'S POV: ${povDirective(authoringMode, authoringPov)}`,
     personaOverlay(persona),
+    bookSummary ? `STORY SUMMARY: ${bookSummary}` : "",
     loreBlock(lore),
     narrativeStyleInstructions ? `NARRATIVE STYLE:\n${narrativeStyleInstructions}` : "",
-    `WRITE IN LANGUAGE: ${language}`,
+    `WRITE IN LANGUAGE: ${formatLanguage(language)}`,
   ].filter(Boolean);
 
   const contextSections = [

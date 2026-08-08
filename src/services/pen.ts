@@ -412,6 +412,7 @@ export async function continuePenDraft(
     storyStartDate: book.storyStartDate ?? null,
     momentum,
     sceneType,
+    bookSummary: book.summary ?? null,
   };
 
   const { systemPrompt, userPrompt } =
