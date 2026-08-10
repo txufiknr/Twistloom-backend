@@ -9,12 +9,12 @@
  */
 
 import { eq, and, desc } from "drizzle-orm";
-import { penSessions, penEdits } from "../db/schema.js";
+import { penSessions, penEdits, branches, pages } from "../db/schema.js";
 import { dbRead, dbWrite } from "../db/client.js";
-import { getBookFromDB } from "./book.js";
-import { getTriggeredLoreEntries } from "./lore.js";
+import { getBookFromDB, getBookPages } from "./book.js";
+import { getTriggeredLoreEntries, listLoreEntries } from "./lore.js";
 import type { DBBook, DBPenSession } from "../types/schema.js";
-import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraftCharacter, PenDraftSceneEssentials, PenEdit, PenSessionStatus, FinalizeViolation, CanonAmendment, PenEditType } from "../types/pen.js";
+import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraftCharacter, PenDraftSceneEssentials, PenEdit, PenSessionStatus, FinalizeViolation, CanonAmendment, PenEditType, PenOutlineData, PenOutlinePage, PenAuthorPage, AuthorshipOrigin } from "../types/pen.js";
 import type { BookMode } from "../types/book.js";
 import type { StoryState, Action, StoryGeneration, PersistedStoryPage, SceneCharacter, CharacterSceneRole, Mood } from "../types/story.js";
 import { moods } from "../types/story.js";
@@ -27,20 +27,20 @@ import type { Gender } from "../types/user.js";
 import { getBranchPath } from "../utils/branch-traversal.js";
 import { processCharacterUpdates, isMainCharacterValid } from "../utils/characters.js";
 import { getStoryStateWithBranch } from "./story-branch.js";
-import { buildPenContinuePrompt, PEN_CONTINUE_SCHEMA, PEN_CONTINUE_REQUIRED_FIELDS } from "../utils/pen-prompt.js";
-import type { PenContinueResult as PenContinueAIOutput } from "../utils/pen-prompt.js";
+import { buildPenContinuePrompt, PEN_CONTINUE_SCHEMA, PEN_CONTINUE_REQUIRED_FIELDS, buildPenEssentialsAutofillPrompt, PEN_ESSENTIALS_SCHEMA, PEN_ESSENTIALS_REQUIRED_FIELDS, PEN_ESSENTIALS_REVIEW_SCHEMA } from "../utils/pen-prompt.js";
+import type { PenContinueResult as PenContinueAIOutput, PenEssentialsAutofillResult as PenEssentialsAIOutput } from "../utils/pen-prompt.js";
 import { aiPrompt, createAIOptionsWithSchema } from "../utils/ai-chat.js";
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
-import { PEN_DRAFT_CAST_LIMIT, PEN_CONTINUE_MAX_TOKENS, penContinueLengthForAssistance } from "../config/story.js";
+import { PEN_DRAFT_CAST_LIMIT, PEN_CONTINUE_MAX_TOKENS, penContinueLengthForAssistance, PEN_ESSENTIALS_MAX_TOKENS, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH, PEN_ESSENTIALS_MAX_FIELD_LENGTH } from "../config/story.js";
 import { generateId } from "../utils/uuid.js";
 import { executeWithCredits } from "./credits.js";
 import { persistPageWithState, insertStoryPage, getPageFromDB, mapToPersistedStoryPage } from "./book.js";
 import { insertStoryState } from "./story.js";
 import { advanceStoryState, createEmptyStoryState, createInitialHiddenState } from "../utils/story.js";
 import { resolvePageDelta, determineBranchIdForPage } from "../utils/prompt.js";
-import { sanitizeActionsForMode, validatePageActionsForMode } from "../utils/book-mode.js";
+import { sanitizeActionsForMode, validatePageActionsForMode, maxDestinationsPerActionForMode } from "../utils/book-mode.js";
 import { validateGeneratedPage } from "../utils/page-validation.js";
 import { runGate1 } from "./custom-actions.js";
 
@@ -558,6 +558,269 @@ export async function continuePenDraft(
   };
 }
 
+/** Errors thrown while running an essentials auto-fill request. */
+export class PenEssentialsAutofillError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PenEssentialsAutofillError";
+  }
+}
+
+/** Body of `POST /api/pen/sessions/:id/essentials/autofill`. */
+export type PenEssentialsAutofillInput = {
+  /**
+   * The current in-progress draft prose (plain text).
+   *
+   * The server's `session.draftBuffer` only updates on `/continue`/`/finalize`,
+   * so live keystrokes live client-side — the freshest story signal must travel
+   * with the request, exactly like `/continue`'s `prose`.
+   */
+  draftText?: string;
+  /**
+   * Autofill mode:
+   * - `fill_empty` (default): propose values ONLY for fields the author left
+   *   blank; already-filled fields are never second-guessed.
+   * - `review_all`: propose the most fitting value for EVERY field, revising
+   *   the author's existing values only when the draft/canon clearly supports
+   *   a better fit. The frontend shows the diffs for per-field acceptance.
+   */
+  mode?: "fill_empty" | "review_all";
+};
+
+/** Valid `mode` values for an essentials auto-fill request. */
+export type PenEssentialsAutofillMode = NonNullable<PenEssentialsAutofillInput["mode"]>;
+
+/** Result of an essentials auto-fill request. */
+export type PenEssentialsAutofillOutput = {
+  /**
+   * A COMPLETE scene-essentials proposal. The service never mutates the
+   * session — the frontend applies only the currently-blank fields and persists
+   * them through the existing debounced PATCH path.
+   */
+  essentials: PenDraftSceneEssentials;
+};
+
+/** Clamps a proposed `keyEvents`/`keyObjects` array (trim, dedupe, cap). */
+function coerceEssentialsList(value: unknown, maxItems: number, maxItemLength: number): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const trimmed = item.trim().slice(0, maxItemLength);
+    if (!trimmed || seen.has(trimmed.toLowerCase())) continue;
+    seen.add(trimmed.toLowerCase());
+    out.push(trimmed);
+    if (out.length >= maxItems) break;
+  }
+  return out;
+}
+
+/** Clamps a free-text proposal field (`calendarDate`/`timeOfDay`) to a string or undefined. */
+function coerceEssentialsText(value: unknown, maxLength: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  return trimmed.slice(0, maxLength);
+}
+
+/**
+ * Coerces the raw auto-fill output into a validated `PenDraftSceneEssentials`
+ * proposal. Every field is defensively validated so a malformed/hallucinated
+ * AI response can never break `/finalize`:
+ * - `mood`/`weather` must land in the canonical enums (`coerceMood`/`coerceWeather`).
+ * - `placeName` is resolved back to a real bible place id by case-insensitive
+ *   name (then value) match; unknown names are dropped entirely.
+ * - List/text fields are trimmed, deduped, and length-capped.
+ * Blank fields stay `undefined` so the frontend merge + `/finalize` inheritance
+ * behave exactly like author-typed blanks.
+ */
+function coerceEssentialsProposal(
+  output: PenEssentialsAIOutput,
+  placeOptions: Array<{ value: string; name: string }>,
+): PenDraftSceneEssentials {
+  const essentials: PenDraftSceneEssentials = {};
+
+  const mood = coerceMood(typeof output.mood === "string" ? output.mood : undefined, undefined);
+  if (mood) essentials.mood = mood;
+
+  const weather = coerceWeather(typeof output.weather === "string" ? output.weather : undefined, undefined);
+  if (weather) essentials.weather = weather;
+
+  const calendarDate = coerceEssentialsText(output.calendarDate, PEN_ESSENTIALS_MAX_FIELD_LENGTH);
+  if (calendarDate) essentials.calendarDate = calendarDate;
+
+  const timeOfDay = coerceEssentialsText(output.timeOfDay, PEN_ESSENTIALS_MAX_FIELD_LENGTH);
+  if (timeOfDay) essentials.timeOfDay = timeOfDay;
+
+  const placeName = typeof output.placeName === "string" ? output.placeName.trim() : "";
+  if (placeName) {
+    const lower = placeName.toLowerCase();
+    const match =
+      placeOptions.find((p) => p.name.toLowerCase() === lower) ??
+      placeOptions.find((p) => p.value.toLowerCase() === lower);
+    if (match) essentials.placeId = match.value;
+  }
+
+  const keyEvents = coerceEssentialsList(output.keyEvents, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH);
+  if (keyEvents.length > 0) essentials.keyEvents = keyEvents;
+
+  const keyObjects = coerceEssentialsList(output.keyObjects, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH);
+  if (keyObjects.length > 0) essentials.keyObjects = keyObjects;
+
+  return essentials;
+}
+
+/**
+ * Runs the `/continue`-style auto-fill generation for an owned pen session
+ * (§2.i / §10 Decision M): one structured-output AI call proposes the blank
+ * scene essentials from the draft + canon, clamped server-side, and an audit
+ * `PenEdit` row (`editType: 'plan'`) is written. The session is never mutated
+ * here — persisting the accepted proposal stays the frontend's job via PATCH.
+ *
+ * @param userId - The authenticated user's id (ownership guard)
+ * @param sessionId - The session to autofill
+ * @param input - `{ draftText }` — the current in-progress draft prose (plain text)
+ * @throws PenSessionNotFoundError / PenBookOwnershipError if not owned
+ * @throws PenEssentialsAutofillError if the session is closed or the AI returns unusable output
+ */
+export async function autofillSceneEssentials(
+  userId: string,
+  sessionId: string,
+  input: PenEssentialsAutofillInput
+): Promise<PenEssentialsAutofillOutput> {
+  const session = await getPenSessionById(userId, sessionId);
+  const book: DBBook | null = await getBookFromDB(session.bookId);
+  if (!book) throw new PenEssentialsAutofillError("Book not found for this session");
+
+  if (session.status !== "active") {
+    throw new PenEssentialsAutofillError("Session is not active; reopen it before autofilling");
+  }
+
+  // Story state + recent prose from the last published page, when one exists
+  // (mirrors `/continue`).
+  let state: StoryState | null = null;
+  let pageTexts: string[] = [];
+  let momentum: string | null = null;
+  let sceneType: string | null = null;
+
+  if (session.currentPageId) {
+    state = await getStoryStateWithBranch(book.id, session.currentPageId);
+    const branch = await getBranchPath(session.currentPageId);
+    pageTexts = branch.pages.map((p) => p.text).filter(Boolean);
+    const last = branch.pages[branch.pages.length - 1];
+    momentum = last?.momentum ?? null;
+    sceneType = last?.sceneType ?? null;
+  }
+
+  const mcName = book.mc?.knownName || book.mc?.name || "";
+  const language = book.language || "en";
+
+  // Known bible places constrain the place proposal (ownership already
+  // verified above). A place suggestion is only accepted when its name resolves
+  // to one of these ids.
+  const loreEntries = await listLoreEntries(userId, book.id);
+  const placeOptions = loreEntries
+    .filter((e) => e.entryType === "place")
+    .map((e) => ({ value: e.linkedPlaceId ?? e.id, name: e.name }));
+
+  // Trigger-keyword lore injection — same haystack contract as `/continue`.
+  const loreHaystack = [state?.contextHistory ?? "", ...pageTexts, input.draftText ?? ""].join("\n");
+  const lore = await getTriggeredLoreEntries(book.id, loreHaystack);
+
+  const { systemPrompt, userPrompt } = buildPenEssentialsAutofillPrompt({
+    state,
+    lore,
+    pageTexts,
+    mcName,
+    language,
+    bookSummary: book.summary ?? null,
+    storyStartDate: book.storyStartDate ?? null,
+    momentum,
+    sceneType,
+    essentials: session.draftSceneEssentials ?? null,
+    draftText: input.draftText?.trim() ?? "",
+    placeOptions,
+    mode: input.mode ?? "fill_empty",
+  });
+
+  const promptConfig: AIPromptForJson<PenEssentialsAIOutput> = {
+    schema: (input.mode ?? "fill_empty") === "review_all" ? PEN_ESSENTIALS_REVIEW_SCHEMA : PEN_ESSENTIALS_SCHEMA,
+    requiredFields: PEN_ESSENTIALS_REQUIRED_FIELDS,
+    fallbackField: "keyEvents",
+    baseOptions: {
+      modelSelection: AI_CHAT_MODELS_WRITING,
+      context: "pen-essentials-autofill",
+      systemPrompt,
+      config: { ...AI_CHAT_CONFIG_DEFAULT, maxOutputToken: PEN_ESSENTIALS_MAX_TOKENS },
+    },
+  };
+
+  const { result } = await executeWithCredits(
+    userId,
+    "PEN_ESSENTIALS_AUTOFILL",
+    async (tx) => {
+      const [current] = await tx
+        .select()
+        .from(penSessions)
+        .where(and(eq(penSessions.id, sessionId), eq(penSessions.userId, userId)))
+        .limit(1);
+      if (!current) throw new PenSessionNotFoundError();
+
+      const aiResponse = await aiPrompt<PenEssentialsAIOutput>(userPrompt, createAIOptionsWithSchema(promptConfig));
+      const output = aiResponse.result;
+
+      if (!output || typeof output !== "object") {
+        throw new PenEssentialsAutofillError("AI returned no scene essentials");
+      }
+
+      const essentials = coerceEssentialsProposal(output, placeOptions);
+
+      // Audit trail — the `plan` edit type was reserved for exactly this kind
+      // of author-facing AI suggestion (types/pen.ts). Nothing is persisted to
+      // the session; the author accepts via the panel and the debounced PATCH.
+      const edit: PenEdit = {
+        id: generateId(),
+        sessionId,
+        userId,
+        bookId: book.id,
+        pageId: null,
+        editType: "plan",
+        authorInput: input.draftText?.trim() || null,
+        aiOutput: JSON.stringify(essentials),
+        finalText: null,
+        contextPageId: session.currentPageId,
+        charOffsetStart: null,
+        charOffsetEnd: null,
+        authoringMode: session.authoringMode,
+        authoringPov: null,
+        createdAt: new Date(),
+      };
+
+      await tx.insert(penEdits).values({
+        id: edit.id,
+        sessionId: edit.sessionId,
+        userId: edit.userId,
+        bookId: edit.bookId,
+        pageId: null,
+        editType: edit.editType,
+        authorInput: edit.authorInput,
+        aiOutput: edit.aiOutput,
+        finalText: null,
+        contextPageId: edit.contextPageId,
+        authoringMode: edit.authoringMode,
+        authoringPov: null,
+        createdAt: edit.createdAt,
+      });
+
+      return essentials;
+    },
+    { context: "pen_essentials_autofill", metadata: { sessionId, bookId: book.id } }
+  );
+
+  return { essentials: result };
+}
+
 /** Errors thrown while running a `/finalize` request. */
 export class PenFinalizeError extends Error {
   constructor(message: string) {
@@ -935,6 +1198,47 @@ export async function finalizePenDraft(
       .update(penSessions)
       .set({ draftBuffer: [], draftCharactersPresent: [], draftSceneEssentials: null, currentPageId: newPage.id, status: "active", updatedAt: new Date() })
       .where(and(eq(penSessions.id, sessionId), eq(penSessions.userId, userId)));
+
+    // §6.6 reverse-edge (B3/E3/E4): record this child as the destination of the
+    // action the author continued from — always `parent.actions[0]`, the action
+    // the pen navigates through (see the continuation path above). This is what
+    // lets the outline tree's action folders and the peek's "leads to current
+    // page" highlight resolve the path. It also makes pen books readable
+    // (reader actions with a destination are the ones surfaced).
+    //
+    // Mode-aware write (deliberately NOT `enforceModeOnActionDestinations`,
+    // which prefers existing destinations for candidate-generation idempotency):
+    //   - novel / interactive (1 destination per action) → the latest
+    //     continuation REPLACES the old destination, because the author
+    //     re-authored that action's outcome. Keeping the old destination would
+    //     orphan every 2nd+ child written from the same parent (unreachable to
+    //     readers and rendered outside its action folder).
+    //   - multiverse (unlimited) → append the child (parallel timelines).
+    const parentPageId = session.currentPageId;
+    if (parentPageId) {
+      const [parentRow] = await tx
+        .select({ actions: pages.actions })
+        .from(pages)
+        .where(eq(pages.id, parentPageId))
+        .limit(1);
+      const parentActions = parentRow?.actions ?? [];
+      if (parentActions.length > 0) {
+        await tx
+          .update(pages)
+          .set({
+            actions: parentActions.map((a, index) => {
+              if (index !== 0) return a;
+              const max = maxDestinationsPerActionForMode(book.mode);
+              const nextDestinations = Number.isFinite(max)
+                ? [newPage.id]
+                : Array.from(new Set([...(a.destinationPageIds ?? []), newPage.id]));
+              return { ...a, destinationPageIds: nextDestinations };
+            }),
+            updatedAt: new Date(),
+          })
+          .where(eq(pages.id, parentPageId));
+      }
+    }
   });
 
   return {
@@ -1114,5 +1418,112 @@ function buildMcNewCharacter(mc: StoryMC): NewCharacter {
     relationshipToMC: { type: "stranger", status: "neutral", context: "", recognitionLevel: "full_name_known" },
     potentialTwist: "none",
     recognitionLevel: "full_name_known",
+  };
+}
+
+// ── Outline tree + author page peek (§6.6 Phase 3.d / Decision A) ───────────
+
+/** Default `textPreview` window — short enough to keep the outline payload light. */
+const PEN_OUTLINE_PREVIEW_CHARS = 200;
+
+/**
+ * Renders `text` as a single-line preview cut at a word boundary, with a
+ * trailing ellipsis when truncated. `null` for blank pages.
+ */
+function previewOf(text: string | null | undefined, maxChars = PEN_OUTLINE_PREVIEW_CHARS): string | null {
+  const trimmed = (text ?? "").trim().replace(/\s+/g, " ");
+  if (!trimmed) return null;
+  if (trimmed.length <= maxChars) return trimmed;
+  const cut = trimmed.slice(0, maxChars);
+  const lastSpace = cut.lastIndexOf(" ");
+  return (lastSpace > 0 ? cut.slice(0, lastSpace) : cut) + "…";
+}
+
+/**
+ * Flat outline payload for the pen book's page/branch tree (§6.6, Phase 3.d).
+ * The frontend builds the hierarchy from `parentId` (`buildOutlineTree`).
+ *
+ * Owner-scoped: the authenticated user must own the book. `isDeadEnd` is only
+ * meaningful for branched books (a `novel` chain with 1 action is not a dead
+ * end).
+ *
+ * @param userId - The authenticated user's id (ownership guard)
+ * @param bookId - The book to list pages for
+ * @throws PenSessionNotFoundError if the book is missing
+ * @throws PenBookOwnershipError if the user does not own the book
+ */
+export async function getPenOutline(userId: string, bookId: string): Promise<PenOutlineData> {
+  const book = await getBookFromDB(bookId);
+  if (!book) throw new PenSessionNotFoundError("Book not found");
+  if (book.userId !== userId) throw new PenBookOwnershipError();
+
+  const [pageRows, branchRows] = await Promise.all([
+    getBookPages(bookId),
+    dbRead
+      .select({ branchId: branches.branchId, displayName: branches.displayName })
+      .from(branches)
+      .where(eq(branches.bookId, bookId)),
+  ]);
+
+  const branched = book.mode === "interactive" || book.mode === "multiverse";
+
+  const pages: PenOutlinePage[] = pageRows.map((page) => {
+    const hasActions = (page.actions?.length ?? 0) > 0;
+    return {
+      id: page.id,
+      page: page.page,
+      parentId: page.parentId,
+      branchId: page.branchId,
+      mood: page.mood ?? undefined,
+      textPreview: previewOf(page.text) ?? undefined,
+      hasActions,
+      isDeadEnd: branched && !hasActions,
+      // Full action list rides along so the frontend can render action folders
+      // and resolve the "leads to current page" reverse-edge without an extra
+      // request per node (§6.6 action folders).
+      actions: page.actions ?? [],
+    };
+  });
+
+  return { pages, branches: branchRows };
+}
+
+/**
+ * Full author-owned published page for the outline peek popover. Unlike the
+ * reader's page payload this includes authorship rollups and no reader-specific
+ * fields — the author sees the page exactly as published.
+ *
+ * @param userId - The authenticated user's id (ownership guard)
+ * @param pageId - The published page to fetch
+ * @throws PenSessionNotFoundError if the page or its book is missing
+ * @throws PenBookOwnershipError if the user does not own the page's book
+ */
+export async function getPenAuthorPage(userId: string, pageId: string): Promise<PenAuthorPage> {
+  const page = await getPageFromDB(pageId);
+  if (!page) throw new PenSessionNotFoundError("Page not found");
+  const book = await getBookFromDB(page.bookId);
+  if (!book) throw new PenSessionNotFoundError("Book not found");
+  if (book.userId !== userId) throw new PenBookOwnershipError();
+
+  return {
+    id: page.id,
+    bookId: page.bookId,
+    parentId: page.parentId,
+    branchId: page.branchId,
+    page: page.page,
+    text: page.text,
+    mood: page.mood ?? undefined,
+    placeId: page.placeId ?? undefined,
+    weather: page.weather ?? undefined,
+    calendarDate: page.calendarDate ?? undefined,
+    timeOfDay: page.timeOfDay ?? undefined,
+    charactersPresent: page.charactersPresent ?? [],
+    keyEvents: page.keyEvents ?? [],
+    keyObjects: page.keyObjects ?? [],
+    actions: page.actions ?? [],
+    authorshipOrigin: (page.authorshipOrigin ?? "ai") as AuthorshipOrigin,
+    aiContributionPercent: page.aiContributionPercent ?? null,
+    createdAt: page.createdAt,
+    updatedAt: page.updatedAt,
   };
 }

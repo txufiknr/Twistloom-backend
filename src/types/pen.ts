@@ -8,7 +8,7 @@
  * @see docs/roadmap/AI_CO_WRITING_PEN_ROADMAP.md
  */
 
-import type { CharacterSceneRole } from "./story.js";
+import type { CharacterSceneRole, SceneCharacter, Action } from "./story.js";
 
 /** How the author works with the AI inside a Pen session. Independent of BookMode. */
 export type AuthoringMode = "storyteller" | "text_adventure"; // TODO: shouldn't it infer from `PEN_AUTHORING_MODES`?
@@ -278,4 +278,75 @@ export type CanonAmendment = {
   currentDescription?: string;
   /** Author-confirmed description from the amend preview; used verbatim when present. */
   finalDescription?: string;
+};
+
+// ── Outline tree (GET /api/pen/sessions/:bookId/outline) ───────────────────
+
+/** One page node in the outline payload (flat; the frontend builds the hierarchy from `parentId`). */
+export type PenOutlinePage = {
+  id: string;
+  /** 1-based published page number in the section timeline. */
+  page: number;
+  /** Parent page id — null for a root page. */
+  parentId: string | null;
+  /** Branch this page belongs to (`branches[].branchId`). */
+  branchId: string | null;
+  /** Storyboard mood/tone label for this page. */
+  mood?: string | null;
+  /** Shortened prose preview for the tree node label + peek fallback. */
+  textPreview?: string | null;
+  /** True when the page exposes outgoing actions. */
+  hasActions: boolean;
+  /** True when a published page has 0 outgoing actions in a branched book (⚠ flag). */
+  isDeadEnd: boolean;
+  /**
+   * Outgoing actions (with `destinationPageIds`) — powers the tree's action
+   * folders and the peek's "leads to current page" highlight + breadcrumbs.
+   */
+  actions?: Action[];
+};
+
+/** A named narrative branch grouping one or more pages. */
+export type PenOutlineBranch = {
+  branchId: string;
+  displayName: string;
+};
+
+/** GET /api/pen/sessions/:bookId/outline response. */
+export type PenOutlineData = {
+  pages: PenOutlinePage[];
+  branches: PenOutlineBranch[];
+};
+
+// ── Author page peek (GET /api/pen/pages/:pageId) ──────────────────────────
+
+/**
+ * Full author-owned published page for the outline peek popover. Mirrors the
+ * stored `pages` row minus per-reader fields (selectedActions, visit stats).
+ */
+export type PenAuthorPage = {
+  id: string;
+  bookId: string;
+  parentId: string | null;
+  branchId: string;
+  page: number;
+  /** Full published prose. */
+  text: string;
+  mood?: string | null;
+  placeId?: string | null;
+  weather?: string;
+  calendarDate?: string | null;
+  timeOfDay?: string | null;
+  /** Scene cast list (author-curated at finalize). */
+  charactersPresent: SceneCharacter[];
+  keyEvents: string[];
+  keyObjects: string[];
+  /** Outgoing actions; the peek highlights the one whose `destinationPageIds` includes the current page. */
+  actions: Action[];
+  /** Rolled-up authorship of this page. */
+  authorshipOrigin: AuthorshipOrigin;
+  /** 0–100 character-count share of non-AI text. */
+  aiContributionPercent: number | null;
+  createdAt: Date;
+  updatedAt: Date;
 };

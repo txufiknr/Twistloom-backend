@@ -28,6 +28,8 @@
  */
 
 import type { StoryState } from "../types/story.js";
+import { moods } from "../types/story.js";
+import { placeWeathers } from "../types/places.js";
 import type { AuthoringMode, AuthoringPov, CoWritingPersona, LoreEntry, PenDraftSceneEssentials } from "../types/pen.js";
 import type { AIJsonProperty } from "../types/ai-chat.js";
 import { getStoryStateInfo } from "./story.js";
@@ -363,3 +365,254 @@ export const PEN_CONTINUE_SCHEMA: Record<keyof PenContinueResult, AIJsonProperty
 
 /** Required fields for the `/continue` structured output. */
 export const PEN_CONTINUE_REQUIRED_FIELDS: (keyof PenContinueResult)[] = ["text"];
+
+/**
+ * Static, cache-friendly system prompt for Page Essentials auto-fill (§2.i /
+ * §10 Decision M).
+ *
+ * Same caching discipline as the `/continue` system prompts: a pure string
+ * const with every volatile field deferred to the user prompt. This call is a
+ * constrained classification task over fixed enum/option sets (mood, weather,
+ * bible places), so the output is a small JSON form rather than prose — the
+ * response is capped by `PEN_ESSENTIALS_MAX_TOKENS`.
+ */
+export const PEN_ESSENTIALS_SYSTEM = `You are a literary scene-designer for a story author. Your job is to propose the scene essentials (setting pin) for the author's NEXT page: mood, weather, in-world date, time of day, the place it happens, and the key events/objects that occur.
+
+MANDATORY: the USER message contains labeled sections you MUST read and obey before generating: AUTHOR'S PERSONA, STORY SUMMARY, CANONICAL LORE, NARRATIVE STYLE, WRITE IN LANGUAGE, CANONICAL STATE (do not contradict), RECENT STORY, CURRENT DRAFT, CURRENT SCENE ESSENTIALS, and PLACE OPTIONS. The CANONICAL STATE and CANONICAL LORE are authoritative — do not contradict them.
+
+CRITICAL RULES:
+- Only propose values for fields the author has LEFT BLANK. If an essential is already filled, return nothing for it (do not repeat or second-guess it).
+- MOOD must be exactly one of the MOOD OPTIONS values and nothing else. WEATHER must be exactly one of the WEATHER OPTIONS values and nothing else.
+- PLACE must be exactly the NAME of one of the PLACE OPTIONS, or empty string when no option fits. Never invent a place that is not in PLACE OPTIONS.
+- KEY EVENTS and KEY OBJECTS are short, concrete phrases derived from the draft. Return empty arrays when you cannot confidently find any.
+- CALENDAR DATE is the in-world date (e.g. 2026-07-26); TIME OF DAY is a coarse mark such as night / dusk / 14:00.
+- Keep every field concise. When in doubt, leave a field empty rather than guessing.
+
+Return ONLY the JSON form matching the schema.
+
+${RULES_STORY_CONSISTENCY}
+
+${RULES_LANGUAGE_LOCALIZATION}`;
+
+/**
+ * Static, cache-friendly system prompt for REVIEW-MODE Page Essentials
+ * auto-fill (§2.i / §10 Decision M). Same caching discipline as
+ * {@link PEN_ESSENTIALS_SYSTEM} — a pure string const with volatile fields in
+ * the user prompt — but instead of only filling blanks, the model proposes the
+ * most fitting value for EVERY field and may revise already-filled ones when
+ * the draft/canon clearly supports a better fit.
+ */
+export const PEN_ESSENTIALS_REVIEW_SYSTEM = `You are a literary scene-designer for a story author. Your job is to review and, when warranted, correct the scene essentials (setting pin) for the author's NEXT page: mood, weather, in-world date, time of day, the place it happens, and the key events/objects that occur.
+
+MANDATORY: the USER message contains labeled sections you MUST read and obey before generating: AUTHOR'S PERSONA, STORY SUMMARY, CANONICAL LORE, NARRATIVE STYLE, WRITE IN LANGUAGE, CANONICAL STATE (do not contradict), RECENT STORY, CURRENT DRAFT, CURRENT SCENE ESSENTIALS, and PLACE OPTIONS. The CANONICAL STATE and CANONICAL LORE are authoritative — do not contradict them.
+
+CRITICAL RULES:
+- Propose a value for EVERY field. For fields the author already filled, propose the same value when it still fits, or a clearly better one when the draft/canon supports it. Never change a filled value without a reason grounded in the draft or canon.
+- MOOD must be exactly one of the MOOD OPTIONS values and nothing else. WEATHER must be exactly one of the WEATHER OPTIONS values and nothing else.
+- PLACE must be exactly the NAME of one of the PLACE OPTIONS, or empty string when no option fits. Never invent a place that is not in PLACE OPTIONS.
+- KEY EVENTS and KEY OBJECTS are short, concrete phrases derived from the draft. Return the author's current items when they still fit, extend or prune them only when the draft warrants it. Return empty arrays when you cannot confidently find any.
+- CALENDAR DATE is the in-world date (e.g. 2026-07-26); TIME OF DAY is a coarse mark such as night / dusk / 14:00.
+- Keep every field concise. When in doubt, keep the author's current value rather than guessing.
+
+Return ONLY the JSON form matching the schema.
+
+${RULES_STORY_CONSISTENCY}
+
+${RULES_LANGUAGE_LOCALIZATION}`;
+
+/** Raw structured output shape of the auto-fill call (before server-side coercion). */
+export type PenEssentialsAutofillResult = {
+  /** One of the canonical `moods` keys, or undefined when the author already set it. */
+  mood?: string;
+  /** One of the canonical `placeWeathers` keys, or undefined when the author already set it. */
+  weather?: string;
+  /** Free-text in-world date, or undefined when the author already set it. */
+  calendarDate?: string;
+  /** Free-text coarse time mark, or undefined when the author already set it. */
+  timeOfDay?: string;
+  /** The NAME of one of the PLACE OPTIONS, or empty when none fits (resolved to a placeId server-side). */
+  placeName?: string;
+  /** Key events for the page — empty array when none. */
+  keyEvents: string[];
+  /** Key objects for the page — empty array when none. */
+  keyObjects: string[];
+};
+
+/** Structured-output schema for the auto-fill call — mood/weather are enum-constrained. */
+export const PEN_ESSENTIALS_SCHEMA: Record<keyof PenEssentialsAutofillResult, AIJsonProperty> = {
+  mood: {
+    type: "string",
+    enum: [...moods],
+    description: "One canonical mood key for the page, or omit when the author already set it.",
+  },
+  weather: {
+    type: "string",
+    enum: [...placeWeathers],
+    description: "One canonical weather key for the page, or omit when the author already set it.",
+  },
+  calendarDate: { type: "string", description: "In-world date for the page (e.g. 2026-07-26), or omit when already set." },
+  timeOfDay: { type: "string", description: "Coarse time mark (e.g. night, dusk, 14:00), or omit when already set." },
+  placeName: { type: "string", description: "Exact name of one of the PLACE OPTIONS, or empty when none fits." },
+  keyEvents: {
+    type: "array",
+    description: "Short, concrete key events that occur in the page.",
+    items: { type: "string" },
+  },
+  keyObjects: {
+    type: "array",
+    description: "Short, concrete key objects present in the page.",
+    items: { type: "string" },
+  },
+};
+
+/**
+ * Structured-output schema for REVIEW-MODE auto-fill. Mirrors
+ * {@link PEN_ESSENTIALS_SCHEMA} but drops every "or omit when the author already
+ * set it" qualifier so the model proposes a value for EVERY field, matching
+ * {@link PEN_ESSENTIALS_REVIEW_SYSTEM}. Without this the structured-output
+ * provider would honor the schema description over the system prompt and
+ * silently skip revising already-filled enum fields.
+ */
+export const PEN_ESSENTIALS_REVIEW_SCHEMA: Record<keyof PenEssentialsAutofillResult, AIJsonProperty> = {
+  mood: {
+    type: "string",
+    enum: [...moods],
+    description: "One canonical mood key for the page — always propose the most fitting value.",
+  },
+  weather: {
+    type: "string",
+    enum: [...placeWeathers],
+    description: "One canonical weather key for the page — always propose the most fitting value.",
+  },
+  calendarDate: { type: "string", description: "In-world date for the page (e.g. 2026-07-26) — always propose the most fitting value." },
+  timeOfDay: { type: "string", description: "Coarse time mark (e.g. night, dusk, 14:00) — always propose the most fitting value." },
+  placeName: { type: "string", description: "Exact name of one of the PLACE OPTIONS, or empty when none fits." },
+  keyEvents: {
+    type: "array",
+    description: "Short, concrete key events that occur in the page.",
+    items: { type: "string" },
+  },
+  keyObjects: {
+    type: "array",
+    description: "Short, concrete key objects present in the page.",
+    items: { type: "string" },
+  },
+};
+
+/** Required fields for the auto-fill structured output. */
+export const PEN_ESSENTIALS_REQUIRED_FIELDS: (keyof PenEssentialsAutofillResult)[] = ["keyEvents", "keyObjects"];
+
+/** Result of building an auto-fill prompt: separate system + user prompts. */
+export type PenEssentialsAutofillPrompt = {
+  systemPrompt: string;
+  userPrompt: string;
+};
+
+/**
+ * Builds the Page Essentials auto-fill prompt (§2.i / §10 Decision M).
+ *
+ * Same caching contract as {@link buildPenContinuePrompt}: a STATIC system
+ * prompt const (`PEN_ESSENTIALS_SYSTEM`) plus a user prompt with the stable-
+ * per-session sections first (persona, summary, lore, style, language) so the
+ * user-prompt prefix stays cacheable, then the per-page canon/prose and the
+ * current essentials + option lists last.
+ *
+ * @param params - Shared context plus the author's currently-filled essentials,
+ *   the current in-progress draft text, and the known bible place options.
+ * @returns `{ systemPrompt, userPrompt }`.
+ */
+export function buildPenEssentialsAutofillPrompt(params: {
+  state?: StoryState | null;
+  persona?: CoWritingPersona;
+  lore?: LoreEntry[];
+  pageTexts: string[];
+  mcName: string;
+  language: string;
+  bookSummary?: string | null;
+  storyStartDate?: string | null;
+  momentum?: string | null;
+  sceneType?: string | null;
+  /** The author's currently-filled essentials — the model fills only the blanks. */
+  essentials: PenDraftSceneEssentials | null;
+  /** Current in-progress draft prose (plain text) — the freshest story signal. */
+  draftText: string;
+  /** Known bible places as `{ value: placeId, name }` — constrains the place proposal. */
+  placeOptions: Array<{ value: string; name: string }>;
+  /** `fill_empty` (default) only fills blanks; `review_all` may revise filled values. */
+  mode?: "fill_empty" | "review_all";
+}): PenEssentialsAutofillPrompt {
+  const {
+    state,
+    persona,
+    lore,
+    pageTexts,
+    mcName,
+    language,
+    bookSummary,
+    storyStartDate,
+    momentum,
+    sceneType,
+    essentials,
+    draftText,
+    placeOptions,
+    mode = "fill_empty",
+  } = params;
+
+  const canon = buildCanonicalBlock(state ?? null, mcName, {
+    storyStartDate,
+    momentum,
+    sceneType,
+    essentials,
+  });
+  const prose = buildProseContext(pageTexts);
+  const narrativeStyleInstructions = state ? createNarrativeStyle(state).instructions : undefined;
+
+  const stableSections = [
+    personaOverlay(persona),
+    bookSummary ? `STORY SUMMARY: ${bookSummary}` : "",
+    loreBlock(lore),
+    narrativeStyleInstructions ? `NARRATIVE STYLE:\n${narrativeStyleInstructions}` : "",
+    `WRITE IN LANGUAGE: ${formatLanguage(language)}`,
+  ].filter(Boolean);
+
+  const placeIdToName = new Map(placeOptions.map((p) => [p.value, p.name]));
+
+  const currentEssentials = essentials
+    ? [
+        essentials.placeId ? `place: ${placeIdToName.get(essentials.placeId) ?? essentials.placeId}` : "",
+        essentials.mood ? `mood: ${essentials.mood}` : "",
+        essentials.weather ? `weather: ${essentials.weather}` : "",
+        essentials.calendarDate ? `date: ${essentials.calendarDate}` : "",
+        essentials.timeOfDay ? `time: ${essentials.timeOfDay}` : "",
+        essentials.keyEvents?.length ? `key events: ${essentials.keyEvents.join(" | ")}` : "",
+        essentials.keyObjects?.length ? `key objects: ${essentials.keyObjects.join(" | ")}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n")
+    : "";
+
+  const placeNames = placeOptions.length > 0 ? placeOptions.map((p) => p.name).join(", ") : "(no places defined yet)";
+
+  const isReview = mode === "review_all";
+  const currentEssentialsLabel = isReview
+    ? "CURRENT SCENE ESSENTIALS (set by the author — keep or propose a clearly better value):"
+    : "CURRENT SCENE ESSENTIALS (already set by the author — leave these alone):";
+  const closingLine = isReview
+    ? "Propose the most fitting value for EVERY field, revising filled ones only when clearly warranted. Output the JSON form described in the system prompt."
+    : "Propose values ONLY for the blank fields. Output the JSON form described in the system prompt.";
+
+  return {
+    systemPrompt: isReview ? PEN_ESSENTIALS_REVIEW_SYSTEM : PEN_ESSENTIALS_SYSTEM,
+    userPrompt: [
+      ...stableSections,
+      `CANONICAL STATE (do not contradict):\n${canon}`,
+      `RECENT STORY:\n${prose}`,
+      draftText ? `CURRENT DRAFT:\n${draftText}` : "(No draft yet — this is the first page; open the scene.)",
+      currentEssentials ? `${currentEssentialsLabel}\n${currentEssentials}` : "(No scene essentials are set yet — propose the most fitting values.)",
+      `MOOD OPTIONS: ${moods.join(", ")}`,
+      `WEATHER OPTIONS: ${placeWeathers.join(", ")}`,
+      `PLACE OPTIONS: ${placeNames}`,
+      closingLine,
+    ].join("\n\n"),
+  };
+}

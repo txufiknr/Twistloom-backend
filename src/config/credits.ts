@@ -123,6 +123,13 @@ const CREDIT_COSTS_BASE = {
   PEN_FUTURE_NOTE: 0,
   /** Scene plan generation. */
   PEN_SCENE_PLAN: 1,
+  /**
+   * Page Essentials auto-fill — one constrained structured-output call that
+   * proposes the blank scene fields (mood/weather/date/time/keys/place) from
+   * the draft. Cheaper than a prose tier because the response is a tiny JSON
+   * form over a fixed enum space.
+   */
+  PEN_ESSENTIALS_AUTOFILL: 1,
   /** Finalize delta-verification — charged only when an LLM judgment runs. */
   PEN_FINALIZE_VERIFY: 0,
 } as const;

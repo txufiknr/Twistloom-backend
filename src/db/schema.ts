@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer, unique, type UpdateDeleteAction, boolean, vector } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer, unique, uniqueIndex, type UpdateDeleteAction, boolean, vector } from "drizzle-orm/pg-core";
 import type { CheckinClaimType, FeedbackAdminStatus, FeedbackCategory, FeedbackStatus, Gender, Source, UserActivityType, UserTier } from "../types/user.js";
 import type { LikeTargetType } from "../types/user.js";
 import type { CharacterMemoryTranslation, CharacterPlan, HealthStatus, InjuryTranslation, InventoryItem, InventoryItemTranslation, StoryMC, StoryMCCandidate, StoryMCTranslation } from "../types/character.js";
@@ -2240,6 +2240,56 @@ export const bookTestimonials = pgTable(
     index("book_testimonials_featured_idx").on(t.featured, t.createdAt.desc()),
     index("book_testimonials_book_idx").on(t.bookId, t.status),
     index("book_testimonials_user_idx").on(t.userId, t.createdAt.desc()),
+  ]
+);
+
+/**
+ * Platform-wide testimonials table
+ * @summary Stores first-party testimonials about the Twistloom platform itself,
+ * as opposed to `bookTestimonials` (which are scoped to a single book).
+ *
+ * Submissions are restricted to beta testers (`users.is_beta_tester = true`),
+ * enforced at the route layer. They share the same curation lifecycle as
+ * `bookTestimonials` (`pending` → `approved` → `featured`), so the public
+ * homepage testimonial wall can union them after admin review.
+ *
+ * A user may hold at most one submission at a time — enforced by a partial
+ * unique index on `user_id` filtered to non-rejected rows, so a rejected
+ * testimonial can be re-submitted without an extra lifecycle step.
+ *
+ * @example
+ * {
+ *   "id": "0194f2d1-...",
+ *   "user_id": "user-uuid",
+ *   "rating": 5,
+ *   "content": "Twistloom is the most creative reading app I've ever used.",
+ *   "status": "pending",
+ *   "featured": false,
+ *   "created_at": "2026-08-10T06:00:00.000Z",
+ *   "updated_at": "2026-08-10T06:00:00.000Z"
+ * }
+ */
+export const platformTestimonials = pgTable(
+  "platform_testimonials",
+  {
+    id: id(),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    rating: integer("rating"),
+    content: text("content").notNull(),
+    status: text("status").$type<'pending' | 'approved' | 'rejected'>().default('pending').notNull(),
+    featured: boolean("featured").default(false).notNull(),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    index("platform_testimonials_status_idx").on(t.status),
+    index("platform_testimonials_featured_idx").on(t.featured, t.createdAt.desc()),
+    index("platform_testimonials_user_idx").on(t.userId, t.createdAt.desc()),
+    // One active submission per beta tester (rejected rows are excluded so a
+    // user can re-submit after a rejection without an extra lifecycle step).
+    uniqueIndex("platform_testimonials_user_active_unique")
+      .on(t.userId)
+      .where(sql`${t.status} <> 'rejected'`),
   ]
 );
 

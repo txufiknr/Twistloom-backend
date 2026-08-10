@@ -44,19 +44,23 @@
  * - POST /user/quests/recheck - Re-evaluate quest completion
  * - POST /user/quests/claim-all - Claim all completed quest rewards at once
  * - POST /user/quests/:questId/claim - Claim a completed quest's credit reward
+ * - POST /user/platform-testimonials - Submit a platform-wide testimonial (beta testers only)
+ * - GET /user/platform-testimonials - Get own platform testimonials (beta testers only)
+ * - PATCH /user/platform-testimonials/:id - Update own platform testimonial (beta testers only)
+ * - DELETE /user/platform-testimonials/:id - Delete own platform testimonial (beta testers only)
  * 
  * Note: Comment CRUD endpoints are in books.ts, not this file.
  */
 
 import { Hono } from "hono";
 import type { Context } from "hono";
-import type { DBNewUserFeedback, DBNewUserLike, DBNewUserFavorite } from "../types/schema.js";
+import type { DBNewUserFeedback, DBNewUserLike, DBNewUserFavorite, DBNewPlatformTestimonial } from "../types/schema.js";
 import type { FeedbackCategory, LikeTargetType, Source, User, UserAchievement, UserActivityType, UserStats } from "../types/user.js";
 import { feedbackCategories, sources } from "../types/user.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { requireAuth, optionalAuth } from "../middleware/nextauth.js";
-import { users, books, userAuth, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, userSessions, userCompletedBooks, userComments, transactions, userProviders, userFeedbacks, bookTestimonials, uploadedImages, userReports, userBlocks } from "../db/schema.js";
-import { getErrorMessage, cApiError, cNotFoundError, cConflictError, cValidationError, cUnauthorizedError } from "../utils/error.js";
+import { users, books, userAuth, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, userSessions, userCompletedBooks, userComments, transactions, userProviders, userFeedbacks, bookTestimonials, uploadedImages, userReports, userBlocks, platformTestimonials } from "../db/schema.js";
+import { getErrorMessage, cApiError, cNotFoundError, cConflictError, cValidationError, cUnauthorizedError, cForbiddenError } from "../utils/error.js";
 import { eq, and, desc, sql, gte } from "drizzle-orm";
 import { calculatePaginationMeta, extractPaginationParams } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
@@ -3430,6 +3434,359 @@ router.post('/quests/:questId/claim', requireAuth, async (c: Context<AppEnv>) =>
   } catch (error) {
     console.error('[POST /user/quests/:questId/claim] ❌', error);
     return cApiError(c, 'Failed to claim quest reward', error);
+  }
+});
+
+// ===== PLATFORM TESTIMONIALS ROUTES =====
+
+/** Max length for a platform testimonial's content. */
+const PLATFORM_TESTIMONIAL_MAX_LENGTH = 1000;
+
+/**
+ * Shared gate: returns true when the user is a beta tester.
+ *
+ * Reads the generated `is_beta_tester` column (SSOT derived from
+ * `beta_tester_joined_at`), so the check can never drift from membership.
+ */
+async function isBetaTesterUser(userId: string): Promise<boolean> {
+  const [row] = await dbRead
+    .select({ isBetaTester: users.isBetaTester })
+    .from(users)
+    .where(eq(users.userId, userId))
+    .limit(1);
+
+  return !!row?.isBetaTester;
+}
+
+/**
+ * POST /user/platform-testimonials
+ *
+ * Submits a platform-wide testimonial. Restricted to beta testers
+ * (`users.is_beta_tester = true`).
+ *
+ * A user can hold at most one active testimonial at a time (excluding
+ * `rejected` rows, so a rejected submission can be re-sent). Submissions start
+ * in `pending` and appear publicly only after admin approval.
+ *
+ * @route POST /user/platform-testimonials
+ * @description Submit a platform-wide testimonial (beta testers only)
+ * @auth Required + beta tester
+ *
+ * @body {Object} Testimonial data
+ * @body {string} content - Testimonial message (required, ≤ 1000 chars)
+ * @body {number} [rating] - Optional star rating (1–5)
+ *
+ * @returns {Object} Testimonial creation response
+ * @returns {boolean} success - Operation status
+ * @returns {Object} testimonial - Created testimonial record
+ *
+ * @example
+ * // Request
+ * POST /user/platform-testimonials
+ * Body: {
+ *   "content": "Twistloom changed the way I think about interactive fiction.",
+ *   "rating": 5
+ * }
+ *
+ * // Response (201 Created)
+ * {
+ *   "success": true,
+ *   "testimonial": {
+ *     "id": "uuid",
+ *     "userId": "user-uuid",
+ *     "rating": 5,
+ *     "content": "Twistloom changed the way I think about interactive fiction.",
+ *     "status": "pending",
+ *     "featured": false,
+ *     "createdAt": "2026-08-10T00:00:00.000Z",
+ *     "updatedAt": "2026-08-10T00:00:00.000Z"
+ *   }
+ * }
+ *
+ * // Response (409 Conflict — already has an active testimonial)
+ * {
+ *   "success": false,
+ *   "error": "You already have an active platform testimonial"
+ * }
+ */
+router.post('/platform-testimonials', requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get('userId')!;
+
+    if (!(await isBetaTesterUser(userId))) {
+      return cForbiddenError(c, 'Only beta testers can submit a platform testimonial');
+    }
+
+    const { content, rating } = c.get('body') as { content?: unknown; rating?: unknown };
+
+    // Validate content (required)
+    const cleanContent = typeof content === 'string' ? content.trim() : '';
+    if (!cleanContent) {
+      return cValidationError(c, 'Content is required');
+    }
+    if (cleanContent.length > PLATFORM_TESTIMONIAL_MAX_LENGTH) {
+      return cValidationError(c, `Content must be at most ${PLATFORM_TESTIMONIAL_MAX_LENGTH} characters`);
+    }
+
+    // Validate rating (optional, 1–5)
+    let cleanRating: number | null = null;
+    if (rating !== undefined && rating !== null) {
+      cleanRating = Math.round(Number(rating));
+      if (!Number.isFinite(cleanRating) || cleanRating < 1 || cleanRating > 5) {
+        return cValidationError(c, 'Rating must be between 1 and 5');
+      }
+    }
+
+    const testimonialData: DBNewPlatformTestimonial = {
+      userId,
+      content: cleanContent,
+      rating: cleanRating,
+      status: 'pending',
+    };
+
+    // `ON CONFLICT DO NOTHING` (no target) also catches the partial unique index
+    // `platform_testimonials_user_active_unique`, so a second active submission
+    // is a silent no-op and never overwrites the existing one.
+    const [testimonial] = await dbWrite
+      .insert(platformTestimonials)
+      .values(testimonialData)
+      .onConflictDoNothing()
+      .returning();
+
+    if (!testimonial) {
+      return cConflictError(c, 'You already have an active platform testimonial');
+    }
+
+    c.status(201);
+    return c.json({ success: true, testimonial });
+  } catch (error) {
+    console.error('[POST /user/platform-testimonials] ❌', error);
+    return cApiError(c, 'Failed to submit platform testimonial', error);
+  }
+});
+
+/**
+ * GET /user/platform-testimonials
+ *
+ * Returns the authenticated beta tester's own platform testimonials, newest
+ * first. Own submissions are visible regardless of curation status so the
+ * author can track a pending/approved/rejected submission.
+ *
+ * @route GET /user/platform-testimonials
+ * @description Get own platform testimonials (beta testers only)
+ * @auth Required + beta tester
+ *
+ * @returns {boolean} success - Operation status
+ * @returns {Array} testimonials - Array of the user's testimonial records
+ *
+ * @example
+ * // Response
+ * {
+ *   "success": true,
+ *   "testimonials": [
+ *     {
+ *       "id": "uuid",
+ *       "userId": "user-uuid",
+ *       "rating": 5,
+ *       "content": "Twistloom changed the way I think about interactive fiction.",
+ *       "status": "approved",
+ *       "featured": true,
+ *       "createdAt": "2026-08-10T00:00:00.000Z",
+ *       "updatedAt": "2026-08-11T00:00:00.000Z"
+ *     }
+ *   ]
+ * }
+ */
+router.get('/platform-testimonials', requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get('userId')!;
+
+    if (!(await isBetaTesterUser(userId))) {
+      return cForbiddenError(c, 'Only beta testers can view platform testimonials');
+    }
+
+    const testimonials = await dbRead
+      .select()
+      .from(platformTestimonials)
+      .where(eq(platformTestimonials.userId, userId))
+      .orderBy(desc(platformTestimonials.createdAt));
+
+    return c.json({ success: true, testimonials });
+  } catch (error) {
+    console.error('[GET /user/platform-testimonials] ❌', error);
+    return cApiError(c, 'Failed to fetch platform testimonials', error);
+  }
+});
+
+/**
+ * PATCH /user/platform-testimonials/:id
+ *
+ * Updates the authenticated beta tester's own platform testimonial. Only
+ * `content` and/or `rating` are updatable; `status`/`featured` are admin-only.
+ * Partial update semantics — omitted fields keep their current value. Editing
+ * an already-approved submission returns it to `pending` for re-review.
+ *
+ * @route PATCH /user/platform-testimonials/:id
+ * @description Update own platform testimonial (beta testers only)
+ * @auth Required + beta tester
+ *
+ * @param {string} id - The testimonial's UUID
+ * @body {Object} Partial testimonial data (at least one field)
+ * @body {string} [content] - New testimonial message (≤ 1000 chars)
+ * @body {number|null} [rating] - New star rating (1–5) or null to clear it
+ *
+ * @returns {Object} Update response
+ * @returns {boolean} success - Operation status
+ * @returns {Object} testimonial - Updated testimonial record
+ *
+ * @example
+ * // Request
+ * PATCH /user/platform-testimonials/uuid
+ * Body: { "content": "Updated testimonial text." }
+ *
+ * // Response
+ * {
+ *   "success": true,
+ *   "testimonial": {
+ *     "id": "uuid",
+ *     "userId": "user-uuid",
+ *     "rating": 5,
+ *     "content": "Updated testimonial text.",
+ *     "status": "pending",
+ *     "featured": false,
+ *     "createdAt": "2026-08-10T00:00:00.000Z",
+ *     "updatedAt": "2026-08-12T00:00:00.000Z"
+ *   }
+ * }
+ */
+router.patch('/platform-testimonials/:id', requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get('userId')!;
+
+    if (!(await isBetaTesterUser(userId))) {
+      return cForbiddenError(c, 'Only beta testers can update a platform testimonial');
+    }
+
+    const { id } = c.req.param();
+    const testimonialId = Array.isArray(id) ? id[0] : id;
+
+    // Ensure the testimonial exists and belongs to this user
+    const [existing] = await dbRead
+      .select({ id: platformTestimonials.id })
+      .from(platformTestimonials)
+      .where(and(
+        eq(platformTestimonials.id, testimonialId),
+        eq(platformTestimonials.userId, userId),
+      ))
+      .limit(1);
+
+    if (!existing) {
+      return cNotFoundError(c, 'Platform testimonial not found');
+    }
+
+    const { content, rating } = c.get('body') as { content?: unknown; rating?: unknown };
+    const hasContent = content !== undefined;
+    const hasRating = rating !== undefined;
+
+    if (!hasContent && !hasRating) {
+      return cValidationError(c, 'Provide at least one field: content or rating');
+    }
+
+    const updates: { content?: string; rating?: number | null; status?: 'pending' | 'approved' | 'rejected'; updatedAt: Date } = {
+      updatedAt: new Date(),
+    };
+
+    if (hasContent) {
+      const cleanContent = typeof content === 'string' ? content.trim() : '';
+      if (!cleanContent) {
+        return cValidationError(c, 'Content is required');
+      }
+      if (cleanContent.length > PLATFORM_TESTIMONIAL_MAX_LENGTH) {
+        return cValidationError(c, `Content must be at most ${PLATFORM_TESTIMONIAL_MAX_LENGTH} characters`);
+      }
+      updates.content = cleanContent;
+    }
+
+    if (hasRating) {
+      if (rating === null) {
+        updates.rating = null;
+      } else {
+        const cleanRating = Math.round(Number(rating));
+        if (!Number.isFinite(cleanRating) || cleanRating < 1 || cleanRating > 5) {
+          return cValidationError(c, 'Rating must be between 1 and 5');
+        }
+        updates.rating = cleanRating;
+      }
+    }
+
+    // Any edit sends the submission back to the admin review queue
+    updates.status = 'pending';
+
+    const [testimonial] = await dbWrite
+      .update(platformTestimonials)
+      .set(updates)
+      .where(eq(platformTestimonials.id, existing.id))
+      .returning();
+
+    return c.json({ success: true, testimonial });
+  } catch (error) {
+    console.error('[PATCH /user/platform-testimonials/:id] ❌', error);
+    return cApiError(c, 'Failed to update platform testimonial', error);
+  }
+});
+
+/**
+ * DELETE /user/platform-testimonials/:id
+ *
+ * Deletes the authenticated beta tester's own platform testimonial.
+ *
+ * @route DELETE /user/platform-testimonials/:id
+ * @description Delete own platform testimonial (beta testers only)
+ * @auth Required + beta tester
+ *
+ * @param {string} id - The testimonial's UUID
+ *
+ * @returns {Object} Deletion response
+ * @returns {boolean} success - Operation status
+ * @returns {string} message - Confirmation message
+ *
+ * @example
+ * // Request
+ * DELETE /user/platform-testimonials/uuid
+ *
+ * // Response
+ * {
+ *   "success": true,
+ *   "message": "Platform testimonial deleted"
+ * }
+ */
+router.delete('/platform-testimonials/:id', requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get('userId')!;
+
+    if (!(await isBetaTesterUser(userId))) {
+      return cForbiddenError(c, 'Only beta testers can delete a platform testimonial');
+    }
+
+    const { id } = c.req.param();
+    const testimonialId = Array.isArray(id) ? id[0] : id;
+
+    const result = await dbWrite
+      .delete(platformTestimonials)
+      .where(and(
+        eq(platformTestimonials.id, testimonialId),
+        eq(platformTestimonials.userId, userId),
+      ))
+      .returning({ id: platformTestimonials.id });
+
+    if (result.length === 0) {
+      return cNotFoundError(c, 'Platform testimonial not found');
+    }
+
+    return c.json({ success: true, message: 'Platform testimonial deleted' });
+  } catch (error) {
+    console.error('[DELETE /user/platform-testimonials/:id] ❌', error);
+    return cApiError(c, 'Failed to delete platform testimonial', error);
   }
 });
 

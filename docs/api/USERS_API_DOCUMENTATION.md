@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Users API provides endpoints for managing user profiles, social interactions (likes, favorites, comments, follows), daily check-ins, reading progress, achievements, and user discovery. All endpoints follow industry-standard public API patterns used by major platforms (Twitter/X, GitHub, Instagram, LinkedIn).
+The Users API provides endpoints for managing user profiles, social interactions (likes, favorites, comments, follows), daily check-ins, reading progress, achievements, platform-wide testimonials, and user discovery. All endpoints follow industry-standard public API patterns used by major platforms (Twitter/X, GitHub, Instagram, LinkedIn).
 
 **Base URL:** All endpoints live under `/api/user`. Authenticated user operations sit directly under it (e.g. `/api/user/checkin`). Public / user-facing operations sit under the nested `/api/user/users/...` sub-path (e.g. `/api/user/users/:identifier`, `/api/user/users/top-creators`). Note there is no separate `/api/users` mount — the `/users/...` routes in this document resolve to `/api/user/users/...`.
 
@@ -72,13 +72,18 @@ The Users API provides endpoints for managing user profiles, social interactions
       - [Submit Feedback](#post-userfeedbacks)
  15. [Beta Tester Program](#beta-tester-program)
       - [Join Beta Tester Program](#post-userbeta-tester)
- 16. [Error Handling](#error-handling)
- 17. [HTTP Headers](#http-headers)
- 18. [Caching Strategy](#caching-strategy)
- 19. [Authentication](#authentication)
- 20. [Database Schema](#database-schema)
- 21. [Testing](#testing)
- 22. [Changelog](#changelog)
+ 16. [Platform Testimonials](#platform-testimonials)
+      - [Submit Platform Testimonial](#post-userplatform-testimonials)
+      - [Get Own Platform Testimonials](#get-userplatform-testimonials)
+      - [Update Own Platform Testimonial](#patch-userplatform-testimonialsid)
+      - [Delete Own Platform Testimonial](#delete-userplatform-testimonialsid)
+ 17. [Error Handling](#error-handling)
+ 18. [HTTP Headers](#http-headers)
+ 19. [Caching Strategy](#caching-strategy)
+ 20. [Authentication](#authentication)
+ 21. [Database Schema](#database-schema)
+ 22. [Testing](#testing)
+ 23. [Changelog](#changelog)
 
 ---
 
@@ -365,6 +370,23 @@ interface Feedback {
   status: 'idle' | 'submitting' | 'success' | 'error';  // Submission status
   createdAt: string;               // Feedback creation timestamp (ISO 8601)
   updatedAt: string;               // Last update timestamp (ISO 8601)
+}
+```
+
+### PlatformTestimonial
+
+User-submitted, platform-wide testimonial (beta testers only). Unlike `bookTestimonials` (scoped to a single book), this relates to the Twistloom platform itself.
+
+```typescript
+interface PlatformTestimonial {
+  id: string;                       // Testimonial unique identifier (UUID)
+  userId: string;                   // User who submitted the testimonial
+  rating: number | null;            // Optional star rating (1–5)
+  content: string;                  // Testimonial message content
+  status: 'pending' | 'approved' | 'rejected';  // Admin curation lifecycle
+  featured: boolean;                // Whether it's featured on the public wall
+  createdAt: string;                // Testimonial creation timestamp (ISO 8601)
+  updatedAt: string;                // Last update timestamp (ISO 8601)
 }
 ```
 
@@ -2036,6 +2058,164 @@ The join and the reward are atomic (single transaction): the flag claim is an `U
 
 ---
 
+## Platform Testimonials
+
+Platform-wide testimonials are first-party endorsements about the Twistloom
+platform itself (as opposed to `bookTestimonials`, which are scoped to a single
+book). All CRUD endpoints are **restricted to beta testers** — the backend reads
+the generated `users.is_beta_tester` column (SSOT derived from
+`beta_tester_joined_at`) and returns `403 Forbidden` for non-beta-testers.
+
+A user can hold **at most one active testimonial** at a time, enforced by a
+partial unique index on `user_id` (excluding `rejected` rows, so a rejected
+submission can be re-submitted). Submissions start in `pending` and appear
+publicly only after admin approval; `status`/`featured` are admin-only fields.
+
+### POST /user/platform-testimonials
+
+Submits a platform-wide testimonial. `content` is required (max 1000 chars); an
+optional star `rating` (1–5) may be included.
+
+**Authentication:** Required + **beta tester** (`requireAuth` + isBetaTester)
+
+**Request Body:**
+```json
+{
+  "content": "Twistloom changed the way I think about interactive fiction.",
+  "rating": 5
+}
+```
+
+**Parameters:**
+- `content` (string, required): Testimonial message (trimmed, ≤ 1000 characters)
+- `rating` (number, optional): Star rating, clamped to an integer between 1 and 5
+
+**Response (201 Created):**
+```json
+{
+  "success": true,
+  "testimonial": {
+    "id": "uuid",
+    "userId": "user-uuid",
+    "rating": 5,
+    "content": "Twistloom changed the way I think about interactive fiction.",
+    "status": "pending",
+    "featured": false,
+    "createdAt": "2026-08-10T00:00:00.000Z",
+    "updatedAt": "2026-08-10T00:00:00.000Z"
+  }
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Missing/empty content, content too long, or invalid rating
+- `403 Forbidden`: Not a beta tester
+- `409 Conflict`: Already has an active platform testimonial
+
+---
+
+### GET /user/platform-testimonials
+
+Returns the authenticated beta tester's own platform testimonials, newest
+first. Own submissions are visible regardless of curation status so the author
+can track a pending/approved/rejected submission.
+
+**Authentication:** Required + **beta tester** (`requireAuth` + isBetaTester)
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "testimonials": [
+    {
+      "id": "uuid",
+      "userId": "user-uuid",
+      "rating": 5,
+      "content": "Twistloom changed the way I think about interactive fiction.",
+      "status": "approved",
+      "featured": true,
+      "createdAt": "2026-08-10T00:00:00.000Z",
+      "updatedAt": "2026-08-11T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+**Error Responses:**
+- `403 Forbidden`: Not a beta tester
+
+---
+
+### PATCH /user/platform-testimonials/:id
+
+Updates the authenticated beta tester's own platform testimonial. Only
+`content` and/or `rating` are updatable; `status`/`featured` are admin-only.
+Partial update semantics — omitted fields keep their current value. Editing an
+already-approved submission returns it to `pending` for re-review.
+
+**Authentication:** Required + **beta tester** (`requireAuth` + isBetaTester)
+
+**Path Parameters:**
+- `id` (string, required): The testimonial's UUID
+
+**Request Body:**
+```json
+{
+  "content": "Updated testimonial text."
+}
+```
+
+**Parameters:**
+- `content` (string, optional): New testimonial message (≤ 1000 characters)
+- `rating` (number|null, optional): New star rating (1–5) or `null` to clear it
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "testimonial": {
+    "id": "uuid",
+    "userId": "user-uuid",
+    "rating": 5,
+    "content": "Updated testimonial text.",
+    "status": "pending",
+    "featured": false,
+    "createdAt": "2026-08-10T00:00:00.000Z",
+    "updatedAt": "2026-08-12T00:00:00.000Z"
+  }
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: No updatable field provided, invalid content/rating
+- `403 Forbidden`: Not a beta tester
+- `404 Not Found`: Testimonial not found (or belongs to another user)
+
+---
+
+### DELETE /user/platform-testimonials/:id
+
+Deletes the authenticated beta tester's own platform testimonial.
+
+**Authentication:** Required + **beta tester** (`requireAuth` + isBetaTester)
+
+**Path Parameters:**
+- `id` (string, required): The testimonial's UUID
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Platform testimonial deleted"
+}
+```
+
+**Error Responses:**
+- `403 Forbidden`: Not a beta tester
+- `404 Not Found`: Testimonial not found (or belongs to another user)
+
+---
+
 ## Error Handling
 
 All endpoints follow consistent error response formats:
@@ -2286,6 +2466,28 @@ CREATE TABLE "user_quests" (
 
 ---
 
+### Platform Testimonials Table
+```sql
+CREATE TABLE "platform_testimonials" (
+  "id" uuid PRIMARY KEY DEFAULT uuidv7(),
+  "user_id" uuid NOT NULL REFERENCES users(user_id) ON DELETE cascade,
+  "rating" integer,
+  "content" text NOT NULL,
+  "status" text NOT NULL DEFAULT 'pending', -- "pending" | "approved" | "rejected"
+  "featured" boolean NOT NULL DEFAULT false,
+  "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+  "updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+```
+
+**Indexes:**
+- `platform_testimonials_status_idx`: (status)
+- `platform_testimonials_featured_idx`: (featured, created_at DESC)
+- `platform_testimonials_user_idx`: (user_id, created_at DESC)
+- `platform_testimonials_user_active_unique` (partial unique): (user_id) WHERE status <> 'rejected' — enforces one active testimonial per beta tester
+
+---
+
 ## Testing
 
 ### Example cURL Commands
@@ -2437,9 +2639,50 @@ curl -X POST https://api.twistloom.com/api/user/feedbacks \
   }'
 ```
 
+**Submit a platform testimonial (beta testers only):**
+```bash
+curl -X POST https://api.twistloom.com/api/user/platform-testimonials \
+  -H "Content-Type: application/json" \
+  -H "Cookie: next-auth.session-token=YOUR_TOKEN" \
+  -d '{
+    "content": "Twistloom changed the way I think about interactive fiction.",
+    "rating": 5
+  }'
+```
+
+**Get own platform testimonials (beta testers only):**
+```bash
+curl https://api.twistloom.com/api/user/platform-testimonials \
+  -H "Cookie: next-auth.session-token=YOUR_TOKEN"
+```
+
+**Update own platform testimonial (beta testers only):**
+```bash
+curl -X PATCH https://api.twistloom.com/api/user/platform-testimonials/uuid \
+  -H "Content-Type: application/json" \
+  -H "Cookie: next-auth.session-token=YOUR_TOKEN" \
+  -d '{ "content": "Updated testimonial text." }'
+```
+
+**Delete own platform testimonial (beta testers only):**
+```bash
+curl -X DELETE https://api.twistloom.com/api/user/platform-testimonials/uuid \
+  -H "Cookie: next-auth.session-token=YOUR_TOKEN"
+```
+
 ---
 
 ## Changelog
+
+### v3.9.0 (2026-08-10)
+- Added the Platform Testimonials section with four endpoints — all restricted to **beta testers** (the backend reads the generated `users.is_beta_tester` column and returns `403 Forbidden` otherwise):
+  - `POST /user/platform-testimonials` — submits a platform-wide testimonial (`content` required ≤ 1000 chars, optional `rating` 1–5); returns `409 Conflict` if the user already has an active testimonial
+  - `GET /user/platform-testimonials` — lists the user's own testimonials, newest first (all statuses visible to the author)
+  - `PATCH /user/platform-testimonials/:id` — updates own testimonial (`content`, `rating`); editing returns it to `pending` for re-review
+  - `DELETE /user/platform-testimonials/:id` — deletes own testimonial
+- Added `PlatformTestimonial` type definition (`id`, `userId`, `rating`, `content`, `status`, `featured`, `createdAt`, `updatedAt`)
+- Added the `platform_testimonials` database table with a partial unique index enforcing one active submission per beta tester (rejected rows excluded so a user can re-submit)
+- Added cURL examples and a database schema entry
 
 ### v3.8.0 (2026-08-08)
 - Added `POST /user/quests/claim-all` — atomically claims **every completed quest** in one transaction, pays a single aggregate balance via `addCredits` (sum of the claimed quests' registry rewards), and records one `quest_reward` batch activity log. Idempotent: with nothing claimable it returns `{ status: 'none_claimable', claimedCount: 0, creditsAwarded: 0 }` and performs no writes. Invalidates the profile cache on success for the `CreditsChip`/`useUser` refresh.

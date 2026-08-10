@@ -11,7 +11,7 @@ import type { Context } from "hono";
 import type { AppEnv } from "../hono/env.js";
 import { requireAuth } from "../middleware/nextauth.js";
 import { rateLimit } from "../middleware/rate-limit.js";
-import { PEN_CONTINUE_RATE_LIMIT } from "../config/ai-rate-limits.js";
+import { PEN_CONTINUE_RATE_LIMIT, PEN_ESSENTIALS_RATE_LIMIT } from "../config/ai-rate-limits.js";
 import { cApiError, cNotFoundError, cValidationError } from "../utils/error.js";
 import { PEN_ASSISTANCE_LEVEL_MAX, PEN_ASSISTANCE_LEVEL_MIN, PEN_AUTHORING_MODES, PEN_AUTHORING_POVS, PEN_DRAFT_CAST_LIMIT, PEN_FINALIZE_MAX_ACTIONS, PEN_SCENE_FOCUS_MAX, PEN_SCENE_FOCUS_MIN, PEN_SESSION_STATUSES } from "../config/story.js";
 import {
@@ -23,14 +23,18 @@ import {
   discardPenDraft,
   continuePenDraft,
   finalizePenDraft,
+  autofillSceneEssentials,
   getPenSessionState,
+  getPenOutline,
+  getPenAuthorPage,
   PenSessionNotFoundError,
   PenSessionConflictError,
   PenBookOwnershipError,
   PenContinueError,
   PenFinalizeError,
+  PenEssentialsAutofillError,
 } from "../services/pen.js";
-import type { PenContinueInput, PenFinalizeInput } from "../services/pen.js";
+import type { PenContinueInput, PenFinalizeInput, PenEssentialsAutofillInput } from "../services/pen.js";
 import type { AuthoringMode, AuthoringPov, PenDraftCharacter, PenDraftSceneEssentials, PenSessionStatus } from "../types/pen.js";
 import { characterSceneRoles } from "../types/story.js";
 import type { CharacterSceneRole } from "../types/story.js";
@@ -159,6 +163,48 @@ router.get("/sessions/:bookId", requireAuth, async (c) => {
     return c.json({ session });
   } catch (error) {
     return cApiError(c, "Failed to load pen session", error);
+  }
+});
+
+/**
+ * GET /api/pen/sessions/:bookId/outline
+ * Flat outline payload (`{ pages, branches }`) for the pen book's page/branch
+ * tree (§6.6, Phase 3.d). The frontend builds the hierarchy from `parentId`.
+ * Owner-scoped: the authenticated user must own the book.
+ */
+router.get("/sessions/:bookId/outline", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId");
+    if (!userId) return cApiError(c, "Authentication required", undefined, 401);
+    const bookId = c.req.param("bookId");
+
+    const result = await getPenOutline(userId, bookId);
+    return c.json(result);
+  } catch (error) {
+    if (error instanceof PenBookOwnershipError) return cApiError(c, error.message, undefined, 403);
+    if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
+    return cApiError(c, "Failed to load pen outline", error);
+  }
+});
+
+/**
+ * GET /api/pen/pages/:pageId
+ * Full author-owned published page (prose + actions + scene essentials +
+ * authorship rollups) for the outline peek popover. Lazy-loaded on demand so
+ * the outline payload itself stays light.
+ */
+router.get("/pages/:pageId", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId");
+    if (!userId) return cApiError(c, "Authentication required", undefined, 401);
+    const pageId = c.req.param("pageId");
+
+    const page = await getPenAuthorPage(userId, pageId);
+    return c.json(page);
+  } catch (error) {
+    if (error instanceof PenBookOwnershipError) return cApiError(c, error.message, undefined, 403);
+    if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
+    return cApiError(c, "Failed to load pen page", error);
   }
 });
 
@@ -318,6 +364,47 @@ router.post("/sessions/:id/continue", requireAuth, rateLimit(PEN_CONTINUE_RATE_L
     if (error instanceof PenBookOwnershipError) return cApiError(c, error.message, undefined, 403);
     if (error instanceof PenContinueError) return cApiError(c, error.message, undefined, 422);
     return cApiError(c, "Failed to continue pen draft", error);
+  }
+});
+
+/**
+ * POST /api/pen/sessions/:id/essentials/autofill
+ * AI-fill the blank Page Essentials fields (mood/weather/date/time/keys/place)
+ * for the next page, from the session's canon + recent prose + the author's
+ * current in-progress draft.
+ *
+ * Body: `{ draftText?, mode? }` — the current draft prose (plain text) and the
+ * autofill mode (`fill_empty` | `review_all`, default `fill_empty`). The service
+ * never mutates the session: it returns a COMPLETE proposal and the frontend
+ * applies only the currently-blank fields (fill mode) or shows per-field diffs
+ * for acceptance (review mode), persisting via the normal debounced
+ * `PATCH /sessions/:id`. Every proposed value is clamped server-side (enum
+ * mood/weather, bible-place resolution, length caps). Charges
+ * `PEN_ESSENTIALS_AUTOFILL` (1 credit) and writes a `plan` audit row.
+ */
+router.post("/sessions/:id/essentials/autofill", requireAuth, rateLimit(PEN_ESSENTIALS_RATE_LIMIT), async (c) => {
+  try {
+    const userId = c.get("userId");
+    if (!userId) return cApiError(c, "Authentication required", undefined, 401);
+    const sessionId = c.req.param("id");
+    const body = await readJsonBody(c);
+
+    const input: PenEssentialsAutofillInput = {};
+    const raw = body as { draftText?: unknown; mode?: unknown } | null | undefined;
+    if (raw && typeof raw.draftText === "string") {
+      input.draftText = raw.draftText;
+    }
+    if (raw && (raw.mode === "fill_empty" || raw.mode === "review_all")) {
+      input.mode = raw.mode;
+    }
+
+    const result = await autofillSceneEssentials(userId, sessionId, input);
+    return c.json(result);
+  } catch (error) {
+    if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
+    if (error instanceof PenBookOwnershipError) return cApiError(c, error.message, undefined, 403);
+    if (error instanceof PenEssentialsAutofillError) return cApiError(c, error.message, undefined, 422);
+    return cApiError(c, "Failed to autofill scene essentials", error);
   }
 });
 

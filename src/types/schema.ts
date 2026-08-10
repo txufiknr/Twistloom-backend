@@ -1,4 +1,4 @@
-import type { users, pages, storyStates, books, userSessions, userLikes, userFavorites, userComments, userPageProgress, userActivityLogs, bookGenerations, pageTranslations, bookTranslations, storyPrompts, userCounters, userFeedbacks, penSessions, penEdits, loreEntries } from "../db/schema.js";
+import type { users, pages, storyStates, books, userSessions, userLikes, userFavorites, userComments, userPageProgress, userActivityLogs, bookGenerations, pageTranslations, bookTranslations, storyPrompts, userCounters, userFeedbacks, penSessions, penEdits, loreEntries, platformTestimonials } from "../db/schema.js";
 
 /** Complete user data as stored in database */
 export type DBUser = typeof users.$inferSelect;
@@ -72,6 +72,10 @@ export type DBNewBookTranslations = typeof bookTranslations.$inferInsert;
 /** Complete user feedback data as stored in database */
 export type DBUserFeedback = typeof userFeedbacks.$inferSelect;
 export type DBNewUserFeedback = typeof userFeedbacks.$inferInsert;
+
+/** Complete platform-wide testimonial data as stored in database */
+export type DBPlatformTestimonial = typeof platformTestimonials.$inferSelect;
+export type DBNewPlatformTestimonial = typeof platformTestimonials.$inferInsert;
 
 /** Complete Pen session data as stored in database */
 export type DBPenSession = typeof penSessions.$inferSelect;

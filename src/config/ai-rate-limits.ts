@@ -177,3 +177,20 @@ export const CUSTOM_ACTION_SUBMIT_RATE_LIMIT: AIRateLimitConfig = buildRateLimit
 export const PEN_CONTINUE_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
   "PEN_CONTINUE", 20, 60
 );
+
+/**
+ * POST /api/pen/sessions/:id/essentials/autofill — AI-fill the blank Page
+ * Essentials fields from the draft.
+ *
+ * Charges `PEN_ESSENTIALS_AUTOFILL` (1 credit) via `executeWithCredits`, so the
+ * credit check already gates spend; this ceiling bounds burst + retry churn
+ * around a charged generation (roadmap §8: even a cheap action needs a rate
+ * limit, not credits alone).
+ *
+ * why: 1-credit structured-output generation — the credit check gates it, but
+ * the limit stops a client hammering past a fresh model before its balance (or
+ * the credit check) catches up.
+ */
+export const PEN_ESSENTIALS_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
+  "PEN_ESSENTIALS", 10, 60
+);

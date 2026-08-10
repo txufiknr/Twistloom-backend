@@ -491,3 +491,12 @@ export const PEN_LORE_MAX_TRIGGERS = 20;
 export const PEN_LORE_DESCRIPTION_MAX_LENGTH = 5000;
 /** Placeholder MC seed for Pen-created books (schema NOT NULL); author shapes the real MC later. */
 export const PEN_PLACEHOLDER_MC: StoryMC = { name: "MC", age: 0, gender: "male", bio: "" };
+
+/** Output-token budget for the Page Essentials auto-fill (§10 Decision M — a constrained JSON classification task, so a small cap suffices). */
+export const PEN_ESSENTIALS_MAX_TOKENS = 400;
+/** Maximum number of `keyEvents` / `keyObjects` items the auto-fill may propose. */
+export const PEN_ESSENTIALS_MAX_LIST_ITEMS = 8;
+/** Maximum length of a single `keyEvents` / `keyObjects` item the auto-fill may propose. */
+export const PEN_ESSENTIALS_MAX_ITEM_LENGTH = 120;
+/** Maximum length of a free-text `calendarDate` / `timeOfDay` value the auto-fill may propose. */
+export const PEN_ESSENTIALS_MAX_FIELD_LENGTH = 64;
