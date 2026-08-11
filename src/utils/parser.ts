@@ -57,6 +57,28 @@ export function safeString(
 }
 
 /**
+ * Checks if a string is object-like (starts with '{' and ends with '}')
+ * 
+ * This function is useful for quickly determining if a string might represent
+ * a JSON object. It does not validate the content of the string, only its
+ * format. For example, it will return true for strings like '{"name": "Alice"}'
+ * and false for strings like 'hello' or '[1, 2, 3]'.
+ * 
+ * @param str - The string to check
+ * @returns True if the string is object-like, false otherwise
+ * 
+ * Examples:
+ * console.log(isObjectLike('{"name": "Alice"}'));    // true
+ * console.log(isObjectLike('  \n  {"a": 1}  \n  ')); // true
+ * console.log(isObjectLike('{"name": "Alice"'));     // false
+ * console.log(isObjectLike('hello'));                // false
+ */
+export function isObjectLike(str: string): boolean {
+  const trimmed = str.trim();
+  return trimmed.startsWith('{') && trimmed.endsWith('}');
+}
+
+/**
  * Clamps a value between a minimum and maximum
  * @param value - The value to clamp
  * @param min - Minimum allowed value

@@ -23,6 +23,7 @@ import type { ProgressCallback } from "../types/sse.js";
 import type { StoryGenerationStep } from "../types/book.js";
 import type { ChatCompletionRequest, ChatCompletionResponse } from "@mistralai/mistralai/models/components";
 import type * as GroqCompletion from "groq-sdk/resources/chat/completions.mjs";
+import { isObjectLike } from "./parser.js";
 
 /**
  * Base function for AI provider prompt handling with common patterns
@@ -325,7 +326,7 @@ export async function geminiPrompt(
       };
 
       const paramsString = JSON.stringify(params, null, 2);
-      edgeGroup.wrap(`[geminiPrompt] 📝 Generate content params for ${model} (${paramsString.length} chars):`, async () => {
+      edgeGroup.wrap(`[geminiPrompt] 📝 Generate content params for ${model} (${isObjectLike(paramsString) ? 'OK' : 'CORRUPT'}, ${paramsString.length} chars):`, async () => {
         console.log(paramsString);
       });
 
