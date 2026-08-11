@@ -1,0 +1,1 @@
+ALTER TABLE "custom_actions" ADD COLUMN "generation_started_at" timestamp with time zone;

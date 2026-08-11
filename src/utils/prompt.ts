@@ -3675,12 +3675,12 @@ ${getActionRulesText({ isFirstPage: true, mode: params.mode })}`;
 }
 
 const firstBookFieldInstructions: string = `Book Metadata:
-- title: ${BOOK_TITLE_LENGTH}. If provided in theme, use it. Otherwise, NEVER start with "The" except it's really good. Be creative, mysterious, visceral (you feel it), memorable, not generic.
-- hook: ${HOOK_LENGTH}. Immediate intrigue. Psychological tension.
-- summary: ${SUMMARY_LENGTH}. Sets up premise without revealing the ending plan.
+- title: ${BOOK_TITLE_LENGTH}. If provided in theme, you MUST use it exactly. Do NOT use generic naming tropes. Avoid starting with definite articles. Favor visceral, punchy nouns and active verbs that feel memorable and unsettling.
+- hook: ${HOOK_LENGTH}. Write a high-tension logline. Establish immediate psychological dread and a clear, unanswered question.
+- summary: ${SUMMARY_LENGTH}. Write a suspenseful back-cover thriller blurb. Establish the terrifying premise and the stakes. Do NOT reveal the twists, the viableEnding plan, or any spoilers. End on a chilling, unresolved hook.
 - keywords: ${KEYWORDS_COUNT} kebab-case tags for theme, genre, mood, and story categorization (keep each short).
 - totalPages: min ${BOOK_MIN_PAGES}, max ${BOOK_MAX_PAGES}. Avoid exact multiples of 10. Let theme complexity and MC arc influence the count. If user mention anything about total pages, respect it as long as it's within bounds.
-- language: language code (ISO 639-1).
+- language: language code (ISO 639-1). Every single user-facing text field above MUST be generated exclusively in this target language.
 
 mainCharacter:
 - Infer a character whose personality makes the theme more psychologically dangerous for them specifically.
