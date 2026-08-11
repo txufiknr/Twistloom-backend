@@ -1780,6 +1780,7 @@ export const customActions = pgTable(
 
     originalText: text("original_text").notNull(),
     canonicalIntent: text("canonical_intent"),
+    hintText: text("hint_text"), // AI-written consequence hint (same language as the book)
     actionType: text("action_type"),
     hintType: text("hint_type"),
 

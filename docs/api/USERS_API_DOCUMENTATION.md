@@ -102,6 +102,7 @@ interface User {
   bio?: string | null;                 // User's bio/description
   gender?: string | null;              // User's gender ("male" | "female" | "unknown")
   imageUrl?: string | null;            // User's profile image URL
+  avatarFrame?: string | null;         // Achievement tier key rendered as an avatar frame ("bronze" | "silver" | "gold" | "platinum", null = no frame)
   credits: number;                     // Available credits
   isNewUser: boolean;                  // Onboarding completed flag
   lastActive: string;                  // Last activity timestamp (ISO 8601)
@@ -208,6 +209,7 @@ interface FollowUser {
   name: string | null;       // Display name
   username: string | null;   // Username
   imageUrl: string | null;   // Profile image URL
+  avatarFrame?: string | null;  // Achievement tier key rendered as an avatar frame (null = no frame)
   followedAt: string;        // When the follow was created (ISO 8601)
 }
 ```
@@ -222,6 +224,7 @@ interface TopCreator {
   name: string;                // Creator's display name
   username: string;            // Creator's username
   imageUrl: string | null;     // Creator's profile image URL
+  avatarFrame?: string | null;     // Achievement tier key rendered as an avatar frame (null = no frame)
   booksCreated: number;        // Number of public books created in the last 7 days
 }
 ```
@@ -429,6 +432,7 @@ Retrieves the authenticated user's full enriched profile with engagement statist
     "bio": "Psychological thriller enthusiast",
     "gender": "male",
     "imageUrl": "https://ik.imagekit.io/abc123/profile.jpg",
+    "avatarFrame": "gold",
     "credits": 500,
     "isNewUser": false,
     "lastActive": "2024-01-15T10:30:00.000Z",
@@ -486,6 +490,7 @@ Fetch user profile by identifier (UUID or username). Industry standard implement
     "bio": "User bio",
     "gender": "male",
     "imageUrl": "https://ik.imagekit.io/abc123/profile.jpg",
+    "avatarFrame": "gold",
     "credits": 500,
     "isNewUser": false,
     "lastActive": "2024-01-15T10:30:00.000Z",
@@ -530,6 +535,7 @@ Fetch user profile by identifier (UUID or username). Industry standard implement
     "bio": "User bio",
     "gender": "male",
     "imageUrl": "https://ik.imagekit.io/abc123/profile.jpg",
+    "avatarFrame": "gold",
     "credits": 500,
     "isNewUser": false,
     "lastActive": "2024-01-15T10:30:00.000Z",
@@ -632,7 +638,8 @@ Partially updates the authenticated user's profile. Only provided fields are upd
   "name": "John Doe",
   "bio": "Psychological thriller enthusiast",
   "gender": "male",
-  "imageUrl": "https://example.com/new-avatar.jpg"
+  "imageUrl": "https://example.com/new-avatar.jpg",
+  "avatarFrame": "gold"
 }
 ```
 
@@ -641,6 +648,7 @@ Partially updates the authenticated user's profile. Only provided fields are upd
 - `bio` (string, optional): Updated bio
 - `gender` (string, optional): Updated gender
 - `imageUrl` (string, optional): Profile image URL or base64 data
+- `avatarFrame` (string, optional): Achievement tier key rendered as an avatar frame (`bronze` | `silver` | `gold` | `platinum`); `null`/empty clears it
 
 **Or multipart/form-data:**
 - `imageFile` (file, optional): Profile image file
@@ -660,6 +668,7 @@ Partially updates the authenticated user's profile. Only provided fields are upd
     "bio": "Psychological thriller enthusiast",
     "gender": "male",
     "imageUrl": "https://ik.imagekit.io/abc123/profile.jpg",
+    "avatarFrame": "gold",
     "credits": 500,
     "isNewUser": false,
     "lastActive": "2024-01-15T10:30:00.000Z",
@@ -744,6 +753,7 @@ Only books with `status = 'active'` and `visibility = 'public'` are counted, so 
       "name": "John Doe",
       "username": "johndoe",
       "imageUrl": "https://ik.imagekit.io/abc123/profile.jpg",
+      "avatarFrame": "gold",
       "booksCreated": 3
     },
     {
@@ -751,6 +761,7 @@ Only books with `status = 'active'` and `visibility = 'public'` are counted, so 
       "name": "Jane Smith",
       "username": "jane-smith",
       "imageUrl": "https://ik.imagekit.io/abc123/profile2.jpg",
+      "avatarFrame": null,
       "booksCreated": 2
     }
   ]
@@ -1187,6 +1198,7 @@ Get all followers of a specific user, with user profile info and pagination.
       "name": "John Doe",
       "username": "johndoe",
       "imageUrl": "https://example.com/avatar.jpg",
+      "avatarFrame": "gold",
       "followedAt": "2023-01-01T00:00:00.000Z"
     }
   ],
@@ -1228,6 +1240,7 @@ Get all users that a specific user is following, with user profile info and pagi
       "name": "Jane Smith",
       "username": "jane-smith",
       "imageUrl": "https://example.com/avatar2.jpg",
+      "avatarFrame": null,
       "followedAt": "2023-01-01T00:00:00.000Z"
     }
   ],
@@ -1266,6 +1279,7 @@ Get all followers of the authenticated user, with user profile info and paginati
       "name": "John Doe",
       "username": "johndoe",
       "imageUrl": "https://example.com/avatar.jpg",
+      "avatarFrame": "gold",
       "followedAt": "2023-01-01T00:00:00.000Z"
     }
   ],
@@ -1301,6 +1315,7 @@ Get all users that the authenticated user is following, with user profile info a
       "name": "Jane Smith",
       "username": "jane-smith",
       "imageUrl": "https://example.com/avatar2.jpg",
+      "avatarFrame": null,
       "followedAt": "2023-01-01T00:00:00.000Z"
     }
   ],
@@ -2673,6 +2688,12 @@ curl -X DELETE https://api.twistloom.com/api/user/platform-testimonials/uuid \
 ---
 
 ## Changelog
+
+### v3.10.0 (2026-08-12)
+- Added `avatarFrame` to the `User`, `FollowUser`, and `TopCreator` type definitions — the user's achievement tier key (`bronze` | `silver` | `gold` | `platinum`) rendered as an avatar frame; `null`/absent when the user has no frame
+- `avatarFrame` is now returned on every user profile payload: `GET /user`, `GET /users/:identifier`, `GET /users/top-creators`, and all four follow-list endpoints (`GET /users/:id/followers`, `GET /users/:id/following`, `GET /user/followers`, `GET /user/following`)
+- `PUT /user` now accepts an optional `avatarFrame` request parameter (string tier key, or `null`/empty to clear); updated request-body example
+- All user-profile response examples updated to include the field
 
 ### v3.9.0 (2026-08-10)
 - Added the Platform Testimonials section with four endpoints — all restricted to **beta testers** (the backend reads the generated `users.is_beta_tester` column and returns `403 Forbidden` otherwise):

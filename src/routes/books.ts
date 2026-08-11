@@ -3197,6 +3197,7 @@ router.get("/:id/comments", optionalAuth, async (c) => {
         userId: userComments.userId,
         name: users.name,
         imageUrl: users.imageUrl,
+        avatarFrame: users.avatarFrame,
         bookId: userComments.bookId,
         pageId: userComments.pageId,
         paragraphNumber: userComments.paragraphNumber,
@@ -3373,6 +3374,7 @@ router.post("/:id/comments", requireAuth, async (c) => {
           userId: userComments.userId,
           name: users.name,
           imageUrl: users.imageUrl,
+          avatarFrame: users.avatarFrame,
           bookId: userComments.bookId,
           pageId: userComments.pageId,
           paragraphNumber: userComments.paragraphNumber,
@@ -3452,6 +3454,7 @@ async function createCommentInScope(
         userId: userComments.userId,
         name: users.name,
         imageUrl: users.imageUrl,
+        avatarFrame: users.avatarFrame,
         bookId: userComments.bookId,
         pageId: userComments.pageId,
         paragraphNumber: userComments.paragraphNumber,
@@ -3491,6 +3494,7 @@ async function fetchComments(
       userId: userComments.userId,
       name: users.name,
       imageUrl: users.imageUrl,
+      avatarFrame: users.avatarFrame,
       bookId: userComments.bookId,
       pageId: userComments.pageId,
       paragraphNumber: userComments.paragraphNumber,
@@ -4136,6 +4140,7 @@ const testimonialWithAuthorSelect = {
   updatedAt: bookTestimonials.updatedAt,
   name: users.name,
   imageUrl: users.imageUrl,
+  avatarFrame: users.avatarFrame,
 };
 
 /**
@@ -5594,7 +5599,7 @@ router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, rateLimi
       : getCreditCostForUser(userId, 'CUSTOM_ACTION');
 
     // Gate 2 — AI validation (light tier)
-    const userPrompt = buildCustomActionValidationPrompt(text, storyState, dbPage);
+    const userPrompt = buildCustomActionValidationPrompt(text, storyState, dbPage, book.language);
 
     const evalConfig: AIPromptForJson<CustomActionValidationResult> = {
       schema: CUSTOM_ACTION_VALIDATION_SCHEMA_DEFINITION,
@@ -5756,7 +5761,7 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit
     }
 
     // Gate 2 — AI validation
-    const userPrompt = buildCustomActionValidationPrompt(text, storyState, dbPage);
+    const userPrompt = buildCustomActionValidationPrompt(text, storyState, dbPage, book.language);
 
     const evalConfig: AIPromptForJson<CustomActionValidationResult> = {
       schema: CUSTOM_ACTION_VALIDATION_SCHEMA_DEFINITION,
@@ -5790,6 +5795,7 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit
         userId,
         originalText: text,
         canonicalIntent: result.interpretedIntent,
+        hintText: result.hintText,
         actionType: result.actionType,
         hintType: result.hintType,
         outcome: 'reject',
@@ -5824,6 +5830,7 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit
           userId,
           originalText: text,
           canonicalIntent: result.interpretedIntent,
+          hintText: result.hintText,
           actionType: result.actionType,
           hintType: result.hintType,
           outcome: result.outcome,

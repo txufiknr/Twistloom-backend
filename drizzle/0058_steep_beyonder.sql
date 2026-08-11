@@ -1,0 +1,1 @@
+ALTER TABLE "custom_actions" ADD COLUMN "hint_text" text;

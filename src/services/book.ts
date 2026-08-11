@@ -28,6 +28,7 @@ import type { StoryPage, PersistedStoryPage, UserStoryPage, StoryState, StoryPag
 import type { CanonValidationSummary } from "../types/canon-validation.js";
 import { getStoryStateFromPage, insertStoryState } from "./story.js";
 import { formatPlacesForPrompt, resolvePlaceLoreNames } from "../utils/places.js";
+import { buildCustomActionAction } from "../utils/custom-action.js";
 import { formatBookMetaForPrompt } from "../utils/books.js";
 import { calculateHealthStatus, formatCharactersForPrompt, formatPlannedCharactersForPrompt, resolveCharacterLoreNames } from "../utils/characters.js";
 import { formatSystemPromptWithDocuments } from "../utils/ai-chat.js";
@@ -1458,6 +1459,7 @@ export function loadOwnCustomActions(bookId: string, pageId: string, userId: str
       actionType: customActions.actionType,
       hintType: customActions.hintType,
       canonicalIntent: customActions.canonicalIntent,
+      hintText: customActions.hintText,
       nextPageId: customActions.nextPageId,
       generationStartedAt: customActions.generationStartedAt,
     })
@@ -1475,6 +1477,10 @@ export function loadOwnCustomActions(bookId: string, pageId: string, userId: str
  * Maps one of the current user's own custom-action rows to an `Action`.
  * Completed rows carry their generated destination; pending ones don't (and
  * therefore stay out of `visibleActions` until generation completes).
+ *
+ * Delegates to the shared `buildCustomActionAction` builder (the same one used
+ * by `buildCanonicalAction` at submit time) so reloads are byte-identical to
+ * the originally-submitted Action.
  */
 export function mapCustomActionRowToAction(row: {
   id: string;
@@ -1482,21 +1488,18 @@ export function mapCustomActionRowToAction(row: {
   actionType: string | null;
   hintType: string | null;
   canonicalIntent: string | null;
+  hintText: string | null;
   nextPageId: string | null;
 }): Action {
-  // TODO: can buildCanonicalAction and mapCustomActionRowToAction be made DRY for consistency?
-  return {
-    // Display label is the AI's interpreted intent (falls back to the raw
-    // reader text when the interpreter produced nothing usable).
-    text: row.canonicalIntent?.trim() || row.text,
-    type: (row.actionType as ActionType) || 'custom',
-    // TODO: should use AI's interpreted `hintText`
-    hint: { text: row.canonicalIntent ?? '', type: (row.hintType as ActionHintType) || 'custom' },
-    destinationPageIds: row.nextPageId ? [row.nextPageId] : [],
-    source: 'custom',
-    customActionId: row.id,
+  return buildCustomActionAction({
     originalText: row.text,
-  };
+    interpretedIntent: row.canonicalIntent ?? '',
+    hintText: row.hintText ?? '',
+    hintType: (row.hintType as ActionHintType) || 'custom',
+    actionType: (row.actionType as ActionType) || 'custom',
+    nextPageId: row.nextPageId,
+    customActionId: row.id,
+  });
 }
 
 /**

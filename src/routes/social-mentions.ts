@@ -41,6 +41,7 @@ type WallRow = {
   platform: string | null;
   author: string;
   authorAvatar: string | null;
+  authorAvatarFrame: string | null;
   title: string | null;
   content: string;
   url: string | null;
@@ -68,6 +69,7 @@ function socialWallQuery() {
       platform: sql<string | null>`${socialMentions.platform}`.as("platform"),
       author: socialMentions.author,
       authorAvatar: socialMentions.authorAvatar,
+      authorAvatarFrame: sql<string | null>`NULL`.as("author_avatar_frame"),
       title: socialMentions.title,
       content: socialMentions.content,
       url: sql<string | null>`${socialMentions.url}`.as("url"),
@@ -100,6 +102,7 @@ function userWallQuery() {
       platform: sql<string | null>`NULL`.as("platform"),
       author: sql<string>`COALESCE(${users.name}, 'Twistloom Reader')`.as("author"),
       authorAvatar: users.imageUrl,
+      authorAvatarFrame: users.avatarFrame,
       title: sql<string | null>`NULL`.as("title"),
       content: bookTestimonials.content,
       url: sql<string | null>`NULL`.as("url"),
@@ -134,6 +137,7 @@ function platformWallQuery() {
       platform: sql<string | null>`NULL`.as("platform"),
       author: sql<string>`COALESCE(${users.name}, 'Twistloom Reader')`.as("author"),
       authorAvatar: users.imageUrl,
+      authorAvatarFrame: users.avatarFrame,
       title: sql<string | null>`NULL`.as("title"),
       content: platformTestimonials.content,
       url: sql<string | null>`NULL`.as("url"),
@@ -305,6 +309,7 @@ router.get("/:id", async (c) => {
         platform: socialMentions.platform,
         author: socialMentions.author,
         authorAvatar: socialMentions.authorAvatar,
+        authorAvatarFrame: sql<string | null>`NULL`.as("author_avatar_frame"),
         title: socialMentions.title,
         content: socialMentions.content,
         url: socialMentions.url,
@@ -340,6 +345,7 @@ router.get("/:id", async (c) => {
         platform: sql<string | null>`NULL`.as("platform"),
         author: sql<string>`COALESCE(${users.name}, 'Twistloom Reader')`.as("author"),
         authorAvatar: users.imageUrl,
+        authorAvatarFrame: users.avatarFrame,
         title: sql<string | null>`NULL`.as("title"),
         content: bookTestimonials.content,
         url: sql<string | null>`NULL`.as("url"),

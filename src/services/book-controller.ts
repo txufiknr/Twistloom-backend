@@ -112,6 +112,7 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
       name: sql<string>`COALESCE(users.pen_name, users.name)`,
       // name: users.penName || users.name || "Anonymous",
       imageUrl: users.imageUrl,
+      avatarFrame: users.avatarFrame,
     } satisfies Record<keyof BookAuthor, unknown>,
 
     // Denormalized engagement metrics (O(1))

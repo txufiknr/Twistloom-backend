@@ -1,5 +1,12 @@
 # Story Page Automatic Pre-Generation Flow
 
+> **⚠️ SUPERSEDED — This document is stale.** The flow it describes no longer
+> matches the implementation (page *visits* no longer trigger pre-generation;
+> progress is DB-backed, not LRU-cached; book-mode branching contract applies).
+> See **[`NEXT_PAGE_GENERATION_ARCHITECTURE.md`](./NEXT_PAGE_GENERATION_ARCHITECTURE.md)**
+> for the current, implementation-accurate architecture. This file is kept for
+> historical reference only.
+
 ## Overview
 
 This document describes the automatic pre-generation system for story pages in Twistloom. The system proactively generates candidate pages for user actions to provide instant navigation and reduce perceived latency during story progression.

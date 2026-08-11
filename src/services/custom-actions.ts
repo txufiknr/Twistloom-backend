@@ -12,6 +12,7 @@ import { getPageFromDB, mapToUserStoryPage, getBookFromDB, mapBookFromDb } from 
 import { getStoryStateFromPage } from "./story.js";
 import { generateNextPages } from "../utils/prompt.js";
 import { acquireLock, releaseLock } from "../utils/distributed-lock.js";
+import { buildCustomActionAction } from "../utils/custom-action.js";
 import type { Book } from "../types/book.js";
 import type { CandidateGenerationPage } from "../types/candidate-generation.js";
 import {
@@ -25,6 +26,7 @@ import {
 import type { PlaceMemory } from "../types/places.js";
 import type { ObjectItem } from "../types/character.js";
 import type { AIJsonProperty } from "../types/ai-chat.js";
+import { formatLanguage } from "./translation.js";
 
 // ============================================================================
 // GATE 0 — Eligibility, rate limiting, credits
@@ -291,6 +293,7 @@ export function buildCustomActionValidationPrompt(
   userText: string,
   state: StoryState,
   currentPage: DBPage,
+  targetLanguage: string,
 ): string {
   const context = buildCustomActionValidationContext(
     state,
@@ -298,7 +301,10 @@ export function buildCustomActionValidationPrompt(
     userText,
   );
 
+  const targetLanguageFormatted = formatLanguage(targetLanguage);
   return `You are a narrative coherence evaluator for a psychological thriller. Your job is to judge whether a reader-submitted custom action is safe, plausible, tonally consistent, and story-coherent.
+
+The story is written in: ${targetLanguageFormatted}. The reader may write in any language, but ALL reader-facing text you produce (interpretedIntent and hintText) MUST be in the story's language.
 
 Evaluate the action against the context below. Return a JSON object with this exact schema:
 
@@ -309,10 +315,17 @@ Evaluate the action against the context below. Return a JSON object with this ex
   "plausibilityScore": 0.0-1.0,
   "progressionScore": 0.0-1.0,
   "interpretedIntent": "3-8 word canonical intent",
+  "hintText": "short consequence hint based on the story context",
   "actionType": "explore" | "escape" | "social" | "risk" | "ignore" | "attack" | "deceive" | "protect" | "create" | "heal" | "dialogue" | "custom" | "other",
   "hintType": "dark_discovery" | "relationship_revelation" | "betrayal" | "confrontation" | "truth_revelation" | "survival" | "psychological" | "custom" | "none",
-  "language": "ISO 639-1 language code of the action text (e.g. \\"en\\", \\"ar\\", \\"fr\\", \\"tr\\")"
+  "language": "ISO 639-1 language code of the custom action text"
 }
+
+RULES FOR LANGUAGE & FORMAT:
+1. Write both "interpretedIntent" and "hintText" IN THE STORY'S LANGUAGE (${targetLanguageFormatted}) — never in the reader's input language.
+2. Both must be properly capitalized, well-formed sentences (not fragments). "interpretedIntent" is a short imperative/choice statement (3-8 words); "hintText" is one evocative consequence sentence.
+3. "hintText" must NOT bluntly repeat the action or say exactly what happens next — it should hint at the consequence through story context (a building threat, a realization, a shift in the scene) without spoiling the result.
+4. The "language" field reflects the READER'S raw custom action text language (for analytics), which can differ from the story language.
 
 RULES FOR OUTCOME:
 1. reject — Use for:
@@ -341,10 +354,10 @@ Classify the action into one of the standard action types. DO NOT default to "cu
 
 SPECIAL INSTRUCTIONS:
 - If no ending plan exists yet ("No ending plan yet."), skip the bypasses_ending check entirely — don't invent an ending to check against.
-- For "allow_as_attempt" outcomes, set hintType and interpretedIntent to guide the page generator toward a failed/punished consequence.
+- For "allow_as_attempt" outcomes, set hintType and interpretedIntent to guide the page generator toward a failed/punished consequence; hintText should subtly signal that consequence through the scene.
+- For "reject" outcomes, you may leave "hintText" empty.
 - Never reveal hidden narrative state in your reasoning.
 - The action text has already been cleaned — focus on narrative evaluation.
-- Detect the language of the action text and return its ISO 639-1 code (e.g., "en", "id").
 
 ${context}`;
 }
@@ -358,26 +371,25 @@ ${context}`;
  * This runs identically for 'allow' and 'allow_as_attempt' outcomes.
  * The difference between a clean success and a forced narrative failure
  * lives entirely in hint.text/hint.type, not in whether an Action gets constructed.
+ *
+ * Display label is the AI's interpreted intent (never the raw verbatim text);
+ * hint text is the AI's consequence hint (never bluntly the outcome). Both are
+ * produced by the same validation call. Shared construction lives in
+ * `buildCustomActionAction` so the persisted-row reload (`mapCustomActionRowToAction`)
+ * produces byte-identical Actions.
  */
 export function buildCanonicalAction(
   originalText: string,
   result: CustomActionValidationResult,
 ): Action {
   const raw = originalText.trim();
-  // The display label is the AI's interpreted intent (the reader-facing choice),
-  // never the raw verbatim text. Fall back to the raw text only when the
-  // interpreter produced nothing usable. The raw request is preserved on
-  // `originalText` so the page generator can still honor it verbatim.
-  const interpretedText = result.interpretedIntent?.trim() ?? '';
-  const interpretedHint = interpretedText; // TODO: should be also generated by AI alongside `interpretedIntent`, answering "what's the consequence?" (text = intent, hint = consequence, but not bluntly)
-  return {
-    text: interpretedText || raw,
-    type: result.actionType,
-    hint: { text: interpretedHint, type: result.hintType },
-    destinationPageIds: [],
-    source: 'custom',
+  return buildCustomActionAction({
     originalText: raw,
-  };
+    interpretedIntent: result.interpretedIntent,
+    hintText: result.hintText,
+    hintType: result.hintType,
+    actionType: result.actionType,
+  });
 }
 
 // ============================================================================
@@ -456,6 +468,7 @@ export const CUSTOM_ACTION_VALIDATION_SCHEMA_DEFINITION: Record<keyof CustomActi
   plausibilityScore: { type: 'number' },
   progressionScore: { type: 'number' },
   interpretedIntent: { type: 'string' },
+  hintText: { type: 'string' },
   actionType: {
     type: 'string',
     enum: [
@@ -499,6 +512,7 @@ export const CUSTOM_ACTION_VALIDATION_REQUIRED_FIELDS: (keyof CustomActionValida
   'plausibilityScore',
   'progressionScore',
   'interpretedIntent',
+  'hintText',
   'actionType',
   'hintType',
   'language',
@@ -601,6 +615,7 @@ export async function generatePageForCustomAction(params: {
       plausibilityScore: row.plausibilityScore ?? 0,
       progressionScore: row.progressionScore ?? 0,
       interpretedIntent: row.canonicalIntent ?? '',
+      hintText: row.hintText ?? '',
       actionType: (row.actionType ?? 'custom') as ActionType,
       hintType: (row.hintType as ActionHintType) || 'custom',
       language: row.language ?? 'en',

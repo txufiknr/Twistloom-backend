@@ -57,6 +57,15 @@ export type CustomActionValidationResult = {
   /** 3–8 word canonical intent, replaces the draft's separate "canonicalization" prompt */
   interpretedIntent: string;
 
+  /**
+   * Short consequence hint written by the AI alongside `interpretedIntent`
+   * (the action label). Text = intent; hint = what this choice leads to,
+   * phrased evocatively rather than bluntly, grounded in the current scene.
+   * Always in the story language (book.language), never the reader's raw
+   * input language.
+   */
+  hintText: string;
+
   /** Best-fit classification into existing ActionType union */
   actionType: ActionType;
 

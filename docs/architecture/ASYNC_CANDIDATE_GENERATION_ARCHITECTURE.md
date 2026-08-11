@@ -1,5 +1,14 @@
 # Asynchronous Candidate Generation Architecture
 
+> **⚠️ SUPERSEDED — This document is stale.** Progress tracking is now
+> **DB-backed** (not the LRU 5-min cache described here), the backend is Hono
+> on Bun/Vercel (not Express/Next.js), and the system now includes the
+> book-mode branching contract, write-chain serialization, and the custom-action
+> on-demand path. See
+> **[`NEXT_PAGE_GENERATION_ARCHITECTURE.md`](./NEXT_PAGE_GENERATION_ARCHITECTURE.md)**
+> for the current, implementation-accurate architecture. This file is kept for
+> historical reference only.
+
 ## Overview
 
 This document describes the asynchronous candidate generation system that solves timeout limitations by using on-demand GitHub Actions workflows for Express.js deployments. The system provides reliable background processing with extended timeouts (30 minutes) and real-time progress updates via Server-Sent Events (SSE).

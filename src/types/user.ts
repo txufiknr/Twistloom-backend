@@ -171,6 +171,7 @@ export type UserComment = {
   userId: string;
   name: string;
   imageUrl: string;
+  avatarFrame?: string | null;
   bookId: string;
   pageId?: string;
   paragraphNumber?: number;

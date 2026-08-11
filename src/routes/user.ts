@@ -663,6 +663,7 @@ router.get("/users/top-creators", async (c: Context<AppEnv>) => {
           name: users.name,
           username: users.username,
           imageUrl: users.imageUrl,
+          avatarFrame: users.avatarFrame,
           booksCreated: sql<number>`COUNT(${books.id})::int`,
         })
         .from(users)
@@ -674,7 +675,7 @@ router.get("/users/top-creators", async (c: Context<AppEnv>) => {
             eq(books.visibility, 'public'),
           )
         )
-        .groupBy(users.userId, users.name, users.username, users.imageUrl)
+        .groupBy(users.userId, users.name, users.username, users.imageUrl, users.avatarFrame)
         .orderBy(sql`COUNT(${books.id})::int DESC`)
         .limit(limit);
 
@@ -1782,6 +1783,7 @@ router.get("/users/:id/followers", async (c: Context<AppEnv>) => {
         name: users.name,
         username: users.username,
         imageUrl: users.imageUrl,
+        avatarFrame: users.avatarFrame,
         followedAt: userFollows.createdAt
       })
       .from(userFollows)
@@ -1885,6 +1887,7 @@ router.get("/users/:id/following", async (c: Context<AppEnv>) => {
         name: users.name,
         username: users.username,
         imageUrl: users.imageUrl,
+        avatarFrame: users.avatarFrame,
         followedAt: userFollows.createdAt
       })
       .from(userFollows)
@@ -1973,6 +1976,7 @@ router.get("/followers", requireAuth, async (c: Context<AppEnv>) => {
         name: users.name,
         username: users.username,
         imageUrl: users.imageUrl,
+        avatarFrame: users.avatarFrame,
         followedAt: userFollows.createdAt
       })
       .from(userFollows)
@@ -2066,6 +2070,7 @@ router.get("/following", requireAuth, async (c: Context<AppEnv>) => {
         name: users.name,
         username: users.username,
         imageUrl: users.imageUrl,
+        avatarFrame: users.avatarFrame,
         followedAt: userFollows.createdAt
       })
       .from(userFollows)
@@ -2715,6 +2720,7 @@ router.get('/users/:identifier/testimonials', optionalAuth, async (c: Context<Ap
         updatedAt: bookTestimonials.updatedAt,
         name: users.name,
         imageUrl: users.imageUrl,
+        avatarFrame: users.avatarFrame,
         bookTitle: books.title,
         bookSlug: books.slug,
         bookImageUrl: uploadedImages.imageUrl,
@@ -2802,6 +2808,7 @@ router.get('/users/:identifier/testimonials/given', optionalAuth, async (c: Cont
         updatedAt: bookTestimonials.updatedAt,
         name: users.name,
         imageUrl: users.imageUrl,
+        avatarFrame: users.avatarFrame,
         bookTitle: books.title,
         bookSlug: books.slug,
         bookImageUrl: uploadedImages.imageUrl,
