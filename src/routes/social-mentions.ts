@@ -14,7 +14,7 @@ import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { union } from "drizzle-orm/pg-core";
 import { cApiError, cValidationError } from "../utils/error.js";
 import { dbRead } from "../db/client.js";
-import { socialMentions, bookTestimonials, users, books, uploadedImages } from "../db/schema.js";
+import { socialMentions, bookTestimonials, platformTestimonials, users, books, uploadedImages } from "../db/schema.js";
 import type { AppEnv } from "../hono/env.js";
 import { extractPaginationParams, calculatePaginationMeta } from "../utils/pagination.js";
 import { buildBookReadHref } from "../services/social/extract-twistloom-link.js";
@@ -123,6 +123,40 @@ function userWallQuery() {
 }
 
 /**
+ * Builds the shared public projection for a platform testimonial row (beta
+ * testers endorsing Twistloom the platform, scoped to no book).
+ */
+function platformWallQuery() {
+  return dbRead
+    .select({
+      id: platformTestimonials.id,
+      source: sql<string>`'platform'`.as("source"),
+      platform: sql<string | null>`NULL`.as("platform"),
+      author: sql<string>`COALESCE(${users.name}, 'Twistloom Reader')`.as("author"),
+      authorAvatar: users.imageUrl,
+      title: sql<string | null>`NULL`.as("title"),
+      content: platformTestimonials.content,
+      url: sql<string | null>`NULL`.as("url"),
+      score: sql<number>`0`.as("score"),
+      rating: platformTestimonials.rating,
+      sentimentScore: sql<number>`0`.as("sentiment_score"),
+      relevanceScore: sql<number>`0`.as("relevance_score"),
+      status: platformTestimonials.status,
+      featured: platformTestimonials.featured,
+      publishedAt: sql<Date | null>`NULL`.as("published_at"),
+      bookId: sql<string | null>`NULL`.as("book_id"),
+      createdAt: platformTestimonials.createdAt,
+      updatedAt: platformTestimonials.updatedAt,
+    })
+    .from(platformTestimonials)
+    .leftJoin(users, eq(platformTestimonials.userId, users.userId))
+    .where(and(
+      eq(platformTestimonials.status, "approved"),
+      eq(platformTestimonials.featured, true),
+    ));
+}
+
+/**
  * Batch-loads public+active books for wall CTA eligibility (D3).
  */
 async function loadPublicBooksByIds(
@@ -191,7 +225,7 @@ router.get("/", async (c) => {
   try {
     const { limit = 20, page = 1 } = extractPaginationParams(c.req.query(), 20);
     const source = c.req.query().source ?? "all";
-    const validSource = source === "social" || source === "user" ? source : "all";
+    const validSource = source === "social" || source === "user" || source === "platform" ? source : "all";
 
     const offset = (page - 1) * limit;
 
@@ -200,8 +234,10 @@ router.get("/", async (c) => {
       query = socialWallQuery();
     } else if (validSource === "user") {
       query = userWallQuery();
+    } else if (validSource === "platform") {
+      query = platformWallQuery();
     } else {
-      query = union(socialWallQuery(), userWallQuery());
+      query = union(socialWallQuery(), userWallQuery(), platformWallQuery());
     }
 
     const rows = (await query
@@ -225,16 +261,28 @@ router.get("/", async (c) => {
         .from(bookTestimonials)
         .where(and(eq(bookTestimonials.status, "approved"), eq(bookTestimonials.featured, true)));
       totalCount = row.count;
+    } else if (validSource === "platform") {
+      const [row] = await dbRead
+        .select({ count: sql<number>`count(*)::int` })
+        .from(platformTestimonials)
+        .where(and(eq(platformTestimonials.status, "approved"), eq(platformTestimonials.featured, true)));
+      totalCount = row.count;
     } else {
-      const [socialRow] = await dbRead
-        .select({ count: sql<number>`count(*)::int` })
-        .from(socialMentions)
-        .where(and(eq(socialMentions.status, "approved"), eq(socialMentions.featured, true)));
-      const [userRow] = await dbRead
-        .select({ count: sql<number>`count(*)::int` })
-        .from(bookTestimonials)
-        .where(and(eq(bookTestimonials.status, "approved"), eq(bookTestimonials.featured, true)));
-      totalCount = socialRow.count + userRow.count;
+      const [[socialRow], [userRow], [platformRow]] = await Promise.all([
+        dbRead
+          .select({ count: sql<number>`count(*)::int` })
+          .from(socialMentions)
+          .where(and(eq(socialMentions.status, "approved"), eq(socialMentions.featured, true))),
+        dbRead
+          .select({ count: sql<number>`count(*)::int` })
+          .from(bookTestimonials)
+          .where(and(eq(bookTestimonials.status, "approved"), eq(bookTestimonials.featured, true))),
+        dbRead
+          .select({ count: sql<number>`count(*)::int` })
+          .from(platformTestimonials)
+          .where(and(eq(platformTestimonials.status, "approved"), eq(platformTestimonials.featured, true))),
+      ]);
+      totalCount = socialRow.count + userRow.count + platformRow.count;
     }
 
     const pagination = calculatePaginationMeta(page, limit, totalCount);

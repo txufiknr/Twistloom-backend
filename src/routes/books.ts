@@ -6020,7 +6020,7 @@ router.patch("/:identifier/testimonials/:id", requireAuth, async (c) => {
   const identifier = c.req.param().identifier as string;
   const id = c.req.param().id as string;
   const userId = c.get("userId")!;
-  const { rating, content } = c.get("body") as { rating?: number; content?: string };
+  const { rating, content } = c.get("body") as { rating?: number | null; content?: string };
 
   const book = await resolveBook(identifier);
   if (!book) {
@@ -6050,12 +6050,17 @@ router.patch("/:identifier/testimonials/:id", requireAuth, async (c) => {
     }
     updateValues.content = content.trim();
   }
-  if (rating !== undefined && rating !== null) {
-    const numericRating = Number(rating);
-    if (!Number.isInteger(numericRating) || numericRating < 1 || numericRating > 5) {
-      return cValidationError(c, "Rating must be an integer between 1 and 5");
+  if (rating !== undefined) {
+    if (rating === null) {
+      // Explicitly clear the rating (e.g. author decides to drop their stars).
+      updateValues.rating = null;
+    } else {
+      const numericRating = Number(rating);
+      if (!Number.isInteger(numericRating) || numericRating < 1 || numericRating > 5) {
+        return cValidationError(c, "Rating must be an integer between 1 and 5");
+      }
+      updateValues.rating = numericRating;
     }
-    updateValues.rating = numericRating;
   }
 
   if (Object.keys(updateValues).length === 0) {

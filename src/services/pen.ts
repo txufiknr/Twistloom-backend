@@ -1168,6 +1168,67 @@ export async function finalizePenDraft(
   }
 
   // ── Phase C: roll up pen_edits spans + offsets, clear the draft ───────────
+  //
+  // TODO(orphan-window): the page + story-state INSERT above (Phase B,
+  // persistPageWithState) commits OUTSIDE this transaction, so there is no
+  // atomicity between "child page inserted" and "session advanced to it".
+  //
+  // ── The window ───────────────────────────────────────────────────────────
+  // If the process dies — or the DB/network drops — between Phase B's commit
+  // and Phase C's commit, the book is left half-published:
+  //   1. the new `pages` row exists (`parentId` already set to the parent),
+  //   2. the session still points at the OLD parent (`currentPageId`,
+  //      `draftBuffer`, scene essentials all untouched),
+  //   3. the B3 reverse-edge backfill below never ran, so the parent's
+  //      `actions[0].destinationPageIds` does NOT include the child.
+  // On client retry the draft is still loaded, so finalize publishes a SECOND
+  // child from the same parent → duplicate sibling. The stranded first child
+  // then lives forever in the outline (visible via `parentId`) but is
+  // reader-unreachable (the reader surfaces only actions with a destination)
+  // and renders outside its action folder.
+  //
+  // ── Why not simply wrap Phase B in one big transaction ───────────────────
+  // persistPageWithState deliberately avoids a DB transaction: insertStoryPage
+  // uses retryWithBranchConflict, which re-runs with a NEW branchId on
+  // unique-constraint violation — a transaction aborts on the first constraint
+  // error, defeating that retry (see the atomicity note on persistPageWithState
+  // in book.ts). Re-threading a `tx` through insertStoryState/persistPageWithState
+  // would couple finalize to every engine write path — high blast radius.
+  //
+  // ── Best proposed fix (Option A — favors the house "cleanup contract") ───
+  // Mirror persistPageWithState's own orphan cleanup instead of a shared tx:
+  //   try { await dbWrite.transaction(Phase C) }
+  //   catch (err) {
+  //     // Compensate: remove the child that never got "adopted" by the session,
+  //     // so a retry is clean and idempotent. Reuses the existing
+  //     // `deleteStoryPage(newPage.id)` helper (book.ts) already used for
+  //     // page-insert/state-insert failures.
+  //     try { await deleteStoryPage(newPage.id); } catch { /* reconciliation */ }
+  //     throw err;
+  //   }
+  // This makes the whole user action all-or-nothing and keeps Phase B's retry
+  // contract intact. Residual risk: if the compensation delete ALSO fails on a
+  // network partition, the page becomes a classic orphan — detectable by the
+  // periodic reconciliation job the engine already assumes ("no state, never
+  // linked as a destination", book.ts). It must not be erased if the author
+  // initiated another publish meanwhile (guard on session.status/currentPageId).
+  //
+  // ── Alternative B (strongest, more work) ─────────────────────────────────
+  // Add an in-progress publish marker to penSessions (e.g. `pendingPublishId`
+  // written before Phase B, cleared in Phase C). finalize is idempotent:
+  // a dangling marker either resumes or sweeps the stranded page on the next
+  // call / a reconciliation job. Requires a schema change + state machine
+  // (rollback, expiry, cross-session safety).
+  //
+  // ── Alternative C (read-time self-heal, least invasive) ──────────────────
+  // Repair missing reverse edges lazily in getPenOutline / reader page load:
+  // a child linked by `parentId` but absent from every action's
+  // `destinationPageIds` gets actions[0] updated to point at it. Heals legacy
+  // AND orphaned data with no write-path change — but is ambiguous in
+  // single-destination modes when a parent has several unlinked children
+  // (which is "the" destination?), so it must pick deterministically
+  // (e.g. highest pageNumber, as the latest continuation).
+
   const editRows = positionedSpans.map((span) => ({
     editId: generateId(),
     span,

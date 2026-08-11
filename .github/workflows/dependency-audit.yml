@@ -37,5 +37,5 @@ jobs:
           # Toggle to 'true' to fail only on critical advisories instead of high+critical.
           FAIL_ON_CRITICAL_ONLY: 'false'
         run: |
-          bun audit --json > audit.json
+          bun audit --json > audit.json || true
           bun scripts/ci-dependency-audit.js

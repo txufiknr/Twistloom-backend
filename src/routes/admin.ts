@@ -28,7 +28,7 @@ import { reconstructStoryState } from "../utils/branch-traversal.js";
 import { getBookFromDB, getPageFromDB, invalidateEnrichedBookCache } from "../services/book.js";
 import { getStoryState } from "../services/story.js";
 import { dbRead, dbWrite } from "../db/client.js";
-import { socialMentions, bookTestimonials, adminUsers, usage, users, userFeedbacks, books, portalBlogPosts } from "../db/schema.js";
+import { socialMentions, bookTestimonials, adminUsers, usage, users, userFeedbacks, books, portalBlogPosts, platformTestimonials } from "../db/schema.js";
 import type { AppEnv } from "../hono/env.js";
 import { bookStatuses, bookVisibilities, type BookStatus, type BookVisibility } from "../types/book.js";
 import { feedbackAdminStatuses, feedbackCategories, type FeedbackAdminStatus, type FeedbackCategory } from "../types/user.js";
@@ -819,6 +819,156 @@ router.post("/testimonials/bulk-status",
       return c.json({ success: true, updated: result.length });
     } catch (error) {
       return cApiError(c, "Failed to bulk update testimonials", error);
+    }
+  }
+);
+
+// ============================================================================
+// PLATFORM TESTIMONIALS (BETA TESTERS) ROUTES
+// ============================================================================
+
+/**
+ * GET /admin/platform-testimonials
+ *
+ * Lists platform-wide testimonials (beta testers' submissions about the
+ * platform itself) for the admin curation queue. Supports filtering by status
+ * and pagination, newest first, with the author's name/avatar joined in.
+ *
+ * @query {string} [status] - Optional filter: "pending" | "approved" | "rejected"
+ * @query {number} [limit] - Maximum rows to return (default: 50, max: 200)
+ * @query {number} [offset] - Number of rows to skip (default: 0)
+ *
+ * @returns {Object} List response
+ * @returns {number} total - Total rows matching the filter
+ * @returns {Array} testimonials - Platform testimonial rows (with author info)
+ */
+router.get("/platform-testimonials",
+  requireAuth,
+  requirePermission("testimonials"),
+  async (c) => {
+    try {
+      const { status, limit = "50", offset = "0" } = c.req.query();
+      const limitNum = Math.min(Math.max(Number(limit) || 50, 1), 200);
+      const offsetNum = Math.max(Number(offset) || 0, 0);
+
+      const conditions = [];
+      if (status === "pending" || status === "approved" || status === "rejected") {
+        conditions.push(eq(platformTestimonials.status, status));
+      }
+
+      const rows = await dbRead
+        .select({
+          id: platformTestimonials.id,
+          userId: platformTestimonials.userId,
+          rating: platformTestimonials.rating,
+          content: platformTestimonials.content,
+          status: platformTestimonials.status,
+          featured: platformTestimonials.featured,
+          createdAt: platformTestimonials.createdAt,
+          updatedAt: platformTestimonials.updatedAt,
+          userName: users.name,
+          userAvatar: users.imageUrl,
+        })
+        .from(platformTestimonials)
+        .leftJoin(users, eq(platformTestimonials.userId, users.userId))
+        .where(conditions.length > 0 ? and(...conditions) : undefined)
+        .orderBy(desc(platformTestimonials.createdAt))
+        .limit(limitNum)
+        .offset(offsetNum);
+
+      const [countRow] = await dbRead
+        .select({ count: sql<number>`count(*)` })
+        .from(platformTestimonials)
+        .where(conditions.length > 0 ? and(...conditions) : undefined);
+
+      return c.json({
+        total: Number(countRow.count),
+        limit: limitNum,
+        offset: offsetNum,
+        testimonials: rows,
+      });
+    } catch (error) {
+      return cApiError(c, "Failed to list platform testimonials", error);
+    }
+  }
+);
+
+/**
+ * PATCH /admin/platform-testimonials/:id
+ *
+ * Updates moderation fields of a platform testimonial (status, featured).
+ * Approving a beta tester's platform endorsement surfaces it on the public
+ * homepage testimonial wall.
+ */
+router.patch("/platform-testimonials/:id",
+  requireAuth,
+  requirePermission("testimonials"),
+  async (c) => {
+    try {
+      const { id } = c.req.param();
+      const { status, featured } = c.get("body");
+
+      if (status !== undefined && status !== "pending" && status !== "approved" && status !== "rejected") {
+        return cValidationError(c, "Invalid status. Must be 'pending', 'approved', or 'rejected'");
+      }
+
+      const [existing] = await dbRead
+        .select({ id: platformTestimonials.id })
+        .from(platformTestimonials)
+        .where(eq(platformTestimonials.id, id))
+        .limit(1);
+
+      if (!existing) {
+        return cNotFoundError(c, "Platform testimonial not found");
+      }
+
+      const updates: Partial<typeof platformTestimonials.$inferInsert> = {};
+      if (status !== undefined) updates.status = status;
+      if (typeof featured === "boolean") updates.featured = featured;
+
+      const [updated] = await dbWrite
+        .update(platformTestimonials)
+        .set(updates)
+        .where(eq(platformTestimonials.id, id))
+        .returning();
+
+      return c.json(updated);
+    } catch (error) {
+      return cApiError(c, "Failed to update platform testimonial", error);
+    }
+  }
+);
+
+/**
+ * POST /admin/platform-testimonials/bulk-status
+ *
+ * Bulk updates the status of multiple platform testimonials.
+ */
+router.post("/platform-testimonials/bulk-status",
+  requireAuth,
+  requirePermission("testimonials"),
+  async (c) => {
+    try {
+      const { ids, status } = c.get("body");
+
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return cValidationError(c, "ids must be a non-empty array");
+      }
+      if (status !== "pending" && status !== "approved" && status !== "rejected") {
+        return cValidationError(c, "Invalid status. Must be 'pending', 'approved', or 'rejected'");
+      }
+
+      const validIds = ids.filter((value): value is string => typeof value === "string" && value.length > 0);
+
+      const result = await dbWrite
+        .update(platformTestimonials)
+        .set({ status })
+        .where(inArray(platformTestimonials.id, validIds))
+        .returning({ id: platformTestimonials.id });
+
+      return c.json({ success: true, updated: result.length });
+    } catch (error) {
+      return cApiError(c, "Failed to bulk update platform testimonials", error);
     }
   }
 );

@@ -28,6 +28,14 @@
 
 ---
 
+Dependency Audit github workflow error in 0s
+
+Run bun audit --json > audit.json
+bun audit v1.3.14 (0d9b296a)
+Error: Process completed with exit code 1.
+
+---
+
 TO PURCHASE:
 [ ] purchase premium AI chat API keys
 [ ] beli domain twistloom.com -> buat email dev@twistloom.com

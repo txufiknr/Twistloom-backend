@@ -896,7 +896,7 @@ export const THEME_VALIDATION_SCHEMA: Record<keyof Omit<AIValidationResult, 'aiP
   comment: { type: 'string', description: 'Your complimentary comment in detected language (follow comment structure & example). Omit if theme is invalid.' },
   titleIdea: { type: 'string', description: `${BOOK_TITLE_LENGTH} in detected language. Omit if theme is invalid.` },
   hook: { type: 'string', description: `Immediate intrigue — ${HOOK_LENGTH} in detected language. Omit if theme is invalid.` },
-  summary: { type: 'string', description: `Sets up premise — ${SUMMARY_LENGTH} in detected language. Omit if theme is invalid.` },
+  summary: { type: 'string', description: `Sets up premise — ${SUMMARY_LENGTH} in detected language. No spoilers. Omit if theme is invalid.` },
   mcCandidate: {
     ...MAIN_CHARACTER_SCHEMA,
     description: `${MAIN_CHARACTER_SCHEMA.description}. Omit if theme is invalid.`

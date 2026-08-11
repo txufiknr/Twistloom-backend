@@ -48,6 +48,7 @@
  * - GET /user/platform-testimonials - Get own platform testimonials (beta testers only)
  * - PATCH /user/platform-testimonials/:id - Update own platform testimonial (beta testers only)
  * - DELETE /user/platform-testimonials/:id - Delete own platform testimonial (beta testers only)
+ * - GET /user/beta-duties - Get the beta-tester duty checklist (own books)
  * 
  * Note: Comment CRUD endpoints are in books.ts, not this file.
  */
@@ -59,9 +60,9 @@ import type { FeedbackCategory, LikeTargetType, Source, User, UserAchievement, U
 import { feedbackCategories, sources } from "../types/user.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { requireAuth, optionalAuth } from "../middleware/nextauth.js";
-import { users, books, userAuth, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, userSessions, userCompletedBooks, userComments, transactions, userProviders, userFeedbacks, bookTestimonials, uploadedImages, userReports, userBlocks, platformTestimonials } from "../db/schema.js";
+import { users, books, pages, userAuth, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, userSessions, userCompletedBooks, userComments, transactions, userProviders, userFeedbacks, bookTestimonials, uploadedImages, userReports, userBlocks, platformTestimonials } from "../db/schema.js";
 import { getErrorMessage, cApiError, cNotFoundError, cConflictError, cValidationError, cUnauthorizedError, cForbiddenError } from "../utils/error.js";
-import { eq, and, desc, sql, gte } from "drizzle-orm";
+import { eq, and, desc, sql, gte, inArray } from "drizzle-orm";
 import { calculatePaginationMeta, extractPaginationParams } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import { updateUserLastActivity, getCheckInStatus, getCheckInStreaks, logUserActivity, sanitizeProfileUpdate, enrichActivityLogs } from "../services/user.js";
@@ -3787,6 +3788,73 @@ router.delete('/platform-testimonials/:id', requireAuth, async (c: Context<AppEn
   } catch (error) {
     console.error('[DELETE /user/platform-testimonials/:id] ❌', error);
     return cApiError(c, 'Failed to delete platform testimonial', error);
+  }
+});
+
+/**
+ * GET /user/beta-duties
+ *
+ * Returns the authenticated user's beta-tester duty checklist, derived from
+ * real, queryable book state. Each duty is answered by EXISTS checks so the
+ * client never has to page through the user's books:
+ *   - createPenBook      → owns at least one Pen book (`books.is_pen_book`)
+ *   - finalizeFirstPage  → a Pen book that has at least one page published
+ *   - finishWriting      → a Pen book marked complete (`authoring_status`)
+ *
+ * Cheap, per-user indexed queries; no privilege carousel — the frontend simply
+ * hides the checklist until the user is a beta tester.
+ *
+ * @route GET /user/beta-duties
+ * @description Get the beta-tester duty checklist (created page, etc.)
+ * @auth Required
+ *
+ * @returns {Object} Duties response
+ * @returns {Object} duties - The duty checklist
+ * @returns {boolean} duties.createPenBook - Whether the user owns a Pen book
+ * @returns {boolean} duties.finalizeFirstPage - Whether a Pen book has a first page
+ * @returns {boolean} duties.finishWriting - Whether a Pen book is marked complete
+ *
+ * @example
+ * // Response
+ * {
+ *   "duties": {
+ *     "createPenBook": true,
+ *     "finalizeFirstPage": false,
+ *     "finishWriting": false
+ *   }
+ * }
+ */
+router.get('/beta-duties', requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get('userId')!;
+
+    const ownedPenBooks = await dbRead
+      .select({ id: books.id, authoringStatus: books.authoringStatus })
+      .from(books)
+      .where(and(eq(books.userId, userId), eq(books.isPenBook, true)));
+
+    const createPenBook = ownedPenBooks.length > 0;
+    const finishWriting = ownedPenBooks.some((b) => b.authoringStatus === 'complete');
+
+    let finalizeFirstPage = false;
+    if (createPenBook) {
+      const penBookIds = ownedPenBooks.map((b) => b.id);
+      const [pageRow] = await dbRead
+        .select({ bookId: pages.bookId })
+        .from(pages)
+        .where(inArray(pages.bookId, penBookIds))
+        .limit(1);
+      finalizeFirstPage = !!pageRow;
+    }
+
+    // Date-sensitive → never cached; this endpoint is only hit while the
+    // beta-join modal is open, so fresh answers are desired anyway.
+    return c.json({
+      duties: { createPenBook, finalizeFirstPage, finishWriting },
+    });
+  } catch (error) {
+    console.error('[GET /user/beta-duties] ❌', error);
+    return cApiError(c, 'Failed to retrieve beta duties', error);
   }
 });
 
