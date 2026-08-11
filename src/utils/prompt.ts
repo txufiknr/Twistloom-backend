@@ -128,6 +128,34 @@ Element Reuse — objects reappear changed, not replaced. Dialogue echoes. Locat
 Guiding principle: confusing, never meaningless.`;
 
 /**
+ * Rules for maintaining "embodied scene continuity" — the physical staging of
+ * the POV character and the narrative camera.
+ *
+ * The root cause of the most common immersion-breaking page defects is not
+ * prose quality but scene state: the model tracks *what happens next* but not
+ * *where the POV body physically is, what posture it's in, and how any
+ * movement got from A to B*. The MC moves from asleep to stepping backward
+ * without a written transition; the camera describes what the MC cannot see;
+ * possessive pronouns ("nya", "dia", "mereka") lose their antecedent.
+ *
+ * These rules make staging legible without suppressing the story's deliberate
+ * reality distortion (memory corruption, composure crashes, unreliable
+ * narration): distortion applies to WHAT is perceived, never to HOW the prose
+ * stages space. Deliberate fractures stay legal; accidental ones are bugs.
+ *
+ * This rule is spliced into both the 'first' and 'next' system prompts (via
+ * {@link buildFirstPageRuleSet}) and — because the evaluator reuses the same
+ * system prompt — reaches generation AND evaluation from a single definition.
+ */
+export const RULES_EMBODIED_SCENE_CONTINUITY = `EMBODIED SCENE CONTINUITY (CAMERA RULES):
+- You are staging a scene the reader can only perceive through the POV character's body. Keep the physical state continuously legible.
+- Before writing, know: the POV character's location, posture (standing/sitting/lying/kneeling/crouching/moving), and orientation (facing whom/what); the position and posture of every character present; the placement of objects that matter.
+- Never change the POV character's location, posture, or orientation silently. Every change needs a written physical transition ("I pushed myself upright", "I took a step back") — never skip the intermediate action.
+- Never teleport the narrative camera: do not describe what the POV character cannot see, hear, or infer from their fixed vantage (e.g., an expression on a face they can't see, a reaction they couldn't observe).
+- Anchor pronoun/possessive references ("dia", "nya", "mereka"): every one must have one unambiguous antecedent in the same or previous sentence. Re-name the owner before a body part acts (write "Ibu Ratih memutar lehernya", never "Lantai... lehernya").
+- Reality distortion is intentional in this story — but it applies to WHAT is perceived, not to how the prose stages space. Even a hallucination must be physically self-consistent within its own frame. Break logic deliberately, never accidentally.`;
+
+/**
  * Rules for story difficulty scaling and progression
  * 
  * Defines how story intensity and psychological pressure should increase
@@ -279,6 +307,7 @@ function buildFirstPageRuleSet(preset: WritingPreset = 'default'): string {
     RULES_PLACE,
     RULES_CHARACTER,
     RULES_CHARACTER_RECOGNITION,
+    RULES_EMBODIED_SCENE_CONTINUITY,
     pageTextRules,
     RULES_ACTIONS,
   ].join('\n\n---\n');
@@ -609,6 +638,7 @@ const buildFirstBookReviewChecklist = (language: string): string => {
   □ Do the characters present in this scene EXACTLY match the provided character data? → If NO: Align them. Do not hallucinate new characters.
   □ Does at least one character have a relationship status that can corrode or betray the MC? → If NO: Adjust their bio to introduce a hidden psychological betrayal vector.
   □ Is the place context evocative (sensory atmosphere) rather than purely descriptive (flat facts)? → If NO: Rewrite to focus on the weight, smell, and dread of the room.
+  □ Is the MC's physical position/posture derivable and self-consistent throughout the page (no teleported camera, no impossible movement, no orphaned "dia"/"nya" pronoun)? → If NO: Fix the staging.
 
 6. Initial State Calibration
   □ Are the psychological flags set based strictly on the events of THIS page — not generic defaults? → If NO: Reassign them to reflect the immediate trauma.
@@ -861,6 +891,9 @@ function buildNextPageFieldInstructions(state: StoryState, action: Action, scene
   - Continue seamlessly from the previous page.${sceneType === 'transition' ? '' : ` No time skip. No location jump. No off-screen actions.`}
   - ${isDialogueAction ? `It's a dialogue action, so begin directly with "[dialogue]."` : `Begin immediately with the chosen action. Example: "I [verb]." or any necessary causal steps.`}
   - Open mid-moment, but maintain causal continuity. Avoid recap or unnecessary setup.
+  - Open from the physical state the previous page ended on (where the MC is, how their body is positioned). If that baseline isn't unambiguous, establish it in the first line.
+  - Track the MC's body continuously: posture and orientation never change without a written physical transition. No off-screen repositioning.
+  - Keep the camera welded to the MC: show only what they can see/hear/infer. Anchor every pronoun to one clear antecedent; name the owner before a body part acts.
   - This is a fast-paced story, don't over explain small details (e.g. clothing, accessories) unless they're plot important.
 ${isEarlyPhase ? `  - Tone: unsettling, not terrifying. Something is wrong — but not yet catastrophic.` : ''}
 ${isMidPhase ? `  - Tone: escalating. Dread should feel earned and personal by now.` : ''}
@@ -1158,15 +1191,23 @@ function buildNextPageReviewChecklist(state: StoryState, language: string): stri
   □ Referencing objects, places, or events not yet established? → Remove or align with known state.
   □ Important unresolved element from previous page missing? → Reintroduce it${isEarlyPhase ? ' subtly' : ' — more directly now'}.
   □ Movement between locations spatially coherent? → If NO: fix the transition.
+  □ POV posture continuous with the previous page's ending position? → If NO: fix the transition.
   □ Reusing the same environmental descriptions as recent pages? → Vary the sensory angle.
 
-4. Character & Relationship Integrity
+4. Embodied Scene Continuity (HARD GATE — apply to the page text)
+  □ Is the POV character's physical position, posture, and orientation derivable at every moment of the page? → If NO: establish the baseline and the transitions.
+  □ Does every posture/movement change have a written physical transition (sitting → standing → stepping)? → If NO: write the missing action.
+  □ Does the camera ever show something the MC cannot perceive from their vantage? → If NO: rewrite from the MC's cramped, honest POV.
+  □ Can every third-person pronoun and possessive anatomical reference be traced to one unambiguous owner? → If NO: replace with the explicit character name.
+  □ Could a real actor physically perform this page exactly as written, in order? → If NO: fix the impossible action.
+
+5. Character & Relationship Integrity
   □ Character changed personality without cause? → Justify via stress, fear, or hidden motive — or make the shift feel deliberately uncanny.
   □ Trauma tags influencing perception, behavior, or dialogue? → If NO: reflect them in what the MC notices, misreads, or can't stop thinking about.
   ${isEarlyPhase || isMidPhase ? `□ Relationships evolving — trust shifting, suspicion forming? → If NO: introduce a micro-shift. A hesitation, a withheld word, a look that doesn't match the dialogue.` : ''}
   ${isLatePhase || isFinale ? `□ Character arcs resolving, fracturing, or deliberately left open? → Confirm which — then make it intentional, not accidental.` : ''}
 
-5. Thread & Event Management
+6. Thread & Event Management
   □ This page contributes to a known thread (main or side)? → If NO: connect it to one, or cut the loose content.
   ${isEarlyPhase || isMidPhase ? `□ Too many active threads simultaneously? → Pause or collapse one. Reader tracks ${MAX_ACTIVE_THREADS} comfortably; more creates noise, not tension.` : ''}
   ${isEarlyPhase || isMidPhase ? `□ At least one subtle hint of future consequence? → If NO: add light foreshadowing — symbolic, indirect, deniable.` : ''}
@@ -1177,14 +1218,14 @@ function buildNextPageReviewChecklist(state: StoryState, language: string): stri
   ${isLatePhase ? `□ New threads introduced in late phase? → Only add if absolutely essential to resolve existing threads.` : ''}
   ${isEarlyPhase || isMidPhase ? `□ New thread has compelling question connected to psychological premise? → If NO: strengthen the question or remove the thread.` : ''}
 
-6. Illusion & Reality Distortion
+7. Illusion & Reality Distortion
   □ At least one detail subtly misleads or contradicts expectations? → If NO: add one — in behavior, environment, or a word choice that doesn't quite fit.
   □ Narrator perception possibly biased, incomplete, or wrong? → If NO: introduce a misread — of a person, a sound, a silence.
   □ Something feels wrong in a way the reader can't name? → If NO: inject atmospheric unease — a texture, a timing, a behavior off by one degree.
   ${isEarlyPhase || isMidPhase ? `□ Can the reader form a believable but ultimately wrong theory? → If NO: add focused misleading anchors. Too many competing theories → narrow to one convincing false trail.` : ''}
   ${isLatePhase || isFinale ? `□ Is the false reality beginning to crack visibly? → If NO: let one seam show — a memory that contradicts, a character who knows something they shouldn't, a detail the MC only now notices was wrong.` : ''}
 
-7. Prose & Style
+8. Prose & Style
   □ Prose immersive and character-specific — not generic AI narration? → If NO: rewrite with sensory grounding and the MC's specific voice and bias.
   □ Sentence structure varied — short fragments, medium, occasional long? → A two-word sentence after a long one lands like a door closing.
   □ Over-explaining instead of implying? → Cut it. If the action implies the feeling, naming the feeling is redundant.
@@ -1193,7 +1234,7 @@ function buildNextPageReviewChecklist(state: StoryState, language: string): stri
   □ Long paragraph exist? → Break up long paragraph into separate lines to create rhythm and suspense.
   □ Does every generated text field uses the specified target language? → If any user-facing field is English while specified language is not, rewrite it.
 
-8. Choice Quality
+9. Choice Quality
   □ Page ends at genuine tension or unresolved disturbance — not resolution? → If NO: reposition the final beat.
   □ Choices meaningfully distinct in risk and emotional register? → Vary across: reckless / cautious / emotional / avoidant.
   □ At least one choice feels like a trap? → If NO: add a concealed consequence to the safest-looking option.
@@ -1202,7 +1243,7 @@ function buildNextPageReviewChecklist(state: StoryState, language: string): stri
   ${isMidPhase ? `□ Choices reflect the player's established psychological profile? → Options should feel designed for how this player thinks.` : ''}
   ${isLatePhase || isFinale ? `□ Choices feel increasingly constrained — like the story is closing in? → Reduce options or weight every path with consequence. On the finale: there is no good option, only degrees of loss.` : ''}
 
-9. JSON Integrity
+10. JSON Integrity
   □ All fields present and populated? → If NO: Complete missing fields.
   □ Every opened bracket '{' or '[' is closed correctly? → If NO: Fix or complete.
   □ No trailing commas? → Fix any.`.trim();
@@ -1250,11 +1291,18 @@ ${buildNextPageFieldInstructions(state, action, sceneType)}`;
 STEP 1 — PARSE & RECONSTRUCT
 If the generated JSON is malformed, invalid, or has out-of-bound values: reconstruct using available content and the expected schema. Fill missing required fields from story context. Do not invent content that contradicts established state.
 
+STEP 1.5 — RECONSTRUCT THE SCENE BEFORE SCORING
+Silently rebuild the physical staging from the page text alone:
+  - POV character: location, posture, orientation, what they can actually see/hear.
+  - Every character present: position, posture, relative to the MC.
+  - Key objects: where they are vs. the MC.
+Then verify: can the prose be executed by real bodies in real space without inventing unstated movement, and without revealing anything the MC cannot perceive?
+
 STEP 2 — SCORE (scoreBefore)
 Score the original content honestly before any corrections. Do not adjust scores to justify later changes.
 
 STEP 3 — CORRECT
-Only rewrite if total scoreBefore < 75, or if any single dimension scores below its threshold.
+Only rewrite if total scoreBefore < 75, if any single dimension scores below its threshold, or if any COHERENCE HARD FAILURE from rubric §2 is present (impossible physical sequence — posture contradiction, teleport, off-screen movement — or a POV break where the camera left the MC).
 Follow writing style in "WRITING STYLE:" and "PAGE FORMAT:" rules creatively.
 Preserve the original narrative voice and story trajectory. Fix the minimum necessary — do not over-correct.
 Do not introduce plot elements not implied by prior context. Do not change characters' names.
@@ -1281,8 +1329,17 @@ ${isLatePhase || isFinale ? `   - Any moment of genuine comfort or safety that i
 
 2. COHERENCE (0-20) — Threshold: 15
    Internal (0-10): Page makes logical sense on its own. No contradictory actions or unwritten scene breaks.
+   Deduct heavily for:
+   - POV posture/location change without a written physical transition (e.g. asleep → steps backward).
+   - The reader unable to determine the MC's physical position at any point.
+   - The narrative camera describing what the MC cannot see/hear/infer.
+   - Pronouns or body parts with no unambiguous owner (e.g. "Lantai... lehernya").
    External (0-10): Matches prior pages — characters, location, calendarDate, timeOfDay, established facts, unresolved threads.
 ${isLatePhase || isFinale ? `   Note: Reality distortion is intentional — penalize only contradictions not grounded in narrator unreliability.` : ''}
+   HARD FAILURES (force correction even if total ≥ 75):
+   - Impossible physical sequence (posture contradiction, teleport, off-screen movement).
+   - POV break — the camera left the MC.
+   Note: reality distortion relaxes the *content* of perception, never the *legibility* of staging.
 
 3. STYLE (0-15) — Threshold: 11
    Award points for:
@@ -1463,11 +1520,13 @@ SCORING RUBRIC:
    - Ends on tension, uncertainty, or a soft cliffhanger — not resolution
    - Narrator voice feels personal, slightly unreliable, emotionally immediate
    - Sensory grounding — at least one specific physical detail that anchors the scene
+   - MC's physical baseline (position, posture, what's within reach) established — the reader can orient immediately
    Deduct points for:
    - Introducing the MC by name and description in the opening lines
    - Explicit statement of the horror or threat too soon
    - Generic AI narration — polished, even, emotionally flat
    - Ending the page on a resolved or comfortable beat
+   - POV posture/position ambiguous or physically impossible (teleported camera, posture contradiction, pronoun with no unambiguous owner)
 
 3. MC & CHARACTER FIT (0-15) — Threshold: 11
    Award points for:
@@ -3652,6 +3711,8 @@ initialRelationships:
 
 firstPage:
 - text: follow the rules in "WRITING STYLE:" and "PAGE FORMAT:" creatively (max ${MAX_WORDS_PER_PAGE} words).
+- Establish the MC's physical baseline (position, posture, what's within reach) early so the reader can orient immediately — then track the body continuously as the scene moves, never silently changing posture or location.
+- Keep the camera on the MC: show only what they can see/hear/infer. Anchor every "dia"/"nya" pronoun to one unambiguous antecedent; name the owner before a body part acts.
 - keyEvents: ${KEY_EVENT_LENGTH}. Plot-level facts happened in this page.
 - charactersPresent: side characters in the scene besides MC. Must match characters in initialCharacters. sceneFocus: between 0.0 to 1.0 (highest = character to focus).
 - keyObjects: objects introduced or used this page that may have future narrative significance.

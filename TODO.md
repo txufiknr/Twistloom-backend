@@ -26,6 +26,10 @@
 [ ] https://dashboard.xendit.co/settings/developers#api-keys
 [ ] pastInteractions -> interactions
 
+prompt.ts line 1201:
+Can every third-person pronoun and possessive anatomical reference be traced to one unambiguous owner?
+→ If NO: replace the ambiguous pronoun with the explicit character name.
+
 ---
 
 Dependency Audit github workflow error in 0s

@@ -1433,6 +1433,68 @@ export function loadCommunityActions(bookId: string, pageId: string, userId?: st
 }
 
 /**
+ * Loads the current user's OWN custom actions for a page (the "custom action"
+ * rows they submitted here). These are merged into the enriched page payload
+ * as the reader's own action choices — appended to the page's canon actions so
+ * they remain visible across page refreshes and drive candidate-generation
+ * polling via `originalActionsCount`. Other users' submissions stay in the
+ * separate community list (`loadCommunityActions`).
+ *
+ * Returns every non-rejected row (pending + completed). Rows without a
+ * `nextPageId` are still generating; once generation backfills `nextPageId`
+ * they surface as navigable choices.
+ *
+ * @param bookId - Book identifier
+ * @param pageId - Page identifier
+ * @param userId - Current user ID (their own custom actions)
+ * @param language - Content language to filter on
+ * @returns Lazy Drizzle query for the user's own custom actions
+ */
+export function loadOwnCustomActions(bookId: string, pageId: string, userId: string) {
+  return dbRead
+    .select({
+      id: customActions.id,
+      text: customActions.originalText,
+      actionType: customActions.actionType,
+      hintType: customActions.hintType,
+      canonicalIntent: customActions.canonicalIntent,
+      nextPageId: customActions.nextPageId,
+      generationStartedAt: customActions.generationStartedAt,
+    })
+    .from(customActions)
+    .where(and(
+      eq(customActions.bookId, bookId),
+      eq(customActions.pageId, pageId),
+      eq(customActions.userId, userId),
+      ne(customActions.outcome, 'reject'),
+    ))
+    .orderBy(desc(customActions.createdAt));
+}
+
+/**
+ * Maps one of the current user's own custom-action rows to an `Action`.
+ * Completed rows carry their generated destination; pending ones don't (and
+ * therefore stay out of `visibleActions` until generation completes).
+ */
+export function mapCustomActionRowToAction(row: {
+  id: string;
+  text: string;
+  actionType: string | null;
+  hintType: string | null;
+  canonicalIntent: string | null;
+  nextPageId: string | null;
+}): Action {
+  return {
+    text: row.text,
+    type: (row.actionType as Action['type']) || 'custom',
+    hint: { text: row.canonicalIntent ?? '', type: (row.hintType as Action['hint']['type']) || 'custom' },
+    destinationPageIds: row.nextPageId ? [row.nextPageId] : [],
+    source: 'custom',
+    customActionId: row.id,
+  };
+}
+
+/**
  * Builds the query for per-paragraph comment counts on a page.
  *
  * Page-level comments (no paragraph scope) are reported under key `0`. Grouped
@@ -1598,11 +1660,31 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
   const { userId, book, headerLanguage, translate = false, sourceAction, isUserTakeAction } = options;
   const { language = 'en' } = book ?? {};
 
-  const allActions = dbPage.actions;
-  const visibleActions = allActions.filter(action => action.destinationPageIds?.length);
-  const hasIncompleteActions = allActions.length > visibleActions.length;
+  const canonActions = dbPage.actions;
+  let allActions = canonActions;
+  let visibleActions = canonActions.filter(action => action.destinationPageIds?.length);
+  let hasIncompleteActions = allActions.length > visibleActions.length;
   const { id: pageId, bookId } = dbPage;
   const isPageOne = dbPage.page === 1;
+
+  // ── Own custom actions (reader-authored choices) ────────────────────────────
+  // Merged into this reader's action list for pages > 1: pending ones (no
+  // nextPageId yet) raise `originalActionsCount` so the frontend's candidate
+  // polling re-engages, completed ones surface as navigable choices. Restricted
+  // to pages > 1 because page 1 is cached user-independently (Redis) and custom
+  // actions are disabled there by the submit gate. When the owner has ANY custom
+  // action on the page, the payload must never be served from the shared LRU
+  // cache (a cached copy would lack the merged rows).
+  let hasOwnCustomActions = false;
+  if (!isPageOne && userId) {
+    const ownCustomActionRows = await loadOwnCustomActions(bookId, pageId, userId);
+    if (ownCustomActionRows.length > 0) {
+      hasOwnCustomActions = true;
+      allActions = [...allActions, ...ownCustomActionRows.map(mapCustomActionRowToAction)];
+      visibleActions = allActions.filter(action => action.destinationPageIds?.length);
+      hasIncompleteActions = allActions.length > visibleActions.length;
+    }
+  }
 
   // Determine if translation is needed (synchronous check)
   const targetLanguage = translate ? shouldTranslate(language, headerLanguage) : undefined;
@@ -1655,7 +1737,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
   // Re-merge `communityActions` to undefined in case a stale entry (written before
   // the lazy-load change, or by the shared path) still carries an old list.
   const cacheKey = getEnrichedPageCacheKey(pageId, userId, translate, headerLanguage);
-  if (!hasIncompleteActions) {
+  if (!hasIncompleteActions && !hasOwnCustomActions) {
     const cached = enrichedPageCache.get(cacheKey);
     if (cached) return { ...cached, communityActions: undefined };
   }

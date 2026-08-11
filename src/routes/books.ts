@@ -142,7 +142,8 @@ import { triggerCandidateGenerationWorkflow, validateAndRetrievePageForGeneratio
 import { SSE_POLLING_CONFIG } from "../config/candidate-generation.js";
 import { getPsychologicalProfileResult } from "../services/psychological-profile.js";
 import { getLockedPaths } from "../services/locked-paths.js";
-import { runGate0, runGate1, buildCustomActionValidationPrompt, buildCanonicalAction, getRejectionMessage, CUSTOM_ACTION_VALIDATION_SCHEMA_DEFINITION, CUSTOM_ACTION_VALIDATION_REQUIRED_FIELDS } from "../services/custom-actions.js";
+import { runGate0, runGate1, buildCustomActionValidationPrompt, buildCanonicalAction, getRejectionMessage, CUSTOM_ACTION_VALIDATION_SCHEMA_DEFINITION, CUSTOM_ACTION_VALIDATION_REQUIRED_FIELDS, generatePageForCustomAction, CUSTOM_ACTION_GENERATION_STALE_MS } from "../services/custom-actions.js";
+import { loadOwnCustomActions, mapCustomActionRowToAction } from "../services/book.js";
 import { customActions } from "../db/schema.js";
 import { getStoryStateFromPage, computeEndingStats, setActiveSession } from "../services/story.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
@@ -4510,11 +4511,43 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
     const { dbBook, dbPage, userPage, isGenerating, isDone } = validationResult;
     const { actions, updatedAt } = userPage;
 
-    // Calculate completed/total from page actions (SSOT)
-    const actionsWithDestinations = actions.filter(a => a.destinationPageIds?.length);
+    // ── Own custom actions ────────────────────────────────────────────────────
+    // Only the owner's own custom submissions participate in this page's
+    // generation status, so their poll streams the custom action alongside canon
+    // progress. Other readers / unauthenticated requests see the canon-only
+    // picture and halt at canon-done exactly as before.
+    const ownCustomRows = userId ? await loadOwnCustomActions(dbBook.id, pageIdStr, userId) : [];
+    let customActionsForStatus = ownCustomRows.map((row) => mapCustomActionRowToAction(row));
+
+    // Drive stale pending custom generations to completion. Awaiting keeps the
+    // request (and therefore the serverless function) alive while the single
+    // AI page is generated — mirroring how the SSE candidate path runs
+    // generation in-process. The driver's per-(page,user) lock plus its
+    // nextPageId / generationStartedAt idempotency guards make repeated status
+    // polls safe: active generations are skipped, completed ones short-circuit.
+    const staleCustomRows = ownCustomRows.filter((row) => !row.nextPageId && (
+      row.generationStartedAt
+        ? Date.now() - row.generationStartedAt.getTime() >= CUSTOM_ACTION_GENERATION_STALE_MS
+        : true
+    ));
+    if (staleCustomRows.length > 0) {
+      for (const row of staleCustomRows) {
+        await generatePageForCustomAction({ userId: userId!, bookId: dbBook.id, pageId: pageIdStr, customActionId: row.id });
+      }
+      // Re-read rows so a just-completed custom action flushes out immediately.
+      const refreshedRows = await loadOwnCustomActions(dbBook.id, pageIdStr, userId!);
+      customActionsForStatus = refreshedRows.map((row) => mapCustomActionRowToAction(row));
+    }
+
+    // Merged view: canon actions + the owner's custom actions (SSOT for totals).
+    const mergedActions = [...actions, ...customActionsForStatus];
+    const actionsWithDestinations = mergedActions.filter((a) => a.destinationPageIds?.length);
     const completedActions = actionsWithDestinations.length;
-    const totalActions = actions.length;
-    const progressEventFallback = actions.map((action) => {
+    const totalActions = mergedActions.length;
+    const pendingCustomCount = customActionsForStatus.filter((a) => !a.destinationPageIds?.length).length;
+    const hasPendingCustom = pendingCustomCount > 0;
+
+    const progressEventFallback = mergedActions.map((action) => {
       const hasDestination = !!action.destinationPageIds?.length;
       return {
         action: action.text,
@@ -4524,6 +4557,24 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
       } satisfies ActionProgressEvent;
     });
 
+    // Augment backend progress events with synthetic custom-action entries the
+    // owner's poll can render (canon events come from the actionProgress table).
+    const mergeCustomProgress = (baseEvents: ActionProgressEvent[]): ActionProgressEvent[] => {
+      const byText = new Map(baseEvents.map((e) => [e.action, e]));
+      const merged = [...baseEvents];
+      for (const custom of customActionsForStatus) {
+        if (byText.has(custom.text)) continue;
+        const hasDestination = !!custom.destinationPageIds?.length;
+        merged.push({
+          action: custom.text,
+          status: hasDestination ? 'completed' : 'started',
+          timestamp: new Date().toISOString(),
+          destinationPageIds: hasDestination ? custom.destinationPageIds : undefined,
+        } satisfies ActionProgressEvent);
+      }
+      return merged;
+    };
+
     // Check if generation is in progress (using timestamp field)
     if (isGenerating) {
       // Generation in progress - return current status
@@ -4532,8 +4583,8 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
       const startedAt = dbPage.isGeneratingStartedAt!.toISOString();
 
       const actionProgress: ActionProgressEvent[] = progressEvents.length > 0
-        // Include all progress events for per-action status
-        ? progressEvents
+        // Include all progress events for per-action status, merged with customs
+        ? mergeCustomProgress(progressEvents)
         // Fallback: generate synthetic progress events for actions
         : progressEventFallback;
 
@@ -4551,6 +4602,21 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
       return c.json(response);
     }
 
+    // Generation not in progress but the owner still has pending custom actions —
+    // keep poll streaming until their custom page is ready.
+    if (hasPendingCustom) {
+      console.log(`[GET /candidates/status] ⏳ Custom page generation pending for page ${pageIdStr}: ${completedActions}/${totalActions} actions completed`);
+      return c.json({
+        isGenerating: true,
+        completedActions,
+        totalActions,
+        actions: actionsWithDestinations,
+        actionProgress: progressEventFallback,
+        startedAt: new Date().toISOString(),
+        lastUpdated: new Date().toISOString(),
+      } satisfies CandidateGenerationStatus);
+    }
+
     // Generation not in progress - check if actions are complete
     if (isDone) {
       // All actions complete, clear progress events and return full data
@@ -4559,9 +4625,9 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
 
       return c.json({
         isGenerating: false,
-        completedActions: actions.length,
-        totalActions: actions.length,
-        actions,
+        completedActions: mergedActions.length,
+        totalActions: mergedActions.length,
+        actions: mergedActions,
         actionProgress: progressEventFallback,
         startedAt: undefined,
         lastUpdated: updatedAt.toISOString(),
@@ -5662,6 +5728,13 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit
       ? getCreditCostForUser(userId, 'CUSTOM_ACTION_AFTER_CHOICE')
       : getCreditCostForUser(userId, 'CUSTOM_ACTION');
 
+    // Custom actions are only available on pages after page 1. Page 1 is cached
+    // user-independently (Redis) and offers no prior action to build on — the
+    // feature is scoped to branches forward from the reader's reading position.
+    if (dbPage.page <= 1) {
+      return cValidationError(c, "Custom actions are only available from page 2 onwards.");
+    }
+
     // Gate 0 — Eligibility with credit check
     const gate0Result = runGate0(storyState, userId, book.id, pageId);
     if (!gate0Result.passed) {
@@ -5788,8 +5861,11 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit
     }, { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } });
 
     // Return success with generation info
-    // The frontend should poll for the next page using the existing candidates/status endpoint
-    const pollingUrl = `/api/books/${bookIdentifier}/${pageId}/candidates/status`;
+    // The frontend polls for the next page using the existing
+    // /books/{identifier}/{pageId}/candidates/status endpoint. The URL is
+    // frontend-relative (no `/api` prefix) because the web client prepends its
+    // own API base — an `/api/books/...` URL would double-prefix into a 404.
+    const pollingUrl = `/books/${bookIdentifier}/${pageId}/candidates/status`;
 
     return c.json({
       message: 'Custom action submitted successfully. Page generation in progress.',

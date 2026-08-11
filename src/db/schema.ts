@@ -1789,6 +1789,7 @@ export const customActions = pgTable(
 
     creditsCharged: integer("credits_charged").default(0).notNull(),
     nextPageId: uuid("next_page_id"), // generated destination page ID
+    generationStartedAt: timestamp("generation_started_at", { withTimezone: true }), // per-user custom-action generation start (owner-only status reporting; never touches the shared isGeneratingStartedAt)
     language: text("language"), // populated by Gate 2 AI validator — ISO 639-1 code
 
     createdAt,

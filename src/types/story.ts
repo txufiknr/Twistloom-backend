@@ -1447,6 +1447,12 @@ export type Action = {
   destinationPageIds?: string[];
   source?: ActionSource;
   /**
+   * When this action is a reader-authored custom action, the `custom_actions`
+   * row id. Serves as the per-user identity of the choice (distinct from its
+   * text, which may repeat) so the read merge stays dedupable.
+   */
+  customActionId?: string;
+  /**
    * 0–1 alignment score between this action and the reader's established
    * psychological pattern (computed post-generation).
    */
@@ -1464,7 +1470,7 @@ export type SelectedAction = Pick<Action, 'text' | 'type' | 'hint' | 'source'> &
   // isPaid?: boolean;
 };
 
-export type ActionGeneration = Omit<Action, 'destinationPageIds' | 'source' | 'tendency'>;
+export type ActionGeneration = Omit<Action, 'destinationPageIds' | 'source' | 'tendency' | 'customActionId'>;
 // export type ActionHistory = Action & { page: number };
 export type ActionTranslation = {
   /** Original action text (serves as unique identifier) */

@@ -4,6 +4,16 @@ import type { DBPage } from "../types/schema.js";
 import type { CustomActionSecurityResult, CustomActionValidationResult, CustomActionRejectionCategory } from "../types/custom-action.js";
 import { getStoryStateInfo } from "../utils/story.js";
 import { normalizeText } from "../utils/text-processing.js";
+import { eq } from "drizzle-orm";
+import { dbRead, dbWrite } from "../db/client.js";
+import { customActions } from "../db/schema.js";
+import { getErrorMessage } from "../utils/error.js";
+import { getPageFromDB, mapToUserStoryPage, getBookFromDB, mapBookFromDb } from "./book.js";
+import { getStoryStateFromPage } from "./story.js";
+import { generateNextPages } from "../utils/prompt.js";
+import { acquireLock, releaseLock } from "../utils/distributed-lock.js";
+import type { Book } from "../types/book.js";
+import type { CandidateGenerationPage } from "../types/candidate-generation.js";
 import {
   CUSTOM_ACTION_DISABLED_PHASES,
   CUSTOM_ACTION_SECURITY_PATTERNS,
@@ -485,3 +495,159 @@ export const CUSTOM_ACTION_VALIDATION_REQUIRED_FIELDS: (keyof CustomActionValida
   'hintType',
   'language',
 ];
+
+// ============================================================================
+// CUSTOM ACTION PAGE GENERATION
+// ============================================================================
+
+/**
+ * After how long a `generationStartedAt` timestamp is considered stale (i.e. the
+ * previous attempt likely died) and generation may be retried. A single
+ * custom-action page takes ~1–4 min, so 10 minutes is a safe ceiling.
+ */
+export const CUSTOM_ACTION_GENERATION_STALE_MS = 10 * 60_000;
+
+/** Distributed-lock TTL for a single custom-action page generation (seconds). */
+const CUSTOM_ACTION_GENERATION_LOCK_TTL_S = 10 * 60;
+
+/**
+ * Generates the next story page for a reader's OWN custom action and backfills
+ * `custom_actions.nextPageId` with the resulting page id.
+ *
+ * This reuses the EXACT next-page generator the engine already uses for canon
+ * candidate pages (`generateNextPages`), which is already custom-action aware
+ * (see the `action.type === 'custom'` branches in prompt.ts). The canonical
+ * action is added to the parent page's action list in-memory ONLY — it is never
+ * persisted to `pages.actions`, so one reader's custom action never leaks into
+ * another reader's choices.
+ *
+ * Generation state is tracked per-row via `generationStartedAt` (never the
+ * shared `pages.isGeneratingStartedAt`), so other readers polling the page
+ * never see phantom "still generating" state.
+ *
+ * Idempotency:
+ * - If `nextPageId` is already set, returns it immediately.
+ * - If generation already started recently, returns `{ started: true }` so the
+ *   caller reports in-progress state without kicking a duplicate generation.
+ * - If `generationStartedAt` is stale (attempt died), a fresh attempt replaces it.
+ *
+ * @param params.userId        - Owner of the custom action (and of the generated branch)
+ * @param params.bookId        - Book identifier
+ * @param params.pageId        - Current page the custom action was submitted on
+ * @param params.customActionId - `custom_actions.id` row to generate for
+ */
+export async function generatePageForCustomAction(params: {
+  userId: string;
+  bookId: string;
+  pageId: string;
+  customActionId: string;
+}): Promise<{ status: 'done'; nextPageId: string } | { status: 'in_progress' } | { status: 'not_found' } | { status: 'failed'; error?: string }> {
+  const { userId, bookId, pageId, customActionId } = params;
+
+  // Per-(page, user) lock so concurrent status polls / retries never double-generate.
+  const lockKey = `lock:custom-action:${pageId}:${userId}`;
+  const acquired = await acquireLock(lockKey, CUSTOM_ACTION_GENERATION_LOCK_TTL_S);
+  if (!acquired) {
+    return { status: 'in_progress' }; // another generation is already running
+  }
+
+  try {
+    // 1. Re-read the row inside the lock (authoritative idempotency check).
+    const [row] = await dbRead
+      .select()
+      .from(customActions)
+      .where(eq(customActions.id, customActionId))
+      .limit(1);
+    if (!row || row.outcome === 'reject') {
+      return { status: 'not_found' };
+    }
+    if (row.nextPageId) {
+      return { status: 'done', nextPageId: row.nextPageId };
+    }
+    if (row.generationStartedAt && Date.now() - row.generationStartedAt.getTime() < CUSTOM_ACTION_GENERATION_STALE_MS) {
+      return { status: 'in_progress' }; // active attempt — don't duplicate
+    }
+
+    // 2. Current page + story state (progression base for the new page).
+    const dbPage = await getPageFromDB(pageId);
+    if (!dbPage) {
+      return { status: 'failed', error: 'Page not found' };
+    }
+    const userPage = await mapToUserStoryPage(dbPage, userId);
+    const storyState = await getStoryStateFromPage(dbPage);
+    if (!storyState) {
+      return { status: 'failed', error: 'Story state not found for page' };
+    }
+
+    // 3. Mark generation as started (per-row; never touches pages.isGeneratingStartedAt).
+    await dbWrite
+      .update(customActions)
+      .set({ generationStartedAt: new Date() })
+      .where(eq(customActions.id, customActionId));
+
+    // 4. Reconstruct the canonical action exactly as it was submitted.
+    const canonicalAction = buildCanonicalAction(row.originalText, {
+      outcome: row.outcome,
+      rejectionCategory: row.rejectionCategory ?? undefined,
+      reasons: [],
+      plausibilityScore: row.plausibilityScore ?? 0,
+      progressionScore: row.progressionScore ?? 0,
+      interpretedIntent: row.canonicalIntent ?? '',
+      actionType: (row.actionType ?? 'custom') as Action['type'],
+      hintType: (row.hintType as Action['hint']['type']) || 'custom',
+      language: row.language ?? 'en',
+    });
+
+    // 5. Generate a single next page for the custom action on a NEW branch.
+    //    The canonical action is appended to the in-memory actioned page only,
+    //    so `generateNextPages` resolves its letter/context correctly without
+    //    ever writing it into `pages.actions`.
+    const actionedPage: CandidateGenerationPage = {
+      ...userPage,
+      actions: [...userPage.actions, canonicalAction],
+      action: canonicalAction,
+    };
+    const book: Book | null = await resolveBookForGeneration(bookId);
+    if (!book) {
+      return { status: 'failed', error: 'Book not found' };
+    }
+
+    const newPages = await generateNextPages({
+      userId,
+      book,
+      currentState: storyState,
+      actionedPage,
+      generateNewBranchId: true,
+      candidateCount: 1,
+    });
+    const newPage = newPages[0];
+    if (!newPage) {
+      return { status: 'failed', error: 'Generation returned no page' };
+    }
+
+    // 6. Backfill the generated destination on the audit row.
+    await dbWrite
+      .update(customActions)
+      .set({ nextPageId: newPage.id })
+      .where(eq(customActions.id, customActionId));
+
+    console.log(`[generatePageForCustomAction] ✅ Custom action "${row.originalText}" → page ${newPage.id}`);
+    return { status: 'done', nextPageId: newPage.id };
+  } catch (error) {
+    const message = getErrorMessage(error);
+    console.error(`[generatePageForCustomAction] ❌ Failed for custom action ${customActionId}:`, message);
+    return { status: 'failed', error: message };
+  } finally {
+    await releaseLock(lockKey);
+  }
+}
+
+/**
+ * Loads the full `Book` needed by `generateNextPages`. Dirty-but-correct fallback
+ * resolves the book from the DB when the caller only has identifiers.
+ */
+async function resolveBookForGeneration(bookId: string, book?: Book | null): Promise<Book | null> {
+  if (book) return book;
+  const dbBook = await getBookFromDB(bookId);
+  return dbBook ? mapBookFromDb(dbBook) : null;
+}
