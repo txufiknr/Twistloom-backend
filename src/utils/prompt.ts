@@ -151,7 +151,7 @@ Guiding principle: confusing, never meaningless.`;
 export const RULES_EMBODIED_SCENE_CONTINUITY = `EMBODIED SCENE CONTINUITY (CAMERA RULES):
 - You are staging a scene the reader can only perceive through the POV character's body. Keep the physical state continuously legible.
 - Before writing, know: the POV character's location, posture (standing/sitting/lying/kneeling/crouching/moving), and orientation (facing whom/what); the position and posture of every character present; the placement of objects that matter.
-- Never change the POV character's location, posture, or orientation silently. Every change needs a written physical transition ("I pushed myself upright", "I took a step back") — never skip the intermediate action.
+- Never change the POV character's location, posture, or orientation silently. Every change needs a written physical transition performed by the character (e.g. rising, stepping back) — never skip the intermediate action.
 - Never teleport the narrative camera: do not describe what the POV character cannot see, hear, or infer from their fixed vantage (e.g., an expression on a face they can't see, a reaction they couldn't observe).
 - Anchor every pronoun, possessive marker, and person-marked inflection in the target language (subject/object forms, possessive suffixes or clitics, verb agreement) to one unambiguous antecedent in the same or previous sentence. Re-name the owner before a body part acts; a body part always belongs to a named person, never to a nearby noun or location.
 - Reality distortion is intentional in this story — but it applies to WHAT is perceived, not to how the prose stages space. Even a hallucination must be physically self-consistent within its own frame. Break logic deliberately, never accidentally.`;
@@ -890,7 +890,7 @@ function buildNextPageFieldInstructions(state: StoryState, action: Action, scene
   return `text
   - Write in the target language's first-person singular. Never refer to the MC as "the protagonist" or "the narrator".
   - Continue seamlessly from the previous page.${sceneType === 'transition' ? '' : ` No time skip. No location jump. No off-screen actions.`}
-  - ${isDialogueAction ? `It's a dialogue action, so begin directly with "[dialogue]."` : `Begin immediately with the chosen action. Example: "I [verb]." or any necessary causal steps.`}
+  - ${isDialogueAction ? `It's a dialogue action, so begin directly with "[dialogue]."` : `Begin immediately with the chosen action — lead with the target language's action phrase or any necessary causal steps.`}
   - Open mid-moment, but maintain causal continuity. Avoid recap or unnecessary setup.
   - Open from the physical state the previous page ended on (where the MC is, how their body is positioned). If that baseline isn't unambiguous, establish it in the first line.
   - Track the MC's body continuously: posture and orientation never change without a written physical transition. No off-screen repositioning.
@@ -2312,12 +2312,20 @@ function formatSelectedAction(page: Pick<CandidateGenerationPage, 'action' | 'ac
   const selectedIndex = allActions.findIndex(a => a.text === action.text);
   const selectedLetter = String.fromCharCode(65 + selectedIndex); // A, B, C, etc.
 
-  return `${selectedLetter ? `${selectedLetter}.` : '•'} ${action.text} (type: ${action.type})
+  // For custom actions the display text is the AI's interpreted intent; the
+  // reader's literal (verbatim) request travels on `originalText` so the
+  // generator can honor the actual words, not just the paraphrase.
+  const hasVerbatimRequest = isCustomAction && !!action.originalText && action.originalText !== action.text;
+  const verbatimLine = hasVerbatimRequest
+    ? `\nREADER'S LITERAL REQUEST (verbatim instruction — develop with fidelity):\n· "${action.originalText}"`
+    : '';
+
+  return `${selectedLetter ? `${selectedLetter}.` : '•'} ${action.text} (type: ${action.type})${verbatimLine}
 
 CONTINUATION GUIDANCE (for selected action):
 · Hint: ${isCustomAction ? "-" : action.hint.text}
 · Guidance: ${getHintGuidanceForAI(isCustomAction ? "custom" : action.hint.type)}
-· Important: ${isCustomAction ? `This is custom prompt from reader. Develop naturally, steer story toward viable ending plan.` : `This hint guides you in narrative direction, might be a secret, not to always put in the story.`}`;
+· Important: ${isCustomAction ? `This is a custom prompt from reader. Honor the reader's literal request above, develop naturally, steer story toward viable ending plan.` : `This hint guides you in narrative direction, might be a secret, not to always put in the story.`}`;
 }
 
 export function getThreadState(

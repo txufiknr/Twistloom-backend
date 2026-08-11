@@ -1484,13 +1484,18 @@ export function mapCustomActionRowToAction(row: {
   canonicalIntent: string | null;
   nextPageId: string | null;
 }): Action {
+  // TODO: can buildCanonicalAction and mapCustomActionRowToAction be made DRY for consistency?
   return {
-    text: row.text,
+    // Display label is the AI's interpreted intent (falls back to the raw
+    // reader text when the interpreter produced nothing usable).
+    text: row.canonicalIntent?.trim() || row.text,
     type: (row.actionType as ActionType) || 'custom',
+    // TODO: should use AI's interpreted `hintText`
     hint: { text: row.canonicalIntent ?? '', type: (row.hintType as ActionHintType) || 'custom' },
     destinationPageIds: row.nextPageId ? [row.nextPageId] : [],
     source: 'custom',
     customActionId: row.id,
+    originalText: row.text,
   };
 }
 

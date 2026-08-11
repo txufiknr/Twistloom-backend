@@ -1453,6 +1453,13 @@ export type Action = {
    */
   customActionId?: string;
   /**
+   * When this action is a reader-authored custom action, the reader's literal
+   * (verbatim) submitted text. The action's display `text` is the AI's
+   * interpreted intent; this preserves the raw request so the page generator
+   * can honor it with fidelity (see formatSelectedAction).
+   */
+  originalText?: string;
+  /**
    * 0–1 alignment score between this action and the reader's established
    * psychological pattern (computed post-generation).
    */
@@ -1470,7 +1477,7 @@ export type SelectedAction = Pick<Action, 'text' | 'type' | 'hint' | 'source'> &
   // isPaid?: boolean;
 };
 
-export type ActionGeneration = Omit<Action, 'destinationPageIds' | 'source' | 'tendency' | 'customActionId'>;
+export type ActionGeneration = Omit<Action, 'destinationPageIds' | 'source' | 'tendency' | 'customActionId' | 'originalText'>;
 // export type ActionHistory = Action & { page: number };
 export type ActionTranslation = {
   /** Original action text (serves as unique identifier) */
