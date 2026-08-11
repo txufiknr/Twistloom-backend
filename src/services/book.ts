@@ -24,7 +24,7 @@ import { getEnrichedBookSelect } from "./book-controller.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage, DBUpdateBook } from "../types/schema.js";
 import type { Book, BookSlugGenerationResult, BookStatus, BookVisibility, EnrichedBookData, EnrichedPageOptions, PublicStats } from "../types/book.js";
 import { bookVisibilities } from "../types/book.js";
-import type { StoryPage, PersistedStoryPage, UserStoryPage, StoryState, StoryPageMeta, EnrichedStoryPage, StateDelta, StoryGeneration, SelectedAction, Action, EnrichedStoryPageContext, TranslatedStoryPage, EnrichedStoryPagePlace, EnrichedStoryPageCharacter } from "../types/story.js";
+import type { StoryPage, PersistedStoryPage, UserStoryPage, StoryState, StoryPageMeta, EnrichedStoryPage, StateDelta, StoryGeneration, SelectedAction, Action, EnrichedStoryPageContext, TranslatedStoryPage, EnrichedStoryPagePlace, EnrichedStoryPageCharacter, ActionType, ActionHintType } from "../types/story.js";
 import type { CanonValidationSummary } from "../types/canon-validation.js";
 import { getStoryStateFromPage, insertStoryState } from "./story.js";
 import { formatPlacesForPrompt, resolvePlaceLoreNames } from "../utils/places.js";
@@ -1486,8 +1486,8 @@ export function mapCustomActionRowToAction(row: {
 }): Action {
   return {
     text: row.text,
-    type: (row.actionType as Action['type']) || 'custom',
-    hint: { text: row.canonicalIntent ?? '', type: (row.hintType as Action['hint']['type']) || 'custom' },
+    type: (row.actionType as ActionType) || 'custom',
+    hint: { text: row.canonicalIntent ?? '', type: (row.hintType as ActionHintType) || 'custom' },
     destinationPageIds: row.nextPageId ? [row.nextPageId] : [],
     source: 'custom',
     customActionId: row.id,

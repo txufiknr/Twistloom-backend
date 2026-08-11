@@ -1,6 +1,6 @@
 import type { Book } from "./book.js";
 import type { DBBook, DBPage } from "./schema.js";
-import type { Action, PersistedStoryPage, StoryGeneration, StoryState, UserStoryPage } from "./story.js";
+import type { Action, ActionSource, PersistedStoryPage, StoryGeneration, StoryState, UserStoryPage } from "./story.js";
 
 /**
  * Candidate generation strategies for different deployment contexts
@@ -75,6 +75,10 @@ export interface ActionProgressEvent {
   timestamp: string;
   /** Destination pageId — present when status is 'completed' */
   destinationPageIds?: string[];
+  /** Provenance of the action — set to 'custom' for reader-authored actions */
+  source?: ActionSource;
+  /** Custom-action row id — present for reader-authored actions */
+  customActionId?: string;
 }
 
 /** Status of an action generation operation */

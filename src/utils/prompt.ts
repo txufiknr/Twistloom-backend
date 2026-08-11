@@ -78,10 +78,10 @@ export const PROMPT_SYSTEM = PROMPT_SYSTEM_WRITING_STYLE.default;
  * they're the most likely to default back to English mid-story.
  */
 export const RULES_LANGUAGE_LOCALIZATION = `STRICT LANGUAGE & LOCALIZATION:
-- The requested language is an ABSOLUTE MANDATE, overriding all stylistic preferences. Generate every user-facing field (any value shown to readers or authors without further AI processing) exclusively in it — never default to English, never mix languages, unless explicitly requested.
+- The requested language is an ABSOLUTE MANDATE, overriding all stylistic preferences. Generate every user-facing field (any value shown to readers or authors without further AI processing) exclusively in it — never fall back to another language, never mix languages, unless explicitly requested.
 - Use everyday expressions, slang, and terminology that feel native to that locale, not translated-sounding.
 - Preserve proper nouns and provided names as-is. Otherwise choose names, places, institutions, and terminology fitting the requested language's cultural context.
-- Defaulting back to English (or any unrequested language) is treated as an incorrect response.`;
+- Defaulting back to any unrequested language is treated as an incorrect response.`;
 
 /**
  * Rules for how route memory and past actions influence the narrative
@@ -136,7 +136,8 @@ Guiding principle: confusing, never meaningless.`;
  * *where the POV body physically is, what posture it's in, and how any
  * movement got from A to B*. The MC moves from asleep to stepping backward
  * without a written transition; the camera describes what the MC cannot see;
- * possessive pronouns ("nya", "dia", "mereka") lose their antecedent.
+ * person-marked pronouns and possessives (subject/object forms, possessive
+ * suffixes or clitics) in the target language lose their antecedent.
  *
  * These rules make staging legible without suppressing the story's deliberate
  * reality distortion (memory corruption, composure crashes, unreliable
@@ -152,7 +153,7 @@ export const RULES_EMBODIED_SCENE_CONTINUITY = `EMBODIED SCENE CONTINUITY (CAMER
 - Before writing, know: the POV character's location, posture (standing/sitting/lying/kneeling/crouching/moving), and orientation (facing whom/what); the position and posture of every character present; the placement of objects that matter.
 - Never change the POV character's location, posture, or orientation silently. Every change needs a written physical transition ("I pushed myself upright", "I took a step back") — never skip the intermediate action.
 - Never teleport the narrative camera: do not describe what the POV character cannot see, hear, or infer from their fixed vantage (e.g., an expression on a face they can't see, a reaction they couldn't observe).
-- Anchor pronoun/possessive references ("dia", "nya", "mereka"): every one must have one unambiguous antecedent in the same or previous sentence. Re-name the owner before a body part acts (write "Ibu Ratih memutar lehernya", never "Lantai... lehernya").
+- Anchor every pronoun, possessive marker, and person-marked inflection in the target language (subject/object forms, possessive suffixes or clitics, verb agreement) to one unambiguous antecedent in the same or previous sentence. Re-name the owner before a body part acts; a body part always belongs to a named person, never to a nearby noun or location.
 - Reality distortion is intentional in this story — but it applies to WHAT is perceived, not to how the prose stages space. Even a hallucination must be physically self-consistent within its own frame. Break logic deliberately, never accidentally.`;
 
 /**
@@ -610,7 +611,7 @@ const buildFirstBookReviewChecklist = (language: string): string => {
 
   return `${isNonEnglish ? `0. Language & Localization Lock (CRITICAL)
   □ COMMITMENT: "I will generate all user-facing story text, metadata, and choices exclusively in ${formattedLanguage} language."
-  □ Are my thoughts, evaluations, and subsequent outputs shifting to match the native grammar, idioms, and cultural context of ${formattedLanguage}? → If NO: Pivot immediately. Do not use English syntax.` : ''}
+  □ Are my thoughts, evaluations, and subsequent outputs shifting to match the native grammar, idioms, and cultural context of ${formattedLanguage}? → If NO: Pivot immediately. Do not retain the syntax of any other language.` : ''}
 
 1. Theme & MC Fit
   □ Does the MC's specific bio make this theme more dangerous for them personally? → If NO: Adjust bio or infer a better-fit character.
@@ -638,7 +639,7 @@ const buildFirstBookReviewChecklist = (language: string): string => {
   □ Do the characters present in this scene EXACTLY match the provided character data? → If NO: Align them. Do not hallucinate new characters.
   □ Does at least one character have a relationship status that can corrode or betray the MC? → If NO: Adjust their bio to introduce a hidden psychological betrayal vector.
   □ Is the place context evocative (sensory atmosphere) rather than purely descriptive (flat facts)? → If NO: Rewrite to focus on the weight, smell, and dread of the room.
-  □ Is the MC's physical position/posture derivable and self-consistent throughout the page (no teleported camera, no impossible movement, no orphaned "dia"/"nya" pronoun)? → If NO: Fix the staging.
+  □ Is the MC's physical position/posture derivable and self-consistent throughout the page (no teleported camera, no impossible movement, no orphaned pronoun/possessive in the target language with no clear owner)? → If NO: Fix the staging.
 
 6. Initial State Calibration
   □ Are the psychological flags set based strictly on the events of THIS page — not generic defaults? → If NO: Reassign them to reflect the immediate trauma.
@@ -887,7 +888,7 @@ function buildNextPageFieldInstructions(state: StoryState, action: Action, scene
   const isDialogueAction = action.type === 'dialogue';
 
   return `text
-  - Use "I". Never refer to the MC as "the protagonist" or "the narrator".
+  - Write in the target language's first-person singular. Never refer to the MC as "the protagonist" or "the narrator".
   - Continue seamlessly from the previous page.${sceneType === 'transition' ? '' : ` No time skip. No location jump. No off-screen actions.`}
   - ${isDialogueAction ? `It's a dialogue action, so begin directly with "[dialogue]."` : `Begin immediately with the chosen action. Example: "I [verb]." or any necessary causal steps.`}
   - Open mid-moment, but maintain causal continuity. Avoid recap or unnecessary setup.
@@ -1037,7 +1038,7 @@ ${isEarlyPhase ? `  - Changes should be subtle — small shifts, not dramatic sw
 ${isLatePhase || isFinale ? `  - Flags should reflect escalation. Fear and guilt especially should be peaking.` : ''}
 
 actions
-${isLastPage ? `  - This is the last page, just provide a single action that concludes the story.` : `  - text: first-person action or dialogue (${ACTION_TEXT_LENGTH}). No subject ("I"). Directly begin with verb (e.g. Pretend not to hear) or saying (e.g. "Yes, of course.").
+${isLastPage ? `  - This is the last page, just provide a single action that concludes the story.` : `  - text: first-person action or dialogue (${ACTION_TEXT_LENGTH}). No explicit subject pronoun — lead directly with the target language's verb form or a short saying (e.g. Pretend not to hear, "Yes, of course.").
   - hint.text: what will happen as a consequence — written as a story beat, not a label. Invisible to the player.
   - ${isFinale ? `Max ${MAX_ACTION_CHOICES_FINALE} choices — the story is closing in.` : `${MIN_ACTION_CHOICES}-${MAX_ACTION_CHOICES} choices.`} Each must be meaningfully distinct.
   - Vary across: reckless / cautious / emotional / avoidant.
@@ -1163,7 +1164,7 @@ function buildNextPageReviewChecklist(state: StoryState, language: string): stri
 
   return `${isNonEnglish ? `0. Language & Localization Lock (CRITICAL)
   □ COMMITMENT: "I will generate all user-facing story text, metadata, and choices exclusively in ${formattedLanguage} language."
-  □ Are my thoughts, evaluations, and subsequent outputs shifting to match the native grammar, idioms, and cultural context of ${formattedLanguage}? → If NO: Pivot immediately. Do not use English syntax.` : ''}
+  □ Are my thoughts, evaluations, and subsequent outputs shifting to match the native grammar, idioms, and cultural context of ${formattedLanguage}? → If NO: Pivot immediately. Do not retain the syntax of any other language.` : ''}
 
 1. Spoiler & Mystery Control
   □ Revealing the core truth or viable ending too early? → Obscure first. Misdirect second. Fragment only as last resort.
@@ -1232,7 +1233,7 @@ function buildNextPageReviewChecklist(state: StoryState, language: string): stri
   □ Dialogue natural and specific to this character's voice? → Each character should be recognizable from word choice alone.
   □ Scene physically coherent despite distortion? → Reader can doubt what's real. They should never doubt what physically happened.
   □ Long paragraph exist? → Break up long paragraph into separate lines to create rhythm and suspense.
-  □ Does every generated text field uses the specified target language? → If any user-facing field is English while specified language is not, rewrite it.
+  □ Does every generated text field use the specified target language? → If any user-facing field is in a language other than the target, rewrite it.
 
 9. Choice Quality
   □ Page ends at genuine tension or unresolved disturbance — not resolution? → If NO: reposition the final beat.
@@ -1333,7 +1334,7 @@ ${isLatePhase || isFinale ? `   - Any moment of genuine comfort or safety that i
    - POV posture/location change without a written physical transition (e.g. asleep → steps backward).
    - The reader unable to determine the MC's physical position at any point.
    - The narrative camera describing what the MC cannot see/hear/infer.
-   - Pronouns or body parts with no unambiguous owner (e.g. "Lantai... lehernya").
+   - Pronouns, possessives, or body parts with no unambiguous owner in the target language (an "orphaned" person-marked form).
    External (0-10): Matches prior pages — characters, location, calendarDate, timeOfDay, established facts, unresolved threads.
 ${isLatePhase || isFinale ? `   Note: Reality distortion is intentional — penalize only contradictions not grounded in narrator unreliability.` : ''}
    HARD FAILURES (force correction even if total ≥ 75):
@@ -2588,12 +2589,12 @@ ${buildEndingRules(state)}`;
  * @example
  * // Single page, mid-story
  * formatNextPageTaskPrompt({ page: 4, maxPage: 10, memoryIntegrity: 'stable', ... }, 1);
- * // → 'Continue the story in first-person ("I") POV. You're now writing page 4 of 10 — 6 pages remaining.'
+ * // → 'Continue the story in first-person POV. You're now writing page 4 of 10 — 6 pages remaining.'
  *
  * @example
  * // Two alternate fates, degraded memory integrity (multiverse)
  * formatNextPageTaskPrompt({ page: 4, maxPage: 10, memoryIntegrity: 'fragmented', ... }, 2, 'en', 'multiverse');
- * // → 'Continue the story in first-person ("I") POV. You're now writing page 4 of 10 — 6 pages remaining.
+ * // → 'Continue the story in first-person POV. You're now writing page 4 of 10 — 6 pages remaining.
  * //    Generate 2 alternate-fate continuations — parallel timelines in the multiverse.
  * //    Each continuation must follow all the same narrative rules above, but diverge
  * //    into a distinct, unexpected outcome.
@@ -2611,7 +2612,7 @@ function formatNextPageTaskPrompt(state: StoryState, candidateCount: number, lan
     ? `page ${page} of ${maxPage} — ${remainingPages} page${remainingPages === 1 ? '' : 's'} remaining`
     : `the final page of the book. The story ends completely right now.`;
 
-  const base = `Continue the story in first-person ("I") POV${isNonEnglish ? ` in ${languageFormatted}` : ''}. You're now writing ${pageLabel}.`;
+  const base = `Continue the story in first-person POV (the target language's first-person singular forms)${isNonEnglish ? ` in ${languageFormatted}` : ''}. You're now writing ${pageLabel}.`;
 
   // ── NOVEL: strictly linear. Never offer branching choices. ──────────────
   if (mode === 'novel') {
@@ -3017,7 +3018,7 @@ ${formatActionChoices(actions)}
 Selected:
 ${formatSelectedAction(actionedPage)}
 
-The next page opening should answer: "What happened immediately after MC ("I") chose this action?"
+The next page opening should answer: "What happened immediately after the MC chose this action?"
 Write that moment before advancing the scene.`;
 }
 
@@ -3623,7 +3624,7 @@ LANGUAGE REQUIREMENT:
 - Target language: ${languageFormatted}
 - Every user-facing text (story content, metadata, narrative, etc) MUST ALWAYS use the specified natural language consistently.
 ${isNonEnglish ? `- Do not translate the STORY THEME, character names, and existing proper nouns.
-- Do not default to English.
+- Do not default to any other language.
 - Do not mix languages.` : ''}
 
 STORY THEME:\n"""\n${theme.trim()}\n"""
@@ -3712,7 +3713,7 @@ initialRelationships:
 firstPage:
 - text: follow the rules in "WRITING STYLE:" and "PAGE FORMAT:" creatively (max ${MAX_WORDS_PER_PAGE} words).
 - Establish the MC's physical baseline (position, posture, what's within reach) early so the reader can orient immediately — then track the body continuously as the scene moves, never silently changing posture or location.
-- Keep the camera on the MC: show only what they can see/hear/infer. Anchor every "dia"/"nya" pronoun to one unambiguous antecedent; name the owner before a body part acts.
+- Keep the camera on the MC: show only what they can see/hear/infer. Anchor every pronoun and possessive marker in the target language to one unambiguous antecedent; name the owner before a body part acts.
 - keyEvents: ${KEY_EVENT_LENGTH}. Plot-level facts happened in this page.
 - charactersPresent: side characters in the scene besides MC. Must match characters in initialCharacters. sceneFocus: between 0.0 to 1.0 (highest = character to focus).
 - keyObjects: objects introduced or used this page that may have future narrative significance.

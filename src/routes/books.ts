@@ -4554,6 +4554,8 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
         status: hasDestination ? 'completed' : 'started',
         timestamp: new Date().toISOString(),
         destinationPageIds: hasDestination ? action.destinationPageIds : undefined,
+        source: action.source,
+        customActionId: action.customActionId,
       } satisfies ActionProgressEvent;
     });
 
@@ -4570,6 +4572,8 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
           status: hasDestination ? 'completed' : 'started',
           timestamp: new Date().toISOString(),
           destinationPageIds: hasDestination ? custom.destinationPageIds : undefined,
+          source: custom.source,
+          customActionId: custom.customActionId,
         } satisfies ActionProgressEvent);
       }
       return merged;

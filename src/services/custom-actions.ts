@@ -1,4 +1,4 @@
-import type { Action, StoryState, StoryPhase } from "../types/story.js";
+import type { Action, StoryState, StoryPhase, ActionType, ActionHintType } from "../types/story.js";
 import type { InventoryItem } from "../types/character.js";
 import type { DBPage } from "../types/schema.js";
 import type { CustomActionSecurityResult, CustomActionValidationResult, CustomActionRejectionCategory } from "../types/custom-action.js";
@@ -593,8 +593,8 @@ export async function generatePageForCustomAction(params: {
       plausibilityScore: row.plausibilityScore ?? 0,
       progressionScore: row.progressionScore ?? 0,
       interpretedIntent: row.canonicalIntent ?? '',
-      actionType: (row.actionType ?? 'custom') as Action['type'],
-      hintType: (row.hintType as Action['hint']['type']) || 'custom',
+      actionType: (row.actionType ?? 'custom') as ActionType,
+      hintType: (row.hintType as ActionHintType) || 'custom',
       language: row.language ?? 'en',
     });
 
