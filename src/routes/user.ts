@@ -287,6 +287,7 @@ router.get('/export', requireAuth, async (c: Context<AppEnv>) => {
           bio: users.bio,
           gender: users.gender,
           imageUrl: users.imageUrl,
+          avatarFrame: users.avatarFrame,
           tier: users.tier,
           isNewUser: users.isNewUser,
           source: users.source,

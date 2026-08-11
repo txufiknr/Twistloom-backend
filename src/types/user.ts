@@ -10,6 +10,9 @@ export const genders = [ 'male', 'female', 'unknown' ] as const;
 export type Gender = typeof genders[number];
 export type KnownGender = Omit<Gender, 'unknown'>
 
+export const avatarFrames = ['bronze', 'silver', 'gold', 'platinum'] as const;
+export type AvatarFrame = typeof avatarFrames[number];
+
 /**
  * Union type of all possible user source values
  * 

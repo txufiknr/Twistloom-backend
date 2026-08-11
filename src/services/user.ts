@@ -13,7 +13,7 @@
 
 import type { Context } from "hono";
 import type { DBNewUser, DBNewUserActivityLog, DBUserActivityLog, DBUserForAuth } from "../types/schema.js";
-import type { CheckinClaimType, CheckinPostResponse, CheckinStatusResponse, Gender } from "../types/user.js";
+import { type AvatarFrame, avatarFrames, type CheckinClaimType, type CheckinPostResponse, type CheckinStatusResponse, type Gender } from "../types/user.js";
 import { type DBClient, dbRead, dbWrite } from "../db/client.js";
 import { users, books, userComments, userAuth, userCheckins, userActivityLogs } from "../db/schema.js";
 import { eq, and, gt, ne, sql, desc, or, inArray } from "drizzle-orm";
@@ -1101,7 +1101,7 @@ function sanitizeFieldValue(
  */
 export async function sanitizeProfileUpdate(
   userId: string,
-  payload: Record<'name' | 'bio' | 'imageUrl' | 'gender' | 'username', unknown>,
+  payload: Record<'name' | 'bio' | 'imageUrl' | 'gender' | 'username' | 'avatarFrame', unknown>,
   res: Context
 ): Promise<Partial<DBNewUser> | null> {
   const updateData: Partial<DBNewUser> = {};
@@ -1119,6 +1119,14 @@ export async function sanitizeProfileUpdate(
 
   const gender = sanitizeFieldValue('gender', payload.gender);
   if (gender !== undefined) updateData.gender = gender;
+
+  if ('avatarFrame' in payload) {
+    if (payload.avatarFrame === null || payload.avatarFrame === '') {
+      updateData.avatarFrame = null;
+    } else if (typeof payload.avatarFrame === 'string' && avatarFrames.includes(payload.avatarFrame as AvatarFrame)) {
+      updateData.avatarFrame = payload.avatarFrame as AvatarFrame;
+    }
+  }
 
   // Username is special — needs format validation + hard conflict check
   if (typeof payload.username === 'string' && payload.username) {

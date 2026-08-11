@@ -400,6 +400,13 @@
       "when": 1786419766735,
       "tag": "0056_solid_omega_sentinel",
       "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1786437535343,
+      "tag": "0057_dashing_princess_powerful",
+      "breakpoints": true
     }
   ]
 }

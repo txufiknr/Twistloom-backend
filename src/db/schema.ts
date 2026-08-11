@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer, unique, uniqueIndex, type UpdateDeleteAction, boolean, vector } from "drizzle-orm/pg-core";
-import type { CheckinClaimType, FeedbackAdminStatus, FeedbackCategory, FeedbackStatus, Gender, Source, UserActivityType, UserTier } from "../types/user.js";
+import type { AvatarFrame, CheckinClaimType, FeedbackAdminStatus, FeedbackCategory, FeedbackStatus, Gender, Source, UserActivityType, UserTier } from "../types/user.js";
 import type { LikeTargetType } from "../types/user.js";
 import type { CharacterMemoryTranslation, CharacterPlan, HealthStatus, InjuryTranslation, InventoryItem, InventoryItemTranslation, StoryMC, StoryMCCandidate, StoryMCTranslation } from "../types/character.js";
 import type { BookGenerationStatus, StoryGenerationStep, BookStatus, BookVisibility, Book, BookStats, UploadedImageType, BookMode } from "../types/book.js";
@@ -242,6 +242,7 @@ export const users = pgTable(
     bio: text("bio"), // User bio/description
     gender,
     imageUrl: text("image_url"),
+    avatarFrame: text("avatar_frame").$type<AvatarFrame>(), // References an achievement tier
     tier: text("tier").$type<UserTier>(),
     isNewUser: boolean("is_new_user").notNull().default(true), // For user onboarding
     referrerId: uuid("referrer_id"),
