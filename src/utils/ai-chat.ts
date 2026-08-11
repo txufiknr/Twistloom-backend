@@ -324,8 +324,9 @@ export async function geminiPrompt(
         } satisfies GenerateContentConfig,
       };
 
-      edgeGroup.wrap(`[geminiPrompt] 📝 Generate content params for ${model}:`, async () => {
-        console.log(JSON.stringify(params, null, 2));
+      const paramsString = JSON.stringify(params, null, 2);
+      edgeGroup.wrap(`[geminiPrompt] 📝 Generate content params for ${model} (${paramsString.length} chars):`, async () => {
+        console.log(paramsString);
       });
 
       const response = await getGeminiClient().models.generateContent(params);

@@ -143,6 +143,7 @@ function getDeepErrorStringForClassification(err: unknown): string {
  *   classifyGenAIError(provider, model, err)            — full context for richer logging
  *
  * @returns One of the `GenAIErrorCode` discriminants describing the category
+ * @todo handle "no longer available", "high demand", "usually temporary", "try again later"
  */
 export function classifyGenAIError(err: unknown): GenAIErrorCode;
 export function classifyGenAIError(provider: AIChatProvider, model: string, err: unknown): GenAIErrorCode;

@@ -25,10 +25,18 @@
 [ ] enrich page 1 with imagePrompt -> generate page image cron
 [ ] https://dashboard.xendit.co/settings/developers#api-keys
 [ ] pastInteractions -> interactions
+[ ] learn about Interactions API (https://ai.google.dev/gemini-api/docs/migrate-to-interactions)
+[ ] remove model: gemini-2.5-pro
 
-prompt.ts line 1201:
-Can every third-person pronoun and possessive anatomical reference be traced to one unambiguous owner?
-→ If NO: replace the ambiguous pronoun with the explicit character name.
+---
+
+mistral/mistral-medium-latest
+SDKError: API error occurred: Status 402. Body: {"detail":"Check your subscription on https://admin.mistral.ai/subscription"}
+   statusCode: 402,
+
+gemini/gemini-3.5-flash
+ApiError: {"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}
+   status: 400,
 
 ---
 

@@ -378,7 +378,7 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
   gemini: [
     // 'gemini-3.1-pro', // Entirely blocked on the free tier. Unrivaled world-building and character memory. It naturally avoids cliché prose, catches subtle subtext, and introduces complex narrative framing.
     // 'gemini-3.1-pro-preview', // Entirely blocked on the free tier.
-    'gemini-2.5-pro', // Strong emotional nuance, handles complex subplots well, and avoids clichés much better than the Flash models. It is highly reactive to complex prompt instructions regarding prose style and meter.
+    // 'gemini-2.5-pro', // No longer available to new users. Strong emotional nuance, handles complex subplots well, and avoids clichés much better than the Flash models. It is highly reactive to complex prompt instructions regarding prose style and meter.
     'gemini-3.5-flash', // Prose is clean, coherent, and highly adaptable to action, sci-fi, and fast-paced adventure writing.
     'gemini-3-flash-preview', // Vivid and highly descriptive. Phenomenal at sensory world-building.
     'gemini-2.5-flash' // A reliable, highly accessible baseline model. It handles plot progression and narrative outlines beautifully.

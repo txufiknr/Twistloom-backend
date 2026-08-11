@@ -124,7 +124,7 @@ const AI_MODEL_COST_OVERRIDES: AICostOverride[] = [
   { match: "gemini-3.1-flash-lite", input: 0.25, output: 1.50 }, // NEW — was missing entirely; this model is wired into AI_CHAT_MODELS_IDEA in ai-clients.ts and was silently falling through to the (wrong, higher) generic gemini default.
   { match: "gemini-3.5-flash", input: 1.50, output: 9.00 }, // NEW — same gap as above, for the model referenced in ai-clients.ts's comments as a May 2026 release.
   { match: "gemini-3-flash", input: 0.50, output: 3.00 }, // FIXED (was 0.30/2.50 — that's 2.5 Flash's price, not 3 Flash's). Matches ai-clients.ts's actual model id, gemini-3-flash-preview.
-  { match: "gemini-2.5-pro", input: 1.25, output: 10.00 }, // Confirmed, ≤200K-token tier (steps up to 2.50/15.00 above 200K — not modeled here, same simplification as before).
+  // { match: "gemini-2.5-pro", input: 1.25, output: 10.00 }, // Confirmed, ≤200K-token tier (steps up to 2.50/15.00 above 200K — not modeled here, same simplification as before).
   { match: "gemini-3.1-pro", input: 2.00, output: 12.00 }, // FIXED (was 1.25/10.00, which is 2.5 Pro's rate). Confirmed ≤200K tier for gemini-3.1-pro-preview; steps up to 4.00/18.00 above 200K.
   { match: "gemini-3-pro", input: 2.00, output: 12.00 }, // FIXED (was 1.25/10.00). Google's own pricing page prices "Gemini 3 Pro Image" text I/O identically to 3.1 Pro, which is the best available confirmation for bare "gemini-3-pro" text pricing.
   { match: "gemini-pro", input: 2.00, output: 12.00 }, // Generic catch-all for any gemini-*-pro model not matched above — bumped from 1.25 to line up with the current 3.x generation now that 2.5-pro/3.1-pro/3-pro all have their own explicit entries checked first.
