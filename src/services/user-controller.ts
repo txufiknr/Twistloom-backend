@@ -65,6 +65,7 @@ export function getEnrichedUserSelect() {
     bio: users.bio,
     gender: users.gender,
     imageUrl: users.imageUrl,
+    avatarFrame: users.avatarFrame,
     tier: users.tier,
     credits: users.credits,
     lastActive: users.lastActive,

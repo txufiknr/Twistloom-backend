@@ -81,6 +81,7 @@ export interface User {
   name: string;
   bio: string | null;
   imageUrl: string | null;
+  avatarFrame: string | null;
   gender: Gender | null;
   source: Source | null;
   lastActive: Date;

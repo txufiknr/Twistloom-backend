@@ -798,6 +798,7 @@ router.get("/users/:identifier", optionalAuth, async (c: Context<AppEnv>) => {
         lastActive: userData.lastActive,
         isNewUser: userData.isNewUser,
         imageUrl: userData.imageUrl,
+        avatarFrame: userData.avatarFrame,
         credits: userData.credits,
         termsAcceptedAt: userData.termsAcceptedAt,
         termsVersion: userData.termsVersion,
