@@ -1859,6 +1859,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
         context: place.context,
         traits: place.traits?.map(parseTrait),
         names: resolvePlaceLoreNames(place),
+        lastVisitedAtPage: place.lastVisitedAtPage,
       }) satisfies Record<keyof EnrichedStoryPagePlace, unknown>),
       characters: Object.entries(characters).map(([characterId, character]) => ({
         characterId,
@@ -1868,6 +1869,9 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
         bio: character.bio,
         traits: character.traits?.map(parseTrait),
         names: resolveCharacterLoreNames(character),
+        lastInteractionAtPage: character.pastInteractions?.length
+          ? Math.max(...character.pastInteractions.map(pi => pi.page))
+          : character.introducedAtPage,
       }) satisfies Record<keyof EnrichedStoryPageCharacter, unknown>)
     } satisfies Record<keyof EnrichedStoryPageContext, unknown>;
   }

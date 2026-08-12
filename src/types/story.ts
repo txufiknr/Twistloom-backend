@@ -1418,8 +1418,8 @@ export type EnrichedStoryPageContext = {
  * `StoryText`) must use `names` over `name`, so tooltips never reveal an
  * identity the recognition gate has not yet revealed.
  */
-export type EnrichedStoryPagePlace = Pick<PlaceMemory, 'type' | 'category' | 'context'> & { placeId: string; name: string; names: string[]; traits?: { key: string; value: string }[] };
-export type EnrichedStoryPageCharacter = Pick<CharacterMemory, 'gender' | 'role' | 'bio'> & { characterId: string; name: string; names: string[]; traits?: { key: string; value: string }[] };
+export type EnrichedStoryPagePlace = Pick<PlaceMemory, 'type' | 'category' | 'context'> & { placeId: string; name: string; names: string[]; traits?: { key: string; value: string }[]; lastVisitedAtPage: number };
+export type EnrichedStoryPageCharacter = Pick<CharacterMemory, 'gender' | 'role' | 'bio'> & { characterId: string; name: string; names: string[]; traits?: { key: string; value: string }[]; lastInteractionAtPage: number };
 
 /**
  * | System          | Purpose                     |

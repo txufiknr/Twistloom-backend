@@ -451,7 +451,8 @@ Creates a new psychological thriller book with AI-generated content. Accepts a s
       "id": "user456",
       "name": "John Doe",
       "username": "johndoe",
-      "imageUrl": "https://example.com/avatar.jpg"
+      "imageUrl": "https://example.com/avatar.jpg",
+      "avatarFrame": "gold"
     },
     "stats": {
       "likesCount": 0,
@@ -702,7 +703,8 @@ Retrieves a book by slug or UUID v7 identifier. Returns complete book informatio
       "email": "user@example.com",
       "username": "johndoe",
       "name": "John Doe",
-      "imageUrl": "https://example.com/avatar.jpg"
+      "imageUrl": "https://example.com/avatar.jpg",
+      "avatarFrame": "gold"
     },
     "stats": {
       "likesCount": 42,
@@ -1317,7 +1319,8 @@ Retrieves similar books based on keyword Jaccard similarity. Uses PostgreSQL's n
         "id": "user789",
         "name": "Jane Doe",
         "username": "janedoe",
-        "imageUrl": "https://example.com/avatar2.jpg"
+        "imageUrl": "https://example.com/avatar2.jpg",
+        "avatarFrame": null
       },
       "stats": {
         "likesCount": 25,
@@ -2199,6 +2202,7 @@ Retrieves all comments for a specific book. Supports pagination for large commen
       "userId": "user456",
       "name": "John Doe",
       "imageUrl": "https://example.com/avatar.jpg",
+      "avatarFrame": "gold",
       "bookId": "book123",
       "pageId": null,
       "paragraphNumber": null,
@@ -2380,6 +2384,7 @@ When `pageId` is provided it must belong to the book. When `paragraphNumber` is 
     "userId": "user456",
     "name": "John Doe",
     "imageUrl": "https://example.com/avatar.jpg",
+    "avatarFrame": "gold",
     "bookId": "book123",
     "pageId": null,
     "paragraphNumber": null,
@@ -2540,6 +2545,7 @@ User-submitted testimonials (ratings + written feedback) for books. These live i
 
 - `name` (string): The author's display name.
 - `imageUrl` (string | null): The author's avatar URL (null if the user has no avatar or was deleted).
+- `avatarFrame` (string | null): The author's achievement tier key rendered as an avatar frame (`bronze` | `silver` | `gold` | `platinum`; null if the user has no frame or was deleted).
 
 **Status lifecycle:** New testimonials default to `pending`. Only `approved` testimonials are visible to the public. Editing a testimonial resets it back to `pending` and clears its `featured` flag so it can be re-curated by an admin.
 
@@ -2575,6 +2581,7 @@ Returns the authenticated user's own testimonials across all books. Supports pag
       "bookId": "uuid",
       "name": "John Doe",
       "imageUrl": "https://example.com/avatar.jpg",
+      "avatarFrame": "gold",
       "rating": 5,
       "content": "Couldn't put it down.",
       "status": "approved",
@@ -2621,6 +2628,7 @@ Lists testimonials for a specific book. Public viewers see only `approved` testi
       "bookId": "uuid",
       "name": "Jane Doe",
       "imageUrl": "https://example.com/avatar2.jpg",
+      "avatarFrame": null,
       "rating": 4,
       "content": "A gripping psychological thriller.",
       "status": "approved",
@@ -2673,6 +2681,7 @@ Creates a testimonial for a book. New testimonials are `pending` and not feature
       "bookId": "uuid",
       "name": "John Doe",
       "imageUrl": "https://example.com/avatar.jpg",
+      "avatarFrame": "gold",
       "rating": 5,
       "content": "One of the best twist endings I've read.",
     "status": "pending",
@@ -2707,6 +2716,7 @@ Retrieves a single testimonial. Owners of the testimonial or the book may view a
       "bookId": "uuid",
       "name": "Jane Doe",
       "imageUrl": "https://example.com/avatar2.jpg",
+      "avatarFrame": null,
       "rating": 4,
       "content": "A gripping psychological thriller.",
       "status": "approved",
@@ -2751,6 +2761,7 @@ Updates a testimonial. Only the testimonial author may update it. Editing resets
       "bookId": "uuid",
       "name": "John Doe",
       "imageUrl": "https://example.com/avatar.jpg",
+      "avatarFrame": "gold",
       "rating": 5,
       "content": "Updated thoughts after a re-read.",
     "status": "pending",
@@ -2899,7 +2910,8 @@ GET /api/books/explore?rating=4-5&minRatingCount=5&sortBy=newest&page=1&limit=20
         "id": "user456",
         "name": "John Doe",
         "username": "johndoe",
-        "imageUrl": "https://example.com/avatar.jpg"
+        "imageUrl": "https://example.com/avatar.jpg",
+        "avatarFrame": "gold"
       },
       "stats": {
         "likesCount": 42,
@@ -3296,6 +3308,13 @@ curl https://api.twistloom.com/api/books \
 ---
 
 ## Changelog
+
+### v2.13.0 (2026-08-12)
+- Added `avatarFrame` to every payload that carries a user's public avatar:
+  - **Book author** (`author` object on enriched book responses — `GET /api/books/:identifier`, `GET /api/books/explore`, `GET /api/books/:id/similar`, and the book-creation/create-response payload): the author's achievement tier key (`bronze` | `silver` | `gold` | `platinum`; `null` if no frame)
+  - **Comments** (all comment objects in `GET /api/books/:id/comments`, page/paragraph comment lists, and the `POST /api/books/:id/comments` response): `avatarFrame` alongside `name` / `imageUrl`
+  - **Testimonials** (all testimonial list/get/create/update responses): `avatarFrame` on the author fields block; added a `avatarFrame` bullet to the Author fields note
+- The frontend type `SocialMention.authorAvatarFrame` is optional (`string | null | undefined`), consistent with the `avatarFrame?: string | null` convention used across all user-bearing types
 
 ### v2.12.0 (2026-08-02)
 - **Added `testimonialsCount` to `BookStats`** — `books.testimonials_count` denormalized column counted from `book_testimonials` and maintained by a database trigger (`AFTER INSERT OR DELETE ON book_testimonials`), mirroring `commentsCount`. The field is now returned in the `stats` object of enriched book responses (`GET /api/books/:identifier`, explore, similar books, user library).

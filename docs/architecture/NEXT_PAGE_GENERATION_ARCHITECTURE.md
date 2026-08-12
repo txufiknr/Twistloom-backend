@@ -8,7 +8,7 @@
 Twistloom generates the next page of a story **in two complementary ways**:
 
 1. **Synchronous direct generation** — one specific destination page for one action, produced on demand (custom actions, first-page flow, Pen engine continue).
-2. **Asynchronous candidate pre-generation** — a whole page's worth of branches pre-built in the background (via a GitHub Actions workflow or a cron job) so that when a reader picks an action, its destination page already exists.
+2. **Asynchronous candidate pre-generation** — a whole page's worth of branches pre-built in the background (via a GitHub Actions workflow or a cron job) so that when a reader picks an action, its destination page already exists. Pre-generation is **triggered automatically by the reader's first visit** to a page whose actions still lack destinations (frontend polls the status endpoint, which starts the workflow), and also on demand.
 
 Both paths converge on the **same core AI pipeline**: `generateNextPage` / `generateNextPages` in `src/utils/prompt.ts:4618/4756`, which build a prompt, call an AI provider waterfall with structured-output guarantees, run an optional evaluator pass, determine a branch, and persist the page with its story-state delta.
 
@@ -28,13 +28,16 @@ The system deliberately keeps **state as data, not as prose history**: every gen
 
 ### The delta→state loop
 
-```
-page (stateDelta)  →  advanceStoryState  →  next StoryState
-     ▲                                            │
-     │                                            ▼
-persistPageWithState                     build prompt context
-     ▲                                            │
-     └───────  AI output + engine deltas  ←───────┘
+```mermaid
+flowchart LR
+    A["Actioned page<br/>(carries stateDelta)"] --> B["advanceStoryState<br/>src/utils/story.ts:749"]
+    B --> C["next StoryState"]
+    C --> D["build prompt context<br/>(prepareNextPageGenerationContext<br/>prompt.ts:4263)"]
+    D --> E["AI generation<br/>(executePromptForJSON)"]
+    E --> F["extractStateDelta (+ engine<br/>psychological deltas)"]
+    F --> G["new stateDelta"]
+    G --> H["persistPageWithState<br/>src/services/book.ts:505"]
+    H --> A
 ```
 
 - `advanceStoryState` (`src/utils/story.ts:749`) applies the user action + previous AI turn to produce the next state.
@@ -47,52 +50,57 @@ persistPageWithState                     build prompt context
 
 ```mermaid
 flowchart TD
-    subgraph Entry["Entry points"]
-        A1["POST /:identifier/:pageId/generate (custom action)"] --> C[generatePageForCustomAction<br/>src/services/custom-actions.ts:546]
-        A2["GET /:identifier/:pageId/candidates"] --> B{isGenerating?}
-        A3["GET /:identifier/:pageId/candidates/status"] --> B
-        A4["Cron: retry-pending-generations"] --> DA[ensureCandidatesForPageWithStrategy<br/>src/utils/candidate-generation.ts:870]
-        A5["GitHub workflow (workflow_dispatch)"] --> DA
+    subgraph Frontend["Frontend reader (Twistloom-web)"]
+        V[Reader opens a page<br/>useReaderPageSession · isActive] --> CHK{"all actions have<br/>destinationPageIds?"}
+        CHK -- "no (pending candidates)" --> POLL[generateCandidatesWithPolling<br/>books-api.ts:1110]
+        CHK -- "yes" --> DONE0["no generation needed<br/>buttons enabled"]
+        POLL --> STATUS["poll GET /candidates/status<br/>(exponential backoff)"]
     end
 
-    B -- "no" --> T[triggerCandidateGenerationWorkflow<br/>src/utils/candidate-generation.ts:1344]
-    B -- "yes" --> SSE[pollForCandidateGeneration<br/>src/utils/sse.ts:558 → progress events]
-    T --> DA
+    subgraph Backend["Backend (Hono / Bun)"]
+        STATUS --> B0{"/candidates/status<br/>three-state machine"}
+        B0 -- "isGenerating=false · isDone=false" --> T[triggerCandidateGenerationWorkflow<br/>candidate-generation.ts:1344]
+        B0 -- "isGenerating=true" --> PR["actionProgress<br/>(DB-backed / synthetic)"]
+        B0 -- "isDone=true" --> RET0["actions complete<br/>+ clears stale progress"]
+        PR --> STATUS
+        T --> W["GitHub workflow_dispatch<br/>(30-min cap)"]
+        W --> CRON["retry-pending-generations cron<br/>processSpecificPage · strategy='cron' (parallel)<br/>cron/retry-pending-generations.ts"]
+        CRON --> DA[ensureCandidatesForPageWithStrategy<br/>candidate-generation.ts:870]
+        DA --> STRAT{strategy}
+        STRAT --> |"cron (batch + workflow)"| PAR2[generateCandidatesInParallel<br/>candidate-generation.ts:572]
+        STRAT --> |"github-action (inline originals)"| SEQ["sequential per-action loop<br/>(prompt.ts:4176)"]
+        STRAT --> |"vercel (legacy default)"| PAR1[generateCandidatesInParallel]
+        PAR1 & PAR2 & SEQ --> GNP[generateNextPages<br/>prompt.ts:4756]
+    end
 
-    A1 --> C
-    C --> E[executePromptForJSON<br/>src/utils/prompt.ts:4936]
-
-    DA --> STRAT{strategy}
-    STRAT --> |vercel / cron| PAR[generateCandidatesInParallel<br/>src/utils/candidate-generation.ts:572]
-    STRAT --> |github-action| SEQ["sequential per-action loop"]
-    PAR & SEQ --> GNP[generateNextPages<br/>src/utils/prompt.ts:4756]
-    GNP --> E
-
-    E --> WFN[aiPrompt<br/>src/utils/ai-chat.ts:916]
+    GNP --> SETUP[prepareNextPageGenerationSetup<br/>prompt.ts:4396]
+    SETUP --> E[executePromptForJSON<br/>prompt.ts:4936]
+    E --> WFN[aiPrompt<br/>ai-chat.ts:916]
     WFN --> WF{"provider waterfall<br/>AI_CHAT_MODELS_WRITING"}
-    WF --> |mistral→gemini→openrouter→…| LLM[AI provider]
+    WF --> |"mistral → gemini → openrouter → …"| LLM[AI provider]
     LLM --> RET{"JSON valid?"}
-    RET -- "no / repair needed" --> VALIDATE[structured-output repair<br/>schema validation + JSON repair]
-    VALIDATE --> EVA{requeue / retry<br/>retryWithBackoffOrNull}<br/>src/utils/retry.ts:255]
-    RET -- "yes" --> EV2[Evaluator pass<br/>AI_CHAT_MODELS_EVALUATION]
-    EV2 --> EVA2{"pass ≥ threshold?<br/>or hard-fail?"}
-    EVA2 -- "fail" --> RETRY2[regenerate / fall back to raw output]
+    RET -- "malformed" --> VALIDATE[structured-output repair<br/>schema validation + JSON repair]
+    VALIDATE --> RTRY{"retry?<br/>retryWithBackoffOrNull<br/>retry.ts:255"}
+    RTRY -- "yes, budget remains" --> WFN
+    RTRY -- "no" --> FAIL["action marked failed /<br/>invalid action removed"]
+    RET -- "valid" --> EV2[Evaluator pass<br/>AI_CHAT_MODELS_EVALUATION]
+    EV2 --> EVA2{"pass ≥ threshold?<br/>or hard-fail present?"}
+    EVA2 -- "fail" --> REGEN["regenerate /<br/>fall back to raw output"]
     EVA2 -- "pass" --> OK[generated StoryGeneration]
 
-    OK --> ST["advanceStoryState → prepareNextPageGenerationSetup<br/>src/utils/prompt.ts:4396"]
-    ST --> BR[determineBranchIdForPage<br/>src/utils/prompt.ts:4336]
-    BR --> PERSIST[persistPageWithState<br/>src/services/book.ts:505]
-    PERSIST --> SIDE["post-persist side effects<br/>canon audit + pgvector embedding"]
+    OK --> ST[advanceStoryState<br/>story.ts:749 + prepareNextPageGenerationContext<br/>prompt.ts:4263]
+    ST --> BR[determineBranchIdForPage<br/>prompt.ts:4336<br/>one candidate keeps parent branch]
+    BR --> PERSIST[persistPageWithState<br/>book.ts:505<br/>mode gate + revalidate + momentum]
 
     subgraph Persistence["Persistence & side effects"]
-        SIDE --> DB[pages / story_states / story_branch rows]
-        SIDE --> CANON[insertCanonValidationAudit<br/>fire-and-forget]
-        SIDE --> VEC[embedPersistedPage → pgvector semantic memory]
+        PERSIST --> DB[pages / story_states / story_branch rows]
+        PERSIST --> CANON[insertCanonValidationAudit<br/>fire-and-forget]
+        PERSIST --> VEC[embedPersistedPage → pgvector semantic memory]
     end
 
     GNP --> DEPTH{"deeper-level<br/>pre-generation?"}
-    DEPTH -- "yes (depth < MAX_BRANCHING_PREGENERATION_DEPTH)" --> DA2[recurse ensureCandidatesForPageWithStrategy]
-    DA2 --> DB2[advance isGeneratingStartedAt / pendingGenerationCount]
+    DEPTH -- "yes (depth < MAX_BRANCHING_PREGENERATION_DEPTH<br/>page ≤ ALLOW_DEEPER_LEVEL_UNTIL_PAGE)" --> DA2[recurse ensureCandidatesForPageWithStrategy]
+    DA2 --> DB2[update isGeneratingStartedAt /<br/>pendingGenerationCount]
     DB2 --> DONE[clearActionProgressEvents]
 ```
 
@@ -149,10 +157,19 @@ flowchart TD
 ## Asynchronous candidate pre-generation
 
 ### Trigger points
-- `GET /:identifier/:pageId/candidates` (`src/routes/books.ts:4352`) — always SSE; if not already generating, fires `triggerCandidateGenerationWorkflow` (maxDepth = `MAX_BRANCHING_PREGENERATION_DEPTH`) then `pollForCandidateGeneration`.
-- `GET /:identifier/:pageId/candidates/status` (`books.ts:4492`) — plain JSON three-state machine: generating / done / not-started (triggers workflow on the latter).
-- Cron `retryPendingGenerations` (`src/cron/retry-pending-generations.ts`) — batch-processes pages with `pendingGenerationCount > 0`; supports manual trigger via `TRIGGERED_BOOK_ID`/`TRIGGERED_PAGE_ID`/`TRIGGERED_BY_USER` env vars.
-- **Note:** a plain page *visit* (`visitBookPage`, `src/services/book-controller.ts:937`) does **not** trigger candidate generation — it only marks visited + records progress. Generation starts only from the candidate endpoints, cron, or custom-action submission.
+
+Candidate generation is triggered **automatically by normal reader activity**, plus by several explicit paths. Every frontend page open initiates it when the page still has pending (destination-less) actions:
+
+1. **Reader visits a page (frontend, automatic):** When a reader opens a page in `Twistloom-web`, `useReaderPageSession` (`Twistloom-web/src/lib/hooks/reader/useReaderPageSession.ts`) checks whether the page's actions all carry `destinationPageIds`. If any are pending, it calls `generateCandidatesWithPolling` (`books-api.ts:1110`) → `pollCandidates` (`books-api.ts:978`), which polls `GET /:identifier/:pageId/candidates/status`. The status endpoint is a three-state machine:
+   - `isGenerating=false · isDone=false` → triggers `triggerCandidateGenerationWorkflow`, returns `isGenerating: true` (`books.ts:4492`, trigger at :4650).
+   - `isGenerating=true` → returns live progress (DB-backed `actionProgress`, synthetic fallback).
+   - `isDone=true` → returns all actions complete and clears stale progress events.
+   - **Custom-action overlap:** for the page owner, the status endpoint also drives stale pending custom generations to completion inline — rows without a `nextPageId` older than `CUSTOM_ACTION_GENERATION_STALE_MS` are generated synchronously via `generatePageForCustomAction` before the response is built (`books.ts:4519-4545`). The poll therefore continues streaming (returns `isGenerating: true`) until the owner's custom page is ready. Other readers / unauthenticated requests see canon-only status.
+2. `GET /:identifier/:pageId/candidates` (`src/routes/books.ts:4352`) — **SSE** variant; if not already generating, fires `triggerCandidateGenerationWorkflow` (maxDepth = `MAX_BRANCHING_PREGENERATION_DEPTH`) then streams progress via `pollForCandidateGeneration` (`src/utils/sse.ts:558`).
+3. Cron `retryPendingGenerations` (`src/cron/retry-pending-generations.ts`) — batch-processes pages with `pendingGenerationCount > 0`; the GitHub workflow runs this in `processSpecificPage` mode via `TRIGGERED_BOOK_ID`/`TRIGGERED_PAGE_ID`/`TRIGGERED_BY_USER` env vars.
+4. **Custom-action submission** — see the custom-actions section below for its own immediate, on-demand generation.
+
+> **Note on the backend visit record:** the *backend* visit mark (`visitBookPage`, `src/services/book-controller.ts:937`) only marks visited / records progress and does **not** itself fire generation. The automatic trigger arrives from the *frontend* reader session (step 1 above), which polls the status endpoint — that endpoint is what starts the workflow on first contact.
 
 ### Orchestration: `ensureCandidatesForPageWithStrategy` (`src/utils/candidate-generation.ts:870`)
 1. **Validation** — skip if last page, depth limit reached, no pending actions, or page is stale.
@@ -160,9 +177,9 @@ flowchart TD
 
 | Strategy | `useParallel` | Timeout | Used by |
 |---|---|---|---|
-| `vercel` | ✅ | ≤ 240s (remaining Vercel budget) | API/SSE requests |
-| `cron` | ✅ | 13 min (`MAX_GENERATION_PARALLEL_DURATION_MS`) | cron batch |
-| `github-action` | ❌ sequential | 30 min (`MAX_GENERATION_DURATION_MS`) | GitHub workflow |
+| `cron` | ✅ | 13 min (`MAX_GENERATION_PARALLEL_DURATION_MS`) | cron batch (`retry-pending-generations.ts:262`) |
+| `github-action` | ❌ sequential | 30 min (`MAX_GENERATION_DURATION_MS`) | inline generation for cron-originals (`prompt.ts:4176`) |
+| `vercel` (default fallback) | ✅ | ≤ 240s (remaining Vercel budget) | legacy default when no strategy is passed — no current caller explicitly selects it; user-facing flows now dispatch a GitHub workflow instead |
 
 3. **Distributed locking** — `withLock` / `acquireLock` (`src/utils/distributed-lock.ts`) keyed on the page. If the lock is held, return fresh page state without doing work.
 4. **Parallel generation** — `generateCandidatesInParallel` (`:572`): one `generateNextPages` call per pending action, with per-action `timeoutMs`, retry, and progress callbacks.
@@ -176,6 +193,47 @@ flowchart TD
 - Per-action failures are retried with backoff, and invalid actions are removed (with a "continue" fallback action if all are invalid — `candidate-generation.ts:1246`).
 - `isGeneratingStartedAt` staleness detection: if the start timestamp exceeds `MAX_GENERATION_DURATION_MS` (30 min), the workflow is considered dead and gets reset by the cron.
 - Timeout logic (`calculateGenerationTimeout`, `:373`) bails early (§`MIN_AI_TIMEOUT_MS`) rather than wasting an AI call.
+
+### End-to-end reader-visit sequence
+
+```mermaid
+sequenceDiagram
+    participant R as Reader (web)
+    participant S as useReaderPageSession<br/>(frontend hook)
+    participant API as Backend API
+    participant WF as GitHub workflow<br/>(cron runner)
+    participant AI as AI provider
+
+    R->>S: open page / select action
+    S->>API: GET /candidates/status (poll)
+    alt actions complete
+        API-->>S: isGenerating=false, actions have destinations
+        S-->>R: buttons enabled
+    else generation not started
+        API->>WF: triggerCandidateGenerationWorkflow
+        API-->>S: isGenerating=true, startedAt
+        WF->>WF: retryPendingGenerations (processSpecificPage, strategy='cron')
+        WF->>API: ensureCandidatesForPageWithStrategy
+        loop per action (parallel under 'cron'; sequential under 'github-action')
+            WF->>AI: generateNextPages → executePromptForJSON
+            AI-->>WF: generated candidates
+            WF->>API: persistPageWithState + progress events
+            API-->>S: actionProgress events (streamed via poll)
+        end
+        WF->>API: clear isGeneratingStartedAt
+        S->>API: next poll → isGenerating=false, all actions ready
+        S-->>R: buttons enabled
+    else in progress
+        API-->>S: isGenerating=true, live progress
+    end
+```
+
+### Idempotency & deduplication
+- **`isGeneratingStartedAt` watermark:** the page row records when a workflow started. Any later trigger attempt that sees a non-stale watermark (`< MAX_GENERATION_DURATION_MS`) short-circuits as `alreadyInProgress` — no duplicate workflows.
+- **Frontend request dedup:** `generateCandidatesWithPolling` returns the in-flight promise for the same `(identifier, pageId)` (`books-api.ts:1122-1183`), so multiple components/poll restarts don't stack requests.
+- **Distributed lock per page:** only one worker generates a page's candidates at a time (`distributed-lock.ts`).
+- **Progress writes are idempotent:** `storeActionProgressEvent` upserts by action text; `onActionProgress` serializes the `actions` JSONB update through a shared promise chain so concurrent AI completions never lose a completed action.
+- **Polling never outlives its page:** the hook aborts its in-flight poll on unmount/page change (`useReaderPageSession.ts:574-580`), and the status endpoint's three-state machine always converges to `isGenerating=false`.
 
 ---
 
@@ -207,7 +265,8 @@ Notes:
 | Story-state advance | `src/utils/story.ts` (`advanceStoryState` 749, `extractStateDelta` 284, `calculatePsychologicalDeltas` 391, `applyStateDelta` 498) | — |
 | Branch id resolution | `src/utils/prompt.ts` `determineBranchIdForPage` | 4336 |
 | Persistence | `src/services/book.ts` `persistPageWithState` | 505 |
-| Visit (does NOT pre-generate) | `src/services/book-controller.ts` `visitBookPage` | 937 |
+| Visit record (backend) | `src/services/book-controller.ts` `visitBookPage` | 937 |
+| Auto-trigger on page open (frontend) | `Twistloom-web` `useReaderPageSession` → `generateCandidatesWithPolling` → `pollCandidates` → `/candidates/status` | useReaderPageSession.ts:420-582, books-api.ts:978/1110 |
 | Candidate orchestration | `src/utils/candidate-generation.ts` `ensureCandidatesForPageWithStrategy` | 870 |
 | Parallel generation | `src/utils/candidate-generation.ts` `generateCandidatesInParallel` | 572 |
 | Strategy select | `src/utils/candidate-generation.ts` `getGenerationStrategy` | 344 |
@@ -226,6 +285,6 @@ Notes:
 
 ## Divergences from the superseded docs
 
-- **`PRE_GENERATION_FLOW.md`** described a full "automatic pre-generation on page visit" flow. That is **no longer true** — `visitBookPage` only marks visited/records progress. Pre-generation is now explicitly triggered (candidates endpoints, cron, custom actions).
+- **`PRE_GENERATION_FLOW.md`** described "automatic pre-generation on page visit". Pre-generation **on visit is still true** (the frontend reader session auto-polls the status endpoint, which starts the workflow) — but the mechanism changed: it is no longer a synchronous, inline AI call inside the page request. It is now an **asynchronous GitHub-workflow/cron pipeline** with SSE/JSON polling progress, started lazily on first status contact (or explicitly via `/candidates`, the cron, or a custom action). The obsolete doc's Express/Next.js framing and 4.5-min inline "vercel" strategy details have been superseded.
 - **`ASYNC_CANDIDATE_GENERATION_ARCHITECTURE.md`** described progress via an **LRU in-memory cache (5-min TTL)** and Express/Next.js framing. Progress is now **DB-backed** (`actionProgress` table) via `progress-tracking.ts`, and the deployment is Hono on Bun/Vercel with three strategies (vercel / cron / github-action).
-- Both old docs lacked the **book-mode branching contract** (`novel`/`interactive`/`multiverse`), the **write-chain serialization** hazard, and the **custom-action on-demand path** now implemented.
+- Both old docs lacked the **book-mode branching contract** (`novel`/`interactive`/`multiverse`), the **write-chain serialization** hazard, the **custom-action on-demand path**, and the **frontend-driven auto-trigger** — all now implemented.
