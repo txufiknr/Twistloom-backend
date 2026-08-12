@@ -27,12 +27,26 @@
 [ ] pastInteractions -> interactions
 [ ] learn about Interactions API (https://ai.google.dev/gemini-api/docs/migrate-to-interactions)
 [ ] ensure `PUT /api/user/editor-prefs` API route optimal en-to-end based on `AI_CO_WRITING_PEN_ROADMAP.md` and frontend's `src\lib\services\users-api.ts`, shouldn't we only send dirty (only changed) fields instead of all fields?
-[x] cap max output token if exceeds `AI_MAX_OUTPUT_TOKEN`
 [ ] lengkapi API keys llm provider baru
+[ ] register & otp sms: https://www.modelscope.cn/register
 [ ] can you also add ai-cost for these gemini models: `gemini-3.6-flash`, `gemini-3.0-flash`?
-[ ] claude: review for ai-chat & ai-chat-stream DRY potential?
-[ ] claude: should we using multi-turn request instead of big array json for generating `generatedPages` (alternative fates) in 'multiverse' book mode?
 [ ] please check `validateGeneratedPage`, I don't want to ditch AI generation result merely because it provides multiple actions for 'novel' book mode (should just strip it sliently), is it already safe & handled as intended?
+[ ] claude: should we using multi-turn request instead of big array json for generating `generatedPages` (alternative fates) in 'multiverse' book mode?
+[ ] claude: review for ai-chat & ai-chat-stream DRY potential?
+[x] claude: review & refine TODO-gemini-interactions-api.md
+[x] claude: review & refine TODO-save-prompt-token.md
+[ ] claude: review & refine TODO-ai-chat-enhancements.md
+[ ] claude: review & refine TODO-hybrid-diffusion-llm.md
+[ ] clause: migrate "Minimal local shape" to use canonical types from `@google/genai` (D:\Projects\Twistloom\Twistloom-backend\node_modules\@google\genai\dist\genai.d.ts)
+[ ] create new comprehensive up-to-date LLM_ORCHESTRATION_ARCHITECTURE.md consolidated from:
+  - docs\roadmap\AI_ORCHESTRATION_ROADMAP.md
+  - docs\roadmap\LLM_OPTIMIZATION_PATCHES.md
+  - docs\roadmap\LLM_OPTIMIZATION_ROADMAP.md
+  - src\config\ai-clients.ts
+  - src\config\ai-chat.ts
+  - src\utils\ai-chat.ts
+  - src\utils\ai-chat-stream.ts
+  - src\utils\ai-limiters.ts
 
 [ ] setup ovh cloud api key:
 https://docs.ovhcloud.com/en/guides/public-cloud/ai-machine-learning/ai-endpoints-getting-started

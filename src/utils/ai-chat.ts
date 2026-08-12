@@ -287,16 +287,22 @@ export const openrouterPrompt = createOpenAICompatiblePrompt('openrouter', getOp
 export const cloudflarePrompt = createOpenAICompatiblePrompt('cloudflare', getCloudflareClient);
 
 /**
- * Sends a prompt to Google Gemini and returns structured output.
+ * Sends a prompt to Google Gemini via the `generateContent` API and returns structured output.
  *
  * Tries each model in {@link AI_CHAT_MODELS_WRITING.gemini} in order; throttles via {@link geminiLimiter}
  * before each call; respects safety blocks and finish reasons like other chat providers.
+ *
+ * Kept alongside {@link geminiPromptViaInteractions} specifically for its explicit-caching support
+ * (`cachedContentId` → {@link getOrCreateGeminiCache} → `cachedContent`) — the Interactions API does
+ * not support explicit caching as of 2026-08-12 (confirmed against
+ * https://ai.google.dev/gemini-api/docs/interactions-overview#limitations). {@link geminiPrompt} below
+ * dispatches to this function whenever `cachedContentId` is set.
  *
  * @param prompt - User portion of the prompt (system rules are concatenated in the request body)
  * @param options.stopSequences - Optional stop sequences (e.g. `['\\n\\n']` for non–Q&A summarization)
  * @returns {@link AIResponse} or `null` if every model fails
  */
-export async function geminiPrompt(
+async function geminiPromptViaGenerateContent(
   prompt: string,
   options?: Partial<PromptWithFallbackOptions>
 ): Promise<AIResponse<string> | null> {
@@ -411,6 +417,187 @@ export async function geminiPrompt(
     },
     (response) => response.candidates?.[0]?.finishReason ?? 'unknown'
   );
+}
+
+/**
+ * Minimal local shape for the fields this file actually reads off an
+ * Interactions API response/resource. Declared locally instead of imported
+ * from `@google/genai` because the SDK's exact exported type name for this
+ * resource wasn't confirmed against the currently-installed SDK version —
+ * the Interactions API needs `@google/genai` >= 2.3.0 (per
+ * https://ai.google.dev/gemini-api/docs/interactions-overview#sdks); check
+ * `node_modules/@google/genai/package.json` and swap this for the real SDK
+ * type once you've confirmed it exports one. Field names/shapes below are
+ * sourced directly from https://ai.google.dev/api/interactions-api (fetched
+ * 2026-08-12) — re-verify against the OpenAPI spec linked from that page if
+ * behavior looks off, since this is a beta (`v1beta`) endpoint.
+ */
+interface GeminiInteractionUsage {
+  total_input_tokens?: number;
+  total_output_tokens?: number;
+  total_cached_tokens?: number;
+  total_tokens?: number;
+}
+interface GeminiInteractionContentBlock {
+  type: string;
+  text?: string;
+  [key: string]: unknown;
+}
+interface GeminiInteractionStep {
+  type: string;
+  content?: GeminiInteractionContentBlock[];
+  [key: string]: unknown;
+}
+interface GeminiInteractionResponse {
+  id: string;
+  status: 'completed' | 'failed' | 'cancelled' | 'incomplete' | 'budget_exceeded' | 'requires_action' | 'in_progress' | 'queued';
+  steps?: GeminiInteractionStep[];
+  usage?: GeminiInteractionUsage;
+  /** SDK convenience property — joins consecutive trailing text blocks. Falls back to a manual `steps` scan below if an older SDK version doesn't populate it. */
+  output_text?: string;
+}
+
+/**
+ * Sends a prompt to Google Gemini via the Interactions API
+ * (https://ai.google.dev/gemini-api/docs/interactions-overview) — GA since
+ * June 2026 and where Google says all new models/features will land first.
+ *
+ * NOT wired into the exported {@link geminiPrompt} dispatcher by default.
+ * Two things couldn't be confirmed from Google's own docs as of 2026-08-12,
+ * and you should verify both empirically before routing real traffic here:
+ *
+ * 1. **Temperature / top_p / top_k**: not listed in the documented
+ *    `generation_config` schema (only `max_output_tokens`, `seed`,
+ *    `stop_sequences`, `thinking_level`, `thinking_summaries`, `tool_choice`
+ *    are). If genuinely unsupported, you lose prose-variety control versus
+ *    the current `generateContent` path — a real regression for fiction
+ *    generation, not a cosmetic one.
+ * 2. **Safety settings**: the API reference documents a full
+ *    `safety_settings` array (with `block_none`/`off` thresholds — exactly
+ *    what you'd want for dark/mature horror content), but the Interactions
+ *    API overview page's own "Limitations" section states custom safety
+ *    settings are "not supported." These two official pages contradict each
+ *    other. Test directly (send a request with `safety_settings: [{ type:
+ *    'dangerous_content', threshold: 'block_none' }]` against genuinely dark
+ *    content and see whether it actually changes blocking behavior) before
+ *    trusting either page.
+ *
+ * Also does not support explicit caching (see {@link geminiPromptViaGenerateContent}'s
+ * doc comment) — this function always passes `store: false` since there's no
+ * conversation continuity need for Twistloom's single-shot generation calls,
+ * and no reason to pay for interaction storage/retention you won't use.
+ *
+ * @param prompt - User portion of the prompt (system rules are concatenated into `system_instruction`)
+ * @returns {@link AIResponse} or `null` if every model fails
+ */
+export async function geminiPromptViaInteractions(
+  prompt: string,
+  options?: Partial<PromptWithFallbackOptions>
+): Promise<AIResponse<string> | null> {
+  return promptWithFallback<GeminiInteractionResponse>(
+    'gemini',
+    prompt,
+    options,
+    async (model, prompt, opts) => {
+      const { config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
+      const systemPromptWithDocuments = formatSystemPromptWithDocuments('gemini', opts);
+
+      // The SDK's exact param type name for this call wasn't confirmed (see
+      // the GeminiInteractionResponse comment above) — cast through `any` at
+      // the call boundary only; everything downstream of the response is
+      // fully typed against GeminiInteractionResponse.
+      const response = await (getGeminiClient() as any).interactions.create({
+        model,
+        input: prompt,
+        system_instruction: systemPromptWithDocuments,
+        store: false,
+        response_format: outputAsJson ? [{
+          type: 'text',
+          mime_type: 'application/json',
+          ...(outputJsonStructure ? {
+            schema: {
+              type: 'object',
+              properties: outputJsonStructure,
+              required: outputJsonRequired,
+            },
+          } : {}),
+        }] : undefined,
+        generation_config: {
+          max_output_tokens: getMaxOutputToken('gemini', model, config.maxOutputToken),
+          stop_sequences: config.stopSequences,
+          seed: config.seed,
+          // temperature / top_p / top_k intentionally omitted — see the
+          // doc-gap warning above. Re-add once confirmed supported.
+        },
+      }) as GeminiInteractionResponse;
+
+      if (response.status === 'failed' || response.status === 'cancelled' || response.status === 'budget_exceeded') {
+        throw new Error(`[gemini/interactions] Interaction ${response.status} (id: ${response.id})`);
+      }
+
+      return response;
+    },
+    (response) => {
+      if (response.status !== 'completed') {
+        console.warn(`[gemini] ❓ Interaction status "${response.status}", not completed`);
+        return null;
+      }
+
+      if (response.output_text) return response.output_text.trim() || null;
+
+      // Manual fallback: find the model_output step and join its text blocks.
+      const outputStep = response.steps?.find((s) => s.type === 'model_output');
+      const text = outputStep?.content
+        ?.filter((c) => c.type === 'text' && typeof c.text === 'string')
+        .map((c) => c.text as string)
+        .join('')
+        .trim();
+      return text || null;
+    },
+    (response) => {
+      const { usage } = response;
+      if (!usage) {
+        console.warn('[gemini] ❓ No usage data in interaction response');
+        return undefined;
+      }
+
+      const cachedTokens = usage.total_cached_tokens;
+      const promptTokens = usage.total_input_tokens;
+      const outputTokens = usage.total_output_tokens;
+      const totalTokens = usage.total_tokens;
+      const cacheHitRate = promptTokens && cachedTokens ? cachedTokens / promptTokens : 0;
+
+      return { cachedTokens, promptTokens, outputTokens, totalTokens, cacheHitRate };
+    },
+    (response) => response.status ?? 'unknown'
+  );
+}
+
+/**
+ * Sends a prompt to Google Gemini and returns structured output.
+ *
+ * Dispatches between two implementations:
+ * - `options.cachedContentId` set → {@link geminiPromptViaGenerateContent}
+ *   (the original, unchanged `generateContent` path) — kept because the
+ *   Interactions API doesn't yet support explicit caching.
+ * - Otherwise → still {@link geminiPromptViaGenerateContent} for now.
+ *
+ * {@link geminiPromptViaInteractions} is fully implemented and exported
+ * separately, but deliberately **not** called from here yet — see its doc
+ * comment for the two unconfirmed behaviors (temperature/top_p/top_k support,
+ * and contradictory safety-settings documentation) worth verifying before
+ * this dispatcher routes real traffic to it. Once confirmed, the second
+ * branch below is a one-line change.
+ *
+ * @param prompt - User portion of the prompt (system rules are concatenated in the request body)
+ * @param options.stopSequences - Optional stop sequences (e.g. `['\\n\\n']` for non–Q&A summarization)
+ * @returns {@link AIResponse} or `null` if every model fails
+ */
+export async function geminiPrompt(
+  prompt: string,
+  options?: Partial<PromptWithFallbackOptions>
+): Promise<AIResponse<string> | null> {
+  return geminiPromptViaGenerateContent(prompt, options);
 }
 
 /**

@@ -459,9 +459,14 @@ const openrouterStreamGenerator = createOpenAICompatibleStreamGenerator('openrou
 const cloudflareStreamGenerator = createOpenAICompatibleStreamGenerator('cloudflare', getCloudflareClient, AI_STREAM_DEFAULT_MODEL.cloudflare);
 
 /**
- * Gemini streaming generator that yields chunks
+ * Gemini streaming generator via the `generateContent` API that yields chunks.
+ *
+ * Kept alongside {@link geminiStreamGeneratorViaInteractions} specifically for its explicit-caching
+ * support (`cachedContentId` → {@link getOrCreateGeminiCache} → `cachedContent`) — the Interactions
+ * API does not support explicit caching as of 2026-08-12. See {@link geminiStreamGenerator}'s comment
+ * for the dispatch logic.
  */
-async function* geminiStreamGenerator(
+async function* geminiStreamGeneratorViaGenerateContent(
   prompt: string,
   options: Partial<PromptWithFallbackOptions>
 ): AIStreamGenerator {
@@ -531,6 +536,124 @@ async function* geminiStreamGenerator(
   }
 
   return usage;
+}
+
+/**
+ * Minimal local shape for the SSE event fields this file actually reads from
+ * an Interactions API stream. See the matching comment on
+ * `GeminiInteractionResponse` in ai-chat.ts for why this is declared locally
+ * rather than imported, and the SDK version requirement (`@google/genai`
+ * >= 2.3.0). Sourced from https://ai.google.dev/api/interactions-api (the
+ * `InteractionSseEvent` / `StepDelta` / `TextDelta` resources), fetched
+ * 2026-08-12 — this is a beta (`v1beta`) endpoint, re-verify if behavior
+ * looks off.
+ */
+interface GeminiInteractionStreamUsage {
+  total_input_tokens?: number;
+  total_output_tokens?: number;
+  total_cached_tokens?: number;
+  total_tokens?: number;
+}
+interface GeminiInteractionStreamEvent {
+  event_type: 'interaction.created' | 'interaction.status_update' | 'step.start' | 'step.delta' | 'step.stop' | 'interaction.completed' | 'error';
+  delta?: { type: string; text?: string; [key: string]: unknown };
+  interaction?: { id?: string; status?: string; usage?: GeminiInteractionStreamUsage };
+  error?: { code?: string; message?: string };
+  [key: string]: unknown;
+}
+
+/**
+ * Gemini streaming generator via the Interactions API
+ * (https://ai.google.dev/gemini-api/docs/interactions-overview). Streams
+ * through the *same* `interactions.create()` call as the non-streaming path
+ * (with `stream: true`) rather than a separate endpoint.
+ *
+ * NOT wired into {@link geminiStreamGenerator} by default — see
+ * `geminiPromptViaInteractions`'s doc comment in ai-chat.ts for the two
+ * unconfirmed behaviors (temperature/top_p/top_k support, and contradictory
+ * safety-settings documentation) that apply identically here. Verify both
+ * before routing real traffic through this function.
+ *
+ * Always passes `store: false` — no conversation continuity needed for
+ * Twistloom's single-shot generation calls, and explicit caching (what
+ * `cachedContentId` currently buys you) isn't available on this API yet.
+ */
+export async function* geminiStreamGeneratorViaInteractions(
+  prompt: string,
+  options: Partial<PromptWithFallbackOptions>
+): AIStreamGenerator {
+  const { signal, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = options;
+  const systemPromptWithDocuments = formatSystemPromptWithDocuments('gemini', options);
+  const model = options.models?.[0] || AI_STREAM_DEFAULT_MODEL.gemini;
+
+  // SDK param type name unconfirmed (see comment above) — cast at the call
+  // boundary only; the stream's events are fully typed against
+  // GeminiInteractionStreamEvent below.
+  const stream = await (getGeminiClient() as any).interactions.create({
+    model,
+    input: prompt,
+    system_instruction: systemPromptWithDocuments,
+    store: false,
+    stream: true,
+    response_format: outputAsJson ? [{
+      type: 'text',
+      mime_type: 'application/json',
+      ...(outputJsonStructure ? {
+        schema: {
+          type: 'object',
+          properties: outputJsonStructure,
+          required: outputJsonRequired,
+        },
+      } : {}),
+    }] : undefined,
+    generation_config: {
+      max_output_tokens: getMaxOutputToken('gemini', model, config.maxOutputToken),
+      stop_sequences: config.stopSequences,
+      seed: config.seed,
+      // temperature / top_p / top_k intentionally omitted — see the
+      // doc-gap warning on geminiPromptViaInteractions in ai-chat.ts.
+    },
+  }) as AsyncIterable<GeminiInteractionStreamEvent>;
+
+  let usage: StreamUsage | undefined;
+
+  for await (const event of stream) {
+    if (signal?.aborted) break;
+
+    if (event.event_type === 'step.delta' && event.delta?.type === 'text' && typeof event.delta.text === 'string') {
+      if (event.delta.text) yield event.delta.text;
+    } else if (event.event_type === 'interaction.completed') {
+      const finalUsage = event.interaction?.usage;
+      if (finalUsage) {
+        usage = {
+          promptTokens: finalUsage.total_input_tokens,
+          cachedTokens: finalUsage.total_cached_tokens,
+        };
+      }
+    } else if (event.event_type === 'error') {
+      throw new Error(`[gemini/interactions] ${event.error?.code}: ${event.error?.message}`);
+    }
+  }
+
+  return usage;
+}
+
+/**
+ * Gemini streaming generator that yields chunks.
+ *
+ * Currently always delegates to {@link geminiStreamGeneratorViaGenerateContent}.
+ * {@link geminiStreamGeneratorViaInteractions} is fully implemented and
+ * exported separately for testing, but not wired in here yet — see its doc
+ * comment for what to verify first (temperature/top_p/top_k support and
+ * contradictory safety-settings documentation). Once confirmed, branching
+ * this on `options.cachedContentId` (Interactions when absent, since explicit
+ * caching still requires the generateContent path) is a one-line change.
+ */
+async function* geminiStreamGenerator(
+  prompt: string,
+  options: Partial<PromptWithFallbackOptions>
+): AIStreamGenerator {
+  return yield* geminiStreamGeneratorViaGenerateContent(prompt, options);
 }
 
 /**
