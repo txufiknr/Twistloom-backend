@@ -26,10 +26,11 @@
 [ ] https://dashboard.xendit.co/settings/developers#api-keys
 [ ] pastInteractions -> interactions
 [ ] learn about Interactions API (https://ai.google.dev/gemini-api/docs/migrate-to-interactions)
-[x] remove model: gemini-2.5-pro
 [ ] ensure `PUT /api/user/editor-prefs` API route optimal en-to-end based on `AI_CO_WRITING_PEN_ROADMAP.md` and frontend's `src\lib\services\users-api.ts`, shouldn't we only send dirty (only changed) fields instead of all fields?
 [x] cap max output token if exceeds `AI_MAX_OUTPUT_TOKEN`
 [ ] remove 'github' from `AIChatProvider`
+[ ] lengkapi API keys llm provider baru
+[ ] can you also add ai-cost for these gemini models: `gemini-3.6-flash`, `gemini-3.0-flash`?
 
 [ ] setup ovh cloud api key:
 https://docs.ovhcloud.com/en/guides/public-cloud/ai-machine-learning/ai-endpoints-getting-started

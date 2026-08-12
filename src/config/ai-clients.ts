@@ -448,7 +448,9 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
     // 'gemini-3.1-pro', // Entirely blocked on the free tier. Unrivaled world-building and character memory. It naturally avoids cliché prose, catches subtle subtext, and introduces complex narrative framing.
     // 'gemini-3.1-pro-preview', // Entirely blocked on the free tier.
     // 'gemini-2.5-pro', // No longer available to new users. Strong emotional nuance, handles complex subplots well, and avoids clichés much better than the Flash models. It is highly reactive to complex prompt instructions regarding prose style and meter.
+    'gemini-3.6-flash', // The latest, highly efficient flagship Flash model.
     'gemini-3.5-flash', // Prose is clean, coherent, and highly adaptable to action, sci-fi, and fast-paced adventure writing.
+    'gemini-3.0-flash', // The standard Gemini 3 Flash version.
     'gemini-3-flash-preview', // Vivid and highly descriptive. Phenomenal at sensory world-building.
     'gemini-2.5-flash' // A reliable, highly accessible baseline model. It handles plot progression and narrative outlines beautifully.
   ],
@@ -570,6 +572,7 @@ export const AI_CHAT_MODELS_FAST: AIModelSelection = {
 
 /**
  * Small but creative model for idea brainstorming
+ * High-speed, lightweight models optimized for low-latency tasks.
  */
 export const AI_CHAT_MODELS_IDEA: AIModelSelection = {
   github: ['openai/gpt-4o', 'openai/gpt-4o-mini'],
@@ -577,7 +580,7 @@ export const AI_CHAT_MODELS_IDEA: AIModelSelection = {
     'gemini-3-flash-preview',
     'gemini-2.5-flash',
     'gemini-3.1-flash-lite', // Generic, "safe" creative prose. It shines brightest at micro-creative tasks: crafting quick character descriptions, naming fictional places, generating short status messages, or writing brief background dialogue snippets for NPCs.
-    'gemini-2.5-flash-lite',
+    'gemini-2.5-flash-lite', // Cost-efficient, fast variant of the 2.5 generation. [2, 3, 4, 5, 6] 
     'gemma-3-27b-it', // Outstanding for raw, highly stylistic, and gritty short-form stories.
     'gemma-3-4b-it' // Can be highly expressive for creative writing. Excel at writing quirky, stylistic, and highly unfiltered prose.
   ],
