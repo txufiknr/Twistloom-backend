@@ -3331,6 +3331,40 @@ router.patch('/in-app-preferences', requireAuth, async (c: Context<AppEnv>) => {
 });
 
 /**
+ * PUT /user/editor-prefs
+ *
+ * Persist the authenticated user's global Pen editor preferences.
+ */
+router.put('/editor-prefs', requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get('userId')!;
+    const body = c.get('body');
+    const {
+      sanitizeEditorPreferences,
+      ensureDefaultEditorPreferences,
+      updateEditorPreferences,
+    } = await import('../services/editor-preferences.js');
+
+    const preferences = sanitizeEditorPreferences(body);
+    if (!preferences) {
+      return cValidationError(
+        c,
+        'Provide all editor preferences: background, fontFamily, fontSize, textColor, lineHeight, contentWidth',
+      );
+    }
+
+    await ensureDefaultEditorPreferences(userId);
+    const updated = await updateEditorPreferences(userId, preferences);
+    if (!updated) return cNotFoundError(c, 'User not found');
+
+    return c.json({ preferences: updated });
+  } catch (error) {
+    console.error('[PUT /user/editor-prefs] ❌', error);
+    return cApiError(c, 'Failed to update editor preferences', error);
+  }
+});
+
+/**
  * PATCH /user/preferred-locale
  *
  * Fire-and-forget friendly update of account UI language (preferredLocale).

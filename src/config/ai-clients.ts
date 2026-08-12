@@ -349,6 +349,75 @@ export const AI_MAX_PROMPT_LENGTH: Record<AIChatProvider, number> = {
 };
 
 /**
+ * Provider-specific maximum allowed output tokens.
+ *
+ * This map constrains the generated completion length for models whose
+ * practical or documented output token limit is smaller than the global
+ * AI chat config default. The value is intended for the request payload's
+ * `max_tokens` / `maxTokens` field only, and does not affect prompt size.
+ *
+ * Keys are normalized by provider and exact model ID string. If a model is
+ * not present, the global `config.maxOutputToken` value is used unchanged.
+ *
+ * Deliberately NOT exhaustive — see the accompanying review notes for what
+ * was checked and omitted, and why. Every value below is a *ceiling the API
+ * enforces* (exceeding it errors or truncates), not a quality/style choice.
+ *
+ * Example:
+ * ```ts
+ * AI_MAX_OUTPUT_TOKEN.cohere['command-r-08-2024'] === 4000;
+ * ```
+ *
+ * Use `getMaxOutputToken(provider, model, config.maxOutputToken)` before
+ * assigning the output token limit in provider requests.
+ */
+export const AI_MAX_OUTPUT_TOKEN: Partial<Record<AIChatProvider, Record<string, number>>> = {
+  cohere: {
+    // 4,000 is Cohere's own documented figure (confirmed via Cohere/
+    // Oracle's model docs and independently by OpenRouter) — 4096 was a
+    // plausible-looking guess, not the real number. Applies identically to
+    // both the R and R+ 08-2024 tiers.
+    'command-r-08-2024': 4000,
+    'command-r-plus-08-2024': 4000,
+  },
+  groq: {
+    // Confirmed via Groq's own model listing and independent trackers. This
+    // is a hard per-request ceiling distinct from — and unrelated to — the
+    // RPM/TPM/TPD rate limits tracked elsewhere; exceeding it errors the
+    // request outright rather than truncating.
+    'llama-3.3-70b-versatile': 8192,
+  },
+};
+
+/**
+ * Default stream models for AI providers.
+ *
+ * These model IDs are used by streaming generators when no explicit
+ * `options.models` array is provided for a provider.
+ */
+export const AI_STREAM_DEFAULT_MODEL: Record<AIChatProvider, string> = {
+  github: 'gpt-4o',
+  gemini: 'gemini-2.5-flash',
+  cohere: 'command-r-08-2024',
+  mistral: 'mistral-large-latest',
+  groq: 'llama-3.3-70b-versatile',
+  cerebras: 'gpt-oss-120b',
+  nvidia: 'meta/llama-3.3-70b-instruct',
+  openrouter: 'deepseek/deepseek-r1',
+  cloudflare: '@cf/meta/llama-3.1-8b-instruct',
+  jina: 'jina-embeddings-v5-text-small',
+  ovhcloud: 'gpt-oss-120b',
+  sambanova: 'DeepSeek-V3.2',
+  ollama: 'gpt-oss:20b',
+  modelscope: 'Qwen/Qwen3.5-27B',
+  zai: 'glm-4.7-flash',
+  siliconflow: 'Qwen/Qwen3-8B',
+  aionlabs: 'aion-2.5',
+  chutes: 'zai-org/GLM-5.1-TEE',
+  llm7: 'gpt-4o-mini',
+}
+
+/**
  * Creative story writing (large and creative models) - in fallback order.
  * Sorted strictly from highest emotional/artistic prose quality down to functional/rigid prose.
  * 

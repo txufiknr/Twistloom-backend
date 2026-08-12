@@ -1,7 +1,7 @@
 import type { AIChatProvider, AIDocument, AIJsonEvaluation, AIJsonProperty, AIPromptForJson, AIPromptOptions, AIResponse, AIModelSelection, NvidiaChatCompletionResponse, OpenRouterCreateParams, PromptWithFallbackOptions } from "../types/ai-chat.js";
 import { AI_PROVIDER_API_KEYS, getCerebrasClient, getCloudflareClient, getCohereClient, getGeminiClient, getGitHubClient, getGroqClient, getMistralClient, getOpenRouterClient } from "./ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT, EVALUATION_FALLBACK_LIMIT, EVALUATION_SCORING_OUTPUT_TOKEN, MAX_SCHEMA_LENGTH } from "../config/ai-chat.js";
-import { AI_CHAT_MODELS_EVALUATION, AI_CHAT_MODELS_WRITING, AI_MAX_PROMPT_LENGTH } from "../config/ai-clients.js";
+import { AI_CHAT_MODELS_EVALUATION, AI_CHAT_MODELS_WRITING, AI_MAX_PROMPT_LENGTH, AI_MAX_OUTPUT_TOKEN } from "../config/ai-clients.js";
 import { canUseAIToday, getRateLimiter, incrementDailyUsageCount } from './ai-limiters.js';
 import { requireEnv } from "./env.js";
 import { PROMPT_SYSTEM } from "./prompt.js";
@@ -164,6 +164,27 @@ async function promptWithFallback<T>(
 }
 
 /**
+ * Returns the effective `max_tokens` / `maxTokens` value for a provider model.
+ *
+ * Provider-specific caps in `AI_MAX_OUTPUT_TOKEN` should always be honored when
+ * building the request payload, even if the configured global `maxOutputToken`
+ * is higher.
+ *
+ * @param provider - AI provider namespace
+ * @param model - Exact model identifier
+ * @param requested - Requested output token limit from config
+ */
+export function getMaxOutputToken(
+  provider: AIChatProvider,
+  model: string,
+  requested: number
+): number {
+  const providerCaps = AI_MAX_OUTPUT_TOKEN[provider];
+  const modelCap = providerCaps?.[model];
+  return typeof modelCap === 'number' ? Math.min(requested, modelCap) : requested;
+}
+
+/**
  * Creates a prompt function for any OpenAI Chat Completions–compatible provider
  * (GitHub Models, OpenRouter, Cloudflare Workers AI, and any future provider that
  * implements the standard `/v1/chat/completions` request/response shape).
@@ -198,7 +219,7 @@ export function createOpenAICompatiblePrompt(
             { role: 'system', content: systemPromptWithDocuments },
             { role: 'user', content: prompt },
           ],
-          max_tokens: config.maxOutputToken,
+          max_tokens: getMaxOutputToken(provider, model, config.maxOutputToken),
           temperature: config.temperature,
           top_p: config.topP,
           stream: false,
@@ -307,7 +328,7 @@ export async function geminiPrompt(
       ) : null;
 
       // Penalty is not enabled for models/gemini-2.5-flash
-      const { frequencyPenalty: _fp, ...geminiConfig } = config;
+      const { frequencyPenalty: _fp, maxOutputToken, ...geminiConfig } = config;
 
       const params: GenerateContentParameters = {
         model,
@@ -315,6 +336,7 @@ export async function geminiPrompt(
         config: {
           ...geminiConfig,
           ...(outputAsJson ? { responseMimeType: 'application/json' } : {}),
+          maxOutputTokens: getMaxOutputToken('gemini', model, maxOutputToken),
           responseSchema: responseJsonSchema ? convertToGeminiSchema(responseJsonSchema, { minify: true }) : undefined,
           // responseJsonSchema,
           // Cache hit — send only the dynamic prompt
@@ -434,7 +456,7 @@ export async function groqPrompt(
           { role: 'user', content: prompt },
         ],
         model,
-        max_tokens: maxOutputToken,
+        max_tokens: getMaxOutputToken('groq', model, maxOutputToken),
         temperature,
         top_p: topP,
         stop: stopSequences,
@@ -539,7 +561,7 @@ export async function coherePrompt(
         documents: documents?.length
           ? documents.map<Cohere.V2ChatRequestDocumentsItem>(data => ({ data }))
           : undefined,
-        maxTokens: config.maxOutputToken,
+        maxTokens: getMaxOutputToken('cohere', model, config.maxOutputToken),
         temperature: config.temperature,
         p: config.topP,
         k: config.topK,
@@ -626,7 +648,7 @@ export async function cerebrasPrompt(
           { role: 'system', content: systemPromptWithDocuments },
           { role: 'user', content: prompt },
         ],
-        max_tokens: maxOutputToken,
+        max_tokens: getMaxOutputToken('cerebras', model, maxOutputToken),
         temperature,
         top_p: topP,
         stream: false,
@@ -707,7 +729,7 @@ export async function mistralPrompt(
           { role: 'system', content: systemPromptWithDocuments },
           { role: 'user', content: prompt },
         ],
-        maxTokens: maxOutputToken,
+        maxTokens: getMaxOutputToken('mistral', model, maxOutputToken),
         temperature,
         topP,
         stop: stopSequences,
@@ -803,7 +825,7 @@ export async function nvidiaPrompt(
             { role: 'system', content: systemPromptWithDocuments },
             { role: 'user', content: prompt },
           ],
-          max_tokens: maxOutputToken,
+          max_tokens: getMaxOutputToken('nvidia', model, maxOutputToken),
           temperature,
           top_p: topP,
           stop: stopSequences,

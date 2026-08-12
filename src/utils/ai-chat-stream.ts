@@ -1,7 +1,7 @@
 import type { AIChatProvider, AIDocument, AIJsonProperty, AIPromptOptions, AIStreamGenerator, PromptWithFallbackOptions, StreamUsage } from "../types/ai-chat.js";
 import { getCerebrasClient, getCloudflareClient, getCohereClient, getGeminiClient, getGitHubClient, getGroqClient, getMistralClient, getOpenRouterClient } from "./ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT, NVIDIA_REQUEST_TIMEOUT_MS } from "../config/ai-chat.js";
-import { AI_CHAT_MODELS_WRITING, AI_MAX_PROMPT_LENGTH } from "../config/ai-clients.js";
+import { AI_CHAT_MODELS_WRITING, AI_MAX_PROMPT_LENGTH, AI_STREAM_DEFAULT_MODEL } from "../config/ai-clients.js";
 import { canUseAIToday, getRateLimiter, incrementDailyUsageCount } from './ai-limiters.js';
 import { requireEnv } from "./env.js";
 import { PROMPT_SYSTEM } from "./prompt.js";
@@ -10,7 +10,7 @@ import { classifyGenAIError, getErrorMessage, isGenAIErrorRetryable } from "./er
 import { retryWithBackoff } from "./retry.js";
 import { AI_CHAT_MODEL_RETRY_COUNT } from "../config/ai-chat.js";
 import { createTextChunkEvent, createErrorEvent, createStartEvent, createEndEvent, handleBackpressure } from "./sse.js";
-import { formatDocumentsToPrompt, formatSystemPromptWithDocuments, isSchemaTooComplex, logPromptWithSeparators } from "./ai-chat.js";
+import { formatDocumentsToPrompt, formatSystemPromptWithDocuments, getMaxOutputToken, isSchemaTooComplex, logPromptWithSeparators } from "./ai-chat.js";
 import { type GenerateContentConfig, type GenerateContentParameters } from "@google/genai";
 import type { AIChatStreamProvider, AIChatStreamResult } from "../types/sse.js";
 import type { Cohere } from "cohere-ai";
@@ -402,13 +402,14 @@ function createOpenAICompatibleStreamGenerator(
     const { context, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = options;
     const systemPromptWithDocuments = formatSystemPromptWithDocuments(provider, options);
 
+    const model = options.models?.[0] || defaultModel;
     const stream = await getClient().chat.completions.create({
-      model: options.models?.[0] || defaultModel,
+      model,
       messages: [
         { role: 'system', content: systemPromptWithDocuments },
         { role: 'user', content: prompt },
       ],
-      max_tokens: config.maxOutputToken,
+      max_tokens: getMaxOutputToken(provider, model, config.maxOutputToken),
       temperature: config.temperature,
       top_p: config.topP,
       stream: true,
@@ -455,9 +456,9 @@ function createOpenAICompatibleStreamGenerator(
 /**
  * GitHub streaming generator that yields chunks
  */
-const githubStreamGenerator = createOpenAICompatibleStreamGenerator('github', getGitHubClient, 'gpt-4o');
-const openrouterStreamGenerator = createOpenAICompatibleStreamGenerator('openrouter', getOpenRouterClient, 'deepseek/deepseek-r1');
-const cloudflareStreamGenerator = createOpenAICompatibleStreamGenerator('cloudflare', getCloudflareClient, '@cf/meta/llama-3.1-8b-instruct');
+const githubStreamGenerator = createOpenAICompatibleStreamGenerator('github', getGitHubClient, AI_STREAM_DEFAULT_MODEL.github);
+const openrouterStreamGenerator = createOpenAICompatibleStreamGenerator('openrouter', getOpenRouterClient, AI_STREAM_DEFAULT_MODEL.openrouter);
+const cloudflareStreamGenerator = createOpenAICompatibleStreamGenerator('cloudflare', getCloudflareClient, AI_STREAM_DEFAULT_MODEL.cloudflare);
 
 /**
  * Gemini streaming generator that yields chunks
@@ -479,7 +480,7 @@ async function* geminiStreamGenerator(
 
   // Helper block to fulfill Gemini's minimum token requirement for explicit caching
   const formattedDocuments = formatDocumentsToPrompt(documents);
-  const model = options.models?.[0] || 'gemini-2.5-flash';
+  const model = options.models?.[0] || AI_STREAM_DEFAULT_MODEL.gemini;
   const cachedContent = cachedContentId ? await getOrCreateGeminiCache(
     cachedContentId,
     model,
@@ -489,7 +490,7 @@ async function* geminiStreamGenerator(
   ) : null;
 
   // Penalty is not enabled for models/gemini-2.5-flash
-  const { frequencyPenalty: _fp, ...geminiConfig } = config;
+  const { frequencyPenalty: _fp, maxOutputToken, ...geminiConfig } = config;
 
   const response = await getGeminiClient().models.generateContentStream({
     model,
@@ -497,6 +498,7 @@ async function* geminiStreamGenerator(
     config: {
       ...geminiConfig,
       ...(outputAsJson ? { responseMimeType: 'application/json' } : {}),
+      maxOutputTokens: getMaxOutputToken('gemini', model, maxOutputToken),
       responseSchema: responseJsonSchema ? convertToGeminiSchema(responseJsonSchema, { minify: true }) : undefined,
       // responseJsonSchema,
       // Cache hit path — send only the dynamic prompt
@@ -544,13 +546,14 @@ async function* groqStreamGenerator(
   const { maxOutputToken, temperature, topP, stopSequences, frequencyPenalty, seed } = config;
   const systemPromptWithDocuments = formatSystemPromptWithDocuments('groq', options);
 
+  const model = options.models?.[0] || AI_STREAM_DEFAULT_MODEL.groq;
   const stream = await getGroqClient().chat.completions.create({
     messages: [
       { role: 'system', content: systemPromptWithDocuments },
       { role: 'user', content: prompt },
     ],
-    model: options.models?.[0] || 'llama-3.3-70b-versatile',
-    max_tokens: maxOutputToken,
+    model,
+    max_tokens: getMaxOutputToken('groq', model, maxOutputToken),
     temperature,
     top_p: topP,
     stop: stopSequences,
@@ -587,8 +590,9 @@ async function* cohereStreamGenerator(
   options: Partial<PromptWithFallbackOptions>
 ): AsyncGenerator<string> {
   const { signal, documents, config = AI_CHAT_CONFIG_DEFAULT, context, outputAsJson, outputJsonStructure, outputJsonRequired } = options;
+  const model = options.models?.[0] || AI_STREAM_DEFAULT_MODEL.cohere;
   const stream = await getCohereClient().chatStream({
-    model: options.models?.[0] || 'command-r-plus',
+    model,
     messages: [
       { role: 'system', content: formatSystemPromptWithDocuments('cohere', options) },
       { role: 'user', content: prompt },
@@ -596,7 +600,7 @@ async function* cohereStreamGenerator(
     documents: documents && documents.length > 0
       ? documents.map<Cohere.V2ChatRequestDocumentsItem>((data: AIDocument) => ({ data }))
       : undefined,
-    maxTokens: config.maxOutputToken,
+    maxTokens: getMaxOutputToken('cohere', model, config.maxOutputToken),
     temperature: config.temperature,
     p: config.topP,
     k: config.topK,
@@ -638,13 +642,14 @@ async function* cerebrasStreamGenerator(
   const { maxOutputToken, temperature, topP, stopSequences, frequencyPenalty, seed } = config;
   const systemPromptWithDocuments = formatSystemPromptWithDocuments('cerebras', options);
 
+  const model = options.models?.[0] || AI_STREAM_DEFAULT_MODEL.cerebras;
   const stream = await getCerebrasClient().chat.completions.create({
-    model: options.models?.[0] || 'gpt-oss-120b',
+    model,
     messages: [
       { role: 'system', content: systemPromptWithDocuments },
       { role: 'user', content: prompt },
     ],
-    max_tokens: maxOutputToken,
+    max_tokens: getMaxOutputToken('cerebras', model, maxOutputToken),
     temperature,
     top_p: topP,
     stream: true,
@@ -697,13 +702,14 @@ async function* mistralStreamGenerator(
   const { maxOutputToken, temperature, topP, stopSequences, frequencyPenalty, seed } = config;
   const systemPromptWithDocuments = formatSystemPromptWithDocuments('mistral', options);
 
+  const model = options.models?.[0] || AI_STREAM_DEFAULT_MODEL.mistral;
   const stream = await getMistralClient().chat.stream({
-    model: options.models?.[0] || 'mistral-large-latest',
+    model,
     messages: [
       { role: 'system', content: systemPromptWithDocuments },
       { role: 'user', content: prompt },
     ],
-    maxTokens: maxOutputToken,
+    maxTokens: getMaxOutputToken('mistral', model, maxOutputToken),
     temperature,
     topP,
     stop: stopSequences,
@@ -756,6 +762,7 @@ async function* nvidiaStreamGenerator(
   const timeoutSignal = AbortSignal.timeout(NVIDIA_REQUEST_TIMEOUT_MS);
   const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 
+  const model = options.models?.[0] || AI_STREAM_DEFAULT_MODEL.nvidia;
   const res = await fetch(`https://integrate.api.nvidia.com/v1/chat/completions`, {
     method: 'POST',
     headers: {
@@ -763,12 +770,12 @@ async function* nvidiaStreamGenerator(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: options.models?.[0] || 'meta/llama-3.3-70b-instruct',
+      model,
       messages: [
         { role: 'system', content: systemPromptWithDocuments },
         { role: 'user', content: prompt },
       ],
-      max_tokens: config.maxOutputToken,
+      max_tokens: getMaxOutputToken('nvidia', model, config.maxOutputToken),
       temperature: config.temperature,
       top_p: config.topP,
       stop: config.stopSequences,
