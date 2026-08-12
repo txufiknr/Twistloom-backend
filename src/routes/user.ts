@@ -3331,9 +3331,43 @@ router.patch('/in-app-preferences', requireAuth, async (c: Context<AppEnv>) => {
 });
 
 /**
+ * GET /user/editor-prefs
+ *
+ * Returns the authenticated user's global Pen editor preferences
+ * (`users.editorPrefs`, roadmap §6.5 / Phase 10). Every field is present —
+ * missing/stale rows normalize to the §0.c defaults. Powers cross-device
+ * hydration so the frontend can diff dirty fields against server truth.
+ */
+router.get('/editor-prefs', requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get('userId')!;
+    const {
+      getEditorPreferences,
+      ensureDefaultEditorPreferences,
+    } = await import('../services/editor-preferences.js');
+
+    let prefs = await getEditorPreferences(userId);
+    if (!prefs) return cNotFoundError(c, 'User not found');
+
+    // Lazy-apply defaults for users onboarded before the column existed
+    await ensureDefaultEditorPreferences(userId);
+    prefs = (await getEditorPreferences(userId)) ?? prefs;
+
+    return c.json({ preferences: prefs });
+  } catch (error) {
+    console.error('[GET /user/editor-prefs] ❌', error);
+    return cApiError(c, 'Failed to fetch editor preferences', error);
+  }
+});
+
+/**
  * PUT /user/editor-prefs
  *
- * Persist the authenticated user's global Pen editor preferences.
+ * Persist the authenticated user's global Pen editor preferences (roadmap §6.5,
+ * Phase 10). Accepts a PARTIAL object — only dirty (changed) fields need to be
+ * sent; each provided field is validated and the patch is merged over the
+ * stored value, so untouched fields are never reset. Response always returns
+ * the complete, normalized preference set.
  */
 router.put('/editor-prefs', requireAuth, async (c: Context<AppEnv>) => {
   try {
@@ -3349,7 +3383,7 @@ router.put('/editor-prefs', requireAuth, async (c: Context<AppEnv>) => {
     if (!preferences) {
       return cValidationError(
         c,
-        'Provide all editor preferences: background, fontFamily, fontSize, textColor, lineHeight, contentWidth',
+        'Provide at least one editor preference field: background, fontFamily, fontSize, textColor, lineHeight, contentWidth',
       );
     }
 

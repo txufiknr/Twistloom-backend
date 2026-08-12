@@ -40,37 +40,54 @@ function isEditorLineHeight(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 1 && value <= 3;
 }
 
-export function sanitizeEditorPreferences(body: unknown): EditorPrefs | null {
+/**
+ * Validate a requested update to `users.editorPrefs`.
+ *
+ * Accepts a PARTIAL object — only the fields the caller actually changed. Every
+ * *provided* field is validated individually and must pass its own guard; a
+ * field the caller omits is left untouched ({@link updateEditorPreferences}
+ * merges the patch over the stored value, never over the defaults). Unknown
+ * keys are ignored. Returns null when the body carries no valid editor field so
+ * the route can 400 a no-op request.
+ */
+export function sanitizeEditorPreferences(body: unknown): Partial<EditorPrefs> | null {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
 
   const record = body as Record<string, unknown>;
-  const background = record.background;
-  const fontFamily = record.fontFamily;
-  const fontSize = record.fontSize;
-  const textColor = record.textColor;
-  const lineHeight = record.lineHeight;
-  const contentWidth = record.contentWidth;
+  const patch: Partial<EditorPrefs> = {};
 
-  if (
-    !isEditorBackground(background) ||
-    !isEditorFontFamily(fontFamily) ||
-    !isEditorFontSize(fontSize) ||
-    typeof textColor !== 'string' ||
-    textColor.trim().length === 0 ||
-    !isEditorLineHeight(lineHeight) ||
-    !isEditorContentWidth(contentWidth)
-  ) {
-    return null;
+  if (record.background !== undefined) {
+    if (!isEditorBackground(record.background)) return null;
+    patch.background = record.background;
   }
 
-  return {
-    background,
-    fontFamily,
-    fontSize,
-    textColor: textColor.trim(),
-    lineHeight,
-    contentWidth,
-  };
+  if (record.fontFamily !== undefined) {
+    if (!isEditorFontFamily(record.fontFamily)) return null;
+    patch.fontFamily = record.fontFamily;
+  }
+
+  if (record.fontSize !== undefined) {
+    if (!isEditorFontSize(record.fontSize)) return null;
+    patch.fontSize = record.fontSize;
+  }
+
+  if (record.textColor !== undefined) {
+    if (typeof record.textColor !== 'string' || record.textColor.trim().length === 0) return null;
+    patch.textColor = record.textColor.trim();
+  }
+
+  if (record.lineHeight !== undefined) {
+    if (!isEditorLineHeight(record.lineHeight)) return null;
+    patch.lineHeight = record.lineHeight;
+  }
+
+  if (record.contentWidth !== undefined) {
+    if (!isEditorContentWidth(record.contentWidth)) return null;
+    patch.contentWidth = record.contentWidth;
+  }
+
+  if (Object.keys(patch).length === 0) return null;
+  return patch;
 }
 
 export async function getEditorPreferences(userId: string): Promise<EditorPrefs | null> {
@@ -102,13 +119,27 @@ export async function ensureDefaultEditorPreferences(userId: string): Promise<vo
 
 export async function updateEditorPreferences(
   userId: string,
-  preferences: EditorPrefs,
+  patch: Partial<EditorPrefs>,
 ): Promise<EditorPrefs | null> {
-  const [row] = await dbWrite
+  // Read-modify-write: merge the patch over the CURRENT stored value, not the
+  // defaults. A dirty-only update must never reset a field the client didn't
+  // touch (e.g. sepia saved on another device) back to its default — the
+  // caller's partial object is not a full picture of the user's preferences.
+  const [row] = await dbRead
+    .select({ editorPrefs: users.editorPrefs })
+    .from(users)
+    .where(eq(users.userId, userId))
+    .limit(1);
+
+  if (!row) return null;
+
+  const merged = normalizeEditorPreferences({ ...row.editorPrefs, ...patch });
+
+  const [updated] = await dbWrite
     .update(users)
-    .set({ editorPrefs: normalizeEditorPreferences(preferences), updatedAt: new Date() })
+    .set({ editorPrefs: merged, updatedAt: new Date() })
     .where(eq(users.userId, userId))
     .returning({ editorPrefs: users.editorPrefs });
 
-  return row?.editorPrefs ? normalizeEditorPreferences(row.editorPrefs) : null;
+  return updated?.editorPrefs ? normalizeEditorPreferences(updated.editorPrefs) : null;
 }
