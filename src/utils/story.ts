@@ -805,6 +805,17 @@ export async function advanceStoryState(state: StoryState, actionedPage: Pick<Ca
   // Update advanced ending systems (profile shifts, fake endings)
   updateAdvancedEndingSystems(updatedState);
 
+  // Recompute health status after injury decay and psychological updates so the
+  // advanced state (used for the next page's generation prompt AND as the base
+  // for applyStateDelta) reflects the decayed injuries and current mental inputs.
+  // Previously decayInjuries() was never followed by a recalculation, leaving
+  // healthStatus stale (often 100%) until the next AI-authored injury delta.
+  updatedState.healthStatus = calculateHealthStatus(updatedState.injuries ?? [], {
+    traumaTagCount:  updatedState.traumaTags.length,
+    memoryIntegrity: updatedState.memoryIntegrity,
+    fearLevel:       updatedState.flags.fear,
+  });
+
   return updatedState;
 }
 
