@@ -8,7 +8,6 @@ import { Mistral } from "@mistralai/mistralai";
 import type { AIChatProvider } from "../types/ai-chat.js";
 
 /** AI client singleton instances to reuse connections across requests */
-let githubClient: OpenAI | null = null;
 let geminiClient: GoogleGenAI | null = null;
 let cohereClient: CohereClientV2 | null = null;
 let mistralClient: Mistral | null = null;
@@ -19,7 +18,6 @@ let cloudflareClient: OpenAI | null = null;
 
 /** Mapping of AI providers to their API key environment variable names */
 export const AI_PROVIDER_API_KEYS: Record<AIChatProvider, string> = {
-  github: 'GITHUB_API_KEY',
   gemini: 'GEMINI_API_KEY',
   cohere: 'COHERE_API_KEY',
   mistral: 'MISTRAL_API_KEY',
@@ -39,17 +37,6 @@ export const AI_PROVIDER_API_KEYS: Record<AIChatProvider, string> = {
   chutes: 'CHUTES_API_KEY',
   llm7: 'LLM7_API_KEY',
 };
-
-// GitHub client singleton
-export function getGitHubClient(): OpenAI {
-  if (githubClient) return githubClient;
-
-  githubClient = new OpenAI({
-    apiKey: requireEnv('GITHUB_API_KEY'),
-    baseURL: "https://models.github.ai/inference",
-  });
-  return githubClient;
-}
 
 // Gemini client singleton
 export function getGeminiClient(): GoogleGenAI {
@@ -135,7 +122,6 @@ export function getCloudflareClient(): OpenAI {
  * monitor pings every 5 minutes, keeping the function warm.
  */
 export function warmAIProviders(): void {
-  getGitHubClient();
   getGeminiClient();
   getMistralClient();
   getGroqClient();

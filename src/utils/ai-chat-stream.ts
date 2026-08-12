@@ -1,5 +1,5 @@
 import type { AIChatProvider, AIDocument, AIJsonProperty, AIPromptOptions, AIStreamGenerator, PromptWithFallbackOptions, StreamUsage } from "../types/ai-chat.js";
-import { getCerebrasClient, getCloudflareClient, getCohereClient, getGeminiClient, getGitHubClient, getGroqClient, getMistralClient, getOpenRouterClient } from "./ai-clients.js";
+import { getCerebrasClient, getCloudflareClient, getCohereClient, getGeminiClient, getGroqClient, getMistralClient, getOpenRouterClient } from "./ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT, NVIDIA_REQUEST_TIMEOUT_MS } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_WRITING, AI_MAX_PROMPT_LENGTH, AI_STREAM_DEFAULT_MODEL } from "../config/ai-clients.js";
 import { canUseAIToday, getRateLimiter, incrementDailyUsageCount } from './ai-limiters.js';
@@ -204,7 +204,6 @@ export async function aiStreamSSE(
                   let gen: AIStreamGenerator;
 
                   switch (provider) {
-                    case 'github': gen = githubStreamGenerator(prompt, opts); break;
                     case 'gemini': gen = geminiStreamGenerator(prompt, opts); break;
                     case 'cohere': gen = cohereStreamGenerator(prompt, opts); break;
                     case 'mistral': gen = mistralStreamGenerator(prompt, opts); break;
@@ -456,7 +455,6 @@ function createOpenAICompatibleStreamGenerator(
 /**
  * GitHub streaming generator that yields chunks
  */
-const githubStreamGenerator = createOpenAICompatibleStreamGenerator('github', getGitHubClient, AI_STREAM_DEFAULT_MODEL.github);
 const openrouterStreamGenerator = createOpenAICompatibleStreamGenerator('openrouter', getOpenRouterClient, AI_STREAM_DEFAULT_MODEL.openrouter);
 const cloudflareStreamGenerator = createOpenAICompatibleStreamGenerator('cloudflare', getCloudflareClient, AI_STREAM_DEFAULT_MODEL.cloudflare);
 

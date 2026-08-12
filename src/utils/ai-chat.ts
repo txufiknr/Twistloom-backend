@@ -1,5 +1,5 @@
 import type { AIChatProvider, AIDocument, AIJsonEvaluation, AIJsonProperty, AIPromptForJson, AIPromptOptions, AIResponse, AIModelSelection, NvidiaChatCompletionResponse, OpenRouterCreateParams, PromptWithFallbackOptions } from "../types/ai-chat.js";
-import { AI_PROVIDER_API_KEYS, getCerebrasClient, getCloudflareClient, getCohereClient, getGeminiClient, getGitHubClient, getGroqClient, getMistralClient, getOpenRouterClient } from "./ai-clients.js";
+import { AI_PROVIDER_API_KEYS, getCerebrasClient, getCloudflareClient, getCohereClient, getGeminiClient, getGroqClient, getMistralClient, getOpenRouterClient } from "./ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT, EVALUATION_FALLBACK_LIMIT, EVALUATION_SCORING_OUTPUT_TOKEN, MAX_SCHEMA_LENGTH } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_EVALUATION, AI_CHAT_MODELS_WRITING, AI_MAX_PROMPT_LENGTH, AI_MAX_OUTPUT_TOKEN } from "../config/ai-clients.js";
 import { canUseAIToday, getRateLimiter, incrementDailyUsageCount } from './ai-limiters.js';
@@ -283,7 +283,6 @@ export function createOpenAICompatiblePrompt(
  * 
  * @see structured JSON guide - https://developers.openai.com/api/docs/guides/structured-outputs
  */
-export const githubPrompt = createOpenAICompatiblePrompt('github', getGitHubClient);
 export const openrouterPrompt = createOpenAICompatiblePrompt('openrouter', getOpenRouterClient);
 export const cloudflarePrompt = createOpenAICompatiblePrompt('cloudflare', getCloudflareClient);
 
@@ -1032,7 +1031,6 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
 
       // Provider-agnostic stack
       switch (provider) {
-        case 'github':     result = await githubPrompt(prompt, opts); break;         // ✅ JSON schema | ☑️ document via system prompt
         case 'gemini':     result = await geminiPrompt(prompt, opts); break;         // ✅ JSON schema | ☑️ document via system prompt
         case 'cohere':     result = await coherePrompt(prompt, opts); break;         // ✅ JSON schema | ✅ document via RAG
         case 'mistral':    result = await mistralPrompt(prompt, opts); break;       // ✅ JSON schema | ☑️ document via system prompt

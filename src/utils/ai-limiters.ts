@@ -23,7 +23,6 @@ const getRateLimitConfig = (provider: AIChatProvider) => {
  * Rate limit configuration for each AI provider with safety buffer applied
  */
 const AI_RATE_LIMITS_WITH_BUFFER: Record<AIChatProvider, { rpm: number; delayMs: number }> = {
-  github: getRateLimitConfig('github'),
   gemini: getRateLimitConfig('gemini'),
   cohere: getRateLimitConfig('cohere'),
   groq: getRateLimitConfig('groq'),
@@ -133,7 +132,6 @@ export class RateLimiter {
 }
 
 // Singleton rate limiter instances - created only when first accessed
-let githubLimiter: RateLimiter | null = null;
 let geminiLimiter: RateLimiter | null = null;
 let groqLimiter: RateLimiter | null = null;
 let cohereLimiter: RateLimiter | null = null;
@@ -143,14 +141,6 @@ let nvidiaLimiter: RateLimiter | null = null;
 let openrouterLimiter: RateLimiter | null = null;
 let cloudflareLimiter: RateLimiter | null = null;
 let jinaLimiter: RateLimiter | null = null;
-
-/**
- * Get GitHub Models rate limiter (singleton)
- * @returns Rate limiter instance for GitHub Models
- */
-export function getGitHubLimiter(): RateLimiter {
-  return githubLimiter || (githubLimiter = new RateLimiter('github'));
-}
 
 /**
  * Get Gemini rate limiter (singleton)
@@ -241,7 +231,6 @@ export function getJinaLimiter(): RateLimiter {
  */
 export function getRateLimiter(provider: AIChatProvider): RateLimiter {
   switch (provider) {
-    case 'github': return getGitHubLimiter();
     case 'gemini': return getGeminiLimiter();
     case 'groq': return getGroqLimiter();
     case 'cohere': return getCohereLimiter();

@@ -60,11 +60,6 @@ import type { AIChatProvider, AIModelSelection, AIProviderRateLimit } from "../t
  * @see https://docs.llm7.io/limits
  */
 export const AI_RATE_LIMITS: Record<AIChatProvider, AIProviderRateLimit> = {
-  // High tier (gpt-4o): 10 RPM / 50 RPD. Low tier (gpt-4o-mini): 10 RPM / 150 RPD.
-  // Using gpt-4o (high tier) ceiling since it's tried first; mini's higher RPD
-  // doesn't matter because the daily gate fires per-provider, not per-model.
-  github:     { rpm: 10,  rpd: 50 }, // before: { rpm: 15, rpd: 150 },
-
   /**
    * Updated Google AI Studio Text Chat Model (Post-December 2025 Cuts)
    * Ranked from Best Story Writing Capabilities to Lowest
@@ -299,7 +294,6 @@ export const AI_MAX_PROMPT_LENGTH: Record<AIChatProvider, number> = {
   cohere:     500_000,   // 128K tokens - Good for external lore fetching.
   nvidia:     480_000,   // 128K tokens - Native context.
   cerebras:   32_000,    // 8K tokens   - FREE TIER CAP. Do not exceed ~32,000 chars.
-  github:     30_000,    // 8K tokens   - Standard GPT-4o free tier context limit.
   groq:       24_000,    // 6K tokens   - FREE TIER TPM CAP. Exceeding this triggers a 429.
 
   // If you pin a large-context free model (e.g. meta-llama/llama-4-maverick
@@ -396,7 +390,6 @@ export const AI_MAX_OUTPUT_TOKEN: Partial<Record<AIChatProvider, Record<string, 
  * `options.models` array is provided for a provider.
  */
 export const AI_STREAM_DEFAULT_MODEL: Record<AIChatProvider, string> = {
-  github: 'gpt-4o',
   gemini: 'gemini-2.5-flash',
   cohere: 'command-r-08-2024',
   mistral: 'mistral-large-latest',
@@ -575,7 +568,6 @@ export const AI_CHAT_MODELS_FAST: AIModelSelection = {
  * High-speed, lightweight models optimized for low-latency tasks.
  */
 export const AI_CHAT_MODELS_IDEA: AIModelSelection = {
-  github: ['openai/gpt-4o', 'openai/gpt-4o-mini'],
   gemini: [
     'gemini-3-flash-preview',
     'gemini-2.5-flash',

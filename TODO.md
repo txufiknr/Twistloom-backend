@@ -28,9 +28,11 @@
 [ ] learn about Interactions API (https://ai.google.dev/gemini-api/docs/migrate-to-interactions)
 [ ] ensure `PUT /api/user/editor-prefs` API route optimal en-to-end based on `AI_CO_WRITING_PEN_ROADMAP.md` and frontend's `src\lib\services\users-api.ts`, shouldn't we only send dirty (only changed) fields instead of all fields?
 [x] cap max output token if exceeds `AI_MAX_OUTPUT_TOKEN`
-[ ] remove 'github' from `AIChatProvider`
 [ ] lengkapi API keys llm provider baru
 [ ] can you also add ai-cost for these gemini models: `gemini-3.6-flash`, `gemini-3.0-flash`?
+[ ] claude: review for ai-chat & ai-chat-stream DRY potential?
+[ ] claude: should we using multi-turn request instead of big array json for generating `generatedPages` (alternative fates) in 'multiverse' book mode?
+[ ] please check `validateGeneratedPage`, I don't want to ditch AI generation result merely because it provides multiple actions for 'novel' book mode (should just strip it sliently), is it already safe & handled as intended?
 
 [ ] setup ovh cloud api key:
 https://docs.ovhcloud.com/en/guides/public-cloud/ai-machine-learning/ai-endpoints-getting-started

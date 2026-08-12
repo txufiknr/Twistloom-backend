@@ -41,7 +41,6 @@ import { dbRead } from "../db/client.js";
  * ```
  */
 const AI_COST_PER_MILLION_PREVIEW: Record<AIChatProvider, { input: number; output: number }> = {
-  github:    { input: 0.15, output: 0.60 }, // gpt-4o-mini — confirmed current, unchanged.
   gemini:    { input: 0.30, output: 2.50 }, // gemini-2.5-flash — confirmed directly against ai.google.dev/gemini-api/docs/pricing (Standard tier). Unchanged; a third-party tracker briefly suggested $0.15/$1.25, but that's Gemini's *Batch*-tier rate, not Standard — don't let that resurface here.
   cohere:    { input: 0.15, output: 0.60 }, // FIXED (was 0.20/1.00, labeled "estimate"). command-r-08-2024's actual published rate, confirmed by two independent trackers.
   mistral:   { input: 1.00, output: 2.00 }, // mistral-medium-latest — UNVERIFIED this pass. The one 2026-relevant data point found (Mistral Medium 3's May 2025 launch price) was $0.40/$2.00, notably lower on input than this entry. Could mean this is stale, or that "latest" now points to a costlier successor tier — couldn't confirm either way. Check mistral.ai/pricing directly before trusting this number for a real budget.

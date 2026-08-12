@@ -9,8 +9,6 @@ import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/ch
  * Only Cohere V2 API has Built-in RAG Support.
  */
 export type AIChatProvider =
-  // @see https://docs.github.com/en/rest/models/inference
-  | 'github'
   // @see https://ai.google.dev/gemini-api/docs/file-search
   // @see https://ai.google.dev/api/generate-content
   | 'gemini'
