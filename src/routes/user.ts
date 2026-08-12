@@ -293,6 +293,7 @@ router.get('/export', requireAuth, async (c: Context<AppEnv>) => {
           source: users.source,
           preferredLocale: users.preferredLocale,
           emailPreferences: users.emailPreferences,
+          inAppPreferences: users.inAppPreferences,
           referralRewardedAt: users.referralRewardedAt,
           vipExpiresAt: users.vipExpiresAt,
           vipTrialUsedAt: users.vipTrialUsedAt,
@@ -456,6 +457,8 @@ router.post('/', requireAuth, async (c: Context<AppEnv>) => {
     // Default engagement prefs (opt-out) + optional preferredLocale from client UI cookie
     const { ensureDefaultEmailPreferences, updatePreferredLocale } = await import('../services/email-preferences.js');
     await ensureDefaultEmailPreferences(userId);
+    const { ensureDefaultInAppPreferences } = await import('../services/in-app-preferences.js');
+    await ensureDefaultInAppPreferences(userId);
 
     const { isEmailLocale } = await import('../types/email-locale.js');
     if (body.preferredLocale && isEmailLocale(body.preferredLocale)) {
@@ -3260,6 +3263,70 @@ router.patch('/email-preferences', requireAuth, async (c: Context<AppEnv>) => {
   } catch (error) {
     console.error('[PATCH /user/email-preferences] ❌', error);
     return cApiError(c, 'Failed to update email preferences', error);
+  }
+});
+
+// ===== IN-APP PREFERENCES =====
+
+/**
+ * GET /user/in-app-preferences
+ *
+ * Returns the authenticated user's in-app notification flags (comments, likes,
+ * storyPublished, aiCompleted). Each key is opt-out and defaults to enabled.
+ */
+router.get('/in-app-preferences', requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get('userId')!;
+    const {
+      getInAppPreferences,
+      ensureDefaultInAppPreferences,
+    } = await import('../services/in-app-preferences.js');
+
+    let prefs = await getInAppPreferences(userId);
+    if (!prefs) return cNotFoundError(c, 'User not found');
+
+    // Lazy-apply defaults for users onboarded before prefs existed
+    await ensureDefaultInAppPreferences(userId);
+    prefs = (await getInAppPreferences(userId)) ?? prefs;
+
+    return c.json({ preferences: prefs });
+  } catch (error) {
+    console.error('[GET /user/in-app-preferences] ❌', error);
+    return cApiError(c, 'Failed to fetch in-app preferences', error);
+  }
+});
+
+/**
+ * PATCH /user/in-app-preferences
+ *
+ * Partial update of in-app notification flags. Unknown keys rejected.
+ */
+router.patch('/in-app-preferences', requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get('userId')!;
+    const body = c.get('body');
+    const {
+      sanitizeInAppPreferencesUpdate,
+      updateInAppPreferences,
+      ensureDefaultInAppPreferences,
+    } = await import('../services/in-app-preferences.js');
+
+    const patch = sanitizeInAppPreferencesUpdate(body);
+    if (!patch) {
+      return cValidationError(
+        c,
+        'Provide at least one field: comments, likes, storyPublished, aiCompleted',
+      );
+    }
+
+    await ensureDefaultInAppPreferences(userId);
+    const prefs = await updateInAppPreferences(userId, patch);
+    if (!prefs) return cNotFoundError(c, 'User not found');
+
+    return c.json({ preferences: prefs });
+  } catch (error) {
+    console.error('[PATCH /user/in-app-preferences] ❌', error);
+    return cApiError(c, 'Failed to update in-app preferences', error);
   }
 });
 

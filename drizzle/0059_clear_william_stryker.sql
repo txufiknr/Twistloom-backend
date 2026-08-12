@@ -1,0 +1,1 @@
+ALTER TABLE "users" ADD COLUMN "in_app_preferences" jsonb;

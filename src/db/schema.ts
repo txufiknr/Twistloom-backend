@@ -306,6 +306,17 @@ export const users = pgTable(
       emailLocale?: "en" | "id" | null;
     }>(),
     /**
+     * Optional in-app notification prefs (comments, likes, storyPublished,
+     * aiCompleted). Null until onboarding applies defaults — see
+     * DEFAULT_IN_APP_PREFERENCES. Mirrors the email_preferences pattern.
+     */
+    inAppPreferences: jsonb("in_app_preferences").$type<{
+      comments: boolean;
+      likes: boolean;
+      storyPublished: boolean;
+      aiCompleted: boolean;
+    }>(),
+    /**
      * Author's persisted Pen editor preferences (§6.5, Phase 0.c). Global per
      * user in v1 — no per-book override column. Default must match
      * `DEFAULT_EDITOR_PREFS` in `src/types/pen.ts`.
