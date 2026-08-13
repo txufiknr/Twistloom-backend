@@ -37,18 +37,12 @@
 [x] claude: review & refine TODO-ai-chat-enhancements.md
 [x] claude: review & refine TODO-hybrid-diffusion-llm.md
 [x] claude: consolidate `TWISTLOOM_MCP_AGENTIC_WORKFLOW_CHATGPT.md` and `TWISTLOOM_MCP_ROADMAP.md`
-[ ] claude: review for ai-chat & ai-chat-stream DRY potential?
+
+---
+
+---
+
 [ ] claude: migrate "Minimal local shape" to use canonical types from `@google/genai` (D:\Projects\Twistloom\Twistloom-backend\node_modules\@google\genai\dist\genai.d.ts)
-[ ] create new comprehensive up-to-date LLM_ORCHESTRATION_ARCHITECTURE.md consolidated from:
-  - docs\roadmap\AI_ORCHESTRATION_ROADMAP.md
-  - docs\roadmap\LLM_OPTIMIZATION_PATCHES.md
-  - docs\roadmap\LLM_OPTIMIZATION_ROADMAP.md
-  - docs\roadmap\AI_DIFFUSION_TOKEN_SAVING_EXECUTION_ROADMAP.md
-  - src\config\ai-clients.ts
-  - src\config\ai-chat.ts
-  - src\utils\ai-chat.ts
-  - src\utils\ai-chat-stream.ts
-  - src\utils\ai-limiters.ts
 
 [ ] docs\roadmap\TWISTLOOM_AGENT_MCP_ROADMAP.md
 [ ] docs\roadmap\TWISTLOOM_AI_DRY_OPPORTUNITIES.md

@@ -2088,10 +2088,29 @@ router.get("/:id/similar", optionalAuth, async (c) => {
     // Resolve book by identifier (slug first, then UUID)
     const book = await resolveBook(bookId);
     if (!book) return cNotFoundError(c, "Book not found");
+
     const targetKeywords = book.keywords;
 
+    // Early return if targetKeywords is null, undefined, or empty.
+    // This saves an unnecessary DB call and prevents Drizzle's arrayOverlaps error.
+    if (!targetKeywords || !Array.isArray(targetKeywords) || targetKeywords.length === 0) {
+      return c.json({
+        similarBooks: [],
+        targetBook: {
+          id: book.id,
+          title: book.title,
+          keywords: book.keywords || [],
+        },
+      });
+    }
+
     // Get similar books with enriched data
-    const similarBooksSelect = getSimilarBookSelect(targetKeywords, currentUserId, c.get("headerLanguage"));
+    const similarBooksSelect = getSimilarBookSelect(
+      targetKeywords,
+      currentUserId,
+      c.get("headerLanguage")
+    );
+
     const similarBooks = await dbRead
       .select(similarBooksSelect)
       .from(books)
@@ -2103,8 +2122,7 @@ router.get("/:id/similar", optionalAuth, async (c) => {
           ne(books.id, book.id),
           // Only include active books
           eq(books.status, 'active'),
-          // Avoid scanning unrelated books entirely (required)
-          // sql`${books.keywords} && ${keywordsToTextArray(targetKeywords)}`
+          // Overlap check (safe now that targetKeywords is guaranteed to have >= 1 item)
           arrayOverlaps(books.keywords, targetKeywords)
         )
       )
