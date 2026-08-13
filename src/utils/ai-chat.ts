@@ -1228,15 +1228,16 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
 
       // Provider-agnostic stack
       switch (provider) {
-        case 'gemini':     result = await geminiPrompt(prompt, opts); break;         // ✅ JSON schema | ☑️ document via system prompt
-        case 'cohere':     result = await coherePrompt(prompt, opts); break;         // ✅ JSON schema | ✅ document via RAG
-        case 'mistral':    result = await mistralPrompt(prompt, opts); break;       // ✅ JSON schema | ☑️ document via system prompt
-        case 'groq':       result = await groqPrompt(prompt, opts); break;             // ✅ JSON schema | ☑️ document via system prompt
-        case 'cerebras':   result = await cerebrasPrompt(prompt, opts); break;     // ✅ JSON schema | ☑️ document via system prompt
-        case 'nvidia':     result = await nvidiaPrompt(prompt, opts); break;         // ☑️ JSON via prompt instructions | ☑️ document via system prompt
+        case 'gemini':     result = await geminiPrompt(prompt, opts); break;     // ✅ JSON schema | ☑️ document via system prompt
+        case 'cohere':     result = await coherePrompt(prompt, opts); break;     // ✅ JSON schema | ✅ document via RAG
+        case 'mistral':    result = await mistralPrompt(prompt, opts); break;    // ✅ JSON schema | ☑️ document via system prompt
+        case 'groq':       result = await groqPrompt(prompt, opts); break;       // ✅ JSON schema | ☑️ document via system prompt
+        case 'cerebras':   result = await cerebrasPrompt(prompt, opts); break;   // ✅ JSON schema | ☑️ document via system prompt
+        case 'nvidia':     result = await nvidiaPrompt(prompt, opts); break;     // ☑️ JSON via prompt instructions | ☑️ document via system prompt
         case 'openrouter': result = await openrouterPrompt(prompt, opts); break; // Same as github
         case 'cloudflare': result = await cloudflarePrompt(prompt, opts); break; // Same as github
-        case 'inception':  result = await inceptionPrompt(prompt, opts); break; // Diffusion LLM — strict json_schema may not be honored; trial measures it
+        case 'inception':  result = await inceptionPrompt(prompt, opts); break;  // Diffusion LLM — strict json_schema may not be honored; trial measures it
+        // TODO: wire new providers: ovhcloud, sambanova, ollama, modelscope, zai, siliconflow, aionlabs, chutes, llm7
       }
     } catch (error) {
       console.log(`[${provider}] ⚠️ Provider failed:`, error);

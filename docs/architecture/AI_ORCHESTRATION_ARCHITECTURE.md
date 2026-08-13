@@ -652,7 +652,7 @@ flowchart TD
 | LLM-OPT Phase 5 — parallel candidate generation | `📋` not started | ⏳ Still sequential per action (see §17) |
 | LLM-OPT Phase 6 — provider racing (`Promise.any`) | `📋` not started | ⏳ Not implemented |
 | LLM-OPT Phase 7 — evaluator model routing | `🔧` composition unknown | ✅ `AI_CHAT_MODELS_EVALUATION` is a distinct pool with `useStringEvaluatorOutput` auto-resolution |
-| PATCH P6 — character relevance filter | `📋` | ❌ Explicitly dropped (safe sort-by-recency reasoning in LLM-OPT Phase 2) |
+| PATCH P6 — character relevance filter | `📋` | ⏩ Explicitly dropped (safe sort-by-recency reasoning in LLM-OPT Phase 2) |
 | Token-saving Step 1 — Mistral `promptCacheKey` | 📋 | ✅ Shipped (mirrors Gemini `cachedContentId`) |
 | Token-saving Steps 3–5 — adherence counters + diffusion harness + `inception` wiring | 📋 | ✅ Shipped; Step-6 trial pending a live key |
 

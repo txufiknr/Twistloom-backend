@@ -30,10 +30,7 @@
  */
 import { aiPrompt, createAIOptionsWithSchema } from "../src/utils/ai-chat.js";
 import { getParseAdherenceStats, parseAISafely, resetParseAdherenceStats } from "../src/utils/ai-parser.js";
-import {
-  STORY_GENERATION_REQUIRED_FIELDS,
-  STORY_GENERATION_SCHEMA_DEFINITION,
-} from "../src/schema/story.js";
+import { STORY_GENERATION_REQUIRED_FIELDS, STORY_GENERATION_SCHEMA_DEFINITION } from "../src/schema/story.js";
 import { AI_CHAT_MODELS_DIFFUSION } from "../src/config/ai-clients.js";
 import { AI_PROVIDER_API_KEYS } from "../src/utils/ai-clients.js";
 import type { AIModelSelection, AIChatProvider } from "../src/types/ai-chat.js";

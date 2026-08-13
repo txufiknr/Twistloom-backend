@@ -30,6 +30,7 @@
 [ ] lengkapi API keys llm provider baru
 [ ] can you also add ai-cost for these gemini models: `gemini-3.6-flash`?
 [ ] please check `validateGeneratedPage`, I don't want to ditch AI generation result merely because it provides multiple actions for 'novel' book mode (should just strip it sliently), is it already safe & handled as intended?
+[ ] persistPageWithState/insertStoryPage: cleanup “[dialogue]” ([actionType]) from page.text (sanitize) before insert
 [ ] claude: should we using multi-turn request instead of big array json for generating `generatedPages` (alternative fates) in 'multiverse' book mode?
 [x] claude: review & refine TODO-gemini-interactions-api.md
 [x] claude: review & refine TODO-save-prompt-token.md
@@ -51,7 +52,9 @@
 
 [ ] docs\roadmap\TWISTLOOM_AGENT_MCP_ROADMAP.md
 [ ] docs\roadmap\TWISTLOOM_AI_DRY_OPPORTUNITIES.md
-[ ] implement: docs\roadmap\AI_DIFFUSION_TOKEN_SAVING_EXECUTION_ROADMAP.md
+[ ] promote inception mercury: docs\roadmap\AI_DIFFUSION_TOKEN_SAVING_EXECUTION_ROADMAP.md
+[ ] bun tests/test-diffusion-adherence.ts
+
 [ ] register & otp sms: https://www.modelscope.cn/register
 [ ] setup ovh cloud api key:
 https://docs.ovhcloud.com/en/guides/public-cloud/ai-machine-learning/ai-endpoints-getting-started

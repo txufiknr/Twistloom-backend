@@ -213,6 +213,7 @@ export async function aiStreamSSE(
                     case 'openrouter': gen = openrouterStreamGenerator(prompt, opts); break;
                     case 'cloudflare': gen = cloudflareStreamGenerator(prompt, opts); break;
                     case 'inception': gen = inceptionStreamGenerator(prompt, opts); break;
+                    // TODO: wire new providers: ovhcloud, sambanova, ollama, modelscope, zai, siliconflow, aionlabs, chutes, llm7
                     default: throw new Error(`Unknown streaming provider: ${provider}`);
                   }
 

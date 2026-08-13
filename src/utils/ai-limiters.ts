@@ -251,6 +251,7 @@ export function getRateLimiter(provider: AIChatProvider): RateLimiter {
     case 'cloudflare': return getCloudflareLimiter();
     case 'jina': return getJinaLimiter();
     case 'inception': return getInceptionLimiter();
+    // TODO: wire new providers: ovhcloud, sambanova, ollama, modelscope, zai, siliconflow, aionlabs, chutes, llm7
     default: throw new Error(`No rate limiter found for provider: ${provider}`);
   }
 }
