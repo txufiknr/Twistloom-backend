@@ -233,6 +233,13 @@ export const AI_RATE_LIMITS: Record<AIChatProvider, AIProviderRateLimit> = {
   // absolute last resort in the waterfall below, not a rung you'd expect
   // to hit often.
   llm7:       { rpm: 60 },
+
+  // Inception Labs Mercury (diffusion LLM). No hard published ceiling found
+  // for the platform API — 60 RPM is a conservative placeholder pending the
+  // Step-6 trial, same stance as the other "estimate" entries in this file.
+  // Pricing is also unconfirmed while Inception runs its API-credits burn
+  // campaign — see AI_MODEL_COST_OVERRIDES for the $0 placeholder.
+  inception:  { rpm: 60 },
 };
 
 /**
@@ -340,6 +347,11 @@ export const AI_MAX_PROMPT_LENGTH: Record<AIChatProvider, number> = {
   // value assumes small IDEA/THEME-scale prompts, matching where
   // AI_CHAT_MODELS_IDEA below actually uses this provider.
   aionlabs:   40_000,
+
+  // Inception Labs Mercury (diffusion LLM) — placeholder pending the Step-6
+  // trial; matches the conservative 120K figure used for the restricted
+  // free-tier models above. Revision tracked in the diffusion roadmap.
+  inception:  120_000,
 };
 
 /**
@@ -408,6 +420,7 @@ export const AI_STREAM_DEFAULT_MODEL: Record<AIChatProvider, string> = {
   aionlabs: 'aion-2.5',
   chutes: 'zai-org/GLM-5.1-TEE',
   llm7: 'gpt-4o-mini',
+  inception: 'mercury-coder-small',
 }
 
 /**
@@ -615,6 +628,23 @@ export const AI_CHAT_MODELS_IDEA: AIModelSelection = {
   ],
   siliconflow: [
     'Qwen/Qwen3-8B',
+  ],
+};
+
+/**
+ * Diffusion LLM story continuation — Inception Labs Mercury (single-shot).
+ *
+ * This is the v1 target of docs/roadmap/AI_DIFFUSION_TOKEN_SAVING_EXECUTION_ROADMAP:
+ * diffusion decoders are roughly an order of magnitude cheaper per token than
+ * autoregressive decoders. Deliberately NOT merged into AI_CHAT_MODELS_WRITING —
+ * it stays "experimental" until the Step-6 adherence/continuity trial confirms
+ * mercury-coder-small preserves story-state continuity, because diffusion
+ * models have no prior page text to "attend to" the way autoregressive decoders
+ * do and are the most likely provider to forget the story state mid-run.
+ */
+export const AI_CHAT_MODELS_DIFFUSION: AIModelSelection = {
+  inception: [
+    'mercury-coder-small',
   ],
 };
 

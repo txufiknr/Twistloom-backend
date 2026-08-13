@@ -1,5 +1,5 @@
 import type { AIChatProvider, AIDocument, AIJsonEvaluation, AIJsonProperty, AIPromptForJson, AIPromptOptions, AIResponse, AIModelSelection, NvidiaChatCompletionResponse, OpenRouterCreateParams, PromptWithFallbackOptions } from "../types/ai-chat.js";
-import { AI_PROVIDER_API_KEYS, getCerebrasClient, getCloudflareClient, getCohereClient, getGeminiClient, getGroqClient, getMistralClient, getOpenRouterClient } from "./ai-clients.js";
+import { AI_PROVIDER_API_KEYS, getCerebrasClient, getCloudflareClient, getCohereClient, getGeminiClient, getGroqClient, getInceptionClient, getMistralClient, getOpenRouterClient } from "./ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT, EVALUATION_FALLBACK_LIMIT, EVALUATION_SCORING_OUTPUT_TOKEN, MAX_SCHEMA_LENGTH } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_EVALUATION, AI_CHAT_MODELS_WRITING, AI_MAX_PROMPT_LENGTH, AI_MAX_OUTPUT_TOKEN } from "../config/ai-clients.js";
 import { canUseAIToday, getRateLimiter, incrementDailyUsageCount } from './ai-limiters.js';
@@ -285,6 +285,7 @@ export function createOpenAICompatiblePrompt(
  */
 export const openrouterPrompt = createOpenAICompatiblePrompt('openrouter', getOpenRouterClient);
 export const cloudflarePrompt = createOpenAICompatiblePrompt('cloudflare', getCloudflareClient);
+export const inceptionPrompt = createOpenAICompatiblePrompt('inception', getInceptionClient);
 
 /**
  * Sends a prompt to Google Gemini via the `generateContent` API and returns structured output.
@@ -1235,6 +1236,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
         case 'nvidia':     result = await nvidiaPrompt(prompt, opts); break;         // ☑️ JSON via prompt instructions | ☑️ document via system prompt
         case 'openrouter': result = await openrouterPrompt(prompt, opts); break; // Same as github
         case 'cloudflare': result = await cloudflarePrompt(prompt, opts); break; // Same as github
+        case 'inception':  result = await inceptionPrompt(prompt, opts); break; // Diffusion LLM — strict json_schema may not be honored; trial measures it
       }
     } catch (error) {
       console.log(`[${provider}] ⚠️ Provider failed:`, error);

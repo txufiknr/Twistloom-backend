@@ -41,6 +41,7 @@ const AI_RATE_LIMITS_WITH_BUFFER: Record<AIChatProvider, { rpm: number; delayMs:
   aionlabs: getRateLimitConfig('aionlabs'),
   chutes: getRateLimitConfig('chutes'),
   llm7: getRateLimitConfig('llm7'),
+  inception: getRateLimitConfig('inception'),
 };
 
 /**
@@ -141,6 +142,7 @@ let nvidiaLimiter: RateLimiter | null = null;
 let openrouterLimiter: RateLimiter | null = null;
 let cloudflareLimiter: RateLimiter | null = null;
 let jinaLimiter: RateLimiter | null = null;
+let inceptionLimiter: RateLimiter | null = null;
 
 /**
  * Get Gemini rate limiter (singleton)
@@ -224,6 +226,14 @@ export function getJinaLimiter(): RateLimiter {
 }
 
 /**
+ * Get Inception rate limiter (singleton)
+ * @returns Rate limiter instance for Inception (diffusion LLM provider)
+ */
+export function getInceptionLimiter(): RateLimiter {
+  return inceptionLimiter || (inceptionLimiter = new RateLimiter('inception'));
+}
+
+/**
  * Get rate limiter by provider name with lazy initialization
  * @param provider - AI provider name
  * @returns Rate limiter instance for the provider
@@ -240,6 +250,7 @@ export function getRateLimiter(provider: AIChatProvider): RateLimiter {
     case 'openrouter': return getOpenRouterLimiter();
     case 'cloudflare': return getCloudflareLimiter();
     case 'jina': return getJinaLimiter();
+    case 'inception': return getInceptionLimiter();
     default: throw new Error(`No rate limiter found for provider: ${provider}`);
   }
 }

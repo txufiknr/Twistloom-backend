@@ -63,6 +63,7 @@ const AI_COST_PER_MILLION_PREVIEW: Record<AIChatProvider, { input: number; outpu
   aionlabs:  { input: 0.50, output: 1.50 }, // Estimate — no published rate card found for Aion Labs' paid tier (their site documents the free tier's ~20K token/day allowance but not what happens beyond it). Rough placeholder based on comparable boutique/specialized-model pricing; low confidence.
   chutes:    { input: 0.30, output: 1.20 }, // Estimate — no official rate card found; Chutes' pricing is tied to Bittensor subnet economics that shift over time. Rough proxy based on comparable budget-aggregator pricing for similar open models (e.g. DeepSeek-R1 class). TEE/confidential-compute-flagged models may carry an unmodeled premium over this.
   llm7:      { input: 0,    output: 0 },    // Not an estimate — LLM7.io has no paid tier at all; it's free-only by construction (an unofficial mirror with no billing path). This accurately reflects that Twistloom will never be invoiced for it, but also means checkDailyCostSpike() structurally can't catch a problem via this provider — its risk is reliability/ToS, not cost. See ai-clients.ts's AI_RATE_LIMITS comment for that caveat.
+  inception: { input: 0,    output: 0 },    // Unconfirmed — Inception Labs is running an API-credits burn campaign; real per-token price appears once the burn ends. $0 placeholder keeps checkDailyCostSpike() from firing on a provider whose true invoice is unknowable right now (same rationale as llm7).
 };
 
 /**
@@ -159,6 +160,12 @@ const AI_MODEL_COST_OVERRIDES: AICostOverride[] = [
 
   // Cloudflare
   { match: "mistral-7b-instruct", input: 0.01, output: 0.01 },
+
+  // Inception (diffusion LLM) — mercury-coder-small. $0 while Inception Labs
+  // runs its API-credits burn campaign; provider-scoped so the entry only
+  // ever charges the diffusion provider (an autoregressive model deliberately
+  // named "mercury-*" elsewhere would otherwise inherit this placeholder).
+  { match: "mercury-coder-small", provider: "inception", input: 0, output: 0 },
 ];
 
 /**

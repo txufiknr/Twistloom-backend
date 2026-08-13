@@ -16,7 +16,8 @@
 | ✅ **DONE** | **Step 2b — Cache-economics dev report** | 1 script + 1 npm script | **Before:** no way to see "is explicit caching paying for this book?" **After:** `bun run dev:usage-cache-report` aggregates last-7-days `usage` per book/provider/model with cache-hit ratio + est. USD, flagging low-hit (opt-out) candidates | `src/cron/usage-cache-report.ts`, package.json |
 | ✅ **DONE** | **Step 3 — Schema-adherence counters** in `parseAISafely` | ~45 lines | **Before:** repair-pipeline outcomes were logged but not tallied → "diffusion has better JSON adherence" was untestable. **After:** `getParseAdherenceStats()` exposes per-provider `total/clean/repaired/repairRate`; `resetParseAdherenceStats()` enables clean harness runs | `src/utils/ai-parser.ts` |
 | ⛔ **PARKED** | **Step 7 — Gemini Interactions dispatch** | — | **Verified 2026-08:** explicit caching + `top_p`/`top_k` unsupported → no dispatch work. Keep `generateContent`; re-verify when Google ships both | — |
-| ⏳ **NEXT** | Steps 4–6 — adherence/continuity harness, Inception provider, trial | medium | Needs Step-4 baseline first; Phase 1 | — |
+| ✅ **DONE** | **Steps 4+5 — adherence harness + Inception provider wiring** | medium | **Harness (Step 4):** `tests/test-diffusion-adherence.ts` — Tier A parse-adherence per provider (`repairRate` via `getParseAdherenceStats()`) + Tier B continuity probe; current-provider baseline not yet recorded (operator run pending). **Provider (Step 5):** `inception` wired across all 8 layers with **confirmed** baseURL `https://api.inceptionlabs.ai/v1` + slug `mercury-coder-small`; sits in new `AI_CHAT_MODELS_DIFFUSION`, **inert** in the waterfall | 8 files + `tests/test-diffusion-adherence.ts` + `.env.example` |
+| ⏳ **BLOCKED (needs operator)** | Step 6 — run the trial against Inception, make the call | medium | `INCEPTION_API_KEY` → `.env`, then `bun tests/test-diffusion-adherence.ts` + manual Tier B on a scratch book; then promote into `AI_CHAT_MODELS_WRITING` or keep for IDEA/THEME | — |
 
 **Quality gates:** `bun run typecheck` ✅ · `bun run lint:fast` ✅ · `bun run lint:imports` ✅ (post-change)
 
@@ -31,8 +32,8 @@
 | C | **Per-book Gemini cache economics** (storage fee vs read savings) | ✅ **DONE (Steps 2 + 2b).** `usage.context` now tagged `story-page-candidate:b-{bookId}`; `dev:usage-cache-report` script computes per-book cache-hit ratios | 2 lines + 1 script | decision (Q5) |
 | D | **Gemini explicit-cache TTL / per-book opt-out** (80% of a problem, 20% of the work) | ✅ **Feasible now.** `GEMINI_CACHE_TTL_SECONDS` is a hardcoded 3600 (gemini.ts:61); `getOrCreateGeminiCache` gets a null fast-path change | ~15 lines | none (decision on default) |
 | E | **Wire the Gemini Interactions API dispatch** (already fully implemented, parked) | ⛔ **Park — confirmed blocker, not a doc-gap.** `geminiPromptViaInteractions` + `geminiStreamGeneratorViaInteractions` exist and are exported but not dispatched (ai-chat.ts:596, ai-chat-stream.ts:652). **Both limiting conditions are now confirmed in Google's current docs (verified 2026-08):** (1) *explicit caching is not supported* — the exact `cachedContentId` → `getOrCreateGeminiCache` mechanism Twistloom relies on for per-book static-prefix cost savings has no Interactions equivalent (only stateful `previous_interaction_id` implicit caching, incompatible with single-shot serverless generation); (2) *granular sampling is unavailable* — the current docs' `generation_config` mentions `temperature` generically, but `top_p`/`top_k` (used by `AI_CHAT_CONFIG_CREATIVE`, temp 0.78/topP 0.92/topK 50, src/config/ai-chat.ts:58–69) are not documented, so prose-variety control is only partially expressible. Hold; re-verify when Google ships both | ~10 lines | Google ships explicit caching + top_p/top_k on Interactions |
-| F | **Add Inception Mercury as a 20th provider** | ✅ **Feasible.** OpenAI-compatible → slot into `createOpenAICompatiblePrompt`/`createOpenAICompatibleStreamGenerator` (the exact pattern `openrouter`/`cloudflare` already use). ~8 files, all mechanical | medium | decision Q1/Q2 + confirm base URL & model slug |
-| G | **Run the diffusion trial (adherence + continuity) on that provider** | ✅ **Feasible** once F is wired; harness is provider-agnostic, so baseline on **current** providers first | medium | F |
+| F | **Add Inception Mercury as a 20th provider** | ✅ **DONE (Step 5, 2026-08-13).** `inception` wired across all 8 files into `AI_CHAT_MODELS_DIFFUSION` (inert). base URL + `mercury-coder-small` slug confirmed from Inception's platform docs | medium | trial verdict (Step 6) |
+| G | **Run the diffusion trial (adherence + continuity) on that provider** | ⏳ **Harness ready (Step 4) + F wired; blocked** on an `INCEPTION_API_KEY` + a scratch book. Record remaining/current-provider baselines first | medium | operator (Step 6) |
 | H | **DeepInfra as paid fallback rung** | ⚠️ **Feasible technically, breaks the waterfall's "all-free" design.** Same OpenAI-compatible slot-in, but it's a conscious paid-reliability decision, not a free addition | small (code) | decision (budget) |
 | I | **Exact-match page cache** `hash(bookId+state+choice+model)` (from token doc Part 4) | ❌ **Largely redundant in your architecture.** `generateCandidatePage` already pre-generates + *reuses* existing destination pages, and `determineBranchIdForPage` enforces `ACTION_ALREADY_HAS_DESTINATION` idempotency (prompt.ts:4377, candidate-generation.ts:484–548). Within a book, pages are never regenerated for an existing action. **A cross-book exact-match cache is near-useless** because each book has its own branching state | build | — (rejected unless a shared-book mode appears) |
 | J | **Helicone / Portkey gateways for caching** | ❌ **Rejected.** Solves a problem (I) that doesn't exist in this architecture; adds a request-path dependency + free-tier ceilings (10K req/mo each). Only their *observability* story is interesting → folded into Future/To-Consider (Cloudflare AI Gateway) | — | —
@@ -225,16 +226,18 @@ Do not skip Step 4. It is the only thing that turns Step 5 from a guess into a d
 
 ### Step 4 — Adherence + continuity trial harness (provider-agnostic, runs today)
 
-Create a **temporary** test file in the repo root (per AGENTS.md: isolated, descriptive name, deleted after use). Two difficulty tiers:
+Create a **temporary** test file under `tests/` (per AGENTS.md: isolated, descriptive name, deleted after use). Two difficulty tiers:
+
+> ✅ **DONE (2026-08-13).** `tests/test-diffusion-adherence.ts`. Tier A runs N (`DIFFUSION_RUNS`, default 30) `aiPrompt<StoryGeneration>` calls per provider/model, feeds each raw output through `parseAISafely` (counter bucket = provider via `logContext`), and prints `console.table(getParseAdherenceStats())`. A lightweight Tier B probe checks the continuation still mentions the fixed characters/location; the full DB-backed multi-page Tier B stays manual as scoped. Baseline for current providers is **not yet recorded** — run it once with working keys before Step 6. `tests/` is in ESLint's global ignores (same as the other harnesses), so it needs no config. Kept until the Step-6 verdict, then deleted per AGENTS.md.
 
 **Tier A — Schema adherence (isolated calls).** Reuses the real generation schema & a realistic prompt, but does **not** touch the DB. Direct `aiPrompt`:
 
 ```typescript
-// test-diffusion-adherence.ts  (repo root — DELETE after the trial)
-import { aiPrompt, createAIOptionsWithSchema } from './src/utils/ai-chat.js';
-import { STORY_GENERATION_SCHEMA_DEFINITION, STORY_GENERATION_REQUIRED_FIELDS } from './src/schema/story.js';
-import { resetParseAdherenceStats, getParseAdherenceStats } from './src/utils/ai-parser.js';
-import type { StoryGeneration } from './src/types/book.js';
+// tests/test-diffusion-adherence.ts  (DELETE after the trial)
+import { aiPrompt, createAIOptionsWithSchema } from '../src/utils/ai-chat.js';
+import { STORY_GENERATION_SCHEMA_DEFINITION, STORY_GENERATION_REQUIRED_FIELDS } from '../src/schema/story.js';
+import { resetParseAdherenceStats, getParseAdherenceStats } from '../src/utils/ai-parser.js';
+import type { StoryGeneration } from '../src/types/book.js';
 
 // 1. realistic prompt mimicking prepareNextPageGenerationSetup's output —
 //    embed a small StoryState JSON + "continue the story" instruction.
@@ -257,13 +260,13 @@ import type { StoryGeneration } from './src/types/book.js';
 - Tier B pass rate + how many fates survive `checkGeneratedPage` untouched.
 - `finishReason` distribution, TTFT (already logged by `prompt-telemetry.ts`), and average `durationMs`.
 
-**Run order:** baseline **all current providers first** (this alone is valuable — you likely don't know today's real repair rate per provider), then re-run for Inception after Step 5/6. Command: `bun test-diffusion-adherence.ts` (PowerShell: `cd "D:\Projects\Twistloom\Twistloom-backend"; bun test-diffusion-adherence.ts`).
+**Run order:** baseline **all current providers first** (this alone is valuable — you likely don't know today's real repair rate per provider), then re-run for Inception after Step 5/6. Command: `bun tests/test-diffusion-adherence.ts` (PowerShell: `cd "D:\Projects\Twistloom\Twistloom-backend"; bun tests/test-diffusion-adherence.ts`).
 
 ### Step 5 — Add Inception Labs Mercury as a provider (mechanical, env-gated)
 
 The switch from `openrouter`/`cloudflare` — ~8 files, all following existing patterns. **Do the trial first, then promote the model within the waterfall** (the diffusion doc's own recommendation: unproven rungs start at the bottom).
 
-> ⚠️ **Two values must be confirmed from Inception Labs' docs at wiring time — neither prior doc gave them:** (1) the exact OpenAI-compatible `baseURL` and (2) the callable Mercury-2 model slug. Placeholders below.
+> ✅ **CONFIRMED (2026-08-13)** from Inception Labs' own platform docs (`inceptionlabs.ai/platform`): (1) OpenAI-compatible base URL = **`https://api.inceptionlabs.ai/v1`**; (2) callable Mercury model slug = **`mercury-coder-small`** (docs also list `mercury-coder-large`, `mercury-architect`, `mercury-mini`). Both are wired below — no placeholder remains.
 
 **5a — `src/types/ai-chat.ts`** — extend the provider union (lines 11–51):
 
@@ -336,11 +339,22 @@ export const AI_CHAT_MODELS_DIFFUSION: AIModelSelection = {
 
 **Sign-off:** `bun run typecheck`, `bun run lint:fast`. Because the provider is *not* in `AI_CHAT_MODELS_WRITING`, no production request will ever touch it until `executePromptForJSON` (or a caller) explicitly passes `modelSelection: AI_CHAT_MODELS_DIFFUSION`.
 
+> ✅ **DONE (2026-08-13).** All 8 files wired exactly as specified — the union, `getInceptionClient` (confirmed base URL), config maps (`rpm 60` placeholder / `120_000` chars / `mercury-coder-small`), the limiter, `inceptionPrompt`, `inceptionStreamGenerator`, cost entries (provider-scoped `mercury-coder-small` $0 override + provider default), and `.env.example`. Added the dedicated `AI_CHAT_MODELS_DIFFUSION` selection as recommended (not merged into `AI_CHAT_MODELS_WRITING`). Sign-off: `bun run check` ✅ (lint + `lint:imports` + typecheck). The Step-4 harness lives at `tests/test-diffusion-adherence.ts` — `tests/` is already in ESLint's global ignores, so no lint config change was needed for it.
+
 ### Step 6 — Run the trial against Inception and make the call
 
-1. Run `test-diffusion-adherence.ts` Tier A + B with `modelSelection: AI_CHAT_MODELS_DIFFUSION`.
-2. Compare `repairRate` and continuity pass-rate to the Step-4 baseline.
+> ⏳ **BLOCKED (waiting on operator).** Harness + wiring are in place; the only missing piece is a live `INCEPTION_API_KEY` and a scratch book for the manual Tier B. Running it:
+> ```powershell
+> cd "D:\Projects\Twistloom\Twistloom-backend"
+> # 1. add INCEPTION_API_KEY=... to .env.local (see .env.example)
+> bun tests/test-diffusion-adherence.ts              # Tier A — defaults to all of AI_CHAT_MODELS_DIFFUSION
+> bun tests/test-diffusion-adherence.ts inception    # or pin just Inception
+> ```
+
+1. Run `tests/test-diffusion-adherence.ts` Tier A (default `modelSelection = AI_CHAT_MODELS_DIFFUSION`), plus the manual DB-backed Tier B on a scratch book routed via `AI_CHAT_MODELS_DIFFUSION`.
+2. Compare `repairRate` and continuity pass-rate to the Step-4 baseline (record current-provider baselines first — see Step 4).
 3. **If continuity holds** → promote `inception` into `AI_CHAT_MODELS_WRITING` (bottom rung) and add the cost override. If it **breaks down** (the likely outcome per AI_DIFFUSION_LLM_ROADMAP Part 2) → keep Mercury only for single-shot IDEA/THEME flume calls (`AI_CHAT_MODELS_IDEA`/`THEME`), where no prior state exists for continuity to lose.
+4. After the verdict: delete `tests/test-diffusion-adherence.ts` per AGENTS.md.
 
 ### Step 7 — Keep the Gemini Interactions path **parked** (verified 2026-08)
 
@@ -479,14 +493,46 @@ These gate Phase-1/Phase-2 scope. Phase 0 (Steps 1–3) requires none of them.
 
 ## Suggested Execution Order (with verification per step)
 
-| Step | What | Verify |
-|---|---|---|
-| 1 | ✅ **DONE** — Mistral `promptCacheKey` (2 patches, derived from `cachedContentId`) | `bun run typecheck` ✅; `cached_tokens > 0` on first live call (pending live traffic) |
-| 2 | ✅ **DONE** — bookId-tagged usage context (`:b-{bookId}`) + `dev:usage-cache-report` script | `bun run typecheck` ✅; step-2b report returns per-book rows on live traffic |
-| 3 | ✅ **DONE** — parseAISafely adherence counters (`getParseAdherenceStats`) | `bun run typecheck` ✅; counters appear after any generation |
-| 4 | Baseline adherence/continuity harness (current providers) | `bun test-diffusion-adherence.ts` (uses the Step-3 counters) |
-| 5 | Inception provider wiring (8 files, env-gated) | `bun run typecheck`; `bun run lint:fast` |
-| 6 | Inception trial → promote / single-shot-only decision | `bun test-diffusion-adherence.ts` (re-run w/ inception) |
-| 7 | Interactions — **parked** (explicit caching + top_p/top_k unsupported, verified 2026-08); no activation work | re-verify Limitations page; nothing to ship |
+| Status | Step | What | Verify |
+|---|---|---|---|
+| ✅ | 1 | **DONE** — Mistral `promptCacheKey` (2 patches, derived from `cachedContentId`) | `bun run typecheck` ✅ passed; live check: `cached_tokens > 0` on first Mistral-rung call |
+| ✅ | 2 | **DONE** — bookId-tagged usage context (`:b-{bookId}`) + `dev:usage-cache-report` script | `bun run typecheck` ✅ passed; live check: report returns per-book rows |
+| ✅ | 3 | **DONE** — parseAISafely adherence counters (`getParseAdherenceStats`) | `bun run typecheck` ✅ passed; live check: counters increment after any generation |
+| 🔷 | 4 | **DONE (harness) —** adherence/continuity harness in `tests/`; baseline for current providers **not yet recorded** (operator run) | ✅ harness built; 🔷 `bun tests/test-diffusion-adherence.ts` to record the baseline; uses Step-3 counters + confirms Step-1 `cached_tokens` live |
+| ✅ | 5 | **DONE —** Inception provider wiring (8 files, env-gated) | `bun run check` ✅ passed; inert in `AI_CHAT_MODELS_DIFFUSION`, nothing in `AI_CHAT_MODELS_WRITING` |
+| ⏳ | 6 | **BLOCKED (needs operator)** — Inception trial → promote / single-shot-only decision | `INCEPTION_API_KEY` → `.env`, then `bun tests/test-diffusion-adherence.ts` (re-run w/ inception)
+| ⛔ | 7 | **PARKED** — Interactions dispatch (explicit caching + top_p/top_k unsupported, verified 2026-08); no activation work | re-verify Limitations page; nothing to ship |
 
-Cleanup rule (AGENTS.md): delete `test-diffusion-adherence.ts` when the trial is done and recorded (or move it to `src/scripts/` if you want it repeatable).
+Cleanup rule (AGENTS.md): delete `tests/test-diffusion-adherence.ts` when the trial is done and recorded (or promote it into `src/scripts/` if you want it repeatable).
+
+---
+
+## 🎯 Conclusion — Token-Saving Impact (implemented vs projected)
+
+> **Honesty note.** Every number below is an **estimate / illustrative**, not a measured invoice line — live savings depend on your real traffic mix (how many page generations hit a given book's cache in a storage-hour) and on Mistral's actual discount for your models, which must be re-verified against mistral.ai/pricing (the "90%" figure originates from the source doc, not Mistral's site). Steps 2b and 3 were built precisely so these estimates become *measured* numbers once live traffic flows.
+
+### A. What the completed steps (1–5) already deliver
+
+| Lever | Mechanism | Approximate impact |
+|---|---|---|
+| **Mistral `promptCacheKey` (Step 1, DONE)** | Repeated page-gen calls share a static prefix (system prompt + book documents) keyed by the same `cachedContentId` Gemini uses | Cached input tokens billed at **~10% of list price** (i.e. **~90% off**). Realistic page-gen mix (≈75% of input tokens are cacheable prefix, high repeat-hit rate for an active book): **~50–60% reduction in Mistral input-token cost**. Caveat: Mistral is one rung of the 19-provider waterfall, so whole-pipeline impact scales with Mistral's traffic share |
+| **Per-book `usage` attribution (Step 2, DONE)** | `context` now carries `:b-{bookId}` → cache economics queryable per book | **0% direct savings — unlocks the rest.** Without it the Gemini storage-vs-read question (below) was literally unanswerable |
+| **Cache-economics report (Step 2b, DONE)** | `bun run dev:usage-cache-report` flags low-hit books | Feeds the Phase-2 per-book opt-out: for low-traffic books, explicit caching currently costs **~88% more** than not caching (50K-context, 15 reads/day example from TOKEN_SAVING_ROADMAP Part 3) — opting those books out reclaims **~47%** of their Gemini cost (1 − 1/1.88) |
+| **Adherence counters (Step 3, DONE)** | `getParseAdherenceStats()` tallies clean vs repaired per provider | **0% direct savings — the trial's measuring stick.** Repair/fallback wastes output tokens and triggers cross-provider retries; Step 3 turns that waste into a number so Step 4–6 can prove (or disprove) "diffusion has better adherence" instead of assuming it |
+| **Adherence harness (Step 4, DONE)** | `tests/test-diffusion-adherence.ts` runs N `aiPrompt` calls per provider through the real 9-stage pipeline + a continuity probe | **0% direct savings — operationalizes the trial.** Once the operator records the baseline, current providers' real repair rates stop being speculation; until then the diffusion "advantage" is unproven |
+| **Inception Mercury wired (Step 5, DONE)** | `inception` in `AI_CHAT_MODELS_DIFFUSION` — the 8-layer slot-in is done and env-gated, **inert** in the waterfall | **0% until Step 6** — adds a potential **$0** writing rung (10M free tokens/mo) with zero cost while parked |
+
+### B. Projected impact of the remaining steps
+
+| Step | What it targets | Projected impact |
+|---|---|---|
+| 6 (only non-parked item left) | Inception Mercury trial → promote / single-shot-only decision | If continuity survives: adds a **$0** writing rung with genuine cost ceiling; if it breaks (likely per the diffusion doc): keep it for single-shot IDEA/THEME calls. Either way the Step-3/4 numbers make it a decision, not a guess |
+| (parked) | Gemini Interactions dispatch | **No impact available** — explicit caching + top_p/top_k unsupported, verified 2026-08 |
+
+### C. Realistic expectation for the whole effort
+
+- **Completed so far:** the only *direct* cost lever shipped is **Step 1 (Mistral)** — realistically **tens of % off Mistral's input cost** on active books, *not* a whole-pipeline number, because Mistral is one provider among 19. Steps 2/2b/3/4/5 added the instrumentation and the trial machinery (per-book economics, adherence stats, the diffusion harness, the inert `$0` rung) but no further direct savings on their own.
+- **Biggest unquantified prize still on the table:** Gemini's explicit-cache economics. Step 2/2b now give you the per-book data to (a) keep caching for hot books (high hit-rate = the 90%-off cache read wins) and (b) opt cold books out (reclaim ~47%). This is Phase 2 / row D, and it is now *decidable* instead of speculative.
+- **The measurement infrastructure (Steps 2b + 3 + Step 4 harness) is the compounding asset** — every future provider (Inception) and every cache-policy decision gets verified against real numbers instead of the source-doc's optimistic percentages.
+
+**Bottom line:** ~50–60% off Mistral input tokens today (Step 1), and the tools to find another ~47%-on-cold-books Gemini lever (Step 2/2b) and to settle the diffusion question honestly (Steps 3 + 4 harness + Step 5 wiring). The single remaining item — Step 6, the Inception trial — is itself a decision *enabled by* that instrumentation and only needs a live `INCEPTION_API_KEY` + a scratch book to resolve.

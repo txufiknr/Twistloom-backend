@@ -48,7 +48,14 @@ export type AIChatProvider =
   // @see https://chutes.ai/terms
   | 'chutes'
   // @see https://docs.llm7.io/limits
-  | 'llm7';
+  | 'llm7'
+  // Diffusion LLM (Inception Labs Mercury) — OpenAI-compatible endpoint at
+  // https://api.inceptionlabs.ai/v1. NOT autoregressive: outputs are
+  // diffusion-generated, so strict json_schema constrained decoding may not be
+  // honored — the adherence/continuity trial (Step 6 of
+  // AI_DIFFUSION_TOKEN_SAVING_EXECUTION_ROADMAP) measures whether that matters.
+  // @see https://inceptionlabs.ai/platform
+  | 'inception';
 
 /**
  * AI response structure returned from chat completion APIs

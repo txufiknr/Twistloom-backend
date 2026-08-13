@@ -15,6 +15,7 @@ let groqClient: Groq | null = null;
 let cerebrasClient: Cerebras | null = null;
 let openrouterClient: OpenAI | null = null;
 let cloudflareClient: OpenAI | null = null;
+let inceptionClient: OpenAI | null = null;
 
 /** Mapping of AI providers to their API key environment variable names */
 export const AI_PROVIDER_API_KEYS: Record<AIChatProvider, string> = {
@@ -36,6 +37,7 @@ export const AI_PROVIDER_API_KEYS: Record<AIChatProvider, string> = {
   aionlabs: 'AIONLABS_API_KEY',
   chutes: 'CHUTES_API_KEY',
   llm7: 'LLM7_API_KEY',
+  inception: 'INCEPTION_API_KEY',
 };
 
 // Gemini client singleton
@@ -109,6 +111,18 @@ export function getCloudflareClient(): OpenAI {
     baseURL: `https://api.cloudflare.com/client/v4/accounts/${requireEnv('CLOUDFLARE_ACCOUNT_ID')}/ai/v1`,
   });
   return cloudflareClient;
+}
+
+// Inception client singleton (OpenAI-compatible with custom baseURL)
+// Diffusion LLM (Mercury) — base URL confirmed from https://inceptionlabs.ai/platform
+export function getInceptionClient(): OpenAI {
+  if (inceptionClient) return inceptionClient;
+
+  inceptionClient = new OpenAI({
+    apiKey: requireEnv('INCEPTION_API_KEY'),
+    baseURL: 'https://api.inceptionlabs.ai/v1',
+  });
+  return inceptionClient;
 }
 
 /**
