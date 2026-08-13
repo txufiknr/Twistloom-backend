@@ -37,6 +37,7 @@
     "dev:cron:cleanup": "bun --env-file=.env.local src/cron/cleanup.ts",
     "dev:cron:email-weekly": "bun --env-file=.env.local src/cron/email-weekly-recommendations.ts",
     "dev:cron:email-monthly": "bun --env-file=.env.local src/cron/email-monthly-summary.ts",
+    "dev:usage-cache-report": "bun --env-file=.env.local src/cron/usage-cache-report.ts",
     "start:cron:trending": "bun dist/cron/update-trending-scores.js",
     "start:cron:generate": "bun dist/cron/generate-originals.js",
     "start:cron:candidate": "bun dist/cron/retry-pending-generations.js",

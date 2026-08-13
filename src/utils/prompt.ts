@@ -1267,8 +1267,8 @@ function buildNextPageEvaluatorPrompt(params: BuildNextPagePromptParams): string
   const outputFormatBlurb = buildEvaluatorOuputFormatBlurb(useStringEvaluatorOutput);
 
   const outputLine = useStringEvaluatorOutput
-    ? '"output": "...", // full corrected JSON as a JSON string: begins with "{", ends with "}"'
-    : '"output": { ...reconstructed and corrected JSON ... }';
+    ? '"output": "...", // full corrected JSON as a JSON string'
+    : '"output": { ...reconstructed and corrected JSON }';
 
   const taskPrompt = `TASK: Evaluate a newly generated branching story page from selected action, refine output, and re-evaluate — in that order.
 
@@ -1457,7 +1457,7 @@ function buildFirstBookEvaluatorPrompt(params: InitializeBookParams): string {
   const outputFormatBlurb = buildEvaluatorOuputFormatBlurb(useStringEvaluatorOutput);
 
   const outputLine = useStringEvaluatorOutput
-    ? '"output": "...", // full corrected JSON as a JSON string: begins with "{", ends with "}"'
+    ? '"output": "...", // full corrected JSON as a JSON string'
     : '"output": { ...reconstructed and corrected JSON }';
 
   return `TASK: Evaluate a newly generated book initialization, refine it, and re-score — in that order.
@@ -4633,7 +4633,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
       baseOptions: {
         config,
         modelSelection: AI_CHAT_MODELS_WRITING,
-        context: 'story-page-candidate',
+        context: `story-page-candidate:b-${book.id}`,
         logPrompts: true,
         systemPrompt,
         documents,
@@ -4781,7 +4781,7 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
       baseOptions: {
         config: { ...config, maxOutputToken: DEFAULT_MAX_OUTPUT_TOKEN * candidateCount },
         modelSelection: AI_CHAT_MODELS_WRITING,
-        context: 'story-page-candidates',
+        context: `story-page-candidates:b-${book.id}`,
         logPrompts: true,
         systemPrompt,
         documents,

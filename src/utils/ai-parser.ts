@@ -152,6 +152,60 @@ export interface ParseAIOptions<T extends Record<string, unknown>> {
  */
 const walkerCache = new Map<string, Promise<SchemaWalker>>();
 
+// ─── Schema-adherence counters ────────────────────────────────────────────────
+
+/**
+ * Schema-adherence counters keyed by `logContext` (format: `<provider>-<context>`).
+ * "clean"  = parsed by stages 1–2 (no repair needed).
+ * "repaired" = any stage ≥3, or the Stage 8/9 fallback, was required.
+ * Used by the adherence harness (execution roadmap Step 4) to compare providers
+ * head-to-head on how often their output routes through the repair pipeline.
+ */
+const parseAdherenceCounters = new Map<string, { clean: number; repaired: number }>();
+
+/**
+ * Records one parse outcome, bucketed by the provider prefix of `logContext`.
+ *
+ * @param logContext - The parse log label (`<provider>-<context>` by convention
+ *                     set in `aiPrompt`); split on the first `-` to recover the provider.
+ * @param clean      - `true` when stages 1–2 parsed without repair, `false` otherwise.
+ * @internal
+ */
+function recordParseOutcome(logContext: string, clean: boolean): void {
+  const key = logContext.split('-')[0] ?? 'unknown'; // provider prefix
+  const entry = parseAdherenceCounters.get(key) ?? { clean: 0, repaired: 0 };
+  if (clean) entry.clean++; else entry.repaired++;
+  parseAdherenceCounters.set(key, entry);
+}
+
+/**
+ * Returns per-provider adherence stats: total, clean, repaired, repairRate (0–1).
+ *
+ * `repairRate` is the diffusion doc's exact requested metric — the fraction of a
+ * provider's outputs that required the repair pipeline.
+ *
+ * @returns Record of provider → adherence statistics.
+ *
+ * @example
+ * ```typescript
+ * getParseAdherenceStats();
+ * // { gemini: { total: 30, clean: 28, repaired: 2, repairRate: 0.0667 } }
+ * ```
+ */
+export function getParseAdherenceStats(): Record<string, { total: number; clean: number; repaired: number; repairRate: number }> {
+  const out: Record<string, { total: number; clean: number; repaired: number; repairRate: number }> = {};
+  for (const [key, v] of parseAdherenceCounters) {
+    const total = v.clean + v.repaired;
+    out[key] = { ...v, total, repairRate: total ? v.repaired / total : 0 };
+  }
+  return out;
+}
+
+/** Resets adherence counters (used at the start of each harness run). */
+export function resetParseAdherenceStats(): void {
+  parseAdherenceCounters.clear();
+}
+
 /**
  * Returns a cached `SchemaWalker` for the given root JSON Schema, creating one
  * lazily on the first call. Race-safe via Promise sharing.
@@ -270,6 +324,7 @@ export async function parseAISafely<T extends Record<string, unknown>>(
   if (candidate === null) {
     // No `{` found anywhere — this is not JSON output at all.
     console.warn(`[${logContext}] ⚠️ No JSON object found — plain-text fallback`);
+    recordParseOutcome(logContext, false);
     return { [options.fallbackField ?? 'output']: cleanInput } as T;
   }
 
@@ -292,6 +347,7 @@ export async function parseAISafely<T extends Record<string, unknown>>(
     const partial = extractPartialJSON<T>(candidate, logContext);
     if (Object.keys(partial).length > 0) {
       console.log(`[${logContext}] 🔄 Stage 8: partial regex extraction`);
+      recordParseOutcome(logContext, false);
       return postProcess<T>(
         partial as Record<string, unknown>,
         normalSchema,
@@ -305,6 +361,7 @@ export async function parseAISafely<T extends Record<string, unknown>>(
   // Absolute last resort. Returns the sanitised raw text under `fallbackField`
   // so the caller always receives a defined value to log, surface, or retry.
   console.warn(`[${logContext}] 🔄 Stage 9: all parse attempts failed — plain-text fallback`);
+  recordParseOutcome(logContext, false);
   return { [options.fallbackField ?? 'output']: cleanInput } as T;
 }
 
@@ -335,6 +392,7 @@ async function runParsePipeline(
     const sanitized = parseSanitizedJson<Record<string, unknown>>(candidate);
     if (isPlainObject(sanitized)) {
       console.log(`[${logContext}] 🔧 Stage 1: parseSanitizedJson`);
+      recordParseOutcome(logContext, true);
       return sanitized;
     }
   } catch {
@@ -348,6 +406,7 @@ async function runParsePipeline(
   const native = tryParse(candidate);
   if (native) {
     console.log(`[${logContext}] ✅ Stage 2: native JSON.parse`);
+    recordParseOutcome(logContext, true);
     return native;
   }
 
@@ -369,6 +428,7 @@ async function runParsePipeline(
     const parsed = tryParse(repaired);
     if (parsed) {
       console.log(`[${logContext}] 🔧 Stage 3: jsonrepair`);
+      recordParseOutcome(logContext, false);
       return parsed;
     }
   } catch {
@@ -395,6 +455,7 @@ async function runParsePipeline(
       const parsed = await isdkRepair(candidate, walker);
       if (isPlainObject(parsed)) {
         console.log(`[${logContext}] 🔧 Stage 4: @isdk/json-repair (schema-guided)`);
+        recordParseOutcome(logContext, false);
         return parsed as Record<string, unknown>;
       }
     } catch {
@@ -421,6 +482,7 @@ async function runParsePipeline(
     const parsed = tryParse(tokenRepaired);
     if (parsed) {
       console.log(`[${logContext}] 🔧 Stage 5: token-level repair`);
+      recordParseOutcome(logContext, false);
       return parsed;
     }
   } catch {
@@ -437,6 +499,7 @@ async function runParsePipeline(
   const fixedNative = tryParse(fixed);
   if (fixedNative) {
     console.log(`[${logContext}] 🔧 Stage 6: heuristic fix + native JSON.parse`);
+    recordParseOutcome(logContext, false);
     return fixedNative;
   }
 
@@ -449,6 +512,7 @@ async function runParsePipeline(
     const parsed = tryParse(repairedFixed);
     if (parsed) {
       console.log(`[${logContext}] 🔧 Stage 7: heuristic fix + jsonrepair`);
+      recordParseOutcome(logContext, false);
       return parsed;
     }
   } catch {

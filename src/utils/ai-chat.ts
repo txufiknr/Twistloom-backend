@@ -905,7 +905,7 @@ export async function mistralPrompt(
     prompt,
     options,
     async (model, prompt, opts) => {
-      const { config = AI_CHAT_CONFIG_DEFAULT, context, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
+      const { config = AI_CHAT_CONFIG_DEFAULT, context, outputAsJson, outputJsonStructure, outputJsonRequired, cachedContentId } = opts;
       const { maxOutputToken, temperature, topP, stopSequences, frequencyPenalty, seed } = config;
       const systemPromptWithDocuments = formatSystemPromptWithDocuments('mistral', opts);
 
@@ -922,6 +922,15 @@ export async function mistralPrompt(
         frequencyPenalty,
         randomSeed: seed,
         stream: false,
+        // Cache key mirrors Gemini's cachedContentId so the Mistral prefix
+        // cache and the Gemini explicit cache bust on the same content change
+        // (characters/places). Fall back to a shared key for callers that
+        // don't pass cachedContentId (pen.ts, canon-validation.ts, etc.).
+        // NOTE: the SDK's public property is camelCase `promptCacheKey`; it is
+        // serialised to the wire field `prompt_cache_key` internally.
+        promptCacheKey: cachedContentId
+          ? `twistloom:mistral:${cachedContentId}`
+          : 'twistloom:mistral:shared',
         responseFormat: outputAsJson ? (outputJsonStructure ? {
           type: "json_schema",
           jsonSchema: {
