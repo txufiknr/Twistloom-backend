@@ -1,4 +1,4 @@
-I like the idea about having a multi-purpose "agent chat" popup in Twistloom which can help user (especially writers) in any way
+Q: I like the idea about having a multi-purpose "agent chat" popup in Twistloom which can help user (especially writers) in any way
 
 example:
 user: Find all scenes mentioning Watson and summarize.
