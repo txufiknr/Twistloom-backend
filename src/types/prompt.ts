@@ -11,6 +11,8 @@ export type GenerateBookCreationPromptParams = {
   language?: string | null;
   /** Initiator user id who requested or generated this prompt. */
   userId?: string | null;
+  /** Optional book title to guide the generated story concept (AI context). */
+  title?: string | null;
 };
 
 /**

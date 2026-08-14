@@ -4998,11 +4998,19 @@ Do not explain, summarize, or mention this review process.` : '';
  * 
  * @returns Object containing systemPrompt and userPrompt for book creation
  */
-function getBookCreationPrompts(headerLanguage?: string | null): { systemPrompt: string; userPrompt: string } {
+function getBookCreationPrompts(headerLanguage?: string | null, title?: string | null): { systemPrompt: string; userPrompt: string } {
   const lang = formatLanguage(headerLanguage || 'en');
+  const titleContext = title && title.trim()
+    ? `BOOK TITLE (user-provided, use as the creative anchor for the story concept):
+- The story concept must revolve around this exact title: "${title.trim()}"
+- Interpret the title naturally — it may be a literal title, a thematic hint, or a source of mood/imagery.
+- Do NOT suggest a different title; keep the given title as-is.`
+    : '';
   const systemPrompt = `You are a creative writing assistant specializing in generating engaging story concept for interactive thriller, mystery, horror, and psychological fiction novels.
 
 TASK: Generate a compelling story concept that another AI will use as the foundation for generating an entire branching novel (max ${MAX_THEME_LENGTH_PROMPT} characters).
+
+${titleContext}
 
 LANGUAGE:
 - The entire output MUST be written in the target language: ${lang}.
@@ -5048,7 +5056,9 @@ OUTPUT FORMAT:
 - Output plain text only. Do not use Markdown formatting.
 - The overall output must not exceed ${MAX_THEME_LENGTH_PROMPT} characters.`;
 
-  const userPrompt = `Generate a creative and engaging story prompt for a thriller/horror interactive fiction novel. Be specific and intriguing. Write the entire prompt in the target language: ${lang}.`;
+  const userPrompt = title && title.trim()
+    ? `Generate a creative and engaging story prompt for a thriller/horror interactive fiction novel titled "${title.trim()}". The concept must be anchored to this title. Be specific and intriguing. Write the entire prompt in the target language: ${lang}.`
+    : `Generate a creative and engaging story prompt for a thriller/horror interactive fiction novel. Be specific and intriguing. Write the entire prompt in the target language: ${lang}.`;
 
   return { systemPrompt, userPrompt };
 }
@@ -5081,8 +5091,8 @@ OUTPUT FORMAT:
  * ```
  */
 export async function generateBookCreationPromptStream(params: GenerateBookCreationPromptParams = {}): Promise<AIChatStreamResult> {
-  const { logPrompts = false, signal, language = 'en' } = params;
-  const { systemPrompt, userPrompt } = getBookCreationPrompts(language);
+  const { logPrompts = false, signal, language = 'en', title } = params;
+  const { systemPrompt, userPrompt } = getBookCreationPrompts(language, title);
 
   return aiStreamSSE(userPrompt, {
     modelSelection: AI_CHAT_MODELS_THEME,
@@ -5109,8 +5119,8 @@ export async function generateBookCreationPromptStream(params: GenerateBookCreat
  * ```
  */
 export async function generateBookCreationPrompt(params: GenerateBookCreationPromptParams = {}): Promise<AIResponse<string>> {
-  const { logPrompts = false, language = 'en' } = params;
-  const { systemPrompt, userPrompt } = getBookCreationPrompts(language);
+  const { logPrompts = false, language = 'en', title } = params;
+  const { systemPrompt, userPrompt } = getBookCreationPrompts(language, title);
 
   const response = await aiPrompt(userPrompt, {
     modelSelection: AI_CHAT_MODELS_THEME,

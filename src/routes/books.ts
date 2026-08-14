@@ -1286,12 +1286,22 @@ router.get("/prompt", optionalAuth, async (c) => {
   return streamSSE(c, async (stream) => {
     try {
       const userId = c.get("userId") || null;
-      const language = c.get("headerLanguage") || 'en';
+      // Query params give the Pen wizard's "Surprise me" AI context from the
+      // earlier steps. Prefer the explicit `language` when present & valid,
+      // otherwise fall back to the Accept-Language header.
+      const { language: queryLanguage, title } = c.req.query();
+      const headerLanguage = c.get("headerLanguage") || 'en';
+      const language = queryLanguage && isValidLanguageCode(queryLanguage)
+        ? queryLanguage
+        : headerLanguage;
+      const titleContext = typeof title === 'string' && title.trim() ? title.trim() : null;
       let promptContent: string | null = null;
       let promptId: string | null = null;
 
-      // Check if cache should be used
-      if (PROMPT_CACHE_CONFIG.enabled && await shouldUseCache()) {
+      // Check if cache should be used. Title-scoped prompts are never cached
+      // because the cache is keyed by user + language only — a title-driven
+      // prompt must not be served to (or overwritten by) unrelated requests.
+      if (!titleContext && PROMPT_CACHE_CONFIG.enabled && await shouldUseCache()) {
         // Try to get fresh prompt from cache for authenticated users
         if (userId) {
           const cachedPrompt = await getFreshPromptForUser(userId, language);
@@ -1316,6 +1326,7 @@ router.get("/prompt", optionalAuth, async (c) => {
         const { stream: aiStream, provider } = await generateBookCreationPromptStream({
           signal: c.req.raw.signal,
           language,
+          title: titleContext,
         });
         
         // Collect the full content from the stream
@@ -1333,7 +1344,7 @@ router.get("/prompt", optionalAuth, async (c) => {
         promptContent = new TextDecoder().decode(combined);
         
         // Validate and save to cache if quality is good
-        if (PROMPT_CACHE_CONFIG.enabled && userId) {
+        if (!titleContext && PROMPT_CACHE_CONFIG.enabled && userId) {
           // Attempt to read provider/model used from the stream's metadata promise
           let aiProvider: AIChatProvider | 'none' = 'none';
           let aiModel: string | undefined = undefined;

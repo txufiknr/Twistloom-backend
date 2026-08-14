@@ -23,7 +23,8 @@
 [ ] can you apply requireVerifiedEmail middleware on "Profile & account management routes" routes first, sequentially?
 [ ] enrich initialize book with generated mc image
 [ ] enrich page 1 with imagePrompt -> generate page image cron
-[ ] https://dashboard.xendit.co/settings/developers#api-keys
+[ ] xendit api keys: https://dashboard.xendit.co/settings/developers#api-keys
+[ ] migrate to QUERY: https://dev.to/hamidrazadev/the-new-http-query-method-why-get-and-post-werent-enough-1lc5
 [ ] pastInteractions -> interactions
 [ ] learn about Interactions API (https://ai.google.dev/gemini-api/docs/migrate-to-interactions)
 [ ] ensure `PUT /api/user/editor-prefs` API route optimal en-to-end based on `AI_CO_WRITING_PEN_ROADMAP.md` and frontend's `src\lib\services\users-api.ts`, shouldn't we only send dirty (only changed) fields instead of all fields?
@@ -31,6 +32,7 @@
 [ ] can you also add ai-cost for these gemini models: `gemini-3.6-flash`?
 [ ] please check `validateGeneratedPage`, I don't want to ditch AI generation result merely because it provides multiple actions for 'novel' book mode (should just strip it sliently), is it already safe & handled as intended?
 [ ] persistPageWithState/insertStoryPage: cleanup “[dialogue]” ([actionType]) from page.text (sanitize) before insert
+[ ] pen prompt: ensure find mathing lore entity from story text via triggerKeywords
 [ ] claude: should we using multi-turn request instead of big array json for generating `generatedPages` (alternative fates) in 'multiverse' book mode?
 [x] claude: review & refine TODO-gemini-interactions-api.md
 [x] claude: review & refine TODO-save-prompt-token.md
