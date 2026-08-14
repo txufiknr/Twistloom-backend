@@ -60,7 +60,11 @@ export type PenSessionPayload = DBPenSession & {
  * but a stale FK is still defensively handled).
  */
 async function toPenSessionPayload(session: DBPenSession): Promise<PenSessionPayload> {
-  const book = await getBookFromDB(session.bookId);
+  // Read replica can lag a just-created book (see createPenSession) — fall back
+  // to the write client before concluding the book is gone.
+  const book =
+    (await getBookFromDB(session.bookId)) ??
+    (await getBookFromDB(session.bookId, { client: dbWrite }));
   if (!book) throw new Error(`Book not found for pen session: ${session.bookId}`);
   return { ...session, bookMode: book.mode };
 }
@@ -101,7 +105,13 @@ export async function createPenSession(
   userId: string,
   params: { bookId: string; authoringMode: AuthoringMode; assistanceLevel?: number; authoringPov?: AuthoringPov | null }
 ): Promise<PenSessionPayload> {
-  const book: DBBook | null = await getBookFromDB(params.bookId);
+  // The book is usually created milliseconds before this runs (POST /books/pen
+  // writes via dbWrite). The read replica may not have it yet, so fall back to
+  // the write client before declaring it missing — otherwise a fresh Pen book
+  // is reported as "not found" and the client misreads it as a non-owner error.
+  const book: DBBook | null =
+    (await getBookFromDB(params.bookId)) ??
+    (await getBookFromDB(params.bookId, { client: dbWrite }));
   if (!book) throw new PenSessionNotFoundError("Book not found");
   if (book.userId !== userId) throw new PenBookOwnershipError();
 

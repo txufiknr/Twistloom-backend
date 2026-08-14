@@ -13,6 +13,8 @@ export type GenerateBookCreationPromptParams = {
   userId?: string | null;
   /** Optional book title to guide the generated story concept (AI context). */
   title?: string | null;
+  /** Optional existing summary/blurb to expand into a fuller story concept. */
+  summary?: string | null;
 };
 
 /**

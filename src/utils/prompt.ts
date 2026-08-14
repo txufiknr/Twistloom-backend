@@ -4998,7 +4998,7 @@ Do not explain, summarize, or mention this review process.` : '';
  * 
  * @returns Object containing systemPrompt and userPrompt for book creation
  */
-function getBookCreationPrompts(headerLanguage?: string | null, title?: string | null): { systemPrompt: string; userPrompt: string } {
+function getBookCreationPrompts(headerLanguage?: string | null, title?: string | null, summary?: string | null): { systemPrompt: string; userPrompt: string } {
   const lang = formatLanguage(headerLanguage || 'en');
   const titleContext = title && title.trim()
     ? `BOOK TITLE (user-provided, use as the creative anchor for the story concept):
@@ -5006,11 +5006,20 @@ function getBookCreationPrompts(headerLanguage?: string | null, title?: string |
 - Interpret the title naturally — it may be a literal title, a thematic hint, or a source of mood/imagery.
 - Do NOT suggest a different title; keep the given title as-is.`
     : '';
+  const summaryContext = summary && summary.trim()
+    ? `EXISTING SUMMARY (user-provided draft, EXPAND it into a full story concept):
+- Keep, honor, and build on the existing blurb below; do not discard or contradict it.
+- Flesh out the premise, characters, tone, and conflicts hinted at in the draft.
+- Do NOT repeat the draft verbatim — expand it into a richer, more detailed concept.
+- Draft: "${summary.trim()}"`
+    : '';
   const systemPrompt = `You are a creative writing assistant specializing in generating engaging story concept for interactive thriller, mystery, horror, and psychological fiction novels.
 
 TASK: Generate a compelling story concept that another AI will use as the foundation for generating an entire branching novel (max ${MAX_THEME_LENGTH_PROMPT} characters).
 
 ${titleContext}
+
+${summaryContext}
 
 LANGUAGE:
 - The entire output MUST be written in the target language: ${lang}.
@@ -5056,7 +5065,10 @@ OUTPUT FORMAT:
 - Output plain text only. Do not use Markdown formatting.
 - The overall output must not exceed ${MAX_THEME_LENGTH_PROMPT} characters.`;
 
-  const userPrompt = title && title.trim()
+  const userPrompt = summary && summary.trim()
+    ? `Expand the user's draft summary into a full, compelling story concept for a thriller/horror interactive fiction novel${title && title.trim() ? ` titled "${title.trim()}"` : ''}. Expand on the existing draft below — make it richer and more detailed while staying true to it. Be specific and intriguing. Write the entire prompt in the target language: ${lang}.
+Draft: "${summary.trim()}"`
+    : title && title.trim()
     ? `Generate a creative and engaging story prompt for a thriller/horror interactive fiction novel titled "${title.trim()}". The concept must be anchored to this title. Be specific and intriguing. Write the entire prompt in the target language: ${lang}.`
     : `Generate a creative and engaging story prompt for a thriller/horror interactive fiction novel. Be specific and intriguing. Write the entire prompt in the target language: ${lang}.`;
 
@@ -5091,8 +5103,8 @@ OUTPUT FORMAT:
  * ```
  */
 export async function generateBookCreationPromptStream(params: GenerateBookCreationPromptParams = {}): Promise<AIChatStreamResult> {
-  const { logPrompts = false, signal, language = 'en', title } = params;
-  const { systemPrompt, userPrompt } = getBookCreationPrompts(language, title);
+  const { logPrompts = false, signal, language = 'en', title, summary } = params;
+  const { systemPrompt, userPrompt } = getBookCreationPrompts(language, title, summary);
 
   return aiStreamSSE(userPrompt, {
     modelSelection: AI_CHAT_MODELS_THEME,
@@ -5119,8 +5131,8 @@ export async function generateBookCreationPromptStream(params: GenerateBookCreat
  * ```
  */
 export async function generateBookCreationPrompt(params: GenerateBookCreationPromptParams = {}): Promise<AIResponse<string>> {
-  const { logPrompts = false, language = 'en', title } = params;
-  const { systemPrompt, userPrompt } = getBookCreationPrompts(language, title);
+  const { logPrompts = false, language = 'en', title, summary } = params;
+  const { systemPrompt, userPrompt } = getBookCreationPrompts(language, title, summary);
 
   const response = await aiPrompt(userPrompt, {
     modelSelection: AI_CHAT_MODELS_THEME,
