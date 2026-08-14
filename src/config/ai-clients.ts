@@ -530,6 +530,18 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
   chutes: [
     'zai-org/GLM-5.1-TEE', // Prefer TEE-flagged models specifically to avoid decentralized logging[cite: 3].
   ],
+  // PROMOTED 2026-08-15: Inception Labs Mercury (diffusion LLM) moved up from
+  // the inert AI_CHAT_MODELS_DIFFUSION experimental rung into the live writing
+  // waterfall as a low-cost ($0) bottom rung — roughly an order of magnitude
+  // cheaper per token than autoregressive decoders. Positioned just above
+  // llm7 (the absolute last resort) so it only ever serves after the
+  // higher-quality prose providers have all been exhausted. Continuity risk
+  // (diffusion models don't "attend to" prior page text) is mitigated by the
+  // 9-stage parse pipeline + evaluator recursion; see
+  // docs/roadmap/AI_DIFFUSION_TOKEN_SAVING_EXECUTION_ROADMAP.md Step 6.
+  inception: [
+    'mercury-coder-small', // Diffusion decoder; $0 during Inception's API-credits burn campaign.
+  ],
   llm7: [
     'gpt-4o-mini', // Unaffiliated mirror with no SLA; absolute last resort[cite: 3].
   ],
@@ -644,15 +656,22 @@ export const AI_CHAT_MODELS_IDEA: AIModelSelection = {
  *
  * This is the v1 target of docs/roadmap/AI_DIFFUSION_TOKEN_SAVING_EXECUTION_ROADMAP:
  * diffusion decoders are roughly an order of magnitude cheaper per token than
- * autoregressive decoders. Deliberately NOT merged into AI_CHAT_MODELS_WRITING —
- * it stays "experimental" until the Step-6 adherence/continuity trial confirms
- * mercury-coder-small preserves story-state continuity, because diffusion
- * models have no prior page text to "attend to" the way autoregressive decoders
- * do and are the most likely provider to forget the story state mid-run.
+ * autoregressive decoders.
+ *
+ * PROMOTED 2026-08-15: `mercury-coder-small` now also lives in
+ * AI_CHAT_MODELS_WRITING as the $0 bottom writing rung (see its entry there).
+ * This selection is kept as a dedicated pool for two reasons: it is what the
+ * Step-6 trial harness (`tests/test-diffusion-adherence.ts`) drives, and it
+ * remains the *isolated* way to route single-shot IDEA/THEME-scale diffusion
+ * calls without touching the writing waterfall. Continuity caveat still
+ * applies — diffusion models have no prior page text to "attend to" the way
+ * autoregressive decoders do and are the most likely provider to forget the
+ * story state mid-run; the 9-stage parse pipeline + evaluator recursion are
+ * the mitigation once live.
  */
 export const AI_CHAT_MODELS_DIFFUSION: AIModelSelection = {
   inception: [
-    'mercury-coder-small', // Stays "experimental" until the Step-6 adherence/continuity trial[cite: 3].
+    'mercury-coder-small', // $0 during Inception's API-credits burn campaign[cite: 3].
   ],
 };
 

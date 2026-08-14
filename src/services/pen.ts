@@ -950,7 +950,7 @@ function coerceStateProposal(
   output: PenStateProposalAIOutput,
   currentState: StoryState | null,
   expectedPageNumber: number,
-): { inventory: InventoryItem[]; injuries: Injury[] } {
+): { inventory: InventoryItem[]; injuries: Injury[]; keyEvents: string[]; keyObjects: string[] } {
   const inventory: InventoryItem[] = [];
   if (Array.isArray(output.inventory)) {
     for (const raw of output.inventory) {
@@ -969,7 +969,10 @@ function coerceStateProposal(
     }
   }
 
-  return { inventory, injuries };
+  const keyEvents = coerceEssentialsList(output.keyEvents, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH);
+  const keyObjects = coerceEssentialsList(output.keyObjects, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH);
+
+  return { inventory, injuries, keyEvents, keyObjects };
 }
 
 /** Errors thrown while running a finalize state-proposal request. */
@@ -1013,7 +1016,7 @@ export async function proposePenStateUpdates(
 
   // Page 1: no prior state → nothing to propose (the frontend skips the dialog).
   if (!session.currentPageId) {
-    return { inventory: [], injuries: [] };
+    return { inventory: [], injuries: [], keyEvents: [], keyObjects: [] };
   }
 
   const state = await getStoryStateWithBranch(book.id, session.currentPageId);
@@ -1119,7 +1122,7 @@ export async function proposePenStateUpdates(
     { context: "pen_finalize_propose", metadata: { sessionId, bookId: book.id } }
   );
 
-  return { inventory: result.inventory, injuries: result.injuries };
+  return { inventory: result.inventory, injuries: result.injuries, keyEvents: result.keyEvents, keyObjects: result.keyObjects };
 }
 
 /** Errors thrown while running a `/finalize` request. */
@@ -1154,6 +1157,13 @@ export type PenFinalizeInput = {
   adoptInventory?: InventoryItem[];
   /** Author-adopted next-page injuries (full replacement). See {@link adoptInventory}. */
   adoptInjuries?: Injury[];
+  /**
+   * Author-adopted page key events (editorial scene metadata). Sent when the
+   * author confirms the AI state proposal; replaces the page's keyEvents.
+   */
+  adoptKeyEvents?: string[];
+  /** Author-adopted page key objects. See {@link adoptKeyEvents}. */
+  adoptKeyObjects?: string[];
 };
 
 /** Body of `POST /api/pen/sessions/:id/finalize/propose`. */
@@ -1168,6 +1178,10 @@ export type PenStateProposalOutput = {
   inventory: InventoryItem[];
   /** Proposed next-page injuries (full replacement). */
   injuries: Injury[];
+  /** Proposed page key events (editorial scene metadata). */
+  keyEvents: string[];
+  /** Proposed page key objects (editorial scene metadata). */
+  keyObjects: string[];
 };
 
 /** Result of a `/finalize` request. */
@@ -1400,12 +1414,16 @@ export async function finalizePenDraft(
         {
           inventory: Array.isArray(input.adoptInventory) ? input.adoptInventory : [],
           injuries: Array.isArray(input.adoptInjuries) ? input.adoptInjuries : [],
+          keyEvents: Array.isArray(input.adoptKeyEvents) ? input.adoptKeyEvents : [],
+          keyObjects: Array.isArray(input.adoptKeyObjects) ? input.adoptKeyObjects : [],
         },
         currentState,
         pageNumber,
       );
       if (adopted.inventory.length > 0) generatedStoryPage.inventory = adopted.inventory;
       if (adopted.injuries.length > 0) generatedStoryPage.injuries = adopted.injuries;
+      if (adopted.keyEvents.length > 0) generatedStoryPage.keyEvents = adopted.keyEvents;
+      if (adopted.keyObjects.length > 0) generatedStoryPage.keyObjects = adopted.keyObjects;
 
       const advancedState = await advanceStoryState(currentState, actionedPage);
 
@@ -1506,6 +1524,8 @@ export async function finalizePenDraft(
         {
           inventory: Array.isArray(input.adoptInventory) ? input.adoptInventory : [],
           injuries: Array.isArray(input.adoptInjuries) ? input.adoptInjuries : [],
+          keyEvents: Array.isArray(input.adoptKeyEvents) ? input.adoptKeyEvents : [],
+          keyObjects: Array.isArray(input.adoptKeyObjects) ? input.adoptKeyObjects : [],
         },
         null,
         1,
@@ -1519,6 +1539,8 @@ export async function finalizePenDraft(
           fearLevel: initialState.flags.fear,
         });
       }
+      if (pageOneAdopted.keyEvents.length > 0) pageToInsert.keyEvents = pageOneAdopted.keyEvents;
+      if (pageOneAdopted.keyObjects.length > 0) pageToInsert.keyObjects = pageOneAdopted.keyObjects;
       await insertStoryState(book.id, newPage.id, initialState, "original");
     }
   } catch (error) {

@@ -14,7 +14,7 @@ import { calculateHealthStatus, generateRandomCharacter, getMainCharacterInfo } 
 import { getPreviousPages } from "../services/story.js";
 import { BOOK_MAX_PAGES, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/story.js";
 import { getErrorMessage } from "./error.js";
-import { validatePageActionsForMode } from "./book-mode.js";
+import { sanitizeActionsForMode, validatePageActionsForMode } from "./book-mode.js";
 import { validateGeneratedPage, checkGeneratedPage } from "./page-validation.js";
 import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, insertBook, insertStoryPage, mapBookFromDb, getPageFromDB, getBookFromDB, persistPageWithState, mapToPersistedStoryPage, updateBook, invalidatePopularTagsCache } from "../services/book.js";
 import { runCanonValidationPass, insertCanonValidationAudit } from "../services/canon-validation.js";
@@ -3964,15 +3964,15 @@ export async function initializeBook(
 
     // ── Novel-mode first-page contract ───────────────────────────────────────
     // Novel mode is a single linear path: the opening page must present exactly
-    // one action. If the AI produced multiple, randomly keep a single one so the
-    // story still opens with a meaningful (non-deterministic) choice.
+    // one action. If the AI produced multiple, keep a single randomly-picked one
+    // (via sanitizeActionsForMode) so the story still opens with a meaningful
+    // (non-deterministic) choice.
     let firstPageForBook = generatedFirstPage;
     if (mode === 'novel' && generatedFirstPage.actions.length > 1) {
-      const [picked] = generatedFirstPage.actions
-        .slice()
-        .sort(() => Math.random() - 0.5)
-        .slice(0, 1);
-      firstPageForBook = { ...generatedFirstPage, actions: [picked] };
+      firstPageForBook = {
+        ...generatedFirstPage,
+        actions: sanitizeActionsForMode(mode, generatedFirstPage.actions),
+      };
     }
 
     // Normalize viable ending object

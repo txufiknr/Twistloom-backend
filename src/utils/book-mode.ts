@@ -129,11 +129,12 @@ export function validatePageActionsForMode(mode: BookMode, actions: Action[]): v
  * Unlike `validatePageActionsForMode` which throws on violation, this function
  * gracefully truncates excess actions so the caller can proceed without error.
  * This is the **defence-in-depth** layer for candidate generation: if the AI
- * over-generates, the extra actions are silently dropped and only the first
- * action is kept.
+ * over-generates, the extra actions are silently dropped and a single action is
+ * kept.
  *
  * Mode rules:
- *   - novel       : exactly 1 action (excess are dropped with a warning)
+ *   - novel       : exactly 1 action (the kept action is picked at random so
+ *                   over-generation never makes book/page creation deterministic)
  *   - interactive : 1..MAX_ACTIONS_PER_PAGE actions (unchanged)
  *   - multiverse  : 1..MAX_ACTIONS_PER_PAGE actions (unchanged)
  *
@@ -144,12 +145,12 @@ export function validatePageActionsForMode(mode: BookMode, actions: Action[]): v
 export function sanitizeActionsForMode(mode: BookMode, actions?: Action[]): Action[] {
   if (!actions) return [];
   if (mode === 'novel' && actions.length > 1) {
+    const picked = actions[Math.floor(Math.random() * actions.length)];
     console.warn(
       `[sanitizeActionsForMode] ⚠️ Mode "${mode}" requires exactly 1 action; ` +
-      `truncating from ${actions.length} to 1. Keeping: "${actions[0].text}"`,
+      `truncating from ${actions.length} to 1. Keeping: "${picked.text}"`,
     );
-    // TODO: should pick random instead of always first `[0]`
-    return [actions[0]];
+    return [picked];
   }
   return actions;
 }

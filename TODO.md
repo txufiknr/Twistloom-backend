@@ -17,86 +17,39 @@
 - [ ] need change to cursor pagination?
 
 ---
-I got error for this line:
-response_format: buildOpenAIResponseFormat(context, outputAsJson, outputJsonStructure, outputJsonRequired),
 
-Type '{ type: string; json_schema: { name: string; strict: boolean; schema: AIJsonProperty | undefined; }; } | { type: string; json_schema?: undefined; } | undefined' is not assignable to type 'ResponseFormatText | ResponseFormatJSONSchema | ResponseFormatJSONObject | undefined'.
-  Type '{ type: string; json_schema: { name: string; strict: boolean; schema: AIJsonProperty | undefined; }; }' is not assignable to type 'ResponseFormatText | ResponseFormatJSONSchema | ResponseFormatJSONObject | undefined'.
-    Type '{ type: string; json_schema: { name: string; strict: boolean; schema: AIJsonProperty | undefined; }; }' is not assignable to type 'ResponseFormatText | ResponseFormatJSONSchema | ResponseFormatJSONObject'.
-      Type '{ type: string; json_schema: { name: string; strict: boolean; schema: AIJsonProperty | undefined; }; }' is not assignable to type 'ResponseFormatJSONSchema'.
-        Types of property 'type' are incompatible.
-          Type 'string' is not assignable to type '"json_schema"'.
-completions.d.ts(1823, 5): The expected type comes from property 'response_format' which is declared here on type 'OpenRouterCreateParams'
+[ ] sambanova: error: 402 A payment method is required. Add one at https://cloud.sambanova.ai/plans/billing to continue.
 
-and for these blocks in `groqStreamGenerator`:
-
-const stream = await getGroqClient().chat.completions.create({
-  messages: buildChatMessages(systemPromptWithDocuments, prompt),
-  model,
-  stream: true,
-  stream_options: { include_usage: true },
-  ...buildSamplingParams('groq', model, config),
-  response_format: buildOpenAIResponseFormat(context, outputAsJson, outputJsonStructure, outputJsonRequired),
-} satisfies Groq.ChatCompletionCreateParamsStreaming, { signal });
-
-No overload matches this call.
-  Overload 1 of 3, '(body: ChatCompletionCreateParamsNonStreaming, options?: RequestOptions | undefined): APIPromise<ChatCompletion>', gave the following error.
-    Type 'true' is not assignable to type 'false'.
-  Overload 2 of 3, '(body: ChatCompletionCreateParamsStreaming, options?: RequestOptions | undefined): APIPromise<Stream<ChatCompletionChunk>>', gave the following error.
-    Object literal may only specify known properties, and 'stream_options' does not exist in type 'ChatCompletionCreateParamsStreaming'.
-  Overload 3 of 3, '(body: ChatCompletionCreateParamsBase, options?: RequestOptions | undefined): APIPromise<ChatCompletion | Stream<...>>', gave the following error.
-    Object literal may only specify known properties, and 'stream_options' does not exist in type 'ChatCompletionCreateParamsBase'.
-completions.d.mts(1970, 5): The expected type comes from property 'stream' which is declared here on type 'ChatCompletionCreateParamsNonStreaming'
-
-Object literal may only specify known properties, and 'stream_options' does not exist in type 'ChatCompletionCreateParamsStreaming'.
-
-if (chunk.usage) {
-  usage = {
-    promptTokens: chunk.usage.prompt_tokens,
-    cachedTokens: chunk.usage.prompt_tokens_details?.cached_tokens ?? 0,
-  };
-}
-
-Property 'usage' does not exist on type 'ChatCompletionChunk'.
-
-and I got this error log using cohere ('command-r-08-2024' model):
-
-  314 |             if (_response.error.reason === "status-code") {
-  315 |                 switch (_response.error.statusCode) {
-  316 |                     case 400:
-  317 |                         throw new Cohere.BadRequestError(_response.error.body, _response.rawResponse);
-                                                 ^
-  BadRequestError: BadRequestError
-  Status code: 400
+[ ] cohere/command-r-08-2024
+  UnprocessableEntityError: UnprocessableEntityError
+  Status code: 422
   Body: {
-    "id": "90de3de5-ea51-40d8-9c73-59c4583b645b",
-    "message": "invalid request: response_format validation: invalid 'json_schema' provided: missing required field 'type'"
+    "error_type": "NO_VALID_RESPONSE_GENERATED",
+    "id": "1f057999-6c9c-46e4-a520-d5aac611cd89",
+    "message": "No valid response generated. Try updating messages"
   }
-   statusCode: 400,
-         body: {
-    id: "90de3de5-ea51-40d8-9c73-59c4583b645b",
-    message: "invalid request: response_format validation: invalid 'json_schema' provided: missing required field 'type'",
-  },
-   rawResponse: {
-    headers: Headers [Object ...],
-    redirected: false,
-    status: 400,
-    statusText: "Bad Request",
-    type: "default",
-    url: "https://api.cohere.com/v2/chat",
-  },
-  
-        at /home/runner/work/Twistloom-backend/Twistloom-backend/node_modules/cohere-ai/api/resources/v2/client/Client.js:317:42
-        at fulfilled (/home/runner/work/Twistloom-backend/Twistloom-backend/node_modules/cohere-ai/api/resources/v2/client/Client.js:97:57)
-        at processTicksAndRejections (native:7:39)
 
-looking at my old `coherePrompt` code, I think the correct shape in `buildCohereResponseFormat` should be:
+nvidia/qwen/qwen2.5-72b-instruct
+error: HTTP 404: 404 page not found
 
-return outputAsJson ? {
-  type: "json_object",
-  jsonSchema: outputJsonStructure ? buildJsonSchemaObject(outputJsonStructure, outputJsonRequired) : undefined
-} satisfies Cohere.ResponseFormatV2 : undefined;
+siliconflow/Qwen/Qwen3-8B
+chutes/zai-org/GLM-5.1-TEE
+error: 402 status code (no body)
 
+llm7/gpt-4o-mini
+error: 400 Model 'gpt-4o-mini' is currently unavailable.
+
+openrouter/qwen/qwen3-30b-a3b
+error: 402 This request requires more credits, or fewer max_tokens. You requested up to 4000 tokens, but can only afford 3384. To increase, visit https://openrouter.ai/settings/credits and upgrade to a paid account
+
+openrouter/google/gemini-2.5-flash
+error: 402 This request requires more credits, or fewer max_tokens. You requested up to 4000 tokens, but can only afford 676. To increase, visit https://openrouter.ai/settings/credits and upgrade to a paid account
+
+openrouter/z-ai/glm-4.5-air
+error: 402 This request requires more credits, or fewer max_tokens. You requested up to 4000 tokens, but can only afford 1538. To increase, visit https://openrouter.ai/settings/credits and upgrade to a paid account
+
+openrouter/meta-llama/llama-4-maverick
+error: 402 This request requires more credits, or fewer max_tokens. You requested up to 4000 tokens, but can only afford 1471. To increase, visit https://openrouter.ai/settings/credits and upgrade to a paid account
 
 ---
 
@@ -204,11 +157,7 @@ note: this is roadmap documentation writing only, no code changes
 ---
 
 [ ] claude: migrate "Minimal local shape" to use canonical types from `@google/genai` (D:\Projects\Twistloom\Twistloom-backend\node_modules\@google\genai\dist\genai.d.ts)
-
 [ ] docs\roadmap\TWISTLOOM_AGENT_MCP_ROADMAP.md
-[ ] docs\roadmap\TWISTLOOM_AI_DRY_OPPORTUNITIES.md
-[ ] promote inception mercury: docs\roadmap\AI_DIFFUSION_TOKEN_SAVING_EXECUTION_ROADMAP.md
-[ ] bun tests/test-diffusion-adherence.ts
 
 ---
 

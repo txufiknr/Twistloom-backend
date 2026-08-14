@@ -630,7 +630,7 @@ export function buildPenEssentialsAutofillPrompt(params: {
  * that should be removed. This is a constrained structured-output task, capped
  * by `PEN_FINALIZE_PROPOSE_MAX_TOKENS`.
  */
-export const PEN_STATE_PROPOSAL_SYSTEM = `You are a story-state accountant for an author. Given the author's CURRENT DRAFT for the NEXT page, compute what the story state should become once that page is published: the character's full inventory and any injuries they carry.
+export const PEN_STATE_PROPOSAL_SYSTEM = `You are a story-state accountant for an author. Given the author's CURRENT DRAFT for the NEXT page, compute what the story state should become once that page is published: the character's full inventory, any injuries they carry, and the page's key events and key objects.
 
 MANDATORY: the USER message contains labeled sections you MUST read and obey before generating: AUTHOR'S PERSONA, STORY SUMMARY, CANONICAL LORE, NARRATIVE STYLE, WRITE IN LANGUAGE, CANONICAL STATE (do not contradict), RECENT STORY, CURRENT DRAFT, and CURRENT INVENTORY & INJURIES. The CANONICAL STATE and CANONICAL LORE are authoritative — do not contradict them.
 
@@ -641,6 +641,7 @@ CRITICAL RULES:
 - Only derive changes the draft supports. Do not invent loot, wounds, or losses out of nowhere; when nothing changes, echo the current state.
 - For each inventory item include the traits that matter (e.g. material, state, rules) as strings in the engine's 'key: value' format (e.g. 'material: iron'); omit traits when the item has none.
 - INJURY SEVERITY is 0–1 (0.1 minor, 0.3 moderate, 0.6 severe, 0.9 critical). INJURY CATEGORY must be one of the CATEGORY OPTIONS.
+- KEY EVENTS and KEY OBJECTS are editorial scene metadata: infer the meaningful events that happen on this page and the important objects present or used, as concise phrases in the story's language. Empty the list when there is nothing notable.
 
 Return ONLY the JSON form matching the schema.
 
@@ -672,6 +673,10 @@ export type PenStateProposalResult = {
   inventory: PenStateProposalInventoryItem[];
   /** FULL resulting injuries (replacement semantics). */
   injuries: PenStateProposalInjury[];
+  /** Key events this page, inferred from the draft + canon (editorial scene metadata). */
+  keyEvents: string[];
+  /** Key objects this page, inferred from the draft + canon (editorial scene metadata). */
+  keyObjects: string[];
 };
 
 /** Structured-output schema for the finalize state proposal. */
@@ -712,6 +717,16 @@ export const PEN_STATE_PROPOSAL_SCHEMA: Record<keyof PenStateProposalResult, AIJ
       },
       required: ["bodyPart", "description"],
     },
+  },
+  keyEvents: {
+    type: "array",
+    description: "Meaningful events that occurred on this page, inferred from the draft.",
+    items: { type: "string" },
+  },
+  keyObjects: {
+    type: "array",
+    description: "Important objects present or used on this page, inferred from the draft.",
+    items: { type: "string" },
   },
 };
 
@@ -813,7 +828,7 @@ export function buildPenStateProposalPrompt(params: {
       `CURRENT DRAFT:\n${draftText}`,
       `CURRENT INVENTORY & INJURIES (the state before this page publishes — carry forward what persists, change only what the draft supports):\nINVENTORY:\n${renderCurrentInventory(state ?? null)}\nINJURIES:\n${renderCurrentInjuries(state ?? null)}`,
       `CATEGORY OPTIONS: ${injuryCategories.join(", ")}`,
-      "Compute the FULL resulting inventory and injuries for the page being published.",
+      "Compute the FULL resulting inventory, injuries, key events, and key objects for the page being published.",
     ].join("\n\n"),
   };
 }

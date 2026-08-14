@@ -1,6 +1,6 @@
 # Twistloom — AI Orchestration Architecture
 
-> **Revision:** v1 — current implementation audit (2026-08-13)
+> **Revision:** v3 — updated 2026-08-15 to reflect the Inception diffusion-LLM promotion (was v2, 2026-08-13 DRY refactor + 9-provider wiring pass).
 > **Stack:** TypeScript / Node.js (Bun) · Hono · PostgreSQL (Neon) · Redis (Upstash)
 > **Primary sources:** `src/utils/ai-chat.ts` · `src/utils/ai-chat-stream.ts` · `src/types/ai-chat.ts` ·
 > `src/config/ai-chat.ts` · `src/config/ai-clients.ts` · `src/utils/ai-limiters.ts` · `src/utils/ai-clients.ts`
@@ -12,6 +12,13 @@
 > Those docs describe the *build order*; this one describes *what is running today*.
 > It complements (does not replace) `docs/architecture/AI_LLM_ARCHITECTURE.md` (caching/prompt-cost
 > engineering) and `docs/architecture/AI_CHAT_STREAM_ARCHITECTURE.md` (SSE event wire format).
+>
+> **What changed in this revision:** all 9 providers §17 flagged as "registered but unwired"
+> (`ovhcloud`, `sambanova`, `ollama`, `modelscope`, `zai`, `siliconflow`, `aionlabs`, `chutes`, `llm7`)
+> are now fully wired — 19 total chat-capable providers, up from 10. The 14-item DRY audit referenced
+> throughout this document (`TWISTLOOM_AI_DRY_OPPORTUNITIES.md`) is now a completion report, not a
+> proposal — every refactor in it is implemented. §3, §5, §15, and §17 are updated accordingly; see
+> each section for what specifically changed.
 
 ---
 
@@ -124,9 +131,11 @@ flowchart TB
 
 **Reader's note for the diagram above.** The `Switch` from an orchestrator to a provider function is
 the single junction every provider must pass through. `aiPrompt` uses a `switch (provider)` that maps
-to nine provider prompt functions; `aiStreamSSE` uses a `switch` that constructs the matching
-generator. Providers that exist **only in the type union and config maps** (see §3 "registered but not
-wired") never appear in those switches and therefore behave as silent no-ops in the waterfall.
+to 18 provider prompt functions (was 9 before the 2026-08-13 wiring pass — see §17.5); `aiStreamSSE`
+uses a matching `switch` that constructs the corresponding generator. A provider that exists only in
+the type union and config maps but has no case in either switch (the state all 9 newer providers were
+in before that pass) behaves as a silent no-op in the waterfall — present in the pool, never actually
+callable.
 
 ---
 
@@ -145,9 +154,21 @@ wired") never appear in those switches and therefore behave as silent no-ops in 
 | `nvidia` | raw `fetch` | `https://integrate.api.nvidia.com/v1/chat/completions`, 60s `AbortSignal.timeout` | ✅ prompt + stream (no structured-output support) |
 | `openrouter` | OpenAI SDK | `https://openrouter.ai/api/v1`; `response-healing` plugin | ✅ prompt + stream (factory) |
 | `cloudflare` | OpenAI SDK | `…/client/v4/accounts/{ACCOUNT_ID}/ai/v1` | ✅ prompt + stream (factory) |
-| `inception` | OpenAI SDK | `https://api.inceptionlabs.ai/v1` (diffusion LLM) | ✅ prompt + stream (factory); **inert** in waterfall until Step-6 trial |
+| `inception` | OpenAI SDK | `https://api.inceptionlabs.ai/v1` (diffusion LLM) | ✅ prompt + stream (factory); **promoted 2026-08-15** into `AI_CHAT_MODELS_WRITING` bottom rung ($0 diffusion decoder) |
+| `ovhcloud`, `sambanova`, `ollama`, `modelscope`, `zai`, `siliconflow`, `aionlabs`, `chutes`, `llm7` | OpenAI SDK (all 9 confirmed OpenAI Chat Completions–compatible) | provider-specific base URLs, see `.env.example` | ✅ **prompt + stream, wired 2026-08-13** (factory) — see note below |
 | `jina` | (own embed path) | embeddings only — not chat | ⚠️ embeddings-only; own limiter, never in chat switches |
-| `ovhcloud`, `sambanova`, `ollama`, `modelscope`, `zai`, `siliconflow`, `aionlabs`, `chutes`, `llm7` | — | — | ❌ **registered but not wired** — union + config entries only |
+
+> **2026-08-13 wiring note.** `ai-chat.ts`/`ai-chat-stream.ts` are fully wired for all 9 — each is a
+> one-line `createOpenAICompatiblePrompt`/`createOpenAICompatibleStreamGenerator` call, identical in
+> shape to openrouter/cloudflare/inception, plus a switch case in both `aiPrompt` and `aiStreamSSE`.
+> What's **still needed outside those two files** for these calls to actually succeed at runtime:
+> client-getter functions (`getOvhcloudClient()`, etc.) + `AI_PROVIDER_API_KEYS` entries in
+> `src/utils/ai-clients.ts`, rate limiter entries in `src/utils/ai-limiters.ts`, and `.env` values.
+> `AI_RATE_LIMITS`/`AI_MAX_PROMPT_LENGTH`/`AI_MAX_OUTPUT_TOKEN`/`AI_STREAM_DEFAULT_MODEL` config
+> entries and the `AI_CHAT_MODELS_*` pool placements were already done in an earlier pass — see §5.
+> One gotcha worth flagging explicitly: `getChutesClient()`'s `baseURL` needs to be
+> `https://llm.chutes.ai/v1` (**not** including `/chat/completions` — the OpenAI SDK appends that
+> itself; Chutes' own docs publish the full path, which double-appends if pasted as-is).
 
 **Client life cycle** (`src/utils/ai-clients.ts`): every client is a lazy-loading module-level
 singleton (`getGeminiClient()`, `getMistralClient()`, …, `getInceptionClient()`). First call
@@ -202,14 +223,14 @@ capacity. `aiPrompt` answers with whichever provider/model succeeds first.
 
 | Pool | Purpose | Notable members |
 |---|---|---|
-| `AI_CHAT_MODELS_WRITING` | full story-page generation (16 providers!) | mistral (top), gemini, openrouter, cerebras, groq, nvidia, cloudflare, cohere, then the registered-but-unwired batch |
+| `AI_CHAT_MODELS_WRITING` | full story-page generation (17 providers!) | mistral (top), gemini, openrouter, cerebras, groq, nvidia, cloudflare, cohere, then the newly-wired batch (ovhcloud, sambanova, modelscope, zai, siliconflow, ollama, chutes), then **inception** (`mercury-coder-small`, promoted 2026-08-15 — $0 diffusion bottom rung, just above the absolute-last-resort llm7) |
 | `AI_CHAT_MODELS_FAST` | theme/custom-action validation | groq, cerebras, sambanova |
-| `AI_CHAT_MODELS_IDEA` | brainstorming / big-idea prompts | gemini, mistral, openrouter, groq, cloudflare, nvidia, cohere + tiny-quota newcomers |
+| `AI_CHAT_MODELS_IDEA` | brainstorming / big-idea prompts | gemini, mistral, openrouter, groq, cloudflare, nvidia, cohere + tiny-quota newcomers (aionlabs, llm7, modelscope, siliconflow — now functional) |
 | `AI_CHAT_MODELS_THEME` | theme idea + meta directives | `IDEA` + `FAST` spread |
 | `AI_CHAT_MODELS_VALIDATION` | policy/content compliance | `IDEA` + groq `gpt-oss-safeguard-20b` |
-| `AI_CHAT_MODELS_TRANSLATION` | multilingual book/page translation | mistral, gemini, cohere, qwen routes |
-| `AI_CHAT_MODELS_EVALUATION` | evaluator pass inside `aiPrompt` | gemini, mistral, cerebras, groq, openrouter, cohere + throughput-heavy newcomers |
-| `AI_CHAT_MODELS_DIFFUSION` | **experimental** diffusion single-shot | inception `mercury-coder-small` (deliberately **not** merged into WRITING) |
+| `AI_CHAT_MODELS_TRANSLATION` | multilingual book/page translation | mistral, gemini, cohere, qwen routes, zai/modelscope/ovhcloud/siliconflow direct Qwen/GLM access (now functional) |
+| `AI_CHAT_MODELS_EVALUATION` | evaluator pass inside `aiPrompt` | gemini, mistral, cerebras, groq, openrouter, cohere + throughput-heavy newcomers (ovhcloud, sambanova, modelscope — now functional) |
+| `AI_CHAT_MODELS_DIFFUSION` | **experimental** diffusion single-shot | inception `mercury-coder-small` — now **also** promoted into WRITING as a bottom rung (2026-08-15); this pool remains the isolated way to drive the trial harness / single-shot diffusion calls without touching the writing waterfall |
 
 ```mermaid
 flowchart LR
@@ -221,7 +242,8 @@ flowchart LR
     WRITING --> M2["gemini: 3.6-flash → 2.5-flash"]
     WRITING --> M3["openrouter: qwen3-30b-a3b → …"]
     WRITING --> M4["cerebras · groq · nvidia · cloudflare · cohere"]
-    WRITING --> M5["(unwired: ovhcloud … llm7)"]
+    WRITING --> M5["ovhcloud · sambanova · modelscope · zai · siliconflow · ollama · chutes<br/>(wired 2026-08-13 — functional)"]
+    WRITING --> M6["inception mercury-coder-small<br/>(promoted 2026-08-15 — $0 diffusion bottom rung)"]
 ```
 
 ---
@@ -615,20 +637,30 @@ Everything below is driven by the `AIChatProvider` union being the key of every 
 TypeScript enumerates the work for you. The OpenAI-compatible case is the cheap path because of the
 two factories.
 
+> **Status for the 9 providers wired 2026-08-13** (ovhcloud, sambanova, ollama, modelscope, zai,
+> siliconflow, aionlabs, chutes, llm7): **steps 1, 3, 5, 6, 7, 8 (pool placement) are done.** Steps 2
+> and 4 — the client-getter/`AI_PROVIDER_API_KEYS` entries in `src/utils/ai-clients.ts` and the
+> limiter entries in `src/utils/ai-limiters.ts` — were outside the scope of the `ai-chat.ts`/
+> `ai-chat-stream.ts` refactor that completed the other steps, since those two files weren't in hand
+> for that pass. All 9 confirmed OpenAI-compatible, so step 5 for each was the cheap one-liner path
+> (`createOpenAICompatiblePrompt`/`createOpenAICompatibleStreamGenerator`) — no hand-written prompt
+> functions were needed. `.env` entries (step 8's env half) and `AI_MODEL_COST_OVERRIDES` were
+> completed in an earlier pass (`ai-cost.ts`).
+
 ```mermaid
 flowchart TD
-    Step0["1. Add union member in src/types/ai-chat.ts"]
-    Step0 --> Step1["2. Add client singleton + AI_PROVIDER_API_KEYS entry<br/>in src/utils/ai-clients.ts (getXClient)"]
-    Step1 --> Step2["3. Add config entries in src/config/ai-clients.ts:<br/>AI_RATE_LIMITS · AI_MAX_PROMPT_LENGTH<br/>AI_MAX_OUTPUT_TOKEN · AI_STREAM_DEFAULT_MODEL"]
-    Step2 --> Step3["4. Add limiter in src/utils/ai-limiters.ts:<br/>buffer map · singleton · getXLimiter · switch case"]
+    Step0["1. Add union member in src/types/ai-chat.ts ✅ done"]
+    Step0 --> Step1["2. Add client singleton + AI_PROVIDER_API_KEYS entry<br/>in src/utils/ai-clients.ts (getXClient) ❌ still needed"]
+    Step1 --> Step2["3. Add config entries in src/config/ai-clients.ts:<br/>AI_RATE_LIMITS · AI_MAX_PROMPT_LENGTH<br/>AI_MAX_OUTPUT_TOKEN · AI_STREAM_DEFAULT_MODEL ✅ done"]
+    Step2 --> Step3["4. Add limiter in src/utils/ai-limiters.ts:<br/>buffer map · singleton · getXLimiter · switch case ❌ still needed"]
     Step3 --> S4Q{"OpenAI-compatible?"}
-    S4Q -- yes --> Step4a["5. One-liner:<br/>createOpenAICompatiblePrompt +<br/>createOpenAICompatibleStreamGenerator"]
+    S4Q -- yes --> Step4a["5. One-liner:<br/>createOpenAICompatiblePrompt +<br/>createOpenAICompatibleStreamGenerator ✅ done (all 9)"]
     S4Q -- no --> Step4b["5. Hand-write prompt fn (promptWithFallback)<br/>+ stream generator<br/>in ai-chat.ts / ai-chat-stream.ts"]
-    Step4a --> Step5["6. Add switch case in aiPrompt<br/>(ai-chat.ts ~1230)"]
+    Step4a --> Step5["6. Add switch case in aiPrompt<br/>(ai-chat.ts) ✅ done"]
     Step4b --> Step5
-    Step5 --> Step6["7. Add switch case in aiStreamSSE<br/>(ai-chat-stream.ts ~206)"]
-    Step6 --> Step7["8. Add a model pool entry (e.g. AI_CHAT_MODELS_WRITING)<br/>or keep it inert (AI_CHAT_MODELS_DIFFUSION pattern)"]
-    Step7 --> Step8[".env entry + extend AI_MODEL_COST_OVERRIDES<br/>then bun run check"]
+    Step5 --> Step6["7. Add switch case in aiStreamSSE<br/>(ai-chat-stream.ts) ✅ done"]
+    Step6 --> Step7["8. Add a model pool entry (e.g. AI_CHAT_MODELS_WRITING)<br/>or keep it inert (AI_CHAT_MODELS_DIFFUSION pattern) ✅ done"]
+    Step7 --> Step8[".env entry + extend AI_MODEL_COST_OVERRIDES<br/>then bun run check ✅ done"]
     Step8 --> Step9["9. DB enum — only if usage.provider is a pgEnum;<br/>today it is text/varchar, so no migration needed"]
 ```
 
@@ -654,7 +686,8 @@ flowchart TD
 | LLM-OPT Phase 7 — evaluator model routing | `🔧` composition unknown | ✅ `AI_CHAT_MODELS_EVALUATION` is a distinct pool with `useStringEvaluatorOutput` auto-resolution |
 | PATCH P6 — character relevance filter | `📋` | ⏩ Explicitly dropped (safe sort-by-recency reasoning in LLM-OPT Phase 2) |
 | Token-saving Step 1 — Mistral `promptCacheKey` | 📋 | ✅ Shipped (mirrors Gemini `cachedContentId`) |
-| Token-saving Steps 3–5 — adherence counters + diffusion harness + `inception` wiring | 📋 | ✅ Shipped; Step-6 trial pending a live key |
+| Token-saving Steps 3–5 — adherence counters + diffusion harness + `inception` wiring | 📋 | ✅ Shipped |
+| Token-saving Step 6 — Inception trial → promote | ⏳ | ✅ **Promoted 2026-08-15** into `AI_CHAT_MODELS_WRITING` bottom rung ($0); `AI_CHAT_MODELS_DIFFUSION` retained as isolated pool for the harness/single-shot |
 
 ---
 
@@ -667,35 +700,66 @@ flowchart TD
    deliberately **never** for background candidate generation.
 3. **Non-streaming latency telemetry.** `aiPrompt` records `durationMs` but lacks the TTFT/prompt-size
    log line (`logGenerationTelemetry`) that streaming has.
-4. **`isSchemaTooComplex` measurement** carries a `TODO` (src/utils/ai-chat.ts:1439) indicating the
-   measuring walk always returns zero on the current shape — the guard currently only meaningfully
-   fires on serialized length. Worth re-validating before leaning on the structural thresholds.
-5. **Registered-but-unwired providers.** `ovhcloud`, `sambanova`, `ollama`, `modelscope`, `zai`,
-   `siliconflow`, `aionlabs`, `chutes`, `llm7` exist in the union + config but have **no** prompt
-   functions, clients, limiters, or switch cases. They are waterfall no-ops today by design (capacity
-   review done; runtime wiring deferred). Adding them is exactly the §15 checklist.
+4. ~~`isSchemaTooComplex` measurement carries a `TODO`...~~ **FIXED 2026-08-13.** The `measure()` walk
+   was seeded incorrectly (`measure(schema)` treated the flat properties-map itself as a schema node,
+   which never has `.properties`/`.enum`/`.items` keys, so it returned immediately every time — props/
+   enumItems/maxDepth were always 0). Fixed by seeding `props` from `Object.keys(schema).length` and
+   recursing into each property's value at depth 1. The structural thresholds (>100 props, >100 enum
+   items, >6 deep) are now live, not dead code shadowed by the character-length check alone.
+5. ~~**Registered-but-unwired providers.**~~ **FIXED 2026-08-13.** `ovhcloud`, `sambanova`, `ollama`,
+   `modelscope`, `zai`, `siliconflow`, `aionlabs`, `chutes`, `llm7` now have prompt functions, switch
+   cases, and pool placements in both `ai-chat.ts` and `ai-chat-stream.ts` (all 9 via the OpenAI-
+   compatible factories — none needed a bespoke implementation). **Still open:** client-getter
+   functions + `AI_PROVIDER_API_KEYS` entries in `src/utils/ai-clients.ts`, and limiter entries in
+   `src/utils/ai-limiters.ts` — neither file was in scope for the pass that closed this gap. See §15.
 6. **Gemini Interactions dispatch** stays parked (explicit caching + `top_p`/`top_k` unsupported,
    verified 2026-08) — see ai-chat.ts:577 and Step 7 of the token-saving roadmap.
-7. **Diffusion trial (Step 6).** `inception` is inert until continuity/adherence is proven; the
-   harness lives at `tests/test-diffusion-adherence.ts` and needs an `INCEPTION_API_KEY` to run.
+7. **Diffusion trial (Step 6) — resolved 2026-08-15.** `inception` `mercury-coder-small` was promoted
+   into `AI_CHAT_MODELS_WRITING` as a $0 bottom writing rung (positioned just above the absolute-last-
+   resort `llm7`). `AI_CHAT_MODELS_DIFFUSION` is retained as an isolated pool so the trial harness
+   (`tests/test-diffusion-adherence.ts`) and any single-shot IDEA/THEME-scale diffusion routing can
+   target it without touching the writing waterfall. Continuity caveat applies in prod — diffusion
+   models don't attend to prior page text, so the 9-stage parse pipeline + evaluator recursion are the
+   mitigation; monitor the `usage` table's per-provider repair/adherence signals before deciding
+   whether the promoted rung earns its slot.
 8. **Evaluator string-mode trade-off.** String mode keeps the schema small (Gemini-compatible) but
    delegates structural validation to the 9-stage pipeline — a documented, accepted risk.
+9. **NEW 2026-08-13 — streaming usage-tracking gap, now fixed.** Of the 8 streaming generators, only
+   Gemini (both variants) and the OpenAI-compatible factory tracked/returned `StreamUsage`; Groq,
+   Cohere, Cerebras, and Mistral's streaming paths recorded `undefined` token counts in the usage
+   ledger regardless of what the provider actually billed (their non-streaming paths were always
+   correct). Fixed for all 4 — see `TWISTLOOM_AI_DRY_OPPORTUNITIES.md` §3.2. Cohere/Cerebras/Mistral's
+   exact final-chunk usage shapes weren't re-confirmed against a live response as part of that fix;
+   worth a smoke test before trusting them in a billing dashboard.
+10. **NEW 2026-08-13 — Cohere `responseFormat` shape, fixed twice.** A real divergence between
+    `coherePrompt` (unwrapped raw schema) and `cohereStreamGenerator` (wrapped `{name,strict,schema}`)
+    was correctly identified and consolidated into one shared `buildCohereResponseFormat` — but the
+    *first* fix guessed the wrong side (wrapped) and broke the previously-working non-streaming path
+    in production (`400: missing required field 'type'`). Cohere's own docs confirm the unwrapped
+    shape was correct all along; re-fixed accordingly. Documented here as a caution for future
+    DRY consolidations of divergent provider-dialect code: confirm the target shape against the
+    provider's actual docs before picking a side to standardize on, not just internal convention.
 
 ---
 
 ## 18. File Map & Quick Reference
 
+*Line numbers below are from the 2026-08-13 revision (post DRY-refactor + 9-provider wiring); expect
+drift as the files continue to change.*
+
 | Concern | File | Anchor |
 |---|---|---|
-| Non-streaming orchestrator + core | `src/utils/ai-chat.ts` | `aiPrompt` :1136 · `promptWithFallback` :40 · `createOpenAICompatiblePrompt` :200 · `isSchemaTooComplex` :1409 · `resolveUseStringEvaluator` :1465 |
-| Streaming orchestrator + generators | `src/utils/ai-chat-stream.ts` | `aiStreamSSE` :85 · `createOpenAICompatibleStreamGenerator` :392 · `parseSSEStreamContent` :980 |
+| Non-streaming orchestrator + core | `src/utils/ai-chat.ts` | `aiPrompt` :1419 · `promptWithFallback` :40 · `createOpenAICompatiblePrompt` :593 · `isSchemaTooComplex` :1692 |
+| DRY helpers (new 2026-08-13) | `src/utils/ai-chat.ts` | `buildChatMessages` · `buildJsonSchemaObject` · `build{OpenAI,Mistral,Cohere}ResponseFormat` · `buildGeminiResponseJsonSchema` · `buildSamplingParams` · `resolveGeminiCachedContent` · `buildGeminiConfig` · `buildMistralPromptCacheKey` · `resolveStreamDefaultModel` · `sumDocumentChars` · `assertPromptAllowed` · `buildModelRetryConfig` · `extractDeltaText` · `nvidiaChatRequest` · `mapCohereDocuments` — all just after `getMaxOutputToken`, exported for `ai-chat-stream.ts` to import |
+| Streaming orchestrator + generators | `src/utils/ai-chat-stream.ts` | `aiStreamSSE` :89 · `createOpenAICompatibleStreamGenerator` :407 · `parseSSEStreamContent` :965 |
 | Types | `src/types/ai-chat.ts` | `AIChatProvider` :11 · `AIResponse` :66 · `AIModelSelection` :93 · `AIPromptOptions` :101 · `PromptWithFallbackOptions` :389 · `StreamUsage`/`AIStreamGenerator` :476/:488 |
 | Sampling config | `src/config/ai-chat.ts` | `AI_CHAT_CONFIG_DEFAULT` :39 · `AI_CHAT_CONFIG_CREATIVE` :58 · `AI_CHAT_MODEL_RETRY_COUNT` :31 |
-| Rate limits / lengths / models | `src/config/ai-clients.ts` | `AI_RATE_LIMITS` :62 · `AI_MAX_PROMPT_LENGTH` :298 · `AI_MAX_OUTPUT_TOKEN` :380 · `AI_STREAM_DEFAULT_MODEL` :404 · model pools :448+ |
-| Throttling & budget | `src/utils/ai-limiters.ts` | `RateLimiter` :61 · `canUseAIToday` :277 · `incrementDailyUsageCount` :349 |
-| SDK clients | `src/utils/ai-clients.ts` | getters + `AI_PROVIDER_API_KEYS` :21 · `warmAIProviders` :138 |
+| Rate limits / lengths / models | `src/config/ai-clients.ts` | `AI_RATE_LIMITS` :62 · `AI_MAX_PROMPT_LENGTH` :298 · `AI_MAX_OUTPUT_TOKEN` :380 · `AI_STREAM_DEFAULT_MODEL` :404 · model pools :448+ (all include the 9 newer providers as of 2026-08) |
+| Throttling & budget | `src/utils/ai-limiters.ts` | `RateLimiter` :61 · `canUseAIToday` :277 · `incrementDailyUsageCount` :349 · **9 newer providers' limiters not yet added — §17.5** |
+| SDK clients | `src/utils/ai-clients.ts` | getters + `AI_PROVIDER_API_KEYS` :21 · `warmAIProviders` :138 · **9 newer providers' client getters not yet added — §17.5** |
 | Repair pipeline | `src/utils/ai-parser.ts` | `parseAISafely` + `getParseAdherenceStats` |
 | Errors / retry | `src/utils/error.ts` · `src/utils/retry.ts` | `classifyGenAIError` · `retryWithBackoff` |
 | Telemetry | `src/utils/prompt-telemetry.ts` · `src/utils/ai-logger.ts` · `src/utils/ai-cost.ts` | — |
 | Gemini explicit cache | `src/utils/gemini.ts` | `getOrCreateGeminiCache` |
+| DRY completion report | `TWISTLOOM_AI_DRY_OPPORTUNITIES.md` | Full before/after status for every item in §17.4/§17.5/§17.9/§17.10 above |
 | Related docs | `docs/architecture/AI_LLM_ARCHITECTURE.md` · `docs/architecture/AI_CHAT_STREAM_ARCHITECTURE.md` | caching & SSE wire format |

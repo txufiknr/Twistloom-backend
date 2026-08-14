@@ -279,43 +279,30 @@ export function buildMistralResponseFormat(
 /**
  * Cohere `responseFormat`.
  *
- * BUG FIX (was a silent drift, not a deliberate choice — see
- * TWISTLOOM_AI_DRY_OPPORTUNITIES.md §15.1): the non-streaming `coherePrompt`
- * previously sent the raw schema object directly as `jsonSchema`, while the
- * streaming `cohereStreamGenerator` wrapped it in `{ name, strict, schema }`.
- * Only one of these could have matched Cohere's actual V2 contract — this
- * helper standardizes both callers on the wrapped shape (matching the
- * OpenAI/Mistral convention, and matching Cohere's own V2 `ResponseFormatV2`
- * type, which nests the schema under a `jsonSchema.schema` object rather than
- * accepting a bare schema at `jsonSchema` directly).
+ * Used by the non-streaming `coherePrompt` and streaming `cohereStreamGenerator`
+ * 
+ * Cohere's own docs (see below) describe `json_schema` as the raw JSON
+ * Schema object itself, provided directly — no `name`/`strict`/`schema`
+ * wrapper exists in Cohere's actual contract at all (that wrapper shape is
+ * OpenAI/Mistral's convention, not Cohere's — the two APIs just happen to
+ * both call the field `json_schema`).
+ * 
+ * @see https://docs.cohere.com/reference/chat
+ * @see https://docs.cohere.com/v2/docs/structured-outputs
+ * 
+ * Note:
+ * `context` is accepted (matching the other three `build*ResponseFormat`
+ * signatures for interchangeability) but genuinely unused here — Cohere's
+ * raw-schema shape has no `name` field to put it in.
  */
 export function buildCohereResponseFormat(
   options: Pick<PromptWithFallbackOptions, 'context' | 'outputAsJson' | 'outputJsonStructure' | 'outputJsonRequired'>,
 ) {
-  const { context, outputAsJson, outputJsonStructure, outputJsonRequired } = options;
-
-  // return outputAsJson ? {
-  //   type: "json_object",
-  //   jsonSchema: outputJsonStructure ? {
-  //     type: "object",
-  //     properties: outputJsonStructure,
-  //     required: outputJsonRequired,
-  //     additionalProperties: false
-  //   } satisfies AIJsonProperty : undefined
-  // } satisfies Cohere.ResponseFormatV2 : undefined;
+  const { outputAsJson, outputJsonStructure, outputJsonRequired } = options;
   return outputAsJson ? {
     type: "json_object",
     jsonSchema: outputJsonStructure ? buildJsonSchemaObject(outputJsonStructure, outputJsonRequired) : undefined
   } satisfies Cohere.ResponseFormatV2 : undefined;
-
-  // return outputAsJson ? (outputJsonStructure ? {
-  //   type: "json_object",
-  //   jsonSchema: {
-  //     name: context ?? "output-format",
-  //     strict: true,
-  //     schema: buildJsonSchemaObject(outputJsonStructure, outputJsonRequired),
-  //   },
-  // } : { type: 'json_object' }) : undefined;
 }
 
 /**
@@ -1719,16 +1706,7 @@ export function isSchemaTooComplex(schema: Record<string, AIJsonProperty> | unde
     }
   }
 
-  // BUG FIX: `schema` is a flat properties MAP (`{ title: {...}, actions: {...} }`),
-  // not a single schema node — it never itself has `.properties`/`.enum`/`.items`
-  // keys. The previous code called `measure(schema)` directly, which checked for
-  // those keys on the map itself, found none, and returned immediately — meaning
-  // props/enumItems/maxDepth were always 0 and only the `schemaStr.length` check
-  // below ever actually flagged anything (confirmed: previously commented
-  // `// TODO: always \`0 props, 0 enum items, depth 0\``). Seeding directly from
-  // the map's own keys, then recursing into each property's *value* (which is a
-  // real schema node), makes the structural checks the JSDoc above describes
-  // actually run.
+  // Recursing into each property's value (which is a real schema node).
   props = Object.keys(schema).length;
   for (const val of Object.values(schema)) {
     measure(val, 1);
