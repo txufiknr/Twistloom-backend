@@ -59,7 +59,44 @@ if (chunk.usage) {
 
 Property 'usage' does not exist on type 'ChatCompletionChunk'.
 
-can you add models from those new providers in my AI provider-model waterfall (AI_CHAT_MODELS_WRITING, AI_CHAT_MODELS_FAST, AI_CHAT_MODELS_IDEA, AI_CHAT_MODELS_EVALUATION, etc)?
+and I got this error log using cohere ('command-r-08-2024' model):
+
+  314 |             if (_response.error.reason === "status-code") {
+  315 |                 switch (_response.error.statusCode) {
+  316 |                     case 400:
+  317 |                         throw new Cohere.BadRequestError(_response.error.body, _response.rawResponse);
+                                                 ^
+  BadRequestError: BadRequestError
+  Status code: 400
+  Body: {
+    "id": "90de3de5-ea51-40d8-9c73-59c4583b645b",
+    "message": "invalid request: response_format validation: invalid 'json_schema' provided: missing required field 'type'"
+  }
+   statusCode: 400,
+         body: {
+    id: "90de3de5-ea51-40d8-9c73-59c4583b645b",
+    message: "invalid request: response_format validation: invalid 'json_schema' provided: missing required field 'type'",
+  },
+   rawResponse: {
+    headers: Headers [Object ...],
+    redirected: false,
+    status: 400,
+    statusText: "Bad Request",
+    type: "default",
+    url: "https://api.cohere.com/v2/chat",
+  },
+  
+        at /home/runner/work/Twistloom-backend/Twistloom-backend/node_modules/cohere-ai/api/resources/v2/client/Client.js:317:42
+        at fulfilled (/home/runner/work/Twistloom-backend/Twistloom-backend/node_modules/cohere-ai/api/resources/v2/client/Client.js:97:57)
+        at processTicksAndRejections (native:7:39)
+
+looking at my old `coherePrompt` code, I think the correct shape in `buildCohereResponseFormat` should be:
+
+return outputAsJson ? {
+  type: "json_object",
+  jsonSchema: outputJsonStructure ? buildJsonSchemaObject(outputJsonStructure, outputJsonRequired) : undefined
+} satisfies Cohere.ResponseFormatV2 : undefined;
+
 
 ---
 
@@ -163,8 +200,6 @@ note: this is roadmap documentation writing only, no code changes
 [ ] claude: should we using multi-turn request instead of big array json for generating `generatedPages` (alternative fates) in 'multiverse' book mode?
 [ ] agentic mcp: TWISTLOOM_AGENT_MCP_ROADMAP.md
 [ ] opencode/claude: TODO-multi-turn-request.md grounded on actual codebase
-
----
 
 ---
 

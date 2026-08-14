@@ -143,6 +143,15 @@ let openrouterLimiter: RateLimiter | null = null;
 let cloudflareLimiter: RateLimiter | null = null;
 let jinaLimiter: RateLimiter | null = null;
 let inceptionLimiter: RateLimiter | null = null;
+let ovhcloudLimiter: RateLimiter | null = null;
+let sambanovaLimiter: RateLimiter | null = null;
+let ollamaLimiter: RateLimiter | null = null;
+let modelscopeLimiter: RateLimiter | null = null;
+let zaiLimiter: RateLimiter | null = null;
+let siliconflowLimiter: RateLimiter | null = null;
+let aionlabsLimiter: RateLimiter | null = null;
+let chutesLimiter: RateLimiter | null = null;
+let llm7Limiter: RateLimiter | null = null;
 
 /**
  * Get Gemini rate limiter (singleton)
@@ -234,6 +243,69 @@ export function getInceptionLimiter(): RateLimiter {
 }
 
 /**
+ * Get OVHcloud rate limiter (singleton)
+ */
+export function getOvhcloudLimiter(): RateLimiter {
+  return ovhcloudLimiter || (ovhcloudLimiter = new RateLimiter('ovhcloud'));
+}
+
+/**
+ * Get SambaNova rate limiter (singleton)
+ */
+export function getSambanovaLimiter(): RateLimiter {
+  return sambanovaLimiter || (sambanovaLimiter = new RateLimiter('sambanova'));
+}
+
+/**
+ * Get Ollama rate limiter (singleton)
+ */
+export function getOllamaLimiter(): RateLimiter {
+  return ollamaLimiter || (ollamaLimiter = new RateLimiter('ollama'));
+}
+
+/**
+ * Get ModelScope rate limiter (singleton)
+ */
+export function getModelscopeLimiter(): RateLimiter {
+  return modelscopeLimiter || (modelscopeLimiter = new RateLimiter('modelscope'));
+}
+
+/**
+ * Get Z.ai rate limiter (singleton)
+ */
+export function getZaiLimiter(): RateLimiter {
+  return zaiLimiter || (zaiLimiter = new RateLimiter('zai'));
+}
+
+/**
+ * Get SiliconFlow rate limiter (singleton)
+ */
+export function getSiliconflowLimiter(): RateLimiter {
+  return siliconflowLimiter || (siliconflowLimiter = new RateLimiter('siliconflow'));
+}
+
+/**
+ * Get Aion Labs rate limiter (singleton)
+ */
+export function getAionlabsLimiter(): RateLimiter {
+  return aionlabsLimiter || (aionlabsLimiter = new RateLimiter('aionlabs'));
+}
+
+/**
+ * Get Chutes rate limiter (singleton)
+ */
+export function getChutesLimiter(): RateLimiter {
+  return chutesLimiter || (chutesLimiter = new RateLimiter('chutes'));
+}
+
+/**
+ * Get LLM7 rate limiter (singleton)
+ */
+export function getLlm7Limiter(): RateLimiter {
+  return llm7Limiter || (llm7Limiter = new RateLimiter('llm7'));
+}
+
+/**
  * Get rate limiter by provider name with lazy initialization
  * @param provider - AI provider name
  * @returns Rate limiter instance for the provider
@@ -251,8 +323,16 @@ export function getRateLimiter(provider: AIChatProvider): RateLimiter {
     case 'cloudflare': return getCloudflareLimiter();
     case 'jina': return getJinaLimiter();
     case 'inception': return getInceptionLimiter();
-    // TODO: wire new providers: ovhcloud, sambanova, ollama, modelscope, zai, siliconflow, aionlabs, chutes, llm7
-    default: throw new Error(`No rate limiter found for provider: ${provider}`);
+    case 'ovhcloud': return getOvhcloudLimiter();
+    case 'sambanova': return getSambanovaLimiter();
+    case 'ollama': return getOllamaLimiter();
+    case 'modelscope': return getModelscopeLimiter();
+    case 'zai': return getZaiLimiter();
+    case 'siliconflow': return getSiliconflowLimiter();
+    case 'aionlabs': return getAionlabsLimiter();
+    case 'chutes': return getChutesLimiter();
+    case 'llm7': return getLlm7Limiter();
+    // default: throw new Error(`No rate limiter found for provider: ${provider}`);
   }
 }
 

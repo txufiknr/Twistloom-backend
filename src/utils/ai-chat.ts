@@ -293,14 +293,29 @@ export function buildCohereResponseFormat(
   options: Pick<PromptWithFallbackOptions, 'context' | 'outputAsJson' | 'outputJsonStructure' | 'outputJsonRequired'>,
 ) {
   const { context, outputAsJson, outputJsonStructure, outputJsonRequired } = options;
-  return outputAsJson ? (outputJsonStructure ? {
+
+  // return outputAsJson ? {
+  //   type: "json_object",
+  //   jsonSchema: outputJsonStructure ? {
+  //     type: "object",
+  //     properties: outputJsonStructure,
+  //     required: outputJsonRequired,
+  //     additionalProperties: false
+  //   } satisfies AIJsonProperty : undefined
+  // } satisfies Cohere.ResponseFormatV2 : undefined;
+  return outputAsJson ? {
     type: "json_object",
-    jsonSchema: {
-      name: context ?? "output-format",
-      strict: true,
-      schema: buildJsonSchemaObject(outputJsonStructure, outputJsonRequired),
-    },
-  } : { type: 'json_object' }) : undefined;
+    jsonSchema: outputJsonStructure ? buildJsonSchemaObject(outputJsonStructure, outputJsonRequired) : undefined
+  } satisfies Cohere.ResponseFormatV2 : undefined;
+
+  // return outputAsJson ? (outputJsonStructure ? {
+  //   type: "json_object",
+  //   jsonSchema: {
+  //     name: context ?? "output-format",
+  //     strict: true,
+  //     schema: buildJsonSchemaObject(outputJsonStructure, outputJsonRequired),
+  //   },
+  // } : { type: 'json_object' }) : undefined;
 }
 
 /**
