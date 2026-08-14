@@ -1,7 +1,7 @@
 import type { AIChatProvider, AIDocument, AIJsonEvaluation, AIJsonProperty, AIPromptForJson, AIPromptOptions, AIResponse, AIModelSelection, NvidiaChatCompletionResponse, OpenRouterCreateParams, PromptWithFallbackOptions } from "../types/ai-chat.js";
-import { AI_PROVIDER_API_KEYS, getCerebrasClient, getCloudflareClient, getCohereClient, getGeminiClient, getGroqClient, getInceptionClient, getMistralClient, getOpenRouterClient } from "./ai-clients.js";
-import { AI_CHAT_CONFIG_DEFAULT, EVALUATION_FALLBACK_LIMIT, EVALUATION_SCORING_OUTPUT_TOKEN, MAX_SCHEMA_LENGTH } from "../config/ai-chat.js";
-import { AI_CHAT_MODELS_EVALUATION, AI_CHAT_MODELS_WRITING, AI_MAX_PROMPT_LENGTH, AI_MAX_OUTPUT_TOKEN } from "../config/ai-clients.js";
+import { AI_PROVIDER_API_KEYS, getCerebrasClient, getCloudflareClient, getCohereClient, getGeminiClient, getGroqClient, getInceptionClient, getMistralClient, getOpenRouterClient, getOvhcloudClient, getSambanovaClient, getOllamaClient, getModelscopeClient, getZaiClient, getSiliconflowClient, getAionlabsClient, getChutesClient, getLlm7Client } from "./ai-clients.js";
+import { AI_CHAT_CONFIG_DEFAULT, EVALUATION_FALLBACK_LIMIT, EVALUATION_SCORING_OUTPUT_TOKEN, MAX_SCHEMA_LENGTH, NVIDIA_REQUEST_TIMEOUT_MS } from "../config/ai-chat.js";
+import { AI_CHAT_MODELS_EVALUATION, AI_CHAT_MODELS_WRITING, AI_MAX_PROMPT_LENGTH, AI_MAX_OUTPUT_TOKEN, AI_STREAM_DEFAULT_MODEL } from "../config/ai-clients.js";
 import { canUseAIToday, getRateLimiter, incrementDailyUsageCount } from './ai-limiters.js';
 import { requireEnv } from "./env.js";
 import { PROMPT_SYSTEM } from "./prompt.js";
@@ -85,13 +85,7 @@ async function promptWithFallback<T>(
       // retryable ones (rate limited, service unavailable, etc.) retry with backoff.
       const response = await retryWithBackoff(
         () => apiCall(model, prompt, modelOptions),
-        {
-          maxRetries: AI_CHAT_MODEL_RETRY_COUNT,
-          shouldRetry: (err) => isGenAIErrorRetryable(classifyGenAIError(provider, model, err)),
-          onRetry: (attempt, err) => {
-            console.warn(`[${provider}] 🔄 Retry ${attempt}/${AI_CHAT_MODEL_RETRY_COUNT} for model ${model}: ${classifyGenAIError(provider, model, err)}`);
-          },
-        }
+        buildModelRetryConfig(provider, model),
       );
       
       // Response extraction: Get the output content from the response
@@ -184,18 +178,402 @@ export function getMaxOutputToken(
   return typeof modelCap === 'number' ? Math.min(requested, modelCap) : requested;
 }
 
+// ---------------------------------------------------------------------------
+// Shared request-building helpers
+//
+// Every *Prompt function (this file) and *StreamGenerator (ai-chat-stream.ts)
+// assembles the same handful of wire shapes — a two-message conversation, a
+// JSON-schema fragment, a per-dialect response_format, and the OpenAI-style
+// sampling block. These were previously re-inlined at ~70 call sites across
+// both files (see TWISTLOOM_AI_DRY_OPPORTUNITIES.md for the full audit); the
+// helpers below single-source each shape so a future change lands once, and
+// so the two files structurally cannot drift the way Cohere's response-format
+// shape and the streaming prompt-length gate already had.
+// ---------------------------------------------------------------------------
+
 /**
- * Creates a prompt function for any OpenAI Chat Completions–compatible provider
- * (GitHub Models, OpenRouter, Cloudflare Workers AI, and any future provider that
- * implements the standard `/v1/chat/completions` request/response shape).
+ * Builds the canonical two-message chat conversation used by every provider.
  *
- * This is the shared implementation behind {@link githubPrompt}; new
- * OpenAI-compatible providers should be defined as a one-line call to this
- * factory rather than copy-pasting a full prompt function.
+ * Both the non-streaming `*Prompt` functions and the streaming
+ * `*StreamGenerator`s send identical `[system, user]` arrays; this
+ * single-sources that shape so a future change (e.g. adding an assistant
+ * preamble) lands in exactly one place.
+ *
+ * @param systemPrompt - Pre-formatted system content (documents already
+ *   embedded for non-RAG providers via {@link formatSystemPromptWithDocuments})
+ * @param userPrompt - Raw user turn
+ * @returns A typed, readonly chat message pair
+ */
+export function buildChatMessages(systemPrompt: string, userPrompt: string) {
+  return [
+    { role: 'system' as const, content: systemPrompt },
+    { role: 'user' as const, content: userPrompt },
+  ];
+}
+
+/**
+ * Builds the `type: 'object'` JSON-schema fragment shared by every provider's
+ * structured-output dialect. Passing `additionalProperties: false` is the
+ * strict-mode requirement for OpenAI/Cerebras/Groq and is easy to forget;
+ * centralizing it removes that footgun.
+ *
+ * @param structure - Property map to require from the model
+ * @param required - Property names the model must emit
+ * @param opts - Controls; `omitAdditionalProperties` for dialects (e.g. Gemini
+ *   Interactions) that reject the key
+ * @returns A typed object schema, or `undefined` when `structure` is empty
+ */
+export function buildJsonSchemaObject(
+  structure: Record<string, AIJsonProperty> | undefined,
+  required: string[] | undefined,
+  opts: { omitAdditionalProperties?: boolean } = {},
+): AIJsonProperty | undefined {
+  if (!structure) return undefined;
+  return {
+    type: "object",
+    properties: structure,
+    required,
+    ...(opts.omitAdditionalProperties ? {} : { additionalProperties: false }),
+  } as AIJsonProperty;
+}
+
+/**
+ * OpenAI-compatible `response_format` — used by the OpenAI-compatible factory
+ * (openrouter/cloudflare/inception + the 9 newer providers), groq, and
+ * cerebras, in both the non-streaming and streaming paths.
+ */
+export function buildOpenAIResponseFormat(
+  context: string | undefined,
+  outputAsJson: boolean | undefined,
+  outputJsonStructure: Record<string, AIJsonProperty> | undefined,
+  outputJsonRequired: string[] | undefined,
+) {
+  return outputAsJson ? (outputJsonStructure ? {
+    type: "json_schema" as const,
+    json_schema: {
+      name: context ?? "output-format",
+      strict: true,
+      schema: buildJsonSchemaObject(outputJsonStructure, outputJsonRequired),
+    },
+  } : { type: 'json_object' as const }) : undefined;
+}
+
+/**
+ * Mistral dialect — identical to OpenAI except the property is named
+ * `schemaDefinition`.
+ */
+export function buildMistralResponseFormat(
+  options: Pick<PromptWithFallbackOptions, 'context' | 'outputAsJson' | 'outputJsonStructure' | 'outputJsonRequired'>,
+) {
+  const { context, outputAsJson, outputJsonStructure, outputJsonRequired } = options;
+  return outputAsJson ? (outputJsonStructure ? {
+    type: "json_schema",
+    jsonSchema: {
+      name: context ?? "output-format",
+      strict: true,
+      schemaDefinition: buildJsonSchemaObject(outputJsonStructure, outputJsonRequired),
+    },
+  } : { type: 'json_object' }) : undefined;
+}
+
+/**
+ * Cohere `responseFormat`.
+ *
+ * BUG FIX (was a silent drift, not a deliberate choice — see
+ * TWISTLOOM_AI_DRY_OPPORTUNITIES.md §15.1): the non-streaming `coherePrompt`
+ * previously sent the raw schema object directly as `jsonSchema`, while the
+ * streaming `cohereStreamGenerator` wrapped it in `{ name, strict, schema }`.
+ * Only one of these could have matched Cohere's actual V2 contract — this
+ * helper standardizes both callers on the wrapped shape (matching the
+ * OpenAI/Mistral convention, and matching Cohere's own V2 `ResponseFormatV2`
+ * type, which nests the schema under a `jsonSchema.schema` object rather than
+ * accepting a bare schema at `jsonSchema` directly).
+ */
+export function buildCohereResponseFormat(
+  options: Pick<PromptWithFallbackOptions, 'context' | 'outputAsJson' | 'outputJsonStructure' | 'outputJsonRequired'>,
+) {
+  const { context, outputAsJson, outputJsonStructure, outputJsonRequired } = options;
+  return outputAsJson ? (outputJsonStructure ? {
+    type: "json_object",
+    jsonSchema: {
+      name: context ?? "output-format",
+      strict: true,
+      schema: buildJsonSchemaObject(outputJsonStructure, outputJsonRequired),
+    },
+  } : { type: 'json_object' }) : undefined;
+}
+
+/**
+ * Gemini `generateContent`'s `responseJsonSchema` — the only dialect that
+ * carries an empty-object fallback instead of `undefined`, because Gemini
+ * still emits an object schema when output is JSON but no structure is
+ * supplied.
+ */
+export function buildGeminiResponseJsonSchema(
+  outputAsJson: boolean | undefined,
+  outputJsonStructure: Record<string, AIJsonProperty> | undefined,
+  outputJsonRequired: string[] | undefined,
+): AIJsonProperty | undefined {
+  return outputAsJson ? {
+    type: "object",
+    ...(outputJsonStructure
+      ? buildJsonSchemaObject(outputJsonStructure, outputJsonRequired)
+      : {}),
+  } : undefined;
+}
+
+/**
+ * Maps the shared {@link AIChatConfig} sampling fields onto the
+ * OpenAI-compatible wire shape (`max_tokens`/`temperature`/`top_p`/`stop`/
+ * `frequency_penalty`/`seed`). Keeps {@link getMaxOutputToken} as the single
+ * cap clamp while removing the per-provider destructure that previously
+ * invited drift (groq/cerebras/nvidia each re-declared the same six fields).
+ *
+ * Cohere (`p`/`k`/`maxTokens`) and Mistral (`topP`/`randomSeed`/`maxTokens`)
+ * use different field names and are deliberately NOT routed through this
+ * helper — see {@link coherePrompt} and {@link mistralPrompt}.
+ *
+ * @param provider - Provider namespace (feeds `getMaxOutputToken`)
+ * @param model - Exact model id (feeds `getMaxOutputToken`)
+ * @param config - Resolved generation config
+ */
+export function buildSamplingParams(
+  provider: AIChatProvider,
+  model: string,
+  config: PromptWithFallbackOptions['config'] & object,
+) {
+  return {
+    max_tokens: getMaxOutputToken(provider, model, config.maxOutputToken),
+    temperature: config.temperature,
+    top_p: config.topP,
+    stop: config.stopSequences,
+    frequency_penalty: config.frequencyPenalty,
+    seed: config.seed,
+  };
+}
+
+/**
+ * Resolves Gemini's explicit cache boundary (mirrors Mistral's
+ * `promptCacheKey`, see {@link buildMistralPromptCacheKey}).
+ *
+ * Single-sources the minimum-token cache seeding that both the non-streaming
+ * and streaming `generateContent` paths must perform: formatting documents
+ * and calling {@link getOrCreateGeminiCache} with the same key, model, system
+ * prompt and bookId. Shared across ai-chat.ts and ai-chat-stream.ts so the two
+ * pathways cannot drift apart on this safety-sensitive logic.
+ *
+ * @param options - Prompt options (reads `cachedContentId`, `systemPrompt`,
+ *   `documents`, `meta`)
+ * @param model - The exact model being called
+ * @returns The cached content string, or `null` when no `cachedContentId`
+ */
+export async function resolveGeminiCachedContent(
+  options: Pick<PromptWithFallbackOptions, 'cachedContentId' | 'systemPrompt' | 'documents' | 'meta'>,
+  model: string,
+): Promise<string | null> {
+  const { cachedContentId, systemPrompt = PROMPT_SYSTEM, documents, meta } = options;
+  if (!cachedContentId) return null;
+  const formattedDocuments = formatDocumentsToPrompt(documents);
+  return getOrCreateGeminiCache(cachedContentId, model, systemPrompt, formattedDocuments, meta?.bookId);
+}
+
+/**
+ * Strips the config keys the Gemini SDK rejects (`frequencyPenalty`) and
+ * separates `maxOutputToken` so the caller can re-clamp via
+ * {@link getMaxOutputToken}. Shared by the non-streaming and streaming
+ * `generateContent` paths so the compensation logic is identical.
+ *
+ * @param config - Full resolved generation config
+ * @returns The Gemini-safe remainder and the requested cap
+ */
+export function buildGeminiConfig<C extends { frequencyPenalty?: number; maxOutputToken: number }>(
+  config: C,
+): { geminiConfig: Omit<C, 'frequencyPenalty' | 'maxOutputToken'>; maxOutputToken: number } {
+  const { frequencyPenalty: _fp, maxOutputToken, ...geminiConfig } = config;
+  return { geminiConfig, maxOutputToken };
+}
+
+/**
+ * Builds the Mistral prompt-cache key, mirroring Gemini's `cachedContentId`
+ * so both caches bust on the same content change (characters/places). Falls
+ * back to a shared key for callers without a `cachedContentId` (pen.ts,
+ * canon-validation.ts, etc.).
+ *
+ * @param cachedContentId - Optional content identity (shared with Gemini)
+ * @returns The `promptCacheKey` value to send to Mistral
+ */
+export function buildMistralPromptCacheKey(cachedContentId?: string): string {
+  return cachedContentId
+    ? `twistloom:mistral:${cachedContentId}`
+    : 'twistloom:mistral:shared';
+}
+
+/**
+ * Resolves the model a streaming generator should use when the caller didn't
+ * pass `options.models`. Centralizing this fallback (previously repeated
+ * verbatim in all 9 stream generators) means a typo'd or removed
+ * `AI_STREAM_DEFAULT_MODEL` entry fails loudly at this one call site instead
+ * of silently per-generator.
+ */
+export function resolveStreamDefaultModel(
+  provider: AIChatProvider,
+  options: Partial<PromptWithFallbackOptions>,
+): string {
+  return options.models?.[0] || AI_STREAM_DEFAULT_MODEL[provider];
+}
+
+/**
+ * Sums the character length of all provided documents. Hidden whitespace or a
+ * future content field should be reflected here once — this previously had
+ * two independently-hand-rolled, numerically-equivalent-but-structurally-
+ * divergent copies (ai-chat.ts used `` `${title}${snippet}`.length ``,
+ * ai-chat-stream.ts used `title.length + snippet.length`).
+ *
+ * @param documents - Optional list of AI documents
+ * @returns Total chars (0 when none)
+ */
+export function sumDocumentChars(documents?: AIDocument[]): number {
+  return documents?.reduce(
+    (sum, doc) => sum + `${doc.title ?? ''}${doc.snippet}`.length,
+    0,
+  ) ?? 0;
+}
+
+/**
+ * Returns whether a provider can accept a request: the resolved prompt
+ * length — **including documents** — is within `AI_MAX_PROMPT_LENGTH`, and
+ * the daily quota (`canUseAIToday`) is not exhausted.
+ *
+ * BUG FIX: the streaming orchestrator (`aiStreamSSE`) previously measured
+ * only `systemPrompt.length + prompt.length` for this gate, omitting
+ * documents entirely — while its own telemetry a few lines later *did* count
+ * them. A request with sizeable `documents` could pass the gate for a
+ * provider whose true total (with documents) exceeded `AI_MAX_PROMPT_LENGTH`,
+ * only to fail against the provider's own limit. This helper is now the only
+ * place either orchestrator measures prompt length, so the two can't
+ * re-diverge.
+ *
+ * @param provider - Provider to check
+ * @param systemPrompt - Resolved system prompt (documents embedded for
+ *   non-RAG providers, per {@link formatSystemPromptWithDocuments} — pass the
+ *   *original* prompt here and `documents` separately; this function adds
+ *   them itself so RAG providers like Cohere, which never embed documents
+ *   into the system prompt, are measured consistently too)
+ * @param prompt - User prompt
+ * @param documents - Optional documents (RAG or embedded)
+ */
+export async function assertPromptAllowed(
+  provider: AIChatProvider,
+  systemPrompt: string,
+  prompt: string,
+  documents: AIDocument[] | undefined,
+): Promise<{ allowed: boolean; reason?: string }> {
+  const totalPromptLength = systemPrompt.length + prompt.length + sumDocumentChars(documents);
+  const maxPromptLength = AI_MAX_PROMPT_LENGTH[provider];
+  if (totalPromptLength > maxPromptLength) {
+    return { allowed: false, reason: `Prompt length (${totalPromptLength.toLocaleString()} chars) exceeds limit (${maxPromptLength.toLocaleString()} chars), skipping` };
+  }
+  if (!(await canUseAIToday(provider))) {
+    return { allowed: false, reason: 'Daily request limit reached, skipping' };
+  }
+  return { allowed: true };
+}
+
+/**
+ * Builds the shared `retryWithBackoff` options object used by both
+ * `promptWithFallback` (below) and the streaming orchestrator's connection
+ * handshake, so the retry policy and its log line can't drift between the
+ * two.
+ */
+export function buildModelRetryConfig(provider: AIChatProvider, model: string) {
+  return {
+    maxRetries: AI_CHAT_MODEL_RETRY_COUNT,
+    shouldRetry: (err: unknown) => isGenAIErrorRetryable(classifyGenAIError(provider, model, err)),
+    onRetry: (attempt: number, err: unknown) => {
+      console.warn(`[${provider}] 🔄 Retry ${attempt}/${AI_CHAT_MODEL_RETRY_COUNT} for model ${model}: ${classifyGenAIError(provider, model, err)}`);
+    },
+  };
+}
+
+/**
+ * Reads a streamed OpenAI-compatible delta's text content, handling both the
+ * common `string` shape and the rarer `ContentChunk[]` shape (currently only
+ * observed from Mistral). Centralizes what was previously 4 near-identical
+ * inline reads (openrouter-family factory, groq, cerebras, and a bespoke
+ * Mistral copy).
+ */
+export function extractDeltaText(chunk: { choices?: Array<{ delta?: { content?: unknown } }> | null }): string {
+  const delta = chunk.choices?.[0]?.delta?.content;
+  if (typeof delta === 'string') return delta;
+  if (Array.isArray(delta)) return delta.map((d) => typeof d === 'string' ? d : '').join('');
+  return '';
+}
+
+/**
+ * NVIDIA's raw-fetch request boilerplate, shared by {@link nvidiaPrompt} and
+ * `nvidiaStreamGenerator` (ai-chat-stream.ts): API key lookup, the
+ * `integrate.api.nvidia.com` URL, auth header, timeout-signal composition,
+ * and the non-2xx error path.
+ *
+ * Returns the composed `signal` alongside the `response` — the streaming
+ * caller needs it to check `.aborted` on each read-loop iteration (matching
+ * its pre-refactor behavior exactly); the non-streaming caller ignores it.
+ *
+ * BUG FIX, not just consolidation: the streaming path already composed
+ * `AbortSignal.any([signal, timeoutSignal])` with a
+ * {@link NVIDIA_REQUEST_TIMEOUT_MS} ceiling; the non-streaming `nvidiaPrompt`
+ * had neither a timeout nor any `signal` support at all, so a hung NVIDIA
+ * request could only ever be ended by `promptWithFallback`'s own retry logic
+ * kicking in — not by the caller's own cancellation. Both paths now share the
+ * same timeout + cancellation composition.
+ */
+export async function nvidiaChatRequest(
+  body: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<{ response: Response; signal: AbortSignal }> {
+  const apiKey = requireEnv('NVIDIA_API_KEY');
+  const timeoutSignal = AbortSignal.timeout(NVIDIA_REQUEST_TIMEOUT_MS);
+  const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+  const response = await fetch(`https://integrate.api.nvidia.com/v1/chat/completions`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: combinedSignal,
+  });
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => 'Unknown error');
+    throw new Error(`HTTP ${response.status}: ${errorText}`);
+  }
+  return { response, signal: combinedSignal };
+}
+
+/**
+ * Cohere V2 RAG `documents` mapping — each document becomes a `{ data }`
+ * item per Cohere's native-RAG contract.
+ */
+export function mapCohereDocuments(documents?: AIDocument[]): Cohere.V2ChatRequestDocumentsItem[] | undefined {
+  return documents && documents.length > 0
+    ? documents.map((data) => ({ data }))
+    : undefined;
+}
+
+/**
+ * Creates a prompt function for any OpenAI Chat Completions–compatible provider.
+ *
+ * Every currently-wired OpenAI-compatible provider is a one-line call to this
+ * factory: {@link openrouterPrompt}, {@link cloudflarePrompt},
+ * {@link inceptionPrompt}, and the 9 providers wired 2026-08-13
+ * ({@link ovhcloudPrompt}, {@link sambanovaPrompt}, {@link ollamaPrompt},
+ * {@link modelscopePrompt}, {@link zaiPrompt}, {@link siliconflowPrompt},
+ * {@link aionlabsPrompt}, {@link chutesPrompt}, {@link llm7Prompt}). GitHub
+ * Models was the 4th (also OpenAI-compatible) provider that used to be
+ * defined here — it was removed after GitHub Models' full retirement on
+ * 2026-07-30, which is also why this doc comment no longer names it as the
+ * canonical example the way it used to.
  *
  * @param provider - Provider name for logging, rate limiting, and config lookups
- * @param getClient - Singleton client getter (e.g. {@link getGitHubClient})
- * @returns A prompt function with the same signature as {@link githubPrompt}
+ * @param getClient - Singleton client getter (e.g. {@link getOpenRouterClient})
+ * @returns A prompt function with the standard `(prompt, options) => Promise<AIResponse<string> | null>` signature
  */
 export function createOpenAICompatiblePrompt(
   provider: AIChatProvider,
@@ -212,33 +590,12 @@ export function createOpenAICompatiblePrompt(
       async (model, prompt, opts) => {
         const { context, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
         const systemPromptWithDocuments = formatSystemPromptWithDocuments(provider, opts);
-        // const createParams: OpenAI.ChatCompletionCreateParamsNonStreaming = {
         const createParams: OpenRouterCreateParams = {
           model,
-          messages: [
-            { role: 'system', content: systemPromptWithDocuments },
-            { role: 'user', content: prompt },
-          ],
-          max_tokens: getMaxOutputToken(provider, model, config.maxOutputToken),
-          temperature: config.temperature,
-          top_p: config.topP,
+          messages: buildChatMessages(systemPromptWithDocuments, prompt),
           stream: false,
-          stop: config.stopSequences,
-          frequency_penalty: config.frequencyPenalty,
-          seed: config.seed,
-          response_format: outputAsJson ? (outputJsonStructure ? {
-            type: "json_schema",
-            json_schema: {
-              name: context ?? "output-format",
-              strict: true,
-              schema: {
-                type: "object",
-                properties: outputJsonStructure,
-                required: outputJsonRequired,
-                additionalProperties: false
-              } satisfies AIJsonProperty
-            }
-          } : { type: 'json_object' }) : undefined,
+          ...buildSamplingParams(provider, model, config),
+          response_format: buildOpenAIResponseFormat(context, outputAsJson, outputJsonStructure, outputJsonRequired),
           plugins: provider === 'openrouter' ? [
             { id: 'response-healing' } // Prevent "qwen/qwen3-30b-a3b" token leak
           ] : undefined,
@@ -271,21 +628,34 @@ export function createOpenAICompatiblePrompt(
 }
 
 /**
- * Sends a prompt to GitHub Models inference (`models.github.ai`, OpenAI-compatible chat completions).
- *
- * Tries each model in order. Applies {@link githubLimiter}
- * before each request. On success, returns an {@link AIResponse} with token usage and finish reason;
- * on failure, logs and tries the next model, matching the control flow of {@link geminiPrompt}.
- *
- * @param prompt - User message body (article plus instructions; system rules are sent separately)
- * @param options.stopSequences - Optional stop sequences — for non–Q&A content use `['\\n\\n']` to mirror {@link geminiPrompt}
- * @returns Structured response or `null` if every model fails
- * 
  * @see structured JSON guide - https://developers.openai.com/api/docs/guides/structured-outputs
  */
 export const openrouterPrompt = createOpenAICompatiblePrompt('openrouter', getOpenRouterClient);
 export const cloudflarePrompt = createOpenAICompatiblePrompt('cloudflare', getCloudflareClient);
 export const inceptionPrompt = createOpenAICompatiblePrompt('inception', getInceptionClient);
+
+/**
+ * Providers wired 2026-08-13. All 9 are OpenAI Chat Completions–compatible —
+ * confirmed against each provider's own docs during the capacity review — so
+ * each is a one-line {@link createOpenAICompatiblePrompt} call, identical in
+ * shape to the three above. See AI_ORCHESTRATION_ARCHITECTURE.md §17 for the
+ * prerequisite client-getter/limiter wiring this assumes exists in
+ * `src/utils/ai-clients.ts` and `src/utils/ai-limiters.ts`.
+ *
+ * `getChutesClient()` specifically: configure its `baseURL` as
+ * `https://llm.chutes.ai/v1` (NOT including `/chat/completions` — the OpenAI
+ * SDK appends that itself; the base URL Chutes publishes in its own docs
+ * already includes the full path, which would double up if pasted as-is).
+ */
+export const ovhcloudPrompt = createOpenAICompatiblePrompt('ovhcloud', getOvhcloudClient);
+export const sambanovaPrompt = createOpenAICompatiblePrompt('sambanova', getSambanovaClient);
+export const ollamaPrompt = createOpenAICompatiblePrompt('ollama', getOllamaClient);
+export const modelscopePrompt = createOpenAICompatiblePrompt('modelscope', getModelscopeClient);
+export const zaiPrompt = createOpenAICompatiblePrompt('zai', getZaiClient);
+export const siliconflowPrompt = createOpenAICompatiblePrompt('siliconflow', getSiliconflowClient);
+export const aionlabsPrompt = createOpenAICompatiblePrompt('aionlabs', getAionlabsClient);
+export const chutesPrompt = createOpenAICompatiblePrompt('chutes', getChutesClient);
+export const llm7Prompt = createOpenAICompatiblePrompt('llm7', getLlm7Client);
 
 /**
  * Sends a prompt to Google Gemini via the `generateContent` API and returns structured output.
@@ -312,29 +682,15 @@ async function geminiPromptViaGenerateContent(
     prompt,
     options,
     async (model, prompt, opts) => {
-      const { meta, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired, systemPrompt = PROMPT_SYSTEM, documents, cachedContentId } = opts;
+      const { config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
       const systemPromptWithDocuments = formatSystemPromptWithDocuments('gemini', opts);
-      const responseJsonSchema: AIJsonProperty | undefined = outputAsJson ? {
-        type: "object",
-        ...(outputJsonStructure ? {
-          properties: outputJsonStructure,
-          required: outputJsonRequired,
-          additionalProperties: false
-        } : {})
-      } : undefined;
+      const responseJsonSchema = buildGeminiResponseJsonSchema(outputAsJson, outputJsonStructure, outputJsonRequired);
 
       // Helper block to fulfill Gemini's minimum token requirement for explicit caching
-      const formattedDocuments = formatDocumentsToPrompt(documents);
-      const cachedContent = cachedContentId ? await getOrCreateGeminiCache(
-        cachedContentId,
-        model,
-        systemPrompt,
-        formattedDocuments,
-        meta?.bookId,
-      ) : null;
+      const cachedContent = await resolveGeminiCachedContent(opts, model);
 
       // Penalty is not enabled for models/gemini-2.5-flash
-      const { frequencyPenalty: _fp, maxOutputToken, ...geminiConfig } = config;
+      const { geminiConfig, maxOutputToken } = buildGeminiConfig(config);
 
       const params: GenerateContentParameters = {
         model,
@@ -516,11 +872,7 @@ export async function geminiPromptViaInteractions(
           type: 'text',
           mime_type: 'application/json',
           ...(outputJsonStructure ? {
-            schema: {
-              type: 'object',
-              properties: outputJsonStructure,
-              required: outputJsonRequired,
-            },
+            schema: buildJsonSchemaObject(outputJsonStructure, outputJsonRequired, { omitAdditionalProperties: true }),
           } : {}),
         }] : undefined,
         generation_config: {
@@ -634,35 +986,14 @@ export async function groqPrompt(
     options,
     async (model, prompt, opts) => {
       const { config = AI_CHAT_CONFIG_DEFAULT, context, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
-      const { maxOutputToken, temperature, topP, stopSequences, frequencyPenalty, seed } = config;
       const systemPromptWithDocuments = formatSystemPromptWithDocuments('groq', opts);
 
       const { data, response } = await getGroqClient().chat.completions.create({
-        messages: [
-          { role: 'system', content: systemPromptWithDocuments },
-          { role: 'user', content: prompt },
-        ],
+        messages: buildChatMessages(systemPromptWithDocuments, prompt),
         model,
-        max_tokens: getMaxOutputToken('groq', model, maxOutputToken),
-        temperature,
-        top_p: topP,
-        stop: stopSequences,
-        frequency_penalty: frequencyPenalty,
-        seed: seed,
         stream: false,
-        response_format: outputAsJson ? (outputJsonStructure ? {
-          type: "json_schema",
-          json_schema: {
-            name: context ?? "output-format",
-            strict: true,
-            schema: {
-              type: "object",
-              properties: outputJsonStructure,
-              required: outputJsonRequired,
-              additionalProperties: false
-            } satisfies AIJsonProperty
-          }
-        } : { type: 'json_object' }) : undefined,
+        ...buildSamplingParams('groq', model, config),
+        response_format: buildOpenAIResponseFormat(context, outputAsJson, outputJsonStructure, outputJsonRequired),
       } satisfies GroqCompletion.ChatCompletionCreateParamsNonStreaming).withResponse();
 
       // Log rate limit information from response headers
@@ -738,16 +1069,11 @@ export async function coherePrompt(
     prompt,
     options,
     async (model, prompt, opts) => {
-      const { documents, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
+      const { documents, context, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
       return await getCohereClient().chat({
         model,
-        messages: [
-          { role: 'system', content: formatSystemPromptWithDocuments('cohere', opts) },
-          { role: 'user', content: prompt },
-        ],
-        documents: documents?.length
-          ? documents.map<Cohere.V2ChatRequestDocumentsItem>(data => ({ data }))
-          : undefined,
+        messages: buildChatMessages(formatSystemPromptWithDocuments('cohere', opts), prompt),
+        documents: mapCohereDocuments(documents),
         maxTokens: getMaxOutputToken('cohere', model, config.maxOutputToken),
         temperature: config.temperature,
         p: config.topP,
@@ -755,15 +1081,7 @@ export async function coherePrompt(
         stopSequences: config.stopSequences,
         frequencyPenalty: config.frequencyPenalty,
         seed: config.seed,
-        responseFormat: outputAsJson ? {
-          type: "json_object",
-          jsonSchema: outputJsonStructure ? {
-            type: "object",
-            properties: outputJsonStructure,
-            required: outputJsonRequired,
-            additionalProperties: false
-          } satisfies AIJsonProperty : undefined
-        } satisfies Cohere.ResponseFormatV2 : undefined,
+        responseFormat: buildCohereResponseFormat({ context, outputAsJson, outputJsonStructure, outputJsonRequired }) as Cohere.ResponseFormatV2 | undefined,
       } satisfies Cohere.V2ChatRequest);
     },
     (response) => {
@@ -826,35 +1144,14 @@ export async function cerebrasPrompt(
     options,
     async (model, prompt, opts) => {
       const { context, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
-      const { maxOutputToken, temperature, topP, stopSequences, frequencyPenalty, seed } = config;
       const systemPromptWithDocuments = formatSystemPromptWithDocuments('cerebras', opts);
 
       return await getCerebrasClient().chat.completions.create({
         model,
-        messages: [
-          { role: 'system', content: systemPromptWithDocuments },
-          { role: 'user', content: prompt },
-        ],
-        max_tokens: getMaxOutputToken('cerebras', model, maxOutputToken),
-        temperature,
-        top_p: topP,
+        messages: buildChatMessages(systemPromptWithDocuments, prompt),
         stream: false,
-        stop: stopSequences,
-        frequency_penalty: frequencyPenalty,
-        seed: seed,
-        response_format: outputAsJson ? (outputJsonStructure ? {
-          type: "json_schema",
-          json_schema: {
-            name: context ?? "output-format",
-            strict: true,
-            schema: {
-              type: "object",
-              properties: outputJsonStructure,
-              required: outputJsonRequired,
-              additionalProperties: false
-            } satisfies AIJsonProperty
-          }
-        } : { type: 'json_object' }) : undefined,
+        ...buildSamplingParams('cerebras', model, config),
+        response_format: buildOpenAIResponseFormat(context, outputAsJson, outputJsonStructure, outputJsonRequired),
       } satisfies Cerebras.ChatCompletionCreateParamsNonStreaming) as Cerebras.ChatCompletion.ChatCompletionResponse;
     },
     (response) => {
@@ -866,10 +1163,20 @@ export async function cerebrasPrompt(
       return content.trim();
     },
     (response) => {
+      // BUG FIX: this previously returned snake_case keys
+      // (completion_tokens/prompt_tokens/total_tokens) — the one raw pass-
+      // through of Cerebras's own wire field names in the file, while every
+      // other provider's extractUsage callback (including the sibling
+      // OpenAI-compatible factory) normalizes to camelCase. AIResponse.usage
+      // and incrementDailyUsageCount() both read the camelCase field names,
+      // so Cerebras's token counts were silently recorded as undefined in
+      // the usage ledger. Verify with a query against your `usage` table —
+      // Cerebras rows should show non-null input/output token counts after
+      // this fix that were previously null.
       return {
-        completion_tokens: response.usage?.completion_tokens,
-        prompt_tokens: response.usage?.prompt_tokens,
-        total_tokens: response.usage?.total_tokens,
+        promptTokens: response.usage?.prompt_tokens,
+        completionTokens: response.usage?.completion_tokens,
+        totalTokens: response.usage?.total_tokens,
       };
     },
     (response) => response.choices?.[0]?.finish_reason ?? 'unknown'
@@ -912,10 +1219,7 @@ export async function mistralPrompt(
 
       return await getMistralClient().chat.complete({
         model,
-        messages: [
-          { role: 'system', content: systemPromptWithDocuments },
-          { role: 'user', content: prompt },
-        ],
+        messages: buildChatMessages(systemPromptWithDocuments, prompt),
         maxTokens: getMaxOutputToken('mistral', model, maxOutputToken),
         temperature,
         topP,
@@ -929,22 +1233,8 @@ export async function mistralPrompt(
         // don't pass cachedContentId (pen.ts, canon-validation.ts, etc.).
         // NOTE: the SDK's public property is camelCase `promptCacheKey`; it is
         // serialised to the wire field `prompt_cache_key` internally.
-        promptCacheKey: cachedContentId
-          ? `twistloom:mistral:${cachedContentId}`
-          : 'twistloom:mistral:shared',
-        responseFormat: outputAsJson ? (outputJsonStructure ? {
-          type: "json_schema",
-          jsonSchema: {
-            name: context ?? "output-format",
-            strict: true,
-            schemaDefinition: {
-              type: "object",
-              properties: outputJsonStructure,
-              required: outputJsonRequired,
-              additionalProperties: false
-            } satisfies AIJsonProperty
-          }
-        } : { type: 'json_object' }) : undefined,
+        promptCacheKey: buildMistralPromptCacheKey(cachedContentId),
+        responseFormat: buildMistralResponseFormat({ context, outputAsJson, outputJsonStructure, outputJsonRequired }) as ChatCompletionRequest['responseFormat'],
       } satisfies ChatCompletionRequest);
     },
     (response) => {
@@ -1004,55 +1294,33 @@ export async function nvidiaPrompt(
     prompt,
     options,
     async (model, prompt, opts) => {
-      const { config = AI_CHAT_CONFIG_DEFAULT } = opts;
-      const { maxOutputToken, temperature, topP, stopSequences, frequencyPenalty, seed } = config;
-
+      const { config = AI_CHAT_CONFIG_DEFAULT, signal } = opts;
       const systemPromptWithDocuments = formatSystemPromptWithDocuments('nvidia', opts);
-      const apiKey = requireEnv('NVIDIA_API_KEY');
-      const res = await fetch(`https://integrate.api.nvidia.com/v1/chat/completions`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model,
-          messages: [
-            { role: 'system', content: systemPromptWithDocuments },
-            { role: 'user', content: prompt },
-          ],
-          max_tokens: getMaxOutputToken('nvidia', model, maxOutputToken),
-          temperature,
-          top_p: topP,
-          stop: stopSequences,
-          frequency_penalty: frequencyPenalty,
-          seed,
-          stream: false,
 
-          // NVIDIA's hosted API doesn't support structured output extensions.
-          // ...(outputAsJson ? {
-          //   extra_body: {
-          //     nvext: {
-          //       guided_json: {
-          //         type: "object",
-          //         ...(outputJsonStructure ? {
-          //           properties: outputJsonStructure,
-          //           required: outputJsonRequired,
-          //           additionalProperties: false
-          //         } : {})
-          //       } satisfies AIJsonProperty // Falls back to a generic JSON object if no structural layout is passed
-          //     }
-          //   }
-          // } : {}),
-        }),
-      });
+      const { response } = await nvidiaChatRequest({
+        model,
+        messages: buildChatMessages(systemPromptWithDocuments, prompt),
+        stream: false,
+        ...buildSamplingParams('nvidia', model, config),
 
-      if (!res.ok) {
-        const errorText = await res.text().catch(() => 'Unknown error');
-        throw new Error(`HTTP ${res.status}: ${errorText}`);
-      }
+        // NVIDIA's hosted API doesn't support structured output extensions.
+        // ...(outputAsJson ? {
+        //   extra_body: {
+        //     nvext: {
+        //       guided_json: {
+        //         type: "object",
+        //         ...(outputJsonStructure ? {
+        //           properties: outputJsonStructure,
+        //           required: outputJsonRequired,
+        //           additionalProperties: false
+        //         } : {})
+        //       } satisfies AIJsonProperty // Falls back to a generic JSON object if no structural layout is passed
+        //     }
+        //   }
+        // } : {}),
+      }, signal);
 
-      return await res.json().catch(() => null) as NvidiaChatCompletionResponse;
+      return await response.json().catch(() => null) as NvidiaChatCompletionResponse;
     },
     (response) => {
       const content = response.choices[0]?.message?.content;
@@ -1106,7 +1374,7 @@ export async function nvidiaPrompt(
  * Each provider has a maximum character limit defined in AI_MAX_PROMPT_LENGTH:
  * - Gemini: 3,600,000 chars (~900K tokens)
  * - Mistral: 1,000,000 chars (~250K tokens)
- * - Cohere/Groq/Cerebras/NVIDIA/GitHub: 480,000-500,000 chars (~120K tokens)
+ * - Cohere/Groq/Cerebras/NVIDIA/OVHcloud: 400,000-500,000 chars (~100-120K tokens)
  * 
  * @param prompt - The user prompt to send to AI
  * @param options - Optional configuration for generation behavior
@@ -1184,20 +1452,11 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
       const models = modelSelection[provider];
       if (!models || models.length === 0) continue; // Skip to next provider
 
-      // Validate prompt length against provider's maximum limit
-      const totalDocumentsLength = documents.reduce((sum, doc) => sum + `${doc.title ?? ''}${doc.snippet}`.length, 0);
-      const totalPromptLength = systemPrompt.length + prompt.length + totalDocumentsLength;
-      const maxPromptLength = AI_MAX_PROMPT_LENGTH[provider];
-
-      // Skip if total prompt length exceeded provider's max prompt length
-      if (totalPromptLength > maxPromptLength) {
-        console.log(`[${provider}] ⏩ Prompt length (${totalPromptLength.toLocaleString()} chars) exceeds limit (${maxPromptLength.toLocaleString()} chars), skipping`);
-        continue;
-      }
-
-      // Skip providers that have already exhausted their daily request budget
-      if (!(await canUseAIToday(provider))) {
-        console.log(`[${provider}] ⏩ Daily request limit reached, skipping`);
+      // Validate prompt length (incl. documents) against the provider's max,
+      // and that its daily request budget isn't exhausted.
+      const gate = await assertPromptAllowed(provider, systemPrompt, prompt, documents);
+      if (!gate.allowed) {
+        console.log(`[${provider}] ⏩ ${gate.reason}`);
         continue;
       }
 
@@ -1234,10 +1493,18 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
         case 'groq':       result = await groqPrompt(prompt, opts); break;       // ✅ JSON schema | ☑️ document via system prompt
         case 'cerebras':   result = await cerebrasPrompt(prompt, opts); break;   // ✅ JSON schema | ☑️ document via system prompt
         case 'nvidia':     result = await nvidiaPrompt(prompt, opts); break;     // ☑️ JSON via prompt instructions | ☑️ document via system prompt
-        case 'openrouter': result = await openrouterPrompt(prompt, opts); break; // Same as github
-        case 'cloudflare': result = await cloudflarePrompt(prompt, opts); break; // Same as github
+        case 'openrouter': result = await openrouterPrompt(prompt, opts); break; // OpenAI-compatible factory
+        case 'cloudflare': result = await cloudflarePrompt(prompt, opts); break; // OpenAI-compatible factory
         case 'inception':  result = await inceptionPrompt(prompt, opts); break;  // Diffusion LLM — strict json_schema may not be honored; trial measures it
-        // TODO: wire new providers: ovhcloud, sambanova, ollama, modelscope, zai, siliconflow, aionlabs, chutes, llm7
+        case 'ovhcloud':    result = await ovhcloudPrompt(prompt, opts); break;    // OpenAI-compatible factory
+        case 'sambanova':   result = await sambanovaPrompt(prompt, opts); break;   // OpenAI-compatible factory
+        case 'ollama':      result = await ollamaPrompt(prompt, opts); break;      // OpenAI-compatible factory — free tier is GPU-time/session-quota, not token-based; see AI_RATE_LIMITS.ollama
+        case 'modelscope':  result = await modelscopePrompt(prompt, opts); break;  // OpenAI-compatible factory
+        case 'zai':         result = await zaiPrompt(prompt, opts); break;         // OpenAI-compatible factory
+        case 'siliconflow': result = await siliconflowPrompt(prompt, opts); break; // OpenAI-compatible factory
+        case 'aionlabs':    result = await aionlabsPrompt(prompt, opts); break;    // OpenAI-compatible factory — tiny ~20K token/day budget, scoped to AI_CHAT_MODELS_IDEA only
+        case 'chutes':      result = await chutesPrompt(prompt, opts); break;      // OpenAI-compatible factory — decentralized; only TEE-flagged models are wired into the model pools
+        case 'llm7':        result = await llm7Prompt(prompt, opts); break;        // OpenAI-compatible factory — unofficial mirror, last-resort fallback only
       }
     } catch (error) {
       console.log(`[${provider}] ⚠️ Provider failed:`, error);
@@ -1437,7 +1704,20 @@ export function isSchemaTooComplex(schema: Record<string, AIJsonProperty> | unde
     }
   }
 
-  measure(schema); // TODO: always `0 props, 0 enum items, depth 0`
+  // BUG FIX: `schema` is a flat properties MAP (`{ title: {...}, actions: {...} }`),
+  // not a single schema node — it never itself has `.properties`/`.enum`/`.items`
+  // keys. The previous code called `measure(schema)` directly, which checked for
+  // those keys on the map itself, found none, and returned immediately — meaning
+  // props/enumItems/maxDepth were always 0 and only the `schemaStr.length` check
+  // below ever actually flagged anything (confirmed: previously commented
+  // `// TODO: always \`0 props, 0 enum items, depth 0\``). Seeding directly from
+  // the map's own keys, then recursing into each property's *value* (which is a
+  // real schema node), makes the structural checks the JSDoc above describes
+  // actually run.
+  props = Object.keys(schema).length;
+  for (const val of Object.values(schema)) {
+    measure(val, 1);
+  }
 
   const isComplex = props > 100 || enumItems > 100 || maxDepth > 6 || schemaStr.length > MAX_SCHEMA_LENGTH;
   if (isComplex) {
@@ -1540,7 +1820,7 @@ export function formatDocumentsToPrompt(documents?: AIDocument[]): string {
  * 
  * This function handles document attachment differently based on provider capabilities:
  * - RAG providers (Cohere): Documents sent via dedicated `documents` field
- * - System prompt providers (GitHub, Gemini, etc.): Documents embedded in system prompt
+ * - System prompt providers (OpenAI-compatible providers, Gemini, etc.): Documents embedded in system prompt
  * 
  * @param options - AI prompt options containing system prompt and documents
  * @returns Formatted system prompt string with documents properly attached

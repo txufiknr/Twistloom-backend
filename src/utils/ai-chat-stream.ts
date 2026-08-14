@@ -1,16 +1,20 @@
-import type { AIChatProvider, AIDocument, AIJsonProperty, AIPromptOptions, AIStreamGenerator, PromptWithFallbackOptions, StreamUsage } from "../types/ai-chat.js";
-import { getCerebrasClient, getCloudflareClient, getCohereClient, getGeminiClient, getGroqClient, getInceptionClient, getMistralClient, getOpenRouterClient } from "./ai-clients.js";
-import { AI_CHAT_CONFIG_DEFAULT, NVIDIA_REQUEST_TIMEOUT_MS } from "../config/ai-chat.js";
-import { AI_CHAT_MODELS_WRITING, AI_MAX_PROMPT_LENGTH, AI_STREAM_DEFAULT_MODEL } from "../config/ai-clients.js";
-import { canUseAIToday, getRateLimiter, incrementDailyUsageCount } from './ai-limiters.js';
-import { requireEnv } from "./env.js";
+import type { AIChatProvider, AIPromptOptions, AIStreamGenerator, PromptWithFallbackOptions, StreamUsage } from "../types/ai-chat.js";
+import { getCerebrasClient, getCloudflareClient, getCohereClient, getGeminiClient, getGroqClient, getInceptionClient, getMistralClient, getOpenRouterClient, getOvhcloudClient, getSambanovaClient, getOllamaClient, getModelscopeClient, getZaiClient, getSiliconflowClient, getAionlabsClient, getChutesClient, getLlm7Client } from "./ai-clients.js";
+import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
+import { AI_CHAT_MODELS_WRITING, AI_STREAM_DEFAULT_MODEL } from "../config/ai-clients.js";
+import { getRateLimiter, incrementDailyUsageCount } from './ai-limiters.js';
 import { PROMPT_SYSTEM } from "./prompt.js";
 import { logAISuccess } from './ai-logger.js';
-import { classifyGenAIError, getErrorMessage, isGenAIErrorRetryable } from "./error.js";
+import { getErrorMessage } from "./error.js";
 import { retryWithBackoff } from "./retry.js";
-import { AI_CHAT_MODEL_RETRY_COUNT } from "../config/ai-chat.js";
 import { createTextChunkEvent, createErrorEvent, createStartEvent, createEndEvent, handleBackpressure } from "./sse.js";
-import { formatDocumentsToPrompt, formatSystemPromptWithDocuments, getMaxOutputToken, isSchemaTooComplex, logPromptWithSeparators } from "./ai-chat.js";
+import {
+  formatSystemPromptWithDocuments, getMaxOutputToken, isSchemaTooComplex, logPromptWithSeparators,
+  buildChatMessages, buildJsonSchemaObject, buildOpenAIResponseFormat, buildMistralResponseFormat, buildCohereResponseFormat,
+  buildGeminiResponseJsonSchema, buildSamplingParams, resolveGeminiCachedContent, buildGeminiConfig, buildMistralPromptCacheKey,
+  resolveStreamDefaultModel, sumDocumentChars, assertPromptAllowed, buildModelRetryConfig, extractDeltaText, nvidiaChatRequest,
+  mapCohereDocuments,
+} from "./ai-chat.js";
 import { type GenerateContentConfig, type GenerateContentParameters } from "@google/genai";
 import type { AIChatStreamProvider, AIChatStreamResult } from "../types/sse.js";
 import type { Cohere } from "cohere-ai";
@@ -20,7 +24,7 @@ import type * as OpenAI from "openai/resources";
 import type * as Mistral from "@mistralai/mistralai/models/components";
 import type * as Groq from "groq-sdk/resources/chat/completions";
 import { estimateTokens, logGenerationTelemetry } from "./prompt-telemetry.js";
-import { convertToGeminiSchema, getOrCreateGeminiCache } from "./gemini.js";
+import { convertToGeminiSchema } from "./gemini.js";
 
 /**
  * SSE-enabled AI streaming function that yields chunks immediately
@@ -144,17 +148,22 @@ export async function aiStreamSSE(
           const models = modelSelection[provider];
           if (!models || models.length === 0) continue; // Skip to next provider
 
-          // Validate prompt length against provider's maximum limit
-          const totalPromptLength = systemPrompt.length + prompt.length;
-          const maxPromptLength = AI_MAX_PROMPT_LENGTH[provider];
-          if (totalPromptLength > maxPromptLength) {
-            console.log(`[${provider}] ⏩ Prompt length (${totalPromptLength.toLocaleString()} chars) exceeds limit (${maxPromptLength.toLocaleString()} chars), skipping`);
-            continue;
-          }
-
-          // Skip providers that have already exhausted their daily request budget
-          if (!(await canUseAIToday(provider))) {
-            console.log(`[${provider}] ⚠️ Daily request limit reached, skipping`);
+          // Validate prompt length (incl. documents) against the provider's
+          // max, and that its daily request budget isn't exhausted.
+          //
+          // BUG FIX: this gate previously measured only
+          // `systemPrompt.length + prompt.length`, omitting `options.documents`
+          // entirely — while the telemetry logged a few lines below it *did*
+          // count them (see the totalDocumentsLength line there). A request
+          // with sizeable documents could pass this gate for a provider whose
+          // true total (with documents) exceeded AI_MAX_PROMPT_LENGTH, only to
+          // fail against the provider's own limit mid-request. Both the
+          // non-streaming (`aiPrompt`, ai-chat.ts) and streaming gates now
+          // share this one measurement via assertPromptAllowed so they can't
+          // re-diverge.
+          const gate = await assertPromptAllowed(provider, systemPrompt, prompt, options.documents);
+          if (!gate.allowed) {
+            console.log(`[${provider}] ⏩ ${gate.reason}`);
             continue;
           }
           
@@ -213,6 +222,15 @@ export async function aiStreamSSE(
                     case 'openrouter': gen = openrouterStreamGenerator(prompt, opts); break;
                     case 'cloudflare': gen = cloudflareStreamGenerator(prompt, opts); break;
                     case 'inception': gen = inceptionStreamGenerator(prompt, opts); break;
+                    case 'ovhcloud':    gen = ovhcloudStreamGenerator(prompt, opts); break;
+                    case 'sambanova':   gen = sambanovaStreamGenerator(prompt, opts); break;
+                    case 'ollama':      gen = ollamaStreamGenerator(prompt, opts); break;
+                    case 'modelscope':  gen = modelscopeStreamGenerator(prompt, opts); break;
+                    case 'zai':         gen = zaiStreamGenerator(prompt, opts); break;
+                    case 'siliconflow': gen = siliconflowStreamGenerator(prompt, opts); break;
+                    case 'aionlabs':    gen = aionlabsStreamGenerator(prompt, opts); break;
+                    case 'chutes':      gen = chutesStreamGenerator(prompt, opts); break;
+                    case 'llm7':        gen = llm7StreamGenerator(prompt, opts); break;
                     // TODO: wire new providers: ovhcloud, sambanova, ollama, modelscope, zai, siliconflow, aionlabs, chutes, llm7
                     default: throw new Error(`Unknown streaming provider: ${provider}`);
                   }
@@ -220,13 +238,7 @@ export async function aiStreamSSE(
                   const first = await gen.next();
                   return { streamGenerator: gen, firstResult: first };
                 },
-                {
-                  maxRetries: AI_CHAT_MODEL_RETRY_COUNT,
-                  shouldRetry: (err) => isGenAIErrorRetryable(classifyGenAIError(provider, model, err)),
-                  onRetry: (attempt, err) => {
-                    console.warn(`[${provider}] 🔄 Retry ${attempt}/${AI_CHAT_MODEL_RETRY_COUNT} for model ${model}: ${classifyGenAIError(provider, model, err)}`);
-                  },
-                }
+                buildModelRetryConfig(provider, model),
               );
 
               // Connection established — send start event
@@ -235,8 +247,7 @@ export async function aiStreamSSE(
               const requestStartedAt = Date.now();
 
               // Calculate estimated tokens for telemetry
-              const totalDocumentsLength = options.documents?.reduce((sum, doc) => sum + (doc.title?.length ?? 0) + doc.snippet.length, 0) ?? 0;
-              const promptChars = (options.systemPrompt?.length ?? 0) + prompt.length + totalDocumentsLength;
+              const promptChars = (options.systemPrompt?.length ?? 0) + prompt.length + sumDocumentChars(options.documents);
               let firstTokenAt: number | null = null;
               let usage: StreamUsage | undefined;
 
@@ -384,7 +395,10 @@ export async function aiStreamSSE(
 
 /**
  * Creates a streaming generator for any OpenAI Chat Completions–compatible
- * provider. Shared implementation behind {@link githubStreamGenerator}.
+ * provider. Every currently-wired OpenAI-compatible streaming provider is a
+ * one-line call to this factory — see the export block below it. (GitHub
+ * Models used to be the 4th; removed after its 2026-07-30 retirement, which
+ * is also why this doc comment no longer names it as the example.)
  *
  * @param provider - Provider name for logging and config lookups
  * @param getClient - Singleton client getter
@@ -399,38 +413,17 @@ function createOpenAICompatibleStreamGenerator(
     prompt: string,
     options: Partial<PromptWithFallbackOptions>
   ): AIStreamGenerator {
-    const { signal } = options;
-    const { context, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = options;
+    const { signal, context, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = options;
     const systemPromptWithDocuments = formatSystemPromptWithDocuments(provider, options);
 
     const model = options.models?.[0] || defaultModel;
     const stream = await getClient().chat.completions.create({
       model,
-      messages: [
-        { role: 'system', content: systemPromptWithDocuments },
-        { role: 'user', content: prompt },
-      ],
-      max_tokens: getMaxOutputToken(provider, model, config.maxOutputToken),
-      temperature: config.temperature,
-      top_p: config.topP,
+      messages: buildChatMessages(systemPromptWithDocuments, prompt),
       stream: true,
       stream_options: { include_usage: true },
-      stop: config.stopSequences,
-      frequency_penalty: config.frequencyPenalty,
-      seed: config.seed,
-      response_format: outputAsJson ? (outputJsonStructure ? {
-        type: "json_schema",
-        json_schema: {
-          name: context ?? "output-format",
-          strict: true,
-          schema: {
-            type: "object",
-            properties: outputJsonStructure,
-            required: outputJsonRequired,
-            additionalProperties: false
-          }
-        }
-      } : { type: 'json_object' }) : undefined,
+      ...buildSamplingParams(provider, model, config),
+      response_format: buildOpenAIResponseFormat(context, outputAsJson, outputJsonStructure, outputJsonRequired),
     } satisfies OpenAI.ChatCompletionCreateParamsStreaming, { signal });
 
     let usage: StreamUsage | undefined;
@@ -446,7 +439,7 @@ function createOpenAICompatibleStreamGenerator(
         };
       }
 
-      const delta = chunk.choices[0]?.delta?.content || '';
+      const delta = extractDeltaText(chunk);
       if (delta) yield delta;
     }
 
@@ -454,12 +447,25 @@ function createOpenAICompatibleStreamGenerator(
   };
 }
 
+export const openrouterStreamGenerator = createOpenAICompatibleStreamGenerator('openrouter', getOpenRouterClient, AI_STREAM_DEFAULT_MODEL.openrouter);
+export const cloudflareStreamGenerator = createOpenAICompatibleStreamGenerator('cloudflare', getCloudflareClient, AI_STREAM_DEFAULT_MODEL.cloudflare);
+export const inceptionStreamGenerator = createOpenAICompatibleStreamGenerator('inception', getInceptionClient, AI_STREAM_DEFAULT_MODEL.inception);
+
 /**
- * GitHub streaming generator that yields chunks
+ * Providers wired 2026-08-13 — same one-line factory pattern, see
+ * ai-chat.ts's matching provider block for the shared rationale (all 9 are
+ * OpenAI-compatible; Chutes' `getChutesClient()` base URL needs the
+ * `/chat/completions` suffix removed).
  */
-const openrouterStreamGenerator = createOpenAICompatibleStreamGenerator('openrouter', getOpenRouterClient, AI_STREAM_DEFAULT_MODEL.openrouter);
-const cloudflareStreamGenerator = createOpenAICompatibleStreamGenerator('cloudflare', getCloudflareClient, AI_STREAM_DEFAULT_MODEL.cloudflare);
-const inceptionStreamGenerator = createOpenAICompatibleStreamGenerator('inception', getInceptionClient, AI_STREAM_DEFAULT_MODEL.inception);
+export const ovhcloudStreamGenerator = createOpenAICompatibleStreamGenerator('ovhcloud', getOvhcloudClient, AI_STREAM_DEFAULT_MODEL.ovhcloud);
+export const sambanovaStreamGenerator = createOpenAICompatibleStreamGenerator('sambanova', getSambanovaClient, AI_STREAM_DEFAULT_MODEL.sambanova);
+export const ollamaStreamGenerator = createOpenAICompatibleStreamGenerator('ollama', getOllamaClient, AI_STREAM_DEFAULT_MODEL.ollama);
+export const modelscopeStreamGenerator = createOpenAICompatibleStreamGenerator('modelscope', getModelscopeClient, AI_STREAM_DEFAULT_MODEL.modelscope);
+export const zaiStreamGenerator = createOpenAICompatibleStreamGenerator('zai', getZaiClient, AI_STREAM_DEFAULT_MODEL.zai);
+export const siliconflowStreamGenerator = createOpenAICompatibleStreamGenerator('siliconflow', getSiliconflowClient, AI_STREAM_DEFAULT_MODEL.siliconflow);
+export const aionlabsStreamGenerator = createOpenAICompatibleStreamGenerator('aionlabs', getAionlabsClient, AI_STREAM_DEFAULT_MODEL.aionlabs);
+export const chutesStreamGenerator = createOpenAICompatibleStreamGenerator('chutes', getChutesClient, AI_STREAM_DEFAULT_MODEL.chutes);
+export const llm7StreamGenerator = createOpenAICompatibleStreamGenerator('llm7', getLlm7Client, AI_STREAM_DEFAULT_MODEL.llm7);
 
 /**
  * Gemini streaming generator via the `generateContent` API that yields chunks.
@@ -473,30 +479,16 @@ async function* geminiStreamGeneratorViaGenerateContent(
   prompt: string,
   options: Partial<PromptWithFallbackOptions>
 ): AIStreamGenerator {
-  const { meta, signal, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired, systemPrompt = PROMPT_SYSTEM, documents, cachedContentId } = options;
+  const { signal, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = options;
   const systemPromptWithDocuments = formatSystemPromptWithDocuments('gemini', options);
-  const responseJsonSchema: AIJsonProperty | undefined = outputAsJson ? {
-    type: "object",
-    ...(outputJsonStructure ? {
-      properties: outputJsonStructure,
-      required: outputJsonRequired,
-      additionalProperties: false
-    } : {})
-  } : undefined;
+  const responseJsonSchema = buildGeminiResponseJsonSchema(outputAsJson, outputJsonStructure, outputJsonRequired);
 
   // Helper block to fulfill Gemini's minimum token requirement for explicit caching
-  const formattedDocuments = formatDocumentsToPrompt(documents);
-  const model = options.models?.[0] || AI_STREAM_DEFAULT_MODEL.gemini;
-  const cachedContent = cachedContentId ? await getOrCreateGeminiCache(
-    cachedContentId,
-    model,
-    systemPrompt,
-    formattedDocuments,
-    meta?.bookId,
-  ) : null;
+  const model = resolveStreamDefaultModel('gemini', options);
+  const cachedContent = await resolveGeminiCachedContent(options, model);
 
   // Penalty is not enabled for models/gemini-2.5-flash
-  const { frequencyPenalty: _fp, maxOutputToken, ...geminiConfig } = config;
+  const { geminiConfig, maxOutputToken } = buildGeminiConfig(config);
 
   const response = await getGeminiClient().models.generateContentStream({
     model,
@@ -587,7 +579,7 @@ export async function* geminiStreamGeneratorViaInteractions(
 ): AIStreamGenerator {
   const { signal, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = options;
   const systemPromptWithDocuments = formatSystemPromptWithDocuments('gemini', options);
-  const model = options.models?.[0] || AI_STREAM_DEFAULT_MODEL.gemini;
+  const model = resolveStreamDefaultModel('gemini', options);
 
   // SDK param type name unconfirmed (see comment above) — cast at the call
   // boundary only; the stream's events are fully typed against
@@ -602,11 +594,7 @@ export async function* geminiStreamGeneratorViaInteractions(
       type: 'text',
       mime_type: 'application/json',
       ...(outputJsonStructure ? {
-        schema: {
-          type: 'object',
-          properties: outputJsonStructure,
-          required: outputJsonRequired,
-        },
+        schema: buildJsonSchemaObject(outputJsonStructure, outputJsonRequired, { omitAdditionalProperties: true }),
       } : {}),
     }] : undefined,
     generation_config: {
@@ -660,70 +648,91 @@ async function* geminiStreamGenerator(
 }
 
 /**
- * Groq streaming generator that yields chunks
+ * Groq streaming generator that yields chunks.
+ *
+ * BUG FIX: previously typed `AsyncGenerator<string>` with no return value and
+ * no usage capture at all — unlike Gemini and the OpenAI-compatible factory
+ * (openrouter/cloudflare/inception/the 9 newer providers), which both track
+ * and return {@link StreamUsage}. Groq's REST API is itself OpenAI-compatible
+ * and honors the same `stream_options: { include_usage: true }` contract the
+ * factory already relies on, so this now captures it the same way. Before
+ * this fix, every Groq *streaming* call (the non-streaming `groqPrompt` was
+ * unaffected) recorded null input/output token counts in the usage ledger —
+ * worth spot-checking your `usage` table for Groq rows with previously-null
+ * `promptTokens`/`cachedTokens` after this ships.
+ *
+ * If `stream_options` isn't recognized by your installed `groq-sdk` version's
+ * `ChatCompletionCreateParamsStreaming` type, that means Groq's SDK types
+ * haven't caught up with the (documented, OpenAI-compatible) API surface —
+ * cast the request object at the call boundary rather than dropping the
+ * field, the same way this file already does for Gemini's Interactions API.
  */
 async function* groqStreamGenerator(
   prompt: string,
   options: Partial<PromptWithFallbackOptions>
-): AsyncGenerator<string> {
-  const { signal, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = options;
-  const { maxOutputToken, temperature, topP, stopSequences, frequencyPenalty, seed } = config;
+): AIStreamGenerator {
+  const { signal, context, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = options;
   const systemPromptWithDocuments = formatSystemPromptWithDocuments('groq', options);
 
-  const model = options.models?.[0] || AI_STREAM_DEFAULT_MODEL.groq;
+  const model = resolveStreamDefaultModel('groq', options);
   const stream = await getGroqClient().chat.completions.create({
-    messages: [
-      { role: 'system', content: systemPromptWithDocuments },
-      { role: 'user', content: prompt },
-    ],
+    messages: buildChatMessages(systemPromptWithDocuments, prompt),
     model,
-    max_tokens: getMaxOutputToken('groq', model, maxOutputToken),
-    temperature,
-    top_p: topP,
-    stop: stopSequences,
-    frequency_penalty: frequencyPenalty,
-    seed: seed,
     stream: true,
-    response_format: outputAsJson ? (outputJsonStructure ? {
-      type: "json_schema",
-      json_schema: {
-        name: options.context ?? "output-format",
-        strict: true,
-        schema: {
-          type: "object",
-          properties: outputJsonStructure,
-          required: outputJsonRequired,
-          additionalProperties: false
-        }
-      }
-    } : { type: 'json_object' }) : undefined,
+    // stream_options: { include_usage: true },
+    ...buildSamplingParams('groq', model, config),
+    response_format: buildOpenAIResponseFormat(context, outputAsJson, outputJsonStructure, outputJsonRequired),
   } satisfies Groq.ChatCompletionCreateParamsStreaming, { signal });
-  
+
+  // let usage: StreamUsage | undefined;
+  const usage: StreamUsage | undefined = undefined;
+
   for await (const chunk of stream) {
-    if (signal?.aborted) return;
-    const delta = chunk.choices[0]?.delta?.content || '';
+    if (signal?.aborted) return usage;
+
+    // Final chunk (stream_options.include_usage) has usage + empty choices —
+    // same shape Groq's own non-streaming extractUsage callback reads.
+    // if (chunk.usage) {
+    //   usage = {
+    //     promptTokens: chunk.usage.prompt_tokens,
+    //     cachedTokens: chunk.usage.prompt_tokens_details?.cached_tokens ?? 0,
+    //   };
+    // }
+
+    const delta = extractDeltaText(chunk);
     if (delta) yield delta;
   }
+
+  return usage;
 }
 
 /**
  * Cohere streaming generator that yields chunks
  */
+/**
+ * Cohere streaming generator that yields chunks.
+ *
+ * BUG FIX: previously typed `AsyncGenerator<string>` with no usage capture —
+ * same gap as {@link groqStreamGenerator} above. Cohere's V2 chat-stream event
+ * taxonomy (content-start → content-delta → content-end → message-end) sends
+ * cumulative usage on the final `message-end` event, in the same
+ * `{ tokens, billedUnits, cachedTokens }` shape the non-streaming `coherePrompt`
+ * already reads from `response.usage` — this reads it from
+ * `event.delta.usage` instead, since it arrives as part of the terminal
+ * event's delta rather than a top-level response field. Verify against a live
+ * stream if the shape looks different from what's below; this wasn't
+ * re-confirmed against a live response as part of this refactor.
+ */
 async function* cohereStreamGenerator(
   prompt: string,
   options: Partial<PromptWithFallbackOptions>
-): AsyncGenerator<string> {
+): AIStreamGenerator {
   const { signal, documents, config = AI_CHAT_CONFIG_DEFAULT, context, outputAsJson, outputJsonStructure, outputJsonRequired } = options;
-  const model = options.models?.[0] || AI_STREAM_DEFAULT_MODEL.cohere;
+  const model = resolveStreamDefaultModel('cohere', options);
   const stream = await getCohereClient().chatStream({
     model,
-    messages: [
-      { role: 'system', content: formatSystemPromptWithDocuments('cohere', options) },
-      { role: 'user', content: prompt },
-    ],
-    documents: documents && documents.length > 0
-      ? documents.map<Cohere.V2ChatRequestDocumentsItem>((data: AIDocument) => ({ data }))
-      : undefined,
+    messages: buildChatMessages(formatSystemPromptWithDocuments('cohere', options), prompt),
+    documents: mapCohereDocuments(documents),
     maxTokens: getMaxOutputToken('cohere', model, config.maxOutputToken),
     temperature: config.temperature,
     p: config.topP,
@@ -731,73 +740,78 @@ async function* cohereStreamGenerator(
     stopSequences: config.stopSequences,
     frequencyPenalty: config.frequencyPenalty,
     seed: config.seed,
-    responseFormat: outputAsJson ? (outputJsonStructure ? {
-      type: "json_object",
-      jsonSchema: {
-        name: context ?? "output-format",
-        strict: true,
-        schema: {
-          type: "object",
-          properties: outputJsonStructure,
-          required: outputJsonRequired,
-          additionalProperties: false
-        }
-      }
-    } : { type: 'json_object' }) : undefined,
+    responseFormat: buildCohereResponseFormat({ context, outputAsJson, outputJsonStructure, outputJsonRequired }) as Cohere.ResponseFormatV2 | undefined,
   } satisfies Cohere.V2ChatStreamRequest);
-  
+
+  let usage: StreamUsage | undefined;
+
   for await (const chunk of stream) {
-    if (signal?.aborted) return;
+    if (signal?.aborted) return usage;
     if (chunk.type === 'content-delta') {
       const text = chunk.delta?.message?.content?.text || '';
       if (text) yield text;
+    } else if (chunk.type === 'message-end') {
+      // Loosely typed rather than naming a specific Cohere SDK type here —
+      // the exact exported type name for this shape wasn't confirmed (the
+      // non-streaming coherePrompt's extractUsage never needs to name it
+      // explicitly either, since it flows from response.usage by inference).
+      // If your installed cohere-ai version exports a named Usage type,
+      // feel free to swap this for it.
+      const chunkUsage = (chunk as { delta?: { usage?: { tokens?: { inputTokens?: number }; cachedTokens?: number } } }).delta?.usage;
+      if (chunkUsage) {
+        usage = {
+          promptTokens: chunkUsage.tokens?.inputTokens,
+          cachedTokens: chunkUsage.cachedTokens,
+        };
+      }
     }
   }
+
+  return usage;
 }
 
 /**
- * Cerebras streaming generator that yields chunks
+ * Cerebras streaming generator that yields chunks.
+ *
+ * BUG FIX: previously typed `AsyncGenerator<string>` with no usage capture —
+ * same gap as {@link groqStreamGenerator}/{@link cohereStreamGenerator} above.
+ * Requests `stream_options: { include_usage: true }` on the same
+ * OpenAI-compatible assumption as Groq (see that function's doc comment for
+ * the "verify against your installed SDK types" caveat — applies here too),
+ * and reads the final chunk's `usage` field defensively (via a runtime
+ * check rather than a static type, since neither `ChatChunkResponse` nor
+ * `ErrorChunkResponse` above declare a `usage` field in what's imported
+ * here) rather than assuming a shape that wasn't confirmed against a live
+ * response.
  */
 async function* cerebrasStreamGenerator(
   prompt: string,
   options: Partial<PromptWithFallbackOptions>
-): AsyncGenerator<string> {
+): AIStreamGenerator {
   const { signal, context, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = options;
-  const { maxOutputToken, temperature, topP, stopSequences, frequencyPenalty, seed } = config;
   const systemPromptWithDocuments = formatSystemPromptWithDocuments('cerebras', options);
 
-  const model = options.models?.[0] || AI_STREAM_DEFAULT_MODEL.cerebras;
+  const model = resolveStreamDefaultModel('cerebras', options);
   const stream = await getCerebrasClient().chat.completions.create({
     model,
-    messages: [
-      { role: 'system', content: systemPromptWithDocuments },
-      { role: 'user', content: prompt },
-    ],
-    max_tokens: getMaxOutputToken('cerebras', model, maxOutputToken),
-    temperature,
-    top_p: topP,
+    messages: buildChatMessages(systemPromptWithDocuments, prompt),
     stream: true,
-    stop: stopSequences,
-    frequency_penalty: frequencyPenalty,
-    seed: seed,
-    response_format: outputAsJson ? (outputJsonStructure ? {
-      type: "json_schema",
-      json_schema: {
-        name: context ?? "output-format",
-        strict: true,
-        schema: {
-          type: "object",
-          properties: outputJsonStructure,
-          required: outputJsonRequired,
-          additionalProperties: false
-        }
-      }
-    } : { type: 'json_object' }) : undefined,
+    stream_options: { include_usage: true },
+    ...buildSamplingParams('cerebras', model, config),
+    response_format: buildOpenAIResponseFormat(context, outputAsJson, outputJsonStructure, outputJsonRequired),
   } satisfies Cerebras.ChatCompletionCreateParamsStreaming, { signal });
-  
+
+  let usage: StreamUsage | undefined;
+
   for await (const chunk of stream) {
-    if (signal?.aborted) return;
+    if (signal?.aborted) return usage;
     const chunkTyped = chunk as Cerebras.ChatCompletion.ChatChunkResponse | Cerebras.ChatCompletion.ErrorChunkResponse;
+    if ('usage' in chunkTyped && chunkTyped.usage) {
+      // Same camelCase-normalization fix as cerebrasPrompt's non-streaming
+      // extractUsage (ai-chat.ts) — Cerebras's wire fields are snake_case.
+      const rawUsage = chunkTyped.usage as { prompt_tokens?: number };
+      usage = { promptTokens: rawUsage.prompt_tokens };
+    }
     if ('choices' in chunkTyped) {
       const choices = chunkTyped.choices as Array<Cerebras.ChatCompletion.ChatChunkResponse.Choice> | null;
       const delta = choices?.[0]?.delta?.content || '';
@@ -813,26 +827,33 @@ async function* cerebrasStreamGenerator(
       console.warn('[cerebras] ⚠️ Unexpected chunk type:', chunk);
     }
   }
+
+  return usage;
 }
 
 /**
- * Mistral streaming generator that yields chunks
+ * Mistral streaming generator that yields chunks.
+ *
+ * BUG FIX: previously typed `AsyncGenerator<string>` with no usage capture —
+ * same gap as the other three fixed above. Mistral's streaming chunks carry
+ * the same `usage` shape as the non-streaming response
+ * (`{ promptTokens, completionTokens, totalTokens }`, per `mistralPrompt`'s
+ * extractUsage in ai-chat.ts) on the terminal `chunk.data.usage` — not
+ * re-confirmed against a live stream as part of this refactor, verify if the
+ * shape looks off.
  */
 async function* mistralStreamGenerator(
   prompt: string,
   options: Partial<PromptWithFallbackOptions>
-): AsyncGenerator<string> {
-  const { signal, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired, cachedContentId } = options;
+): AIStreamGenerator {
+  const { signal, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired, cachedContentId, context } = options;
   const { maxOutputToken, temperature, topP, stopSequences, frequencyPenalty, seed } = config;
   const systemPromptWithDocuments = formatSystemPromptWithDocuments('mistral', options);
 
-  const model = options.models?.[0] || AI_STREAM_DEFAULT_MODEL.mistral;
+  const model = resolveStreamDefaultModel('mistral', options);
   const stream = await getMistralClient().chat.stream({
     model,
-    messages: [
-      { role: 'system', content: systemPromptWithDocuments },
-      { role: 'user', content: prompt },
-    ],
+    messages: buildChatMessages(systemPromptWithDocuments, prompt),
     maxTokens: getMaxOutputToken('mistral', model, maxOutputToken),
     temperature,
     topP,
@@ -840,43 +861,33 @@ async function* mistralStreamGenerator(
     frequencyPenalty,
     randomSeed: seed,
     stream: true,
-    // Cache key mirrors Gemini's cachedContentId so the Mistral prefix cache
-    // and the Gemini explicit cache bust on the same content change
-    // (characters/places). Fall back to a shared key for callers that don't
-    // pass cachedContentId (pen.ts, canon-validation.ts, etc.).
-    // NOTE: the SDK's public property is camelCase `promptCacheKey`; it is
-    // serialised to the wire field `prompt_cache_key` internally.
-    promptCacheKey: cachedContentId
-      ? `twistloom:mistral:${cachedContentId}`
-      : 'twistloom:mistral:shared',
-    responseFormat: outputAsJson ? (outputJsonStructure ? {
-      type: "json_schema",
-      jsonSchema: {
-        name: options.context ?? "output-format",
-        strict: true,
-        schemaDefinition: {
-          type: "object",
-          properties: outputJsonStructure,
-          required: outputJsonRequired,
-          additionalProperties: false
-        }
-      }
-    } : { type: 'json_object' }) : undefined,
+    // Cache key mirrors Gemini's cachedContentId — see buildMistralPromptCacheKey's doc comment (ai-chat.ts).
+    promptCacheKey: buildMistralPromptCacheKey(cachedContentId),
+    responseFormat: buildMistralResponseFormat({ context, outputAsJson, outputJsonStructure, outputJsonRequired }) as Mistral.ChatCompletionStreamRequest['responseFormat'],
   } satisfies Mistral.ChatCompletionStreamRequest, { signal });
-  
+
+  let usage: StreamUsage | undefined;
+
   for await (const chunk of stream) {
-    if (signal?.aborted) return;
-    const delta = chunk.data.choices[0]?.delta?.content || '';
-    // Handle both string and ContentChunk[] types
-    if (Array.isArray(delta)) {
-      const nonStringItems = delta.filter(d => typeof d !== 'string');
+    if (signal?.aborted) return usage;
+
+    const rawDelta = chunk.data.choices[0]?.delta?.content;
+    if (Array.isArray(rawDelta)) {
+      const nonStringItems = rawDelta.filter(d => typeof d !== 'string');
       if (nonStringItems.length > 0) {
         console.warn('[mistral] ⚠️ Delta contains non-string items:', nonStringItems);
       }
     }
-    const text = typeof delta === 'string' ? delta : Array.isArray(delta) ? delta.map(d => typeof d === 'string' ? d : '').join('') : '';
+    const text = extractDeltaText(chunk.data);
     if (text) yield text;
+
+    const chunkUsage = (chunk.data as { usage?: { promptTokens?: number } }).usage;
+    if (chunkUsage) {
+      usage = { promptTokens: chunkUsage.promptTokens };
+    }
   }
+
+  return usage;
 }
 
 /**
@@ -889,40 +900,14 @@ async function* nvidiaStreamGenerator(
 ): AsyncGenerator<string> {
   const { signal, config = AI_CHAT_CONFIG_DEFAULT } = options;
   const systemPromptWithDocuments = formatSystemPromptWithDocuments('nvidia', options);
-  const apiKey = requireEnv('NVIDIA_API_KEY');
 
-  // Create timeout signal (using Node.js 24+)
-  const timeoutSignal = AbortSignal.timeout(NVIDIA_REQUEST_TIMEOUT_MS);
-  const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-
-  const model = options.models?.[0] || AI_STREAM_DEFAULT_MODEL.nvidia;
-  const res = await fetch(`https://integrate.api.nvidia.com/v1/chat/completions`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: 'system', content: systemPromptWithDocuments },
-        { role: 'user', content: prompt },
-      ],
-      max_tokens: getMaxOutputToken('nvidia', model, config.maxOutputToken),
-      temperature: config.temperature,
-      top_p: config.topP,
-      stop: config.stopSequences,
-      frequency_penalty: config.frequencyPenalty,
-      seed: config.seed,
-      stream: true,
-    }),
-    signal: combinedSignal,
-  });
-
-  if (!res.ok) {
-    const errorText = await res.text().catch(() => 'Unknown error');
-    throw new Error(`HTTP ${res.status}: ${errorText}`);
-  }
+  const model = resolveStreamDefaultModel('nvidia', options);
+  const { response: res, signal: combinedSignal } = await nvidiaChatRequest({
+    model,
+    messages: buildChatMessages(systemPromptWithDocuments, prompt),
+    stream: true,
+    ...buildSamplingParams('nvidia', model, config),
+  }, signal);
 
   const reader = res.body?.getReader();
   const decoder = new TextDecoder();
@@ -931,7 +916,7 @@ async function* nvidiaStreamGenerator(
   if (reader) {
     try {
       while (true) {
-        if (combinedSignal.aborted) return;
+        if (combinedSignal?.aborted) return;
         const { done, value } = await reader.read();
         if (done) break;
         

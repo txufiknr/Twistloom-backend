@@ -148,6 +148,7 @@ export function sanitizeActionsForMode(mode: BookMode, actions?: Action[]): Acti
       `[sanitizeActionsForMode] ⚠️ Mode "${mode}" requires exactly 1 action; ` +
       `truncating from ${actions.length} to 1. Keeping: "${actions[0].text}"`,
     );
+    // TODO: should pick random instead of always first `[0]`
     return [actions[0]];
   }
   return actions;

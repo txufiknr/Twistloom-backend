@@ -16,6 +16,15 @@ let cerebrasClient: Cerebras | null = null;
 let openrouterClient: OpenAI | null = null;
 let cloudflareClient: OpenAI | null = null;
 let inceptionClient: OpenAI | null = null;
+let ovhcloudClient: OpenAI | null = null;
+let sambanovaClient: OpenAI | null = null;
+let ollamaClient: OpenAI | null = null;
+let modelscopeClient: OpenAI | null = null;
+let zaiClient: OpenAI | null = null;
+let siliconflowClient: OpenAI | null = null;
+let aionlabsClient: OpenAI | null = null;
+let chutesClient: OpenAI | null = null;
+let llm7Client: OpenAI | null = null;
 
 /** Mapping of AI providers to their API key environment variable names */
 export const AI_PROVIDER_API_KEYS: Record<AIChatProvider, string> = {
@@ -125,6 +134,96 @@ export function getInceptionClient(): OpenAI {
   return inceptionClient;
 }
 
+export function getOvhcloudClient(): OpenAI {
+  if (ovhcloudClient) return ovhcloudClient;
+
+  ovhcloudClient = new OpenAI({
+    apiKey: requireEnv('OVHCLOUD_API_KEY'),
+    baseURL: 'https://oai.endpoints.kepler.ai.cloud.ovh.net/v1',
+  });
+  return ovhcloudClient;
+}
+
+export function getSambanovaClient(): OpenAI {
+  if (sambanovaClient) return sambanovaClient;
+
+  sambanovaClient = new OpenAI({
+    apiKey: requireEnv('SAMBANOVA_API_KEY'),
+    baseURL: 'https://api.sambanova.ai/v1',
+  });
+  return sambanovaClient;
+}
+
+export function getOllamaClient(): OpenAI {
+  if (ollamaClient) return ollamaClient;
+
+  ollamaClient = new OpenAI({
+    apiKey: requireEnv('OLLAMA_API_KEY'),
+    baseURL: 'https://api.ollama.com/v1', 
+  });
+  return ollamaClient;
+}
+
+export function getModelscopeClient(): OpenAI {
+  if (modelscopeClient) return modelscopeClient;
+
+  modelscopeClient = new OpenAI({
+    apiKey: requireEnv('MODELSCOPE_API_KEY'),
+    baseURL: 'https://api-inference.modelscope.cn/v1',
+  });
+  return modelscopeClient;
+}
+
+export function getZaiClient(): OpenAI {
+  if (zaiClient) return zaiClient;
+
+  zaiClient = new OpenAI({
+    apiKey: requireEnv('ZAI_API_KEY'),
+    baseURL: 'https://api.z.ai/api/paas/v4', 
+  });
+  return zaiClient;
+}
+
+export function getSiliconflowClient(): OpenAI {
+  if (siliconflowClient) return siliconflowClient;
+
+  siliconflowClient = new OpenAI({
+    apiKey: requireEnv('SILICONFLOW_API_KEY'),
+    baseURL: 'https://api.siliconflow.com/v1',
+  });
+  return siliconflowClient;
+}
+
+export function getAionlabsClient(): OpenAI {
+  if (aionlabsClient) return aionlabsClient;
+
+  aionlabsClient = new OpenAI({
+    apiKey: requireEnv('AIONLABS_API_KEY'),
+    baseURL: 'https://api.aionlabs.ai/v1',
+  });
+  return aionlabsClient;
+}
+
+export function getChutesClient(): OpenAI {
+  if (chutesClient) return chutesClient;
+
+  chutesClient = new OpenAI({
+    apiKey: requireEnv('CHUTES_API_KEY'),
+    baseURL: 'https://llm.chutes.ai/v1', 
+  });
+  return chutesClient;
+}
+
+export function getLlm7Client(): OpenAI {
+  if (llm7Client) return llm7Client;
+
+  llm7Client = new OpenAI({
+    apiKey: requireEnv('LLM7_API_KEY'),
+    baseURL: 'https://api.llm7.io/v1',
+  });
+  return llm7Client;
+}
+
 /**
  * Pre-warms all AI provider SDKs so the first real request doesn't pay
  * the cold-start penalty of initialising every client.
@@ -142,4 +241,14 @@ export function warmAIProviders(): void {
   getCerebrasClient();
   getOpenRouterClient();
   getCloudflareClient();
+  getInceptionClient();
+  getOvhcloudClient();
+  getSambanovaClient();
+  getOllamaClient();
+  getModelscopeClient();
+  getZaiClient();
+  getSiliconflowClient();
+  getAionlabsClient();
+  getChutesClient();
+  getLlm7Client();
 }

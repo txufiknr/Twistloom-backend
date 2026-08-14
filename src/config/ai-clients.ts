@@ -507,53 +507,37 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
   ],
 
   // --- New additions (2026-08-04) ---
-  // Deliberately appended below the hierarchy above rather than sorted
-  // into it. The ordering above (mistral > gemini > openrouter > cerebras
-  // > groq > nvidia > cloudflare > cohere) reflects actual observed prose
-  // quality on your story content — these providers don't have that track
-  // record yet, so they start at the bottom of the waterfall on capacity/
-  // reliability grounds instead. Once you've seen real output quality from
-  // each, move the good ones up.
   ovhcloud: [
-    'Qwen3.6-27B', // 262K+ token context, strong multilingual/structured output. Verify exact catalog slug — OVHcloud's naming can differ slightly from the upstream Hugging Face ID.
-    'gpt-oss-120b', // Same model family already used via cerebras/groq above; a third, independent rate-limit pool for it is genuinely useful capacity, not just redundant coverage.
+    'Qwen3.6-27B', // 262K+ token context, strong multilingual/structured output[cite: 3].
+    'gpt-oss-120b', // Independent rate-limit pool for reliable capacity[cite: 3].
   ],
   sambanova: [
-    'DeepSeek-V3.2', // Confirmed available on SambaNova's free tier per their own docs; verify current model-list slug before wiring in.
-    'MiniMax-M2.7', // Also confirmed free-tier available; MiniMax models are generally strong at long-form narrative pacing.
+    'DeepSeek-V3.2', // Confirmed available on SambaNova's free tier[cite: 3].
+    'MiniMax-M2.7', // Generally strong at long-form narrative pacing[cite: 3].
   ],
   modelscope: [
-    'Qwen/Qwen3.5-27B', // ModelScope's Qwen access tends to get new releases first — worth checking their catalog periodically for newer variants than what's listed here.
+    'Qwen/Qwen3.5-27B', // ModelScope's Qwen access tends to get new releases first[cite: 3].
   ],
   zai: [
-    'glm-4.7-flash', // Same GLM family already praised in AI_CHAT_MODELS_TRANSLATION below (via cerebras/openrouter) for warm, theatrical prose — this gives you a first-party, independently-rate-limited path to it instead of relying on those routes.
+    'glm-4.7-flash', // First-party path for warm, theatrical prose without relying on OpenRouter[cite: 3].
   ],
   siliconflow: [
-    'Qwen/Qwen3-8B', // One of the permanently-$0 models on SiliconFlow; smaller model, treat as light-duty fallback capacity, not a primary rung.
+    'Qwen/Qwen3-8B', // Light-duty fallback capacity; permanently $0[cite: 3].
   ],
-
-  // The two entries below are intentionally last. Ollama's free tier has
-  // no SLA and a documented reliability incident; Chutes' free capacity
-  // is served by anonymous decentralized operators. Both are "better than
-  // nothing when everything else is exhausted," not providers to route
-  // real volume through by default.
   ollama: [
-    'gpt-oss:20b', // Stay on "level 1-2" free-tier-safe models — do not pin the larger cloud-only variants (e.g. 480B-class coder models) here, they're outside the free tier.
+    'gpt-oss:20b', // Kept to level 1-2 models; positioned last due to 5h/7d cycle constraints[cite: 3].
   ],
   chutes: [
-    'zai-org/GLM-5.1-TEE', // Prefer TEE (confidential-compute)-flagged models specifically for real story content — this one keeps your prompts out of the non-TEE decentralized logging path described in the AI_RATE_LIMITS comment above.
+    'zai-org/GLM-5.1-TEE', // Prefer TEE-flagged models specifically to avoid decentralized logging[cite: 3].
   ],
-
-  // Absolute last resort. LLM7.io is an unaffiliated mirror with no SLA —
-  // this entry exists so the waterfall has one more rung before failing
-  // outright, not because it's a provider you'd want serving real volume.
   llm7: [
-    'gpt-4o-mini', // The one genuinely notable thing LLM7.io offers: a named closed model, free. Treat its availability as fragile — it can disappear without notice since LLM7.io isn't OpenAI's partner.
+    'gpt-4o-mini', // Unaffiliated mirror with no SLA; absolute last resort[cite: 3].
   ],
 };
 
 /**
  * Lightning-fast model (like Llama 3 on Groq) for theme & custom action validation
+ * Note: Ollama and Chutes are omitted here. Ollama's GPU timesharing and Chutes' decentralized miners make their latencies too unpredictable for the FAST category[cite: 3]. Aion Labs is omitted because of its strict 20k daily token budget[cite: 3].
  */
 export const AI_CHAT_MODELS_FAST: AIModelSelection = {
   groq: [
@@ -565,13 +549,25 @@ export const AI_CHAT_MODELS_FAST: AIModelSelection = {
     // TODO: is it really available now?
     'llama3.1-8b', // Fast, punchy — closest in spirit to the old llama-3.3-70b pick.
   ],
-
-  // SambaNova's whole differentiator is inference speed (custom RDU
-  // hardware, not GPUs) — a direct fit for this category. Free-tier RPM
-  // is conservative (see AI_RATE_LIMITS above) so this won't carry heavy
-  // volume, but for latency-sensitive validation calls it's worth having.
+  
+  // --- New additions (2026-08-04) ---
   sambanova: [
-    'Meta-Llama-3.3-70B-Instruct', // Verify exact slug casing in SambaNova's model list — their naming convention differs from most other providers here.
+    'Meta-Llama-3.3-70B-Instruct', // Custom RDU hardware delivers exceptional inference speed[cite: 3].
+  ],
+  zai: [
+    'glm-4.5-air', // The 'air' variant is highly optimized for low-latency calls.
+  ],
+  ovhcloud: [
+    'Qwen3.6-27B', // Reliable throughput against the 400 RPM authenticated ceiling[cite: 3].
+  ],
+  modelscope: [
+    'Qwen/Qwen3.5-27B',
+  ],
+  siliconflow: [
+    'Qwen/Qwen3-8B', // Small $0-tier model[cite: 3], perfect for rapid action checks.
+  ],
+  llm7: [
+    'gpt-4o-mini', // Treated as an absolute last-resort proxy fallback[cite: 3].
   ],
 };
 
@@ -614,20 +610,32 @@ export const AI_CHAT_MODELS_IDEA: AIModelSelection = {
   cohere: ['command-r-08-2024'],
 
   // --- New additions (2026-08-04) ---
-  // This category is exactly where the smallest-quota new providers
-  // belong: short, structured, low-token brainstorm calls, not full page
-  // generation.
   aionlabs: [
-    'aion-2.5', // Fine-tuned for narrative tension/dark themes specifically — the whole point of pulling it in here despite the tiny ~20K token/day budget. Capped hard by AI_MAX_PROMPT_LENGTH.aionlabs above; keep calls short so this quota stretches across a full day of theme generation rather than one request.
+    'aion-2.5', // Fine-tuned for dark themes[cite: 3]. Perfect here to stretch the ~20K token/day budget across small calls[cite: 3].
   ],
-  llm7: [
-    'gpt-4o-mini', // Low-stakes brainstorm text is a reasonable place to spend an unaffiliated-mirror provider's capacity — worth less if it disappears than it would be as a primary writing rung.
+  zai: [
+    'glm-4.7-flash', // Theatrical and creative, excellent for sparking new concepts.
+  ],
+  sambanova: [
+    'MiniMax-M2.7', // Excellent for rapid brainstorming without burning main provider quotas.
+  ],
+  ovhcloud: [
+    'Qwen3.6-27B', // 400 RPM authenticated pool provides great capacity for ideas[cite: 3].
   ],
   modelscope: [
-    'Qwen/Qwen3.5-27B',
+    'Qwen/Qwen3.5-27B', // 500 RPD per-model cap makes this a safe brainstorm fallback[cite: 3].
   ],
   siliconflow: [
-    'Qwen/Qwen3-8B',
+    'Qwen/Qwen3-8B', // True no-cost default model[cite: 3] for small idea payloads.
+  ],
+  chutes: [
+    'zai-org/GLM-5.1-TEE', // Decentralized/miner-served[cite: 3], but fine for low-stakes idea generation.
+  ],
+  ollama: [
+    'gpt-oss:20b', // Level 1-2 free-tier model[cite: 3], good for offline/timeshared idea generation.
+  ],
+  llm7: [
+    'gpt-4o-mini', // Unofficial proxy mirror, strictly last-resort[cite: 3].
   ],
 };
 
@@ -644,7 +652,7 @@ export const AI_CHAT_MODELS_IDEA: AIModelSelection = {
  */
 export const AI_CHAT_MODELS_DIFFUSION: AIModelSelection = {
   inception: [
-    'mercury-coder-small',
+    'mercury-coder-small', // Stays "experimental" until the Step-6 adherence/continuity trial[cite: 3].
   ],
 };
 
@@ -714,21 +722,30 @@ export const AI_CHAT_MODELS_TRANSLATION: AIModelSelection = {
   ],
 
   // --- New additions (2026-08-04) ---
-  // The GLM and Qwen praise already written above (via cerebras/groq/
-  // openrouter routes) now has a first-party path too — same model
-  // families, but on an independent rate-limit pool instead of riding on
-  // cerebras/groq/openrouter's shared capacity.
   zai: [
-    'glm-4.7-flash', // Same GLM family praised above under cerebras for "warm, theatrical, naturally human" translated dialogue.
+    'glm-4.7-flash', // Praised for warm, theatrical, naturally human dialogue[cite: 3].
   ],
-  modelscope: [
-    'Qwen/Qwen3.5-27B', // Same reasoning as the qwen3.6-27b praise above under groq — Alibaba's own platform tends to get new Qwen releases first.
+  sambanova: [
+    'DeepSeek-V3.2', // Confirmed free tier[cite: 3]; DeepSeek architecture is remarkably strong at multilingual reasoning.
   ],
   ovhcloud: [
-    'Qwen3.6-27B', // Direct path to the same 262K-context Qwen variant already used via groq above.
+    'Qwen3.6-27B', // Direct path to massive 262K-context Qwen variant[cite: 3].
+    'gpt-oss-120b', // Same model family already used via groq for translation[cite: 3].
+  ],
+  modelscope: [
+    'Qwen/Qwen3.5-27B', // Alibaba's own platform tends to get new Qwen releases first[cite: 3].
   ],
   siliconflow: [
-    'Qwen/Qwen3-8B', // Smaller/lighter than the other Qwen entries here — treat as fallback capacity, not primary.
+    'Qwen/Qwen3-8B', // Smaller/lighter Qwen variant for fallback capacity[cite: 3].
+  ],
+  chutes: [
+    'zai-org/GLM-5.1-TEE', // GLM lineage is extremely robust with non-English datasets.
+  ],
+  ollama: [
+    'gpt-oss:20b', // Light fallback if GPU-time is available[cite: 3].
+  ],
+  llm7: [
+    'gpt-4o-mini', // OpenAI's translation alignment is top-tier; use as proxy fallback[cite: 3].
   ],
 };
 
@@ -768,17 +785,23 @@ export const AI_CHAT_MODELS_EVALUATION: AIModelSelection = {
   ],
 
   // --- New additions (2026-08-04) ---
-  // High-RPM-ceiling, well-documented providers are the better fit here —
-  // evaluation runs against every generated page, so this rung needs
-  // throughput more than it needs the tiny-quota providers (aionlabs,
-  // llm7) added to AI_CHAT_MODELS_IDEA above.
   ovhcloud: [
-    'gpt-oss-120b', // Same reasoning as the groq/cerebras gpt-oss-120b picks above — a third independent rate-limit pool for a model already proven here for schema adherence.
+    'gpt-oss-120b', // A third independent rate-limit pool for schema adherence[cite: 3].
+    'Qwen3.6-27B', // Good throughput and bracket-matching.
   ],
   sambanova: [
-    'DeepSeek-V3.2', // DeepSeek's reasoning-heavy training tends to translate well to structured-output scoring, consistent with the deepseek-r1 pick under openrouter above.
+    'DeepSeek-V3.2', // DeepSeek's reasoning-heavy training translates well to structured-output scoring[cite: 3].
   ],
   modelscope: [
-    'Qwen/Qwen3.5-27B', // Same qwen3.6-27b bracket-matching reliability noted under groq above.
+    'Qwen/Qwen3.5-27B', // Same bracket-matching reliability noted under groq[cite: 3].
+  ],
+  zai: [
+    'glm-4.7-flash', // Powerful reasoning capabilities for finding schema errors.
+  ],
+  chutes: [
+    'zai-org/GLM-5.1-TEE', // Prefer TEE-flagged models[cite: 3] to evaluate story content securely.
+  ],
+  llm7: [
+    'gpt-4o-mini', // Very strong at schema parsing, but keep as last resort due to unofficial mirror status[cite: 3].
   ],
 };

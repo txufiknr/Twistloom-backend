@@ -16,6 +16,132 @@
 - [ ] search jaccard similarity (by book keywords & title)
 - [ ] need change to cursor pagination?
 
+---
+I got error for this line:
+response_format: buildOpenAIResponseFormat(context, outputAsJson, outputJsonStructure, outputJsonRequired),
+
+Type '{ type: string; json_schema: { name: string; strict: boolean; schema: AIJsonProperty | undefined; }; } | { type: string; json_schema?: undefined; } | undefined' is not assignable to type 'ResponseFormatText | ResponseFormatJSONSchema | ResponseFormatJSONObject | undefined'.
+  Type '{ type: string; json_schema: { name: string; strict: boolean; schema: AIJsonProperty | undefined; }; }' is not assignable to type 'ResponseFormatText | ResponseFormatJSONSchema | ResponseFormatJSONObject | undefined'.
+    Type '{ type: string; json_schema: { name: string; strict: boolean; schema: AIJsonProperty | undefined; }; }' is not assignable to type 'ResponseFormatText | ResponseFormatJSONSchema | ResponseFormatJSONObject'.
+      Type '{ type: string; json_schema: { name: string; strict: boolean; schema: AIJsonProperty | undefined; }; }' is not assignable to type 'ResponseFormatJSONSchema'.
+        Types of property 'type' are incompatible.
+          Type 'string' is not assignable to type '"json_schema"'.
+completions.d.ts(1823, 5): The expected type comes from property 'response_format' which is declared here on type 'OpenRouterCreateParams'
+
+and for these blocks in `groqStreamGenerator`:
+
+const stream = await getGroqClient().chat.completions.create({
+  messages: buildChatMessages(systemPromptWithDocuments, prompt),
+  model,
+  stream: true,
+  stream_options: { include_usage: true },
+  ...buildSamplingParams('groq', model, config),
+  response_format: buildOpenAIResponseFormat(context, outputAsJson, outputJsonStructure, outputJsonRequired),
+} satisfies Groq.ChatCompletionCreateParamsStreaming, { signal });
+
+No overload matches this call.
+  Overload 1 of 3, '(body: ChatCompletionCreateParamsNonStreaming, options?: RequestOptions | undefined): APIPromise<ChatCompletion>', gave the following error.
+    Type 'true' is not assignable to type 'false'.
+  Overload 2 of 3, '(body: ChatCompletionCreateParamsStreaming, options?: RequestOptions | undefined): APIPromise<Stream<ChatCompletionChunk>>', gave the following error.
+    Object literal may only specify known properties, and 'stream_options' does not exist in type 'ChatCompletionCreateParamsStreaming'.
+  Overload 3 of 3, '(body: ChatCompletionCreateParamsBase, options?: RequestOptions | undefined): APIPromise<ChatCompletion | Stream<...>>', gave the following error.
+    Object literal may only specify known properties, and 'stream_options' does not exist in type 'ChatCompletionCreateParamsBase'.
+completions.d.mts(1970, 5): The expected type comes from property 'stream' which is declared here on type 'ChatCompletionCreateParamsNonStreaming'
+
+Object literal may only specify known properties, and 'stream_options' does not exist in type 'ChatCompletionCreateParamsStreaming'.
+
+if (chunk.usage) {
+  usage = {
+    promptTokens: chunk.usage.prompt_tokens,
+    cachedTokens: chunk.usage.prompt_tokens_details?.cached_tokens ?? 0,
+  };
+}
+
+Property 'usage' does not exist on type 'ChatCompletionChunk'.
+
+can you add models from those new providers in my AI provider-model waterfall (AI_CHAT_MODELS_WRITING, AI_CHAT_MODELS_FAST, AI_CHAT_MODELS_IDEA, AI_CHAT_MODELS_EVALUATION, etc)?
+
+---
+
+async function* groqStreamGenerator(
+  prompt: string,
+  options: Partial<PromptWithFallbackOptions>
+): AIStreamGenerator {
+  const { signal, context, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = options;
+  const systemPromptWithDocuments = formatSystemPromptWithDocuments('groq', options);
+
+  const model = resolveStreamDefaultModel('groq', options);
+  
+  const stream = await getGroqClient().chat.completions.create({
+    messages: buildChatMessages(systemPromptWithDocuments, prompt),
+    model,
+    stream: true,
+    stream_options: { include_usage: true },
+    ...buildSamplingParams('groq', model, config),
+    response_format: buildOpenAIResponseFormat(context, outputAsJson, outputJsonStructure, outputJsonRequired),
+  // 1. Cast the payload instead of using `satisfies` to bypass the missing `stream_options` type
+  } as Groq.ChatCompletionCreateParamsStreaming & { stream_options?: { include_usage: boolean } }, { signal });
+
+  let usage: StreamUsage | undefined;
+
+  for await (const chunk of stream) {
+    if (signal?.aborted) return usage;
+
+    // 2. Cast chunk to `any` to bypass the missing `usage` type on ChatCompletionChunk.
+    // 3. Add a fallback to `x_groq?.usage` to catch Groq's custom metadata wrapper.
+    const rawChunk = chunk as any;
+    const chunkUsage = rawChunk.usage || rawChunk.x_groq?.usage;
+
+    if (chunkUsage) {
+      usage = {
+        promptTokens: chunkUsage.prompt_tokens,
+        cachedTokens: chunkUsage.prompt_tokens_details?.cached_tokens ?? 0,
+      };
+    }
+
+    const delta = extractDeltaText(chunk);
+    if (delta) yield delta;
+  }
+
+  return usage;
+}
+
+---
+
+TODO-multi-turn-request.md
+src\utils\prompt.ts
+src\types\story.ts
+src\schema\story.ts
+
+please learn this answer and suggestion from ChatGPT in `TODO-multi-turn-request.md`
+I want to implement it, but for now only split into 2 multi-turn requests: StoryPage and StateDelta
+please learn about both `StoryPageGeneration` and `StateDeltaGeneration` type definitions which used in `STORY_GENERATION_SCHEMA_DEFINITION` and `CANDIDATE_GENERATION_SCHEMA_DEFINITION`
+for these functions:
+- generateNextPage
+- generateNextPages
+
+and I also want to split `generatedPages` ('multiverse' book page generation) in `CANDIDATE_GENERATION_SCHEMA_DEFINITION` into parallel multi-turn request:
+example (in parallel):
+- StoryPage (alt 1) → StateDelta (alt 1)
+- StoryPage (alt 2) → StateDelta (alt 2)
+- StoryPage (alt 3) → StateDelta (alt 3)
+
+please thoroughly examine current implementation and write comprehensive roadmap MD plan doc in docs\roadmap , grounded on actual codebase, including:
+- json schema splitting in src\schema\story.ts
+- user & system prompt separation
+- refactor both generateNextPage(s) function into 2-step multi-turn requests
+- ensure ai-chat.ts support multi-turn
+
+adjust DEFAULT_MAX_OUTPUT_TOKEN and EVALUATION_SCORING_OUTPUT_TOKEN per turn (since now it halved)
+
+because page and state delta generation now split, I also want state delta generation be retryable anytime in separate AI chat request (idempotent) in case only StoryPage generation was succeeded
+so maybe we need a way (new db table and/or column) to track partial page generation and retry later (e.g., via cron)
+
+because this it a big refactor, please divide into smaller targeted tasks, phases, and steps
+note: this is roadmap documentation writing only, no code changes
+
+---
+
 [@] sync sampling formula with ai-sampling.ts
 [ ] implement trust and safety enforcement system (TODO-trust-safety.md & TRUST_AND_SAFETY_ENFORCEMENT_SYSTEM.md)
 [ ] on book.ending edit, evaluate with AI for security and plausibility
@@ -30,15 +156,19 @@
 [ ] ensure `PUT /api/user/editor-prefs` API route optimal en-to-end based on `AI_CO_WRITING_PEN_ROADMAP.md` and frontend's `src\lib\services\users-api.ts`, shouldn't we only send dirty (only changed) fields instead of all fields?
 [ ] lengkapi API keys llm provider baru
 [ ] can you also add ai-cost for these gemini models: `gemini-3.6-flash`?
-[ ] please check `validateGeneratedPage`, I don't want to ditch AI generation result merely because it provides multiple actions for 'novel' book mode (should just strip it sliently), is it already safe & handled as intended?
+[ ] book-creation.ts still not language-agnostic
+[@] please check `validateGeneratedPage`, I don't want to ditch AI generation result merely because it provides multiple actions for 'novel' book mode (should just strip it sliently), is it already safe & handled as intended?
 [@] persistPageWithState/insertStoryPage: cleanup [actionType] from page.text before insert
-[ ] pen prompt: ensure find matching lore entity from story text via triggerKeywords
+[ ] sanitizeActionsForMode: should pick random instead of always first `[0]`
+[@] pen prompt: ensure find matching lore entity from story text via triggerKeywords
+[ ] instead of 1 big failing request (schema too complex for gemini or prompt token exceeds) should we using multi-turn request for generating single big page json? ask AI to generate each json key and append sequentially in each turn, will that solve the problem?
 [ ] claude: should we using multi-turn request instead of big array json for generating `generatedPages` (alternative fates) in 'multiverse' book mode?
 [x] claude: review & refine TODO-gemini-interactions-api.md
 [x] claude: review & refine TODO-save-prompt-token.md
 [x] claude: review & refine TODO-ai-chat-enhancements.md
 [x] claude: review & refine TODO-hybrid-diffusion-llm.md
 [x] claude: consolidate `TWISTLOOM_MCP_AGENTIC_WORKFLOW_CHATGPT.md` and `TWISTLOOM_MCP_ROADMAP.md`
+[ ] opencode/claude: TODO-multi-turn-request.md gounded on actual codebase
 
 ---
 

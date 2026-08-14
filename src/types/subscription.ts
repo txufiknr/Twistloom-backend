@@ -27,7 +27,9 @@ export const subscriptionStatuses = [
   'paused'
 ] satisfies Stripe.Subscription.Status[];
 
-export type SubscriptionStatus = typeof subscriptionStatuses[number];
+// export type SubscriptionStatus = typeof subscriptionStatuses[number];
+// see node_modules\stripe\esm\resources\Subscriptions.d.ts (line 473)
+export type SubscriptionStatus = typeof subscriptionStatuses[number] | string & Record<never, never>;
 
 /**
  * Subscription configuration for VIP plans

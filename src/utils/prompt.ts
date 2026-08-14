@@ -4758,6 +4758,7 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
   
   // Fast path: Route to single page generation if only 1 is requested
   // (forwards enableCanonValidation via full params)
+  // TODO: if book mode is novel/interactive, always use single page generation
   if (providedCandidateCount === 1) return [await generateNextPage(params)];
 
   const candidateCount = Math.min(providedCandidateCount, MAX_CANDIDATE_PAGE_PER_ACTION);
