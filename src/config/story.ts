@@ -500,3 +500,14 @@ export const PEN_ESSENTIALS_MAX_LIST_ITEMS = 8;
 export const PEN_ESSENTIALS_MAX_ITEM_LENGTH = 120;
 /** Maximum length of a free-text `calendarDate` / `timeOfDay` value the auto-fill may propose. */
 export const PEN_ESSENTIALS_MAX_FIELD_LENGTH = 64;
+
+/** Output-token budget for the finalize state proposal (constrained JSON over the existing inventory/injury enum space). */
+export const PEN_FINALIZE_PROPOSE_MAX_TOKENS = 500;
+/** Maximum number of inventory items the proposal may return. */
+export const PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS = 10;
+/** Maximum number of injuries the proposal may return. */
+export const PEN_FINALIZE_PROPOSE_MAX_INJURIES = 8;
+/** Maximum length of a proposed inventory name / injury description. */
+export const PEN_FINALIZE_PROPOSE_MAX_ITEM_LENGTH = 200;
+/** Maximum number of traits per proposed inventory item. */
+export const PEN_FINALIZE_PROPOSE_MAX_TRAITS = 5;

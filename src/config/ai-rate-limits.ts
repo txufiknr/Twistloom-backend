@@ -194,3 +194,14 @@ export const PEN_CONTINUE_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
 export const PEN_ESSENTIALS_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
   "PEN_ESSENTIALS", 10, 60
 );
+
+/**
+ * POST /api/pen/sessions/:id/finalize/propose — AI-compute the next page's
+ * inventory/injuries as an "adopt as canon" proposal (§2.i / §10).
+ *
+ * Free (`PEN_FINALIZE_PROPOSE` = 0) but still an LLM structured-output call, so
+ * it gets the same spend-shape guard as essentials auto-fill.
+ */
+export const PEN_FINALIZE_PROPOSE_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
+  "PEN_FINALIZE_PROPOSE", 10, 60
+);

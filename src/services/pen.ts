@@ -22,18 +22,19 @@ import type { PlaceWeather } from "../types/places.js";
 import { placeWeathers } from "../types/places.js";
 import type { CandidateGenerationPage } from "../types/candidate-generation.js";
 import type { AIResponseProvider } from "../types/ai-chat.js";
-import type { CharacterMemory, NewCharacter, StoryMC } from "../types/character.js";
+import type { CharacterMemory, NewCharacter, StoryMC, Injury, InventoryItem } from "../types/character.js";
+import { injuryCategories } from "../types/character.js";
 import type { Gender } from "../types/user.js";
 import { getBranchPath } from "../utils/branch-traversal.js";
 import { processCharacterUpdates, isMainCharacterValid } from "../utils/characters.js";
 import { getStoryStateWithBranch } from "./story-branch.js";
-import { buildPenContinuePrompt, PEN_CONTINUE_SCHEMA, PEN_CONTINUE_REQUIRED_FIELDS, buildPenEssentialsAutofillPrompt, PEN_ESSENTIALS_SCHEMA, PEN_ESSENTIALS_REQUIRED_FIELDS, PEN_ESSENTIALS_REVIEW_SCHEMA } from "../utils/pen-prompt.js";
-import type { PenContinueResult as PenContinueAIOutput, PenEssentialsAutofillResult as PenEssentialsAIOutput } from "../utils/pen-prompt.js";
+import { buildPenContinuePrompt, PEN_CONTINUE_SCHEMA, PEN_CONTINUE_REQUIRED_FIELDS, buildPenEssentialsAutofillPrompt, PEN_ESSENTIALS_SCHEMA, PEN_ESSENTIALS_REQUIRED_FIELDS, PEN_ESSENTIALS_REVIEW_SCHEMA, buildPenStateProposalPrompt, PEN_STATE_PROPOSAL_SCHEMA, PEN_STATE_PROPOSAL_REQUIRED_FIELDS } from "../utils/pen-prompt.js";
+import type { PenContinueResult as PenContinueAIOutput, PenEssentialsAutofillResult as PenEssentialsAIOutput, PenStateProposalResult as PenStateProposalAIOutput } from "../utils/pen-prompt.js";
 import { aiPrompt, createAIOptionsWithSchema } from "../utils/ai-chat.js";
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
-import { PEN_DRAFT_CAST_LIMIT, PEN_CONTINUE_MAX_TOKENS, penContinueLengthForAssistance, PEN_ESSENTIALS_MAX_TOKENS, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH, PEN_ESSENTIALS_MAX_FIELD_LENGTH } from "../config/story.js";
+import { PEN_DRAFT_CAST_LIMIT, PEN_CONTINUE_MAX_TOKENS, penContinueLengthForAssistance, PEN_ESSENTIALS_MAX_TOKENS, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TOKENS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_FINALIZE_PROPOSE_MAX_ITEM_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TRAITS } from "../config/story.js";
 import { generateId } from "../utils/uuid.js";
 import { executeWithCredits } from "./credits.js";
 import { persistPageWithState, insertStoryPage, getPageFromDB, mapToPersistedStoryPage } from "./book.js";
@@ -43,6 +44,7 @@ import { resolvePageDelta, determineBranchIdForPage } from "../utils/prompt.js";
 import { sanitizeActionsForMode, validatePageActionsForMode, maxDestinationsPerActionForMode } from "../utils/book-mode.js";
 import { validateGeneratedPage } from "../utils/page-validation.js";
 import { runGate1 } from "./custom-actions.js";
+import { calculateHealthStatus } from "../utils/characters.js";
 
 /**
  * The API-facing session payload. Extends the stored session with the book's
@@ -831,6 +833,295 @@ export async function autofillSceneEssentials(
   return { essentials: result };
 }
 
+/**
+ * Clamps a raw state-proposal inventory item into an `InventoryItem`.
+ * Name is required; amount is clamped to a non-negative integer; `where` and
+ * traits are trimmed/length-capped. Acquisition metadata is preserved when the
+ * item already exists in the current state (matched by name) so carried-over
+ * items keep their original `pageAcquired`/`placeId`; new items are stamped
+ * with `expectedPageNumber` so the engine tags them as acquired this page.
+ */
+function coerceStateProposalInventoryItem(
+  raw: unknown,
+  currentState: StoryState | null,
+  expectedPageNumber: number,
+): InventoryItem | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.name !== "string") return null;
+  const name = r.name.trim();
+  if (!name) return null;
+
+  const existing = currentState?.inventory?.find(
+    (item) => item.name.toLowerCase() === name.toLowerCase(),
+  );
+
+  const traits: string[] = [];
+  if (Array.isArray(r.traits)) {
+    for (const t of r.traits) {
+      if (traits.length >= PEN_FINALIZE_PROPOSE_MAX_TRAITS) break;
+      if (typeof t !== "string") continue;
+      const trimmed = t.trim().slice(0, PEN_FINALIZE_PROPOSE_MAX_ITEM_LENGTH);
+      if (!trimmed) continue;
+      traits.push(trimmed);
+    }
+  }
+
+  const amountRaw = r.amount;
+  const amount =
+    typeof amountRaw === "number" && Number.isFinite(amountRaw)
+      ? Math.max(0, Math.floor(amountRaw))
+      : existing?.amount;
+
+  const where =
+    typeof r.where === "string" && r.where.trim()
+      ? r.where.trim().slice(0, PEN_FINALIZE_PROPOSE_MAX_ITEM_LENGTH)
+      : existing?.where;
+
+  return {
+    name: name.slice(0, PEN_FINALIZE_PROPOSE_MAX_ITEM_LENGTH),
+    ...(traits.length > 0 ? { traits } : {}),
+    ...(amount !== undefined ? { amount } : {}),
+    ...(where ? { where } : {}),
+    ...(existing?.pageAcquired !== undefined ? { pageAcquired: existing.pageAcquired } : { pageAcquired: expectedPageNumber }),
+    ...(existing?.placeId !== undefined ? { placeId: existing.placeId } : {}),
+  };
+}
+
+/**
+ * Clamps a raw state-proposal injury into an `Injury`. `bodyPart`/`description`
+ * are required; severity is clamped to 0–1; category must land in the canonical
+ * `injuryCategories` enum; consequences are trimmed/length-capped. Acquisition
+ * metadata is carried over when the injury already exists in the current state
+ * (matched by body part + description), else stamped `expectedPageNumber`.
+ */
+function coerceStateProposalInjury(
+  raw: unknown,
+  currentState: StoryState | null,
+  expectedPageNumber: number,
+): Injury | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.bodyPart !== "string" || typeof r.description !== "string") return null;
+  const bodyPart = r.bodyPart.trim();
+  const description = r.description.trim();
+  if (!bodyPart || !description) return null;
+
+  const existing = currentState?.injuries?.find(
+    (injury) =>
+      injury.bodyPart.toLowerCase() === bodyPart.toLowerCase() &&
+      injury.description.toLowerCase() === description.toLowerCase(),
+  );
+
+  const severityRaw = r.severity;
+  const severity =
+    typeof severityRaw === "number" && Number.isFinite(severityRaw)
+      ? Math.min(1, Math.max(0, severityRaw))
+      : existing?.severity;
+
+  const category =
+    typeof r.category === "string" && (injuryCategories as readonly string[]).includes(r.category)
+      ? (r.category as Injury["category"])
+      : existing?.category;
+
+  const consequences =
+    typeof r.consequences === "string" && r.consequences.trim()
+      ? r.consequences.trim().slice(0, PEN_FINALIZE_PROPOSE_MAX_ITEM_LENGTH)
+      : existing?.consequences;
+
+  return {
+    bodyPart: bodyPart.slice(0, PEN_FINALIZE_PROPOSE_MAX_ITEM_LENGTH),
+    description: description.slice(0, PEN_FINALIZE_PROPOSE_MAX_ITEM_LENGTH),
+    ...(severity !== undefined ? { severity } : {}),
+    ...(category ? { category } : {}),
+    ...(consequences ? { consequences } : {}),
+    ...(existing?.pageAcquired !== undefined ? { pageAcquired: existing.pageAcquired } : { pageAcquired: expectedPageNumber }),
+    ...(existing?.placeId !== undefined ? { placeId: existing.placeId } : {}),
+  };
+}
+
+/**
+ * Coerces a raw state proposal (AI output OR author-adopted arrays) into
+ * validated `InventoryItem[]` / `Injury[]` full replacements. Every field is
+ * defensively validated so a malformed/hallucinated AI response or a hand-edited
+ * adoption can never break `/finalize` (mirrors {@link coerceEssentialsProposal}).
+ */
+function coerceStateProposal(
+  output: PenStateProposalAIOutput,
+  currentState: StoryState | null,
+  expectedPageNumber: number,
+): { inventory: InventoryItem[]; injuries: Injury[] } {
+  const inventory: InventoryItem[] = [];
+  if (Array.isArray(output.inventory)) {
+    for (const raw of output.inventory) {
+      if (inventory.length >= PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS) break;
+      const item = coerceStateProposalInventoryItem(raw, currentState, expectedPageNumber);
+      if (item) inventory.push(item);
+    }
+  }
+
+  const injuries: Injury[] = [];
+  if (Array.isArray(output.injuries)) {
+    for (const raw of output.injuries) {
+      if (injuries.length >= PEN_FINALIZE_PROPOSE_MAX_INJURIES) break;
+      const injury = coerceStateProposalInjury(raw, currentState, expectedPageNumber);
+      if (injury) injuries.push(injury);
+    }
+  }
+
+  return { inventory, injuries };
+}
+
+/** Errors thrown while running a finalize state-proposal request. */
+export class PenStateProposalError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PenStateProposalError";
+  }
+}
+
+/**
+ * Runs the finalize state-proposal generation for an owned pen session (§2.i /
+ * §10): one structured-output AI call computes the FULL next-page inventory and
+ * injuries from the draft + canon, clamped server-side against the current
+ * state, and an audit `PenEdit` row (`editType: 'plan'`) is written. Nothing
+ * is persisted to the session — the author adopts/edits the proposal in the
+ * publish dialog and `/finalize` merges the adopted arrays into the state delta.
+ *
+ * Page 1 (no `currentPageId`) has no prior state to propose against, so it
+ * returns an empty proposal (`{ inventory: [], injuries: [] }`) without calling
+ * the model — the frontend skips the adopt dialog entirely.
+ *
+ * @param userId - The authenticated user's id (ownership guard)
+ * @param sessionId - The session to propose for
+ * @param input - `{ draftText }` — the current in-progress draft prose (plain text)
+ * @throws PenSessionNotFoundError / PenBookOwnershipError if not owned
+ * @throws PenStateProposalError if the AI call returns unusable output
+ */
+export async function proposePenStateUpdates(
+  userId: string,
+  sessionId: string,
+  input: PenStateProposalInput,
+): Promise<PenStateProposalOutput> {
+  const session = await getPenSessionById(userId, sessionId);
+  const book: DBBook | null = await getBookFromDB(session.bookId);
+  if (!book) throw new PenStateProposalError("Book not found for this session");
+
+  if (session.status !== "active") {
+    throw new PenStateProposalError("Session is not active; reopen it before proposing");
+  }
+
+  // Page 1: no prior state → nothing to propose (the frontend skips the dialog).
+  if (!session.currentPageId) {
+    return { inventory: [], injuries: [] };
+  }
+
+  const state = await getStoryStateWithBranch(book.id, session.currentPageId);
+  const branch = await getBranchPath(session.currentPageId);
+  const pageTexts = branch.pages.map((p) => p.text).filter(Boolean);
+  const last = branch.pages[branch.pages.length - 1];
+  const momentum = last?.momentum ?? null;
+  const sceneType = last?.sceneType ?? null;
+  const currentPage = await getPageFromDB(session.currentPageId);
+  const expectedPageNumber = (currentPage?.page ?? 0) + 1;
+
+  const mcName = book.mc?.knownName || book.mc?.name || "";
+  const language = book.language || "en";
+
+  const loreHaystack = [state?.contextHistory ?? "", ...pageTexts, input.draftText ?? ""].join("\n");
+  const lore = await getTriggeredLoreEntries(book.id, loreHaystack);
+
+  const { systemPrompt, userPrompt } = buildPenStateProposalPrompt({
+    state,
+    lore,
+    pageTexts,
+    mcName,
+    language,
+    bookSummary: book.summary ?? null,
+    storyStartDate: book.storyStartDate ?? null,
+    momentum,
+    sceneType,
+    draftText: input.draftText?.trim() ?? "",
+  });
+
+  const promptConfig: AIPromptForJson<PenStateProposalAIOutput> = {
+    schema: PEN_STATE_PROPOSAL_SCHEMA,
+    requiredFields: PEN_STATE_PROPOSAL_REQUIRED_FIELDS,
+    fallbackField: "inventory",
+    baseOptions: {
+      modelSelection: AI_CHAT_MODELS_WRITING,
+      context: "pen-finalize-propose",
+      systemPrompt,
+      config: { ...AI_CHAT_CONFIG_DEFAULT, maxOutputToken: PEN_FINALIZE_PROPOSE_MAX_TOKENS },
+    },
+  };
+
+  const { result } = await executeWithCredits(
+    userId,
+    "PEN_FINALIZE_PROPOSE",
+    async (tx) => {
+      const [current] = await tx
+        .select()
+        .from(penSessions)
+        .where(and(eq(penSessions.id, sessionId), eq(penSessions.userId, userId)))
+        .limit(1);
+      if (!current) throw new PenSessionNotFoundError();
+
+      const aiResponse = await aiPrompt<PenStateProposalAIOutput>(userPrompt, createAIOptionsWithSchema(promptConfig));
+      const output = aiResponse.result;
+
+      if (!output || typeof output !== "object") {
+        throw new PenStateProposalError("AI returned no state proposal");
+      }
+
+      const proposal = coerceStateProposal(output, state, expectedPageNumber);
+
+      // Audit trail — the `plan` edit type was reserved for author-facing AI
+      // suggestions (types/pen.ts). Nothing is persisted to the session; the
+      // author accepts/edits via the publish dialog and `/finalize` merges the
+      // adopted arrays into the state delta.
+      const edit: PenEdit = {
+        id: generateId(),
+        sessionId,
+        userId,
+        bookId: book.id,
+        pageId: null,
+        editType: "plan",
+        authorInput: input.draftText?.trim() || null,
+        aiOutput: JSON.stringify(proposal),
+        finalText: null,
+        contextPageId: session.currentPageId,
+        charOffsetStart: null,
+        charOffsetEnd: null,
+        authoringMode: session.authoringMode,
+        authoringPov: null,
+        createdAt: new Date(),
+      };
+
+      await tx.insert(penEdits).values({
+        id: edit.id,
+        sessionId: edit.sessionId,
+        userId: edit.userId,
+        bookId: edit.bookId,
+        pageId: null,
+        editType: edit.editType,
+        authorInput: edit.authorInput,
+        aiOutput: edit.aiOutput,
+        finalText: null,
+        contextPageId: edit.contextPageId,
+        authoringMode: edit.authoringMode,
+        authoringPov: null,
+        createdAt: edit.createdAt,
+      });
+
+      return proposal;
+    },
+    { context: "pen_finalize_propose", metadata: { sessionId, bookId: book.id } }
+  );
+
+  return { inventory: result.inventory, injuries: result.injuries };
+}
+
 /** Errors thrown while running a `/finalize` request. */
 export class PenFinalizeError extends Error {
   constructor(message: string) {
@@ -854,6 +1145,29 @@ export type PenFinalizeInput = {
   force?: boolean;
   amendments?: CanonAmendment[];
   actions?: { text: string; type: string; hint?: { text?: string; type?: string } }[];
+  /**
+   * Author-adopted next-page inventory (full replacement). Sent by the
+   * frontend when the author confirms the AI state proposal ("adopt as
+   * canon") in the publish dialog. Merged into the state delta exactly like
+   * AI-generated inventory.
+   */
+  adoptInventory?: InventoryItem[];
+  /** Author-adopted next-page injuries (full replacement). See {@link adoptInventory}. */
+  adoptInjuries?: Injury[];
+};
+
+/** Body of `POST /api/pen/sessions/:id/finalize/propose`. */
+export type PenStateProposalInput = {
+  /** The current in-progress draft prose (plain text) — the freshest story signal. */
+  draftText?: string;
+};
+
+/** Result of a finalize state-proposal request. */
+export type PenStateProposalOutput = {
+  /** Proposed next-page inventory (full replacement). */
+  inventory: InventoryItem[];
+  /** Proposed next-page injuries (full replacement). */
+  injuries: Injury[];
 };
 
 /** Result of a `/finalize` request. */
@@ -1078,6 +1392,21 @@ export async function finalizePenDraft(
         ...(castNewCharacters.length ? { newCharacters: castNewCharacters } : {}),
       };
 
+      // Adopt-as-canon state proposal (§2.i / §10): when the author confirmed
+      // the AI-computed next inventory/injuries in the publish dialog, inject
+      // them as the generation's state so `extractStateDelta` maps them into
+      // the delta exactly like AI-generated state (full-replacement semantics).
+      const adopted = coerceStateProposal(
+        {
+          inventory: Array.isArray(input.adoptInventory) ? input.adoptInventory : [],
+          injuries: Array.isArray(input.adoptInjuries) ? input.adoptInjuries : [],
+        },
+        currentState,
+        pageNumber,
+      );
+      if (adopted.inventory.length > 0) generatedStoryPage.inventory = adopted.inventory;
+      if (adopted.injuries.length > 0) generatedStoryPage.injuries = adopted.injuries;
+
       const advancedState = await advanceStoryState(currentState, actionedPage);
 
       const { newState, fullStateDelta } = resolvePageDelta({
@@ -1169,6 +1498,26 @@ export async function finalizePenDraft(
       // registered into the initial story state directly (no stateDelta to apply).
       if (castNewCharacters.length) {
         processCharacterUpdates(initialState, castNewCharacters);
+      }
+      // Page-1 adopt (no stateDelta exists): apply the author-adopted state
+      // proposal to the initial story state directly. `extractStateDelta`
+      // returns `{}` for page 1, so there is no delta pipeline to ride.
+      const pageOneAdopted = coerceStateProposal(
+        {
+          inventory: Array.isArray(input.adoptInventory) ? input.adoptInventory : [],
+          injuries: Array.isArray(input.adoptInjuries) ? input.adoptInjuries : [],
+        },
+        null,
+        1,
+      );
+      if (pageOneAdopted.inventory.length > 0) initialState.inventory = pageOneAdopted.inventory;
+      if (pageOneAdopted.injuries.length > 0) {
+        initialState.injuries = pageOneAdopted.injuries;
+        initialState.healthStatus = calculateHealthStatus(pageOneAdopted.injuries, {
+          traumaTagCount: initialState.traumaTags.length,
+          memoryIntegrity: initialState.memoryIntegrity,
+          fearLevel: initialState.flags.fear,
+        });
       }
       await insertStoryState(book.id, newPage.id, initialState, "original");
     }

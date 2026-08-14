@@ -16,10 +16,6 @@ import type { BookMode } from "../types/book.js";
 
 export const MAX_ACTIONS_PER_PAGE = 6;
 
-function maxActionsForMode(mode: BookMode): number {
-  return mode === 'novel' ? 1 : MAX_ACTIONS_PER_PAGE;
-}
-
 // ── JSON field leak detection ──────────────────────────────────────────────
 
 /**
@@ -129,7 +125,12 @@ export function checkTextLength(
 
 /**
  * Throws if `actions` is not a non-empty array, or if the count exceeds the
- * limit for the given `mode`.
+ * hard cap (`MAX_ACTIONS_PER_PAGE`) for branching modes.
+ *
+ * Deliberately NOT mode-strict for `novel`: an AI that over-generates multiple
+ * actions must not abort the whole generation. Novel's "exactly 1 action" rule
+ * is enforced by `sanitizeActionsForMode` (silently strips to the first action)
+ * and by the strict `validatePageActionsForMode` gate at persist/insert time.
  */
 export function validatePageActions(
   actions: unknown,
@@ -144,20 +145,20 @@ export function validatePageActions(
   if (actions.length < 1) {
     throw new Error(`${tag}Page must have at least 1 action, got 0`);
   }
-  if (mode) {
-    const max = maxActionsForMode(mode);
-    if (actions.length > max) {
-      const msg = mode === 'novel'
-        ? 'requires exactly 1 action'
-        : `allows at most ${max} actions`;
-      throw new Error(`${tag}Mode "${mode}" ${msg}, got ${actions.length}`);
-    }
+  if (mode && mode !== 'novel' && actions.length > MAX_ACTIONS_PER_PAGE) {
+    throw new Error(
+      `${tag}Mode "${mode}" allows at most ${MAX_ACTIONS_PER_PAGE} actions, got ${actions.length}`,
+    );
   }
 }
 
 /**
  * Returns `true` if actions are valid.  Logs a warning and returns `false`
  * otherwise (for loop skip contexts).
+ *
+ * Like `validatePageActions`, the `novel` mode's "exactly 1 action" rule is
+ * intentionally not enforced here — excess actions are stripped silently by
+ * `sanitizeActionsForMode` rather than skipping the page.
  */
 export function checkPageActions(
   actions: unknown,
@@ -170,14 +171,11 @@ export function checkPageActions(
     console.warn(`⚠️ ${tag}Invalid or empty actions — skipping`);
     return false;
   }
-  if (mode) {
-    const max = maxActionsForMode(mode);
-    if (actions.length > max) {
-      console.warn(
-        `⚠️ ${tag}Too many actions (${actions.length} > ${max}) for mode "${mode}" — skipping`,
-      );
-      return false;
-    }
+  if (mode && mode !== 'novel' && actions.length > MAX_ACTIONS_PER_PAGE) {
+    console.warn(
+      `⚠️ ${tag}Too many actions (${actions.length} > ${MAX_ACTIONS_PER_PAGE}) for mode "${mode}" — skipping`,
+    );
+    return false;
   }
   return true;
 }

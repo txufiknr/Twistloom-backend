@@ -31,8 +31,8 @@
 [ ] lengkapi API keys llm provider baru
 [ ] can you also add ai-cost for these gemini models: `gemini-3.6-flash`?
 [ ] please check `validateGeneratedPage`, I don't want to ditch AI generation result merely because it provides multiple actions for 'novel' book mode (should just strip it sliently), is it already safe & handled as intended?
-[ ] persistPageWithState/insertStoryPage: cleanup “[dialogue]” ([actionType]) from page.text (sanitize) before insert
-[ ] pen prompt: ensure find mathing lore entity from story text via triggerKeywords
+[@] persistPageWithState/insertStoryPage: cleanup [actionType] from page.text before insert
+[ ] pen prompt: ensure find matching lore entity from story text via triggerKeywords
 [ ] claude: should we using multi-turn request instead of big array json for generating `generatedPages` (alternative fates) in 'multiverse' book mode?
 [x] claude: review & refine TODO-gemini-interactions-api.md
 [x] claude: review & refine TODO-save-prompt-token.md

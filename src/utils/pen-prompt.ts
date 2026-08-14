@@ -38,6 +38,7 @@ import { createNarrativeStyle } from "./narrative-style.js";
 import { formatLanguage } from "./translation.js";
 import { PEN_CONTINUE_WORDS } from "../config/story.js";
 import type { PenContinueLength } from "../config/story.js";
+import { injuryCategories } from "../types/character.js";
 
 /** Number of prior pages of context included in a `/continue` prompt. */
 const PEN_CONTEXT_PAGES = 2;
@@ -613,6 +614,206 @@ export function buildPenEssentialsAutofillPrompt(params: {
       `WEATHER OPTIONS: ${placeWeathers.join(", ")}`,
       `PLACE OPTIONS: ${placeNames}`,
       closingLine,
+    ].join("\n\n"),
+  };
+}
+
+/**
+ * Static, cache-friendly system prompt for the finalize state proposal (§2.i /
+ * §10). Same caching discipline as the other Pen system prompts: a pure string
+ * const with every volatile field deferred to the user prompt.
+ *
+ * The model proposes the NEXT page's inventory and injuries as an "adopt as
+ * canon" state update. Output is the FULL resulting state (replacement
+ * semantics, mirroring how `applyStateDelta` consumes inventory/injuries): the
+ * model must carry forward every item/injury that should persist and drop any
+ * that should be removed. This is a constrained structured-output task, capped
+ * by `PEN_FINALIZE_PROPOSE_MAX_TOKENS`.
+ */
+export const PEN_STATE_PROPOSAL_SYSTEM = `You are a story-state accountant for an author. Given the author's CURRENT DRAFT for the NEXT page, compute what the story state should become once that page is published: the character's full inventory and any injuries they carry.
+
+MANDATORY: the USER message contains labeled sections you MUST read and obey before generating: AUTHOR'S PERSONA, STORY SUMMARY, CANONICAL LORE, NARRATIVE STYLE, WRITE IN LANGUAGE, CANONICAL STATE (do not contradict), RECENT STORY, CURRENT DRAFT, and CURRENT INVENTORY & INJURIES. The CANONICAL STATE and CANONICAL LORE are authoritative — do not contradict them.
+
+CRITICAL RULES:
+- Return the FULL resulting inventory and injuries, not just the changes.
+- INVENTORY is a complete replacement list: keep every item the character should still hold (same name, same amount unless the draft shows use/loss), add items the draft shows them acquiring, drop items the draft shows them losing, and set amount to 0 only when an item is fully consumed (it will be removed server-side).
+- INJURIES is a complete replacement list: keep every active injury (adjust severity only when the draft shows healing or aggravation), add injuries the draft shows the character sustaining, and drop injuries that have fully healed.
+- Only derive changes the draft supports. Do not invent loot, wounds, or losses out of nowhere; when nothing changes, echo the current state.
+- For each inventory item include the traits that matter (e.g. material, state, rules) as strings in the engine's 'key: value' format (e.g. 'material: iron'); omit traits when the item has none.
+- INJURY SEVERITY is 0–1 (0.1 minor, 0.3 moderate, 0.6 severe, 0.9 critical). INJURY CATEGORY must be one of the CATEGORY OPTIONS.
+
+Return ONLY the JSON form matching the schema.
+
+${RULES_STORY_CONSISTENCY}
+
+${RULES_LANGUAGE_LOCALIZATION}`;
+
+/** One inventory item in a state proposal (server-side coercion stamps acquisition metadata). */
+export type PenStateProposalInventoryItem = {
+  name: string;
+  amount?: number;
+  where?: string;
+  /** Trait strings (engine format: `"material: iron"`, `"state: broken"`). */
+  traits?: string[];
+};
+
+/** One injury in a state proposal. */
+export type PenStateProposalInjury = {
+  bodyPart: string;
+  description: string;
+  severity?: number;
+  category?: string;
+  consequences?: string;
+};
+
+/** Raw structured output shape of the finalize state-proposal call. */
+export type PenStateProposalResult = {
+  /** FULL resulting inventory (replacement semantics). */
+  inventory: PenStateProposalInventoryItem[];
+  /** FULL resulting injuries (replacement semantics). */
+  injuries: PenStateProposalInjury[];
+};
+
+/** Structured-output schema for the finalize state proposal. */
+export const PEN_STATE_PROPOSAL_SCHEMA: Record<keyof PenStateProposalResult, AIJsonProperty> = {
+  inventory: {
+    type: "array",
+    description: "The FULL resulting inventory — every item the character should hold after this page.",
+    items: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Item name." },
+        amount: { type: "integer", description: "Quantity; 0 when the item is fully consumed." },
+        where: { type: "string", description: "Where the item is kept (e.g. 'in backpack')." },
+        traits: {
+          type: "array",
+          description: "Notable traits for the item, each as a 'key: value' string (e.g. 'material: iron').",
+          items: { type: "string" },
+        },
+      },
+      required: ["name"],
+    },
+  },
+  injuries: {
+    type: "array",
+    description: "The FULL resulting injuries — every active injury the character carries after this page.",
+    items: {
+      type: "object",
+      properties: {
+        bodyPart: { type: "string", description: "Body part affected." },
+        description: { type: "string", description: "Human-readable injury description." },
+        severity: { type: "number", description: "0–1 severity (0.1 minor, 0.3 moderate, 0.6 severe, 0.9 critical)." },
+        category: {
+          type: "string",
+          enum: [...injuryCategories],
+          description: "Broad injury classification.",
+        },
+        consequences: { type: "string", description: "Functional consequences (e.g. 'Cannot run fast')." },
+      },
+      required: ["bodyPart", "description"],
+    },
+  },
+};
+
+/** Required fields for the state-proposal structured output. */
+export const PEN_STATE_PROPOSAL_REQUIRED_FIELDS: (keyof PenStateProposalResult)[] = ["inventory", "injuries"];
+
+/** Result of building a state-proposal prompt: separate system + user prompts. */
+export type PenStateProposalPrompt = {
+  systemPrompt: string;
+  userPrompt: string;
+};
+
+/** Renders the current inventory as a compact prompt section. */
+function renderCurrentInventory(state: StoryState | null): string {
+  const inventory = state?.inventory;
+  if (!inventory || inventory.length === 0) return "(the character currently holds nothing)";
+  return inventory
+    .map((item) => {
+      const traits = item.traits?.length ? ` [${item.traits.join(", ")}]` : "";
+      const amount = item.amount !== undefined ? ` ×${item.amount}` : "";
+      const where = item.where ? ` (${item.where})` : "";
+      return `- ${item.name}${traits}${amount}${where}`;
+    })
+    .join("\n");
+}
+
+/** Renders the current injuries as a compact prompt section. */
+function renderCurrentInjuries(state: StoryState | null): string {
+  const injuries = state?.injuries;
+  if (!injuries || injuries.length === 0) return "(the character carries no active injuries)";
+  return injuries
+    .map((injury) => {
+      const severity = injury.severity !== undefined ? ` severity ${injury.severity}` : "";
+      const category = injury.category ? ` [${injury.category}]` : "";
+      const consequences = injury.consequences ? ` — ${injury.consequences}` : "";
+      return `- ${injury.bodyPart}: ${injury.description}${severity}${category}${consequences}`;
+    })
+    .join("\n");
+}
+
+/**
+ * Builds the finalize state-proposal prompt (§2.i / §10).
+ *
+ * Same caching contract as {@link buildPenContinuePrompt} and
+ * {@link buildPenEssentialsAutofillPrompt}: a STATIC system prompt const
+ * (`PEN_STATE_PROPOSAL_SYSTEM`) plus a user prompt with the stable-per-session
+ * sections first, then the per-page canon/prose and the current
+ * inventory/injuries last.
+ */
+export function buildPenStateProposalPrompt(params: {
+  state?: StoryState | null;
+  persona?: CoWritingPersona;
+  lore?: LoreEntry[];
+  pageTexts: string[];
+  mcName: string;
+  language: string;
+  bookSummary?: string | null;
+  storyStartDate?: string | null;
+  momentum?: string | null;
+  sceneType?: string | null;
+  draftText: string;
+}): PenStateProposalPrompt {
+  const {
+    state,
+    persona,
+    lore,
+    pageTexts,
+    mcName,
+    language,
+    bookSummary,
+    storyStartDate,
+    momentum,
+    sceneType,
+    draftText,
+  } = params;
+
+  const canon = buildCanonicalBlock(state ?? null, mcName, {
+    storyStartDate,
+    momentum,
+    sceneType,
+  });
+  const prose = buildProseContext(pageTexts);
+  const narrativeStyleInstructions = state ? createNarrativeStyle(state).instructions : undefined;
+
+  const stableSections = [
+    personaOverlay(persona),
+    bookSummary ? `STORY SUMMARY: ${bookSummary}` : "",
+    loreBlock(lore),
+    narrativeStyleInstructions ? `NARRATIVE STYLE:\n${narrativeStyleInstructions}` : "",
+    `WRITE IN LANGUAGE: ${formatLanguage(language)}`,
+  ].filter(Boolean);
+
+  return {
+    systemPrompt: PEN_STATE_PROPOSAL_SYSTEM,
+    userPrompt: [
+      ...stableSections,
+      `CANONICAL STATE (do not contradict):\n${canon}`,
+      `RECENT STORY:\n${prose}`,
+      `CURRENT DRAFT:\n${draftText}`,
+      `CURRENT INVENTORY & INJURIES (the state before this page publishes — carry forward what persists, change only what the draft supports):\nINVENTORY:\n${renderCurrentInventory(state ?? null)}\nINJURIES:\n${renderCurrentInjuries(state ?? null)}`,
+      `CATEGORY OPTIONS: ${injuryCategories.join(", ")}`,
+      "Compute the FULL resulting inventory and injuries for the page being published.",
     ].join("\n\n"),
   };
 }

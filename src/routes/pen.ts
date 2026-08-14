@@ -11,9 +11,9 @@ import type { Context } from "hono";
 import type { AppEnv } from "../hono/env.js";
 import { requireAuth } from "../middleware/nextauth.js";
 import { rateLimit } from "../middleware/rate-limit.js";
-import { PEN_CONTINUE_RATE_LIMIT, PEN_ESSENTIALS_RATE_LIMIT } from "../config/ai-rate-limits.js";
+import { PEN_CONTINUE_RATE_LIMIT, PEN_ESSENTIALS_RATE_LIMIT, PEN_FINALIZE_PROPOSE_RATE_LIMIT } from "../config/ai-rate-limits.js";
 import { cApiError, cNotFoundError, cValidationError } from "../utils/error.js";
-import { PEN_ASSISTANCE_LEVEL_MAX, PEN_ASSISTANCE_LEVEL_MIN, PEN_AUTHORING_MODES, PEN_AUTHORING_POVS, PEN_DRAFT_CAST_LIMIT, PEN_FINALIZE_MAX_ACTIONS, PEN_SCENE_FOCUS_MAX, PEN_SCENE_FOCUS_MIN, PEN_SESSION_STATUSES } from "../config/story.js";
+import { PEN_ASSISTANCE_LEVEL_MAX, PEN_ASSISTANCE_LEVEL_MIN, PEN_AUTHORING_MODES, PEN_AUTHORING_POVS, PEN_DRAFT_CAST_LIMIT, PEN_FINALIZE_MAX_ACTIONS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_SCENE_FOCUS_MAX, PEN_SCENE_FOCUS_MIN, PEN_SESSION_STATUSES } from "../config/story.js";
 import {
   createPenSession,
   getPenSessionForBook,
@@ -24,6 +24,7 @@ import {
   continuePenDraft,
   finalizePenDraft,
   autofillSceneEssentials,
+  proposePenStateUpdates,
   getPenSessionState,
   getPenOutline,
   getPenAuthorPage,
@@ -33,8 +34,9 @@ import {
   PenContinueError,
   PenFinalizeError,
   PenEssentialsAutofillError,
+  PenStateProposalError,
 } from "../services/pen.js";
-import type { PenContinueInput, PenFinalizeInput, PenEssentialsAutofillInput } from "../services/pen.js";
+import type { PenContinueInput, PenFinalizeInput, PenEssentialsAutofillInput, PenStateProposalInput } from "../services/pen.js";
 import type { AuthoringMode, AuthoringPov, PenDraftCharacter, PenDraftSceneEssentials, PenSessionStatus } from "../types/pen.js";
 import { characterSceneRoles } from "../types/story.js";
 import type { CharacterSceneRole } from "../types/story.js";
@@ -409,6 +411,42 @@ router.post("/sessions/:id/essentials/autofill", requireAuth, rateLimit(PEN_ESSE
 });
 
 /**
+ * POST /api/pen/sessions/:id/finalize/propose
+ * AI-compute the next page's inventory/injuries as an "adopt as canon"
+ * proposal (§2.i / §10).
+ *
+ * Body: `{ draftText? }` — the current draft prose (plain text). The service
+ * never mutates the session: it returns a COMPLETE next-state proposal
+ * `{ inventory, injuries }` (full-replacement arrays) that the frontend shows
+ * in the publish dialog for acceptance/editing, then sends back via
+ * `/finalize` as `adoptInventory`/`adoptInjuries`. Page 1 has no prior state,
+ * so it returns an empty proposal without calling the model. Free
+ * (`PEN_FINALIZE_PROPOSE` = 0) and writes a `plan` audit row.
+ */
+router.post("/sessions/:id/finalize/propose", requireAuth, rateLimit(PEN_FINALIZE_PROPOSE_RATE_LIMIT), async (c) => {
+  try {
+    const userId = c.get("userId");
+    if (!userId) return cApiError(c, "Authentication required", undefined, 401);
+    const sessionId = c.req.param("id");
+    const body = await readJsonBody(c);
+
+    const input: PenStateProposalInput = {};
+    const raw = body as { draftText?: unknown } | null | undefined;
+    if (raw && typeof raw.draftText === "string") {
+      input.draftText = raw.draftText;
+    }
+
+    const result = await proposePenStateUpdates(userId, sessionId, input);
+    return c.json(result);
+  } catch (error) {
+    if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
+    if (error instanceof PenBookOwnershipError) return cApiError(c, error.message, undefined, 403);
+    if (error instanceof PenStateProposalError) return cApiError(c, error.message, undefined, 422);
+    return cApiError(c, "Failed to propose the next page state", error);
+  }
+});
+
+/**
  * POST /api/pen/sessions/:id/finalize
  * Publish the session's draft as the next story page (Phase 1.c).
  *
@@ -418,8 +456,10 @@ router.post("/sessions/:id/essentials/autofill", requireAuth, rateLimit(PEN_ESSE
  * (or a clean/author-consistent draft) it publishes via `persistPageWithState`
  * / `insertStoryPage`, rolls the draft up into `penEdits` spans with character
  * offsets, and clears the draft.
- * Body: { force?, amendments?, actions? } — `actions` supplies author-defined
- * next choices for interactive/multiverse; novel always uses the single default.
+ * Body: { force?, amendments?, actions?, adoptInventory?, adoptInjuries? } —
+ * `actions` supplies author-defined next choices for interactive/multiverse;
+ * novel always uses the single default. `adoptInventory`/`adoptInjuries` are
+ * the confirmed "adopt as canon" state proposal from `/finalize/propose`.
  */
 router.post("/sessions/:id/finalize", requireAuth, async (c) => {
   try {
@@ -439,6 +479,12 @@ router.post("/sessions/:id/finalize", requireAuth, async (c) => {
     }
     if (body.actions !== undefined && (!Array.isArray(body.actions) || body.actions.length > PEN_FINALIZE_MAX_ACTIONS)) {
       return cValidationError(c, `actions must be an array of at most ${PEN_FINALIZE_MAX_ACTIONS} items`);
+    }
+    if (body.adoptInventory !== undefined && (!Array.isArray(body.adoptInventory) || body.adoptInventory.length > PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS)) {
+      return cValidationError(c, `adoptInventory must be an array of at most ${PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS} items`);
+    }
+    if (body.adoptInjuries !== undefined && (!Array.isArray(body.adoptInjuries) || body.adoptInjuries.length > PEN_FINALIZE_PROPOSE_MAX_INJURIES)) {
+      return cValidationError(c, `adoptInjuries must be an array of at most ${PEN_FINALIZE_PROPOSE_MAX_INJURIES} items`);
     }
 
     const result = await finalizePenDraft(userId, sessionId, body);

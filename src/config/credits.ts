@@ -132,6 +132,13 @@ const CREDIT_COSTS_BASE = {
   PEN_ESSENTIALS_AUTOFILL: 1,
   /** Finalize delta-verification — charged only when an LLM judgment runs. */
   PEN_FINALIZE_VERIFY: 0,
+  /**
+   * Finalize state-proposal — the pre-publish structured-output call that
+   * computes the next page's inventory/injuries as an "adopt as canon"
+   * proposal (§2.i / §10). Constrained JSON over the same enum space as
+   * essentials auto-fill, so it stays free alongside finalize.
+   */
+  PEN_FINALIZE_PROPOSE: 0,
 } as const;
 
 /**

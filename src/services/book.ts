@@ -24,7 +24,7 @@ import { getEnrichedBookSelect } from "./book-controller.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage, DBUpdateBook } from "../types/schema.js";
 import type { Book, BookSlugGenerationResult, BookStatus, BookVisibility, EnrichedBookData, EnrichedPageOptions, PublicStats } from "../types/book.js";
 import { bookVisibilities } from "../types/book.js";
-import type { StoryPage, PersistedStoryPage, UserStoryPage, StoryState, StoryPageMeta, EnrichedStoryPage, StateDelta, StoryGeneration, SelectedAction, Action, EnrichedStoryPageContext, TranslatedStoryPage, EnrichedStoryPagePlace, EnrichedStoryPageCharacter, ActionType, ActionHintType } from "../types/story.js";
+import { actionTypes, type StoryPage, type PersistedStoryPage, type UserStoryPage, type StoryState, type StoryPageMeta, type EnrichedStoryPage, type StateDelta, type StoryGeneration, type SelectedAction, type Action, type EnrichedStoryPageContext, type TranslatedStoryPage, type EnrichedStoryPagePlace, type EnrichedStoryPageCharacter, type ActionType, type ActionHintType } from "../types/story.js";
 import type { CanonValidationSummary } from "../types/canon-validation.js";
 import { getStoryStateFromPage, insertStoryState } from "./story.js";
 import { formatPlacesForPrompt, resolvePlaceLoreNames } from "../utils/places.js";
@@ -252,6 +252,35 @@ export function invalidateEnrichedBookCache(bookIdentifier: string): void {
 }
 
 /**
+ * Matches bracketed action-type markers (e.g. "[dialogue]", "[explore]") in
+ * story page text, including any trailing period the model may append.
+ *
+ * Built from the known actionTypes keys so only real action-type markers are
+ * stripped — arbitrary bracketed text in the narrative is preserved.
+ */
+const ACTION_TYPE_TAG_PATTERN = new RegExp(
+  `\\s*\\[(${Object.keys(actionTypes).join('|')})\\]\\s*\\.?`,
+  'gi'
+);
+
+/**
+ * Removes bracketed action-type markers (e.g. "[dialogue]", "[explore]") from
+ * story page text.
+ *
+ * The generation prompt instructs the model to begin dialogue actions with
+ * "[dialogue]." and similar markers can leak into other action types. These are
+ * control markers for the AI, not part of the narrative, so they must not be
+ * stored in the database or served to readers.
+ *
+ * @param text - Raw AI-generated page text
+ * @returns Text with action-type markers stripped and whitespace normalized
+ */
+function stripActionTypeTags(text: string): string {
+  if (!text || typeof text !== 'string') return text;
+  return text.replace(ACTION_TYPE_TAG_PATTERN, '').trim();
+}
+
+/**
  * Inserts a story page into database (supports both root and child pages)
  * 
  * @param userId - User identifier who owns the page
@@ -310,13 +339,16 @@ export async function insertStoryPage(
   } = aiResponseProvider;
 
   const elapsedDays = storyStartDate && calendarDate ? daysBetween(storyStartDate, calendarDate) : undefined;
+  // Strip AI control markers (e.g. "[dialogue]") from the narrative before it
+  // touches the database — they are prompt scaffolding, not story content.
+  const sanitizedPageText = stripActionTypeTags(page.text);
   const newPageData: DBNewPage = {
     userId,
     bookId,
     branchId,
     parentId,
     page: pageNumber,
-    text: page.text,
+    text: sanitizedPageText,
     mood: page.mood,
     placeId: page.placeId,
     weather: page.weather,
