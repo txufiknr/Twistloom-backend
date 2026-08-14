@@ -405,15 +405,44 @@ export function ensureProtocol(url: string, defaultProtocol: string = 'https://'
 }
 
 /**
- * Removes all empty lines from a multi-line string
+ * Removes excess empty lines from a multi-line string
  * @param prompt - Multi-line string to clean
- * @returns Cleaned string with no empty lines, or empty string if input is blank
+ * @param maxEmptyLines - Maximum allowed consecutive empty lines (defaults to 0)
+ * @returns Cleaned string with limited empty lines, or empty string if input is blank
  */
-export function stripEmptyLines(prompt: string): string {
-  return !prompt.trim() ? '' : prompt.trim()
-    .split('\n')
-    .filter(line => line.trim())
-    .join('\n');
+export function stripEmptyLines(prompt: string, maxEmptyLines: number = 0): string {
+  if (!prompt.trim()) return '';
+
+  if (maxEmptyLines === 0) {
+    return !prompt.trim() ? '' : prompt.trim()
+      .split('\n')
+      .filter(line => line.trim())
+      .join('\n');
+  }
+
+  const result: string[] = [];
+  let consecutiveEmptyCount = 0;
+
+  // split(/\r?\n/) safely handles both Windows and Mac/Linux line endings
+  const lines = prompt.trim().split(/\r?\n/);
+
+  for (const line of lines) {
+    if (!line.trim()) {
+      // It's an empty line (or only contains invisible spaces)
+      consecutiveEmptyCount++;
+      
+      if (consecutiveEmptyCount <= maxEmptyLines) {
+        // Push a perfectly clean blank line (removes any hidden spaces)
+        result.push(''); 
+      }
+    } else {
+      // It's a normal text line
+      consecutiveEmptyCount = 0;
+      result.push(line); // Keep the original line with its indentation
+    }
+  }
+
+  return result.join('\n');
 }
 
 /**

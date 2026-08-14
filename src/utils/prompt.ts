@@ -5013,7 +5013,7 @@ function getBookCreationPrompts(headerLanguage?: string | null, title?: string |
 - Do NOT repeat the draft verbatim — expand it into a richer, more detailed concept.
 - Draft: "${summary.trim()}"`
     : '';
-  const systemPrompt = `You are a creative writing assistant specializing in generating engaging story concept for interactive thriller, mystery, horror, and psychological fiction novels.
+  const systemPrompt = stripEmptyLines(`You are a creative writing assistant specializing in generating engaging story concept for interactive thriller, mystery, horror, and psychological fiction novels.
 
 TASK: Generate a compelling story concept that another AI will use as the foundation for generating an entire branching novel (max ${MAX_THEME_LENGTH_PROMPT} characters).
 
@@ -5063,7 +5063,7 @@ OUTPUT FORMAT:
 - Only output the story concept.
 - Do not include introductions, explanations, or meta-commentary.
 - Output plain text only. Do not use Markdown formatting.
-- The overall output must not exceed ${MAX_THEME_LENGTH_PROMPT} characters.`;
+- The overall output must not exceed ${MAX_THEME_LENGTH_PROMPT} characters.`, 1);
 
   const userPrompt = summary && summary.trim()
     ? `Expand the user's draft summary into a full, compelling story concept for a thriller/horror interactive fiction novel${title && title.trim() ? ` titled "${title.trim()}"` : ''}. Expand on the existing draft below — make it richer and more detailed while staying true to it. Be specific and intriguing. Write the entire prompt in the target language: ${lang}.
