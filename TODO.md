@@ -157,18 +157,12 @@ note: this is roadmap documentation writing only, no code changes
 [ ] lengkapi API keys llm provider baru
 [ ] can you also add ai-cost for these gemini models: `gemini-3.6-flash`?
 [ ] book-creation.ts still not language-agnostic
-[@] please check `validateGeneratedPage`, I don't want to ditch AI generation result merely because it provides multiple actions for 'novel' book mode (should just strip it sliently), is it already safe & handled as intended?
-[@] persistPageWithState/insertStoryPage: cleanup [actionType] from page.text before insert
 [ ] sanitizeActionsForMode: should pick random instead of always first `[0]`
 [@] pen prompt: ensure find matching lore entity from story text via triggerKeywords
 [ ] instead of 1 big failing request (schema too complex for gemini or prompt token exceeds) should we using multi-turn request for generating single big page json? ask AI to generate each json key and append sequentially in each turn, will that solve the problem?
 [ ] claude: should we using multi-turn request instead of big array json for generating `generatedPages` (alternative fates) in 'multiverse' book mode?
-[x] claude: review & refine TODO-gemini-interactions-api.md
-[x] claude: review & refine TODO-save-prompt-token.md
-[x] claude: review & refine TODO-ai-chat-enhancements.md
-[x] claude: review & refine TODO-hybrid-diffusion-llm.md
-[x] claude: consolidate `TWISTLOOM_MCP_AGENTIC_WORKFLOW_CHATGPT.md` and `TWISTLOOM_MCP_ROADMAP.md`
-[ ] opencode/claude: TODO-multi-turn-request.md gounded on actual codebase
+[ ] agentic mcp: TWISTLOOM_AGENT_MCP_ROADMAP.md
+[ ] opencode/claude: TODO-multi-turn-request.md grounded on actual codebase
 
 ---
 
@@ -180,11 +174,6 @@ note: this is roadmap documentation writing only, no code changes
 [ ] docs\roadmap\TWISTLOOM_AI_DRY_OPPORTUNITIES.md
 [ ] promote inception mercury: docs\roadmap\AI_DIFFUSION_TOKEN_SAVING_EXECUTION_ROADMAP.md
 [ ] bun tests/test-diffusion-adherence.ts
-
-[ ] register & otp sms: https://www.modelscope.cn/register
-[ ] setup ovh cloud api key:
-https://docs.ovhcloud.com/en/guides/public-cloud/ai-machine-learning/ai-endpoints-getting-started
-https://manager.ca.ovhcloud.com/#/public-cloud/pci/projects/new?cartId=f28fcbf3-81ef-4bc1-a1cf-402d249ae8b7
 
 ---
 
