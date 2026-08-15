@@ -679,25 +679,30 @@ async function* groqStreamGenerator(
     messages: buildChatMessages(systemPromptWithDocuments, prompt),
     model,
     stream: true,
-    // stream_options: { include_usage: true },
+    stream_options: { include_usage: true },
     ...buildSamplingParams('groq', model, config),
     response_format: buildOpenAIResponseFormat(context, outputAsJson, outputJsonStructure, outputJsonRequired),
-  } satisfies Groq.ChatCompletionCreateParamsStreaming, { signal });
+  // 1. Cast the payload instead of using `satisfies` to bypass the missing `stream_options` type
+  // } satisfies Groq.ChatCompletionCreateParamsStreaming, { signal });
+  } as Groq.ChatCompletionCreateParamsStreaming & { stream_options?: { include_usage: boolean } }, { signal });
 
-  // let usage: StreamUsage | undefined;
-  const usage: StreamUsage | undefined = undefined;
+  let usage: StreamUsage | undefined;
 
   for await (const chunk of stream) {
     if (signal?.aborted) return usage;
 
-    // Final chunk (stream_options.include_usage) has usage + empty choices —
-    // same shape Groq's own non-streaming extractUsage callback reads.
+    // 2. Cast chunk to `any` to bypass the missing `usage` type on ChatCompletionChunk.
+    // 3. Add a fallback to `x_groq?.usage` to catch Groq's custom metadata wrapper.
+    const rawChunk = chunk as any;
+    const chunkUsage = rawChunk.usage || rawChunk.x_groq?.usage;
+
     // if (chunk.usage) {
-    //   usage = {
-    //     promptTokens: chunk.usage.prompt_tokens,
-    //     cachedTokens: chunk.usage.prompt_tokens_details?.cached_tokens ?? 0,
-    //   };
-    // }
+    if (chunkUsage) {
+      usage = {
+        promptTokens: chunkUsage.prompt_tokens,
+        cachedTokens: chunkUsage.prompt_tokens_details?.cached_tokens ?? 0,
+      };
+    }
 
     const delta = extractDeltaText(chunk);
     if (delta) yield delta;

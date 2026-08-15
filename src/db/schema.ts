@@ -2487,6 +2487,15 @@ export const penSessions = pgTable(
     /** Draft workspace — JSONB spans, NOT plain text (Model C). */
     draftBuffer: jsonb("draft_buffer").$type<DraftSpan[]>().notNull().default(sql`'[]'::jsonb`),
     /**
+     * Exact TipTap HTML of the live draft (roadmap §18.1 autosave layer 2).
+     * Mirrors `draftBuffer` (the engine-facing span array) so a page refresh or
+     * a second device can restore the draft WITHOUT flattening rich formatting
+     * (headings/lists/quotes/bold/images) through the plain-text span model.
+     * `null` for sessions written before layer 2 shipped — those restore from
+     * `draftBuffer` via the span→HTML builder as before.
+     */
+    draftHtml: text("draft_html"),
+    /**
      * Author-curated cast physically present in the current draft's scene
      * (§10 Decision M). Full on-scene cast INCLUDING the main character; the
      * author checklists this in the editor before /finalize. Cleared with the

@@ -53,51 +53,6 @@ error: 402 This request requires more credits, or fewer max_tokens. You requeste
 
 ---
 
-async function* groqStreamGenerator(
-  prompt: string,
-  options: Partial<PromptWithFallbackOptions>
-): AIStreamGenerator {
-  const { signal, context, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = options;
-  const systemPromptWithDocuments = formatSystemPromptWithDocuments('groq', options);
-
-  const model = resolveStreamDefaultModel('groq', options);
-  
-  const stream = await getGroqClient().chat.completions.create({
-    messages: buildChatMessages(systemPromptWithDocuments, prompt),
-    model,
-    stream: true,
-    stream_options: { include_usage: true },
-    ...buildSamplingParams('groq', model, config),
-    response_format: buildOpenAIResponseFormat(context, outputAsJson, outputJsonStructure, outputJsonRequired),
-  // 1. Cast the payload instead of using `satisfies` to bypass the missing `stream_options` type
-  } as Groq.ChatCompletionCreateParamsStreaming & { stream_options?: { include_usage: boolean } }, { signal });
-
-  let usage: StreamUsage | undefined;
-
-  for await (const chunk of stream) {
-    if (signal?.aborted) return usage;
-
-    // 2. Cast chunk to `any` to bypass the missing `usage` type on ChatCompletionChunk.
-    // 3. Add a fallback to `x_groq?.usage` to catch Groq's custom metadata wrapper.
-    const rawChunk = chunk as any;
-    const chunkUsage = rawChunk.usage || rawChunk.x_groq?.usage;
-
-    if (chunkUsage) {
-      usage = {
-        promptTokens: chunkUsage.prompt_tokens,
-        cachedTokens: chunkUsage.prompt_tokens_details?.cached_tokens ?? 0,
-      };
-    }
-
-    const delta = extractDeltaText(chunk);
-    if (delta) yield delta;
-  }
-
-  return usage;
-}
-
----
-
 TODO-multi-turn-request.md
 src\utils\prompt.ts
 src\types\story.ts
@@ -129,6 +84,12 @@ so maybe we need a way (new db table and/or column) to track partial page genera
 
 because this it a big refactor, please divide into smaller targeted tasks, phases, and steps
 note: this is roadmap documentation writing only, no code changes
+
+---
+
+LEVELING SYSTEM:
+- text adventure pen draft book enable level by default
+- show level in CastChip.tsx
 
 ---
 

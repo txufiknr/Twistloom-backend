@@ -13,7 +13,9 @@ import { requireAuth } from "../middleware/nextauth.js";
 import { rateLimit } from "../middleware/rate-limit.js";
 import { PEN_CONTINUE_RATE_LIMIT, PEN_ESSENTIALS_RATE_LIMIT, PEN_FINALIZE_PROPOSE_RATE_LIMIT } from "../config/ai-rate-limits.js";
 import { cApiError, cNotFoundError, cValidationError } from "../utils/error.js";
-import { PEN_ASSISTANCE_LEVEL_MAX, PEN_ASSISTANCE_LEVEL_MIN, PEN_AUTHORING_MODES, PEN_AUTHORING_POVS, PEN_DRAFT_CAST_LIMIT, PEN_FINALIZE_MAX_ACTIONS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_SCENE_FOCUS_MAX, PEN_SCENE_FOCUS_MIN, PEN_SESSION_STATUSES } from "../config/story.js";
+import { PEN_ASSISTANCE_LEVEL_MAX, PEN_ASSISTANCE_LEVEL_MIN, PEN_AUTHORING_MODES, PEN_AUTHORING_POVS, PEN_DRAFT_CAST_LIMIT, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_MAX_ACTIONS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_SCENE_FOCUS_MAX, PEN_SCENE_FOCUS_MIN, PEN_SESSION_STATUSES } from "../config/story.js";
+import { moods } from "../types/story.js";
+import { placeWeathers } from "../types/places.js";
 import {
   createPenSession,
   getPenSessionForBook,
@@ -37,7 +39,7 @@ import {
   PenStateProposalError,
 } from "../services/pen.js";
 import type { PenContinueInput, PenFinalizeInput, PenEssentialsAutofillInput, PenStateProposalInput } from "../services/pen.js";
-import type { AuthoringMode, AuthoringPov, PenDraftCharacter, PenDraftSceneEssentials, PenSessionStatus } from "../types/pen.js";
+import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraftCharacter, PenDraftSceneEssentials, PenSessionStatus } from "../types/pen.js";
 import { characterSceneRoles } from "../types/story.js";
 import type { CharacterSceneRole } from "../types/story.js";
 
@@ -100,6 +102,32 @@ function validateDraftSceneEssentials(value: unknown): string | null {
     if (e[field] !== undefined) {
       if (!Array.isArray(e[field])) return `${field} must be an array of strings`;
       if (e[field].some((item) => typeof item !== "string")) return `${field} must contain only strings`;
+    }
+  }
+  return null;
+}
+
+/** Validates the `draftBuffer` span array (autosave layer 2, roadmap §18.1); returns an error string or null. */
+function validateDraftBuffer(value: unknown): string | null {
+  if (!Array.isArray(value)) {
+    return "draftBuffer must be an array of draft spans";
+  }
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      return "each draft span must be an object";
+    }
+    const s = item as Record<string, unknown>;
+    if (typeof s.id !== "string" || s.id.length === 0) {
+      return "each draft span needs a string id";
+    }
+    if (typeof s.text !== "string") {
+      return "each draft span needs a string text";
+    }
+    if (s.origin !== "human" && s.origin !== "ai" && s.origin !== "revised") {
+      return "draft span origin must be human, ai, or revised";
+    }
+    if (s.validationState !== "validated" && s.validationState !== "dirty") {
+      return "draft span validationState must be validated or dirty";
     }
   }
   return null;
@@ -224,13 +252,16 @@ router.patch("/sessions/:id", requireAuth, async (c) => {
     if (!body || typeof body !== "object") {
       return cValidationError(c, "Request body must be a JSON object");
     }
-    const { assistanceLevel, status, currentPageId, authoringPov, draftCharactersPresent, draftSceneEssentials } = body as {
+    const { assistanceLevel, status, currentPageId, authoringPov, draftCharactersPresent, draftSceneEssentials, draftBuffer, draftHtml, draftUpdatedAt } = body as {
       assistanceLevel?: number;
       status?: PenSessionStatus;
       currentPageId?: string | null;
       authoringPov?: AuthoringPov | null;
       draftCharactersPresent?: PenDraftCharacter[];
       draftSceneEssentials?: PenDraftSceneEssentials | null;
+      draftBuffer?: DraftSpan[];
+      draftHtml?: string;
+      draftUpdatedAt?: string;
     };
 
     if (assistanceLevel !== undefined && (typeof assistanceLevel !== "number" || assistanceLevel < PEN_ASSISTANCE_LEVEL_MIN || assistanceLevel > PEN_ASSISTANCE_LEVEL_MAX)) {
@@ -260,7 +291,18 @@ router.patch("/sessions/:id", requireAuth, async (c) => {
       if (essentialsError) return cValidationError(c, essentialsError);
     }
 
-    const session = await updatePenSession(userId, sessionId, { assistanceLevel, status, currentPageId, authoringPov, draftCharactersPresent, draftSceneEssentials });
+    if (draftBuffer !== undefined) {
+      const bufferError = validateDraftBuffer(draftBuffer);
+      if (bufferError) return cValidationError(c, bufferError);
+    }
+    if (draftHtml !== undefined && typeof draftHtml !== "string") {
+      return cValidationError(c, "draftHtml must be a string");
+    }
+    if (draftUpdatedAt !== undefined && (typeof draftUpdatedAt !== "string" || Number.isNaN(Date.parse(draftUpdatedAt)))) {
+      return cValidationError(c, "draftUpdatedAt must be a valid date string");
+    }
+
+    const session = await updatePenSession(userId, sessionId, { assistanceLevel, status, currentPageId, authoringPov, draftCharactersPresent, draftSceneEssentials, draftBuffer, draftHtml, draftUpdatedAt });
     return c.json({ session });
   } catch (error) {
     if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
@@ -412,16 +454,19 @@ router.post("/sessions/:id/essentials/autofill", requireAuth, rateLimit(PEN_ESSE
 
 /**
  * POST /api/pen/sessions/:id/finalize/propose
- * AI-compute the next page's inventory/injuries as an "adopt as canon"
- * proposal (§2.i / §10).
+ * AI-compute the next page's scene pin + inventory/injuries as an "adopt as
+ * canon" proposal (§2.i / §10).
  *
  * Body: `{ draftText? }` — the current draft prose (plain text). The service
  * never mutates the session: it returns a COMPLETE next-state proposal
- * `{ inventory, injuries }` (full-replacement arrays) that the frontend shows
+ * `{ mood?, weather?, calendarDate?, timeOfDay?, inventory, injuries,
+ * keyEvents, keyObjects }` (full-replacement arrays) that the frontend shows
  * in the publish dialog for acceptance/editing, then sends back via
- * `/finalize` as `adoptInventory`/`adoptInjuries`. Page 1 has no prior state,
- * so it returns an empty proposal without calling the model. Free
- * (`PEN_FINALIZE_PROPOSE` = 0) and writes a `plan` audit row.
+ * `/finalize` as `adoptMood`/`adoptWeather`/`adoptCalendarDate`/
+ * `adoptTimeOfDay`/`adoptInventory`/`adoptInjuries`. Page 1 has no prior
+ * state, so inventory/injuries come back empty but the scene pin is still
+ * proposed from the opening draft. Free (`PEN_FINALIZE_PROPOSE` = 0) and
+ * writes a `plan` audit row.
  */
 router.post("/sessions/:id/finalize/propose", requireAuth, rateLimit(PEN_FINALIZE_PROPOSE_RATE_LIMIT), async (c) => {
   try {
@@ -485,6 +530,24 @@ router.post("/sessions/:id/finalize", requireAuth, async (c) => {
     }
     if (body.adoptInjuries !== undefined && (!Array.isArray(body.adoptInjuries) || body.adoptInjuries.length > PEN_FINALIZE_PROPOSE_MAX_INJURIES)) {
       return cValidationError(c, `adoptInjuries must be an array of at most ${PEN_FINALIZE_PROPOSE_MAX_INJURIES} items`);
+    }
+    if (body.adoptKeyEvents !== undefined && (!Array.isArray(body.adoptKeyEvents) || body.adoptKeyEvents.length > PEN_ESSENTIALS_MAX_LIST_ITEMS)) {
+      return cValidationError(c, `adoptKeyEvents must be an array of at most ${PEN_ESSENTIALS_MAX_LIST_ITEMS} items`);
+    }
+    if (body.adoptKeyObjects !== undefined && (!Array.isArray(body.adoptKeyObjects) || body.adoptKeyObjects.length > PEN_ESSENTIALS_MAX_LIST_ITEMS)) {
+      return cValidationError(c, `adoptKeyObjects must be an array of at most ${PEN_ESSENTIALS_MAX_LIST_ITEMS} items`);
+    }
+    if (body.adoptMood !== undefined && (typeof body.adoptMood !== "string" || !moods.includes(body.adoptMood as (typeof moods)[number]))) {
+      return cValidationError(c, "adoptMood must be a valid mood key");
+    }
+    if (body.adoptWeather !== undefined && (typeof body.adoptWeather !== "string" || !placeWeathers.includes(body.adoptWeather as (typeof placeWeathers)[number]))) {
+      return cValidationError(c, "adoptWeather must be a valid weather key");
+    }
+    if (body.adoptCalendarDate !== undefined && (typeof body.adoptCalendarDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(body.adoptCalendarDate))) {
+      return cValidationError(c, "adoptCalendarDate must be a YYYY-MM-DD string");
+    }
+    if (body.adoptTimeOfDay !== undefined && (typeof body.adoptTimeOfDay !== "string" || body.adoptTimeOfDay.trim().length === 0 || body.adoptTimeOfDay.length > PEN_ESSENTIALS_MAX_FIELD_LENGTH)) {
+      return cValidationError(c, `adoptTimeOfDay must be a non-empty string of at most ${PEN_ESSENTIALS_MAX_FIELD_LENGTH} characters`);
     }
 
     const result = await finalizePenDraft(userId, sessionId, body);

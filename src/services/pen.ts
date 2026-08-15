@@ -249,14 +249,31 @@ export type PenSessionUpdates = {
   authoringPov?: AuthoringPov | null;
   draftCharactersPresent?: PenDraftCharacter[];
   draftSceneEssentials?: PenDraftSceneEssentials | null;
+  /**
+   * Draft workspace (autosave layer 2, roadmap §18.1). Flushed together with
+   * `draftHtml` by the frontend's heartbeat autosave. Applied ONLY when
+   * `draftUpdatedAt` is newer than the server's current `updatedAt` (last-write-
+   * wins), so a stale draft from another device can never clobber fresher prose.
+   */
+  draftBuffer?: DraftSpan[];
+  /** Exact TipTap HTML mirror of `draftBuffer` — restores rich formatting on refresh/other devices. */
+  draftHtml?: string;
+  /** Client wall-clock (ms epoch, ISO string) of the most recent keystroke in this draft. */
+  draftUpdatedAt?: string;
 };
 
 /**
  * Applies allowed PATCH updates to a session the user owns.
  *
+ * Draft-workspace writes (`draftBuffer`/`draftHtml`) are merged last-write-wins
+ * against the client's `draftUpdatedAt`: the write is dropped when it is not
+ * newer than the session's `updatedAt`, so a second device that has gone stale
+ * never overwrites a fresher buffer. Non-draft fields (assistanceLevel, status,
+ * currentPageId, POV, cast, essentials) apply unconditionally.
+ *
  * @param userId - The authenticated user's id (ownership guard)
  * @param sessionId - The session to update
- * @param updates - `assistanceLevel`, `status`, or `currentPageId`
+ * @param updates - the allowed PATCH fields above
  * @throws PenSessionNotFoundError if missing or owned by another user
  */
 export async function updatePenSession(
@@ -283,6 +300,42 @@ export async function updatePenSession(
   }
   if (updates.draftSceneEssentials !== undefined) {
     values.draftSceneEssentials = updates.draftSceneEssentials;
+  }
+
+  // Draft-workspace write: read the current row first so the last-write-wins
+  // guard can compare against the stored `updatedAt` (read via dbWrite to avoid
+  // replica lag flipping the decision on a just-written draft).
+  let existing: DBPenSession | null = null;
+  const hasDraftWrite =
+    updates.draftBuffer !== undefined || updates.draftHtml !== undefined || updates.draftUpdatedAt !== undefined;
+  if (hasDraftWrite) {
+    const rows = await dbWrite
+      .select()
+      .from(penSessions)
+      .where(and(eq(penSessions.id, sessionId), eq(penSessions.userId, userId)))
+      .limit(1);
+    existing = rows[0] ?? null;
+    if (!existing) throw new PenSessionNotFoundError();
+
+    const clientTs = updates.draftUpdatedAt !== undefined ? Date.parse(updates.draftUpdatedAt) : Date.now();
+    if (!Number.isNaN(clientTs) && clientTs > existing.updatedAt.getTime()) {
+      if (updates.draftBuffer !== undefined) values.draftBuffer = updates.draftBuffer;
+      if (updates.draftHtml !== undefined) values.draftHtml = updates.draftHtml;
+    }
+  }
+
+  // Nothing accepted (e.g. only a stale draft write) — return the current
+  // session unchanged instead of issuing an empty UPDATE.
+  if (Object.keys(values).length === 0) {
+    const row = existing ?? (
+      await dbWrite
+        .select()
+        .from(penSessions)
+        .where(and(eq(penSessions.id, sessionId), eq(penSessions.userId, userId)))
+        .limit(1)
+    )[0];
+    if (!row) throw new PenSessionNotFoundError();
+    return toPenSessionPayload(row);
   }
 
   const [updated] = await dbWrite
@@ -400,14 +453,15 @@ export async function continuePenDraft(
   let pageTexts: string[] = [];
   let momentum: string | null = null;
   let sceneType: string | null = null;
+  let lastPage: PersistedStoryPage | undefined;
 
   if (session.currentPageId) {
     state = await getStoryStateWithBranch(book.id, session.currentPageId);
     const branch = await getBranchPath(session.currentPageId);
     pageTexts = branch.pages.map((p) => p.text).filter(Boolean);
-    const last = branch.pages[branch.pages.length - 1];
-    momentum = last?.momentum ?? null;
-    sceneType = last?.sceneType ?? null;
+    lastPage = branch.pages[branch.pages.length - 1];
+    momentum = lastPage?.momentum ?? null;
+    sceneType = lastPage?.sceneType ?? null;
   }
 
   const mcName = book.mc?.knownName || book.mc?.name || "";
@@ -451,7 +505,7 @@ export async function continuePenDraft(
     momentum,
     sceneType,
     bookSummary: book.summary ?? null,
-    essentials: session.draftSceneEssentials ?? null,
+    essentials: inheritSceneEssentials(session.draftSceneEssentials, lastPage),
   };
 
   const { systemPrompt, userPrompt } =
@@ -715,14 +769,15 @@ export async function autofillSceneEssentials(
   let pageTexts: string[] = [];
   let momentum: string | null = null;
   let sceneType: string | null = null;
+  let lastPage: PersistedStoryPage | undefined;
 
   if (session.currentPageId) {
     state = await getStoryStateWithBranch(book.id, session.currentPageId);
     const branch = await getBranchPath(session.currentPageId);
     pageTexts = branch.pages.map((p) => p.text).filter(Boolean);
-    const last = branch.pages[branch.pages.length - 1];
-    momentum = last?.momentum ?? null;
-    sceneType = last?.sceneType ?? null;
+    lastPage = branch.pages[branch.pages.length - 1];
+    momentum = lastPage?.momentum ?? null;
+    sceneType = lastPage?.sceneType ?? null;
   }
 
   const mcName = book.mc?.knownName || book.mc?.name || "";
@@ -750,7 +805,7 @@ export async function autofillSceneEssentials(
     storyStartDate: book.storyStartDate ?? null,
     momentum,
     sceneType,
-    essentials: session.draftSceneEssentials ?? null,
+    essentials: inheritSceneEssentials(session.draftSceneEssentials, lastPage),
     draftText: input.draftText?.trim() ?? "",
     placeOptions,
     mode: input.mode ?? "fill_empty",
@@ -942,15 +997,17 @@ function coerceStateProposalInjury(
 
 /**
  * Coerces a raw state proposal (AI output OR author-adopted arrays) into
- * validated `InventoryItem[]` / `Injury[]` full replacements. Every field is
- * defensively validated so a malformed/hallucinated AI response or a hand-edited
- * adoption can never break `/finalize` (mirrors {@link coerceEssentialsProposal}).
+ * validated `InventoryItem[]` / `Injury[]` full replacements plus the scene
+ * fields. Every field is defensively validated so a malformed/hallucinated AI
+ * response or a hand-edited adoption can never break `/finalize` (mirrors
+ * {@link coerceEssentialsProposal}). Invalid scene values drop to `undefined`
+ * so the finalize falls back to the inherited page value.
  */
 function coerceStateProposal(
   output: PenStateProposalAIOutput,
   currentState: StoryState | null,
   expectedPageNumber: number,
-): { inventory: InventoryItem[]; injuries: Injury[]; keyEvents: string[]; keyObjects: string[] } {
+): { inventory: InventoryItem[]; injuries: Injury[]; mood?: Mood; weather?: PlaceWeather; calendarDate?: string; timeOfDay?: string; keyEvents: string[]; keyObjects: string[] } {
   const inventory: InventoryItem[] = [];
   if (Array.isArray(output.inventory)) {
     for (const raw of output.inventory) {
@@ -969,10 +1026,22 @@ function coerceStateProposal(
     }
   }
 
+  const mood = typeof output.mood === "string" && (moods as readonly string[]).includes(output.mood) ? (output.mood as Mood) : undefined;
+  const weather =
+    typeof output.weather === "string" && (placeWeathers as readonly string[]).includes(output.weather) ? (output.weather as PlaceWeather) : undefined;
+  const calendarDate =
+    typeof output.calendarDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(output.calendarDate.trim())
+      ? output.calendarDate.trim()
+      : undefined;
+  const timeOfDay =
+    typeof output.timeOfDay === "string" && output.timeOfDay.trim()
+      ? output.timeOfDay.trim().slice(0, PEN_ESSENTIALS_MAX_FIELD_LENGTH)
+      : undefined;
+
   const keyEvents = coerceEssentialsList(output.keyEvents, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH);
   const keyObjects = coerceEssentialsList(output.keyObjects, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH);
 
-  return { inventory, injuries, keyEvents, keyObjects };
+  return { inventory, injuries, mood, weather, calendarDate, timeOfDay, keyEvents, keyObjects };
 }
 
 /** Errors thrown while running a finalize state-proposal request. */
@@ -985,15 +1054,12 @@ export class PenStateProposalError extends Error {
 
 /**
  * Runs the finalize state-proposal generation for an owned pen session (§2.i /
- * §10): one structured-output AI call computes the FULL next-page inventory and
- * injuries from the draft + canon, clamped server-side against the current
- * state, and an audit `PenEdit` row (`editType: 'plan'`) is written. Nothing
- * is persisted to the session — the author adopts/edits the proposal in the
- * publish dialog and `/finalize` merges the adopted arrays into the state delta.
- *
- * Page 1 (no `currentPageId`) has no prior state to propose against, so it
- * returns an empty proposal (`{ inventory: [], injuries: [] }`) without calling
- * the model — the frontend skips the adopt dialog entirely.
+ * §10): one structured-output AI call computes the FULL next-page scene pin
+ * (mood/weather/date/time), inventory, and injuries from the draft + canon,
+ * clamped server-side against the current state, and an audit `PenEdit` row
+ * (`editType: 'plan'`) is written. Nothing is persisted to the session — the
+ * author adopts/edits the proposal in the publish dialog and `/finalize` merges
+ * the adopted arrays into the state delta.
  *
  * @param userId - The authenticated user's id (ownership guard)
  * @param sessionId - The session to propose for
@@ -1014,19 +1080,25 @@ export async function proposePenStateUpdates(
     throw new PenStateProposalError("Session is not active; reopen it before proposing");
   }
 
-  // Page 1: no prior state → nothing to propose (the frontend skips the dialog).
-  if (!session.currentPageId) {
-    return { inventory: [], injuries: [], keyEvents: [], keyObjects: [] };
-  }
+  // Page 1 has no prior state yet — the model still proposes the scene pin and
+  // key metadata from the opening draft (empty inventory/injuries as expected).
+  let state: StoryState | null = null;
+  let pageTexts: string[] = [];
+  let lastPage: PersistedStoryPage | undefined;
+  let momentum: string | null = null;
+  let sceneType: string | null = null;
+  let expectedPageNumber = 1;
 
-  const state = await getStoryStateWithBranch(book.id, session.currentPageId);
-  const branch = await getBranchPath(session.currentPageId);
-  const pageTexts = branch.pages.map((p) => p.text).filter(Boolean);
-  const last = branch.pages[branch.pages.length - 1];
-  const momentum = last?.momentum ?? null;
-  const sceneType = last?.sceneType ?? null;
-  const currentPage = await getPageFromDB(session.currentPageId);
-  const expectedPageNumber = (currentPage?.page ?? 0) + 1;
+  if (session.currentPageId) {
+    state = await getStoryStateWithBranch(book.id, session.currentPageId);
+    const branch = await getBranchPath(session.currentPageId);
+    pageTexts = branch.pages.map((p) => p.text).filter(Boolean);
+    lastPage = branch.pages[branch.pages.length - 1];
+    momentum = lastPage?.momentum ?? null;
+    sceneType = lastPage?.sceneType ?? null;
+    const currentPage = await getPageFromDB(session.currentPageId);
+    expectedPageNumber = (currentPage?.page ?? 0) + 1;
+  }
 
   const mcName = book.mc?.knownName || book.mc?.name || "";
   const language = book.language || "en";
@@ -1044,6 +1116,7 @@ export async function proposePenStateUpdates(
     storyStartDate: book.storyStartDate ?? null,
     momentum,
     sceneType,
+    essentials: inheritSceneEssentials(session.draftSceneEssentials, lastPage),
     draftText: input.draftText?.trim() ?? "",
   });
 
@@ -1122,7 +1195,16 @@ export async function proposePenStateUpdates(
     { context: "pen_finalize_propose", metadata: { sessionId, bookId: book.id } }
   );
 
-  return { inventory: result.inventory, injuries: result.injuries, keyEvents: result.keyEvents, keyObjects: result.keyObjects };
+  return {
+    inventory: result.inventory,
+    injuries: result.injuries,
+    mood: result.mood,
+    weather: result.weather,
+    calendarDate: result.calendarDate,
+    timeOfDay: result.timeOfDay,
+    keyEvents: result.keyEvents,
+    keyObjects: result.keyObjects,
+  };
 }
 
 /** Errors thrown while running a `/finalize` request. */
@@ -1164,6 +1246,14 @@ export type PenFinalizeInput = {
   adoptKeyEvents?: string[];
   /** Author-adopted page key objects. See {@link adoptKeyEvents}. */
   adoptKeyObjects?: string[];
+  /** Author-adopted page mood (one of the `moods` keys). See {@link adoptKeyEvents}. */
+  adoptMood?: string;
+  /** Author-adopted page weather (one of the `placeWeathers` keys). See {@link adoptKeyEvents}. */
+  adoptWeather?: string;
+  /** Author-adopted page in-world date (YYYY-MM-DD). See {@link adoptKeyEvents}. */
+  adoptCalendarDate?: string;
+  /** Author-adopted page coarse time mark. See {@link adoptKeyEvents}. */
+  adoptTimeOfDay?: string;
 };
 
 /** Body of `POST /api/pen/sessions/:id/finalize/propose`. */
@@ -1178,6 +1268,14 @@ export type PenStateProposalOutput = {
   inventory: InventoryItem[];
   /** Proposed next-page injuries (full replacement). */
   injuries: Injury[];
+  /** Proposed page mood (one of the `moods` keys), when the AI determined one. */
+  mood?: Mood;
+  /** Proposed page weather (one of the `placeWeathers` keys), when the AI determined one. */
+  weather?: PlaceWeather;
+  /** Proposed page in-world date (YYYY-MM-DD), when the AI determined one. */
+  calendarDate?: string;
+  /** Proposed page coarse time mark, when the AI determined one. */
+  timeOfDay?: string;
   /** Proposed page key events (editorial scene metadata). */
   keyEvents: string[];
   /** Proposed page key objects (editorial scene metadata). */
@@ -1407,15 +1505,20 @@ export async function finalizePenDraft(
       };
 
       // Adopt-as-canon state proposal (§2.i / §10): when the author confirmed
-      // the AI-computed next inventory/injuries in the publish dialog, inject
-      // them as the generation's state so `extractStateDelta` maps them into
-      // the delta exactly like AI-generated state (full-replacement semantics).
+      // the AI-computed next inventory/injuries/scene in the publish dialog,
+      // inject them as the generation's state so `extractStateDelta` maps them
+      // into the delta exactly like AI-generated state (full-replacement
+      // semantics); scene fields override the inherited page values.
       const adopted = coerceStateProposal(
         {
           inventory: Array.isArray(input.adoptInventory) ? input.adoptInventory : [],
           injuries: Array.isArray(input.adoptInjuries) ? input.adoptInjuries : [],
           keyEvents: Array.isArray(input.adoptKeyEvents) ? input.adoptKeyEvents : [],
           keyObjects: Array.isArray(input.adoptKeyObjects) ? input.adoptKeyObjects : [],
+          mood: typeof input.adoptMood === "string" ? input.adoptMood : undefined,
+          weather: typeof input.adoptWeather === "string" ? input.adoptWeather : undefined,
+          calendarDate: typeof input.adoptCalendarDate === "string" ? input.adoptCalendarDate : undefined,
+          timeOfDay: typeof input.adoptTimeOfDay === "string" ? input.adoptTimeOfDay : undefined,
         },
         currentState,
         pageNumber,
@@ -1424,6 +1527,10 @@ export async function finalizePenDraft(
       if (adopted.injuries.length > 0) generatedStoryPage.injuries = adopted.injuries;
       if (adopted.keyEvents.length > 0) generatedStoryPage.keyEvents = adopted.keyEvents;
       if (adopted.keyObjects.length > 0) generatedStoryPage.keyObjects = adopted.keyObjects;
+      if (adopted.mood) generatedStoryPage.mood = adopted.mood;
+      if (adopted.weather) generatedStoryPage.weather = adopted.weather;
+      if (adopted.calendarDate) generatedStoryPage.calendarDate = adopted.calendarDate;
+      if (adopted.timeOfDay) generatedStoryPage.timeOfDay = adopted.timeOfDay;
 
       const advancedState = await advanceStoryState(currentState, actionedPage);
 
@@ -1485,6 +1592,24 @@ export async function finalizePenDraft(
         book.mc,
       );
 
+      // Page-1 adopt (no stateDelta exists): apply the author-adopted state
+      // proposal to the page + initial story state directly. `extractStateDelta`
+      // returns `{}` for page 1, so there is no delta pipeline to ride.
+      const pageOneAdopted = coerceStateProposal(
+        {
+          inventory: Array.isArray(input.adoptInventory) ? input.adoptInventory : [],
+          injuries: Array.isArray(input.adoptInjuries) ? input.adoptInjuries : [],
+          keyEvents: Array.isArray(input.adoptKeyEvents) ? input.adoptKeyEvents : [],
+          keyObjects: Array.isArray(input.adoptKeyObjects) ? input.adoptKeyObjects : [],
+          mood: typeof input.adoptMood === "string" ? input.adoptMood : undefined,
+          weather: typeof input.adoptWeather === "string" ? input.adoptWeather : undefined,
+          calendarDate: typeof input.adoptCalendarDate === "string" ? input.adoptCalendarDate : undefined,
+          timeOfDay: typeof input.adoptTimeOfDay === "string" ? input.adoptTimeOfDay : undefined,
+        },
+        null,
+        1,
+      );
+
       const firstPageEssentials = applySceneEssentials(session.draftSceneEssentials, {});
 
       const pageToInsert = {
@@ -1496,6 +1621,12 @@ export async function finalizePenDraft(
         ...(session.draftSceneEssentials?.timeOfDay ? { timeOfDay: session.draftSceneEssentials.timeOfDay } : {}),
         ...(session.draftSceneEssentials?.keyEvents?.length ? { keyEvents: session.draftSceneEssentials.keyEvents } : {}),
         ...(session.draftSceneEssentials?.keyObjects?.length ? { keyObjects: session.draftSceneEssentials.keyObjects } : {}),
+        ...(pageOneAdopted.mood ? { mood: pageOneAdopted.mood } : {}),
+        ...(pageOneAdopted.weather ? { weather: pageOneAdopted.weather } : {}),
+        ...(pageOneAdopted.calendarDate ? { calendarDate: pageOneAdopted.calendarDate } : {}),
+        ...(pageOneAdopted.timeOfDay ? { timeOfDay: pageOneAdopted.timeOfDay } : {}),
+        ...(pageOneAdopted.keyEvents.length ? { keyEvents: pageOneAdopted.keyEvents } : {}),
+        ...(pageOneAdopted.keyObjects.length ? { keyObjects: pageOneAdopted.keyObjects } : {}),
         stateDelta: {},
       };
       validateGeneratedPage(pageToInsert, book.mode, "pen-finalize");
@@ -1517,19 +1648,6 @@ export async function finalizePenDraft(
       if (castNewCharacters.length) {
         processCharacterUpdates(initialState, castNewCharacters);
       }
-      // Page-1 adopt (no stateDelta exists): apply the author-adopted state
-      // proposal to the initial story state directly. `extractStateDelta`
-      // returns `{}` for page 1, so there is no delta pipeline to ride.
-      const pageOneAdopted = coerceStateProposal(
-        {
-          inventory: Array.isArray(input.adoptInventory) ? input.adoptInventory : [],
-          injuries: Array.isArray(input.adoptInjuries) ? input.adoptInjuries : [],
-          keyEvents: Array.isArray(input.adoptKeyEvents) ? input.adoptKeyEvents : [],
-          keyObjects: Array.isArray(input.adoptKeyObjects) ? input.adoptKeyObjects : [],
-        },
-        null,
-        1,
-      );
       if (pageOneAdopted.inventory.length > 0) initialState.inventory = pageOneAdopted.inventory;
       if (pageOneAdopted.injuries.length > 0) {
         initialState.injuries = pageOneAdopted.injuries;
@@ -1539,8 +1657,6 @@ export async function finalizePenDraft(
           fearLevel: initialState.flags.fear,
         });
       }
-      if (pageOneAdopted.keyEvents.length > 0) pageToInsert.keyEvents = pageOneAdopted.keyEvents;
-      if (pageOneAdopted.keyObjects.length > 0) pageToInsert.keyObjects = pageOneAdopted.keyObjects;
       await insertStoryState(book.id, newPage.id, initialState, "original");
     }
   } catch (error) {
@@ -1710,6 +1826,37 @@ function coerceMood(value: string | undefined, fallback: Mood | undefined): Mood
 function coerceWeather(value: string | undefined, fallback: PlaceWeather | undefined): PlaceWeather | undefined {
   if (value === undefined || value === "") return fallback;
   return placeWeathers.includes(value as PlaceWeather) ? (value as PlaceWeather) : fallback;
+}
+
+/**
+ * Merges the author's current draft essentials with the previous published
+ * page's scene fields, so the AI prompt canon still sees the inherited
+ * mood/weather/date/time even though the essentials panel only captures place
+ * (the rest are inferred and adopted at finalize, §10). Author-set values
+ * always win; blank strings/empty arrays are dropped. Key events/objects are
+ * intentionally NOT inherited — they are per-page metadata inferred fresh.
+ */
+function inheritSceneEssentials(
+  draft: PenDraftSceneEssentials | null | undefined,
+  lastPage: PersistedStoryPage | undefined,
+): PenDraftSceneEssentials | null {
+  const base: PenDraftSceneEssentials = {};
+  if (lastPage) {
+    if (lastPage.placeId) base.placeId = lastPage.placeId;
+    if (lastPage.mood) base.mood = lastPage.mood;
+    if (lastPage.weather) base.weather = lastPage.weather;
+    if (lastPage.calendarDate) base.calendarDate = lastPage.calendarDate;
+    if (lastPage.timeOfDay) base.timeOfDay = lastPage.timeOfDay;
+  }
+  const merged: PenDraftSceneEssentials = { ...base, ...(draft ?? {}) };
+  const clean: PenDraftSceneEssentials = {};
+  for (const [k, v] of Object.entries(merged) as [keyof PenDraftSceneEssentials, unknown][]) {
+    if (v === undefined || v === null) continue;
+    if (typeof v === "string" && v.trim() === "") continue;
+    if (Array.isArray(v) && v.length === 0) continue;
+    (clean[k] as unknown) = v;
+  }
+  return Object.keys(clean).length > 0 ? clean : null;
 }
 
 /**

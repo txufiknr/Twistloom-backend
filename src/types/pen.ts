@@ -134,6 +134,8 @@ export type PenSession = {
   currentPageId: string | null;
   /** Draft workspace — JSONB spans, NOT plain text (Model C). */
   draftBuffer: DraftSpan[];
+  /** Exact TipTap HTML mirror of `draftBuffer` (roadmap §18.1 layer 2) — preserves rich formatting across refresh/other devices. Null on pre-layer-2 rows. */
+  draftHtml?: string | null;
   /** Author-curated cast for the current draft's scene (§10 Decision M). */
   draftCharactersPresent: PenDraftCharacter[];
   /** Author-curated scene essentials for the next page (setting: place/mood/weather/date/time/keys). */

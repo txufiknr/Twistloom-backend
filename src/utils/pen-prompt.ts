@@ -630,12 +630,13 @@ export function buildPenEssentialsAutofillPrompt(params: {
  * that should be removed. This is a constrained structured-output task, capped
  * by `PEN_FINALIZE_PROPOSE_MAX_TOKENS`.
  */
-export const PEN_STATE_PROPOSAL_SYSTEM = `You are a story-state accountant for an author. Given the author's CURRENT DRAFT for the NEXT page, compute what the story state should become once that page is published: the character's full inventory, any injuries they carry, and the page's key events and key objects.
+export const PEN_STATE_PROPOSAL_SYSTEM = `You are a story-state accountant for an author. Given the author's CURRENT DRAFT for the NEXT page, compute what the story state should become once that page is published: the page's scene pin (mood, weather, in-world date, time of day), the character's full inventory, any injuries they carry, and the page's key events and key objects.
 
-MANDATORY: the USER message contains labeled sections you MUST read and obey before generating: AUTHOR'S PERSONA, STORY SUMMARY, CANONICAL LORE, NARRATIVE STYLE, WRITE IN LANGUAGE, CANONICAL STATE (do not contradict), RECENT STORY, CURRENT DRAFT, and CURRENT INVENTORY & INJURIES. The CANONICAL STATE and CANONICAL LORE are authoritative — do not contradict them.
+MANDATORY: the USER message contains labeled sections you MUST read and obey before generating: AUTHOR'S PERSONA, STORY SUMMARY, CANONICAL LORE, NARRATIVE STYLE, WRITE IN LANGUAGE, CANONICAL STATE (do not contradict), RECENT STORY, CURRENT DRAFT, CURRENT SCENE, and CURRENT INVENTORY & INJURIES. The CANONICAL STATE and CANONICAL LORE are authoritative — do not contradict them.
 
 CRITICAL RULES:
 - Return the FULL resulting inventory and injuries, not just the changes.
+- SCENE FIELDS (mood, weather, calendarDate, timeOfDay) are the FULL resulting values the page should carry — carry forward the CURRENT SCENE values unless the draft clearly changes them. MOOD must be exactly one of the MOOD OPTIONS values and nothing else; WEATHER must be exactly one of the WEATHER OPTIONS values and nothing else. CALENDAR DATE continues the story's in-world timeline: advance from the CURRENT SCENE date by the time that passes in the draft (e.g. the next day), and keep it when the draft does not clearly advance time. TIME OF DAY is a coarse mark (e.g. night, dusk, 14:00).
 - INVENTORY is a complete replacement list: keep every item the character should still hold (same name, same amount unless the draft shows use/loss), add items the draft shows them acquiring, drop items the draft shows them losing, and set amount to 0 only when an item is fully consumed (it will be removed server-side).
 - INJURIES is a complete replacement list: keep every active injury (adjust severity only when the draft shows healing or aggravation), add injuries the draft shows the character sustaining, and drop injuries that have fully healed.
 - Only derive changes the draft supports. Do not invent loot, wounds, or losses out of nowhere; when nothing changes, echo the current state.
@@ -673,6 +674,14 @@ export type PenStateProposalResult = {
   inventory: PenStateProposalInventoryItem[];
   /** FULL resulting injuries (replacement semantics). */
   injuries: PenStateProposalInjury[];
+  /** FULL resulting page mood (one of the `moods` keys). */
+  mood?: string;
+  /** FULL resulting page weather (one of the `placeWeathers` keys). */
+  weather?: string;
+  /** FULL resulting in-world date (advances the CURRENT SCENE date per the draft). */
+  calendarDate?: string;
+  /** FULL resulting coarse time mark. */
+  timeOfDay?: string;
   /** Key events this page, inferred from the draft + canon (editorial scene metadata). */
   keyEvents: string[];
   /** Key objects this page, inferred from the draft + canon (editorial scene metadata). */
@@ -681,6 +690,18 @@ export type PenStateProposalResult = {
 
 /** Structured-output schema for the finalize state proposal. */
 export const PEN_STATE_PROPOSAL_SCHEMA: Record<keyof PenStateProposalResult, AIJsonProperty> = {
+  mood: {
+    type: "string",
+    enum: [...moods],
+    description: "Full resulting page mood — one of the MOOD OPTIONS.",
+  },
+  weather: {
+    type: "string",
+    enum: [...placeWeathers],
+    description: "Full resulting page weather — one of the WEATHER OPTIONS.",
+  },
+  calendarDate: { type: "string", description: "In-world date for the page (e.g. 2026-07-26), continuing the timeline from the CURRENT SCENE date." },
+  timeOfDay: { type: "string", description: "Coarse time mark (e.g. night, dusk, 14:00)." },
   inventory: {
     type: "array",
     description: "The FULL resulting inventory — every item the character should hold after this page.",
@@ -739,6 +760,18 @@ export type PenStateProposalPrompt = {
   userPrompt: string;
 };
 
+/** Renders the current scene (essentials) as a compact prompt section. */
+function renderCurrentScene(essentials: PenDraftSceneEssentials | null): string {
+  if (!essentials) return "(no scene is set — infer the most fitting values from the draft)";
+  const parts: string[] = [];
+  if (essentials.placeId) parts.push(`place: ${essentials.placeId}`);
+  if (essentials.mood) parts.push(`mood: ${essentials.mood}`);
+  if (essentials.weather) parts.push(`weather: ${essentials.weather}`);
+  if (essentials.calendarDate) parts.push(`date: ${essentials.calendarDate}`);
+  if (essentials.timeOfDay) parts.push(`time: ${essentials.timeOfDay}`);
+  return parts.length > 0 ? parts.join("\n") : "(no scene is set — infer the most fitting values from the draft)";
+}
+
 /** Renders the current inventory as a compact prompt section. */
 function renderCurrentInventory(state: StoryState | null): string {
   const inventory = state?.inventory;
@@ -787,6 +820,8 @@ export function buildPenStateProposalPrompt(params: {
   storyStartDate?: string | null;
   momentum?: string | null;
   sceneType?: string | null;
+  /** The scene the current draft sits in (place + inherited scene fields) — the model carries it forward. */
+  essentials?: PenDraftSceneEssentials | null;
   draftText: string;
 }): PenStateProposalPrompt {
   const {
@@ -800,6 +835,7 @@ export function buildPenStateProposalPrompt(params: {
     storyStartDate,
     momentum,
     sceneType,
+    essentials,
     draftText,
   } = params;
 
@@ -807,6 +843,7 @@ export function buildPenStateProposalPrompt(params: {
     storyStartDate,
     momentum,
     sceneType,
+    essentials,
   });
   const prose = buildProseContext(pageTexts);
   const narrativeStyleInstructions = state ? createNarrativeStyle(state).instructions : undefined;
@@ -826,9 +863,12 @@ export function buildPenStateProposalPrompt(params: {
       `CANONICAL STATE (do not contradict):\n${canon}`,
       `RECENT STORY:\n${prose}`,
       `CURRENT DRAFT:\n${draftText}`,
+      `CURRENT SCENE (the scene before this page publishes — carry forward what the draft does not change):\n${renderCurrentScene(essentials ?? null)}`,
       `CURRENT INVENTORY & INJURIES (the state before this page publishes — carry forward what persists, change only what the draft supports):\nINVENTORY:\n${renderCurrentInventory(state ?? null)}\nINJURIES:\n${renderCurrentInjuries(state ?? null)}`,
       `CATEGORY OPTIONS: ${injuryCategories.join(", ")}`,
-      "Compute the FULL resulting inventory, injuries, key events, and key objects for the page being published.",
+      `MOOD OPTIONS: ${moods.join(", ")}`,
+      `WEATHER OPTIONS: ${placeWeathers.join(", ")}`,
+      "Compute the FULL resulting scene, inventory, injuries, key events, and key objects for the page being published.",
     ].join("\n\n"),
   };
 }

@@ -421,6 +421,13 @@
       "when": 1786499263797,
       "tag": "0059_clear_william_stryker",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1786770356504,
+      "tag": "0061_solid_lightspeed",
+      "breakpoints": true
     }
   ]
 }
