@@ -29,6 +29,12 @@
     "message": "No valid response generated. Try updating messages"
   }
 
+mistral/mistral-medium-latest
+SDKError: API error occurred: Status 402. Body: {"detail":"Check your subscription on https://admin.mistral.ai/subscription"}
+
+gemini/gemini-3.5-flash
+ApiError: {"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}
+
 nvidia/qwen/qwen2.5-72b-instruct
 error: HTTP 404: 404 page not found
 
@@ -82,14 +88,14 @@ adjust DEFAULT_MAX_OUTPUT_TOKEN and EVALUATION_SCORING_OUTPUT_TOKEN per turn (si
 because page and state delta generation now split, I also want state delta generation be retryable anytime in separate AI chat request (idempotent) in case only StoryPage generation was succeeded
 so maybe we need a way (new db table and/or column) to track partial page generation and retry later (e.g., via cron)
 
-because this it a big refactor, please divide into smaller targeted tasks, phases, and steps
+because this is a big refactor, please divide into smaller targeted tasks, phases, and steps
 note: this is roadmap documentation writing only, no code changes
 
 ---
 
 LEVELING SYSTEM:
 - text adventure pen draft book enable level by default
-- show level in CastChip.tsx
+- show character's level in CastChip.tsx
 
 ---
 
@@ -111,32 +117,14 @@ LEVELING SYSTEM:
 [ ] sanitizeActionsForMode: should pick random instead of always first `[0]`
 [@] pen prompt: ensure find matching lore entity from story text via triggerKeywords
 [ ] instead of 1 big failing request (schema too complex for gemini or prompt token exceeds) should we using multi-turn request for generating single big page json? ask AI to generate each json key and append sequentially in each turn, will that solve the problem?
-[ ] claude: should we using multi-turn request instead of big array json for generating `generatedPages` (alternative fates) in 'multiverse' book mode?
 [ ] agentic mcp: TWISTLOOM_AGENT_MCP_ROADMAP.md
+
+[ ] claude: should we using multi-turn request instead of big array json for generating `generatedPages` (alternative fates) in 'multiverse' book mode?
 [ ] opencode/claude: TODO-multi-turn-request.md grounded on actual codebase
 
 ---
 
-[ ] claude: migrate "Minimal local shape" to use canonical types from `@google/genai` (D:\Projects\Twistloom\Twistloom-backend\node_modules\@google\genai\dist\genai.d.ts)
-[ ] docs\roadmap\TWISTLOOM_AGENT_MCP_ROADMAP.md
-
----
-
-mistral/mistral-medium-latest
-SDKError: API error occurred: Status 402. Body: {"detail":"Check your subscription on https://admin.mistral.ai/subscription"}
-   statusCode: 402,
-
-gemini/gemini-3.5-flash
-ApiError: {"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}
-   status: 400,
-
----
-
-Dependency Audit github workflow error in 0s
-
-Run bun audit --json > audit.json
-bun audit v1.3.14 (0d9b296a)
-Error: Process completed with exit code 1.
+[ ] migrate "Minimal local shape" to use canonical types from `@google/genai` (D:\Projects\Twistloom\Twistloom-backend\node_modules\@google\genai\dist\genai.d.ts)
 
 ---
 

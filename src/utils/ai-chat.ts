@@ -1480,11 +1480,33 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
         _fallbackCounter: fallbackCounter,
       };
       
-      // Pre-call check: Skip Gemini if the schema exceeds its constrained decoder limits.
-      // The remaining providers (Groq, Cerebras, etc.) handle large schemas fine.
-      if (provider === 'gemini' && isSchemaTooComplex(outputJsonStructure)) {
-        console.warn(`[gemini] ⏩ Skipping Gemini — schema exceeds complexity limits that Gemini's constrained decoder can compile`);
-        continue;
+      // Pre-call check: when the schema exceeds Gemini's constrained-decoder
+      // limits, don't skip Gemini outright — fall back to string-wrapped JSON
+      // output instead, mirroring the same tradeoff resolveUseStringEvaluator
+      // already makes for the evaluation pass, and for the identical reason
+      // (Gemini's constrained decoder can't compile an overly complex schema,
+      // but has no trouble producing a JSON *string* containing that same
+      // shape when the format is described in prose — which options.outputFormat
+      // already does for every gemini call via shouldAppendOutputFormat above).
+      //
+      // Only opts.outputJsonStructure/outputJsonRequired are overridden here —
+      // the outer outputJsonStructure/outputJsonRequired (used by the shared
+      // parseAISafely call after the switch below) stay untouched, so once
+      // geminiStringModeWrapperKey's unwrap step runs, Gemini's output is
+      // validated against the REAL schema through the same repair pipeline
+      // every other provider's output goes through — not a bespoke bare
+      // JSON.parse the way the evaluation pass's string mode works today.
+      const geminiStringModeWrapperKey = 'output';
+      const geminiUsesStringMode = provider === 'gemini' && isSchemaTooComplex(outputJsonStructure);
+      if (geminiUsesStringMode) {
+        console.warn(`[gemini] 📝 Schema exceeds complexity limits Gemini's constrained decoder can compile — using string-wrapped JSON output instead of skipping`);
+        opts.outputJsonStructure = {
+          [geminiStringModeWrapperKey]: {
+            type: 'string',
+            description: 'The complete JSON object described in the output format above, as a single escaped JSON string.',
+          },
+        };
+        opts.outputJsonRequired = [geminiStringModeWrapperKey];
       }
 
       // Provider-agnostic stack
@@ -1507,6 +1529,27 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
         case 'aionlabs':    result = await aionlabsPrompt(prompt, opts); break;    // OpenAI-compatible factory — tiny ~20K token/day budget, scoped to AI_CHAT_MODELS_IDEA only
         case 'chutes':      result = await chutesPrompt(prompt, opts); break;      // OpenAI-compatible factory — decentralized; only TEE-flagged models are wired into the model pools
         case 'llm7':        result = await llm7Prompt(prompt, opts); break;        // OpenAI-compatible factory — unofficial mirror, last-resort fallback only
+      }
+
+      // Unwrap string-mode output before it reaches the shared parseAISafely
+      // call below. Deliberately tolerant of a failed unwrap: if the wrapper
+      // itself doesn't parse (e.g. Gemini emitted malformed JSON even for the
+      // simple wrapper shape), `result.output` is left as-is and falls
+      // through to parseAISafely's own repair pipeline rather than being
+      // discarded — strictly no worse than the previous skip-Gemini behavior,
+      // and often better since the repair pipeline gets a chance to salvage it.
+      if (geminiUsesStringMode && result?.output) {
+        try {
+          const wrapper = JSON.parse(result.output) as Record<string, unknown>;
+          const inner = wrapper[geminiStringModeWrapperKey];
+          if (typeof inner === 'string') {
+            result = { ...result, output: inner };
+          } else {
+            console.warn(`[gemini] ⚠️ String-mode wrapper missing '${geminiStringModeWrapperKey}' field — passing raw output to repair pipeline as-is`);
+          }
+        } catch {
+          console.warn('[gemini] ⚠️ Failed to parse string-mode wrapper JSON — passing raw output to repair pipeline as-is');
+        }
       }
     } catch (error) {
       console.log(`[${provider}] ⚠️ Provider failed:`, error);
