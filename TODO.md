@@ -18,6 +18,14 @@
 
 ---
 
+claim quest reward:
+POST /api/user/quests/qs_01_1/claim
+
+2026-08-15 13:10:14.215 [error] [user] ❌ Failed to log activity for user 019ed9a8-0b2b-72bb-92af-260e19e699aa: Failed query: insert into "user_activity_logs" ("id", "user_id", "activity_type", "target_type", "target_id", "metadata", "ip_address", "user_agent", "platform", "app_version", "created_at") values (default, $1, $2, $3, $4, $5, default, default, default, default, default)
+params: 019ed9a8-0b2b-72bb-92af-260e19e699aa,quest_reward_claimed,quest,qs_01_1,{"creditsAwarded":10}
+
+---
+
 [ ] sambanova: error: 402 A payment method is required. Add one at https://cloud.sambanova.ai/plans/billing to continue.
 
 [ ] cohere/command-r-08-2024
@@ -59,39 +67,12 @@ error: 402 This request requires more credits, or fewer max_tokens. You requeste
 
 ---
 
-TODO-multi-turn-request.md
-src\utils\prompt.ts
-src\types\story.ts
-src\schema\story.ts
+TODO-leveling-system-chatgpt.md
 
-please learn this answer and suggestion from ChatGPT in `TODO-multi-turn-request.md`
-I want to implement it, but for now only split into 2 multi-turn requests: StoryPage and StateDelta
-please learn about both `StoryPageGeneration` and `StateDeltaGeneration` type definitions which used in `STORY_GENERATION_SCHEMA_DEFINITION` and `CANDIDATE_GENERATION_SCHEMA_DEFINITION`
-for these functions:
-- generateNextPage
-- generateNextPages
+can you do the same for this "character leveling system" elaboration from chatgpt?
+please thoroughly learn and examine current implementation around StoryState, Character, and CharacterRelationship type in @src/types/character.ts @src/types/story.ts @src/utils/story.ts @src/utils/characters.ts 
+please write a comprehensive roadmap MD for this in @docs/roadmap\ , grounded on actual codebase
 
-and I also want to split `generatedPages` ('multiverse' book page generation) in `CANDIDATE_GENERATION_SCHEMA_DEFINITION` into parallel multi-turn request:
-example (in parallel):
-- StoryPage (alt 1) → StateDelta (alt 1)
-- StoryPage (alt 2) → StateDelta (alt 2)
-- StoryPage (alt 3) → StateDelta (alt 3)
-
-please thoroughly examine current implementation and write comprehensive roadmap MD plan doc in docs\roadmap , grounded on actual codebase, including:
-- json schema splitting in src\schema\story.ts
-- user & system prompt separation
-- refactor both generateNextPage(s) function into 2-step multi-turn requests
-- ensure ai-chat.ts support multi-turn
-
-adjust DEFAULT_MAX_OUTPUT_TOKEN and EVALUATION_SCORING_OUTPUT_TOKEN per turn (since now it halved)
-
-because page and state delta generation now split, I also want state delta generation be retryable anytime in separate AI chat request (idempotent) in case only StoryPage generation was succeeded
-so maybe we need a way (new db table and/or column) to track partial page generation and retry later (e.g., via cron)
-
-because this is a big refactor, please divide into smaller targeted tasks, phases, and steps
-note: this is roadmap documentation writing only, no code changes
-
----
 
 LEVELING SYSTEM:
 - text adventure pen draft book enable level by default
@@ -111,16 +92,70 @@ LEVELING SYSTEM:
 [ ] pastInteractions -> interactions
 [ ] learn about Interactions API (https://ai.google.dev/gemini-api/docs/migrate-to-interactions)
 [ ] ensure `PUT /api/user/editor-prefs` API route optimal en-to-end based on `AI_CO_WRITING_PEN_ROADMAP.md` and frontend's `src\lib\services\users-api.ts`, shouldn't we only send dirty (only changed) fields instead of all fields?
-[ ] lengkapi API keys llm provider baru
 [ ] can you also add ai-cost for these gemini models: `gemini-3.6-flash`?
 [ ] book-creation.ts still not language-agnostic
-[ ] sanitizeActionsForMode: should pick random instead of always first `[0]`
 [@] pen prompt: ensure find matching lore entity from story text via triggerKeywords
 [ ] instead of 1 big failing request (schema too complex for gemini or prompt token exceeds) should we using multi-turn request for generating single big page json? ask AI to generate each json key and append sequentially in each turn, will that solve the problem?
 [ ] agentic mcp: TWISTLOOM_AGENT_MCP_ROADMAP.md
 
-[ ] claude: should we using multi-turn request instead of big array json for generating `generatedPages` (alternative fates) in 'multiverse' book mode?
-[ ] opencode/claude: TODO-multi-turn-request.md grounded on actual codebase
+[ ] claude: TODO-ai-gateway-decouple.md
+
+---
+
+api\index.ts
+src\hono\express-shim.ts
+src\app.ts
+src\server.bun.ts
+src\middleware\cache.ts
+
+2026-08-15 10:30:55.282 [error] [app] ❌ Unhandled error: TypeError: this.raw.headers.get is not a function
+    at HonoRequest.header (file:///var/task/node_modules/hono/dist/request.js:75:31)
+    at cors2 (file:///var/task/node_modules/hono/dist/middleware/cors/index.js:39:53)
+    at dispatch (file:///var/task/node_modules/hono/dist/compose.js:22:23)
+    at file:///var/task/node_modules/hono/dist/compose.js:22:46
+    at <anonymous> (/vercel/path0/src/middleware/cache.ts:26:9)
+    at dispatch (file:///var/task/node_modules/hono/dist/compose.js:22:23)
+    at file:///var/task/node_modules/hono/dist/compose.js:22:46
+    at compress2 (file:///var/task/node_modules/hono/dist/middleware/compress/index.js:37:11)
+    at dispatch (file:///var/task/node_modules/hono/dist/compose.js:22:23)
+    at file:///var/task/node_modules/hono/dist/compose.js:22:46
+2026-08-15 10:30:55.304 [error] [app] ❌ Unhandled error: TypeError: this.raw.headers.get is not a function
+    at HonoRequest.header (file:///var/task/node_modules/hono/dist/request.js:75:31)
+    at compress2 (file:///var/task/node_modules/hono/dist/middleware/compress/index.js:52:30)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async dispatch (file:///var/task/node_modules/hono/dist/compose.js:22:17)
+    at async <anonymous> (/vercel/path0/src/app.ts:40:3)
+    at async dispatch (file:///var/task/node_modules/hono/dist/compose.js:22:17)
+    at async file:///var/task/node_modules/hono/dist/hono-base.js:307:25
+    at async Server.r (/opt/rust/nodejs.js:2:16316)
+    at async Server.<anonymous> (/opt/rust/nodejs.js:17:14507)
+2026-08-15 10:30:55.317 [warn] WARN: default export returned a `Response`.
+├▶ The default-export signature is `(req, res) => void` — returns are
+│  ignored. You likely meant the Web `fetch`-style API.
+│
+├▶ Fix: export a `fetch` function or a named HTTP method:
+│         export function GET(request) { return new Response('ok') }
+│
+├▶ Fix: write the response through `res`:
+│         export default function (req, res) { res.end('ok') }
+│
+╰▶ Read more: https://vercel.com/docs/functions/functions-api-reference#function-signature
+
+---
+
+[gemini] ✅ gemini-3.5-flash succeeded (77 chars, finish: STOP, duration: 10983ms)
+"""
+{
+  "output": "JSON parsed successfully. Proceeding with story generation."
+}
+"""
+[gemini] 📊 Token usage: {
+  cachedTokens: undefined,
+  promptTokens: 17014,
+  outputTokens: 19,
+  totalTokens: 18547,
+  cacheHitRate: 0,
+}
 
 ---
 
@@ -138,10 +173,6 @@ TO PURCHASE:
 [ ] migrate: LRU & in-memory cache (for static configurations or public API metadata) -> Vercel KV or Upstash Redis for true, shared cross-user in-memory storage.
 [ ] migrate: serverless environment -> single, always-on server Vercel VPS alternative (like Render, Railway, or Fly.io) if you want a true, traditional single-instance server.
 [ ] unlock 1,000 RPD OpenRouter: requires a one-time $10 credit top-up
-
----
-
-APIError: 402 This request requires more credits, or fewer max_tokens. You requested up to 4000 tokens, but can only afford 1538. To increase, visit https://openrouter.ai/settings/credits and upgrade to a paid account
 
 ---
 

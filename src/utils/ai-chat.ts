@@ -1448,7 +1448,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
 
     // Append outputFormat to systemPrompt when structured output is active or provider is gemini
     const shouldAppendOutputFormat = options.outputFormat && (supportsStructuredOutput || provider === 'gemini');
-    const systemPrompt = shouldAppendOutputFormat ? `${originalSystemPrompt}\n\n---\n${options.outputFormat}` : originalSystemPrompt;
+    const systemPrompt = shouldAppendOutputFormat ? `${originalSystemPrompt}\n\n---\nOUTPUT FORMAT:\n${options.outputFormat}` : originalSystemPrompt;
 
     try {
       const models = modelSelection[provider];
@@ -1503,7 +1503,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
         opts.outputJsonStructure = {
           [geminiStringModeWrapperKey]: {
             type: 'string',
-            description: 'The complete JSON object described in the output format above, as a single escaped JSON string.',
+            description: 'Full escaped JSON object string (see "OUTPUT FORMAT:").',
           },
         };
         opts.outputJsonRequired = [geminiStringModeWrapperKey];

@@ -37,7 +37,7 @@ app.use("*", async (c, next) => {
   c.header("X-Frame-Options", "DENY");
   c.header("Referrer-Policy", "strict-origin-when-cross-origin");
   c.header("X-XSS-Protection", "0");
-  await next();
+  await next(); // TODO: Unhandled error: TypeError: this.raw.headers.get is not a function
 });
 
 // Response compression (gzip/deflate) for API responses.

@@ -261,7 +261,7 @@ export async function logUserActivity(params: DBNewUserActivityLog, options?: { 
     await updateUserLastActivity(userId, client);
   } catch (error) {
     // Log error but don't throw to avoid breaking main flow
-    console.error(`[user] ❌ Failed to log activity for user ${params.userId}:`, getErrorMessage(error));
+    console.error(`[user] ❌ Failed to log activity for user ${params.userId}:`, error);
   }
 }
 

@@ -23,7 +23,7 @@ const CACHE = {
 } as const;
 
 export const cacheControl = createMiddleware<AppEnv>(async (c, next) => {
-  await next();
+  await next(); // TODO: Unhandled error: TypeError: this.raw.headers.get is not a function
 
   // If the route handler already set its own Cache-Control, respect it.
   // Routes like GET /users/:identifier and various book endpoints have
