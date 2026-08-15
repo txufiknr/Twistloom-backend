@@ -556,7 +556,8 @@ export type UploadedImageType =
   | 'cover' // Book cover
   | 'mc'    // Main character's picture
   | 'user'  // Profile picture
-  | 'feedback'; // Feedback screenshot
+  | 'feedback' // Feedback screenshot
+  | 'pen'; // Pen draft inline image
 
 export type PageVisitStats = {
   nthVisit: number;

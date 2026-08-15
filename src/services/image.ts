@@ -774,6 +774,29 @@ export async function uploadFeedbackScreenshot(
 }
 
 /**
+ * Uploads an inline draft image for the Pen editor (base64 data URL).
+ *
+ * Tagged with the pen-draft marker and the owning session's ID so drafts can be
+ * found/cleaned up by tag via the ImageKit dashboard or API without a DB
+ * round-trip, mirroring `uploadBookCover`'s tagging convention.
+ *
+ * @param imageSource - The draft image, in any form `uploadImageKit` accepts
+ *   (the Pen editor sends a base64 data URL).
+ * @param sessionId - Pen session this image belongs to.
+ * @returns The ImageKit upload response, or `null` on failure.
+ */
+export async function uploadPenDraftImage(
+  imageSource: ImageUploadSource,
+  sessionId: string
+): Promise<ImageKitUploadResponse | null> {
+  return uploadImageKit(imageSource, sessionId, {
+    folder: 'pen-drafts',
+    tags: ['pen-draft', `session-id:${sessionId}`],
+    filenamePrefix: 'draft',
+  });
+}
+
+/**
  * Uploads a user's profile image.
  *
  * @param imageSource - The profile image, in any form `uploadImageKit` accepts.

@@ -45,6 +45,8 @@ import { sanitizeActionsForMode, validatePageActionsForMode, maxDestinationsPerA
 import { validateGeneratedPage } from "../utils/page-validation.js";
 import { runGate1 } from "./custom-actions.js";
 import { calculateHealthStatus } from "../utils/characters.js";
+import { uploadPenDraftImage as uploadPenDraftImageToKit, persistUploadedImage, deleteFileFromImageKit } from "./image.js";
+import type { ImageUploadSource } from "../types/image.js";
 
 /**
  * The API-facing session payload. Extends the stored session with the book's
@@ -184,6 +186,56 @@ export async function getPenSessionById(userId: string, sessionId: string): Prom
 
   if (!session) throw new PenSessionNotFoundError();
   return toPenSessionPayload(session);
+}
+
+/** Error thrown when an inline draft image fails to upload to ImageKit. */
+export class PenImageUploadError extends Error {
+  constructor(message = "Failed to upload draft image") {
+    super(message);
+    this.name = "PenImageUploadError";
+  }
+}
+
+/**
+ * Uploads an inline draft image for the Pen editor and records it in the
+ * `uploaded_images` table (`type: 'pen'`), mirroring the cover/avatar/feedback
+ * upload flow. Ownership is verified through the session before anything is
+ * uploaded. If persisting the upload record fails, the freshly uploaded file is
+ * deleted from ImageKit so no orphaned asset is left behind.
+ *
+ * @param userId - The authenticated user's id (ownership guard)
+ * @param sessionId - The session the image belongs to
+ * @param imageSource - The draft image (base64 data URL from the Pen editor)
+ * @throws PenSessionNotFoundError if missing or owned by another user
+ * @throws PenImageUploadError if ImageKit rejects the image
+ * @returns The public ImageKit URL of the uploaded image
+ */
+export async function uploadPenDraftImage(
+  userId: string,
+  sessionId: string,
+  imageSource: ImageUploadSource,
+): Promise<{ imageUrl: string }> {
+  // Ownership guard — throws PenSessionNotFoundError for missing/foreign sessions.
+  await getPenSessionById(userId, sessionId);
+
+  const uploadResult = await uploadPenDraftImageToKit(imageSource, sessionId);
+  if (!uploadResult || !uploadResult.url) {
+    throw new PenImageUploadError();
+  }
+
+  try {
+    await persistUploadedImage({
+      imageId: uploadResult.fileId,
+      imageUrl: uploadResult.url,
+      type: 'pen',
+      userId,
+    });
+  } catch (error) {
+    await deleteFileFromImageKit(uploadResult.fileId);
+    throw error;
+  }
+
+  return { imageUrl: uploadResult.url };
 }
 
 /** Result of `GET /sessions/:id/state` (§1.e). */

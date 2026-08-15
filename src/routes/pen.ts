@@ -13,6 +13,7 @@ import { requireAuth } from "../middleware/nextauth.js";
 import { rateLimit } from "../middleware/rate-limit.js";
 import { PEN_CONTINUE_RATE_LIMIT, PEN_ESSENTIALS_RATE_LIMIT, PEN_FINALIZE_PROPOSE_RATE_LIMIT } from "../config/ai-rate-limits.js";
 import { cApiError, cNotFoundError, cValidationError } from "../utils/error.js";
+import { isBase64Upload } from "../services/image.js";
 import { PEN_ASSISTANCE_LEVEL_MAX, PEN_ASSISTANCE_LEVEL_MIN, PEN_AUTHORING_MODES, PEN_AUTHORING_POVS, PEN_DRAFT_CAST_LIMIT, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_MAX_ACTIONS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_SCENE_FOCUS_MAX, PEN_SCENE_FOCUS_MIN, PEN_SESSION_STATUSES } from "../config/story.js";
 import { moods } from "../types/story.js";
 import { placeWeathers } from "../types/places.js";
@@ -37,6 +38,8 @@ import {
   PenFinalizeError,
   PenEssentialsAutofillError,
   PenStateProposalError,
+  uploadPenDraftImage,
+  PenImageUploadError,
 } from "../services/pen.js";
 import type { PenContinueInput, PenFinalizeInput, PenEssentialsAutofillInput, PenStateProposalInput } from "../services/pen.js";
 import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraftCharacter, PenDraftSceneEssentials, PenSessionStatus } from "../types/pen.js";
@@ -599,6 +602,38 @@ router.get("/session/:id", requireAuth, async (c) => {
   } catch (error) {
     if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
     return cApiError(c, "Failed to load pen session", error);
+  }
+});
+
+/**
+ * POST /api/pen/sessions/:id/images
+ * Upload an inline draft image for a session the user owns and record it in
+ * `uploaded_images` (type `pen`). Body: `{ imageBase64 }` — a base64 data URL
+ * produced by the Pen editor's image compression. Returns `{ imageUrl }`, which
+ * the editor embeds in the draft HTML. Ownership is verified via the session.
+ */
+router.post("/sessions/:id/images", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId");
+    if (!userId) return cApiError(c, "Authentication required", undefined, 401);
+    const sessionId = c.req.param("id");
+    const body = await readJsonBody(c);
+
+    if (!body || typeof body !== "object") {
+      return cValidationError(c, "Request body must be a JSON object");
+    }
+    const { imageBase64 } = body as { imageBase64?: unknown };
+    if (!isBase64Upload(imageBase64)) {
+      return cValidationError(c, "imageBase64 must be a valid base64 image (data URL or raw base64)");
+    }
+
+    const result = await uploadPenDraftImage(userId, sessionId, imageBase64);
+    return c.json(result);
+  } catch (error) {
+    if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
+    if (error instanceof PenBookOwnershipError) return cApiError(c, error.message, undefined, 403);
+    if (error instanceof PenImageUploadError) return cApiError(c, error.message, undefined, 400);
+    return cApiError(c, "Failed to upload pen draft image", error);
   }
 });
 
