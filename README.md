@@ -115,10 +115,10 @@ The backend was migrated from **Node.js + pnpm + tsx** to **Bun** (runtime + pac
 |-------|--------|--------|
 | 1 — Package manager | `pnpm` → `bun install`, lockfile `pnpm-lock.yaml` → `bun.lock` | ✅ |
 | 2 — Local dev | `tsx watch` + `@hono/node-server` → `bun --watch` + `Bun.serve()` | ✅ |
-| 3 — Vercel deployment | Custom `IncomingMessage` → `Request` adapter in `api/index.ts` | ✅ |
+| 3 — Vercel deployment | Consolidated `IncomingMessage` → `Request` adapter as the default export in `src/app.ts` (re-exported by `api/index.ts`) | ✅ |
 | 4 — DB migrations | Drizzle Kit runs under Node.js (`node --env-file=... node_modules/drizzle-kit/bin.cjs`) | ✅ |
 
-> **Note on runtime decisions:** Vercel's Bun runtime was initially attempted but had ESM module linking failures. The `hono/vercel` adapter was also tried but its `handle()` doesn't properly convert `IncomingMessage` → `Request` on the Node.js runtime, causing `this.raw.headers.get()` to fail. The final architecture uses a **custom conversion handler** in `api/index.ts` — the same well-tested pattern from the pre-migration codebase. This is the most stable path while still benefiting from Bun's faster local dev cycle.
+> **Note on runtime decisions:** Vercel's Bun runtime was initially attempted but had ESM module linking failures. The `hono/vercel` adapter was also tried but its `handle()` doesn't properly convert `IncomingMessage` → `Request` on the Node.js runtime, causing `this.raw.headers.get()` to fail. The final architecture uses a **custom conversion handler** — consolidated as the default export of `src/app.ts` (re-exported by `api/index.ts`) — the same well-tested pattern from the pre-migration codebase. This is the most stable path while still benefiting from Bun's faster local dev cycle.
 
 #### DB migrations run under Node.js (drizzle-kit)
 
@@ -142,7 +142,9 @@ The `db:*` scripts (`db:generate`, `db:migrate`, `db:migrate:prod`, `db:studio`)
 
 ### Vercel deployment
 
-The app is deployed on the **Node.js runtime** via a custom handler in `api/index.ts`. Vercel's Node.js Serverless functions receive `(IncomingMessage, ServerResponse)`, but Hono expects a Web API `Request`. The handler converts between the two.
+The app is deployed on the **Node.js runtime** via a custom handler that lives in `src/app.ts` as its **default export** (`vercelHandler`). Vercel's Node.js Serverless functions can receive `(IncomingMessage, ServerResponse)`, but Hono expects a Web API `Request` — so the handler converts between the two and pipes the response back through whichever output path Vercel expects (legacy `res` or a returned `Response` for Fluid Compute). `api/index.ts` is a thin re-export of that handler, so both entrypoints Vercel might pick serve the identical conversion.
+
+> **⚠️ Historical pitfall — the default export must be the adapter, not `app.fetch`.** Vercel's "Hono" framework preset auto-detects `src/app.ts` (a recognized entrypoint that imports `hono`) and deploys its default export. If that default export is `app.fetch`, a legacy Node invocation hands Hono a raw `IncomingMessage` whose `headers` is a plain object — crashing CORS/compress middleware with `TypeError: this.raw.headers.get is not a function` and logging "default export returned a `Response`". That is why the default export is the consolidated `vercelHandler`, which always converts to a real Web `Request` first.
 
 **Why not `hono/vercel` `handle()`?** The adapter passes the raw request through without conversion. On the legacy Node.js Serverless path, the `IncomingMessage` reaches Hono as `c.req.raw`, and `c.req.raw.headers.get()` throws because `IncomingMessage.headers` is a plain object with no `.get()` method.
 
@@ -175,7 +177,8 @@ The codebase was originally migrated to be Edge Runtime-compatible, systematical
 
 #### Configuration
 
-- **Vercel dashboard → Framework Preset → "Hono"**.
+- **Vercel dashboard → Framework Preset** — either **"Hono"** (auto-detects `src/app.ts` and deploys its adapter default export) or **"Other"** (routes every path via the `vercel.json` rewrite to `/api/index`, which re-exports the same handler). Both now work because both entrypoints serve the identical consolidated `vercelHandler`.
+- **Runtime** — Node.js (set via `export const config = { runtime: "nodejs" }` in `src/app.ts`, re-exported by `api/index.ts`).
 - **Build Command** — leave empty (Vercel auto-detects `bun install` from `bun.lock`).
 - **Install Command** — leave empty.
 - **Output Directory** — leave default (no override).
@@ -840,7 +843,7 @@ OPENROUTER_API_KEY=...
 ### **Code Organization**
 ```
 api/
-├── index.ts                        # Vercel serverless entrypoint (IncomingMessage → Request adapter)
+├── index.ts                        # Vercel entrypoint — re-exports src/app.ts's default export (the IncomingMessage → Request adapter)
 
 src/
 ├── app.ts                          # Hono app configuration

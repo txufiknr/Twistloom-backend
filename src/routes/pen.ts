@@ -14,8 +14,9 @@ import { rateLimit } from "../middleware/rate-limit.js";
 import { PEN_CONTINUE_RATE_LIMIT, PEN_ESSENTIALS_RATE_LIMIT, PEN_FINALIZE_PROPOSE_RATE_LIMIT } from "../config/ai-rate-limits.js";
 import { cApiError, cNotFoundError, cValidationError } from "../utils/error.js";
 import { isBase64Upload } from "../services/image.js";
-import { PEN_ASSISTANCE_LEVEL_MAX, PEN_ASSISTANCE_LEVEL_MIN, PEN_AUTHORING_MODES, PEN_AUTHORING_POVS, PEN_DRAFT_CAST_LIMIT, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_MAX_ACTIONS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_SCENE_FOCUS_MAX, PEN_SCENE_FOCUS_MIN, PEN_SESSION_STATUSES } from "../config/story.js";
+import { PEN_ASSISTANCE_LEVEL_MAX, PEN_ASSISTANCE_LEVEL_MIN, PEN_AUTHORING_MODES, PEN_AUTHORING_POVS, PEN_DRAFT_BUFFER_MAX_CHARS, PEN_DRAFT_CAST_LIMIT, PEN_DRAFT_HTML_MAX_LENGTH, PEN_DRAFT_IMAGE_MAX_BYTES, PEN_DRAFT_SPAN_MAX_LENGTH, PEN_DRAFT_TEXT_MAX_LENGTH, PEN_DIRECTION_HINT_MAX_LENGTH, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_MAX_ACTIONS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_SCENE_FOCUS_MAX, PEN_SCENE_FOCUS_MIN, PEN_SESSION_STATUSES, PEN_CONTINUE_PROSE_MAX_LENGTH } from "../config/story.js";
 import { moods } from "../types/story.js";
+import { actionTypes } from "../types/story.js";
 import { placeWeathers } from "../types/places.js";
 import {
   createPenSession,
@@ -115,6 +116,7 @@ function validateDraftBuffer(value: unknown): string | null {
   if (!Array.isArray(value)) {
     return "draftBuffer must be an array of draft spans";
   }
+  let totalChars = 0;
   for (const item of value) {
     if (!item || typeof item !== "object" || Array.isArray(item)) {
       return "each draft span must be an object";
@@ -126,12 +128,19 @@ function validateDraftBuffer(value: unknown): string | null {
     if (typeof s.text !== "string") {
       return "each draft span needs a string text";
     }
+    if (s.text.length > PEN_DRAFT_SPAN_MAX_LENGTH) {
+      return `each draft span text must be at most ${PEN_DRAFT_SPAN_MAX_LENGTH} characters`;
+    }
     if (s.origin !== "human" && s.origin !== "ai" && s.origin !== "revised") {
       return "draft span origin must be human, ai, or revised";
     }
     if (s.validationState !== "validated" && s.validationState !== "dirty") {
       return "draft span validationState must be validated or dirty";
     }
+    totalChars += s.text.length;
+  }
+  if (totalChars > PEN_DRAFT_BUFFER_MAX_CHARS) {
+    return `draftBuffer total length must be at most ${PEN_DRAFT_BUFFER_MAX_CHARS} characters`;
   }
   return null;
 }
@@ -301,6 +310,9 @@ router.patch("/sessions/:id", requireAuth, async (c) => {
     if (draftHtml !== undefined && typeof draftHtml !== "string") {
       return cValidationError(c, "draftHtml must be a string");
     }
+    if (typeof draftHtml === "string" && draftHtml.length > PEN_DRAFT_HTML_MAX_LENGTH) {
+      return cValidationError(c, `draftHtml must be at most ${PEN_DRAFT_HTML_MAX_LENGTH} characters`);
+    }
     if (draftUpdatedAt !== undefined && (typeof draftUpdatedAt !== "string" || Number.isNaN(Date.parse(draftUpdatedAt)))) {
       return cValidationError(c, "draftUpdatedAt must be a valid date string");
     }
@@ -393,6 +405,15 @@ router.post("/sessions/:id/continue", requireAuth, rateLimit(PEN_CONTINUE_RATE_L
       if (typeof raw.prose !== "string" || raw.prose.trim().length === 0) {
         return cValidationError(c, "prose is required for storyteller");
       }
+      if (raw.prose.length > PEN_CONTINUE_PROSE_MAX_LENGTH) {
+        return cValidationError(c, `prose must be at most ${PEN_CONTINUE_PROSE_MAX_LENGTH} characters`);
+      }
+      if (raw.directionHint !== undefined && typeof raw.directionHint !== "string") {
+        return cValidationError(c, "directionHint must be a string");
+      }
+      if (typeof raw.directionHint === "string" && raw.directionHint.length > PEN_DIRECTION_HINT_MAX_LENGTH) {
+        return cValidationError(c, `directionHint must be at most ${PEN_DIRECTION_HINT_MAX_LENGTH} characters`);
+      }
       input = {
         type: "storyteller",
         prose: raw.prose,
@@ -439,6 +460,9 @@ router.post("/sessions/:id/essentials/autofill", requireAuth, rateLimit(PEN_ESSE
     const input: PenEssentialsAutofillInput = {};
     const raw = body as { draftText?: unknown; mode?: unknown } | null | undefined;
     if (raw && typeof raw.draftText === "string") {
+      if (raw.draftText.length > PEN_DRAFT_TEXT_MAX_LENGTH) {
+        return cValidationError(c, `draftText must be at most ${PEN_DRAFT_TEXT_MAX_LENGTH} characters`);
+      }
       input.draftText = raw.draftText;
     }
     if (raw && (raw.mode === "fill_empty" || raw.mode === "review_all")) {
@@ -481,6 +505,9 @@ router.post("/sessions/:id/finalize/propose", requireAuth, rateLimit(PEN_FINALIZ
     const input: PenStateProposalInput = {};
     const raw = body as { draftText?: unknown } | null | undefined;
     if (raw && typeof raw.draftText === "string") {
+      if (raw.draftText.length > PEN_DRAFT_TEXT_MAX_LENGTH) {
+        return cValidationError(c, `draftText must be at most ${PEN_DRAFT_TEXT_MAX_LENGTH} characters`);
+      }
       input.draftText = raw.draftText;
     }
 
@@ -509,17 +536,28 @@ router.post("/sessions/:id/finalize/propose", requireAuth, rateLimit(PEN_FINALIZ
  * novel always uses the single default. `adoptInventory`/`adoptInjuries` are
  * the confirmed "adopt as canon" state proposal from `/finalize/propose`.
  */
-router.post("/sessions/:id/finalize", requireAuth, async (c) => {
+router.post("/sessions/:id/finalize", requireAuth, rateLimit({ maxRequests: 10, windowSeconds: 60 }), async (c) => {
   try {
     const userId = c.get("userId");
     if (!userId) return cApiError(c, "Authentication required", undefined, 401);
     const sessionId = c.req.param("id");
+
+    // BE3: distinguish "no body" (publish clean, the client may send an empty
+    // finalize) from "body sent but corrupted" (400 — adoptions/actions must
+    // never be silently dropped by a truncated request).
     let body: PenFinalizeInput = {};
-    try {
-      const raw = await c.req.json();
-      if (raw && typeof raw === "object") body = raw as PenFinalizeInput;
-    } catch {
-      // No body or non-JSON body → default to an empty finalize (publish clean).
+    const rawText = await c.req.text();
+    if (rawText.trim().length > 0) {
+      let raw: unknown;
+      try {
+        raw = JSON.parse(rawText);
+      } catch {
+        return cValidationError(c, "finalize body is not valid JSON");
+      }
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+        return cValidationError(c, "finalize body must be a JSON object");
+      }
+      body = raw as PenFinalizeInput;
     }
 
     if (body.force !== undefined && typeof body.force !== "boolean") {
@@ -527,6 +565,23 @@ router.post("/sessions/:id/finalize", requireAuth, async (c) => {
     }
     if (body.actions !== undefined && (!Array.isArray(body.actions) || body.actions.length > PEN_FINALIZE_MAX_ACTIONS)) {
       return cValidationError(c, `actions must be an array of at most ${PEN_FINALIZE_MAX_ACTIONS} items`);
+    }
+    if (body.actions !== undefined) {
+      const allowedTypes = Object.keys(actionTypes);
+      for (const action of body.actions) {
+        if (!action || typeof action !== "object" || Array.isArray(action)) {
+          return cValidationError(c, "each action must be an object");
+        }
+        if (typeof action.text !== "string" || action.text.trim().length === 0) {
+          return cValidationError(c, "each action needs a non-empty text");
+        }
+        if (typeof action.type !== "string" || !allowedTypes.includes(action.type)) {
+          return cValidationError(c, `each action type must be one of: ${allowedTypes.join(", ")}`);
+        }
+        if (action.hint !== undefined && (typeof action.hint !== "object" || Array.isArray(action.hint))) {
+          return cValidationError(c, "each action hint must be an object");
+        }
+      }
     }
     if (body.adoptInventory !== undefined && (!Array.isArray(body.adoptInventory) || body.adoptInventory.length > PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS)) {
       return cValidationError(c, `adoptInventory must be an array of at most ${PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS} items`);
@@ -625,6 +680,17 @@ router.post("/sessions/:id/images", requireAuth, async (c) => {
     const { imageBase64 } = body as { imageBase64?: unknown };
     if (!isBase64Upload(imageBase64)) {
       return cValidationError(c, "imageBase64 must be a valid base64 image (data URL or raw base64)");
+    }
+
+    // BE6: reject oversized payloads before they are decoded into memory and
+    // pushed to ImageKit. base64 ≈ 4/3 × binary bytes (minus padding), so a
+    // length check is a cheap upper-bound estimate.
+    const payload = typeof imageBase64 === "string" && imageBase64.includes(",")
+      ? imageBase64.slice(imageBase64.indexOf(",") + 1)
+      : (typeof imageBase64 === "string" ? imageBase64 : "");
+    const approxBytes = Math.floor((payload.length * 3) / 4);
+    if (approxBytes > PEN_DRAFT_IMAGE_MAX_BYTES) {
+      return cValidationError(c, `imageBase64 must decode to at most ${PEN_DRAFT_IMAGE_MAX_BYTES} bytes`);
     }
 
     const result = await uploadPenDraftImage(userId, sessionId, imageBase64);

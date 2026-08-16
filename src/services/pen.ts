@@ -10,8 +10,8 @@
 
 import { eq, and, desc } from "drizzle-orm";
 import { penSessions, penEdits, branches, pages } from "../db/schema.js";
-import { dbRead, dbWrite } from "../db/client.js";
-import { getBookFromDB, getBookPages } from "./book.js";
+import { dbRead, dbWrite, type DBClient } from "../db/client.js";
+import { getBookFromDB, getBookPages, deleteStoryPage } from "./book.js";
 import { getTriggeredLoreEntries, listLoreEntries } from "./lore.js";
 import type { DBBook, DBPenSession } from "../types/schema.js";
 import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraftCharacter, PenDraftSceneEssentials, PenEdit, PenSessionStatus, FinalizeViolation, CanonAmendment, PenEditType, PenOutlineData, PenOutlinePage, PenAuthorPage, AuthorshipOrigin } from "../types/pen.js";
@@ -34,7 +34,7 @@ import { aiPrompt, createAIOptionsWithSchema } from "../utils/ai-chat.js";
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
-import { PEN_DRAFT_CAST_LIMIT, PEN_CONTINUE_MAX_TOKENS, penContinueLengthForAssistance, PEN_ESSENTIALS_MAX_TOKENS, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TOKENS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_FINALIZE_PROPOSE_MAX_ITEM_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TRAITS } from "../config/story.js";
+import { PEN_DRAFT_CAST_LIMIT, PEN_CONTINUE_MAX_TOKENS, penContinueLengthForAssistance, PEN_ESSENTIALS_MAX_TOKENS, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TOKENS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_FINALIZE_PROPOSE_MAX_ITEM_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TRAITS, PEN_DRAFT_BUFFER_MAX_CHARS } from "../config/story.js";
 import { generateId } from "../utils/uuid.js";
 import { executeWithCredits } from "./credits.js";
 import { persistPageWithState, insertStoryPage, getPageFromDB, mapToPersistedStoryPage } from "./book.js";
@@ -83,7 +83,10 @@ export class PenSessionNotFoundError extends Error {
 
 /** Error thrown when a pen session already exists for the (user, book) pair. */
 export class PenSessionConflictError extends Error {
-  constructor(message = "An active pen session already exists for this book") {
+  // BN4: the 409 fires for ANY existing session row (the check matches
+  // status-independent), so the message no longer claims "active" — the book
+  // already owns a session, active or closed.
+  constructor(message = "This book already has a pen session — reopen it from the pen dashboard") {
     super(message);
     this.name = "PenSessionConflictError";
   }
@@ -175,10 +178,17 @@ export async function getPenSessionForBook(userId: string, bookId: string): Prom
  *
  * @param userId - The authenticated user's id (ownership guard)
  * @param sessionId - The session to load
+ * @param options.client - Override the default read-replica client with `dbWrite`
+ *   for read-then-write paths that must not race a replica (BE9: finalize).
  * @throws PenSessionNotFoundError if missing or owned by another user
  */
-export async function getPenSessionById(userId: string, sessionId: string): Promise<PenSessionPayload> {
-  const [session] = await dbRead
+export async function getPenSessionById(
+  userId: string,
+  sessionId: string,
+  options: { client?: DBClient } = {}
+): Promise<PenSessionPayload> {
+  const { client = dbRead } = options;
+  const [session] = await client
     .select()
     .from(penSessions)
     .where(and(eq(penSessions.id, sessionId), eq(penSessions.userId, userId)))
@@ -415,7 +425,10 @@ export async function closePenSession(userId: string, sessionId: string): Promis
 export async function discardPenDraft(userId: string, sessionId: string): Promise<PenSessionPayload> {
   const [updated] = await dbWrite
     .update(penSessions)
-    .set({ draftBuffer: [], draftCharactersPresent: [], draftSceneEssentials: null })
+    // BE5: also clear the `draftHtml` mirror (and bump `updatedAt`) so the rich
+    // editor doesn't re-import a stale TipTap payload after a discard — the
+    // reset then survives reload / resume on another device.
+    .set({ draftBuffer: [], draftCharactersPresent: [], draftSceneEssentials: null, draftHtml: null, updatedAt: new Date() })
     .where(and(eq(penSessions.id, sessionId), eq(penSessions.userId, userId)))
     .returning();
 
@@ -429,6 +442,15 @@ export class PenContinueError extends Error {
     super(message);
     this.name = "PenContinueError";
   }
+}
+
+/**
+ * Defensive HTML stripping for author prose fed into prompts + the audit trail
+ * (BE2/BQ1). The frontend sends plain text, but a hostile/buggy client can
+ * still inject markup that would reach the model and bloat `pen_edits`.
+ */
+function stripHtmlTags(value: string): string {
+  return value.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
 }
 
 /** Body of `POST /api/pen/sessions/:id/continue`. Discriminated by `type`. */
@@ -487,6 +509,17 @@ export async function continuePenDraft(
     throw new PenContinueError("Session is not active; reopen it before continuing");
   }
 
+  // BE1/BQ2: the request `type` must match the session's authoring mode.
+  // Enforcing this re-arms the Gate 1 command filter below — a mis-typed
+  // client can no longer slip a storyteller continue past a text_adventure
+  // session's injection/denylist filter. `authoringMode` is immutable
+  // post-create (not in PenSessionUpdates), so the check is stable.
+  if (input.type !== session.authoringMode) {
+    throw new PenContinueError(
+      `Session is in ${session.authoringMode} mode; request type "${input.type}" rejected.`
+    );
+  }
+
   // §3: text-adventure commands reuse the custom-actions Gate 1 — the
   // deterministic injection/denylist security filter — so a jailbreak/denylisted
   // command is rejected for the author to rephrase BEFORE any AI call or credit
@@ -523,7 +556,7 @@ export async function continuePenDraft(
   // assembled continuation context (contextHistory + recent prose + the author's
   // own fragment/command) are injected as the authoritative CANONICAL LORE block.
   // Deterministic + author-controlled; semantic memory stays the fallback.
-  const authorInput = input.type === "text_adventure" ? input.command : input.prose;
+  const authorInput = stripHtmlTags(input.type === "text_adventure" ? input.command : input.prose);
   const loreHaystack = [
     state?.contextHistory ?? "",
     ...pageTexts,
@@ -562,8 +595,8 @@ export async function continuePenDraft(
 
   const { systemPrompt, userPrompt } =
     input.type === "text_adventure"
-      ? buildPenContinuePrompt({ ...shared, command: input.command, authoringPov, length: continueLength })
-      : buildPenContinuePrompt({ ...shared, prose: input.prose, directionHint: input.directionHint, authoringPov, length: continueLength });
+      ? buildPenContinuePrompt({ ...shared, command: authorInput, authoringPov, length: continueLength })
+      : buildPenContinuePrompt({ ...shared, prose: authorInput, directionHint: input.directionHint, authoringPov, length: continueLength });
 
   const promptConfig: AIPromptForJson<PenContinueAIOutput> = {
     schema: PEN_CONTINUE_SCHEMA,
@@ -615,6 +648,12 @@ export async function continuePenDraft(
         authoringPov: authoringPov ?? null,
       };
 
+      // BE8: bound the buffer's total size so long sessions can't grow an
+      // unbounded JSONB payload (bloats session reads + finalize rollup).
+      const existingTotal = (current.draftBuffer ?? []).reduce((sum, s) => sum + (s.text?.length ?? 0), 0);
+      if (existingTotal + span.text.length > PEN_DRAFT_BUFFER_MAX_CHARS) {
+        throw new PenContinueError("Draft is at its maximum size — finalize or trim before continuing");
+      }
       const nextBuffer = [...(current.draftBuffer ?? []), span];
 
       const [updated] = await tx
@@ -790,6 +829,35 @@ function coerceEssentialsProposal(
 }
 
 /**
+ * Known places that constrain a place proposal (BQ3).
+ *
+ * Prefers the lore bible's `place` entries (the authoritative, author-curated
+ * source once Phase 5 lands), keyed by `linkedPlaceId` so the accepted value
+ * matches the id space the frontend's place picker uses. Falls back to the
+ * story state's places when the bible is empty, so a book that never populated
+ * the lore bible still gets a constrained (never invented) place proposal.
+ */
+async function buildPenPlaceOptions(
+  userId: string,
+  bookId: string,
+  state: StoryState | null
+): Promise<Array<{ value: string; name: string }>> {
+  const loreEntries = await listLoreEntries(userId, bookId);
+  const fromLore = loreEntries
+    .filter((e) => e.entryType === "place")
+    .map((e) => ({ value: e.linkedPlaceId ?? e.id, name: e.name }));
+  if (fromLore.length > 0) return fromLore;
+
+  if (state?.places) {
+    return Object.entries(state.places).map(([placeId, place]) => ({
+      value: placeId,
+      name: place.knownName ?? place.realName ?? placeId,
+    }));
+  }
+  return [];
+}
+
+/**
  * Runs the `/continue`-style auto-fill generation for an owned pen session
  * (§2.i / §10 Decision M): one structured-output AI call proposes the blank
  * scene essentials from the draft + canon, clamped server-side, and an audit
@@ -835,13 +903,10 @@ export async function autofillSceneEssentials(
   const mcName = book.mc?.knownName || book.mc?.name || "";
   const language = book.language || "en";
 
-  // Known bible places constrain the place proposal (ownership already
-  // verified above). A place suggestion is only accepted when its name resolves
-  // to one of these ids.
-  const loreEntries = await listLoreEntries(userId, book.id);
-  const placeOptions = loreEntries
-    .filter((e) => e.entryType === "place")
-    .map((e) => ({ value: e.linkedPlaceId ?? e.id, name: e.name }));
+  // Known places constrain the place proposal (ownership already verified
+  // above). A place suggestion is only accepted when its name resolves to one
+  // of these ids. BQ3: lore bible first, story-state places as the fallback.
+  const placeOptions = await buildPenPlaceOptions(userId, book.id, state);
 
   // Trigger-keyword lore injection — same haystack contract as `/continue`.
   const loreHaystack = [state?.contextHistory ?? "", ...pageTexts, input.draftText ?? ""].join("\n");
@@ -1170,6 +1235,7 @@ export async function proposePenStateUpdates(
     sceneType,
     essentials: inheritSceneEssentials(session.draftSceneEssentials, lastPage),
     draftText: input.draftText?.trim() ?? "",
+    placeOptions: await buildPenPlaceOptions(userId, book.id, state),
   });
 
   const promptConfig: AIPromptForJson<PenStateProposalAIOutput> = {
@@ -1479,7 +1545,10 @@ export async function finalizePenDraft(
   sessionId: string,
   input: PenFinalizeInput = {}
 ): Promise<PenFinalizeOutput> {
-  const session = await getPenSessionById(userId, sessionId);
+  // BE9: read the session via dbWrite here — finalize is a read-then-write
+  // path, and reading the current draft off a lagging read replica could
+  // publish a stale buffer (or bump the session from an outdated row).
+  const session = await getPenSessionById(userId, sessionId, { client: dbWrite });
   const book: DBBook | null = await getBookFromDB(session.bookId);
   if (!book) throw new PenFinalizeError("Book not found for this session");
 
@@ -1783,8 +1852,9 @@ export async function finalizePenDraft(
     span,
   }));
 
-  await dbWrite.transaction(async (tx) => {
-    for (const { editId, span } of editRows) {
+  try {
+    await dbWrite.transaction(async (tx) => {
+      for (const { editId, span } of editRows) {
       await tx.insert(penEdits).values({
         id: editId,
         sessionId,
@@ -1849,7 +1919,30 @@ export async function finalizePenDraft(
           .where(eq(pages.id, parentPageId));
       }
     }
-  });
+    });
+  } catch (error) {
+    // BE4 (Option A — compensation delete): Phase B's page/state INSERT
+    // committed OUTSIDE this transaction (see TODO(orphan-window) above), so a
+    // Phase C failure leaves a new child row in `pages` while the session still
+    // points at the old parent. Delete the un-adopted child so a client retry
+    // publishes cleanly instead of creating a duplicate sibling. Guard: never
+    // erase a page that a concurrent publish has since adopted (session
+    // advanced or closed).
+    try {
+      const [freshSession] = await dbWrite
+        .select({ currentPageId: penSessions.currentPageId, status: penSessions.status })
+        .from(penSessions)
+        .where(and(eq(penSessions.id, sessionId), eq(penSessions.userId, userId)))
+        .limit(1);
+      if (freshSession && freshSession.currentPageId === session.currentPageId && freshSession.status === "active") {
+        await deleteStoryPage(newPage.id);
+      }
+    } catch {
+      // Compensation delete failed (network partition) → the page is a classic
+      // orphan, detectable by the engine's periodic reconciliation job.
+    }
+    throw error;
+  }
 
   return {
     status: "published",

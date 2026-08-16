@@ -386,12 +386,18 @@ export async function evaluateQuests(
  *
  * Disabled quests are omitted entirely so the UI never renders them.
  *
+ * The metric snapshot is loaded exactly once and shared between the
+ * evaluate-on-read pass and the progress rendering below — a separate load
+ * would duplicate ~19 user-scoped queries per request for identical data.
+ *
  * @param userId - User whose quest log is being read
  * @returns The ordered list of `UserQuestState` rows
  */
 export async function getUserQuests(userId: string): Promise<UserQuestState[]> {
+  const metrics = await loadQuestMetrics(userId);
+
   // Evaluate on read (like getUserAchievements) so retroactive completion syncs.
-  await evaluateQuests(userId);
+  await evaluateQuests(userId, metrics);
 
   const rows = await dbRead
     .select()
@@ -399,7 +405,6 @@ export async function getUserQuests(userId: string): Promise<UserQuestState[]> {
     .where(eq(userQuests.userId, userId));
 
   const stateMap = new Map(rows.map((r) => [r.questId, r]));
-  const metrics = await loadQuestMetrics(userId);
 
   return QUEST_REGISTRY
     .filter((rule) => rule.enabled)
@@ -516,8 +521,10 @@ export async function claimQuestReward(
         userId,
         activityType: 'quest_reward_claimed',
         targetType: 'quest',
-        targetId: questId,
-        metadata: { creditsAwarded: rule.rewardCredits },
+        // target_id is a UUID column; point it at the user_quests row (uuid v7)
+        // and keep the registry slug in metadata for reference.
+        targetId: claimed.id,
+        metadata: { questId: rule.id, creditsAwarded: rule.rewardCredits },
       },
       { client: tx },
     );
@@ -596,8 +603,9 @@ export async function claimAllQuestRewards(
         userId,
         activityType: 'quest_reward_claimed',
         targetType: 'quest',
-        targetId: questIds.length === 1 ? questIds[0] : 'quests',
-        metadata: { creditsAwarded: totalReward, questCount: questIds.length },
+        // Batch claim has no single user_quests row — omit target_id (UUID
+        // column) and carry the slugs in metadata instead.
+        metadata: { creditsAwarded: totalReward, questCount: questIds.length, questIds },
       },
       { client: tx },
     );

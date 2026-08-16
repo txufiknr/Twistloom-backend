@@ -1342,6 +1342,7 @@ function humanizeActivityType(type: string): string {
     session_updated: 'Session Updated',
     onboarding_complete: 'Onboarding Complete',
     referrer_set: 'Referrer Set',
+    quest_reward_claimed: 'Quest Reward Claimed',
   };
   return map[type] || type;
 }

@@ -511,3 +511,47 @@ export const PEN_FINALIZE_PROPOSE_MAX_INJURIES = 8;
 export const PEN_FINALIZE_PROPOSE_MAX_ITEM_LENGTH = 200;
 /** Maximum number of traits per proposed inventory item. */
 export const PEN_FINALIZE_PROPOSE_MAX_TRAITS = 5;
+
+/**
+ * Maximum length (chars) of the author's steering input to `/continue`
+ * (`directionHint`). Mirrors the frontend `MAX_PEN_DIRECTION_LENGTH` so the
+ * contract is enforced server-side regardless of client behavior (BE2).
+ */
+export const PEN_DIRECTION_HINT_MAX_LENGTH = 500;
+
+/**
+ * Maximum length (chars) of the author's continuation `prose` to `/continue`.
+ * Generous (~8k words) but bounds prompt-injection token cost and `pen_edits`
+ * bloat from a hostile/buggy client (BE2).
+ */
+export const PEN_CONTINUE_PROSE_MAX_LENGTH = 50_000;
+
+/**
+ * Maximum length (chars) of the live draft text accepted by essentials
+ * auto-fill and finalize state-proposal (`draftText`) (BE2).
+ */
+export const PEN_DRAFT_TEXT_MAX_LENGTH = 50_000;
+
+/**
+ * Maximum length (chars) of the persisted TipTap HTML mirror (`draftHtml`).
+ * Caps session-row bloat; the full session is returned on every session read (BE2).
+ */
+export const PEN_DRAFT_HTML_MAX_LENGTH = 500_000;
+
+/** Maximum length (chars) of a single draft span's text (BE2/BE8). */
+export const PEN_DRAFT_SPAN_MAX_LENGTH = 10_000;
+
+/**
+ * Maximum total length (chars) of all draft spans in a session's buffer.
+ * Bounds the JSONB payload, session-read size, and the finalize `pen_edits`
+ * rollup for long sessions (BE8).
+ */
+export const PEN_DRAFT_BUFFER_MAX_CHARS = 100_000;
+
+/**
+ * Maximum decoded size (bytes) of a pen draft inline image upload (BE6).
+ * The frontend compresses to ~6MB before sending; this is the server-side
+ * backstop so an oversized base64 payload is rejected before it is decoded
+ * into memory and pushed to ImageKit.
+ */
+export const PEN_DRAFT_IMAGE_MAX_BYTES = 10 * 1024 * 1024;

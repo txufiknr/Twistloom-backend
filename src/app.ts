@@ -5,6 +5,7 @@
  * handling now use Hono's web-standard Context object (`c`).
  */
 
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { csrf } from "hono/csrf";
@@ -37,7 +38,7 @@ app.use("*", async (c, next) => {
   c.header("X-Frame-Options", "DENY");
   c.header("Referrer-Policy", "strict-origin-when-cross-origin");
   c.header("X-XSS-Protection", "0");
-  await next(); // TODO: Unhandled error: TypeError: this.raw.headers.get is not a function
+  await next();
 });
 
 // Response compression (gzip/deflate) for API responses.
@@ -191,10 +192,170 @@ function getErrorMessageSafe(err: unknown): string {
   return err instanceof Error ? err.message : "Unknown error";
 }
 
-// Local dev entry imports the Hono instance directly (see src/server.ts).
-export { app };
+// ---------------------------------------------------------------------------
+// Vercel entrypoint (consolidated from the former `api/index.ts`).
+//
+// Vercel's Hono framework preset auto-detects `src/app.ts` as the serverless
+// entrypoint and deploys its default export. If that default export were
+// `app.fetch`, a legacy Node `(req, res)` invocation would hand Hono a raw
+// `IncomingMessage` — whose `headers` is a plain object with no `.get()`
+// method, crashing CORS/compress middleware with
+// `TypeError: this.raw.headers.get is not a function`.
+//
+// So the conversion logic that used to live in `api/index.ts` now lives here
+// as the default export. `api/index.ts` re-exports it, which means whichever
+// file Vercel deploys serves the identical handler: it always hands Hono a
+// spec-compliant Web `Request` and pipes the response back through whatever
+// output path Vercel expects. It supports both Vercel Node.js execution modes:
+//   - Legacy Serverless — `(IncomingMessage, ServerResponse)`, writes through `res`.
+//   - Fluid Compute    — Web API `Request`, returns a `Response`.
+// ---------------------------------------------------------------------------
 
-// Vercel handler — direct app.fetch for Bun runtime.
-// Vercel's Bun runtime always passes a standard Web API Request, so no
-// IncomingMessage conversion is needed.
-export default app.fetch;
+export const config = { runtime: "nodejs" };
+
+export default async function vercelHandler(
+  req: Request | IncomingMessage,
+  maybeRes?: ServerResponse,
+): Promise<Response | void> {
+  try {
+    // --------------------------------------------------------------------
+    // STEP 1 — Detect the incoming request type
+    // --------------------------------------------------------------------
+    // `IncomingMessage.rawHeaders` is an `[key, val, key, val, …]` array that
+    // the Web API `Request` does not have — the most reliable discriminator
+    // between the two Vercel runtimes. We cast before the check because
+    // TypeScript cannot narrow a union from a standalone boolean.
+    const isIncomingMessage =
+      typeof (req as IncomingMessage).rawHeaders !== "undefined";
+
+    // This will hold the canonical Request we hand off to Hono.
+    let honoRequest: Request;
+
+    // --------------------------------------------------------------------
+    // STEP 2a — Legacy Node.js Serverless path (IncomingMessage → Request)
+    // --------------------------------------------------------------------
+    if (isIncomingMessage) {
+      const incoming = req as IncomingMessage;
+
+      // Reconstruct the URL. Vercel terminates TLS at its edge proxy, so the
+      // original protocol is carried in `x-forwarded-proto`; the original host
+      // arrives via `x-forwarded-host`.
+      const protocol =
+        (incoming.headers["x-forwarded-proto"] as string) ||
+        ((incoming.socket as { encrypted?: boolean } | undefined)?.encrypted
+          ? "https"
+          : "http");
+      const host =
+        (incoming.headers["x-forwarded-host"] as string) ||
+        (incoming.headers["host"] as string) ||
+        "localhost";
+      const url = `${protocol}://${host}${incoming.url ?? "/"}`;
+
+      // Buffer the body. Acceptable on Vercel because the platform enforces a
+      // 4.5 MB payload limit.
+      const chunks: Buffer[] = [];
+      for await (const chunk of incoming) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      const body =
+        incoming.method !== "GET" && incoming.method !== "HEAD" && chunks.length > 0
+          ? Buffer.concat(chunks)
+          : null;
+
+      // Extract headers from rawHeaders, skipping HTTP/2 pseudo-headers
+      // (`:method`, `:path`, … — they start with char code 58).
+      const headers: Record<string, string> = {};
+      const rawHeaders = incoming.rawHeaders;
+      for (let i = 0; i < rawHeaders.length; i += 2) {
+        const key = rawHeaders[i];
+        if (key.charCodeAt(0) !== 58) headers[key] = rawHeaders[i + 1];
+      }
+
+      // Building a new `Request` normalises the plain-object headers into a
+      // spec-compliant `Headers` instance with a `.get()` method.
+      honoRequest = new Request(url, { method: incoming.method, headers, body });
+    } else {
+      // ------------------------------------------------------------------
+      // STEP 2b — Fluid Compute path (Request → Request)
+      // ------------------------------------------------------------------
+      // Vercel might pass a Request whose `headers` is a plain object rather
+      // than the Web API `Headers` class. Rebuilding through `new Request()`
+      // guarantees spec-compliant `Headers` that Hono's CORS middleware and
+      // others depend on.
+      const webReq = req as unknown as Request;
+      honoRequest = new Request(webReq.url, {
+        method: webReq.method,
+        headers: webReq.headers, // Headers | Record → Headers
+        body: webReq.body, // ReadableStream | null passthrough
+      });
+    }
+
+    // --------------------------------------------------------------------
+    // STEP 3 — Dispatch through Hono
+    // --------------------------------------------------------------------
+    // `honoRequest` is always a fresh, spec-compliant `Request` with proper
+    // `Headers.get()`, so every middleware can safely call `c.req.header()`.
+    const response = await app.fetch(honoRequest);
+
+    // --------------------------------------------------------------------
+    // STEP 4 — Write the Hono Response back to Vercel
+    // --------------------------------------------------------------------
+    if (maybeRes && typeof maybeRes.statusCode === "number") {
+      // --- Legacy Serverless path: write through ServerResponse ---------
+      maybeRes.statusCode = response.status;
+
+      // Copy all response headers onto the ServerResponse. Set-Cookie needs
+      // special care: `Headers.forEach()` coalesces repeated keys into
+      // comma-joined strings (wrong for Set-Cookie), so we collect them into
+      // an array and let Node serialise separate `Set-Cookie` lines.
+      const setCookieValues: string[] = [];
+      response.headers.forEach((value, key) => {
+        if (key.toLowerCase() === "set-cookie") {
+          setCookieValues.push(value);
+        } else {
+          maybeRes.setHeader(key, value);
+        }
+      });
+      if (setCookieValues.length > 0) {
+        maybeRes.setHeader("Set-Cookie", setCookieValues);
+      }
+
+      // Stream the response body bytes through the ServerResponse using the
+      // Web `ReadableStream`'s reader.
+      if (response.body) {
+        const reader = response.body.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          maybeRes.write(value);
+        }
+      }
+      maybeRes.end();
+      return; // ← must return void for Legacy Serverless
+    }
+
+    // --- Fluid Compute path: return the Response object directly ---------
+    return response;
+
+    // --------------------------------------------------------------------
+    // STEP 5 — Error handling
+    // --------------------------------------------------------------------
+  } catch (error) {
+    console.error("[vercel-handler] Unhandled error:", error);
+
+    // If we still have a valid ServerResponse that hasn't started sending,
+    // write a JSON 500 error instead of crashing the invocation.
+    if (maybeRes && typeof maybeRes.statusCode === "number" && !maybeRes.headersSent) {
+      maybeRes.statusCode = 500;
+      maybeRes.setHeader("Content-Type", "application/json");
+      maybeRes.end(JSON.stringify({ success: false, error: "Internal Server Error" }));
+      return;
+    }
+
+    // No ServerResponse available (pure-Fluid-Compute path) or headers already
+    // sent — let Vercel handle the error.
+    throw error;
+  }
+}
+
+export { app };

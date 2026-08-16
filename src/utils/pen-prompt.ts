@@ -89,6 +89,37 @@ function loreBlock(lore?: LoreEntry[]): string {
 }
 
 /**
+ * Shared stable-per-session user-prompt sections across the Pen prompt builders
+ * (BD1). Order matters: these lead every Pen user prompt so the prefix is
+ * cacheable across a session's successive turns. The `/continue` builder
+ * prepends the mode-specific `AUTHOR'S POV` line; the essentials/state-proposal
+ * builders don't have a POV concept and pass it straight through.
+ */
+function buildStablePenSections(params: {
+  persona?: CoWritingPersona;
+  bookSummary?: string | null;
+  lore?: LoreEntry[];
+  narrativeStyle?: string;
+  language: string;
+}): string[] {
+  return [
+    params.bookSummary ? `STORY SUMMARY: ${params.bookSummary}` : "",
+    personaOverlay(params.persona),
+    loreBlock(params.lore),
+    params.narrativeStyle ? `NARRATIVE STYLE:\n${params.narrativeStyle}` : "",
+    `WRITE IN LANGUAGE: ${formatLanguage(params.language)}`,
+  ].filter(Boolean);
+}
+
+/** Shared per-page context sections (canonical state + recent story) — identical across all Pen builders (BD1). */
+function buildPenContextSections(canon: string, prose: string): string[] {
+  return [
+    `CANONICAL STATE (do not contradict):\n${canon}`,
+    `RECENT STORY:\n${prose}`,
+  ];
+}
+
+/**
  * Static, cache-friendly system prompt for Storyteller mode (§1.f).
  *
  * Deliberately NOT the engine's `PROMPT_SYSTEM` (first-person psychological-
@@ -285,17 +316,10 @@ export function buildPenContinuePrompt(
   // and the fragment/command (changes per turn) come last.
   const stableSections = [
     `AUTHOR'S POV: ${povDirective(authoringMode, authoringPov)}`,
-    personaOverlay(persona),
-    bookSummary ? `STORY SUMMARY: ${bookSummary}` : "",
-    loreBlock(lore),
-    narrativeStyleInstructions ? `NARRATIVE STYLE:\n${narrativeStyleInstructions}` : "",
-    `WRITE IN LANGUAGE: ${formatLanguage(language)}`,
-  ].filter(Boolean);
-
-  const contextSections = [
-    `CANONICAL STATE (do not contradict):\n${canon}`,
-    `RECENT STORY:\n${prose}`,
+    ...buildStablePenSections({ persona, bookSummary, lore, narrativeStyle: narrativeStyleInstructions, language }),
   ];
+
+  const contextSections = buildPenContextSections(canon, prose);
 
   if (authoringMode === "text_adventure") {
     const command = "command" in params ? params.command : "";
@@ -359,7 +383,7 @@ export const PEN_CONTINUE_SCHEMA: Record<keyof PenContinueResult, AIJsonProperty
         expected: { type: "string", description: "What the canonical state requires." },
         found: { type: "string", description: "What the draft says." },
       },
-      required: ["expected", "found"],
+      required: ["type", "expected", "found"],
     },
   },
 };
@@ -568,13 +592,13 @@ export function buildPenEssentialsAutofillPrompt(params: {
   const prose = buildProseContext(pageTexts);
   const narrativeStyleInstructions = state ? createNarrativeStyle(state).instructions : undefined;
 
-  const stableSections = [
-    personaOverlay(persona),
-    bookSummary ? `STORY SUMMARY: ${bookSummary}` : "",
-    loreBlock(lore),
-    narrativeStyleInstructions ? `NARRATIVE STYLE:\n${narrativeStyleInstructions}` : "",
-    `WRITE IN LANGUAGE: ${formatLanguage(language)}`,
-  ].filter(Boolean);
+  const stableSections = buildStablePenSections({
+    persona,
+    bookSummary,
+    lore,
+    narrativeStyle: narrativeStyleInstructions,
+    language,
+  });
 
   const placeIdToName = new Map(placeOptions.map((p) => [p.value, p.name]));
 
@@ -606,8 +630,7 @@ export function buildPenEssentialsAutofillPrompt(params: {
     systemPrompt: isReview ? PEN_ESSENTIALS_REVIEW_SYSTEM : PEN_ESSENTIALS_SYSTEM,
     userPrompt: [
       ...stableSections,
-      `CANONICAL STATE (do not contradict):\n${canon}`,
-      `RECENT STORY:\n${prose}`,
+      ...buildPenContextSections(canon, prose),
       draftText ? `CURRENT DRAFT:\n${draftText}` : "(No draft yet — this is the first page; open the scene.)",
       currentEssentials ? `${currentEssentialsLabel}\n${currentEssentials}` : "(No scene essentials are set yet — propose the most fitting values.)",
       `MOOD OPTIONS: ${moods.join(", ")}`,
@@ -761,10 +784,16 @@ export type PenStateProposalPrompt = {
 };
 
 /** Renders the current scene (essentials) as a compact prompt section. */
-function renderCurrentScene(essentials: PenDraftSceneEssentials | null): string {
+function renderCurrentScene(
+  essentials: PenDraftSceneEssentials | null,
+  placeIdToName: Map<string, string>
+): string {
   if (!essentials) return "(no scene is set — infer the most fitting values from the draft)";
   const parts: string[] = [];
-  if (essentials.placeId) parts.push(`place: ${essentials.placeId}`);
+  // BN2/BQ3: render the place by its known NAME, not the raw id, so the model
+  // reasons about the actual location; the raw id leaks an opaque slug and
+  // never appears in the narrative.
+  if (essentials.placeId) parts.push(`place: ${placeIdToName.get(essentials.placeId) ?? essentials.placeId}`);
   if (essentials.mood) parts.push(`mood: ${essentials.mood}`);
   if (essentials.weather) parts.push(`weather: ${essentials.weather}`);
   if (essentials.calendarDate) parts.push(`date: ${essentials.calendarDate}`);
@@ -823,6 +852,8 @@ export function buildPenStateProposalPrompt(params: {
   /** The scene the current draft sits in (place + inherited scene fields) — the model carries it forward. */
   essentials?: PenDraftSceneEssentials | null;
   draftText: string;
+  /** Known places as `{ value: placeId, name }` — rendered by name and used to constrain any place mention (BQ3). */
+  placeOptions?: Array<{ value: string; name: string }>;
 }): PenStateProposalPrompt {
   const {
     state,
@@ -837,8 +868,11 @@ export function buildPenStateProposalPrompt(params: {
     sceneType,
     essentials,
     draftText,
+    placeOptions = [],
   } = params;
 
+  const placeIdToName = new Map(placeOptions.map((p) => [p.value, p.name]));
+  const placeNames = placeOptions.length > 0 ? placeOptions.map((p) => p.name).join(", ") : "(no places defined yet)";
   const canon = buildCanonicalBlock(state ?? null, mcName, {
     storyStartDate,
     momentum,
@@ -848,26 +882,27 @@ export function buildPenStateProposalPrompt(params: {
   const prose = buildProseContext(pageTexts);
   const narrativeStyleInstructions = state ? createNarrativeStyle(state).instructions : undefined;
 
-  const stableSections = [
-    personaOverlay(persona),
-    bookSummary ? `STORY SUMMARY: ${bookSummary}` : "",
-    loreBlock(lore),
-    narrativeStyleInstructions ? `NARRATIVE STYLE:\n${narrativeStyleInstructions}` : "",
-    `WRITE IN LANGUAGE: ${formatLanguage(language)}`,
-  ].filter(Boolean);
+  const stableSections = buildStablePenSections({
+    persona,
+    bookSummary,
+    lore,
+    narrativeStyle: narrativeStyleInstructions,
+    language,
+  });
+  const contextSections = buildPenContextSections(canon, prose);
 
   return {
     systemPrompt: PEN_STATE_PROPOSAL_SYSTEM,
     userPrompt: [
       ...stableSections,
-      `CANONICAL STATE (do not contradict):\n${canon}`,
-      `RECENT STORY:\n${prose}`,
+      ...contextSections,
       `CURRENT DRAFT:\n${draftText}`,
-      `CURRENT SCENE (the scene before this page publishes — carry forward what the draft does not change):\n${renderCurrentScene(essentials ?? null)}`,
+      `CURRENT SCENE (the scene before this page publishes — carry forward what the draft does not change):\n${renderCurrentScene(essentials ?? null, placeIdToName)}`,
       `CURRENT INVENTORY & INJURIES (the state before this page publishes — carry forward what persists, change only what the draft supports):\nINVENTORY:\n${renderCurrentInventory(state ?? null)}\nINJURIES:\n${renderCurrentInjuries(state ?? null)}`,
       `CATEGORY OPTIONS: ${injuryCategories.join(", ")}`,
       `MOOD OPTIONS: ${moods.join(", ")}`,
       `WEATHER OPTIONS: ${placeWeathers.join(", ")}`,
+      `PLACE OPTIONS: ${placeNames}`,
       "Compute the FULL resulting scene, inventory, injuries, key events, and key objects for the page being published.",
     ].join("\n\n"),
   };
