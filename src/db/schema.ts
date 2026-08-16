@@ -2592,6 +2592,8 @@ export const loreEntries = pgTable(
     /** Soft ref to engine state rows (character/place ids in `story_states`), if this entry mirrors one. */
     linkedCharacterId: uuid("linked_character_id"),
     linkedPlaceId: uuid("linked_place_id"),
+    /** Optional avatar image for character entities (references `uploaded_images.image_id`). */
+    imageId: text("image_id").references(() => uploadedImages.imageId, { onDelete: "set null" }),
     userId: userId().references(() => users.userId, { onDelete: "cascade" }),
     createdAt,
     updatedAt,

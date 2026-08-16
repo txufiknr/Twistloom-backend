@@ -220,6 +220,10 @@ export type LoreEntry = {
   /** Soft refs to engine state rows, if this entry mirrors one. */
   linkedCharacterId?: string | null;
   linkedPlaceId?: string | null;
+  /** ImageKit file ID for character avatar. */
+  imageId?: string | null;
+  /** ImageKit CDN URL for character avatar. */
+  imageUrl?: string | null;
   createdByUserId: string;
   createdAt: Date;
   updatedAt: Date;
@@ -234,6 +238,9 @@ export type LoreEntryInput = {
   triggerKeywords?: string[];
   linkedCharacterId?: string | null;
   linkedPlaceId?: string | null;
+  /** ImageKit file ID or base64 data URL for avatar image. */
+  imageId?: string | null;
+  imageUrl?: string | null;
 };
 
 /** Update shape for a story-bible entry (PATCH /lore/:entryId). */

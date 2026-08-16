@@ -428,6 +428,13 @@
       "when": 1786770356504,
       "tag": "0061_solid_lightspeed",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1786877135038,
+      "tag": "0062_cooing_cerise",
+      "breakpoints": true
     }
   ]
 }

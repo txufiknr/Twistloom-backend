@@ -1,0 +1,2 @@
+ALTER TABLE "lore_entries" ADD COLUMN "image_id" text;--> statement-breakpoint
+ALTER TABLE "lore_entries" ADD CONSTRAINT "lore_entries_image_id_uploaded_images_image_id_fk" FOREIGN KEY ("image_id") REFERENCES "public"."uploaded_images"("image_id") ON DELETE set null ON UPDATE no action;

@@ -68,6 +68,12 @@ function validateLoreFields(fields: Partial<LoreEntryInput>): string | null {
   if (fields.linkedPlaceId !== undefined && fields.linkedPlaceId !== null && !isValidUuid(fields.linkedPlaceId)) {
     return "linkedPlaceId must be a valid UUID or null";
   }
+  if (fields.imageId !== undefined && fields.imageId !== null && typeof fields.imageId !== "string") {
+    return "imageId must be a string or null";
+  }
+  if (fields.imageUrl !== undefined && fields.imageUrl !== null && typeof fields.imageUrl !== "string") {
+    return "imageUrl must be a string or null";
+  }
   return null;
 }
 

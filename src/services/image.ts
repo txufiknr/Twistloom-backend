@@ -756,6 +756,33 @@ export async function uploadBookCharacterImage(
 }
 
 /**
+ * Uploads a character avatar image from the Story Bible (Lore entries).
+ *
+ * @param imageSource - Image source (base64 data URL, buffer, URL, etc.)
+ * @param bookId - Book ID this lore character belongs to.
+ * @param characterName - Character name for tagging and filename prefix.
+ * @returns The ImageKit upload response, or `null` on failure.
+ */
+export async function uploadLoreCharacterImage(
+  imageSource: ImageUploadSource,
+  bookId: string,
+  characterName: string
+): Promise<ImageKitUploadResponse | null> {
+  const sanitizedName = characterName
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .trim()
+    .replace(/[\s-]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'character';
+
+  return uploadImageKit(imageSource, bookId, {
+    folder: 'lore-characters',
+    tags: ['lore-character', `book-id:${bookId}`, `character:${sanitizedName}`],
+    filenamePrefix: `lore-${sanitizedName}`,
+  });
+}
+
+/**
  * Uploads a screenshot attached to a user feedback report.
  *
  * @param imageSource - The screenshot, in any form `uploadImageKit` accepts.

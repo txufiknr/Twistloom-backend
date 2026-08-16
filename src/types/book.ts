@@ -557,7 +557,8 @@ export type UploadedImageType =
   | 'mc'    // Main character's picture
   | 'user'  // Profile picture
   | 'feedback' // Feedback screenshot
-  | 'pen'; // Pen draft inline image
+  | 'pen' // Pen draft inline image
+  | 'lore_character'; // Story bible character avatar
 
 export type PageVisitStats = {
   nthVisit: number;
