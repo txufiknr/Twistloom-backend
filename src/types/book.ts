@@ -427,6 +427,7 @@ export const bookSortOptions = [
   'trending',
   'top-picks',
   'originals',
+  'pen', // Public Pen-written books (is_pen_book) — the "Pen Stories" showcase
   'reads', // Continue reading
   'recommendations', // You might like
   'creations', // User's created books

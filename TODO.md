@@ -17,65 +17,16 @@
 - [ ] need change to cursor pagination?
 
 [ ] pas split multi-turn udah stable, DRY infer state delta dari story page sama pen finalize propose
+[ ] buildNextPageFieldInstructionSections: can you make it be more manageable?
+[ ] buildStoryPageReviewChecklist, buildStateDeltaEvaluatorPrompt: still unused
 
 ---
 
-I got this error when claiming quest reward:
-POST /api/user/quests/qs_01_1/claim
-cause: error: invalid input syntax for type uuid: "qs_01_1"
+CRITICAL TONE & LOCALIZATION CONSTRAINTS:
+- LITERARY PROSE: Write in a highly evocative, novelistic style suitable for a gritty thriller. STRICTLY AVOID formal, academic, standard, or "AI-sounding" rigid vocabulary. 
+- INFORMAL POV: The narrative voice must feel deeply personal and emotive. Never sound like a formal translator or assistant.
+- INDONESIAN OVERRIDES (If applicable): You are STRICTLY FORBIDDEN from using "Bahasa Baku" (e.g., never use rigid phrasing like "Identik dengan saya"). You MUST use "aku" for the first-person pronoun—never use "saya".
 
-can you investigate and propose best approach to solve?
-
-[user] ❌ Failed to log activity for user 019ed9a8-0b2b-72bb-92af-260e19e699aa: DrizzleQueryError: Failed query: insert into "user_activity_logs" ("id", "user_id", "activity_type", "target_type", "target_id", "metadata", "ip_address", "user_agent", "platform", "app_version", "created_at") values (default, $1, $2, $3, $4, $5, default, default, default, default, default)
-params: 019ed9a8-0b2b-72bb-92af-260e19e699aa,quest_reward_claimed,quest,qs_01_1,{"creditsAwarded":10}
-    at NeonPreparedQuery.queryWithCache (file:///var/task/node_modules/drizzle-orm/pg-core/session.js:41:15)
-    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
-    at async NeonPreparedQuery.execute (file:///var/task/node_modules/drizzle-orm/neon-serverless/session.js:105:14)
-    at async logUserActivity (/vercel/path0/src/services/user.ts:254:5)
-    at async <anonymous> (/vercel/path0/src/services/quests.ts:514:5)
-    at async NeonSession.transaction (file:///var/task/node_modules/drizzle-orm/neon-serverless/session.js:183:22)
-    at async claimQuestRewardAndInvalidate (/vercel/path0/src/services/quests.ts:636:18)
-    at async <anonymous> (/vercel/path0/src/routes/user.ts:3563:20)
-    at async dispatch (file:///var/task/node_modules/hono/dist/compose.js:22:17)
-    at async <anonymous> (/vercel/path0/src/middleware/nextauth.ts:207:3) {
-  query: 'insert into "user_activity_logs" ("id", "user_id", "activity_type", "target_type", "target_id", "metadata", "ip_address", "user_agent", "platform", "app_version", "created_at") values (default, $1, $2, $3, $4, $5, default, default, default, default, default)',
-  params: [
-    '019ed9a8-0b2b-72bb-92af-260e19e699aa',
-    'quest_reward_claimed',
-    'quest',
-    'qs_01_1',
-    '{"creditsAwarded":10}'
-  ],
-  cause: error: invalid input syntax for type uuid: "qs_01_1"
-      at bn.parseErrorMessage (file:///var/task/node_modules/@neondatabase/serverless/index.mjs:955:41)
-      at bn.handlePacket (file:///var/task/node_modules/@neondatabase/serverless/index.mjs:923:75)
-      at bn.parse (file:///var/task/node_modules/@neondatabase/serverless/index.mjs:911:36)
-      at S.<anonymous> (file:///var/task/node_modules/@neondatabase/serverless/index.mjs:962:16)
-      at S.emit (file:///var/task/node_modules/@neondatabase/serverless/index.mjs:317:79)
-      at WebSocket.<anonymous> (file:///var/task/node_modules/@neondatabase/serverless/index.mjs:403:19)
-      at [nodejs.internal.kHybridDispatch] (node:internal/event_target:843:20)
-      at WebSocket.dispatchEvent (node:internal/event_target:776:26)
-      at fireEvent (node:internal/deps/undici/undici:14387:14)
-      at #onMessage (node:internal/deps/undici/undici:15710:9) {
-    length: 139,
-    severity: 'ERROR',
-    code: '22P02',
-    detail: undefined,
-    hint: undefined,
-    position: undefined,
-    internalPosition: undefined,
-    internalQuery: undefined,
-    where: "unnamed portal parameter $4 = '...'",
-    schema: undefined,
-    table: undefined,
-    column: undefined,
-    dataType: undefined,
-    constraint: undefined,
-    file: 'uuid.c',
-    line: '174',
-    routine: 'string_to_uuid'
-  }
-}
 ---
 
 [ ] sambanova: error: 402 A payment method is required. Add one at https://cloud.sambanova.ai/plans/billing to continue.

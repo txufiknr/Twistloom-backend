@@ -44,9 +44,38 @@ export const REDIS_CACHE_KEYS = {
   USER_BOOKS: (userId: string, page: number) => `books:user:${userId}:page:${page}`,
   /** Invalidate all user books: books:user:{userId}:* */
   USER_BOOKS_PATTERN: (userId: string) => `books:user:${userId}:*`,
-  /** Explore page 1: books:explore:page:1 */
+  /**
+   * Legacy combined explore page-1 key (superseded by EXPLORE_PAGE_1_BY_SORT).
+   * Kept only to explicitly purge the old shared slot on invalidation; nothing
+   * new is ever written under it.
+   *
+   * WHY IT WAS BROKEN: `newest`, `popular`, `top-picks` and `originals` all
+   * wrote their page-1 results into this ONE key. Whichever sort ran first
+   * (always the default `newest` browse request, TTL 30 min) won, and every
+   * later `sortBy=top-picks` / `sortBy=originals` request was served that same
+   * cached "all public books" list — so those filters appeared to do nothing.
+   */
   EXPLORE_PAGE_1: 'books:explore:page:1',
-  /** Explore page 1 trending: books:explore:page:1:trending */
+  /**
+   * Per-sort explore page-1 key: `books:explore:page:1:{sortBy}`.
+   *
+   * Each public sort option (newest, popular, trending, top-picks, originals)
+   * gets its OWN cache slot, so a `top-picks` request can never be answered
+   * with data cached for `newest`. Trending falls out naturally as
+   * `...:trending`, which matches the old EXPLORE_PAGE_1_TRENDING value.
+   *
+   * @param sortBy - BookSortOption value (e.g. 'top-picks', 'originals').
+   */
+  EXPLORE_PAGE_1_BY_SORT: (sortBy: string) => `books:explore:page:1:${sortBy}`,
+  /**
+   * Pattern matching every per-sort explore page-1 key. Used by
+   * `invalidateExploreCache` so a public/visibility change clears all sort
+   * slots in one scan. Note this does NOT match the legacy key
+   * `books:explore:page:1` (no trailing segment) — that one is purged
+   * explicitly alongside this pattern.
+   */
+  EXPLORE_PAGE_1_PATTERN: 'books:explore:page:1:*',
+  /** Explore page 1 trending TTL (5 min) — superseded key constant kept for clarity in cache.ts */
   EXPLORE_PAGE_1_TRENDING: 'books:explore:page:1:trending',
   /** User profile: user:profile:{userId} */
   USER_PROFILE: (userId: string) => `user:profile:${userId}`,

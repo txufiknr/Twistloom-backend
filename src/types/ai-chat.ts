@@ -187,6 +187,19 @@ export type AIPromptForJsonParams<T> = {
   evaluatorPrompt?: string;
 }
 
+/**
+ * A single turn in the multi-turn (stage-split) page generation pipeline —
+ * see MULTI_TURN_PAGE_GENERATION_ROADMAP.md Part 2.3.
+ *
+ * `executePromptForJSON`/`aiPrompt` stay single-shot and generic over `T`;
+ * this type only labels which turn a given call belongs to, for logging
+ * (`context` strings), per-stage `cachedContentId` suffixing (so Turn A and
+ * Turn B never collide on — or silently reuse — the same Gemini explicit
+ * cache slot despite using different system prompts), and the
+ * `page_generation_tasks` ledger's `stage` column.
+ */
+export type GenerationStage = 'story_page' | 'state_delta';
+
 export type AIJsonProperty = {
   type: 'object' | 'array' | 'string' | 'integer' | 'number' | 'boolean';
   items?: AIJsonProperty;

@@ -2410,3 +2410,56 @@ export function getStoryStateInfo(state: StoryState): StoryStateInfo {
     placesSlot,
   } satisfies StoryStateInfo;
 }
+
+/**
+ * Generates language-specific tone and style constraints for the LLM prompt.
+ * 
+ * This ensures the AI avoids formal, robotic translations and maintains
+ * a gritty, novelistic, and highly emotive first-person narrative voice.
+ * It dynamically tailors negative constraints to the grammatical quirks of 
+ * specific target languages (ISO 639-1) to prevent "Language Drift".
+ *
+ * @param {string} languageCode - The ISO 639-1 language code (e.g., 'en', 'id', 'es').
+ * @returns {string} The localized style constraint prompt block.
+ * 
+ * @example
+ * // Returns the universal baseline plus Indonesian overrides (e.g., forbidding "saya")
+ * const stylePrompt = getLocalizedStyleConstraints('id');
+ */
+export function getLocalizedStyleConstraints(languageCode: string): string {
+  // 1. The Universal Baseline: Applies to EVERY language to set the core Thriller identity.
+  const universalBaseline = `
+CRITICAL TONE & LOCALIZATION CONSTRAINTS:
+- LITERARY PROSE: Write in a highly evocative, novelistic style suitable for a gritty thriller. STRICTLY AVOID formal, academic, standard, or "AI-sounding" rigid vocabulary.
+- INFORMAL POV: The narrative voice must feel deeply personal and emotive. Never sound like a formal translator or assistant.`;
+
+  // 2. Language-Specific Overrides: Hard guardrails against default LLM formal behavior.
+  let localizedOverrides = "";
+
+  switch (languageCode.toLowerCase()) {
+    case 'id':
+      localizedOverrides = `
+- INDONESIAN OVERRIDES: You are STRICTLY FORBIDDEN from using "Bahasa Baku" (e.g., never use rigid phrasing like "Identik dengan saya"). You MUST use "aku" for the first-person pronoun—never use "saya". Maximize the use of poetic, visceral, and contemporary novelistic Indonesian.`;
+      break;
+
+    case 'es':
+      localizedOverrides = `
+- SPANISH OVERRIDES: Use informal, visceral phrasing. You MUST default to "tú" instead of the formal "usted" for internal monologue, unless the specific character dynamic demands it. Avoid sterile, textbook Spanish translations.`;
+      break;
+
+    case 'fr':
+      localizedOverrides = `
+- FRENCH OVERRIDES: Write in a modern, gritty literary style. Default to "tu" for internal thoughts and casual dialogue rather than the formal "vous". Avoid bureaucratic or polite phrasing.`;
+      break;
+
+    case 'ja':
+      localizedOverrides = `
+- JAPANESE OVERRIDES: AVOID polite/formal forms (Desu/Masu). Use casual, dramatic, or gritty literary forms (Da/De aru) appropriate for a psychological thriller inner monologue.`;
+      break;
+
+    // Add more languages as Twistloom expands
+  }
+
+  // Combine and return the clean constraint block
+  return `${universalBaseline}${localizedOverrides}`.trim();
+}

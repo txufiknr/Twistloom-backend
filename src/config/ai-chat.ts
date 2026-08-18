@@ -6,6 +6,62 @@ export const EVALUATION_FALLBACK_LIMIT: number | undefined = undefined;
 export const MAX_SCHEMA_LENGTH: number = 30_000;
 
 /**
+ * Per-turn output-token budgets for multi-turn (stage-split) page generation
+ * — see MULTI_TURN_PAGE_GENERATION_ROADMAP.md Part 2 & Part 3 Phase 2.
+ *
+ * `DEFAULT_MAX_OUTPUT_TOKEN` (4000) sizes the OLD single combined
+ * "page + state delta" request and stays unchanged for every non-split
+ * caller (pen.ts, canon-validation.ts, book-creation, and the legacy
+ * `generateNextPage(s)` path when `USE_MULTI_TURN_GENERATION` is off).
+ *
+ * The two turn budgets below intentionally do NOT sum to 4000. A StoryPage
+ * turn only authors `text` (max MAX_WORDS_PER_PAGE words) plus a handful of
+ * scalar/array scene fields — empirically it almost never approaches even
+ * half of 4000 today. A StateDelta turn's largest single field
+ * (`contextHistory`, capped at MAX_WORDS_SUMMARIZED_CONTEXT words) plus every
+ * other delta array (newCharacters/newPlaces/newThreads/etc.) is the field
+ * set that actually risks truncation (`finishReason === 'length'`) under the
+ * OLD shared 4000 budget, since it competes with the page text for the same
+ * pool. Splitting the budget unevenly — page gets headroom it rarely uses,
+ * delta gets a larger dedicated share than it effectively had before (it
+ * used to share ~4000 with the page text; alone it gets 1800, which is more
+ * than its typical share of the old combined budget) — is a deliberate
+ * asymmetric split, not a straight halving. Revisit against observed
+ * `finishReason === 'length'` telemetry per Part 5 decision #3 before
+ * tightening further.
+ */
+export const STORY_PAGE_MAX_OUTPUT_TOKEN: number = 2200;
+/** See {@link STORY_PAGE_MAX_OUTPUT_TOKEN} doc for the full rationale. */
+export const STATE_DELTA_MAX_OUTPUT_TOKEN: number = 1800;
+/**
+ * Evaluator-pass budgets for each split turn — mirrors how
+ * EVALUATION_SCORING_OUTPUT_TOKEN is added on top of `config.maxOutputToken`
+ * for the legacy single-shot evaluator (ai-chat.ts, aiPrompt). Roughly half
+ * of EVALUATION_SCORING_OUTPUT_TOKEN each, same asymmetric-split rationale.
+ */
+export const STORY_PAGE_EVALUATION_OUTPUT_TOKEN: number = 1100;
+/** See {@link STORY_PAGE_EVALUATION_OUTPUT_TOKEN} doc. */
+export const STATE_DELTA_EVALUATION_OUTPUT_TOKEN: number = 900;
+
+/**
+ * Feature flag gating the multi-turn (stage-split) page generation pipeline
+ * — see MULTI_TURN_PAGE_GENERATION_ROADMAP.md Part 3 Phase 8.
+ *
+ * `false` (default): `generateNextPage`/`generateNextPages` use the
+ * original single combined "page + state delta" request, byte-identical to
+ * pre-refactor behavior — this is the safe rollback state.
+ * `true`: routes through the 2-turn (single page) / parallel-multi-turn
+ * (multiverse) pipeline in prompt.ts.
+ *
+ * Reads directly from `process.env` rather than through a shared env-config
+ * helper (unlike `IS_PRODUCTION` in config/env.ts) because that module
+ * wasn't in hand when this flag was added — consider moving this constant
+ * there if/when config/env.ts is next touched, for consistency with
+ * IS_PRODUCTION's pattern.
+ */
+export const USE_MULTI_TURN_GENERATION: boolean = process.env.USE_MULTI_TURN_GENERATION === 'true';
+
+/**
  * NVIDIA API request timeout in milliseconds
  * 
  * This timeout prevents hanging requests to NVIDIA's inference API.

@@ -1448,7 +1448,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
 
     // Append outputFormat to systemPrompt when structured output is active or provider is gemini
     const shouldAppendOutputFormat = options.outputFormat && (supportsStructuredOutput || provider === 'gemini');
-    const systemPrompt = shouldAppendOutputFormat ? `${originalSystemPrompt}\n\n---\nOUTPUT FORMAT:\n${options.outputFormat}` : originalSystemPrompt;
+    const systemPrompt = shouldAppendOutputFormat ? `${originalSystemPrompt}\n\n---\n${options.outputFormat}` : originalSystemPrompt;
 
     try {
       const models = modelSelection[provider];
@@ -1503,7 +1503,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
         opts.outputJsonStructure = {
           [geminiStringModeWrapperKey]: {
             type: 'string',
-            description: 'Full escaped JSON object string (see "OUTPUT FORMAT:").',
+            description: 'The complete JSON object described in the output format above, as a single escaped JSON string.',
           },
         };
         opts.outputJsonRequired = [geminiStringModeWrapperKey];
@@ -1562,102 +1562,8 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
       try {
         // Run evaluation phase if provided
         if (evaluatorPrompt) {
-          // STEP 3: EVALUATING (best-effort)
-          // Evaluation must not invalidate a successful generation. If evaluation fails,
-          // fall back to the original generated `result.output` below.
-          await onProgress?.({ type: 'ai_evaluation_start' });
-          await onGenerationProgress?.('ai_evaluation');
-
-          const evaluationContext = `${context}-evaluation`;
-
-          // Resolve 'auto' once at the evaluation level. The resolved boolean threads
-          // through to both schema building and result parsing, ensuring they stay in sync.
-          const evaluationOptions: AIPromptOptions = {
-            ...options,
-            modelSelection: AI_CHAT_MODELS_EVALUATION,
-            useStringEvaluatorOutput: resolveUseStringEvaluator({ ...options, modelSelection: AI_CHAT_MODELS_EVALUATION }),
-          };
-
-          try {
-            // Call second AI prompt to score, evaluate, and output corrected result
-            const response = await aiPrompt<AIJsonEvaluation<T>>(evaluatorPrompt, {
-              ...evaluationOptions,
-              config: {...config, maxOutputToken: config.maxOutputToken + EVALUATION_SCORING_OUTPUT_TOKEN },
-              systemPrompt,
-              context: evaluationContext,
-              fallbackLimit: evaluatorFallbackLimit,
-
-              // Pass generated raw output as document
-              documents: [
-                ...documents,
-                {
-                  title: 'GENERATED JSON (from previous AI)',
-                  snippet: result.output,
-                }
-              ],
-
-              // Evaluation output schema
-              outputAsJson: true,
-              outputJsonStructure: buildEvaluationSchemaDefinition(evaluationOptions),
-              outputJsonRequired: EVALUATION_REQUIRED_FIELDS satisfies (keyof AIJsonEvaluation<T>)[],
-              outputJsonFallbackField: 'output' satisfies keyof AIJsonEvaluation<T>
-
-              // CRITICAL: evaluation call should exclude the evaluatorPromptBuilder to prevent the recursive loop
-            }, undefined);
-
-            const { result: evaluationResult, provider: evalProvider, model: evalModel } = response;
-
-            if (evaluationResult) {
-              const { scoreBefore, scoreAfter, actionFlags, integrityFlags } = evaluationResult;
-              if (logEvaluationResult) {
-                edgeGroup.wrap(`[${evaluationContext}] 🕵️‍♂️ Evaluation result (score: ${scoreBefore.total} → ${scoreAfter.total}):`, async () => {
-                  console.log("Score before:", scoreBefore);
-                  console.log("Score after:", scoreAfter);
-                  console.log("Action flags:", actionFlags);
-                  console.log("Integrity flags:", integrityFlags);
-                });
-              }
-              // Process evaluator output based on schema strategy
-              // evaluationOptions.useStringEvaluatorOutput is already resolved to a
-              // boolean (see resolveUseStringEvaluator above). When true: output is
-              // JSON string → parse. When false: output is structured object → use directly.
-              let correctedOutput: T | undefined;
-              if (evaluationOptions.useStringEvaluatorOutput) {
-                try {
-                  const raw = evaluationResult.output as unknown as string;
-                  correctedOutput = raw ? JSON.parse(raw) as T : undefined;
-                } catch {
-                  console.warn(`[${evaluationContext}] ⚠️ Failed to parse evaluator string output as JSON — falling back to original`);
-                }
-              } else {
-                correctedOutput = evaluationResult.output;
-              }
-
-              if (correctedOutput) {
-                return {
-                  ...result,
-                  evalProvider,
-                  evalModel,
-                  scoreBefore: scoreBefore.total,
-                  scoreAfter: scoreAfter.total,
-                  result: correctedOutput
-                } satisfies AIResponse<T>;
-              }
-            } else if (logEvaluationResult) {
-              console.warn(`[${evaluationContext}] ❓ Evaluation returned no result — falling back to generation output`);
-            }
-          } catch (evalError) {
-            console.warn(`[${evaluationContext}] ⚠️ Evaluation failed — falling back to generation output:`, evalError);
-            // Continue to parsing original generated result
-          } finally {
-            try {
-              // Ensure we emit evaluation complete regardless of outcome to keep
-              // progress lifecycle consistent (best-effort)
-              await onProgress?.({ type: 'ai_evaluation_complete' });
-            } catch {
-              // Never let a progress callback mask a real evaluation error
-            }
-          }
+          const evaluated = await runEvaluationPass<T>(result, evaluatorPrompt, options, systemPrompt, context, onProgress, onGenerationProgress);
+          if (evaluated) return evaluated;
         }
 
         // Parse the output into the expected type T
@@ -1703,6 +1609,149 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
 }
 
 /**
+ * Runs the evaluation/self-correction pass on an already-generated result.
+ * Extracted from aiPrompt's inline `if (evaluatorPrompt)` block (originally
+ * only reachable as a private follow-up inside aiPrompt's own provider loop)
+ * so the exact same evaluation-call shape — same schema-complexity handling
+ * via the outer aiPrompt's own Gemini string-mode fallback, same
+ * prompt-length waterfall-skip behavior, same score/correct/re-score
+ * contract — can also be invoked directly for a single post-merge evaluation
+ * pass in multi-turn page generation (see prompt.ts's
+ * evaluateMergedStoryGeneration — MULTI_TURN_PAGE_GENERATION_ROADMAP.md Part
+ * 5.5 Q2). aiPrompt's own inline call site now just calls this and returns
+ * early on success — behavior is unchanged, this is a pure extraction.
+ *
+ * @param result - The already-generated content to evaluate (`result.output`
+ * is fed to the evaluator as a "GENERATED JSON (from previous AI)" document).
+ * @param systemPrompt - The system prompt to reuse for the evaluation call —
+ * pass the SAME (already provider/output-format-resolved) string used for
+ * the generation call that produced `result`, not `options.systemPrompt`
+ * unresolved, so the evaluator sees identical framing to the generator.
+ * @param context - Base context string; the evaluation call itself uses
+ * `${context}-evaluation` (matching aiPrompt's original inline behavior).
+ * @returns The corrected `AIResponse<T>` on a successful evaluation, or
+ * `undefined` if evaluation didn't produce a usable correction — callers
+ * should fall back to parsing `result.output` themselves in that case,
+ * exactly as aiPrompt's own post-block code already does.
+ */
+export async function runEvaluationPass<T extends Record<string, unknown>>(
+  result: AIResponse<string>,
+  evaluatorPrompt: string,
+  options: AIPromptOptions & { evaluatorFallbackLimit?: number },
+  systemPrompt: string,
+  context: string,
+  onProgress?: ProgressCallback,
+  onGenerationProgress?: (step: StoryGenerationStep) => Promise<void>,
+): Promise<AIResponse<T> | undefined> {
+  const {
+    config = AI_CHAT_CONFIG_DEFAULT,
+    documents = [],
+    logEvaluationResult = false,
+    evaluatorFallbackLimit = EVALUATION_FALLBACK_LIMIT,
+  } = options;
+
+  // STEP 3: EVALUATING (best-effort)
+  // Evaluation must not invalidate a successful generation. If evaluation fails,
+  // fall back to the original generated `result.output` below.
+  await onProgress?.({ type: 'ai_evaluation_start' });
+  await onGenerationProgress?.('ai_evaluation');
+
+  const evaluationContext = `${context}-evaluation`;
+
+  // Resolve 'auto' once at the evaluation level. The resolved boolean threads
+  // through to both schema building and result parsing, ensuring they stay in sync.
+  const evaluationOptions: AIPromptOptions = {
+    ...options,
+    modelSelection: AI_CHAT_MODELS_EVALUATION,
+    useStringEvaluatorOutput: resolveUseStringEvaluator({ ...options, modelSelection: AI_CHAT_MODELS_EVALUATION }),
+  };
+
+  try {
+    // Call second AI prompt to score, evaluate, and output corrected result
+    const response = await aiPrompt<AIJsonEvaluation<T>>(evaluatorPrompt, {
+      ...evaluationOptions,
+      config: {...config, maxOutputToken: config.maxOutputToken + EVALUATION_SCORING_OUTPUT_TOKEN },
+      systemPrompt,
+      context: evaluationContext,
+      fallbackLimit: evaluatorFallbackLimit,
+
+      // Pass generated raw output as document
+      documents: [
+        ...documents,
+        {
+          title: 'GENERATED JSON (from previous AI)',
+          snippet: result.output,
+        }
+      ],
+
+      // Evaluation output schema
+      outputAsJson: true,
+      outputJsonStructure: buildEvaluationSchemaDefinition(evaluationOptions),
+      outputJsonRequired: EVALUATION_REQUIRED_FIELDS satisfies (keyof AIJsonEvaluation<T>)[],
+      outputJsonFallbackField: 'output' satisfies keyof AIJsonEvaluation<T>
+
+      // CRITICAL: evaluation call should exclude the evaluatorPromptBuilder to prevent the recursive loop
+    }, undefined);
+
+    const { result: evaluationResult, provider: evalProvider, model: evalModel } = response;
+
+    if (evaluationResult) {
+      const { scoreBefore, scoreAfter, actionFlags, integrityFlags } = evaluationResult;
+      if (logEvaluationResult) {
+        edgeGroup.wrap(`[${evaluationContext}] 🕵️‍♂️ Evaluation result (score: ${scoreBefore.total} → ${scoreAfter.total}):`, async () => {
+          console.log("Score before:", scoreBefore);
+          console.log("Score after:", scoreAfter);
+          console.log("Action flags:", actionFlags);
+          console.log("Integrity flags:", integrityFlags);
+        });
+      }
+      // Process evaluator output based on schema strategy
+      // evaluationOptions.useStringEvaluatorOutput is already resolved to a
+      // boolean (see resolveUseStringEvaluator above). When true: output is
+      // JSON string → parse. When false: output is structured object → use directly.
+      let correctedOutput: T | undefined;
+      if (evaluationOptions.useStringEvaluatorOutput) {
+        try {
+          const raw = evaluationResult.output as unknown as string;
+          correctedOutput = raw ? JSON.parse(raw) as T : undefined;
+        } catch {
+          console.warn(`[${evaluationContext}] ⚠️ Failed to parse evaluator string output as JSON — falling back to original`);
+        }
+      } else {
+        correctedOutput = evaluationResult.output;
+      }
+
+      if (correctedOutput) {
+        return {
+          ...result,
+          evalProvider,
+          evalModel,
+          scoreBefore: scoreBefore.total,
+          scoreAfter: scoreAfter.total,
+          result: correctedOutput
+        } satisfies AIResponse<T>;
+      }
+    } else if (logEvaluationResult) {
+      console.warn(`[${evaluationContext}] ❓ Evaluation returned no result — falling back to generation output`);
+    }
+  } catch (evalError) {
+    console.warn(`[${evaluationContext}] ⚠️ Evaluation failed — falling back to generation output:`, evalError);
+    // Continue to parsing original generated result
+  } finally {
+    try {
+      // Ensure we emit evaluation complete regardless of outcome to keep
+      // progress lifecycle consistent (best-effort)
+      await onProgress?.({ type: 'ai_evaluation_complete' });
+    } catch {
+      // Never let a progress callback mask a real evaluation error
+    }
+  }
+
+  return undefined;
+}
+
+
+/**
  * Calculates whether a JSON schema is too complex for Gemini's constrained decoder.
  * 
  * Gemini's structured output uses constrained decoding, which builds a state graph
@@ -1714,7 +1763,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
  * - >100 properties → too many structural branches
  * - >100 total enum items → too many token alternatives at decision points
  * - >6 max depth → nested state explosion (arrays of objects within arrays)
- * - >15KB JSON → schema payload itself exceeds decoder limits
+ * - schema JSON larger than MAX_SCHEMA_LENGTH (config/ai-chat.ts, 30KB) → payload itself exceeds decoder limits
  * 
  * @param schema - The JSON schema properties object to evaluate
  * @returns True if the schema exceeds complexity thresholds

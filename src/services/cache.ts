@@ -209,9 +209,16 @@ export async function invalidateExploreCache(options?: InvalidateExploreOptions)
     // else: invalidate (preserves always-invalidate behavior for unknown option shapes)
   }
 
-  // Invalidate both explore caches since trending scores affect ranking
+  // Invalidate all explore page-1 cache slots.
+  //
+  // Explore page 1 is now cached per sort option
+  // (CACHE_KEYS.EXPLORE_PAGE_1_BY_SORT, e.g. `books:explore:page:1:top-picks`),
+  // so a single SCAN-pattern delete clears every sort slot at once. The legacy
+  // combined key `books:explore:page:1` is still purged explicitly in case it
+  // was populated before this per-sort split shipped (it is never written
+  // anymore, but an old stale copy could otherwise linger until TTL).
   await deleteCache(CACHE_KEYS.EXPLORE_PAGE_1);
-  await deleteCache(CACHE_KEYS.EXPLORE_PAGE_1_TRENDING);
+  await deleteCachePattern(CACHE_KEYS.EXPLORE_PAGE_1_PATTERN);
   return true;
 }
 

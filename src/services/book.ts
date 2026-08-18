@@ -1507,8 +1507,9 @@ export function loadOwnCustomActions(bookId: string, pageId: string, userId: str
 
 /**
  * Maps one of the current user's own custom-action rows to an `Action`.
- * Completed rows carry their generated destination; pending ones don't (and
- * therefore stay out of `visibleActions` until generation completes).
+ * Completed rows carry their generated destination; pending ones don't (they
+ * ship with an empty `destinationPageIds` and are included in `visibleActions`
+ * so the reader sees the choice immediately — disabled — while it generates).
  *
  * Delegates to the shared `buildCustomActionAction` builder (the same one used
  * by `buildCanonicalAction` at submit time) so reloads are byte-identical to
@@ -1702,8 +1703,20 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
 
   const canonActions = dbPage.actions;
   let allActions = canonActions;
-  let visibleActions = canonActions.filter(action => action.destinationPageIds?.length);
-  let hasIncompleteActions = allActions.length > visibleActions.length;
+  // Ship EVERY action — completed AND still-pending — so the reader sees all
+  // choices immediately on first render. Actions whose `destinationPageIds` is
+  // still empty render as disabled buttons with a progress/radar indicator
+  // (see StoryActionButton: isDisabledByProgress + getProgressIcon), and become
+  // clickable the moment candidate generation resolves their destination. The
+  // old filter (completed-only) was what left the frontend with NO buttons on
+  // a fresh page until the first poll round-trip.
+  let visibleActions = canonActions;
+  // Cache-gating flag: a page is "incomplete" while ANY action lacks a
+  // destination. Such pages must never be served from / written to the Redis or
+  // LRU caches — a cached copy would freeze the pending actions as permanently
+  // disabled. Computed independently of `visibleActions` (which now always
+  // carries the full list) so the two concerns stay decoupled.
+  let hasIncompleteActions = allActions.some(action => !action.destinationPageIds?.length);
   const { id: pageId, bookId } = dbPage;
   const isPageOne = dbPage.page === 1;
 
@@ -1721,8 +1734,8 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
     if (ownCustomActionRows.length > 0) {
       hasOwnCustomActions = true;
       allActions = [...allActions, ...ownCustomActionRows.map(mapCustomActionRowToAction)];
-      visibleActions = allActions.filter(action => action.destinationPageIds?.length);
-      hasIncompleteActions = allActions.length > visibleActions.length;
+      visibleActions = allActions;
+      hasIncompleteActions = allActions.some(action => !action.destinationPageIds?.length);
     }
   }
 
@@ -1937,7 +1950,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
     updatedAt: dbPage.updatedAt,
 
     // Enriched columns
-    actions: visibleActions, // Only actions that have a destination page
+    actions: visibleActions, // ALL actions — completed AND still-pending (empty destinationPageIds until generation resolves them)
     originalActionsCount: allActions.length,
     selectedActions,
     sourceAction, // sourceAction is the convenience shortcut for the single action that led to this page.

@@ -679,38 +679,51 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
       // Recommend books based on user's reading history (from userSessions)
       // Finds unread books with overlapping keywords, sorted by similarity count
       // Requires authentication, fall through to 'popular' books
-      if (currentUserId) {
-        // Aggregate all distinct keywords from books the user has read
-        const userReadKeywords = sql`(
-          SELECT COALESCE(array_agg(DISTINCT kw), '{}')
-          FROM user_sessions us_src
-          INNER JOIN books rb ON us_src.book_id = rb.id
-          CROSS JOIN LATERAL unnest(rb.keywords) AS kw
-          WHERE us_src.user_id = ${currentUserId}
-        )`;
+      if (!currentUserId) {
+        // Anonymous viewer → nothing to personalize against. Return an EMPTY
+        // result instead of falling through to the `popular` case below: the
+        // fall-through used to silently present the entire public catalogue
+        // under a "You Might Like" label, and combined with the old single-slot
+        // explore cache this could even surface a stale cached list.
+        const noop = query.where(sql`1=0`);
+        if (countQuery) countQuery.where(sql`1=0`);
+        return noop;
+      }
 
-        // Keyword overlap count between the candidate book and user's read books
-        const overlapScore = sql`(
-          SELECT COUNT(*)::int
-          FROM unnest(${books.keywords}) AS kw
-          WHERE kw = ANY(${userReadKeywords})
-        )`;
+      // Aggregate all distinct keywords from books the user has read.
+      // NOTE: the read-books join intentionally does NOT filter on
+      // `visibility='public'` — a user reading their own private/draft book
+      // still has a real user_sessions row, and its keywords are legitimate
+      // personalization signal for "You Might Like".
+      const userReadKeywords = sql`(
+        SELECT COALESCE(array_agg(DISTINCT kw), '{}')
+        FROM user_sessions us_src
+        INNER JOIN books rb ON us_src.book_id = rb.id
+        CROSS JOIN LATERAL unnest(rb.keywords) AS kw
+        WHERE us_src.user_id = ${currentUserId}
+      )`;
 
-        query = query
-          .where(sql`${books.keywords} && ${userReadKeywords}`)
+      // Keyword overlap count between the candidate book and user's read books
+      const overlapScore = sql`(
+        SELECT COUNT(*)::int
+        FROM unnest(${books.keywords}) AS kw
+        WHERE kw = ANY(${userReadKeywords})
+      )`;
+
+      query = query
+        .where(sql`${books.keywords} && ${userReadKeywords}`)
+        .where(sql`NOT EXISTS (
+          SELECT 1 FROM user_sessions us_exclude
+          WHERE us_exclude.user_id = ${currentUserId} AND us_exclude.book_id = books.id
+        )`);
+      if (countQuery) {
+        countQuery.where(sql`${books.keywords} && ${userReadKeywords}`)
           .where(sql`NOT EXISTS (
             SELECT 1 FROM user_sessions us_exclude
             WHERE us_exclude.user_id = ${currentUserId} AND us_exclude.book_id = books.id
           )`);
-        if (countQuery) {
-          countQuery.where(sql`${books.keywords} && ${userReadKeywords}`)
-            .where(sql`NOT EXISTS (
-              SELECT 1 FROM user_sessions us_exclude
-              WHERE us_exclude.user_id = ${currentUserId} AND us_exclude.book_id = books.id
-            )`);
-        }
-        return query.orderBy(desc(overlapScore)).orderBy(desc(books.trendingScore));
       }
+      return query.orderBy(desc(overlapScore)).orderBy(desc(books.trendingScore));
     }
 
     case 'popular': {
@@ -750,6 +763,23 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
       return query;
     }
 
+    case 'pen': {
+      // Filter to public Pen-written books (is_pen_book) that the author has
+      // marked complete (authoring_status='complete'). In-progress Pen drafts
+      // are intentionally excluded from this showcase — they are surfaced in
+      // the owner-scoped 'pen-drafts' sort instead. The explore route's base
+      // condition already scopes to status='active' + visibility='public'.
+      // Sort by creation date (newest first), mirroring 'originals'.
+      query = query
+        .where(eq(books.isPenBook, true))
+        .where(sql`${books.authoringStatus} = 'complete'`)
+        .orderBy(desc(books.createdAt));
+      if (countQuery) {
+        countQuery.where(eq(books.isPenBook, true))
+          .where(sql`${books.authoringStatus} = 'complete'`);
+      }
+      return query;
+    }
     case 'reads': {
       // Filter to books the user has read (from userSessions)
       // Sort by lastReadAt (most recent first)

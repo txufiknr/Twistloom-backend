@@ -4,7 +4,7 @@ import type { RelationshipUpdate, InitialInventoryItem, InitialInjury, Inventory
 import { canonicalPlaceTypes, type NewPlace, type PlaceUpdate, placeWeathers, type PlaceConnectionUpdate, placeAccessibilities } from "../types/places.js";
 import { actionHintTypes, actionTypes, characterSceneRoles, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, sceneTypes, difficulties, endingTypes, storyMomentums, stabilityLevels, storyPhaseKeys, futureNoteTriggerTypes, memoryIntegrities } from "../types/story.js";
 import type { AIJsonActionFlag, AIJsonEvaluation, AIJsonEvaluationFix, AIJsonEvaluationIssue, AIJsonIntegrityFlag, AIJsonProperty, AIJsonScoreAfter, AIJsonScoreBefore, AIJsonScoreBreakdown, AIPromptOptions } from "../types/ai-chat.js";
-import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, FactUpdate, StateDeltaGeneration, ActionGeneration, FutureNoteGeneration, FlagUpdate, PlotFlagType, InitialPlotFlag, SceneCharacter, SanityState } from "../types/story.js";
+import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, FactUpdate, StateDeltaGeneration, StateDeltaGenerationWithBranch, ActionGeneration, FutureNoteGeneration, FlagUpdate, PlotFlagType, InitialPlotFlag, SceneCharacter, SanityState } from "../types/story.js";
 import { threadPriorities, threadStatuses, threadTruths, type UpdateThread, type NewThread, type AddThreadClue, type InitialThreadClue } from "../types/story-thread.js";
 import type { CandidatePagesGeneration } from "../types/candidate-generation.js";
 import { genders } from "../types/user.js";
@@ -664,17 +664,71 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
   },
 }
 
+// ============================================================================
+// MULTI-TURN (STAGE-SPLIT) SCHEMA EXPORTS
+// ============================================================================
+// See MULTI_TURN_PAGE_GENERATION_ROADMAP.md Part 2.1. Additive, non-breaking:
+// these two definitions are the SAME objects STORY_GENERATION_SCHEMA_DEFINITION
+// below composes from (not copies), so Turn A / Turn B can never drift from
+// the merge-validation target the way the old duplicated-JSON-shape bug
+// class did (see prompt.ts's NEW_CHARACTER_SHAPE-style constants for the
+// prior fix of that same class of bug). When USE_MULTI_TURN_GENERATION is on,
+// each turn sends only its own definition — a provably smaller/shallower
+// schema than STORY_GENERATION_SCHEMA_DEFINITION — to the AI's constrained
+// decoder, directly addressing isSchemaTooComplex (ai-chat.ts) depth/prop
+// thresholds and per-provider prompt-length caps (AI_MAX_PROMPT_LENGTH).
+
+/** Turn A (StoryPage) schema — sent to the AI instead of STORY_GENERATION_SCHEMA_DEFINITION when USE_MULTI_TURN_GENERATION is on. Identical fields to STORY_PAGE_GENERATION_SCHEMA above; exported under the turn-oriented name for call sites in prompt.ts's stage runner. */
+export const STORY_PAGE_SCHEMA_DEFINITION: Record<keyof StoryPageGeneration, AIJsonProperty> = STORY_PAGE_GENERATION_SCHEMA;
+export const STORY_PAGE_REQUIRED_FIELDS = ['text', 'actions', 'calendarDate'] satisfies (keyof StoryPageGeneration)[];
+
+/** Turn B (StateDelta) schema, WITHOUT branchNames — sent to the AI instead of STORY_GENERATION_SCHEMA_DEFINITION when USE_MULTI_TURN_GENERATION is on. No required fields: every delta field is optional (a page with zero state changes — e.g. a purely reflective beat — is a valid StateDelta). Prefer STATE_DELTA_WITH_BRANCH_SCHEMA_DEFINITION below at actual call sites; this bare form exists for callers that place branchNames elsewhere (see Part 5 decision log). */
+export const STATE_DELTA_SCHEMA_DEFINITION: Record<keyof StateDeltaGeneration, AIJsonProperty> = STORY_STATE_GENERATION_SCHEMA;
+export const STATE_DELTA_REQUIRED_FIELDS: (keyof StateDeltaGeneration)[] = [];
+
+/**
+ * Turn B schema + `branchNames` (see {@link StateDeltaGenerationWithBranch}
+ * in types/story.ts). This — not the bare STATE_DELTA_SCHEMA_DEFINITION
+ * above — is what prompt.ts's state-delta stage actually sends: branchNames
+ * moved to Turn B because the alternative-timeline names describe the whole
+ * divergence, which is only knowable once the delta (the actual consequence)
+ * is authored (roadmap §2.1 decision).
+ *
+ * Serves BOTH generateNextPage's single delta turn and generateNextPages'
+ * per-alternative delta turns — in the parallel multi-turn design each
+ * alternative's delta is its own independent request (Part 2.5), not an
+ * array element inside one combined batch response, so no separate
+ * array-wrapped "candidate" schema is needed the way
+ * CANDIDATE_GENERATION_SCHEMA_DEFINITION wraps the legacy single-shot path.
+ */
+export const STATE_DELTA_WITH_BRANCH_SCHEMA_DEFINITION = {
+  ...STATE_DELTA_SCHEMA_DEFINITION,
+  branchNames: {
+    type: 'array',
+    items: { type: 'string' },
+    description: 'Suggest 3 creative, distinct names for this timeline. Evocative, spoiler-free.',
+  },
+} satisfies Record<keyof StateDeltaGenerationWithBranch, AIJsonProperty>;
+export const STATE_DELTA_WITH_BRANCH_REQUIRED_FIELDS: (keyof StateDeltaGenerationWithBranch)[] = [];
+
 /**
  * Common schema definition for StoryGeneration type
  * 
  * This is the single source of truth for StoryGeneration schema.
  * All helper functions reference this to avoid duplication.
  * 
+ * Composed from STORY_PAGE_SCHEMA_DEFINITION + STATE_DELTA_SCHEMA_DEFINITION
+ * (the multi-turn exports above) rather than the legacy
+ * STORY_PAGE_GENERATION_SCHEMA/STORY_STATE_GENERATION_SCHEMA names directly —
+ * same two objects either way (the multi-turn exports are aliases, not
+ * copies), but this keeps a single textual reference point so the legacy
+ * single-shot schema and the two split schemas structurally cannot diverge.
+ * 
  * @todo ApiError: {"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}
  */
 export const STORY_GENERATION_SCHEMA_DEFINITION = {
-  ...STORY_PAGE_GENERATION_SCHEMA, // Page
-  ...STORY_STATE_GENERATION_SCHEMA, // State Delta
+  ...STORY_PAGE_SCHEMA_DEFINITION, // Page
+  ...STATE_DELTA_SCHEMA_DEFINITION, // State Delta
   branchNames: {
     type: 'array',
     items: { type: 'string' },

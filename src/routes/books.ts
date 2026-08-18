@@ -2383,11 +2383,20 @@ router.get("/explore", optionalAuth, async (c) => {
 
     // Cache strategy: don't cache user-specific or filtered queries
     const shouldCache = page === 1 && !profileUserId && !isCreations && !isPenDrafts && !search && tagsArray.length === 0 && !language && !lastUpdated && !ageRange && !gender && !mode && !statusFilter && !ratingParam && !ratingCountParam && bookSortBy !== 'reads' && bookSortBy !== 'favorites' && bookSortBy !== 'recommendations' && bookSortBy !== 'for-you';
+    //
+    // Per-sort cache key (see CACHE_KEYS.EXPLORE_PAGE_1_BY_SORT). Each public
+    // sort option caches page 1 under its OWN key. This fixes a cache-key
+    // collision where `newest`, `popular`, `top-picks` and `originals` all
+    // shared one `books:explore:page:1` slot: the first sort to run (usually
+    // the default `newest` browse, 30-min TTL) populated it, and every later
+    // `sortBy=top-picks` / `sortBy=originals` request was served that cached
+    // "all public books" list — making those filters appear broken.
     const cacheKey = isCreations
       ? `books:user:${targetUserId}:page:${page}`
-      : bookSortBy === 'trending'
-      ? CACHE_KEYS.EXPLORE_PAGE_1_TRENDING
-      : CACHE_KEYS.EXPLORE_PAGE_1;
+      : CACHE_KEYS.EXPLORE_PAGE_1_BY_SORT(bookSortBy);
+    // Trending keeps its own (shorter) TTL because its score decays daily; the
+    // other public sorts can hold a longer cache. The key differs per sort, so
+    // a shorter TTL for trending does not cross-contaminate other sort slots.
     const cacheTTL = bookSortBy === 'trending'
       ? CACHE_TTL.EXPLORE_PAGE_1_TRENDING
       : CACHE_TTL.EXPLORE_PAGE_1;
@@ -4633,7 +4642,11 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
         isGenerating: true,
         completedActions,
         totalActions,
-        actions: actionsWithDestinations, // Current completed actions, this should be already correct
+        // ALL actions — completed AND still-pending. The frontend merges this
+        // array into page.actions on each progress event, so returning the full
+        // set keeps pending choices visible (disabled) while they generate,
+        // instead of clobbering them with completed-only arrays.
+        actions: mergedActions,
         actionProgress, // Include per-action progress events
         startedAt,
         lastUpdated: new Date().toISOString(),
@@ -4651,7 +4664,9 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
         isGenerating: true,
         completedActions,
         totalActions,
-        actions: actionsWithDestinations,
+        // Full action set — pending custom choices stay visible (disabled) while
+        // their page generates, same contract as the isGenerating branch above.
+        actions: mergedActions,
         actionProgress: progressEventFallback,
         startedAt: new Date().toISOString(),
         lastUpdated: new Date().toISOString(),
@@ -4703,7 +4718,9 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
       isGenerating: true,
       completedActions,
       totalActions,
-      actions: actionsWithDestinations, // Current completed actions, this should be already correct
+      // Full action set — mirrors the page payload: pending actions included,
+      // disabled until their destinations resolve.
+      actions: mergedActions,
       actionProgress: progressEventFallback,
       startedAt: new Date().toISOString(),
       lastUpdated: new Date().toISOString(),

@@ -1325,6 +1325,26 @@ export type StoryGeneration = StoryPageGeneration & StateDeltaGeneration & {
 };
 export type InitialStoryPageGeneration = Omit<StoryPageGeneration, 'placeId'> & Pick<StoryPage, 'momentum'>;
 
+/**
+ * AI-output shape of the multi-turn "state delta" stage (Turn B) — see
+ * MULTI_TURN_PAGE_GENERATION_ROADMAP.md Part 2.1.
+ *
+ * Identical to {@link StateDeltaGeneration} plus `branchNames`. Turn B moves
+ * `branchNames` off {@link StoryPageGeneration} (Turn A) because the
+ * alternative-timeline names describe the *whole* divergence, which is only
+ * knowable once the state delta (the actual consequence of the action) has
+ * been authored — Turn A's page text alone under-determines it.
+ *
+ * `StoryGeneration` (the merge target) is unaffected: `StoryPageGeneration &
+ * StateDeltaGeneration & { branchNames?: string[] }` already carries
+ * `branchNames` as its own field, so `{ ...storyPage, ...stateDelta }` from
+ * a Turn A/Turn B merge produces a valid `StoryGeneration` either way.
+ */
+export type StateDeltaGenerationWithBranch = StateDeltaGeneration & {
+  /** AI-suggested human-readable names for this branch (3 alternatives). Authored in Turn B — see type doc above. */
+  branchNames?: string[];
+};
+
 export type PersistedStoryPage = StoryPage & Pick<DBPage, 'id' | 'bookId' | 'branchId' | 'parentId' | 'page' | 'elapsedDays' | ResourceAIProvider | ResourceAIScore | ResourceTimestamp>;
 export type UserStoryPage = PersistedStoryPage & { selectedActions: SelectedAction[] };
 export type ActionedStoryPage = PersistedStoryPage & { selectedAction: SelectedAction };

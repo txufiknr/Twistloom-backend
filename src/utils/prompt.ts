@@ -1,4 +1,4 @@
-import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_CREATIVE, DEFAULT_MAX_OUTPUT_TOKEN } from "../config/ai-chat.js";
+import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_CREATIVE, DEFAULT_MAX_OUTPUT_TOKEN, STORY_PAGE_MAX_OUTPUT_TOKEN, STATE_DELTA_MAX_OUTPUT_TOKEN, STORY_PAGE_EVALUATION_OUTPUT_TOKEN, STATE_DELTA_EVALUATION_OUTPUT_TOKEN, USE_MULTI_TURN_GENERATION } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING, AI_CHAT_MODELS_EVALUATION } from "../config/ai-clients.js";
 import { characterImportances, characterStatuses } from "../config/enums.js";
 import { actionTypes, archetypes, stabilityLevels, manipulationAffinities, truthLevels, threatProximities, realityStabilities, endingTypes, finalePhases, factTypes, sceneTypes, storyMomentums } from "../config/enums.js";
@@ -7,7 +7,7 @@ import { moodValues, weatherValues, sceneTypeValues, sceneRoleValues, momentumVa
 import { createNonRetryableError } from "./retry.js";
 import { TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS, MAX_THREADS_CLUES, MAX_ACTION_CHOICES_FINALE, FUTURE_NOTE_LOOKAHEAD_DAYS } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
-import { aiPrompt, createAIOptionsWithSchema, resolveUseStringEvaluator } from "./ai-chat.js";
+import { aiPrompt, createAIOptionsWithSchema, resolveUseStringEvaluator, runEvaluationPass } from "./ai-chat.js";
 import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, applyStateDelta, advanceStoryState, calculatePsychologicalDeltas, mapFutureNoteWithKey, createStoryThread } from "./story.js";
 import { ensureCandidatesForPageWithStrategy, triggerCandidateGenerationWorkflow } from "./candidate-generation.js";
 import { calculateHealthStatus, generateRandomCharacter, getMainCharacterInfo } from "./characters.js";
@@ -26,7 +26,7 @@ import { invalidateUserBooksCache, invalidateUserProfileCache, invalidateExplore
 import { logUserActivity } from "../services/user.js";
 import { notifyForumOfBookChange } from "../services/forum-queue.js";
 import { generateBranchId, getStoryStateWithBranch } from "../services/story-branch.js";
-import { BOOK_CREATION_REQUIRED_FIELDS, BOOK_CREATION_SCHEMA_DEFINITION, CANDIDATE_GENERATION_REQUIRED_FIELDS, CANDIDATE_GENERATION_SCHEMA_DEFINITION, SANITY_STATE_DEFAULTS, STORY_GENERATION_REQUIRED_FIELDS, STORY_GENERATION_SCHEMA_DEFINITION } from "../schema/story.js";
+import { BOOK_CREATION_REQUIRED_FIELDS, BOOK_CREATION_SCHEMA_DEFINITION, CANDIDATE_GENERATION_REQUIRED_FIELDS, CANDIDATE_GENERATION_SCHEMA_DEFINITION, SANITY_STATE_DEFAULTS, STORY_GENERATION_REQUIRED_FIELDS, STORY_GENERATION_SCHEMA_DEFINITION, STORY_PAGE_SCHEMA_DEFINITION, STORY_PAGE_REQUIRED_FIELDS, STATE_DELTA_WITH_BRANCH_SCHEMA_DEFINITION, STATE_DELTA_WITH_BRANCH_REQUIRED_FIELDS } from "../schema/story.js";
 import { formatPageTextForPrompt } from "./books.js";
 import type { ThreadPriority, StoryThread, ThreadStatus } from "../types/story-thread.js";
 import { aiStreamSSE, parseSSEStreamContent } from "./ai-chat-stream.js";
@@ -39,11 +39,11 @@ import { DEFAULT_CANDIDATE_PAGE_PER_ACTION, MAX_CANDIDATE_PAGE_PER_ACTION } from
 import { canonicalPlaceTypes } from "../config/enums.js";
 import type { PlaceMemory } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
-import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, FutureNoteSchedule, FutureNoteStateTrigger, MemoryIntegrity, PastEvent, PlotFlag, SanityState, SceneType, StateDelta, StoryGeneration, StoryOutline, StoryPage, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
-import type { AIChatConfig, AIChatConfigCaps, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
+import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, FutureNoteSchedule, FutureNoteStateTrigger, MemoryIntegrity, PastEvent, PlotFlag, SanityState, SceneType, StateDelta, StateDeltaGeneration, StateDeltaGenerationWithBranch, StoryGeneration, StoryOutline, StoryPage, StoryPageGeneration, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
+import type { AIChatConfig, AIChatConfigCaps, AIPromptForJson, AIPromptForJsonParams, AIResponse, GenerationStage } from "../types/ai-chat.js";
 import type { CharacterMemory, CharacterRelationship, Injury, InventoryItem, PastInteraction, HealthStatus, StoryMCCandidate } from "../types/character.js";
 import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, CreateBookResponse, BookStatus, BookMode } from "../types/book.js";
-import type { BuildNextPageParams, GenerateBookCreationPromptParams, BuildNextPagePromptParams } from "../types/prompt.js";
+import type { BuildNextPageParams, GenerateBookCreationPromptParams, BuildNextPagePromptParams, StageContext, GenerationStageDefinition } from "../types/prompt.js";
 import type { AIChatStreamResult, ProgressCallback } from "../types/sse.js";
 import type { CandidateGenerationPage, CandidatePagesGeneration } from "../types/candidate-generation.js";
 import { ucfirst } from "./formatter.js";
@@ -316,23 +316,70 @@ function buildFirstPageRuleSet(preset: WritingPreset = 'default'): string {
 
 /**
  * Builds the complete system prompt (writing style + rules) for a given writing
- * preset and generation phase (first page or subsequent page).
+ * preset and generation phase (first page, subsequent page, or — multi-turn
+ * only — the state-delta turn).
+ *
+ * `'state-delta'` (MULTI_TURN_PAGE_GENERATION_ROADMAP.md Part 2.2) is a
+ * dedicated, smaller rule set for Turn B of the stage-split pipeline: it
+ * drops every rule block that governs page PROSE (RULES_EMBODIED_SCENE_CONTINUITY,
+ * the preset's page-text rules, RULES_ACTIONS, RULES_SCENE_TYPES,
+ * RULES_ENDING_ARCHETYPES, RULES_STORY_MOMENTUMS, RULES_DIFFICULTY_SCALING —
+ * none of these describe a StateDeltaGeneration field) and keeps only the
+ * blocks that govern fields Turn B actually authors: world/consistency rules
+ * (RULES_ROUTE_MEMORY, RULES_STORY_CONSISTENCY — flagUpdates/factUpdates),
+ * future-note vocabulary (RULES_FUTURE_NOTES — futureNoteAdd), and
+ * character/place authoring rules (RULES_CHARACTER, RULES_CHARACTER_RECOGNITION,
+ * RULES_PLACE — newCharacters/updatedCharacters/newPlaces/updatedPlaces).
+ *
+ * This corrects a gap in the original roadmap draft's Part 2.2 table, which
+ * listed RULES_PLANNED_CHARACTERS as a state-delta system-prompt rule — that
+ * rule is actually spliced into the shared USER prompt today (see
+ * buildNextPagePrompt's `state.plannedCharacters?.length && RULES_PLANNED_CHARACTERS`
+ * line), not the system prompt, and stays a user-prompt concern for both
+ * turns in the split (buildStoryPagePrompt/buildStateDeltaPrompt below) since
+ * a planned character can plausibly appear in Turn A's prose as well as
+ * being introduced via Turn B's addPlannedCharacters/newCharacters — moving
+ * it to only one turn's system prompt would have been wrong in either
+ * direction. The table also omitted RULES_CHARACTER_RECOGNITION, even though
+ * `recognitionLevel` is itself a StateDeltaGeneration field
+ * (newCharacters[].recognitionLevel / updatedCharacters[].recognitionLevel) —
+ * included here.
+ *
+ * RULES_FALSE_PREVIEW is intentionally kept OUT of state-delta: it's a prose
+ * technique enacted in page text (Turn A), not something any delta field
+ * encodes.
  */
-function buildPresetSystemPrompt(type: 'first' | 'next', preset: WritingPreset = 'default'): string {
+function buildPresetSystemPrompt(type: 'first' | 'next' | 'state-delta', preset: WritingPreset = 'default'): string {
   const writingStyle = PROMPT_SYSTEM_WRITING_STYLE[preset] ?? PROMPT_SYSTEM_WRITING_STYLE.default;
-  const firstPageRules = buildFirstPageRuleSet(preset);
 
-  const rules = type === 'first' ? firstPageRules : [
-    RULES_ROUTE_MEMORY,
-    RULES_STORY_CONSISTENCY,
-    RULES_FUTURE_NOTES,
-    RULES_FALSE_PREVIEW,
-    firstPageRules,
-  ].join('\n\n---\n');
+  const rules = ((): string => {
+    switch (type) {
+      case 'first':
+        return buildFirstPageRuleSet(preset);
+      case 'state-delta':
+        return [
+          RULES_ROUTE_MEMORY,
+          RULES_STORY_CONSISTENCY,
+          RULES_FUTURE_NOTES,
+          RULES_CHARACTER,
+          RULES_CHARACTER_RECOGNITION,
+          RULES_PLACE,
+        ].join('\n\n---\n');
+      case 'next':
+      default:
+        return [
+          RULES_ROUTE_MEMORY,
+          RULES_STORY_CONSISTENCY,
+          RULES_FUTURE_NOTES,
+          RULES_FALSE_PREVIEW,
+          buildFirstPageRuleSet(preset),
+        ].join('\n\n---\n');
+    }
+  })();
 
-  // Language enforcement is preset-independent (applies identically to first-page
-  // and next-page generation), so it's spliced in once here rather than duplicated
-  // into all 8 PROMPT_SYSTEM_WRITING_STYLE strings.
+  // Language enforcement is preset-independent (applies identically across
+  // every generation phase/turn), so it's spliced in once here rather than
+  // duplicated into all 8 PROMPT_SYSTEM_WRITING_STYLE strings.
   return `${writingStyle}\n\n---\n${RULES_LANGUAGE_LOCALIZATION}\n\n---\n${rules}`;
 }
 
@@ -868,6 +915,234 @@ const multiNextPageOutputFormat: string = `{
   "output": "..."
 }`;
 
+// ============================================================================
+// MULTI-TURN (STAGE-SPLIT) OUTPUT FORMAT TEMPLATES
+// ============================================================================
+// See MULTI_TURN_PAGE_GENERATION_ROADMAP.md Part 2.1/3 Phase 1 Step 1.1.
+// Field-for-field identical text to nextPageOutputFormat above, partitioned
+// by the same StoryPageGeneration/StateDeltaGeneration split the schema
+// (schema/story.ts) and field instructions (buildStoryPageFieldInstructions/
+// buildStateDeltaFieldInstructions above) use — verified via an automated
+// bracket-depth-aware diff against nextPageOutputFormat during authoring, so
+// every one of the 35 top-level keys appears in exactly one of the two
+// templates below with byte-identical shape to the combined original.
+
+/** Turn A (StoryPage) JSON-shape example — paired with STORY_PAGE_SCHEMA_DEFINITION. */
+const storyPageOutputFormat: string = `{
+  "text": "...",
+  "mood": "${moodValues}",
+  "placeId": "<place_id>",
+  "weather": "${weatherValues}",
+  "calendarDate": "<yyyy-MM-dd>",
+  "timeOfDay": "...",
+  "sceneType": "${sceneTypeValues}",
+  "charactersPresent": [
+    {
+      "characterId": "<character_id>",
+      "sceneRole": "${sceneRoleValues}",
+      "sceneFocus": <number between 0.0 and 1.0>
+    }
+  ],
+  "keyEvents": [],
+  "keyObjects": [],
+  "actions": [
+    {
+      "text": "First-person action or dialogue",
+      "type": "${actionTypeValues}",
+      "hint": {
+        "text": "Subtle implication of consequence",
+        "type": "${hintTypeValues}"
+      }
+    }
+  ]
+}`;
+
+/**
+ * Turn B (StateDelta) JSON-shape example, including `branchNames` — paired
+ * with STATE_DELTA_WITH_BRANCH_SCHEMA_DEFINITION. `minutesPassed` opens the
+ * object rather than trailing after the page-only fields the way it does in
+ * the combined nextPageOutputFormat — no semantic significance, just the
+ * natural result of removing the 11 page-only keys from that template.
+ */
+const stateDeltaOutputFormat: string = `{
+  "minutesPassed": <number>,
+  "traumaTagAdd": [],
+  "traumaTagRemove": [],
+  "addPlotFlags": [{
+    "fact": "...",
+    "type": "${plotFlagTypeValues}",
+    "isMajorEvent": <boolean>
+  }],
+  "inventory": [
+    {
+      "name": "...",
+      "traits": [
+        "...: ..."
+      ],
+      "amount": <number>,
+      "where": "...",
+      "pageAcquired": <number>
+    }
+  ],
+  "injuries": [
+    {
+      "bodyPart": "...",
+      "description": "...",
+      "consequences": "...",
+      "category": "${injuryCategoryValues}",
+      "severity": <number between 0.0 and 1.0>,
+      "decayPerPage": <number between 0.0 and 1.0>,
+      "pageAcquired": <number>
+    }
+  ],
+  "contextHistory": "...",
+  "futureNoteAdd": [
+    ${NEW_FUTURE_NOTE_SHAPE}
+  ],
+  "futureNoteRemove": [<key>],
+  "addPlannedCharacters": [
+    ${NEW_PLANNED_CHARACTER_SHAPE}
+  ],
+  "factUpdates": [
+    {
+      "key": <new or existing key>,
+      "value": "...",
+      "page": <number>,
+      "type": "${factTypeValues}",
+      "reason": "..."
+    }
+  ],
+  "flagUpdates": [
+    {
+      "type": "${psychologicalFlagTypeValues}",
+      "level": "${flagLevelValues}"
+    }
+  ],
+  "newCharacters": [
+    ${NEW_CHARACTER_SHAPE}
+  ],
+  "updatedCharacters": [
+    {
+      "characterId": "<character_id>",
+      "knownName": "...",
+      "recognitionLevel": "${recognitionLevelValues}",
+      "gender": "${genderValues}",
+      "role": "...",
+      "bio": "...",
+      "appearance": "...",
+      "status": "${characterStatusValues}",
+      "secrets": ["..."],
+      "importance": "${characterImportanceValues}",
+      "relationshipToMC": {
+        "type": "${relationshipTypeValues}",
+        "status": "${relationshipStatusValues}",
+        "context": "...",
+        "recognitionLevel": "${recognitionLevelValues}"
+      },
+      "newInteractions": ["..."],
+      "potentialTwist": "${twistTypeValues}",
+      "updateSchedules": [
+        {
+          "placeId": "<place_id>",
+          "availabilityWindow": "...",
+          "missedConsequence": "..."
+        }
+      ],
+      "removeSchedules": ["<place_id>"],
+      "updateTraits": [
+        "...: ..."
+      ],
+      "removeTraits": [],
+      "injuries": []
+    }
+  ],
+  "relationshipUpdates": [
+    {
+      "sourceId": "<character_id_1>",
+      "targetId": "<character_id_2>",
+      "type": "${relationshipTypeValues}",
+      "status": "${relationshipStatusValues}",
+      "context": "Define relationship context",
+      "recognitionLevel": "${recognitionLevelValues}"
+    }
+  ],
+  "newPlaces": [
+    ${NEW_PLACE_SHAPE}
+  ],
+  "updatedPlaces": [
+    {
+      "placeId": "<place_id>",
+      "knownName": "...",
+      "type": "...",
+      "category": "${canonicalPlaceTypeValues}",
+      "context": "...",
+      "familiarityCorrection": <number between -0.5 to 0.5>,
+      "isRealNameKnown": <boolean>,
+      "addKeyEvents": ["..."],
+      "addHints": [],
+      "removeHints": [],
+      "updateTraits": [
+        "...: ..."
+      ],
+      "removeTraits": [],
+      "knownCharacters": [
+        "<character_id>: <Context or interaction>"
+      ]
+    }
+  ],
+  "placeConnections": [
+    {
+      "sourceId": "<place_id_1>",
+      "targetId": "<place_id_2>",
+      "travelTime": "...",
+      "routeType": "...",
+      "accessibility": "${accessibilityValues}",
+      "addObstacles": [],
+      "removeObstacles": [],
+      "bidirectional": <boolean>,
+      "notes": "..."
+    }
+  ],
+  "newThreads": [
+    ${NEW_THREAD_SHAPE}
+  ],
+  "updateThreads": [
+    {
+      "threadId": "<thread_id>",
+      "status": "${threadStatusValues}",
+      "priority": "${threadPriorityValues}",
+      "truth": "${threadTruthValues}",
+      "importance": <number between 0.0 and 1.0>,
+      "urgencyCorrection": <number between -0.5 and 0.5>,
+      "summary": "...",
+      "resolution": "..."
+    }
+  ],
+  "addClues": [
+    {
+      "threadId": "<thread_id>",
+      "clue": "...",
+      "isFalse": <boolean>
+    }
+  ],
+  "closeThreads": [],
+  "viableEnding": {
+    "text": "...",
+    "type": "${endingTypeValues}",
+    "outline": [
+      {
+        "text": "...",
+        "isDone": <boolean>,
+        "doneAtPage": <number>
+      }
+    ],
+    "changeReason": "...",
+    "changeViabilityBefore": <number between 0.0 and 1.0>,
+    "changeViabilityAfter": <number between 0.0 and 1.0>
+  },
+  "branchNames": ["...", "...", "..."]
+}`;
+
 function buildNextPagePrompt(params: BuildNextPagePromptParams): string {
   const { advancedState: state, candidateCount, book } = params;
   const { isFinale, isLastPage } = getStoryStateInfo(state);
@@ -882,12 +1157,95 @@ function buildNextPagePrompt(params: BuildNextPagePromptParams): string {
   ].filter(Boolean).join(`\n\n---\n`);
 }
 
-function buildNextPageFieldInstructions(state: StoryState, action: Action, sceneType: SceneType = 'transition'): string {
+/**
+ * Turn A (StoryPage) user prompt — MULTI_TURN_PAGE_GENERATION_ROADMAP.md
+ * Part 3 Phase 1/4. Mirrors buildNextPagePrompt exactly except:
+ *  - formatNextPageTaskPrompt takes `fateContext` (parallel-multiverse
+ *    divergence, see formatFateDivergenceDirective) instead of `candidateCount`
+ *    from params (this call always writes exactly one page).
+ *  - formatNextPageNarrativePrompt is unchanged (full) — Turn A needs
+ *    everything to write accurate, tonally-correct prose.
+ * RULES_PLANNED_CHARACTERS and the BRANCHING ACTIONS block both stay: a
+ * planned character can appear in Turn A's prose even though
+ * addPlannedCharacters itself is authored in Turn B, and `actions` is a
+ * StoryPageGeneration field Turn A authors directly.
+ */
+function buildStoryPagePrompt(params: BuildNextPagePromptParams, fateContext?: { fateIndex: number; fateCount: number }): string {
+  const { advancedState: state, candidateCount, book } = params;
+  const { isFinale, isLastPage } = getStoryStateInfo(state);
+  const { language } = book;
+
+  return [
+    `TASK: ${formatNextPageTaskPrompt(state, candidateCount, language, book.mode, fateContext)}`,
+    formatNextPageStoryContextPrompt(params),
+    formatNextPageNarrativePrompt(params, true),
+    state.plannedCharacters?.length && RULES_PLANNED_CHARACTERS,
+    isLastPage && `BRANCHING ACTIONS:\n${getActionRulesText({ isFinale, mode: book.mode })}`
+  ].filter(Boolean).join(`\n\n---\n`);
+}
+
+/**
+ * Formats Turn A's already-generated StoryPage for Turn B's "GENERATED PAGE"
+ * prompt section — MULTI_TURN_PAGE_GENERATION_ROADMAP.md Part 2.3. Turn B
+ * reads the page the way a human editor would (prose first, then the scene
+ * facts Turn A also decided) rather than raw JSON, so its delta decisions
+ * stay grounded in what a reader actually experienced on the page.
+ */
+function formatGeneratedPageForDeltaPrompt(storyPage: StoryPageGeneration): string {
+  const { text, mood, placeId, weather, calendarDate, timeOfDay, sceneType, charactersPresent = [], keyEvents = [], keyObjects = [], actions = [] } = storyPage;
+
+  const meta = [
+    `Scene: ${sceneType} at ${placeId}, ${calendarDate} ${timeOfDay}${weather ? `, ${weather}` : ''}${mood ? ` — mood: ${mood}` : ''}`,
+    charactersPresent.length ? `Characters present: ${charactersPresent.map(c => `${c.characterId} (${c.sceneRole})`).join(', ')}` : '',
+    keyEvents.length ? `Key events: ${keyEvents.join('; ')}` : '',
+    keyObjects.length ? `Key objects: ${keyObjects.join('; ')}` : '',
+    actions.length ? `Choices offered: ${actions.map(a => a.text).join(' / ')}` : '',
+  ].filter(Boolean).join('\n');
+
+  return `${text}\n\n${meta}`;
+}
+
+/**
+ * Turn B (StateDelta) user prompt — MULTI_TURN_PAGE_GENERATION_ROADMAP.md
+ * Part 3 Phase 1/4. Reuses formatNextPageStoryContextPrompt unchanged (Turn B
+ * still needs the pre-action background — previous pages, facts, threads —
+ * to judge what's genuinely new) and adds the "GENERATED PAGE" section
+ * (the one piece of context that's genuinely new for this turn: Turn A's
+ * output, which Turn B is deriving state changes FROM). No BRANCHING
+ * ACTIONS block — actions is a StoryPageGeneration field, not authored here.
+ */
+function buildStateDeltaPrompt(params: BuildNextPagePromptParams, storyPage: StoryPageGeneration): string {
+  const { advancedState: state, book } = params;
+  const { language } = book;
+
+  return [
+    `TASK: ${formatStateDeltaTaskPrompt(language)}`,
+    formatNextPageStoryContextPrompt(params),
+    `GENERATED PAGE:\n${formatGeneratedPageForDeltaPrompt(storyPage)}`,
+    formatNextPageNarrativePrompt(params, false),
+    state.plannedCharacters?.length && RULES_PLANNED_CHARACTERS,
+  ].filter(Boolean).join(`\n\n---\n`);
+}
+
+/**
+ * One field's worth of prose from buildNextPageFieldInstructionSections,
+ * tagged with which multi-turn stage authors that field. `stage: 'page'`
+ * sections cover exactly StoryPageGeneration's fields; `stage: 'delta'`
+ * covers everything else in StoryGeneration (StateDeltaGeneration's fields
+ * plus `branchNames`, which Turn B authors — see StateDeltaGenerationWithBranch).
+ * A single computed-once array is the source both the legacy combined
+ * function and the two split functions below read from, so the three can
+ * never drift the way the old duplicated-JSON-shape templates did.
+ */
+type FieldInstructionSection = { field: string; stage: 'page' | 'delta'; text: string };
+
+function buildNextPageFieldInstructionSections(state: StoryState, action: Action, sceneType: SceneType = 'transition', isMultiTurn: boolean = false): FieldInstructionSection[] {
   const { traumaTags, futureNotes } = state;
   const { isEarlyPhase, isLatePhase, isMidPhase, isFinale, isLastPage, charactersSlot, placesSlot, phase } = getStoryStateInfo(state);
   const isDialogueAction = action.type === 'dialogue';
 
-  return `text
+  return [
+  { field: 'text', stage: 'page', text: `text
   - Write in the target language's first-person singular. Never refer to the MC as "the protagonist" or "the narrator".
   - Continue seamlessly from the previous page.${sceneType === 'transition' ? '' : ` No time skip. No location jump. No off-screen actions.`}
   - ${isDialogueAction ? `It's a dialogue action, so begin directly with "[dialogue]."` : `Begin immediately with the chosen action — lead with the target language's action phrase or any necessary causal steps.`}
@@ -899,104 +1257,90 @@ function buildNextPageFieldInstructions(state: StoryState, action: Action, scene
 ${isEarlyPhase ? `  - Tone: unsettling, not terrifying. Something is wrong — but not yet catastrophic.` : ''}
 ${isMidPhase ? `  - Tone: escalating. Dread should feel earned and personal by now.` : ''}
 ${isLatePhase ? `  - Tone: fracturing. Reality and relationships should feel increasingly unstable.` : ''}
-${isFinale ? `  - Tone: collapse. This is the point of no return. Write accordingly.` : ''}
-
-mood
+${isFinale ? `  - Tone: collapse. This is the point of no return. Write accordingly.` : ''}` },
+  { field: 'mood', stage: 'page', text: `mood
   - Reflect the dominant emotional atmosphere of this specific page, not the genre generally.
-${isFinale ? `  - Mood should feel terminal — no neutrality, no ambiguity in register.` : ''}
-
-placeId
+${isFinale ? `  - Mood should feel terminal — no neutrality, no ambiguity in register.` : ''}` },
+  { field: 'placeId', stage: 'page', text: `placeId
   - Use same place ID if the MC hasn't moved.
   - Use "unknown" only if location is genuinely ambiguous to the MC.
-${isLatePhase || isFinale ? `  - Familiar places should feel subtly wrong now — same name, different atmosphere.` : ''}
-
-weather
+${isMultiTurn ? `  - If the MC has moved somewhere genuinely new, invent a short unique lowercase-slug ID for it now (e.g. "flooded-basement-stairwell") and use it consistently — a later stage formally introduces it in newPlaces using this EXACT ID.` : ''}
+${isLatePhase || isFinale ? `  - Familiar places should feel subtly wrong now — same name, different atmosphere.` : ''}` },
+  { field: 'weather', stage: 'page', text: `weather
   - Keep consistent with recent pages unless enough time has passed or the scene has moved somewhere conditions would plausibly differ.
   - Omit if not narratively relevant to this page.
-${isLatePhase || isFinale ? `  - A sudden shift can heighten dread — but don't reuse it as a cheap scare every page.` : ''}
-
-calendarDate:
+${isLatePhase || isFinale ? `  - A sudden shift can heighten dread — but don't reuse it as a cheap scare every page.` : ''}` },
+  { field: 'calendarDate', stage: 'page', text: `calendarDate:
   - Increment if the day has changed.
-  - Use 'yyyy-MM-dd' format (e.g., "2026-07-26").
-
-timeOfDay
+  - Use 'yyyy-MM-dd' format (e.g., "2026-07-26").` },
+  { field: 'timeOfDay', stage: 'page', text: `timeOfDay
   - Any string: "2 AM", "dusk", "HH:mm", time range, or "unknown".
-  - Must be consistent with previous page unless a transition is written into the text.
-
-minutesPassed
+  - Must be consistent with previous page unless a transition is written into the text.` },
+  { field: 'minutesPassed', stage: 'delta', text: `minutesPassed
   - Realistic in-world minutes that pass during this page's events.
   - Omit if the exact duration is ambiguous or unimportant (system will estimate from scene type).
   - Use precise values when time is narratively significant (e.g., a 3-minute countdown, 45-minute interrogation).
-  - Values under 1 can indicate seconds (0.5 ≈ 30 seconds). Values over 120 imply multiple hours.
-
-sceneType
+  - Values under 1 can indicate seconds (0.5 ≈ 30 seconds). Values over 120 imply multiple hours.` },
+  { field: 'sceneType', stage: 'page', text: `sceneType
   - Select the single dominant narrative function of the page.
   - Analyze user's selected action to either maintain previous scene type or transition to a new, logical scene type.
   - Choose the scene type that best represents the page's primary narrative purpose, not merely its setting, mood, or individual actions.
   - If multiple scene types apply, choose the most important narrative function.
-  - Use "transition" only when no stronger narrative function dominates the page.
-
-charactersPresent
+  - Use "transition" only when no stronger narrative function dominates the page.` },
+  { field: 'charactersPresent', stage: 'page', text: `charactersPresent
   - Side characters physically present in the scene besides MC.
   - Only side characters, exclude MC. MC is central POV and always on the scene.
   - Do not include characters who are only mentioned, remembered, referenced, contacted remotely, or discussed.
   - Every ID must match an existing known character${isFinale ? `.
   - Keep the cast minimal. Finale scenes should feel claustrophobic, not populated.`
+: isMultiTurn ? ` or, if this is a brand-new character appearing for the first time, a short unique lowercase-slug ID you invent now (based on their role or a distinguishing trait, e.g. "hollow-eyed-clerk") — use it consistently. A later stage introduces them formally in newCharacters using this EXACT ID, so do not reuse an ID already on the known-characters list.`
 : ` or a character introduced in newCharacters on this page.`}
   - sceneRole: ${sceneRoleValues}
-  - sceneFocus: between 0.0 to 1.0. Relative narrative importance in the current scene (highest = character to focus).
-
-keyEvents
+  - sceneFocus: between 0.0 to 1.0. Relative narrative importance in the current scene (highest = character to focus).` },
+  { field: 'keyEvents', stage: 'page', text: `keyEvents
   - ${KEY_EVENT_LENGTH}. Plot-level facts only — what objectively happened (situation/exact hard facts).
-${isLatePhase || isFinale ? `  - At least one event should connect to or resolve a thread opened earlier in the story.` : ''}
-
-keyObjects
+${isLatePhase || isFinale ? `  - At least one event should connect to or resolve a thread opened earlier in the story.` : ''}` },
+  { field: 'keyObjects', stage: 'page', text: `keyObjects
   - Objects introduced or used this page that may have future narrative significance.
 ${isEarlyPhase ? `  - Seed freely — early objects pay off later. Introduce them without drawing attention.` : ''}
 ${isMidPhase ? `  - Only include objects with clear narrative weight. No new red herrings.` : ''}
-${isLatePhase || isFinale ? `  - Reuse established objects only. No new ones unless absolutely necessary.` : ''}
-
-inventory
+${isLatePhase || isFinale ? `  - Reuse established objects only. No new ones unless absolutely necessary.` : ''}` },
+  { field: 'inventory', stage: 'delta', text: `inventory
   - Items currently in MC's possession. Can include the amount, traits, and where it currently located.
   - Max ${MAX_INVENTORY_ITEM} different items. Only include that actually matters to the plot.
   - To remove an item, explicitly set its amount to 0 (system will auto-remove).
   - If no changes, output empty array or omit this field entirely.
-  - Otherwise, MUST include all current items with updated values and/or new item if any.
-
-injuries
+  - Otherwise, MUST include all current items with updated values and/or new item if any.` },
+  { field: 'injuries', stage: 'delta', text: `injuries
   - Injuries are auto-decaying, ONLY update when character takes action that treats/worsens injury.
   - If an action is taken to heal, or anything made injury worse, update the injury severity and description accordingly.
   - If healed, set severity to 0 (system will auto-remove fully healed injuries).
   - If healed but leaves permanent scar/story relevance, move to character's appearance.
   - If no meaningful injury-related action occurs, output empty array or omit this field entirely.
   - Otherwise, MUST include all previous injuries with updated values and/or new injury if any.
-  - consequences: update any that affect the storyline (e.g. "Can't run fast, can't lift heavy objects").
-
-traumaTagAdd / traumaTagRemove
+  - consequences: update any that affect the storyline (e.g. "Can't run fast, can't lift heavy objects").` },
+  { field: 'traumaTagAdd/traumaTagRemove', stage: 'delta', text: `traumaTagAdd / traumaTagRemove
   - Short evocative phrases for experiences that will haunt the MC later.
 ${traumaTags.length < MAX_TRAUMA_TAGS ? `  - Only add if something genuinely traumatic or psychologically significant occurs.` : `  - Maximum trauma tags reached. Can't add more.`}
   - Remove when trauma is resolved.
 ${isEarlyPhase ? `  - Max 1 per page. Plant sparingly — early trauma tags shape everything downstream.` : `  - Max 2 per page. Omit if none.`}
-${isFinale ? `  - Existing trauma tags should be echoing and surfacing now, not new ones being added.` : ''}
-
-futureNoteAdd / futureNoteRemove
+${isFinale ? `  - Existing trauma tags should be echoing and surfacing now, not new ones being added.` : ''}` },
+  { field: 'futureNoteAdd/futureNoteRemove', stage: 'delta', text: `futureNoteAdd / futureNoteRemove
 ${futureNotes.length < MAX_FUTURE_NOTES ? `  - ONLY add for important unresolved clues, revelations, promises, relationships, mysteries, or future developments which matter later.
   - Do NOT add for temporary details, completed events, or facts already captured by plot flags.
   - Prefer advancing existing future notes before creating new ones. Avoid duplicate or overlapping future notes.` : ''}
   - Future notes represent narrative obligations, not immediate requirements. Do not resolve a future note merely because it exists.
   - Remove notes which have been fulfilled or become irrelevant.
   - If fulfilling a future note materially changes the story, record the outcome as a plot flag.
-  - Keep max ${MAX_FUTURE_NOTES} items. Only the most important unresolved future notes.
-
-addPlannedCharacters
+  - Keep max ${MAX_FUTURE_NOTES} items. Only the most important unresolved future notes.` },
+  { field: 'addPlannedCharacters', stage: 'delta', text: `addPlannedCharacters
 ${!isLatePhase && charactersSlot > 0 ? `  - Add new planned character candidates for future introduction when the story needs fresh faces for upcoming beats.
   - This is for characters not yet on-page — they're seeds for future pages. Use newCharacters instead if the new character is physically present on this page.
   - Each must have a distinct characterId. Avoid generic or throwaway plans.
   - storyPurpose: why this character exists and what role they'll play.
   - plannedIntro: brief hook describing how/when they might first appear.`
-: `  - Do not add new planned characters. ${isLatePhase ? 'Phase is too late for meaningful future introductions.' : `${MAX_CHARACTERS} characters limit reached.`}`}
-
-factUpdates
+: `  - Do not add new planned characters. ${isLatePhase ? 'Phase is too late for meaningful future introductions.' : `${MAX_CHARACTERS} characters limit reached.`}`}` },
+  { field: 'factUpdates', stage: 'delta', text: `factUpdates
   - Represents long-term story memory, discoveries, or important established facts that influence future turns.
   - key: consistent ${FACT_KEY_FORMAT}. Type can be either: ${formatOneOf(Object.keys(factTypes))}.
   - value: latest known state. Prefer concise value over long sentence (explanation can be added in reason).
@@ -1008,9 +1352,8 @@ factUpdates
     → Permanently change the story world.
     → Reveal important information to remember 20+ pages later.
     → Change a character's status, goal, relationship, possession, or knowledge.
-    → Establish a mystery clue, suspect, or revelation.
-
-addPlotFlags
+    → Establish a mystery clue, suspect, or revelation.` },
+  { field: 'addPlotFlags', stage: 'delta', text: `addPlotFlags
   - Add ONLY for crucial story developments that impact narrative trajectory and become established canon (max 2 per page).
   - Do NOT add for temporary actions, routine events, minor clues, short-lived details, or if no lasting story state changed.
   - Use for major revelations, death, betrayal, irreversible decisions, or major shifts in story direction.
@@ -1022,22 +1365,19 @@ addPlotFlags
     → Do NOT create major events solely to escalate the plot.
   - Expected distribution:
     → Most pages: 0-1 plot flags.
-    → Major turning points: up to 2 plot flags.
-
-contextHistory
+    → Major turning points: up to 2 plot flags.` },
+  { field: 'contextHistory', stage: 'delta', text: `contextHistory
   - Running summary from page 1 until now — key plot developments, hard facts, major events.
   - Incorporate the overall story context while keeping all essential narrative elements.
   - Single paragraph or bullet points (max ${MAX_WORDS_SUMMARIZED_CONTEXT} words).
   - Write in 3rd person POV.
-  - Maintain the continuity of the story.
-
-flagUpdates
+  - Maintain the continuity of the story.` },
+  { field: 'flagUpdates', stage: 'delta', text: `flagUpdates
   - Only include flags that changed this page. Omit unchanged flags entirely.
   - Base changes on what actually happened in the scene.
 ${isEarlyPhase ? `  - Changes should be subtle — small shifts, not dramatic swings.` : ''}
-${isLatePhase || isFinale ? `  - Flags should reflect escalation. Fear and guilt especially should be peaking.` : ''}
-
-actions
+${isLatePhase || isFinale ? `  - Flags should reflect escalation. Fear and guilt especially should be peaking.` : ''}` },
+  { field: 'actions', stage: 'page', text: `actions
 ${isLastPage ? `  - This is the last page, just provide a single action that concludes the story.` : `  - text: first-person action or dialogue (${ACTION_TEXT_LENGTH}). No explicit subject pronoun — lead directly with the target language's verb form or a short saying (e.g. Pretend not to hear, "Yes, of course.").
   - hint.text: what will happen as a consequence — written as a story beat, not a label. Invisible to the player.
   - ${isFinale ? `Max ${MAX_ACTION_CHOICES_FINALE} choices — the story is closing in.` : `${MIN_ACTION_CHOICES}-${MAX_ACTION_CHOICES} choices.`} Each must be meaningfully distinct.
@@ -1047,13 +1387,12 @@ ${isLastPage ? `  - This is the last page, just provide a single action that con
 ${isEarlyPhase ? `  - Choices should feel open and curious — stakes are present but not yet dire.` : ''}
 ${isMidPhase ? `  - Choices should reflect the player's established decision patterns. Make the trap feel tailored.` : ''}
 ${isLatePhase ? `  - Every choice should carry visible weight. No option should feel consequence-free.` : ''}
-${isFinale ? `  - Both choices should feel like loss. The difference is only in what kind.` : ''}`}
-
-branchNames
+${isFinale ? `  - Both choices should feel like loss. The difference is only in what kind.` : ''}`}` },
+  { field: 'branchNames', stage: 'delta', text: `branchNames
   - Suggest 3 creative, distinct names for this page as a timeline/branch — evocative, spoiler-free (e.g., "The Locked Door", "Trust No One").
-  - Always suggest regardless of whether this page's actions actually fork the story — the system decides whether a name is used.
-
-newCharacters/updatedCharacters
+  - Always suggest regardless of whether this page's actions actually fork the story — the system decides whether a name is used.` },
+  { field: 'newCharacters/updatedCharacters', stage: 'delta', text: `newCharacters/updatedCharacters
+${isMultiTurn ? `  - The GENERATED PAGE's charactersPresent may reference an ID not in KNOWN CHARACTERS — that means the page turn invented a slug ID for a brand-new character. You MUST add a newCharacters entry using that EXACT ID (do not invent a different one, do not rename it).` : ''}
 ${charactersSlot === 0 ? `  - Can't introduce new characters (${MAX_CHARACTERS} limit). Update existing ones only.`
 : isEarlyPhase ? `  - New characters welcome up to ${charactersSlot} more — establish the cast now.`
 : isMidPhase ? `  - Optionally introduce up to ${charactersSlot} new characters only if genuinely necessary. Prefer deepening existing ones.`
@@ -1076,15 +1415,14 @@ ${isLatePhase || isFinale
   - injuries: add or update. Set severity to zero to remove.
   - pastInteractions (new): dialogue or event towards MC in current page.
   - newInteractions (update): interactions since last page.
-  - relationships (new only): include known relationships to other named characters. Omit if none.
-
-relationshipUpdates
+  - relationships (new only): include known relationships to other named characters. Omit if none.` },
+  { field: 'relationshipUpdates', stage: 'delta', text: `relationshipUpdates
   - Changes in relationship between any two named characters (excluding MC).
   - Omit if no relationships shifted this page.
 ${isEarlyPhase ? `  - Subtle shifts only — early relationships should feel ambiguous, not defined.` : ''}
-${isLatePhase || isFinale ? `  - Relationships should be breaking, inverting, or crystallizing. No more ambiguity.` : ''}
-
-newPlaces/updatedPlaces
+${isLatePhase || isFinale ? `  - Relationships should be breaking, inverting, or crystallizing. No more ambiguity.` : ''}` },
+  { field: 'newPlaces/updatedPlaces', stage: 'delta', text: `newPlaces/updatedPlaces
+${isMultiTurn ? `  - The GENERATED PAGE's placeId may be an ID not in KNOWN PLACES — that means the page turn invented a slug ID for a brand-new place. You MUST add a newPlaces entry using that EXACT ID (do not invent a different one, do not rename it).` : ''}
 ${placesSlot === 0 ? `  - Can't introduce new places (${MAX_PLACES} limit). Update existing ones only.`
 : isEarlyPhase || isMidPhase ? `  - You can introduce up to ${placesSlot} new meaningful places the MC enters for the first time — no generic one-offs.
   - knownName: should fit in-world cultural setting.
@@ -1104,25 +1442,22 @@ ${placesSlot === 0 ? `  - Can't introduce new places (${MAX_PLACES} limit). Upda
     → learns hidden functions/secrets, discovers new areas, gains deeper understanding.
     → memory loss/confusion, familiar assumptions proven false, environment unrecognizable.
     → Do NOT use for ordinary visits, repeated exposure, or gradual learning (handled automatically).
-${isLatePhase || isFinale ? `  - High-familiarity places revisited now should feel distorted.` : ''}
-
-placeConnections
+${isLatePhase || isFinale ? `  - High-familiarity places revisited now should feel distorted.` : ''}` },
+  { field: 'placeConnections', stage: 'delta', text: `placeConnections
   - Add new if visiting/adding a new place or when a place is first connected.
   - Only update existing if route conditions meaningfully change on revisit.
   - travelTime: travel duration (e.g., "5 minutes walk", "20 minutes drive").
   - routeType: route description (e.g., "main street", "alley", "tunnel").
   - accessibility: ${accessibilityValues}.
   - addObstacles/removeObstacles: story-relevant barriers, hazards, or access requirements.
-  - notes: short route details not covered elsewhere.
-
-${!isFinale ? `newThreads (see ACTIVE THREADS for whether a new thread is warranted this page)
+  - notes: short route details not covered elsewhere.` },
+  { field: 'newThreads', stage: 'delta', text: `${!isFinale ? `newThreads (see ACTIVE THREADS for whether a new thread is warranted this page)
   - title: Short, evocative name for the mystery (e.g., "Lisa's Identity", "The River Incident")
   - question: central mystery question (e.g., "Who is Lisa really?", "What happened at the river that night?")
   - priority: "main" for central mysteries, "secondary" for supporting mysteries, "minor" for background details
   - truth: "true" if the thread leads to genuine revelation, "false" if it's a deliberate misdirection, "unknown" if ambiguous
-  - importance: 0.0-1.0 (how frequently this thread should appear in the narrative)` : ''}
-
-updateThreads
+  - importance: 0.0-1.0 (how frequently this thread should appear in the narrative)` : ''}` },
+  { field: 'updateThreads', stage: 'delta', text: `updateThreads
   - Update existing threads when their status, priority, or urgency meaningfully changes.
   - threadId: must match an existing thread ID.
   - status: ${isLatePhase ? 'update to "revealed" or "closed" as threads converge toward the ending.' : '"open" (newly introduced), "developing" (active investigation), "revealed" (truth partially shown), "closed" (resolved).'}
@@ -1130,22 +1465,19 @@ updateThreads
   - summary: running summary of thread development (from the start to current).
   - resolution: only include when thread is being closed or resolved (brief summary of the answer).
   - If this page develops, complicates, advances, or revisits an active thread, include a summary update for that thread.
-${isFinale ? `  - Every main thread must be resolved (status: "closed" with resolution text).` : ''}
-
-addClues
+${isFinale ? `  - Every main thread must be resolved (status: "closed" with resolution text).` : ''}` },
+  { field: 'addClues', stage: 'delta', text: `addClues
 ${isEarlyPhase || isMidPhase ? `  - Add clues to existing threads to advance mysteries.
   - threadId: must match an existing thread ID.
   - clue: short, evocative clue that advances the mystery (e.g., "She knows my mother", "Flashbacks of water").
   - isFalse: set to true if this is a deliberate misdirection (false clue).` : ''}
 ${isLatePhase ? `  - Add revealing clues that push threads toward resolution.` : ''}
-${isFinale ? `  - Add final clues that complete thread resolutions.` : ''}
-
-${isLatePhase ? 'closeThreads' : ''}
+${isFinale ? `  - Add final clues that complete thread resolutions.` : ''}` },
+  { field: 'closeThreads', stage: 'delta', text: `${isLatePhase ? 'closeThreads' : ''}
 ${isLatePhase ? `  - Close threads that have been fully resolved or are no longer relevant.
   - Include thread IDs that should be marked as closed (resolution should be in updateThreads.resolution)` : ''}
-${isFinale ? `  - All remaining threads must be closed in the finale.` : ''}
-
-viableEnding
+${isFinale ? `  - All remaining threads must be closed in the finale.` : ''}` },
+  { field: 'viableEnding', stage: 'delta', text: `viableEnding
   - Don't output viableEnding if unchanged
   - Only output if story trajectory has meaningfully shifted and the previously planned ending no longer fits, or if outline should be updated.
 ${futureNotes.length ? `  - Ensure it supports or aligns with future notes` : ''}
@@ -1154,7 +1486,52 @@ ${futureNotes.length ? `  - Ensure it supports or aligns with future notes` : ''
 ${isEarlyPhase ? `  - Rarely needed this early. Only revise if the theme has fundamentally diverged from the original plan.` : ''}
 ${isMidPhase ? `  - Revise if a major twist has made the original ending implausible or redundant.` : ''}
 ${isLatePhase ? `  - Should be stable now. Revise only if a late revelation makes the ending genuinely unreachable.` : ''}
-${isFinale ? `  - Do not revise. The ending is now in motion — execute it.` : ''}`;
+${isFinale ? `  - Do not revise. The ending is now in motion — execute it.` : ''}` },
+  ];
+}
+
+/**
+ * Legacy single-shot field instructions (unchanged output) — every section
+ * from buildNextPageFieldInstructionSections, joined in original order. Used
+ * by the pre-multi-turn generateNextPage(s) path (USE_MULTI_TURN_GENERATION
+ * off) and by buildNextPageEvaluatorPrompt's legacy evaluator. Always calls
+ * with isMultiTurn=false (the default), so this is byte-identical to the
+ * pre-split function — verified via automated diff during authoring.
+ */
+function buildNextPageFieldInstructions(state: StoryState, action: Action, sceneType: SceneType = 'transition'): string {
+  return buildNextPageFieldInstructionSections(state, action, sceneType).map(s => s.text).join('\n\n');
+}
+
+/**
+ * Turn A (StoryPage) field instructions — MULTI_TURN_PAGE_GENERATION_ROADMAP.md
+ * Part 3 Phase 1 Step 1.2. Only the sections for StoryPageGeneration's 11
+ * fields (text, mood, placeId, weather, calendarDate, timeOfDay, sceneType,
+ * charactersPresent, keyEvents, keyObjects, actions) — the exact same prose
+ * buildNextPageFieldInstructions uses for these fields today, just narrowed
+ * to what Turn A actually authors. Passes isMultiTurn=true so charactersPresent
+ * and placeId get the slug-ID handoff instruction (see the ID-handoff note in
+ * Part 5 of the roadmap) that a same-response legacy call never needs.
+ */
+function buildStoryPageFieldInstructions(state: StoryState, action: Action, sceneType: SceneType = 'transition'): string {
+  return buildNextPageFieldInstructionSections(state, action, sceneType, true)
+    .filter(s => s.stage === 'page')
+    .map(s => s.text)
+    .join('\n\n');
+}
+
+/**
+ * Turn B (StateDelta) field instructions — MULTI_TURN_PAGE_GENERATION_ROADMAP.md
+ * Part 3 Phase 1 Step 1.2. Every section NOT claimed by Turn A above,
+ * including `branchNames` (moved here — see StateDeltaGenerationWithBranch
+ * doc in types/story.ts for why) and `minutesPassed` (a StateDeltaGeneration
+ * field even though it reads like scene metadata). Passes isMultiTurn=true so
+ * newCharacters/newPlaces get the matching slug-ID handoff instruction.
+ */
+function buildStateDeltaFieldInstructions(state: StoryState, action: Action, sceneType: SceneType = 'transition'): string {
+  return buildNextPageFieldInstructionSections(state, action, sceneType, true)
+    .filter(s => s.stage === 'delta')
+    .map(s => s.text)
+    .join('\n\n');
 }
 
 function buildNextPageReviewChecklist(state: StoryState, language: string): string {
@@ -1245,6 +1622,154 @@ function buildNextPageReviewChecklist(state: StoryState, language: string): stri
   ${isLatePhase || isFinale ? `□ Choices feel increasingly constrained — like the story is closing in? → Reduce options or weight every path with consequence. On the finale: there is no good option, only degrees of loss.` : ''}
 
 10. JSON Integrity
+  □ All fields present and populated? → If NO: Complete missing fields.
+  □ Every opened bracket '{' or '[' is closed correctly? → If NO: Fix or complete.
+  □ No trailing commas? → Fix any.`.trim();
+}
+
+
+/**
+ * Turn A (StoryPage) review checklist — MULTI_TURN_PAGE_GENERATION_ROADMAP.md
+ * Part 3 Phase 1 Step 1.3. Sections 1–5, 8–10 of buildNextPageReviewChecklist
+ * (renumbered 1–9 here), verbatim — every one of these validates fields
+ * StoryPageGeneration authors (text, mood, placeId, calendarDate, timeOfDay,
+ * charactersPresent, actions) or is prose-craft that only applies to page
+ * text. Section 6 (Thread & Event Management) and the ending-progression
+ * bullets from section 1 move to buildStateDeltaReviewChecklist instead —
+ * this corrects the original roadmap draft's Part 2.2 table, which grouped
+ * ALL of "1–5, 8, 9, 10" into the page checklist without separating out
+ * section 1's ending-trajectory bullets, which check a StateDeltaGeneration
+ * field (viableEnding), not anything StoryPageGeneration owns.
+ */
+function buildStoryPageReviewChecklist(state: StoryState, language: string): string {
+  const { isEarlyPhase, isLatePhase, isMidPhase, isFinale } = getStoryStateInfo(state);
+  const formattedLanguage = formatLanguage(language);
+  const isNonEnglish = !!language && language !== 'en';
+
+  return `${isNonEnglish ? `0. Language & Localization Lock (CRITICAL)
+  □ COMMITMENT: "I will generate all user-facing story text, metadata, and choices exclusively in ${formattedLanguage} language."
+  □ Are my thoughts, evaluations, and subsequent outputs shifting to match the native grammar, idioms, and cultural context of ${formattedLanguage}? → If NO: Pivot immediately. Do not retain the syntax of any other language.` : ''}
+
+1. Spoiler & Mystery Control
+  □ Revealing the core truth or viable ending too early? → Obscure first. Misdirect second. Fragment only as last resort.
+  □ Major mystery resolved too cleanly? → Inject doubt, contradiction, or reframe the resolution as a new question.
+  ${isEarlyPhase || isMidPhase ? `□ Opening new mysteries faster than existing ones develop? → Pause new threads. Deepen one existing thread first.` : ''}
+  ${isMidPhase ? `□ Open threads accumulating without movement? → Collapse or meaningfully advance at least one this page.` : ''}
+  ${isLatePhase || isFinale ? `□ New mystery introduced this page? → Remove it. Late pages seed nothing new.` : ''}
+  ${isLatePhase || isFinale ? `□ Page progressing toward the viable ending? → If NO: steer events, character decisions, or tone toward it now.` : ''}
+
+2. Tension & Pacing
+  □ Tone and events reflect current psychological flags? → If NO: adjust intensity (fear high → distorted perception, guilt high → intrusive echoes).
+  □ Emotional contrast with the previous page? → If NO: shift register (panic → silence, chaos → routine, dread → warmth that feels wrong).
+  □ Page overloaded with events? → Simplify to one clear movement.
+  □ Page too empty — nothing changed? → Add one meaningful change: in perception, relationship, or environment.
+  □ Does this page make the reader want to continue? → If NO: add a hook, unanswered question, or atmospheric wrongness they can't name.
+  ${isEarlyPhase ? `□ Escalating too fast? → Dial back. Plant unease, not dread. Let the wrongness stay subtle.` : ''}
+  ${isMidPhase ? `□ Last 2-3 pages all increased tension linearly? → Introduce relief, false safety, or routine. Pattern: build → release → false safety → escalation.` : ''}
+  ${isMidPhase ? `□ Tension flat for too long? → Introduce a disturbance: a behavior shift, a missing object, an unexplained sound.` : ''}
+  ${isLatePhase || isFinale ? `□ Any moment of relief or genuine safety this page? → Remove it or immediately corrupt it. Late pages do not offer real rest.` : ''}
+
+3. Continuity & State Integrity
+  □ Characters present consistent with story state? → If NO: remove or justify.
+  □ Character behaviors consistent with traits, trauma tags, and current flags? → If NO: adjust dialogue or action.
+  □ Location, calendarDate, and timeOfDay consistent with previous page? → If NO: fix transition or write the change explicitly.
+  □ Referencing objects, places, or events not yet established? → Remove or align with known state.
+  □ Important unresolved element from previous page missing? → Reintroduce it${isEarlyPhase ? ' subtly' : ' — more directly now'}.
+  □ Movement between locations spatially coherent? → If NO: fix the transition.
+  □ POV posture continuous with the previous page's ending position? → If NO: fix the transition.
+  □ Reusing the same environmental descriptions as recent pages? → Vary the sensory angle.
+
+4. Embodied Scene Continuity (HARD GATE — apply to the page text)
+  □ Is the POV character's physical position, posture, and orientation derivable at every moment of the page? → If NO: establish the baseline and the transitions.
+  □ Does every posture/movement change have a written physical transition (sitting → standing → stepping)? → If NO: write the missing action.
+  □ Does the camera ever show something the MC cannot perceive from their vantage? → If NO: rewrite from the MC's cramped, honest POV.
+  □ Can every third-person pronoun and possessive anatomical reference be traced to one unambiguous owner? → If NO: replace with the explicit character name.
+  □ Could a real actor physically perform this page exactly as written, in order? → If NO: fix the impossible action.
+
+5. Character & Relationship Integrity
+  □ Character changed personality without cause? → Justify via stress, fear, or hidden motive — or make the shift feel deliberately uncanny.
+  □ Trauma tags influencing perception, behavior, or dialogue? → If NO: reflect them in what the MC notices, misreads, or can't stop thinking about.
+  ${isEarlyPhase || isMidPhase ? `□ Relationships evolving — trust shifting, suspicion forming? → If NO: introduce a micro-shift. A hesitation, a withheld word, a look that doesn't match the dialogue.` : ''}
+  ${isLatePhase || isFinale ? `□ Character arcs resolving, fracturing, or deliberately left open? → Confirm which — then make it intentional, not accidental.` : ''}
+
+6. Illusion & Reality Distortion
+  □ At least one detail subtly misleads or contradicts expectations? → If NO: add one — in behavior, environment, or a word choice that doesn't quite fit.
+  □ Narrator perception possibly biased, incomplete, or wrong? → If NO: introduce a misread — of a person, a sound, a silence.
+  □ Something feels wrong in a way the reader can't name? → If NO: inject atmospheric unease — a texture, a timing, a behavior off by one degree.
+  ${isEarlyPhase || isMidPhase ? `□ Can the reader form a believable but ultimately wrong theory? → If NO: add focused misleading anchors. Too many competing theories → narrow to one convincing false trail.` : ''}
+  ${isLatePhase || isFinale ? `□ Is the false reality beginning to crack visibly? → If NO: let one seam show — a memory that contradicts, a character who knows something they shouldn't, a detail the MC only now notices was wrong.` : ''}
+
+7. Prose & Style
+  □ Prose immersive and character-specific — not generic AI narration? → If NO: rewrite with sensory grounding and the MC's specific voice and bias.
+  □ Sentence structure varied — short fragments, medium, occasional long? → A two-word sentence after a long one lands like a door closing.
+  □ Over-explaining instead of implying? → Cut it. If the action implies the feeling, naming the feeling is redundant.
+  □ Dialogue natural and specific to this character's voice? → Each character should be recognizable from word choice alone.
+  □ Scene physically coherent despite distortion? → Reader can doubt what's real. They should never doubt what physically happened.
+  □ Long paragraph exist? → Break up long paragraph into separate lines to create rhythm and suspense.
+  □ Does every generated text field use the specified target language? → If any user-facing field is in a language other than the target, rewrite it.
+
+8. Choice Quality
+  □ Page ends at genuine tension or unresolved disturbance — not resolution? → If NO: reposition the final beat.
+  □ Choices meaningfully distinct in risk and emotional register? → Vary across: reckless / cautious / emotional / avoidant.
+  □ At least one choice feels like a trap? → If NO: add a concealed consequence to the safest-looking option.
+  □ All choices appear plausibly reasonable on the surface? → If NO: soften the dangerous framing so the trap isn't visible.
+  ${isEarlyPhase ? `□ Choices seed curiosity — not force immediate crisis? → Avoid options that escalate to irreversible stakes too soon.` : ''}
+  ${isMidPhase ? `□ Choices reflect the player's established psychological profile? → Options should feel designed for how this player thinks.` : ''}
+  ${isLatePhase || isFinale ? `□ Choices feel increasingly constrained — like the story is closing in? → Reduce options or weight every path with consequence. On the finale: there is no good option, only degrees of loss.` : ''}
+
+9. JSON Integrity
+  □ All fields present and populated? → If NO: Complete missing fields.
+  □ Every opened bracket '{' or '[' is closed correctly? → If NO: Fix or complete.
+  □ No trailing commas? → Fix any.`.trim();
+}
+
+/**
+ * Turn B (StateDelta) review checklist — MULTI_TURN_PAGE_GENERATION_ROADMAP.md
+ * Part 3 Phase 1 Step 1.3. Section 6 (Thread & Event Management) verbatim
+ * (renumbered), plus two new sections written for this split: "State
+ * Trajectory & Ending Progression" (distilled from section 1's
+ * ending-progression bullets — the only part of section 1 that checks a
+ * delta field) and "Continuity & State Integrity (Delta)" (the ID-validity,
+ * new-vs-updated, and justified-by-the-page checks that section 3 and 5
+ * implied but only stated in page-text terms). JSON Integrity is kept
+ * generic and duplicated from the page checklist — cheap, and each turn's
+ * output needs its own well-formedness check regardless of the other.
+ */
+function buildStateDeltaReviewChecklist(state: StoryState, language: string): string {
+  const { isEarlyPhase, isLatePhase, isMidPhase, isFinale } = getStoryStateInfo(state);
+  const formattedLanguage = formatLanguage(language);
+  const isNonEnglish = !!language && language !== 'en';
+
+  return `${isNonEnglish ? `0. Language & Localization Lock (CRITICAL)
+  □ COMMITMENT: "I will generate all user-facing story text, metadata, and choices exclusively in ${formattedLanguage} language."
+  □ Are my thoughts, evaluations, and subsequent outputs shifting to match the native grammar, idioms, and cultural context of ${formattedLanguage}? → If NO: Pivot immediately. Do not retain the syntax of any other language.` : ''}
+
+1. State Trajectory & Ending Progression
+  □ Does viableEnding (if set) match what actually happened on the generated page — not what might happen later? → If NO: clear it, or correct type/text to match the page's actual trajectory.
+  □ Do factUpdates/flagUpdates only record what the generated page actually established? → If NO: remove anything not grounded in the page text.
+  ${isLatePhase || isFinale ? `□ Is the state trending toward the viable ending — flags, facts, and thread closures all pointing the same direction? → If NO: adjust factUpdates/flagUpdates/closeThreads so the delta steers toward it.` : ''}
+  ${isFinale ? `□ Is minutesPassed, and every closed thread's resolution, consistent with this being the final page? → If NO: correct before returning.` : ''}
+
+2. Thread & Event Management
+  □ This page contributes to a known thread (main or side)? → If NO: connect it to one, or cut the loose content.
+  ${isEarlyPhase || isMidPhase ? `□ Too many active threads simultaneously? → Pause or collapse one. Reader tracks ${MAX_ACTIVE_THREADS} comfortably; more creates noise, not tension.` : ''}
+  ${isEarlyPhase || isMidPhase ? `□ At least one subtle hint of future consequence? → If NO: add light foreshadowing — symbolic, indirect, deniable.` : ''}
+  ${isEarlyPhase || isMidPhase ? `□ Hints too obvious or on-the-nose? → Make them symbolic or indirect. The reader should feel it before they understand it.` : ''}
+  ${isLatePhase ? `□ Active threads still open that should be converging? → Begin closing or collapsing them toward the viable ending.` : ''}
+  ${isFinale ? `□ Any thread still unresolved with no deliberate ambiguity or resolution text? → Resolve it, shatter it, or make its irresolution feel like the answer.` : ''}
+  ${isFinale ? `□ New threads introduced in finale? → Remove all newThreads. Finale must close, not open.` : ''}
+  ${isLatePhase ? `□ New threads introduced in late phase? → Only add if absolutely essential to resolve existing threads.` : ''}
+  ${isEarlyPhase || isMidPhase ? `□ New thread has compelling question connected to psychological premise? → If NO: strengthen the question or remove the thread.` : ''}
+
+3. Continuity & State Integrity (Delta)
+  □ Every ID referenced in updatedCharacters/updatedPlaces/updateThreads/closeThreads/addClues matches an ID that already exists in the provided story state? → If NO: fix the ID, or move the entry to the corresponding "new" list instead.
+  □ newCharacters/newPlaces include only entities that actually appeared or were established on the generated page? → If NO: remove the entry.
+  □ relationshipUpdates reflect a shift actually shown in the generated page's dialogue or behavior? → If NO: remove or align with the page text.
+  □ placeConnections added only for a route actually traveled or explicitly established this page? → If NO: remove.
+  □ contextHistory entry accurately and concisely summarizes what happened on the generated page — not a future page? → If NO: rewrite it.
+  □ traumaTagAdd/traumaTagRemove and flagUpdates are justified by what the generated page's events and character behavior actually showed? → If NO: remove or align.
+
+4. JSON Integrity
   □ All fields present and populated? → If NO: Complete missing fields.
   □ Every opened bracket '{' or '[' is closed correctly? → If NO: Fix or complete.
   □ No trailing commas? → Fix any.`.trim();
@@ -1442,6 +1967,94 @@ ${outputFormatBlurb}
 }`;
 
   return [taskPrompt, ...instructionsPrompt.split('---').map(stripEmptyLines)].join('\n\n---\n');
+}
+
+/**
+ * Single post-merge evaluation pass on the MERGED StoryGeneration object
+ * (Turn A + Turn B combined) — MULTI_TURN_PAGE_GENERATION_ROADMAP.md Part
+ * 5.5 Q2. This is the resolved design for evaluation in the multi-turn
+ * pipeline: rather than each turn running its own evaluator (which would
+ * double evaluator-call cost per candidate on top of the base 1→2 generation
+ * calls), evaluation runs exactly ONCE, after both turns are done and merged
+ * — matching today's single-shot flow's call count (1 generation-equivalent
+ * unit + 1 evaluation), not doubling it.
+ *
+ * Reuses buildNextPageEvaluatorPrompt (the legacy, UNCHANGED evaluator
+ * prompt/rubric) unmodified — it already targets the full StoryGeneration
+ * shape, so it's exactly correct for evaluating a merged object with zero
+ * new prompt content needed. This superseded the per-turn
+ * buildStoryPageEvaluatorPrompt/buildStateDeltaEvaluatorPrompt pair from
+ * checkpoint 1 (removed here — see the roadmap's checkpoint log for why).
+ *
+ * Conscious accepted trade-off (Part 5.5 Q2): this means the OPTIONAL
+ * evaluation pass sends the full-size schema/prompt this whole project set
+ * out to shrink for GENERATION — but not for evaluation, which keeps today's
+ * already-tolerated behavior instead. This is safe, not a regression: (a)
+ * Gemini's constrained-decoder complexity is already handled by the
+ * existing string-mode fallback inside aiPrompt (isSchemaTooComplex →
+ * geminiUsesStringMode), which applies equally whether aiPrompt is invoked
+ * for a small split-turn schema or this full merged one; (b) a
+ * too-long-for-Cohere prompt is already handled by assertPromptAllowed's
+ * per-provider skip-to-next-provider behavior — the waterfall's normal
+ * operation, not a failure mode. Both mechanisms already run unchanged
+ * every time evaluation is enabled today; this reuses them exactly as-is.
+ *
+ * @param merged - The complete StoryGeneration object (Turn A's StoryPage
+ * spread with Turn B's StateDeltaGenerationWithBranch — see generateStoryPage/
+ * generateStateDelta in the 2-turn/parallel-multi-turn orchestrators).
+ * @param carrierResult - Either turn's AIResponse to carry forward
+ * provider/model bookkeeping fields (id, timing, etc.) that aren't part of
+ * `merged` itself. Turn B's result is the natural choice — it's the turn
+ * that had full context of Turn A's output, so it's the more "final" of the
+ * two — but this is a bookkeeping choice, not a correctness one.
+ * @returns AIResponse<StoryGeneration> — either the evaluator's corrected
+ * object (on a successful evaluation) or `merged` unchanged (evaluation
+ * disabled, failed, or unavailable) — exactly the same graceful-degradation
+ * contract aiPrompt's own inline evaluation step already provides.
+ */
+async function evaluateMergedStoryGeneration(
+  merged: StoryGeneration,
+  carrierResult: AIResponse<unknown>,
+  params: BuildNextPagePromptParams,
+  systemPrompt: string,
+  evaluationContext: string,
+  onProgress?: ProgressCallback,
+  onGenerationProgress?: (step: StoryGenerationStep) => Promise<void>,
+): Promise<AIResponse<StoryGeneration>> {
+  const baseResult: AIResponse<string> = {
+    ...carrierResult,
+    output: JSON.stringify(merged),
+  };
+
+  // Bug caught during Phase 5 review (checkpoint 3): buildNextPageEvaluatorPrompt
+  // branches its "EXPECTED JSON SCHEMA" text on `params.candidateCount > 1`,
+  // describing the ARRAY-WRAPPED multiNextPageOutputFormat shape whenever
+  // the outer request asked for more than one alternative — correct for the
+  // legacy batch path (T = CandidatePagesGeneration there), but `merged`
+  // here is always exactly ONE StoryGeneration object (runEvaluationPass is
+  // called with T = StoryGeneration explicitly below), even when this is
+  // one alternative out of a multi-turn parallel batch of several. Passing
+  // `params` through unchanged would describe the wrong shape to the
+  // evaluator while the actual enforced schema stayed StoryGeneration —
+  // prose and schema disagreeing in a way that could plausibly push the
+  // model to wrap its correction in `{ generatedPages: [...] }`. Forcing
+  // `candidateCount: 1` here — for THIS call only, not the shared `params`
+  // object other callers (Turn A/Turn B prompts) still read — keeps the
+  // evaluator's prose and its actual schema in agreement regardless of how
+  // many alternatives the outer request has.
+  const evaluatorPrompt = buildNextPageEvaluatorPrompt({ ...params, candidateCount: 1 });
+
+  const evaluated = await runEvaluationPass<StoryGeneration>(
+    baseResult,
+    evaluatorPrompt,
+    { modelSelection: AI_CHAT_MODELS_EVALUATION },
+    systemPrompt,
+    evaluationContext,
+    onProgress,
+    onGenerationProgress,
+  );
+
+  return evaluated ?? { ...baseResult, result: merged };
 }
 
 /**
@@ -2609,7 +3222,50 @@ ${buildEndingRules(state)}`;
  * //    Occasionally, let a faint echo bleed across timelines — a déjà vu, a half-remembered
  * //    feeling or hallucination — but keep it subtle.'
  */
-function formatNextPageTaskPrompt(state: StoryState, candidateCount: number, language: string, mode?: BookMode): string {
+/**
+ * MULTI_TURN_PAGE_GENERATION_ROADMAP.md decision log — a risk NOT identified
+ * by the original roadmap draft, found while implementing Part 2.5 (parallel
+ * multi-turn generateNextPages).
+ *
+ * The legacy multiverse path generates all `candidateCount` alternate fates
+ * inside ONE completion (see the "Multiple possible futures example" below):
+ * the model sees everything it's writing at once and can deliberately
+ * diverge each alternative from the others. The multi-turn parallel design
+ * runs `candidateCount` independent StoryPage requests instead — each is
+ * blind to what the other N-1 are producing. Without an explicit push,
+ * independent parallel generations risk converging on similar continuations
+ * for the same action, silently defeating the entire point of offering N
+ * fates. This is a fixed, deterministic (zero extra AI calls, zero added
+ * latency) rotation of narrative angles injected into each parallel
+ * request's task prompt via formatFateDivergenceDirective below — divergence
+ * is enforced structurally instead of relying on the model seeing its
+ * siblings. Applies to 'multiverse' and 'interactive' modes (both offer
+ * multiple candidates); 'novel' mode is always single-path, so it never
+ * needs this.
+ */
+const FATE_DIVERGENCE_DIRECTIVES: readonly string[] = [
+  'Commit to this fate fully: the danger or tension implied by the action becomes real, immediate, and undeniable.',
+  'Commit to this fate fully: what seemed dangerous or significant turns out to be a misdirection — something else is actually happening, and it is no less unsettling for being unexpected.',
+  'Commit to this fate fully: break the expected pattern entirely — introduce a development that is neither the obvious danger nor a simple red herring, but something tonally distinct from the other possible fates.',
+  'Commit to this fate fully: the quiet, unnervingly mundane outcome — nothing overtly dramatic happens on the surface, but something is subtly, irreversibly wrong underneath.',
+];
+
+function formatFateDivergenceDirective(fateIndex: number, fateCount: number): string {
+  if (fateCount <= 1) return '';
+  const directive = FATE_DIVERGENCE_DIRECTIVES[fateIndex % FATE_DIVERGENCE_DIRECTIVES.length];
+  return `\nALTERNATE FATE ${fateIndex + 1} of ${fateCount}: this is one of ${fateCount} independently-generated alternate continuations for the SAME action below — you cannot see the other ${fateCount - 1}. To guarantee real divergence between them, do not write a generic continuation: ${directive}`;
+}
+
+/**
+ * @param fateContext - Multi-turn parallel generation only (Part 2.5): which
+ * alternative (0-indexed) of how many total this single StoryPage call is
+ * writing. Omitted (default) for every legacy/single-page call site, which
+ * reproduces the exact original branching below unchanged. When provided,
+ * this call always writes exactly ONE page — the `candidateCount`-branching
+ * "generate N alternates in one response" framing never applies, since that
+ * framing described the OLD combined-batch request shape, not this call.
+ */
+function formatNextPageTaskPrompt(state: StoryState, candidateCount: number, language: string, mode?: BookMode, fateContext?: { fateIndex: number; fateCount: number }): string {
   const { page, maxPage, memoryIntegrity, flags } = state;
   const { trust, curiosity } = flags;
   const remainingPages = maxPage - page;
@@ -2622,6 +3278,8 @@ function formatNextPageTaskPrompt(state: StoryState, candidateCount: number, lan
 
   const base = `Continue the story in first-person POV (the target language's first-person singular forms)${isNonEnglish ? ` in ${languageFormatted}` : ''}. You're now writing ${pageLabel}.`;
 
+  const divergence = fateContext ? formatFateDivergenceDirective(fateContext.fateIndex, fateContext.fateCount) : '';
+
   // ── NOVEL: strictly linear. Never offer branching choices. ──────────────
   if (mode === 'novel') {
     return `${base}
@@ -2630,6 +3288,8 @@ This is a NOVEL — a strictly LINEAR story with a single path and a single endi
 
   // ── INTERACTIVE: single chosen path per action. ───────────────────────
   if (mode === 'interactive') {
+    if (fateContext) return `${base}
+This is an INTERACTIVE story — the reader's choices shape ONE path through the book. Write a small set of 2-3 distinct branching actions as usual, but each action leads to exactly ONE outcome. Do NOT pre-generate alternate fates; every action resolves to a single destination page.${divergence}`;
     if (candidateCount === 1) return `${base}
 This is an INTERACTIVE story — the reader's choices shape ONE path through the book. Write a small set of 2-3 distinct branching actions as usual, but each action leads to exactly ONE outcome. Do NOT pre-generate alternate fates; every action resolves to a single destination page.`;
     return `${base}
@@ -2637,6 +3297,7 @@ This is an INTERACTIVE story — the reader's choices shape ONE path through the
   }
 
   // ── MULTIVERSE (default): current behaviour. ──────────────────────────
+  if (fateContext) return `${base}${divergence}`;
   if (candidateCount === 1) return base;
 
   // Only inject the cross-timeline bleed instruction when memory is degraded.
@@ -2655,6 +3316,23 @@ Open the door
   - A missing fellow waits in the dark
   - Something breathes inside
   - The room shouldn't exist`;
+}
+
+/**
+ * Turn B (StateDelta) task prompt — MULTI_TURN_PAGE_GENERATION_ROADMAP.md
+ * Part 3 Phase 1 Step 1.4. Newly authored (Turn B is a genuinely new call
+ * shape, not an extraction of existing prose): the AI's job in this turn is
+ * NOT to write narrative — the page text already exists (passed as a
+ * GENERATED PAGE document, see buildStateDeltaPrompt) — it's to read that
+ * page and decide what changed in the underlying story state as a result.
+ * Written in the same terse, imperative voice as formatNextPageTaskPrompt
+ * above for consistency.
+ */
+function formatStateDeltaTaskPrompt(language: string): string {
+  const isNonEnglish = !!language && language !== 'en';
+  const languageFormatted = formatLanguage(language);
+
+  return `The page below (GENERATED PAGE) has already been written and will NOT be regenerated. Your job is not to write prose — it's to determine what changed in the story's underlying state as a direct result of that page: inventory, injuries, relationships, threads, facts, flags, planned characters, and — only if genuinely warranted — the viable ending.${isNonEnglish ? ` Any text you author (contextHistory, factUpdates.reason, thread summaries/resolutions, etc.) must be in ${languageFormatted}.` : ''} Every field is optional — return only what the page actually changed. A quiet, reflective page can produce a small or empty delta; do not invent changes to fill fields that don't apply.`;
 }
 
 /**
@@ -3030,17 +3708,32 @@ The next page opening should answer: "What happened immediately after the MC cho
 Write that moment before advancing the scene.`;
 }
 
-function formatNextPageNarrativePrompt(params: BuildNextPagePromptParams): string {
+/**
+ * @param includeProseStyle - Default true (unchanged behavior). Pass false for
+ * the multi-turn state-delta turn (Turn B, MULTI_TURN_PAGE_GENERATION_ROADMAP.md
+ * Part 2.2/3 Phase 1 Step 1.4): the "NARRATIVE STYLE & PROSE ATMOSPHERE" block
+ * (sentence rhythm, register, prose technique) governs page TEXT exclusively —
+ * no StateDeltaGeneration field is affected by it — so it's the one section of
+ * this prompt that's unambiguously dead weight for Turn B. Everything else
+ * here (psychological flags/profile, hidden state, composure, route memory,
+ * future notes, threads, ending) plausibly informs at least one delta field
+ * (flagUpdates, futureNoteAdd, newThreads/updateThreads/addClues/closeThreads,
+ * viableEnding) and is kept for both turns — a conservative first cut per the
+ * roadmap's Part 5 decision log; narrower trimming is a documented follow-up,
+ * not implemented here, since this function is also reused unchanged by every
+ * other non-split caller.
+ */
+function formatNextPageNarrativePrompt(params: BuildNextPagePromptParams, includeProseStyle: boolean = true): string {
   const { advancedState: state, actionedPage, relevantFutureNoteKeys, book, clueRecallBlocks } = params;
   const { flags, psychologicalProfile, hiddenState, threads, memoryIntegrity, futureNotes, healthStatus, sanityState } = state;
   const stateInfo = getStoryStateInfo(state);
   const { currentPage, phase } = stateInfo;
   const { calendarDate, elapsedDays } = actionedPage;
 
-  return `NARRATIVE STYLE & PROSE ATMOSPHERE:
+  return `${includeProseStyle ? `NARRATIVE STYLE & PROSE ATMOSPHERE:
 ${createNarrativeStyle(state).instructions}
 
-PSYCHOLOGICAL FLAGS (Accumulated):
+` : ''}PSYCHOLOGICAL FLAGS (Accumulated):
 ${formatPsychologicalFlags(flags, memoryIntegrity)}
 
 PSYCHOLOGICAL PROFILE (Behavioral analysis):
@@ -4516,6 +5209,11 @@ async function prepareNextPageGenerationSetup(params: BuildNextPageParams, candi
     fieldInstructions: buildNextPageFieldInstructions(advancedState, action, sceneType),
     reviewChecklist: buildNextPageReviewChecklist(advancedState, book.language),
     evaluatorPrompt: buildNextPageEvaluatorPrompt(promptParams),
+    // Only used by the multi-turn path (USE_MULTI_TURN_GENERATION) — cheap
+    // to always return (just the resolved preset name), lets
+    // generateStoryGenerationMultiTurn build Turn B's `buildPresetSystemPrompt('state-delta', nextPreset)`
+    // without needing to re-read book.advancedOptions itself.
+    nextPreset,
   };
 }
 
@@ -4554,6 +5252,150 @@ export function resolvePageDelta(params: {
   const fullStateDelta: StateDelta = { ...stateDelta, ...psychologicalDeltas };
 
   return { newState, fullStateDelta };
+}
+
+/**
+ * Runs a single generation turn (Turn A/StoryPage or Turn B/StateDelta)
+ * through executePromptForJSON — MULTI_TURN_PAGE_GENERATION_ROADMAP.md Part
+ * 2.3/3 Phase 3.
+ *
+ * Deliberately thin: all the actual per-turn content (prompt text, schema,
+ * field instructions, review checklist) is built by the Phase 1 functions
+ * (buildStoryPagePrompt/buildStateDeltaPrompt, buildStoryPageFieldInstructions/
+ * buildStateDeltaFieldInstructions, etc.) and passed in via `definition` —
+ * this function's only job is the per-stage bookkeeping every turn needs
+ * identically: suffixing `cachedContentId`/`context` by stage so Turn A and
+ * Turn B never collide on the same Gemini explicit-cache slot despite
+ * sending different system prompts (Part 0.5 item 1), and assembling the
+ * exact `AIPromptForJsonParams<T>` shape `executePromptForJSON` expects —
+ * matching `generateNextPage`'s existing single-shot call shape field for
+ * field, just parameterized.
+ *
+ * No `evaluatorPrompt` is passed — per-turn evaluation was removed at
+ * checkpoint 2 (Part 5.5 Q2); evaluation runs once, after both turns are
+ * merged, via `evaluateMergedStoryGeneration`.
+ */
+async function runGenerationStage<T extends Record<string, unknown>>(
+  definition: GenerationStageDefinition<T>,
+  onProgress?: ProgressCallback,
+  onGenerationProgress?: (step: StoryGenerationStep) => Promise<void>,
+): Promise<AIResponse<T>> {
+  const { stage, prompt, systemPrompt, fieldInstructions, reviewChecklist, jsonStructure, schema, requiredFields, fallbackField, config, maxOutputToken, documents, cachedContentId, context, bookId } = definition;
+
+  return executePromptForJSON<T>({
+    prompt,
+    configs: {
+      schema,
+      requiredFields,
+      fallbackField,
+      baseOptions: {
+        config: { ...config, maxOutputToken },
+        modelSelection: AI_CHAT_MODELS_WRITING,
+        context: `${context}:${stage}`,
+        logPrompts: true,
+        systemPrompt,
+        documents,
+        cachedContentId: cachedContentId ? `${cachedContentId}:${stage}` : undefined,
+        meta: { bookId },
+      },
+    } satisfies AIPromptForJson<T>,
+    jsonStructure,
+    fieldInstructions,
+    reviewChecklist,
+  }, onProgress, onGenerationProgress);
+}
+
+/**
+ * Runs the full 2-turn pipeline (StoryPage → StateDelta → merge → 1
+ * evaluation pass) and returns an `AIResponse<StoryGeneration>` — the exact
+ * same shape `executePromptForJSON<StoryGeneration>` returns for the legacy
+ * single-shot call. MULTI_TURN_PAGE_GENERATION_ROADMAP.md Part 2.4/2.5,
+ * Phase 4/5.
+ *
+ * This is the ONE piece of logic shared by `generateNextPage` (fateContext
+ * omitted — single page) and `generateNextPages` (fateContext supplied per
+ * parallel alternative — Part 0.5 item 2's divergence fix). Returning the
+ * same response shape the legacy path already produces means every caller's
+ * downstream code (validate → canon → resolvePageDelta → branchId → persist
+ * → embeds) needs ZERO changes regardless of which path produced `response`
+ * — only the response-producing step itself branches on
+ * `USE_MULTI_TURN_GENERATION`.
+ */
+async function generateStoryGenerationMultiTurn(options: {
+  setup: Awaited<ReturnType<typeof prepareNextPageGenerationSetup>>;
+  book: Book;
+  actionedPage: CandidateGenerationPage;
+  baseContext: string;
+  fateContext?: { fateIndex: number; fateCount: number };
+}): Promise<AIResponse<StoryGeneration>> {
+  const { setup, book, actionedPage, baseContext, fateContext } = options;
+  const { promptParams, advancedState, action, config, documents, cachedContentId, systemPrompt, nextPreset } = setup;
+  const { sceneType } = actionedPage;
+
+  // TODO(Phase 6, roadmap Part 2.6): check pageGenerationCheckpoints for a
+  // cached StoryPage for this (actionedPageId, action, fateIndex) before
+  // running Turn A, and skip straight to Turn B if found. Not yet
+  // implemented — Turn A always runs fresh for now. This is never worse
+  // than today's behavior (a Turn-B failure still gets retried to success
+  // by the existing retry layers, just without the cost optimization yet).
+
+  // ── Turn A: StoryPage ────────────────────────────────────────────────
+  const storyPageResponse = await runGenerationStage<StoryPageGeneration>({
+    stage: 'story_page',
+    prompt: buildStoryPagePrompt(promptParams, fateContext),
+    systemPrompt, // buildPresetSystemPrompt('next', nextPreset) — already computed by prepareNextPageGenerationSetup, identical for Turn A
+    fieldInstructions: buildStoryPageFieldInstructions(advancedState, action, sceneType),
+    reviewChecklist: buildStoryPageReviewChecklist(advancedState, book.language),
+    jsonStructure: storyPageOutputFormat,
+    schema: STORY_PAGE_SCHEMA_DEFINITION,
+    requiredFields: STORY_PAGE_REQUIRED_FIELDS,
+    fallbackField: 'text',
+    config,
+    maxOutputToken: STORY_PAGE_MAX_OUTPUT_TOKEN,
+    documents,
+    cachedContentId,
+    context: baseContext,
+    bookId: book.id,
+  });
+
+  if (!storyPageResponse.result) {
+    throw new Error('Failed to generate page: no result (story_page turn)');
+  }
+  const storyPage = storyPageResponse.result;
+
+  // TODO(Phase 6): upsert pageGenerationCheckpoints row with `storyPage`
+  // here (best-effort — log and continue on failure, never block Turn B).
+
+  // ── Turn B: StateDelta (sees Turn A's output via buildStateDeltaPrompt's
+  //    "GENERATED PAGE" section) ──────────────────────────────────────────
+  const stateDeltaResponse = await runGenerationStage<StateDeltaGenerationWithBranch>({
+    stage: 'state_delta',
+    prompt: buildStateDeltaPrompt(promptParams, storyPage),
+    systemPrompt: buildPresetSystemPrompt('state-delta', nextPreset),
+    fieldInstructions: buildStateDeltaFieldInstructions(advancedState, action, sceneType),
+    reviewChecklist: buildStateDeltaReviewChecklist(advancedState, book.language),
+    jsonStructure: stateDeltaOutputFormat,
+    schema: STATE_DELTA_WITH_BRANCH_SCHEMA_DEFINITION,
+    requiredFields: STATE_DELTA_WITH_BRANCH_REQUIRED_FIELDS,
+    fallbackField: 'contextHistory',
+    config,
+    maxOutputToken: STATE_DELTA_MAX_OUTPUT_TOKEN,
+    documents,
+    cachedContentId,
+    context: baseContext,
+    bookId: book.id,
+  });
+
+  if (!stateDeltaResponse.result) {
+    throw new Error('Failed to generate page: no result (state_delta turn)');
+  }
+  const stateDelta = stateDeltaResponse.result;
+
+  // ── Merge (same shape/precedence as the legacy single-shot response) ───
+  const merged: StoryGeneration = { ...storyPage, ...stateDelta };
+
+  // ── Single post-merge evaluation pass (Part 5.5 Q2) ─────────────────────
+  return evaluateMergedStoryGeneration(merged, stateDeltaResponse, promptParams, systemPrompt, `${baseContext}:evaluation`);
 }
 
 /**
@@ -4620,34 +5462,50 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
   const context = "generateNextPage";
 
   // 1 & 2. Setup context, config, and prompts
-  const { prompt, config, systemPrompt, documents, cachedContentId, fieldInstructions, reviewChecklist, evaluatorPrompt, generationContext, advancedState, currentState, expectedPageNumber, action } = await prepareNextPageGenerationSetup(params, 1);
+  const setup = await prepareNextPageGenerationSetup(params, 1);
+  const { prompt, config, systemPrompt, documents, cachedContentId, fieldInstructions, reviewChecklist, evaluatorPrompt, generationContext, advancedState, currentState, expectedPageNumber, action } = setup;
   console.log(`[${context}] 💭 Conceptualizing continuation for ${generationContext}...`);
-  
+
   // 3. Send prompt to AI with dynamic parameters (single story context)
-  const response = await executePromptForJSON<StoryGeneration>({
-    prompt,
-    configs: {
-      schema: STORY_GENERATION_SCHEMA_DEFINITION,
-      requiredFields: STORY_GENERATION_REQUIRED_FIELDS,
-      fallbackField: 'text',
-      baseOptions: {
-        config,
-        modelSelection: AI_CHAT_MODELS_WRITING,
-        context: `story-page-candidate:b-${book.id}`,
-        logPrompts: true,
-        systemPrompt,
-        documents,
-        cachedContentId,
-        meta: {
-          bookId: book.id
-        }
-      }
-    } satisfies AIPromptForJson<StoryGeneration>,
-    jsonStructure: nextPageOutputFormat,
-    fieldInstructions,
-    reviewChecklist,
-    evaluatorPrompt,
-  });
+  //
+  // USE_MULTI_TURN_GENERATION (MULTI_TURN_PAGE_GENERATION_ROADMAP.md, default
+  // false): routes through the 2-turn StoryPage → StateDelta pipeline
+  // instead of one combined request. generateStoryGenerationMultiTurn
+  // returns the exact same AIResponse<StoryGeneration> shape as the legacy
+  // executePromptForJSON call below, so every line after this branch (4
+  // onward — validate, canon, resolvePageDelta, branchId, persist, embeds)
+  // is completely unchanged and unaware of which path produced `response`.
+  const response = USE_MULTI_TURN_GENERATION
+    ? await generateStoryGenerationMultiTurn({
+        setup,
+        book,
+        actionedPage,
+        baseContext: `story-page-candidate:b-${book.id}`,
+      })
+    : await executePromptForJSON<StoryGeneration>({
+        prompt,
+        configs: {
+          schema: STORY_GENERATION_SCHEMA_DEFINITION,
+          requiredFields: STORY_GENERATION_REQUIRED_FIELDS,
+          fallbackField: 'text',
+          baseOptions: {
+            config,
+            modelSelection: AI_CHAT_MODELS_WRITING,
+            context: `story-page-candidate:b-${book.id}`,
+            logPrompts: true,
+            systemPrompt,
+            documents,
+            cachedContentId,
+            meta: {
+              bookId: book.id
+            }
+          }
+        } satisfies AIPromptForJson<StoryGeneration>,
+        jsonStructure: nextPageOutputFormat,
+        fieldInstructions,
+        reviewChecklist,
+        evaluatorPrompt,
+      });
   
   // 4. Validate AI response
   if (!response.result) {
@@ -4769,42 +5627,96 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
   const context = "generateNextPages";
 
   // 1 & 2. Setup context, config, and prompts
-  const { prompt, config, systemPrompt, documents, cachedContentId, fieldInstructions, reviewChecklist, evaluatorPrompt, generationContext, advancedState, currentState, expectedPageNumber, action } = await prepareNextPageGenerationSetup(params, candidateCount);
+  const setup = await prepareNextPageGenerationSetup(params, candidateCount);
+  const { prompt, config, systemPrompt, documents, cachedContentId, fieldInstructions, reviewChecklist, evaluatorPrompt, generationContext, advancedState, currentState, expectedPageNumber, action } = setup;
   console.log(`[${context}] 💭 Conceptualizing ${candidateCount} alternative fates for ${generationContext}...`);
-  
-  // 3. Send prompt to AI with dynamic parameters (multi-page batch schema)
-  const response = await executePromptForJSON<CandidatePagesGeneration>({
-    prompt,
-    configs: {
-      schema: CANDIDATE_GENERATION_SCHEMA_DEFINITION,
-      requiredFields: CANDIDATE_GENERATION_REQUIRED_FIELDS,
-      fallbackField: 'output',
-      baseOptions: {
-        config: { ...config, maxOutputToken: DEFAULT_MAX_OUTPUT_TOKEN * candidateCount },
-        modelSelection: AI_CHAT_MODELS_WRITING,
-        context: `story-page-candidates:b-${book.id}`,
-        logPrompts: true,
-        systemPrompt,
-        documents,
-        cachedContentId,
-        meta: {
-          bookId: book.id
-        }
+
+  // 3. Generate all `candidateCount` alternatives.
+  //
+  // USE_MULTI_TURN_GENERATION (MULTI_TURN_PAGE_GENERATION_ROADMAP.md, default
+  // false): each alternative runs as its OWN independent 2-turn
+  // (StoryPage → StateDelta) pipeline via generateStoryGenerationMultiTurn,
+  // all `candidateCount` of them in parallel via Promise.allSettled — NOT
+  // the combined single-request batch below. Deliberately simpler than the
+  // roadmap's original two-phase sketch ("all Turn A in parallel, then all
+  // Turn B in parallel"): N parallel *independent* (Turn A → Turn B)
+  // sequences has the same wall-clock cost (bounded by one A+B pair's
+  // latency either way) while reusing generateStoryGenerationMultiTurn
+  // completely unmodified — no separate batch-orchestration layer needed.
+  // Promise.allSettled (not Promise.all) means one alternative's total
+  // generation failure — either turn — no longer takes the other
+  // alternatives down with it, unlike the combined single-request batch
+  // below where one malformed AI response loses every alternative at once.
+  // Each alternative gets its OWN AIResponse (own provider/model), unlike
+  // the combined path's one shared `response` reused for every persisted
+  // page — see generatedAlternatives below, which normalizes both shapes
+  // to the same { result, response } pairing so the persist loop doesn't
+  // need to know which path produced them.
+  let generatedAlternatives: { result: StoryGeneration; response: AIResponse<StoryGeneration> }[];
+
+  if (USE_MULTI_TURN_GENERATION) {
+    const settled = await Promise.allSettled(
+      Array.from({ length: candidateCount }, (_, index) =>
+        generateStoryGenerationMultiTurn({
+          setup,
+          book,
+          actionedPage,
+          baseContext: `story-page-candidates:b-${book.id}:fate-${index + 1}`,
+          fateContext: { fateIndex: index, fateCount: candidateCount },
+        })
+      )
+    );
+
+    generatedAlternatives = [];
+    settled.forEach((outcome, index) => {
+      if (outcome.status === 'fulfilled' && outcome.value.result) {
+        generatedAlternatives.push({ result: outcome.value.result, response: outcome.value });
+      } else {
+        const reason = outcome.status === 'rejected' ? outcome.reason : new Error('No result');
+        console.error(`[${context}] ❌ Alternative fate ${index + 1}/${candidateCount} generation failed:`, getErrorMessage(reason));
       }
-    } satisfies AIPromptForJson<CandidatePagesGeneration>,
-    jsonStructure: multiNextPageOutputFormat,
-    fieldInstructions,
-    reviewChecklist,
-    evaluatorPrompt,
-  });
-  
-  // 4. Validate AI response
-  if (!response.result) {
-    throw new Error('Failed to generate page candidates: no result');
+    });
+
+    if (generatedAlternatives.length === 0) {
+      throw new Error(`All ${candidateCount} alternatives failed to generate for ${generationContext}`);
+    }
+  } else {
+    // 3. Send prompt to AI with dynamic parameters (multi-page batch schema)
+    const response = await executePromptForJSON<CandidatePagesGeneration>({
+      prompt,
+      configs: {
+        schema: CANDIDATE_GENERATION_SCHEMA_DEFINITION,
+        requiredFields: CANDIDATE_GENERATION_REQUIRED_FIELDS,
+        fallbackField: 'output',
+        baseOptions: {
+          config: { ...config, maxOutputToken: DEFAULT_MAX_OUTPUT_TOKEN * candidateCount },
+          modelSelection: AI_CHAT_MODELS_WRITING,
+          context: `story-page-candidates:b-${book.id}`,
+          logPrompts: true,
+          systemPrompt,
+          documents,
+          cachedContentId,
+          meta: {
+            bookId: book.id
+          }
+        }
+      } satisfies AIPromptForJson<CandidatePagesGeneration>,
+      jsonStructure: multiNextPageOutputFormat,
+      fieldInstructions,
+      reviewChecklist,
+      evaluatorPrompt,
+    });
+
+    // 4. Validate AI response
+    if (!response.result) {
+      throw new Error('Failed to generate page candidates: no result');
+    }
+
+    // Every persisted page shares the SAME response object (one combined
+    // request produced all alternatives) — matches original behavior exactly.
+    generatedAlternatives = response.result.generatedPages.map(result => ({ result, response }));
   }
-  
-  // Generated content from AI response
-  const generatedStoryPages = response.result.generatedPages;
+
   const newPages: PersistedStoryPage[] = [];
   const parentBranchId = actionedPage.branchId ?? "main";
 
@@ -4815,7 +5727,7 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
   let lastError: unknown = null;
 
   // 5. Per-page state processing and persistence
-  for (const [index, generatedStoryPageResult] of generatedStoryPages.entries()) {
+  for (const [index, { result: generatedStoryPageResult, response: alternativeResponse }] of generatedAlternatives.entries()) {
     const isFirstAlternative = index === 0;
     const fateLogContext = `${context}:fate-${index + 1}`;
 
@@ -4863,11 +5775,11 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
       });
     } catch (error) {
       // Non-retryable signals abort the entire loop
-      console.error(`[${context}] ❌ Cannot determine branchId for alternative fate ${index + 1}/${generatedStoryPages.length}:`, getErrorMessage(error));
+      console.error(`[${context}] ❌ Cannot determine branchId for alternative fate ${index + 1}/${generatedAlternatives.length}:`, getErrorMessage(error));
       throw error; 
     }
     
-    console.log(`[${context}] 🌳 Alternative fate ${index + 1}/${generatedStoryPages.length} — branchId: ${branchId} (${branchId === parentBranchId ? "inherited from parent" : "new branch"})`);
+    console.log(`[${context}] 🌳 Alternative fate ${index + 1}/${generatedAlternatives.length} — branchId: ${branchId} (${branchId === parentBranchId ? "inherited from parent" : "new branch"})`);
     usedBranchIds.add(branchId);
 
     // Persist page and its state atomically
@@ -4878,7 +5790,7 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
         generatedStoryPage,
         fullStateDelta,
         newState,
-        aiResponseProvider: response,
+        aiResponseProvider: alternativeResponse,
         actionedPage,
         action,
         branchId,
@@ -4888,7 +5800,7 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
       });
 
       newPages.push(newPage);
-      console.log(`[${context}] 🌌 Persisted alternative fate ${index + 1}/${generatedStoryPages.length} — page ${newPage.id}`);
+      console.log(`[${context}] 🌌 Persisted alternative fate ${index + 1}/${generatedAlternatives.length} — page ${newPage.id}`);
 
       if (canonPass.audit) {
         void insertCanonValidationAudit({
@@ -4906,17 +5818,17 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
     } catch (error) {
       // One alternative failing should not abort the others
       lastError = error;
-      console.error(`[${context}] ❌ Failed to persist alternative fate ${index + 1}/${generatedStoryPages.length} (branchId: ${branchId}):`, getErrorMessage(error));
+      console.error(`[${context}] ❌ Failed to persist alternative fate ${index + 1}/${generatedAlternatives.length} (branchId: ${branchId}):`, getErrorMessage(error));
     }
   }
 
   // 6. Surface error state based on success rate
   if (newPages.length === 0) {
-    throw (lastError ?? new Error(`All ${generatedStoryPages.length} alternatives failed to persist for ${generationContext}`));
+    throw (lastError ?? new Error(`All ${generatedAlternatives.length} alternatives failed to persist for ${generationContext}`));
   }
 
-  if (newPages.length < generatedStoryPages.length) {
-    console.warn(`[${context}] ⚠️ Partial success: persisted ${newPages.length}/${generatedStoryPages.length} alternatives for ${generationContext}`);
+  if (newPages.length < generatedAlternatives.length) {
+    console.warn(`[${context}] ⚠️ Partial success: persisted ${newPages.length}/${generatedAlternatives.length} alternatives for ${generationContext}`);
   } else {
     console.log(`[${context}] ✅ Persisted all ${newPages.length} alternative fates for ${generationContext}`);
   }

@@ -1,6 +1,7 @@
 import type { Book, BookMode } from "./book.js";
 import type { CandidateGenerationPage } from "./candidate-generation.js";
-import type { ActionedStoryPage, StoryState } from "./story.js";
+import type { ActionedStoryPage, StateDeltaGenerationWithBranch, StoryPageGeneration, StoryState } from "./story.js";
+import type { AIChatConfig, AIDocument, AIJsonProperty, GenerationStage } from "./ai-chat.js";
 
 export type GenerateBookCreationPromptParams = {
   /** Whether to include prompt generation logging information. */
@@ -85,3 +86,56 @@ export type BuildNextPagePromptParams = {
    */
   useStringEvaluatorOutput?: boolean;
 }
+
+/**
+ * Context for a single generation stage (Turn A or Turn B) in the multi-turn
+ * page-generation pipeline — MULTI_TURN_PAGE_GENERATION_ROADMAP.md Part 2.3.
+ *
+ * Extends BuildNextPagePromptParams with the one thing only Turn B needs:
+ * Turn A's already-generated StoryPage. buildStateDeltaPrompt,
+ * buildStateDeltaFieldInstructions's isMultiTurn ID-handoff instructions, and
+ * evaluateMergedStoryGeneration's merge step all read it off this field.
+ * Turn A leaves it undefined — there's nothing to hand it yet.
+ */
+export type StageContext = BuildNextPagePromptParams & {
+  generatedPage?: StoryPageGeneration;
+};
+
+/**
+ * Everything runGenerationStage (prompt.ts) needs to run ONE generation turn
+ * through executePromptForJSON — parameterized by T so the same runner
+ * serves both the StoryPage turn (T = StoryPageGeneration) and the
+ * StateDelta turn (T = StateDeltaGenerationWithBranch).
+ * MULTI_TURN_PAGE_GENERATION_ROADMAP.md Part 2.3/3 Phase 3.
+ *
+ * No `evaluatorPrompt` field — per-turn evaluation was removed at
+ * checkpoint 2 (Part 5.5 Q2, see evaluateMergedStoryGeneration); evaluation
+ * runs once, after both turns are merged, not per stage.
+ */
+export type GenerationStageDefinition<T extends Record<string, unknown>> = {
+  /**
+   * Which turn this is. Used by runGenerationStage to suffix `cachedContentId`
+   * (`:story_page` / `:state_delta`) so Turn A and Turn B never collide on
+   * the same Gemini explicit-cache slot despite sending different system
+   * prompts (see the Gemini cache-collision finding, roadmap Part 0.5 item
+   * 1) — and to suffix the log `context` string the same way.
+   */
+  stage: GenerationStage;
+  prompt: string;
+  systemPrompt: string;
+  fieldInstructions: string;
+  reviewChecklist: string;
+  jsonStructure: string;
+  schema: Record<keyof T, AIJsonProperty>;
+  requiredFields: (keyof T)[];
+  fallbackField: keyof T;
+  /** Base AI config (from determineAIConfig — dynamic per advancedState/psychological progress, NOT a static preset) — runGenerationStage spreads this with the per-stage `maxOutputToken` override, matching the pattern generateNextPage(s) already use for their single combined call. */
+  config: AIChatConfig;
+  maxOutputToken: number;
+  documents: AIDocument[];
+  /** Base cache key from buildBookMetaDocuments — runGenerationStage appends `:${stage}`. Omitted when the caller has no book-level cache key to share (shouldn't normally happen for next-page generation, but kept optional for robustness). */
+  cachedContentId?: string;
+  /** Base context string (e.g. `next-page-2turn:b-${bookId}`) — runGenerationStage appends `:${stage}`. */
+  context: string;
+  bookId: string;
+};
