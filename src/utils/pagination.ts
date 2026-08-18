@@ -52,10 +52,11 @@ export interface PaginationParams {
 /**
  * Paginated response interface with dynamic resource naming
  */
-export interface PaginatedResponse<T> {
-  [key: string]: T[] | PaginationMeta;
+export type PaginatedResponse<T, K extends string = 'items'> = {
+  [P in K]: T[];
+} & {
   pagination: PaginationMeta;
-}
+};
 
 /**
  * Extracts pagination parameters from a Hono request query record.
@@ -167,15 +168,16 @@ export function calculatePaginationMeta(
  * // Returns: { items: [...], pagination: { page: 1, limit: 20, ... } }
  * ```
  */
-export function createPaginatedResponse<T>(
+export function createPaginatedResponse<T, K extends string = 'items'>(
   items: T[],
   pagination: PaginationMeta,
-  resourceName?: ResourceName
-): PaginatedResponse<T> {
+  resourceName?: K
+): PaginatedResponse<T, K> {
+  const key = (resourceName || 'items') as K;
   return {
-    [resourceName || 'items']: items,
-    pagination
-  };
+    [key]: items,
+    pagination,
+  } as PaginatedResponse<T, K>;
 }
 
 /**

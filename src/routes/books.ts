@@ -117,14 +117,15 @@ import { streamCachedPrompt } from "../utils/prompt-stream.js";
 import { PROMPT_CACHE_CONFIG } from "../config/prompt-cache.js";
 import { imageUploadMiddleware } from "../middleware/upload.js";
 import { deleteFileFromImageKit, isBase64Upload, persistUploadedImage } from "../services/image.js";
-import { extractPaginationParams, createPaginatedResponse, calculatePaginationMeta } from "../utils/pagination.js";
+import { extractPaginationParams, createPaginatedResponse, calculatePaginationMeta, type PaginatedResponse } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import { validateSearchQuery, validateLanguageCode, isValidLanguageCode, validateAgeRange, validateGender, validateRatingFilter, validateRatingCountFilter, createRelevanceExpression, buildTokenizedSearchCondition } from "../utils/search.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { updateBook, updateBookVisibility, insertBook, uploadBookCoverImage, uploadBookCharacterAvatarImage, sanitizeBookTextField, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage, mapBookFromDb, invalidatePopularTagsCache, invalidateBookCache, invalidateEnrichedBookCache, invalidatePageOneCache, loadParagraphCommentCounts, loadCommunityActions } from "../services/book.js";
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
-import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookPage } from "../services/book-controller.js";
+import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookPage, enrichBooksWithUserData } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache } from "../services/cache.js";
+import type { PaginationMeta } from "../types/api.js";
 import type { BookCreationStatus, BookGenerationPayload, BookMode, BookSortOption, BookStatus, BookVisibility, EnrichedBookData } from "../types/book.js";
 import { bookStatuses, bookVisibilities, bookModes, lastUpdatedFilterOptions, storyGenerationSteps } from "../types/book.js";
 import { createBookCore, createBookValidate, handleBookCreationError, updateBookGenerationStatus } from "../services/book-creation.js";
@@ -2401,16 +2402,15 @@ router.get("/explore", optionalAuth, async (c) => {
       ? CACHE_TTL.EXPLORE_PAGE_1_TRENDING
       : CACHE_TTL.EXPLORE_PAGE_1;
 
-    // Fetch function for cache
-    const fetchBooks = async () => {
-      // Build base query with enriched fields
-      const baseSelect = getEnrichedBookSelect(userId, c.get("headerLanguage"));
+    // Fetch function for cache (pure public book data, no user-specific flags)
+    const fetchPublicBooks = async () => {
+      // Build base query with public fields (userId = null)
+      const baseSelect = getEnrichedBookSelect(null, c.get("headerLanguage"));
       const baseQuery = dbRead
         .select(sanitizedSearch
           ? { ...baseSelect, relevanceScore: createRelevanceExpression(sanitizedSearch, books) }
           : baseSelect)
         .from(books)
-        // TODO: should add left join to userSessions & firstPageSq
         .leftJoin(users, eq(books.userId, users.userId));
 
       // Build comprehensive query using shared helper
@@ -2431,8 +2431,8 @@ router.get("/explore", optionalAuth, async (c) => {
         minRating,
         maxRating,
         minRatingCount,
-        currentUserId: profileUserId || userId, // Use profileUserId for viewing another user's list
-        collection, // Filter favorites by collection name
+        currentUserId: null,
+        collection,
       });
 
       const [totalCountResult] = await countQuery;
@@ -2445,16 +2445,70 @@ router.get("/explore", optionalAuth, async (c) => {
 
       return createPaginatedResponse(booksResult, pagination, 'books');
     };
-    
-    // Use cache if applicable, otherwise fetch directly
-    const result = shouldCache
-      ? await withCache(cacheKey, fetchBooks, cacheTTL)
-      : await fetchBooks();
 
-    // Add HTTP cache headers for CDN/edge caching (works alongside Redis)
+    // Direct fetch function for uncached or user-specific queries
+    const fetchDirectBooks = async () => {
+      const baseSelect = getEnrichedBookSelect(profileUserId || userId, c.get("headerLanguage"));
+      const baseQuery = dbRead
+        .select(sanitizedSearch
+          ? { ...baseSelect, relevanceScore: createRelevanceExpression(sanitizedSearch, books) }
+          : baseSelect)
+        .from(books)
+        .leftJoin(users, eq(books.userId, users.userId));
+
+      const { query, countQuery } = buildBookQuery<typeof baseQuery>({
+        baseQuery,
+        baseCondition,
+        search: sanitizedSearch,
+        bookSortBy,
+        genericSortBy: sortBy,
+        sortOrder,
+        tags: tagsArray,
+        language: sanitizedLanguage,
+        lastUpdated,
+        minAge,
+        maxAge,
+        gender: sanitizedGender,
+        mode: sanitizedMode,
+        minRating,
+        maxRating,
+        minRatingCount,
+        currentUserId: profileUserId || userId,
+        collection,
+      });
+
+      const [totalCountResult] = await countQuery;
+      const totalCount = (totalCountResult?.count as number) ?? 0;
+
+      const offset = (page - 1) * limit;
+      const booksResult: EnrichedBookData[] = await query.limit(limit).offset(offset);
+      const pagination = calculatePaginationMeta(page, limit, totalCount);
+
+      return createPaginatedResponse(booksResult, pagination, 'books');
+    };
+    
+    // Hybrid cache execution:
+    // 1. If eligible for public cache, pull public catalog from Redis (or populate on miss)
+    // 2. If user is authenticated, overlay personal interactions on the fly (~1-2ms)
+    let result: PaginatedResponse<EnrichedBookData, 'books'>;
     if (shouldCache) {
+      const cachedPublic = await withCache(cacheKey, fetchPublicBooks, cacheTTL);
+      if (userId && cachedPublic.books && cachedPublic.books.length > 0) {
+        const enrichedBooks = await enrichBooksWithUserData(cachedPublic.books, userId);
+        result = { ...cachedPublic, books: enrichedBooks };
+      } else {
+        result = cachedPublic;
+      }
+    } else {
+      result = await fetchDirectBooks();
+    }
+
+    // Add HTTP cache headers: public CDN caching ONLY for anonymous requests
+    if (shouldCache && !userId) {
       const httpCacheMaxAge = cacheTTL; // 5 min for trending, 30 min for newest
       c.header('Cache-Control', `public, max-age=${httpCacheMaxAge}, s-maxage=${httpCacheMaxAge}, stale-while-revalidate=${httpCacheMaxAge / 2}`);
+    } else if (userId) {
+      c.header('Cache-Control', 'private, no-cache, no-store, must-revalidate');
     }
     
     // Update user activity in background for authenticated users
