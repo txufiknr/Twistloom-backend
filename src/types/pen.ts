@@ -121,6 +121,63 @@ export type PenDraftSceneEssentials = {
 /** Edit classification recorded per AI/human interaction inside a session. */
 export type PenEditType = "human_wrote" | "ai_continued" | "ai_revised" | "human_revised" | "plan";
 
+// ── Multi-draft workspace (PEN_DRAFT_SHELF_ROADMAP.md) ──────────────────────
+
+/**
+ * One in-flight draft slot in the Pen's multi-draft workspace. Standalone and
+ * switchable: continue / finalize / discard / autosave all operate on a single
+ * row; `pen_sessions.active_draft_id` persists which one the editor shows.
+ *
+ * `draftId`, NOT `action.text`, is the draft identity — the published page's
+ * incoming action is inherited from the parent at finalize, so sibling drafts
+ * share it (roadmap D-1).
+ */
+export type PenDraft = {
+  id: string;
+  sessionId: string;
+  /** Published page being continued from (null → the would-be page 1). */
+  parentPageId: string | null;
+  /** Editorial, non-unique name shown in the outline draft shelf (D-3). */
+  label: string | null;
+  /** Draft workspace — JSONB spans, NOT plain text (Model C). */
+  draftBuffer: DraftSpan[];
+  /** Exact TipTap HTML mirror of `draftBuffer` (autosave layer 2). */
+  draftHtml?: string | null;
+  /** Author-curated cast present in this draft's scene (§10 Decision M). */
+  draftCharactersPresent: PenDraftCharacter[];
+  /** Author-curated scene essentials for the NEXT page. */
+  draftSceneEssentials?: PenDraftSceneEssentials | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+/**
+ * Lightweight draft summary for the session payload + outline draft shelf —
+ * never carries the full buffer/html.
+ */
+export type PenDraftSummary = {
+  id: string;
+  /** Published page being continued from (null → the would-be page 1). */
+  parentPageId: string | null;
+  /** Editorial label (D-3). */
+  label: string | null;
+  /** Plain-text length of the buffer (for the word-count chip). */
+  charCount: number;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+/** Allowed PATCH fields on a single `pen_drafts` row (autosave heartbeat). */
+export type PenDraftUpdates = {
+  label?: string;
+  draftBuffer?: DraftSpan[];
+  draftHtml?: string;
+  draftCharactersPresent?: PenDraftCharacter[];
+  draftSceneEssentials?: PenDraftSceneEssentials | null;
+  /** Client wall-clock (ms epoch, ISO string) of the most recent keystroke — last-write-wins key. */
+  draftUpdatedAt?: string;
+};
+
 /** Rolled-up authorship of a published page (`pages.authorshipOrigin`). */
 export type AuthorshipOrigin = "human" | "ai" | "revised";
 
@@ -325,6 +382,18 @@ export type PenOutlineBranch = {
 export type PenOutlineData = {
   pages: PenOutlinePage[];
   branches: PenOutlineBranch[];
+  /**
+   * The book's pen session + its in-flight draft slots, when a session exists
+   * (the outline draft shelf, roadmap §7). `null` when the author hasn't opened
+   * the pen yet — the outline still lists published pages.
+   */
+  workspace:
+    | {
+        sessionId: string;
+        activeDraftId: string | null;
+        drafts: PenDraftSummary[];
+      }
+    | null;
 };
 
 // ── Author page peek (GET /api/pen/pages/:pageId) ──────────────────────────

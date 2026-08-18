@@ -13,8 +13,9 @@ import { requireAuth } from "../middleware/nextauth.js";
 import { rateLimit } from "../middleware/rate-limit.js";
 import { PEN_CONTINUE_RATE_LIMIT, PEN_ESSENTIALS_RATE_LIMIT, PEN_FINALIZE_PROPOSE_RATE_LIMIT } from "../config/ai-rate-limits.js";
 import { cApiError, cNotFoundError, cValidationError } from "../utils/error.js";
+import { dbWrite } from "../db/client.js";
 import { isBase64Upload } from "../services/image.js";
-import { PEN_ASSISTANCE_LEVEL_MAX, PEN_ASSISTANCE_LEVEL_MIN, PEN_AUTHORING_MODES, PEN_AUTHORING_POVS, PEN_DRAFT_BUFFER_MAX_CHARS, PEN_DRAFT_CAST_LIMIT, PEN_DRAFT_HTML_MAX_LENGTH, PEN_DRAFT_IMAGE_MAX_BYTES, PEN_DRAFT_SPAN_MAX_LENGTH, PEN_DRAFT_TEXT_MAX_LENGTH, PEN_DIRECTION_HINT_MAX_LENGTH, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_MAX_ACTIONS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_SCENE_FOCUS_MAX, PEN_SCENE_FOCUS_MIN, PEN_SESSION_STATUSES, PEN_CONTINUE_PROSE_MAX_LENGTH } from "../config/story.js";
+import { PEN_ASSISTANCE_LEVEL_MAX, PEN_ASSISTANCE_LEVEL_MIN, PEN_AUTHORING_MODES, PEN_AUTHORING_POVS, PEN_DRAFT_BUFFER_MAX_CHARS, PEN_DRAFT_CAST_LIMIT, PEN_DRAFT_HTML_MAX_LENGTH, PEN_DRAFT_IMAGE_MAX_BYTES, PEN_DRAFT_SPAN_MAX_LENGTH, PEN_DRAFT_TEXT_MAX_LENGTH, PEN_DIRECTION_HINT_MAX_LENGTH, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_MAX_ACTIONS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_SCENE_FOCUS_MAX, PEN_SCENE_FOCUS_MIN, PEN_SESSION_STATUSES, PEN_CONTINUE_PROSE_MAX_LENGTH, PEN_DRAFT_LABEL_MAX_LENGTH } from "../config/story.js";
 import { moods } from "../types/story.js";
 import { actionTypes } from "../types/story.js";
 import { placeWeathers } from "../types/places.js";
@@ -32,6 +33,11 @@ import {
   getPenSessionState,
   getPenOutline,
   getPenAuthorPage,
+  listSessionDrafts,
+  createSessionDraft,
+  activateSessionDraft,
+  updateSessionDraft,
+  discardSessionDraft,
   PenSessionNotFoundError,
   PenSessionConflictError,
   PenBookOwnershipError,
@@ -39,6 +45,8 @@ import {
   PenFinalizeError,
   PenEssentialsAutofillError,
   PenStateProposalError,
+  PenDraftLimitError,
+  PenDraftNotActiveError,
   uploadPenDraftImage,
   PenImageUploadError,
 } from "../services/pen.js";
@@ -362,6 +370,190 @@ router.post("/sessions/:id/discard", requireAuth, async (c) => {
 });
 
 /**
+ * GET /api/pen/sessions/:id/drafts
+ * Lists every in-flight draft slot for the outline draft shelf (roadmap §7).
+ * Returns lightweight summaries only — the full buffer/html rides on the
+ * session payload (active draft) or the per-draft PATCH responses.
+ */
+router.get("/sessions/:id/drafts", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId");
+    if (!userId) return cApiError(c, "Authentication required", undefined, 401);
+    const sessionId = c.req.param("id");
+
+    const drafts = await listSessionDrafts(userId, sessionId);
+    return c.json({ drafts });
+  } catch (error) {
+    if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
+    return cApiError(c, "Failed to list pen drafts", error);
+  }
+});
+
+/**
+ * POST /api/pen/sessions/:id/drafts
+ * Creates a new in-flight draft slot (roadmap §6.1). Body:
+ * `{ parentPageId?, label?, activate? }` — the published page being continued
+ * from (null → the would-be page 1), an optional editorial label, and whether
+ * the new slot should immediately become the active draft (the "New draft" /
+ * branchFromPage action). Enforces the soft per-parent cap
+ * (PEN_DRAFTS_PER_PARENT). Returns the session payload so the frontend can sync
+ * its shelf + editor state in one round trip.
+ */
+router.post("/sessions/:id/drafts", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId");
+    if (!userId) return cApiError(c, "Authentication required", undefined, 401);
+    const sessionId = c.req.param("id");
+    const body = await readJsonBody(c);
+
+    if (!body || typeof body !== "object") {
+      return cValidationError(c, "Request body must be a JSON object");
+    }
+    const { parentPageId, label, activate } = body as { parentPageId?: unknown; label?: unknown; activate?: unknown };
+    if (parentPageId !== undefined && parentPageId !== null && typeof parentPageId !== "string") {
+      return cValidationError(c, "parentPageId must be a string or null");
+    }
+    if (label !== undefined && typeof label !== "string") {
+      return cValidationError(c, "label must be a string");
+    }
+    if (typeof label === "string" && label.trim().length > PEN_DRAFT_LABEL_MAX_LENGTH) {
+      return cValidationError(c, `label must be at most ${PEN_DRAFT_LABEL_MAX_LENGTH} characters`);
+    }
+    if (activate !== undefined && typeof activate !== "boolean") {
+      return cValidationError(c, "activate must be a boolean");
+    }
+
+    const session = await createSessionDraft(userId, sessionId, {
+      parentPageId: typeof parentPageId === "string" ? parentPageId : null,
+      label: typeof label === "string" ? label : undefined,
+      activate: activate === true,
+    });
+    return c.json({ session });
+  } catch (error) {
+    if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
+    if (error instanceof PenDraftLimitError) return cApiError(c, error.message, undefined, 422);
+    return cApiError(c, "Failed to create pen draft", error);
+  }
+});
+
+/**
+ * POST /api/pen/sessions/:id/drafts/:draftId/activate
+ * Switches `activeDraftId` to the given slot — the outline "switch draft"
+ * action. Returns the session payload (the editor hydrates from its draft view).
+ */
+router.post("/sessions/:id/drafts/:draftId/activate", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId");
+    if (!userId) return cApiError(c, "Authentication required", undefined, 401);
+    const sessionId = c.req.param("id");
+    const draftId = c.req.param("draftId");
+
+    const session = await activateSessionDraft(userId, sessionId, draftId);
+    return c.json({ session });
+  } catch (error) {
+    if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
+    return cApiError(c, "Failed to activate pen draft", error);
+  }
+});
+
+/**
+ * PATCH /api/pen/sessions/:id/drafts/:draftId
+ * Autosave heartbeat for a single draft slot (roadmap §6.1). Allowed fields:
+ * `{ label?, draftBuffer?, draftHtml?, draftCharactersPresent?,
+ * draftSceneEssentials?, draftUpdatedAt? }`. Buffer/html writes are dropped
+ * when `draftUpdatedAt` is not newer than the stored row's `updatedAt`
+ * (last-write-wins). Returns `{ draft }` (the updated row).
+ */
+router.patch("/sessions/:id/drafts/:draftId", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId");
+    if (!userId) return cApiError(c, "Authentication required", undefined, 401);
+    const sessionId = c.req.param("id");
+    const draftId = c.req.param("draftId");
+    const body = await readJsonBody(c);
+
+    if (!body || typeof body !== "object") {
+      return cValidationError(c, "Request body must be a JSON object");
+    }
+    const { label, draftBuffer, draftHtml, draftCharactersPresent, draftSceneEssentials, draftUpdatedAt } = body as {
+      label?: unknown;
+      draftBuffer?: unknown;
+      draftHtml?: unknown;
+      draftCharactersPresent?: unknown;
+      draftSceneEssentials?: unknown;
+      draftUpdatedAt?: unknown;
+    };
+
+    if (label !== undefined && typeof label !== "string") {
+      return cValidationError(c, "label must be a string");
+    }
+    if (typeof label === "string" && label.trim().length > PEN_DRAFT_LABEL_MAX_LENGTH) {
+      return cValidationError(c, `label must be at most ${PEN_DRAFT_LABEL_MAX_LENGTH} characters`);
+    }
+    if (draftBuffer !== undefined) {
+      const bufferError = validateDraftBuffer(draftBuffer);
+      if (bufferError) return cValidationError(c, bufferError);
+    }
+    if (draftHtml !== undefined && typeof draftHtml !== "string") {
+      return cValidationError(c, "draftHtml must be a string");
+    }
+    if (typeof draftHtml === "string" && draftHtml.length > PEN_DRAFT_HTML_MAX_LENGTH) {
+      return cValidationError(c, `draftHtml must be at most ${PEN_DRAFT_HTML_MAX_LENGTH} characters`);
+    }
+    if (draftCharactersPresent !== undefined) {
+      if (!Array.isArray(draftCharactersPresent) || draftCharactersPresent.length > PEN_DRAFT_CAST_LIMIT) {
+        return cValidationError(c, `draftCharactersPresent must be an array of at most ${PEN_DRAFT_CAST_LIMIT} cast members`);
+      }
+      for (const member of draftCharactersPresent) {
+        const memberError = validateDraftCastMember(member);
+        if (memberError) return cValidationError(c, memberError);
+      }
+    }
+    if (draftSceneEssentials !== undefined) {
+      const essentialsError = validateDraftSceneEssentials(draftSceneEssentials);
+      if (essentialsError) return cValidationError(c, essentialsError);
+    }
+    if (draftUpdatedAt !== undefined && (typeof draftUpdatedAt !== "string" || Number.isNaN(Date.parse(draftUpdatedAt)))) {
+      return cValidationError(c, "draftUpdatedAt must be a valid date string");
+    }
+
+    const draft = await updateSessionDraft(userId, sessionId, draftId, {
+      label: typeof label === "string" ? label : undefined,
+      draftBuffer: draftBuffer as DraftSpan[] | undefined,
+      draftHtml: typeof draftHtml === "string" ? draftHtml : undefined,
+      draftCharactersPresent: draftCharactersPresent as PenDraftCharacter[] | undefined,
+      draftSceneEssentials: draftSceneEssentials as PenDraftSceneEssentials | null | undefined,
+      draftUpdatedAt: typeof draftUpdatedAt === "string" ? draftUpdatedAt : undefined,
+    });
+    return c.json({ draft });
+  } catch (error) {
+    if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
+    return cApiError(c, "Failed to update pen draft", error);
+  }
+});
+
+/**
+ * DELETE /api/pen/sessions/:id/drafts/:draftId
+ * Clears a single draft slot (zero cost). If it was the active draft, the most
+ * recently touched sibling becomes active (or the editor empties). Returns the
+ * session payload.
+ */
+router.delete("/sessions/:id/drafts/:draftId", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId");
+    if (!userId) return cApiError(c, "Authentication required", undefined, 401);
+    const sessionId = c.req.param("id");
+    const draftId = c.req.param("draftId");
+
+    const session = await discardSessionDraft(userId, sessionId, draftId);
+    return c.json({ session });
+  } catch (error) {
+    if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
+    return cApiError(c, "Failed to discard pen draft", error);
+  }
+});
+
+/**
  * POST /api/pen/sessions/:id/continue
  * Runs the single-request validate-and-generate continuation for an active
  * session the user owns. Body (discriminated by `type`):
@@ -385,6 +577,11 @@ router.post("/sessions/:id/continue", requireAuth, rateLimit(PEN_CONTINUE_RATE_L
 
     let input: PenContinueInput;
     const raw = body as Record<string, unknown>;
+
+    const draftIdParam = raw.draftId;
+    if (draftIdParam !== undefined && (typeof draftIdParam !== "string" || draftIdParam.trim().length === 0)) {
+      return cValidationError(c, "draftId must be a non-empty string");
+    }
 
     const authoringPov = raw.authoringPov as AuthoringPov | null | undefined;
     if (authoringPov !== undefined && authoringPov !== null && !PEN_AUTHORING_POVS.includes(authoringPov)) {
@@ -425,11 +622,24 @@ router.post("/sessions/:id/continue", requireAuth, rateLimit(PEN_CONTINUE_RATE_L
       return cValidationError(c, "type must be 'storyteller' or 'text_adventure'");
     }
 
-    const result = await continuePenDraft(userId, sessionId, input);
+    // Multi-draft: continue always targets a draft slot. Optional `draftId`
+    // defaults to the session's active draft (backward compat for older
+    // clients). `null` when no draft exists yet.
+    let draftId: string | undefined = typeof draftIdParam === "string" ? draftIdParam : undefined;
+    if (!draftId) {
+      const session = await getPenSessionById(userId, sessionId);
+      draftId = session.activeDraftId ?? undefined;
+    }
+    if (!draftId) {
+      return cValidationError(c, "No active draft to continue — create one first");
+    }
+
+    const result = await continuePenDraft(userId, sessionId, draftId, input);
     return c.json(result);
   } catch (error) {
     if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
     if (error instanceof PenBookOwnershipError) return cApiError(c, error.message, undefined, 403);
+    if (error instanceof PenDraftNotActiveError) return cApiError(c, error.message, undefined, 409);
     if (error instanceof PenContinueError) return cApiError(c, error.message, undefined, 422);
     return cApiError(c, "Failed to continue pen draft", error);
   }
@@ -608,11 +818,27 @@ router.post("/sessions/:id/finalize", requireAuth, rateLimit({ maxRequests: 10, 
       return cValidationError(c, `adoptTimeOfDay must be a non-empty string of at most ${PEN_ESSENTIALS_MAX_FIELD_LENGTH} characters`);
     }
 
-    const result = await finalizePenDraft(userId, sessionId, body);
+    // Multi-draft: finalize publishes exactly one draft slot. Optional `draftId`
+    // defaults to the session's active draft (backward compat).
+    const draftIdParam = (body as Record<string, unknown>).draftId;
+    if (draftIdParam !== undefined && (typeof draftIdParam !== "string" || draftIdParam.trim().length === 0)) {
+      return cValidationError(c, "draftId must be a non-empty string");
+    }
+    let draftId: string | undefined = typeof draftIdParam === "string" ? draftIdParam : undefined;
+    if (!draftId) {
+      const session = await getPenSessionById(userId, sessionId, { client: dbWrite });
+      draftId = session.activeDraftId ?? undefined;
+    }
+    if (!draftId) {
+      return cValidationError(c, "No active draft to finalize — create one first");
+    }
+
+    const result = await finalizePenDraft(userId, sessionId, draftId, body);
     return c.json(result);
   } catch (error) {
     if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
     if (error instanceof PenBookOwnershipError) return cApiError(c, error.message, undefined, 403);
+    if (error instanceof PenDraftNotActiveError) return cApiError(c, error.message, undefined, 409);
     if (error instanceof PenFinalizeError) return cApiError(c, error.message, undefined, 422);
     return cApiError(c, "Failed to finalize pen draft", error);
   }

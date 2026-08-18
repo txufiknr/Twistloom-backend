@@ -483,6 +483,15 @@ export const PEN_SCENE_FOCUS_MIN = 0;
 export const PEN_SCENE_FOCUS_MAX = 1;
 /** Maximum number of draft cast members (own characters + existing draft characters). */
 export const PEN_DRAFT_CAST_LIMIT = 20;
+/**
+ * Soft cap on parallel in-flight drafts under ONE parent page per session
+ * (multi-draft workspace, PEN_DRAFT_SHELF_ROADMAP.md D-5). Bounds credit
+ * exposure and outline clutter; a 422 rejects creates beyond it. `null`
+ * parent (the would-be page 1) counts against its own bucket.
+ */
+export const PEN_DRAFTS_PER_PARENT = 5;
+/** Maximum length of a draft's editorial `label` (draft shelf, D-3). */
+export const PEN_DRAFT_LABEL_MAX_LENGTH = 120;
 /** Maximum number of author-supplied action choices accepted by /finalize. */
 export const PEN_FINALIZE_MAX_ACTIONS = 6;
 /** Maximum number of trigger keywords accepted on a lore entry. */

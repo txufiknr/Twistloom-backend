@@ -8,13 +8,13 @@
  * @see docs/roadmap/AI_CO_WRITING_PEN_ROADMAP.md §5.3, Phase 1.a, Phase 1.b
  */
 
-import { eq, and, desc } from "drizzle-orm";
-import { penSessions, penEdits, branches, pages } from "../db/schema.js";
+import { eq, and, desc, ne, isNull } from "drizzle-orm";
+import { penSessions, penEdits, penDrafts, branches, pages } from "../db/schema.js";
 import { dbRead, dbWrite, type DBClient } from "../db/client.js";
 import { getBookFromDB, getBookPages, deleteStoryPage } from "./book.js";
 import { getTriggeredLoreEntries, listLoreEntries } from "./lore.js";
-import type { DBBook, DBPenSession } from "../types/schema.js";
-import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraftCharacter, PenDraftSceneEssentials, PenEdit, PenSessionStatus, FinalizeViolation, CanonAmendment, PenEditType, PenOutlineData, PenOutlinePage, PenAuthorPage, AuthorshipOrigin } from "../types/pen.js";
+import type { DBBook, DBPenSession, DBPenDraft } from "../types/schema.js";
+import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraft, PenDraftCharacter, PenDraftSceneEssentials, PenDraftSummary, PenDraftUpdates, PenEdit, PenSessionStatus, FinalizeViolation, CanonAmendment, PenEditType, PenOutlineData, PenOutlinePage, PenAuthorPage, AuthorshipOrigin } from "../types/pen.js";
 import type { BookMode } from "../types/book.js";
 import type { StoryState, Action, StoryGeneration, PersistedStoryPage, SceneCharacter, CharacterSceneRole, Mood } from "../types/story.js";
 import { moods } from "../types/story.js";
@@ -34,7 +34,7 @@ import { aiPrompt, createAIOptionsWithSchema } from "../utils/ai-chat.js";
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
-import { PEN_DRAFT_CAST_LIMIT, PEN_CONTINUE_MAX_TOKENS, penContinueLengthForAssistance, PEN_ESSENTIALS_MAX_TOKENS, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TOKENS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_FINALIZE_PROPOSE_MAX_ITEM_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TRAITS, PEN_DRAFT_BUFFER_MAX_CHARS } from "../config/story.js";
+import { PEN_DRAFT_CAST_LIMIT, PEN_CONTINUE_MAX_TOKENS, penContinueLengthForAssistance, PEN_ESSENTIALS_MAX_TOKENS, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TOKENS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_FINALIZE_PROPOSE_MAX_ITEM_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TRAITS, PEN_DRAFT_BUFFER_MAX_CHARS, PEN_DRAFTS_PER_PARENT, PEN_DRAFT_LABEL_MAX_LENGTH } from "../config/story.js";
 import { generateId } from "../utils/uuid.js";
 import { executeWithCredits } from "./credits.js";
 import { persistPageWithState, insertStoryPage, getPageFromDB, mapToPersistedStoryPage } from "./book.js";
@@ -52,25 +52,125 @@ import type { ImageUploadSource } from "../types/image.js";
  * The API-facing session payload. Extends the stored session with the book's
  * branching contract (`bookMode`) so the editor knows how many actions it can
  * offer and how Continue/finalize behave (§1.a).
+ *
+ * Multi-draft workspace: the payload's legacy draft fields (`draftBuffer`,
+ * `draftHtml`, `draftCharactersPresent`, `draftSceneEssentials`) are a VIEW of
+ * the ACTIVE `pen_drafts` row (roadmap D-2) — legacy session columns stay
+ * empty post-backfill. `drafts` lists every in-flight slot for the outline
+ * shelf, and `activeDraftId` (stored on the session) tells the editor which one
+ * is loaded.
  */
 export type PenSessionPayload = DBPenSession & {
   /** `books.mode` — the branching contract the editor must respect. */
   bookMode: BookMode;
+  /** All in-flight draft slots for this session (lightweight summaries). */
+  drafts: PenDraftSummary[];
 };
 
 /**
  * Converts a stored session row into the API payload by attaching the book's
- * mode. Throws if the book no longer exists (session rows cascade on book delete,
- * but a stale FK is still defensively handled).
+ * mode and the multi-draft workspace view. Throws if the book no longer exists
+ * (session rows cascade on book delete, but a stale FK is still defensively
+ * handled).
  */
-async function toPenSessionPayload(session: DBPenSession): Promise<PenSessionPayload> {
+async function toPenSessionPayload(session: DBPenSession, options: { client?: DBClient } = {}): Promise<PenSessionPayload> {
   // Read replica can lag a just-created book (see createPenSession) — fall back
   // to the write client before concluding the book is gone.
+  const client = options.client ?? dbRead;
   const book =
     (await getBookFromDB(session.bookId)) ??
     (await getBookFromDB(session.bookId, { client: dbWrite }));
   if (!book) throw new Error(`Book not found for pen session: ${session.bookId}`);
-  return { ...session, bookMode: book.mode };
+
+  const drafts = await listPenDraftRows(session.id, client);
+  const active = session.activeDraftId
+    ? drafts.find((d) => d.id === session.activeDraftId) ?? null
+    : null;
+
+  return {
+    ...session,
+    bookMode: book.mode,
+    draftBuffer: active?.draftBuffer ?? [],
+    draftHtml: active?.draftHtml ?? null,
+    draftCharactersPresent: active?.draftCharactersPresent ?? [],
+    draftSceneEssentials: active?.draftSceneEssentials ?? null,
+    drafts: drafts.map(toPenDraftSummary),
+  };
+}
+
+/**
+ * Loads every `pen_drafts` row for a session, most recently touched first.
+ * Runs on the provided client so write paths don't race replica lag.
+ */
+async function listPenDraftRows(sessionId: string, client: DBClient = dbRead): Promise<DBPenDraft[]> {
+  return client
+    .select()
+    .from(penDrafts)
+    .where(eq(penDrafts.sessionId, sessionId))
+    .orderBy(desc(penDrafts.updatedAt));
+}
+
+/** Converts a stored draft row into the lightweight outline-shelf summary. */
+function toPenDraftSummary(draft: DBPenDraft): PenDraftSummary {
+  const charCount = (draft.draftBuffer ?? []).reduce((sum, span) => sum + (span.text?.length ?? 0), 0);
+  return {
+    id: draft.id,
+    parentPageId: draft.parentPageId,
+    label: draft.label,
+    charCount,
+    createdAt: draft.createdAt,
+    updatedAt: draft.updatedAt,
+  };
+}
+
+/**
+ * Loads a single draft row, scoped to the session (ownership of the session is
+ * verified by the caller before this runs).
+ */
+async function getSessionDraftRow(sessionId: string, draftId: string, client: DBClient = dbRead): Promise<DBPenDraft> {
+  const [row] = await client
+    .select()
+    .from(penDrafts)
+    .where(and(eq(penDrafts.id, draftId), eq(penDrafts.sessionId, sessionId)))
+    .limit(1);
+  if (!row) throw new PenSessionNotFoundError("Pen draft not found");
+  return row;
+}
+
+/** Builds the `(parent_page_id IS NULL)` vs `(parent_page_id = x)` predicate. */
+function draftParentPredicate(parentPageId: string | null) {
+  return parentPageId === null ? isNull(penDrafts.parentPageId) : eq(penDrafts.parentPageId, parentPageId);
+}
+
+/**
+ * Activates the most recent draft anchored at `parentPageId`, or creates a
+ * fresh empty one when none exists. Returns the draft id. Used by navigation
+ * (`PATCH currentPageId`) and `branchFromPage` (roadmap §5.2).
+ */
+async function activateOrCreateDraftForParent(
+  sessionId: string,
+  parentPageId: string | null,
+  client: DBClient
+): Promise<string> {
+  const [existing] = await client
+    .select()
+    .from(penDrafts)
+    .where(and(eq(penDrafts.sessionId, sessionId), draftParentPredicate(parentPageId)))
+    .orderBy(desc(penDrafts.updatedAt))
+    .limit(1);
+  if (existing) return existing.id;
+
+  const [created] = await client
+    .insert(penDrafts)
+    .values({
+      sessionId,
+      parentPageId,
+      draftBuffer: [],
+      draftCharactersPresent: [],
+      draftSceneEssentials: null,
+    })
+    .returning();
+  return created.id;
 }
 
 /** Error thrown when the requested pen session does not exist or is not owned. */
@@ -97,6 +197,28 @@ export class PenBookOwnershipError extends Error {
   constructor(message = "You do not own this book") {
     super(message);
     this.name = "PenBookOwnershipError";
+  }
+}
+
+/**
+ * Error thrown when a draft slot would exceed the per-parent soft cap
+ * (PEN_DRAFTS_PER_PARENT, roadmap D-5).
+ */
+export class PenDraftLimitError extends Error {
+  constructor(message = "Too many drafts for this page — finalize or discard one first") {
+    super(message);
+    this.name = "PenDraftLimitError";
+  }
+}
+
+/**
+ * Error thrown when an operation targets a draft that is not the session's
+ * active draft (continue/finalize only act on the visible one, roadmap D-2).
+ */
+export class PenDraftNotActiveError extends Error {
+  constructor(message = "This draft is not the active draft — switch to it first") {
+    super(message);
+    this.name = "PenDraftNotActiveError";
   }
 }
 
@@ -149,10 +271,30 @@ export async function createPenSession(
       })
       .returning();
 
-    return session;
+    // Seed the first draft slot so `activeDraftId` is never null for a fresh
+    // session (roadmap §6.2 — "New Draft" in a virgin session just renames it).
+    const [draft] = await tx
+      .insert(penDrafts)
+      .values({
+        sessionId: session.id,
+        parentPageId: null,
+        label: null,
+        draftBuffer: [],
+        draftCharactersPresent: [],
+        draftSceneEssentials: null,
+      })
+      .returning();
+
+    const [activated] = await tx
+      .update(penSessions)
+      .set({ activeDraftId: draft.id })
+      .where(eq(penSessions.id, session.id))
+      .returning();
+
+    return activated;
   });
 
-  return toPenSessionPayload(created);
+  return toPenSessionPayload(created, { client: dbWrite });
 }
 
 /**
@@ -195,7 +337,7 @@ export async function getPenSessionById(
     .limit(1);
 
   if (!session) throw new PenSessionNotFoundError();
-  return toPenSessionPayload(session);
+  return toPenSessionPayload(session, { client });
 }
 
 /** Error thrown when an inline draft image fails to upload to ImageKit. */
@@ -327,11 +469,13 @@ export type PenSessionUpdates = {
 /**
  * Applies allowed PATCH updates to a session the user owns.
  *
- * Draft-workspace writes (`draftBuffer`/`draftHtml`) are merged last-write-wins
- * against the client's `draftUpdatedAt`: the write is dropped when it is not
- * newer than the session's `updatedAt`, so a second device that has gone stale
- * never overwrites a fresher buffer. Non-draft fields (assistanceLevel, status,
- * currentPageId, POV, cast, essentials) apply unconditionally.
+ * Multi-draft workspace (roadmap §4): draft-workspace writes
+ * (`draftBuffer`/`draftHtml`/`draftCharactersPresent`/`draftSceneEssentials`)
+ * route to the ACTIVE `pen_drafts` row — legacy session columns are never the
+ * source of truth. `currentPageId` changes re-anchor the editor: the most
+ * recent draft under the target page is activated, or a fresh one is created
+ * (roadmap §5.2). Buffer/html merges are last-write-wins against the client's
+ * `draftUpdatedAt`.
  *
  * @param userId - The authenticated user's id (ownership guard)
  * @param sessionId - The session to update
@@ -343,71 +487,68 @@ export async function updatePenSession(
   sessionId: string,
   updates: PenSessionUpdates
 ): Promise<PenSessionPayload> {
-  const values: typeof updates = {};
+  const [existing] = await dbWrite
+    .select()
+    .from(penSessions)
+    .where(and(eq(penSessions.id, sessionId), eq(penSessions.userId, userId)))
+    .limit(1);
+  if (!existing) throw new PenSessionNotFoundError();
 
+  // 1) Session-level fields.
+  const values: {
+    assistanceLevel?: number;
+    status?: PenSessionStatus;
+    currentPageId?: string | null;
+    authoringPov?: AuthoringPov | null;
+    activeDraftId?: string | null;
+  } = {};
   if (updates.assistanceLevel !== undefined) {
     values.assistanceLevel = Math.min(1, Math.max(0, updates.assistanceLevel));
   }
   if (updates.status !== undefined) {
     values.status = updates.status;
   }
-  if (updates.currentPageId !== undefined) {
-    values.currentPageId = updates.currentPageId;
-  }
   if (updates.authoringPov !== undefined) {
     values.authoringPov = updates.authoringPov;
   }
-  if (updates.draftCharactersPresent !== undefined) {
-    values.draftCharactersPresent = updates.draftCharactersPresent;
-  }
-  if (updates.draftSceneEssentials !== undefined) {
-    values.draftSceneEssentials = updates.draftSceneEssentials;
-  }
 
-  // Draft-workspace write: read the current row first so the last-write-wins
-  // guard can compare against the stored `updatedAt` (read via dbWrite to avoid
-  // replica lag flipping the decision on a just-written draft).
-  let existing: DBPenSession | null = null;
-  const hasDraftWrite =
-    updates.draftBuffer !== undefined || updates.draftHtml !== undefined || updates.draftUpdatedAt !== undefined;
-  if (hasDraftWrite) {
-    const rows = await dbWrite
-      .select()
-      .from(penSessions)
-      .where(and(eq(penSessions.id, sessionId), eq(penSessions.userId, userId)))
-      .limit(1);
-    existing = rows[0] ?? null;
-    if (!existing) throw new PenSessionNotFoundError();
-
-    const clientTs = updates.draftUpdatedAt !== undefined ? Date.parse(updates.draftUpdatedAt) : Date.now();
-    if (!Number.isNaN(clientTs) && clientTs > existing.updatedAt.getTime()) {
-      if (updates.draftBuffer !== undefined) values.draftBuffer = updates.draftBuffer;
-      if (updates.draftHtml !== undefined) values.draftHtml = updates.draftHtml;
+  // 2) Navigation: activate-or-create the draft anchored at the target page.
+  if (updates.currentPageId !== undefined) {
+    values.currentPageId = updates.currentPageId;
+    const targetChanged = updates.currentPageId !== existing.currentPageId;
+    if (targetChanged || !existing.activeDraftId) {
+      const draftId = await activateOrCreateDraftForParent(sessionId, updates.currentPageId, dbWrite);
+      values.activeDraftId = draftId;
     }
   }
 
-  // Nothing accepted (e.g. only a stale draft write) — return the current
-  // session unchanged instead of issuing an empty UPDATE.
-  if (Object.keys(values).length === 0) {
-    const row = existing ?? (
-      await dbWrite
-        .select()
-        .from(penSessions)
-        .where(and(eq(penSessions.id, sessionId), eq(penSessions.userId, userId)))
-        .limit(1)
-    )[0];
-    if (!row) throw new PenSessionNotFoundError();
-    return toPenSessionPayload(row);
+  // 3) Draft-workspace writes route to the ACTIVE draft (compat path — new
+  //    clients autosave via `PATCH /drafts/:id` instead, roadmap §6.1).
+  const draftUpdates: PenDraftUpdates = {};
+  if (updates.draftCharactersPresent !== undefined) draftUpdates.draftCharactersPresent = updates.draftCharactersPresent;
+  if (updates.draftSceneEssentials !== undefined) draftUpdates.draftSceneEssentials = updates.draftSceneEssentials;
+  if (updates.draftBuffer !== undefined) draftUpdates.draftBuffer = updates.draftBuffer;
+  if (updates.draftHtml !== undefined) draftUpdates.draftHtml = updates.draftHtml;
+  if (updates.draftUpdatedAt !== undefined) draftUpdates.draftUpdatedAt = updates.draftUpdatedAt;
+
+  const activeDraftId = existing.activeDraftId ?? values.activeDraftId ?? null;
+  if (Object.keys(draftUpdates).length > 0 && activeDraftId) {
+    await updateSessionDraft(userId, sessionId, activeDraftId, draftUpdates);
   }
 
-  const [updated] = await dbWrite
-    .update(penSessions)
-    .set(values)
-    .where(and(eq(penSessions.id, sessionId), eq(penSessions.userId, userId)))
-    .returning();
+  // 4) Persist session-level changes.
+  if (Object.keys(values).length > 0) {
+    const [updated] = await dbWrite
+      .update(penSessions)
+      .set(values)
+      .where(and(eq(penSessions.id, sessionId), eq(penSessions.userId, userId)))
+      .returning();
+    if (!updated) throw new PenSessionNotFoundError();
+    return toPenSessionPayload(updated, { client: dbWrite });
+  }
 
-  if (!updated) throw new PenSessionNotFoundError();
-  return toPenSessionPayload(updated);
+  // Nothing accepted (only a stale draft write or a no-op) — return unchanged.
+  return toPenSessionPayload(existing, { client: dbWrite });
 }
 
 /**
@@ -419,21 +560,189 @@ export async function closePenSession(userId: string, sessionId: string): Promis
 }
 
 /**
- * Clears the draft buffer without charging credits (`/discard`). Ownership is
- * verified. Returns the cleared session.
+ * Clears the ACTIVE draft without charging credits (`/discard`). Ownership is
+ * verified. If the discarded draft was active, the most recently touched
+ * sibling becomes active (or `activeDraftId` resets to null when none remain).
+ * Returns the updated session payload.
  */
 export async function discardPenDraft(userId: string, sessionId: string): Promise<PenSessionPayload> {
+  const session = await getPenSessionById(userId, sessionId, { client: dbWrite });
+  if (!session.activeDraftId) return session;
+  return discardSessionDraft(userId, sessionId, session.activeDraftId);
+}
+
+// ── Multi-draft workspace CRUD (PEN_DRAFT_SHELF_ROADMAP.md §6.1) ────────────
+
+/** Lists every in-flight draft slot for the outline shelf (ownership verified). */
+export async function listSessionDrafts(userId: string, sessionId: string): Promise<PenDraftSummary[]> {
+  await getPenSessionById(userId, sessionId);
+  return (await listPenDraftRows(sessionId)).map(toPenDraftSummary);
+}
+
+/**
+ * Creates a new in-flight draft slot anchored at `parentPageId` (the published
+ * page being continued from; null → the would-be page 1). Enforces the soft
+ * per-parent cap `PEN_DRAFTS_PER_PARENT` (D-5). With `activate: true` (the
+ * outline "New draft" / `branchFromPage` action) the new slot immediately
+ * becomes the active draft; otherwise it is activated only when the session has
+ * no active draft yet (D-2). Returns the session payload so the frontend can
+ * sync its shelf in one round trip.
+ */
+export async function createSessionDraft(
+  userId: string,
+  sessionId: string,
+  input: { parentPageId?: string | null; label?: string; activate?: boolean }
+): Promise<PenSessionPayload> {
+  const session = await getPenSessionById(userId, sessionId, { client: dbWrite });
+  const parentPageId = input.parentPageId ?? null;
+  const label = input.label?.trim().slice(0, PEN_DRAFT_LABEL_MAX_LENGTH) || null;
+
+  // The anchor page must belong to this session's book.
+  if (parentPageId) {
+    const page = await getPageFromDB(parentPageId);
+    if (!page || page.bookId !== session.bookId) throw new PenSessionNotFoundError("Parent page not found");
+  }
+
+  const [draft] = await dbWrite.transaction(async (tx) => {
+    const siblings = await tx
+      .select({ id: penDrafts.id })
+      .from(penDrafts)
+      .where(and(eq(penDrafts.sessionId, sessionId), draftParentPredicate(parentPageId)));
+    if (siblings.length >= PEN_DRAFTS_PER_PARENT) throw new PenDraftLimitError();
+    return tx
+      .insert(penDrafts)
+      .values({ sessionId, parentPageId, label, draftBuffer: [], draftCharactersPresent: [], draftSceneEssentials: null })
+      .returning();
+  });
+
+  if (input.activate || !session.activeDraftId) {
+    const [activated] = await dbWrite
+      .update(penSessions)
+      // The anchor parent becomes the session's current page so the outline
+      // highlights the page the active draft continues from (the to-be model:
+      // `currentPageId` → anchor parent page).
+      .set({ activeDraftId: draft.id, currentPageId: draft.parentPageId })
+      .where(eq(penSessions.id, sessionId))
+      .returning();
+    if (activated) return toPenSessionPayload(activated, { client: dbWrite });
+  }
+  return toPenSessionPayload(session, { client: dbWrite });
+}
+
+/**
+ * Switches the session's `activeDraftId` to the given slot (ownership
+ * verified; the draft must belong to the session). `currentPageId` follows the
+ * slot's anchor parent so the outline highlights the page being continued.
+ * Returns the session payload.
+ */
+export async function activateSessionDraft(
+  userId: string,
+  sessionId: string,
+  draftId: string
+): Promise<PenSessionPayload> {
+  await getPenSessionById(userId, sessionId, { client: dbWrite });
+  const draft = await getSessionDraftRow(sessionId, draftId, dbWrite);
+
   const [updated] = await dbWrite
     .update(penSessions)
-    // BE5: also clear the `draftHtml` mirror (and bump `updatedAt`) so the rich
-    // editor doesn't re-import a stale TipTap payload after a discard — the
-    // reset then survives reload / resume on another device.
-    .set({ draftBuffer: [], draftCharactersPresent: [], draftSceneEssentials: null, draftHtml: null, updatedAt: new Date() })
+    .set({ activeDraftId: draftId, currentPageId: draft.parentPageId })
     .where(and(eq(penSessions.id, sessionId), eq(penSessions.userId, userId)))
     .returning();
-
   if (!updated) throw new PenSessionNotFoundError();
-  return toPenSessionPayload(updated);
+  return toPenSessionPayload(updated, { client: dbWrite });
+}
+
+/**
+ * Autosave heartbeat for a single draft slot (ownership verified). Buffer/html
+ * writes are dropped when `draftUpdatedAt` is not newer than the stored row's
+ * `updatedAt` (last-write-wins); label / cast / essentials apply unconditionally.
+ * Returns the updated draft row.
+ */
+export async function updateSessionDraft(
+  userId: string,
+  sessionId: string,
+  draftId: string,
+  updates: PenDraftUpdates
+): Promise<PenDraft> {
+  await getPenSessionById(userId, sessionId, { client: dbWrite });
+  const existing = await getSessionDraftRow(sessionId, draftId, dbWrite);
+
+  const values: {
+    draftBuffer?: DraftSpan[];
+    draftHtml?: string | null;
+    draftCharactersPresent?: PenDraftCharacter[];
+    draftSceneEssentials?: PenDraftSceneEssentials | null;
+    label?: string | null;
+  } = {};
+
+  if (updates.label !== undefined) {
+    values.label = updates.label.trim().slice(0, PEN_DRAFT_LABEL_MAX_LENGTH) || null;
+  }
+  if (updates.draftCharactersPresent !== undefined) {
+    values.draftCharactersPresent = updates.draftCharactersPresent;
+  }
+  if (updates.draftSceneEssentials !== undefined) {
+    values.draftSceneEssentials = updates.draftSceneEssentials;
+  }
+
+  // Buffer/html: last-write-wins against the client's keystroke timestamp.
+  const clientTs = updates.draftUpdatedAt !== undefined ? Date.parse(updates.draftUpdatedAt) : Date.now();
+  const applyDraftWrite = !Number.isNaN(clientTs) && clientTs > existing.updatedAt.getTime();
+  if (applyDraftWrite) {
+    if (updates.draftBuffer !== undefined) values.draftBuffer = updates.draftBuffer;
+    if (updates.draftHtml !== undefined) values.draftHtml = updates.draftHtml;
+  }
+
+  if (Object.keys(values).length === 0) return existing;
+
+  const [updated] = await dbWrite
+    .update(penDrafts)
+    .set({ ...values, updatedAt: new Date() })
+    .where(and(eq(penDrafts.id, draftId), eq(penDrafts.sessionId, sessionId)))
+    .returning();
+  if (!updated) throw new PenSessionNotFoundError();
+  return updated;
+}
+
+/**
+ * Clears a single draft slot (ownership verified). If it was the active draft,
+ * the most recently touched sibling becomes active (or `activeDraftId` resets
+ * to null). Returns the session payload.
+ */
+export async function discardSessionDraft(userId: string, sessionId: string, draftId: string): Promise<PenSessionPayload> {
+  const session = await getPenSessionById(userId, sessionId, { client: dbWrite });
+  await getSessionDraftRow(sessionId, draftId, dbWrite);
+
+  await dbWrite
+    .update(penDrafts)
+    .set({
+      draftBuffer: [],
+      draftHtml: null,
+      draftCharactersPresent: [],
+      draftSceneEssentials: null,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(penDrafts.id, draftId), eq(penDrafts.sessionId, sessionId)));
+
+  let updatedSession: DBPenSession = session;
+  if (session.activeDraftId === draftId) {
+    const [next] = await dbWrite
+      .select()
+      .from(penDrafts)
+      .where(and(eq(penDrafts.sessionId, sessionId), ne(penDrafts.id, draftId)))
+      .orderBy(desc(penDrafts.updatedAt))
+      .limit(1);
+    const [activated] = await dbWrite
+      .update(penSessions)
+      // The fallback sibling's anchor parent becomes the current page too, so
+      // the outline stays pointed at what the editor is now continuing from.
+      .set({ activeDraftId: next?.id ?? null, currentPageId: next?.parentPageId ?? updatedSession.currentPageId })
+      .where(eq(penSessions.id, sessionId))
+      .returning();
+    if (activated) updatedSession = activated;
+  }
+
+  return toPenSessionPayload(updatedSession, { client: dbWrite });
 }
 
 /** Errors thrown while running a `/continue` request. */
@@ -490,15 +799,22 @@ function continueCreditKey(session: { assistanceLevel: number }): "PEN_CONTINUE_
  * `books.canonVersion`; self-reported issues mark it `dirty` so the finalize
  * delta-gate re-checks it. Never auto-regenerates.
  *
+ * Multi-draft workspace: generation appends to a single `pen_drafts` slot and
+ * the audit row records its `draftId`. Only the ACTIVE draft can be continued
+ * (roadmap D-2).
+ *
  * @param userId - The authenticated user's id (ownership guard)
  * @param sessionId - The session to continue
+ * @param draftId - The draft slot to append to (must be the active draft)
  * @param input - Discriminated body: storyteller prose or text-adventure command
  * @throws PenSessionNotFoundError / PenBookOwnershipError if not owned
+ * @throws PenDraftNotActiveError if `draftId` is not the active draft
  * @throws PenContinueError if the AI returns no usable text
  */
 export async function continuePenDraft(
   userId: string,
   sessionId: string,
+  draftId: string,
   input: PenContinueInput
 ): Promise<PenContinueOutput> {
   const session = await getPenSessionById(userId, sessionId);
@@ -508,6 +824,12 @@ export async function continuePenDraft(
   if (session.status !== "active") {
     throw new PenContinueError("Session is not active; reopen it before continuing");
   }
+
+  // Multi-draft guard: continue only ever mutates the visible draft.
+  if (draftId !== session.activeDraftId) {
+    throw new PenDraftNotActiveError();
+  }
+  const draft = await getSessionDraftRow(sessionId, draftId, dbRead);
 
   // BE1/BQ2: the request `type` must match the session's authoring mode.
   // Enforcing this re-arms the Gate 1 command filter below — a mis-typed
@@ -590,7 +912,7 @@ export async function continuePenDraft(
     momentum,
     sceneType,
     bookSummary: book.summary ?? null,
-    essentials: inheritSceneEssentials(session.draftSceneEssentials, lastPage),
+    essentials: inheritSceneEssentials(draft.draftSceneEssentials, lastPage),
   };
 
   const { systemPrompt, userPrompt } =
@@ -616,8 +938,8 @@ export async function continuePenDraft(
     async (tx) => {
       const [current] = await tx
         .select()
-        .from(penSessions)
-        .where(and(eq(penSessions.id, sessionId), eq(penSessions.userId, userId)))
+        .from(penDrafts)
+        .where(and(eq(penDrafts.id, draftId), eq(penDrafts.sessionId, sessionId)))
         .limit(1);
       if (!current) throw new PenSessionNotFoundError();
 
@@ -657,17 +979,22 @@ export async function continuePenDraft(
       const nextBuffer = [...(current.draftBuffer ?? []), span];
 
       const [updated] = await tx
+        .update(penDrafts)
+        .set({ draftBuffer: nextBuffer, updatedAt: new Date() })
+        .where(and(eq(penDrafts.id, draftId), eq(penDrafts.sessionId, sessionId)))
+        .returning();
+      if (!updated) throw new PenSessionNotFoundError();
+
+      const [updatedSession] = await tx
         .update(penSessions)
         .set({
-          draftBuffer: nextBuffer,
           status: "active",
           ...(typeof input.assistanceLevel === "number" ? { assistanceLevel } : {}),
           updatedAt: new Date(),
         })
         .where(and(eq(penSessions.id, sessionId), eq(penSessions.userId, userId)))
         .returning();
-
-      if (!updated) throw new PenSessionNotFoundError();
+      if (!updatedSession) throw new PenSessionNotFoundError();
 
       const edit: PenEdit = {
         id: generateId(),
@@ -693,6 +1020,7 @@ export async function continuePenDraft(
         userId: edit.userId,
         bookId: edit.bookId,
         pageId: null,
+        draftId,
         editType: edit.editType,
         authorInput: edit.authorInput,
         aiOutput: edit.aiOutput,
@@ -728,7 +1056,7 @@ export type PenEssentialsAutofillInput = {
   /**
    * The current in-progress draft prose (plain text).
    *
-   * The server's `session.draftBuffer` only updates on `/continue`/`/finalize`,
+   * The server's active draft only updates on `/continue`/`/finalize`/autosave,
    * so live keystrokes live client-side — the freshest story signal must travel
    * with the request, exactly like `/continue`'s `prose`.
    */
@@ -1543,6 +1871,7 @@ function runFinalizeDeltaGate(session: { draftBuffer: DraftSpan[] }, canonVersio
 export async function finalizePenDraft(
   userId: string,
   sessionId: string,
+  draftId: string,
   input: PenFinalizeInput = {}
 ): Promise<PenFinalizeOutput> {
   // BE9: read the session via dbWrite here — finalize is a read-then-write
@@ -1556,7 +1885,15 @@ export async function finalizePenDraft(
     throw new PenFinalizeError("Session is not active; reopen it before finalizing");
   }
 
-  const spans = session.draftBuffer ?? [];
+  // Multi-draft guard: finalize publishes exactly the visible draft (D-2). The
+  // session payload's draft fields already mirror the active draft, but we load
+  // the row explicitly so Phase C clears the right slot.
+  if (draftId !== session.activeDraftId) {
+    throw new PenDraftNotActiveError();
+  }
+  const draft = await getSessionDraftRow(sessionId, draftId, dbWrite);
+
+  const spans = draft.draftBuffer ?? [];
   if (spans.length === 0 || !spans.some((s) => (s.text ?? "").trim().length > 0)) {
     throw new PenFinalizeError("Draft is empty; nothing to finalize");
   }
@@ -1576,7 +1913,7 @@ export async function finalizePenDraft(
   const violations = runFinalizeDeltaGate(session, book.canonVersion);
   const highFindings = violations.filter((v) => v.severity === "high");
   if (highFindings.length > 0 && !input.force) {
-    return { status: "needs_review", violations, pageNumber, draft: session.draftBuffer };
+    return { status: "needs_review", violations, pageNumber, draft: draft.draftBuffer };
   }
 
   // ── Phase B: publish through the engine ───────────────────────────────────
@@ -1600,12 +1937,12 @@ export async function finalizePenDraft(
       // Author-curated on-scene cast (full cast incl. MC). New/unknown names
       // are registered into story state via stateDelta.newCharacters.
       const { charactersPresent: castPresent, newCharacters: castNewCharacters } = resolveDraftCharacters(
-        session.draftCharactersPresent ?? [],
+        draft.draftCharactersPresent ?? [],
         currentState.characters,
         book.mc,
       );
 
-      const sceneEssentials = applySceneEssentials(session.draftSceneEssentials, {
+      const sceneEssentials = applySceneEssentials(draft.draftSceneEssentials, {
         mood: currentPage.mood,
         weather: currentPage.weather,
       });
@@ -1614,14 +1951,14 @@ export async function finalizePenDraft(
         text: draftText,
         actions,
         mood: sceneEssentials.mood,
-        placeId: session.draftSceneEssentials?.placeId ?? currentPage.placeId,
+        placeId: draft.draftSceneEssentials?.placeId ?? currentPage.placeId,
         weather: sceneEssentials.weather,
-        calendarDate: session.draftSceneEssentials?.calendarDate ?? currentPage.calendarDate,
-        timeOfDay: session.draftSceneEssentials?.timeOfDay ?? currentPage.timeOfDay,
+        calendarDate: draft.draftSceneEssentials?.calendarDate ?? currentPage.calendarDate,
+        timeOfDay: draft.draftSceneEssentials?.timeOfDay ?? currentPage.timeOfDay,
         sceneType: currentPage.sceneType,
         charactersPresent: castPresent,
-        ...(session.draftSceneEssentials?.keyEvents?.length ? { keyEvents: session.draftSceneEssentials.keyEvents } : {}),
-        ...(session.draftSceneEssentials?.keyObjects?.length ? { keyObjects: session.draftSceneEssentials.keyObjects } : {}),
+        ...(draft.draftSceneEssentials?.keyEvents?.length ? { keyEvents: draft.draftSceneEssentials.keyEvents } : {}),
+        ...(draft.draftSceneEssentials?.keyObjects?.length ? { keyObjects: draft.draftSceneEssentials.keyObjects } : {}),
         ...(castNewCharacters.length ? { newCharacters: castNewCharacters } : {}),
       };
 
@@ -1708,7 +2045,7 @@ export async function finalizePenDraft(
     } else {
       // First page of the book (mirrors initializeBook's page-1 path).
       const { charactersPresent: castPresent, newCharacters: castNewCharacters } = resolveDraftCharacters(
-        session.draftCharactersPresent ?? [],
+        draft.draftCharactersPresent ?? [],
         {},
         book.mc,
       );
@@ -1731,17 +2068,17 @@ export async function finalizePenDraft(
         1,
       );
 
-      const firstPageEssentials = applySceneEssentials(session.draftSceneEssentials, {});
+      const firstPageEssentials = applySceneEssentials(draft.draftSceneEssentials, {});
 
       const pageToInsert = {
         ...generatedFirstPage(draftText, actions, castPresent, castNewCharacters),
-        ...(session.draftSceneEssentials?.placeId ? { placeId: session.draftSceneEssentials.placeId } : {}),
+        ...(draft.draftSceneEssentials?.placeId ? { placeId: draft.draftSceneEssentials.placeId } : {}),
         ...(firstPageEssentials.mood ? { mood: firstPageEssentials.mood } : {}),
         ...(firstPageEssentials.weather ? { weather: firstPageEssentials.weather } : {}),
-        ...(session.draftSceneEssentials?.calendarDate ? { calendarDate: session.draftSceneEssentials.calendarDate } : {}),
-        ...(session.draftSceneEssentials?.timeOfDay ? { timeOfDay: session.draftSceneEssentials.timeOfDay } : {}),
-        ...(session.draftSceneEssentials?.keyEvents?.length ? { keyEvents: session.draftSceneEssentials.keyEvents } : {}),
-        ...(session.draftSceneEssentials?.keyObjects?.length ? { keyObjects: session.draftSceneEssentials.keyObjects } : {}),
+        ...(draft.draftSceneEssentials?.calendarDate ? { calendarDate: draft.draftSceneEssentials.calendarDate } : {}),
+        ...(draft.draftSceneEssentials?.timeOfDay ? { timeOfDay: draft.draftSceneEssentials.timeOfDay } : {}),
+        ...(draft.draftSceneEssentials?.keyEvents?.length ? { keyEvents: draft.draftSceneEssentials.keyEvents } : {}),
+        ...(draft.draftSceneEssentials?.keyObjects?.length ? { keyObjects: draft.draftSceneEssentials.keyObjects } : {}),
         ...(pageOneAdopted.mood ? { mood: pageOneAdopted.mood } : {}),
         ...(pageOneAdopted.weather ? { weather: pageOneAdopted.weather } : {}),
         ...(pageOneAdopted.calendarDate ? { calendarDate: pageOneAdopted.calendarDate } : {}),
@@ -1861,6 +2198,7 @@ export async function finalizePenDraft(
         userId,
         bookId: book.id,
         pageId: newPage.id,
+        draftId,
         editType: SPAN_ORIGIN_TO_EDIT_TYPE[span.origin] ?? "human_wrote",
         authorInput: null,
         aiOutput: span.origin === "ai" ? span.text : null,
@@ -1876,8 +2214,15 @@ export async function finalizePenDraft(
 
     await tx
       .update(penSessions)
-      .set({ draftBuffer: [], draftCharactersPresent: [], draftSceneEssentials: null, currentPageId: newPage.id, status: "active", updatedAt: new Date() })
+      .set({ draftBuffer: [], draftCharactersPresent: [], draftSceneEssentials: null, currentPageId: newPage.id, activeDraftId: null, status: "active", updatedAt: new Date() })
       .where(and(eq(penSessions.id, sessionId), eq(penSessions.userId, userId)));
+
+    // The published draft slot is cleared (multi-draft workspace): the editor
+    // auto-creates a fresh slot under the new page on the next keystroke.
+    await tx
+      .update(penDrafts)
+      .set({ draftBuffer: [], draftHtml: null, draftCharactersPresent: [], draftSceneEssentials: null, updatedAt: new Date() })
+      .where(and(eq(penDrafts.id, draftId), eq(penDrafts.sessionId, sessionId)));
 
     // §6.6 reverse-edge (B3/E3/E4): record this child as the destination of the
     // action the author continued from — always `parent.actions[0]`, the action
@@ -2191,13 +2536,19 @@ export async function getPenOutline(userId: string, bookId: string): Promise<Pen
   if (!book) throw new PenSessionNotFoundError("Book not found");
   if (book.userId !== userId) throw new PenBookOwnershipError();
 
-  const [pageRows, branchRows] = await Promise.all([
+  const [pageRows, branchRows, sessionRows] = await Promise.all([
     getBookPages(bookId),
     dbRead
       .select({ branchId: branches.branchId, displayName: branches.displayName })
       .from(branches)
       .where(eq(branches.bookId, bookId)),
+    dbRead
+      .select({ id: penSessions.id, activeDraftId: penSessions.activeDraftId })
+      .from(penSessions)
+      .where(and(eq(penSessions.userId, userId), eq(penSessions.bookId, bookId)))
+      .limit(1),
   ]);
+  const sessionRow = sessionRows[0] ?? null;
 
   const branched = book.mode === "interactive" || book.mode === "multiverse";
 
@@ -2219,7 +2570,17 @@ export async function getPenOutline(userId: string, bookId: string): Promise<Pen
     };
   });
 
-  return { pages, branches: branchRows };
+  return {
+    pages,
+    branches: branchRows,
+    workspace: sessionRow
+      ? {
+          sessionId: sessionRow.id,
+          activeDraftId: sessionRow.activeDraftId,
+          drafts: (await listPenDraftRows(sessionRow.id)).map(toPenDraftSummary),
+        }
+      : null,
+  };
 }
 
 /**

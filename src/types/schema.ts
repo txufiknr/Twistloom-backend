@@ -1,4 +1,4 @@
-import type { users, pages, storyStates, books, userSessions, userLikes, userFavorites, userComments, userPageProgress, userActivityLogs, bookGenerations, pageTranslations, bookTranslations, storyPrompts, userCounters, userFeedbacks, penSessions, penEdits, loreEntries, platformTestimonials } from "../db/schema.js";
+import type { users, pages, storyStates, books, userSessions, userLikes, userFavorites, userComments, userPageProgress, userActivityLogs, bookGenerations, pageTranslations, bookTranslations, storyPrompts, userCounters, userFeedbacks, penSessions, penDrafts, penEdits, loreEntries, platformTestimonials } from "../db/schema.js";
 
 /** Complete user data as stored in database */
 export type DBUser = typeof users.$inferSelect;
@@ -80,6 +80,10 @@ export type DBNewPlatformTestimonial = typeof platformTestimonials.$inferInsert;
 /** Complete Pen session data as stored in database */
 export type DBPenSession = typeof penSessions.$inferSelect;
 export type DBNewPenSession = typeof penSessions.$inferInsert;
+
+/** Complete Pen draft slot as stored in database (multi-draft workspace) */
+export type DBPenDraft = typeof penDrafts.$inferSelect;
+export type DBNewPenDraft = typeof penDrafts.$inferInsert;
 
 /** Complete Pen edit data as stored in database */
 export type DBPenEdit = typeof penEdits.$inferSelect;

@@ -2467,6 +2467,50 @@ export const portalBlogPosts = pgTable(
 );
 
 /**
+ * One in-flight draft row in the Pen's multi-draft workspace (draft shelf).
+ *
+ * The session remains the workspace (one per user × book); each draft is a
+ * standalone, switchable slot anchored to a parent published page. continue /
+ * finalize / discard / autosave all operate on a single draft row, with
+ * `pen_sessions.active_draft_id` persisting which one the editor shows.
+ *
+ * Declared BEFORE `penSessions` so the two tables' circular FK can be resolved
+ * (penSessions holds the backward `active_draft_id` ref; this table's
+ * `sessionId` is a lazy forward ref to penSessions).
+ *
+ * Legacy `pen_sessions.draftBuffer/draftHtml/draftCharactersPresent/
+ * draftSceneEssentials` columns remain (backfilled empty) for a transition
+ * window, then dropped — see the cleanup migration.
+ *
+ * @see docs/roadmap/PEN_DRAFT_SHELF_ROADMAP.md
+ */
+export const penDrafts = pgTable(
+  "pen_drafts",
+  {
+    id: id(),
+    sessionId: uuid("session_id").notNull().references(() => penSessions.id, { onDelete: "cascade" }),
+    /** Published page being continued from (null → the would-be page 1). */
+    parentPageId: uuid("parent_page_id").references(() => pages.id, { onDelete: "set null" }),
+    /** Editorial, non-unique name shown in the outline draft shelf (D-3). */
+    label: text("label"),
+    /** Draft workspace — JSONB spans, NOT plain text (Model C). */
+    draftBuffer: jsonb("draft_buffer").$type<DraftSpan[]>().notNull().default(sql`'[]'::jsonb`),
+    /** Exact TipTap HTML mirror of `draftBuffer` (autosave layer 2) — preserves rich formatting on refresh/other devices. */
+    draftHtml: text("draft_html"),
+    /** Author-curated cast present in this draft's scene (§10 Decision M). */
+    draftCharactersPresent: jsonb("draft_characters_present").$type<PenDraftCharacter[]>().notNull().default(sql`'[]'::jsonb`),
+    /** Author-curated scene essentials for the NEXT page. */
+    draftSceneEssentials: jsonb("draft_scene_essentials").$type<PenDraftSceneEssentials | null>().default(null),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    index("pen_drafts_session_idx").on(t.sessionId),
+    index("pen_drafts_parent_idx").on(t.parentPageId),
+  ]
+);
+
+/**
  * Pen (AI Co-Writing) sessions — Phase 0.a (Model C, draft-then-finalize).
  *
  * One active session per (user, book). The draft is a private JSONB span buffer
@@ -2484,6 +2528,21 @@ export const penSessions = pgTable(
     authoringMode: text("authoring_mode").$type<AuthoringMode>().notNull(),
     /** Published page the author is continuing from (null until page 1 finalizes). */
     currentPageId: uuid("current_page_id").references(() => pages.id, { onDelete: "set null" }),
+    /**
+     * Which `pen_drafts` row is the editor's active workspace (draft shelf).
+     * `null` right after /finalize and before the editor opens a fresh slot.
+     *
+     * Deliberately a PLAIN uuid, NOT a `references()` FK: a DB-level back-ref
+     * here creates a circular-FK type cycle with `penDrafts.session_id` that
+     * TS cannot resolve (both tables end up `any`). Draft rows are never
+     * hard-deleted (discard/finalize clear them in place), so the FK's
+     * `onDelete: set null` would never fire; a dangling pointer is defensively
+     * ignored by `toPenSessionPayload`. The cascade direction (session delete →
+     * draft delete) is enforced by `penDrafts.session_id`.
+     *
+     * @see docs/roadmap/PEN_DRAFT_SHELF_ROADMAP.md D-2
+     */
+    activeDraftId: uuid("active_draft_id"),
     /** Draft workspace — JSONB spans, NOT plain text (Model C). */
     draftBuffer: jsonb("draft_buffer").$type<DraftSpan[]>().notNull().default(sql`'[]'::jsonb`),
     /**
@@ -2540,6 +2599,8 @@ export const penEdits = pgTable(
     sessionId: uuid("session_id").notNull().references(() => penSessions.id, { onDelete: "cascade" }),
     userId: userId().references(() => users.userId, { onDelete: "cascade" }),
     bookId: bookId("cascade"),
+    /** The `pen_drafts` row this edit contributed to (multi-draft workspace); null for pre-migration rows. */
+    draftId: uuid("draft_id").references(() => penDrafts.id, { onDelete: "set null" }),
     /** Published page this edit contributed to (null until its draft finalizes). */
     pageId: uuid("page_id").references(() => pages.id, { onDelete: "set null" }),
     editType: text("edit_type").$type<PenEditType>().notNull(),
@@ -2561,6 +2622,7 @@ export const penEdits = pgTable(
   },
   (t) => [
     index("pen_edits_session_idx").on(t.sessionId),
+    index("pen_edits_draft_idx").on(t.draftId),
     index("pen_edits_book_idx").on(t.bookId),
     index("pen_edits_page_idx").on(t.pageId),
   ]

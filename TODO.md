@@ -17,7 +17,7 @@
 - [ ] need change to cursor pagination?
 
 [ ] pas split multi-turn udah stable, DRY infer state delta dari story page sama pen finalize propose
-[ ] buildNextPageFieldInstructionSections: can you make it be more manageable?
+[ ] buildNextPageFieldInstructionSections: can you make it be more manageable (type-safe, defined as separate consts in new config file)? should we add generic type <T> in `FieldInstructionSection`?
 [ ] buildStoryPageReviewChecklist, buildStateDeltaEvaluatorPrompt: still unused
 
 ---
