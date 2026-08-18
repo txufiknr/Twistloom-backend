@@ -433,3 +433,57 @@ export type PenAuthorPage = {
   createdAt: Date;
   updatedAt: Date;
 };
+
+// ── Block-action transformations (POST /api/pen/sessions/:id/transform) ────
+
+/** Available top-level block actions in the contextual popup menu. */
+export const penBlockActions = ["rephrase", "continue", "describe", "visualize", "twist"] as const;
+export type PenBlockAction = (typeof penBlockActions)[number];
+
+/** Sub-actions for `rephrase`. */
+export const penRephraseSubActions = [
+  "expand",
+  "show_dont_tell",
+  "shorten",
+  "more_intense",
+  "more_sensory",
+  "change_voice",
+] as const;
+export type PenRephraseSubAction = (typeof penRephraseSubActions)[number];
+
+/** Sub-actions for `describe`. */
+export const penDescribeSubActions = ["sensory", "character", "atmosphere"] as const;
+export type PenDescribeSubAction = (typeof penDescribeSubActions)[number];
+
+/** Sub-actions for `twist`. */
+export const penTwistSubActions = ["complication", "reversal", "foreshadowing", "revelation"] as const;
+export type PenTwistSubAction = (typeof penTwistSubActions)[number];
+
+export type PenBlockSubAction = PenRephraseSubAction | PenDescribeSubAction | PenTwistSubAction | string;
+
+/** Request payload for `POST /api/pen/sessions/:id/transform`. */
+export type PenTransformInput = {
+  draftId?: string;
+  selection: {
+    text: string;
+    from?: number;
+    to?: number;
+  };
+  action: PenBlockAction;
+  subAction?: PenBlockSubAction;
+  customInstruction?: string;
+  surroundingProse?: string;
+  authoringPov?: AuthoringPov;
+};
+
+/** Response payload for `POST /api/pen/sessions/:id/transform`. */
+export type PenTransformResult = {
+  transformedText: string;
+  rationale?: string;
+  issues?: Array<{
+    type: "lore" | "fact" | "character_memory" | "place_memory" | "other";
+    expected: string;
+    found: string;
+  }>;
+};
+

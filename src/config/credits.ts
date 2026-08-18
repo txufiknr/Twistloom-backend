@@ -139,6 +139,11 @@ const CREDIT_COSTS_BASE = {
    * essentials auto-fill, so it stays free alongside finalize.
    */
   PEN_FINALIZE_PROPOSE: 0,
+  /**
+   * Block-action selection transformation (rephrase, describe, twist, visualize)
+   * on highlighted prose in the draft surface.
+   */
+  PEN_TRANSFORM: 1,
 } as const;
 
 /**

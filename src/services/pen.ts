@@ -14,7 +14,7 @@ import { dbRead, dbWrite, type DBClient } from "../db/client.js";
 import { getBookFromDB, getBookPages, deleteStoryPage } from "./book.js";
 import { getTriggeredLoreEntries, listLoreEntries } from "./lore.js";
 import type { DBBook, DBPenSession, DBPenDraft } from "../types/schema.js";
-import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraft, PenDraftCharacter, PenDraftSceneEssentials, PenDraftSummary, PenDraftUpdates, PenEdit, PenSessionStatus, FinalizeViolation, CanonAmendment, PenEditType, PenOutlineData, PenOutlinePage, PenAuthorPage, AuthorshipOrigin } from "../types/pen.js";
+import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraft, PenDraftCharacter, PenDraftSceneEssentials, PenDraftSummary, PenDraftUpdates, PenEdit, PenSessionStatus, FinalizeViolation, CanonAmendment, PenEditType, PenOutlineData, PenOutlinePage, PenAuthorPage, AuthorshipOrigin, PenTransformInput, PenTransformResult } from "../types/pen.js";
 import type { BookMode } from "../types/book.js";
 import type { StoryState, Action, StoryGeneration, PersistedStoryPage, SceneCharacter, CharacterSceneRole, Mood, ActionType, ActionHint, ActionHintType } from "../types/story.js";
 import { moods, actionTypes, actionHintTypes } from "../types/story.js";
@@ -28,13 +28,13 @@ import type { Gender } from "../types/user.js";
 import { getBranchPath } from "../utils/branch-traversal.js";
 import { processCharacterUpdates, isMainCharacterValid } from "../utils/characters.js";
 import { getStoryStateWithBranch } from "./story-branch.js";
-import { buildPenContinuePrompt, PEN_CONTINUE_SCHEMA, PEN_CONTINUE_REQUIRED_FIELDS, buildPenEssentialsAutofillPrompt, PEN_ESSENTIALS_SCHEMA, PEN_ESSENTIALS_REQUIRED_FIELDS, PEN_ESSENTIALS_REVIEW_SCHEMA, buildPenStateProposalPrompt, PEN_STATE_PROPOSAL_SCHEMA, PEN_STATE_PROPOSAL_REQUIRED_FIELDS } from "../utils/pen-prompt.js";
-import type { PenContinueResult as PenContinueAIOutput, PenEssentialsAutofillResult as PenEssentialsAIOutput, PenStateProposalResult as PenStateProposalAIOutput } from "../utils/pen-prompt.js";
+import { buildPenContinuePrompt, PEN_CONTINUE_SCHEMA, PEN_CONTINUE_REQUIRED_FIELDS, buildPenEssentialsAutofillPrompt, PEN_ESSENTIALS_SCHEMA, PEN_ESSENTIALS_REQUIRED_FIELDS, PEN_ESSENTIALS_REVIEW_SCHEMA, buildPenStateProposalPrompt, PEN_STATE_PROPOSAL_SCHEMA, PEN_STATE_PROPOSAL_REQUIRED_FIELDS, buildPenTransformPrompt, PEN_TRANSFORM_SCHEMA, PEN_TRANSFORM_REQUIRED_FIELDS } from "../utils/pen-prompt.js";
+import type { PenContinueResult as PenContinueAIOutput, PenEssentialsAutofillResult as PenEssentialsAIOutput, PenStateProposalResult as PenStateProposalAIOutput, PenTransformResult as PenTransformAIOutput } from "../utils/pen-prompt.js";
 import { aiPrompt, createAIOptionsWithSchema } from "../utils/ai-chat.js";
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
-import { PEN_DRAFT_CAST_LIMIT, PEN_CONTINUE_MAX_TOKENS, penContinueLengthForAssistance, PEN_ESSENTIALS_MAX_TOKENS, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TOKENS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_FINALIZE_PROPOSE_MAX_ITEM_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TRAITS, PEN_DRAFT_BUFFER_MAX_CHARS, PEN_DRAFTS_PER_PARENT, PEN_DRAFT_LABEL_MAX_LENGTH, PEN_DRAFT_ACTION_TEXT_MAX_LENGTH, PEN_DRAFT_ACTION_HINT_MAX_LENGTH } from "../config/story.js";
+import { PEN_DRAFT_CAST_LIMIT, PEN_CONTINUE_MAX_TOKENS, penContinueLengthForAssistance, PEN_ESSENTIALS_MAX_TOKENS, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TOKENS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_FINALIZE_PROPOSE_MAX_ITEM_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TRAITS, PEN_DRAFT_BUFFER_MAX_CHARS, PEN_DRAFTS_PER_PARENT, PEN_DRAFT_LABEL_MAX_LENGTH, PEN_DRAFT_ACTION_TEXT_MAX_LENGTH, PEN_DRAFT_ACTION_HINT_MAX_LENGTH, PEN_TRANSFORM_MAX_TOKENS, PEN_TRANSFORM_SELECTION_MAX_LENGTH } from "../config/story.js";
 import { generateId } from "../utils/uuid.js";
 import { executeWithCredits } from "./credits.js";
 import { persistPageWithState, insertStoryPage, getPageFromDB, mapToPersistedStoryPage } from "./book.js";
@@ -1048,6 +1048,181 @@ export async function continuePenDraft(
     edit: result.edit,
     draft: result.updated.draftBuffer,
   };
+}
+
+/** Errors thrown while running a `/transform` request. */
+export class PenTransformError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PenTransformError";
+  }
+}
+
+/**
+ * Transforms or expands a selected text block in the draft surface (POST /api/pen/sessions/:id/transform).
+ *
+ * Runs inside executeWithCredits('PEN_TRANSFORM') (1 credit).
+ * Writes an audit row to `pen_edits` with `editType: 'ai_revised'`.
+ */
+export async function transformPenSelection(
+  userId: string,
+  sessionId: string,
+  input: PenTransformInput
+): Promise<PenTransformResult> {
+  const session = await getPenSessionById(userId, sessionId);
+  const book: DBBook | null = await getBookFromDB(session.bookId);
+  if (!book) throw new PenTransformError("Book not found for this session");
+
+  if (session.status !== "active") {
+    throw new PenTransformError("Session is not active; reopen it before transforming");
+  }
+
+  const selectionText = stripHtmlTags(input.selection?.text ?? "");
+  if (!selectionText || selectionText.trim().length === 0) {
+    throw new PenTransformError("Selection text is required");
+  }
+  if (selectionText.length > PEN_TRANSFORM_SELECTION_MAX_LENGTH) {
+    throw new PenTransformError(`Selection must be at most ${PEN_TRANSFORM_SELECTION_MAX_LENGTH} characters`);
+  }
+
+  // Safety filter on custom instruction if provided
+  if (input.customInstruction) {
+    const gate1 = runGate1(input.customInstruction);
+    if (gate1.category === "injection_attempt" || gate1.category === "denylist") {
+      throw new PenTransformError("Instruction failed the safety gate — please rephrase it.");
+    }
+  }
+
+  const draftId = input.draftId || session.activeDraftId || undefined;
+  let draft: DBPenDraft | undefined;
+  if (draftId) {
+    draft = await getSessionDraftRow(sessionId, draftId, dbRead);
+  }
+
+  // Story state + recent prose from the last published page, when one exists.
+  let state: StoryState | null = null;
+  let pageTexts: string[] = [];
+  let momentum: string | null = null;
+  let sceneType: string | null = null;
+  let lastPage: PersistedStoryPage | undefined;
+
+  if (session.currentPageId) {
+    state = await getStoryStateWithBranch(book.id, session.currentPageId);
+    const branch = await getBranchPath(session.currentPageId);
+    pageTexts = branch.pages.map((p) => p.text).filter(Boolean);
+    lastPage = branch.pages[branch.pages.length - 1];
+    momentum = lastPage?.momentum ?? null;
+    sceneType = lastPage?.sceneType ?? null;
+  }
+
+  const mcName = book.mc?.knownName || book.mc?.name || "";
+  const language = book.language || "en";
+
+  const authorInstruction = input.customInstruction ? stripHtmlTags(input.customInstruction) : undefined;
+  const surroundingProse = input.surroundingProse ? stripHtmlTags(input.surroundingProse) : "";
+
+  const loreHaystack = [
+    state?.contextHistory ?? "",
+    ...pageTexts,
+    surroundingProse,
+    selectionText,
+    authorInstruction ?? "",
+  ].join("\n");
+  const lore = await getTriggeredLoreEntries(book.id, loreHaystack);
+
+  const authoringPov = input.authoringPov ?? session.authoringPov ?? undefined;
+
+  const { systemPrompt, userPrompt } = buildPenTransformPrompt({
+    state,
+    authoringMode: session.authoringMode,
+    authoringPov,
+    lore,
+    pageTexts,
+    mcName,
+    language,
+    bookSummary: book.summary ?? null,
+    storyStartDate: book.storyStartDate ?? null,
+    momentum,
+    sceneType,
+    essentials: draft ? inheritSceneEssentials(draft.draftSceneEssentials, lastPage) : null,
+    selectionText,
+    surroundingProse,
+    action: input.action,
+    subAction: input.subAction,
+    customInstruction: authorInstruction,
+  });
+
+  const promptConfig: AIPromptForJson<PenTransformAIOutput> = {
+    schema: PEN_TRANSFORM_SCHEMA,
+    requiredFields: PEN_TRANSFORM_REQUIRED_FIELDS,
+    fallbackField: "transformedText",
+    baseOptions: {
+      modelSelection: AI_CHAT_MODELS_WRITING,
+      context: "pen-transform",
+      systemPrompt,
+      config: { ...AI_CHAT_CONFIG_DEFAULT, maxOutputToken: PEN_TRANSFORM_MAX_TOKENS },
+    },
+  };
+
+  const { result } = await executeWithCredits(
+    userId,
+    "PEN_TRANSFORM",
+    async (tx) => {
+      const aiResponse = await aiPrompt<PenTransformAIOutput>(userPrompt, createAIOptionsWithSchema(promptConfig));
+      const output = aiResponse.result;
+
+      if (!output || typeof output.transformedText !== "string" || output.transformedText.trim().length === 0) {
+        throw new PenTransformError("AI returned no transformed text");
+      }
+
+      const issues = Array.isArray(output.issues) && output.issues.length > 0
+        ? output.issues.filter((i: { expected?: unknown; found?: unknown }) => i && typeof i.expected === "string" && typeof i.found === "string")
+        : [];
+
+      const edit: PenEdit = {
+        id: generateId(),
+        sessionId,
+        userId,
+        bookId: book.id,
+        pageId: null,
+        editType: "ai_revised",
+        authorInput: `[${input.action}${input.subAction ? `:${input.subAction}` : ""}] ${selectionText}`,
+        aiOutput: output.transformedText.trim(),
+        finalText: output.transformedText.trim(),
+        contextPageId: session.currentPageId,
+        charOffsetStart: input.selection.from ?? null,
+        charOffsetEnd: input.selection.to ?? null,
+        authoringMode: session.authoringMode,
+        authoringPov: authoringPov ?? null,
+        createdAt: new Date(),
+      };
+
+      await tx.insert(penEdits).values({
+        id: edit.id,
+        sessionId: edit.sessionId,
+        userId: edit.userId,
+        bookId: edit.bookId,
+        pageId: null,
+        draftId: draftId ?? null,
+        editType: edit.editType,
+        authorInput: edit.authorInput,
+        aiOutput: edit.aiOutput,
+        finalText: edit.finalText,
+        contextPageId: edit.contextPageId,
+        authoringMode: edit.authoringMode,
+        authoringPov: edit.authoringPov,
+        createdAt: edit.createdAt,
+      });
+
+      return {
+        transformedText: output.transformedText.trim(),
+        rationale: output.rationale?.trim() || undefined,
+        issues: issues.length > 0 ? issues : undefined,
+      };
+    }
+  );
+
+  return result;
 }
 
 /** Errors thrown while running an essentials auto-fill request. */

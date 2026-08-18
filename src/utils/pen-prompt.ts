@@ -30,7 +30,7 @@
 import type { StoryState } from "../types/story.js";
 import { moods, actionTypes, actionHintTypes } from "../types/story.js";
 import { placeWeathers } from "../types/places.js";
-import type { AuthoringMode, AuthoringPov, CoWritingPersona, LoreEntry, PenDraftSceneEssentials } from "../types/pen.js";
+import type { AuthoringMode, AuthoringPov, CoWritingPersona, LoreEntry, PenDraftSceneEssentials, PenBlockAction, PenBlockSubAction, PenTransformResult } from "../types/pen.js";
 import type { AIJsonProperty } from "../types/ai-chat.js";
 import { getStoryStateInfo } from "./story.js";
 import { RULES_STORY_CONSISTENCY, RULES_LANGUAGE_LOCALIZATION } from "./prompt.js";
@@ -939,3 +939,244 @@ export function buildPenStateProposalPrompt(params: {
     ].join("\n\n"),
   };
 }
+
+// ── Block-action transformation prompt builder (POST /api/pen/sessions/:id/transform) ──
+
+/**
+ * Static, cache-friendly system prompt for block-action transformations.
+ * Genre-agnostic, POV-flexible, stable prefix across requests.
+ */
+export const PEN_TRANSFORM_SYSTEM = `You are an expert literary co-writer and stylistic editor. (Genre-agnostic — follow the story's established genre and tone; do not force horror or thriller framing.)
+Your task is to transform, continue, or unpack a SPECIFIC SELECTED FRAGMENT of the author's prose according to the requested transformation action.
+
+MANDATORY: the USER message contains labeled sections you MUST read and obey before generating: AUTHOR'S POV, AUTHOR'S PERSONA, STORY SUMMARY, CANONICAL LORE, NARRATIVE STYLE, WRITE IN LANGUAGE, CANONICAL STATE (do not contradict), RECENT STORY, SURROUNDING CONTEXT, and SELECTED TEXT TO TRANSFORM. The CANONICAL STATE and CANONICAL LORE are authoritative — do not contradict them.
+
+CRITICAL RULES:
+1. SEAMLESS BLENDING: The transformed output MUST match the tense, voice, rhythm, tone, and characterization of the surrounding prose.
+2. TARGETED FOCUS: Transform or expand ONLY what was selected in SELECTED TEXT TO TRANSFORM. The surrounding context is provided for seamless narrative blending; write the text that replaces or continues that specific selection.
+3. OUTPUT PRECISION: Write ONLY the transformed replacement, continuation, sensory description, or visual art prompt in the 'transformedText' field. Do not include markdown meta-commentary, introductory remarks, or surrounding duplicate sentences.
+4. WRITE ONLY IN THE LANGUAGE SPECIFIED IN THE WRITE IN LANGUAGE SECTION.
+5. CANON RESPECT: Do not contradict CANONICAL STATE or CANONICAL LORE.
+
+${RULES_STORY_CONSISTENCY}
+
+${RULES_LANGUAGE_LOCALIZATION}`;
+
+export type { PenTransformResult };
+
+/** Structured-output schema for block-action transformations. */
+export const PEN_TRANSFORM_SCHEMA: Record<keyof PenTransformResult, AIJsonProperty> = {
+  transformedText: {
+    type: "string",
+    description: "The transformed prose replacement, continuation, sensory description, or visual art prompt.",
+  },
+  rationale: {
+    type: "string",
+    description: "Brief 1-sentence note explaining the stylistic choice or subversion.",
+  },
+  issues: {
+    type: "array",
+    description: "Any canon contradictions detected, or an empty array.",
+    items: {
+      type: "object",
+      properties: {
+        type: {
+          type: "string",
+          enum: ["lore", "fact", "character_memory", "place_memory", "other"],
+          description: "Source of the contradiction.",
+        },
+        expected: { type: "string", description: "What the canonical state requires." },
+        found: { type: "string", description: "What the draft says." },
+      },
+      required: ["type", "expected", "found"],
+    },
+  },
+};
+
+/** Required fields for block-action transformations. */
+export const PEN_TRANSFORM_REQUIRED_FIELDS: (keyof PenTransformResult)[] = ["transformedText"];
+
+/** Result of building a block-action transform prompt: separate system + user prompts. */
+export type PenTransformPrompt = {
+  systemPrompt: string;
+  userPrompt: string;
+};
+
+/** Formulates clear, unambiguous action directives for the model based on action + subAction. */
+function getActionDirective(
+  action: PenBlockAction,
+  subAction?: PenBlockSubAction,
+  customInstruction?: string
+): string {
+  const parts: string[] = [];
+
+  switch (action) {
+    case "rephrase":
+      if (subAction === "show_dont_tell") {
+        parts.push(
+          "ACTION: Show, Don't Tell — Convert abstract exposition, thoughts, or stated emotions into visceral physiological reactions, tangible sensory details, dialogue beats, and micro-actions."
+        );
+      } else if (subAction === "expand") {
+        parts.push(
+          "ACTION: Expand — Unpack compressed narration. Add atmospheric texture, sensory depth, character interiority, and pacing pauses without losing focus."
+        );
+      } else if (subAction === "shorten") {
+        parts.push(
+          "ACTION: Shorten / Tighten — Trim filler words, purge purple prose and repetitive glue words, and sharpen narrative cadence and punchiness."
+        );
+      } else if (subAction === "more_intense") {
+        parts.push(
+          "ACTION: More Intense — Heighten dramatic stakes, increase suspense, sharpen active verbs, and inject syntactic urgency."
+        );
+      } else if (subAction === "more_sensory") {
+        parts.push(
+          "ACTION: More Sensory — Infuse rich textures, smell, tactile sensations, temperature, ambient sound, and lighting contrast."
+        );
+      } else if (subAction === "change_voice") {
+        parts.push(
+          "ACTION: Change Voice / Tone — Elevate the prose style with poetic cadence, vivid imagery, and distinct emotional resonance."
+        );
+      } else {
+        parts.push(
+          "ACTION: Rephrase — Elevate the literary quality and rhythm of the selected text while preserving its core narrative meaning."
+        );
+      }
+      parts.push("Rewrite the SELECTED TEXT to replace it in-place.");
+      break;
+
+    case "continue":
+      parts.push(
+        "ACTION: Continue Selection — Treat the SELECTED TEXT as the immediate leading anchor, and write a seamless continuation (1-3 sentences or ~40-80 words) advancing the scene."
+      );
+      break;
+
+    case "describe":
+      if (subAction === "character") {
+        parts.push(
+          "ACTION: Character Deep-Dive — Describe facial micro-expressions, posture, body language, vocal timbre, and physical nuances of the character mentioned in the selection."
+        );
+      } else if (subAction === "atmosphere") {
+        parts.push(
+          "ACTION: Atmosphere & Lore — Describe the environmental history, spatial mood, weather interaction, and ambient acoustics of the setting."
+        );
+      } else {
+        parts.push(
+          "ACTION: Sensory Description — Provide a rich sensory exploration (textures, aromas, sounds, lighting) of the noun, object, or location highlighted."
+        );
+      }
+      break;
+
+    case "twist":
+      if (subAction === "complication") {
+        parts.push(
+          "ACTION: Complication — Introduce an unexpected immediate obstacle, friction, or physical/social disruption to the action in the selected text."
+        );
+      } else if (subAction === "reversal") {
+        parts.push(
+          "ACTION: Reversal — Subvert the assumption or premise in the selected sentence with an ironic or contradictory turn."
+        );
+      } else if (subAction === "foreshadowing") {
+        parts.push(
+          "ACTION: Foreshadowing — Weave in an ominous omen, hidden danger, or subtle clue suggesting future peril."
+        );
+      } else if (subAction === "revelation") {
+        parts.push(
+          "ACTION: Dramatic Revelation — Reveal a startling hidden secret, unspoken motive, or concealed vulnerability related to this moment."
+        );
+      } else {
+        parts.push(
+          "ACTION: Dramatic Twist — Inject a surprising turn of events, dramatic complication, or subverted expectation."
+        );
+      }
+      break;
+
+    case "visualize":
+      parts.push(
+        "ACTION: Visualize Art Prompt — Convert the selected scene/subject into an evocative visual art prompt for image generation, including subject details, mood, composition, lighting, and cinematic framing (in English)."
+      );
+      break;
+  }
+
+  if (customInstruction?.trim()) {
+    parts.push(`ADDITIONAL AUTHOR INSTRUCTION: ${customInstruction.trim()}`);
+  }
+
+  return parts.join("\n");
+}
+
+/**
+ * Builds the block-action transform prompt for `POST /api/pen/sessions/:id/transform`.
+ */
+export function buildPenTransformPrompt(params: {
+  state?: StoryState | null;
+  authoringMode: AuthoringMode;
+  authoringPov?: AuthoringPov;
+  persona?: CoWritingPersona;
+  lore?: LoreEntry[];
+  pageTexts: string[];
+  mcName: string;
+  language: string;
+  bookSummary?: string | null;
+  storyStartDate?: string | null;
+  momentum?: string | null;
+  sceneType?: string | null;
+  essentials?: PenDraftSceneEssentials | null;
+  selectionText: string;
+  surroundingProse?: string;
+  action: PenBlockAction;
+  subAction?: PenBlockSubAction;
+  customInstruction?: string;
+}): PenTransformPrompt {
+  const {
+    state,
+    authoringMode,
+    authoringPov,
+    persona,
+    lore,
+    pageTexts,
+    mcName,
+    language,
+    bookSummary,
+    storyStartDate,
+    momentum,
+    sceneType,
+    essentials,
+    selectionText,
+    surroundingProse = "",
+    action,
+    subAction,
+    customInstruction,
+  } = params;
+
+  const canon = buildCanonicalBlock(state ?? null, mcName, {
+    storyStartDate,
+    momentum,
+    sceneType,
+    essentials,
+  });
+  const prose = buildProseContext(pageTexts);
+  const narrativeStyleInstructions = state ? createNarrativeStyle(state).instructions : undefined;
+
+  const stableSections = [
+    `AUTHOR'S POV: ${povDirective(authoringMode, authoringPov)}`,
+    ...buildStablePenSections({ persona, bookSummary, lore, narrativeStyle: narrativeStyleInstructions, language }),
+  ];
+
+  const contextSections = buildPenContextSections(canon, prose);
+  const directive = getActionDirective(action, subAction, customInstruction);
+
+  return {
+    systemPrompt: PEN_TRANSFORM_SYSTEM,
+    userPrompt: [
+      ...stableSections,
+      ...contextSections,
+      surroundingProse.trim() ? `SURROUNDING CONTEXT:\n${surroundingProse.trim()}` : "",
+      `SELECTED TEXT TO TRANSFORM:\n"${selectionText.trim()}"`,
+      `TRANSFORMATION DIRECTIVE:\n${directive}`,
+      "Generate the transformed prose output matching the specified schema in 'transformedText'.",
+    ]
+      .filter(Boolean)
+      .join("\n\n"),
+  };
+}
+

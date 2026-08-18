@@ -568,3 +568,12 @@ export const PEN_DRAFT_BUFFER_MAX_CHARS = 100_000;
  * into memory and pushed to ImageKit.
  */
 export const PEN_DRAFT_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+
+/**
+ * Maximum character length of a highlighted selection sent to `/transform`.
+ * Covers long paragraphs/sections (~1000 words) while bounding token cost.
+ */
+export const PEN_TRANSFORM_SELECTION_MAX_LENGTH = 5000;
+
+/** Output-token budget for block-action transformation generations. */
+export const PEN_TRANSFORM_MAX_TOKENS = 1200;

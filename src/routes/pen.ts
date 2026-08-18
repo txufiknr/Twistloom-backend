@@ -11,11 +11,11 @@ import type { Context } from "hono";
 import type { AppEnv } from "../hono/env.js";
 import { requireAuth } from "../middleware/nextauth.js";
 import { rateLimit } from "../middleware/rate-limit.js";
-import { PEN_CONTINUE_RATE_LIMIT, PEN_ESSENTIALS_RATE_LIMIT, PEN_FINALIZE_PROPOSE_RATE_LIMIT } from "../config/ai-rate-limits.js";
+import { PEN_CONTINUE_RATE_LIMIT, PEN_ESSENTIALS_RATE_LIMIT, PEN_FINALIZE_PROPOSE_RATE_LIMIT, PEN_TRANSFORM_RATE_LIMIT } from "../config/ai-rate-limits.js";
 import { cApiError, cNotFoundError, cValidationError } from "../utils/error.js";
 import { dbWrite } from "../db/client.js";
 import { isBase64Upload } from "../services/image.js";
-import { PEN_ASSISTANCE_LEVEL_MAX, PEN_ASSISTANCE_LEVEL_MIN, PEN_AUTHORING_MODES, PEN_AUTHORING_POVS, PEN_DRAFT_BUFFER_MAX_CHARS, PEN_DRAFT_CAST_LIMIT, PEN_DRAFT_HTML_MAX_LENGTH, PEN_DRAFT_IMAGE_MAX_BYTES, PEN_DRAFT_SPAN_MAX_LENGTH, PEN_DRAFT_TEXT_MAX_LENGTH, PEN_DIRECTION_HINT_MAX_LENGTH, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_MAX_ACTIONS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_SCENE_FOCUS_MAX, PEN_SCENE_FOCUS_MIN, PEN_SESSION_STATUSES, PEN_CONTINUE_PROSE_MAX_LENGTH, PEN_DRAFT_LABEL_MAX_LENGTH, PEN_DRAFT_ACTION_TEXT_MAX_LENGTH, PEN_DRAFT_ACTION_HINT_MAX_LENGTH } from "../config/story.js";
+import { PEN_ASSISTANCE_LEVEL_MAX, PEN_ASSISTANCE_LEVEL_MIN, PEN_AUTHORING_MODES, PEN_AUTHORING_POVS, PEN_DRAFT_BUFFER_MAX_CHARS, PEN_DRAFT_CAST_LIMIT, PEN_DRAFT_HTML_MAX_LENGTH, PEN_DRAFT_IMAGE_MAX_BYTES, PEN_DRAFT_SPAN_MAX_LENGTH, PEN_DRAFT_TEXT_MAX_LENGTH, PEN_DIRECTION_HINT_MAX_LENGTH, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_MAX_ACTIONS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_SCENE_FOCUS_MAX, PEN_SCENE_FOCUS_MIN, PEN_SESSION_STATUSES, PEN_CONTINUE_PROSE_MAX_LENGTH, PEN_DRAFT_LABEL_MAX_LENGTH, PEN_DRAFT_ACTION_TEXT_MAX_LENGTH, PEN_DRAFT_ACTION_HINT_MAX_LENGTH, PEN_TRANSFORM_SELECTION_MAX_LENGTH } from "../config/story.js";
 import { moods } from "../types/story.js";
 import { actionTypes, actionHintTypes } from "../types/story.js";
 import { placeWeathers } from "../types/places.js";
@@ -27,6 +27,7 @@ import {
   closePenSession,
   discardPenDraft,
   continuePenDraft,
+  transformPenSelection,
   finalizePenDraft,
   autofillSceneEssentials,
   proposePenStateUpdates,
@@ -42,6 +43,7 @@ import {
   PenSessionConflictError,
   PenBookOwnershipError,
   PenContinueError,
+  PenTransformError,
   PenFinalizeError,
   PenEssentialsAutofillError,
   PenStateProposalError,
@@ -51,7 +53,8 @@ import {
   PenImageUploadError,
 } from "../services/pen.js";
 import type { PenContinueInput, PenFinalizeInput, PenEssentialsAutofillInput, PenStateProposalInput } from "../services/pen.js";
-import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraftCharacter, PenDraftSceneEssentials, PenSessionStatus } from "../types/pen.js";
+import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraftCharacter, PenDraftSceneEssentials, PenSessionStatus, PenBlockAction } from "../types/pen.js";
+import { penBlockActions } from "../types/pen.js";
 import { characterSceneRoles } from "../types/story.js";
 import type { CharacterSceneRole } from "../types/story.js";
 
@@ -657,6 +660,83 @@ router.post("/sessions/:id/continue", requireAuth, rateLimit(PEN_CONTINUE_RATE_L
     if (error instanceof PenDraftNotActiveError) return cApiError(c, error.message, undefined, 409);
     if (error instanceof PenContinueError) return cApiError(c, error.message, undefined, 422);
     return cApiError(c, "Failed to continue pen draft", error);
+  }
+});
+
+/**
+ * POST /api/pen/sessions/:id/transform
+ * Runs an in-editor block action (rephrase, continue, describe, visualize, twist)
+ * on a highlighted selection in the active draft surface.
+ * Body: {
+ *   draftId?: string,
+ *   selection: { text: string, from?: number, to?: number },
+ *   action: PenBlockAction,
+ *   subAction?: string,
+ *   customInstruction?: string,
+ *   surroundingProse?: string,
+ *   authoringPov?: AuthoringPov
+ * }
+ */
+router.post("/sessions/:id/transform", requireAuth, rateLimit(PEN_TRANSFORM_RATE_LIMIT), async (c) => {
+  try {
+    const userId = c.get("userId");
+    if (!userId) return cApiError(c, "Authentication required", undefined, 401);
+    const sessionId = c.req.param("id");
+    const body = await readJsonBody(c);
+
+    if (!body || typeof body !== "object") {
+      return cValidationError(c, "Request body must be a JSON object");
+    }
+
+    const raw = body as Record<string, unknown>;
+
+    const selection = raw.selection as { text?: unknown; from?: unknown; to?: unknown } | undefined;
+    if (!selection || typeof selection !== "object" || typeof selection.text !== "string" || selection.text.trim().length === 0) {
+      return cValidationError(c, "selection with non-empty text is required");
+    }
+    if (selection.text.length > PEN_TRANSFORM_SELECTION_MAX_LENGTH) {
+      return cValidationError(c, `selection text must be at most ${PEN_TRANSFORM_SELECTION_MAX_LENGTH} characters`);
+    }
+
+    const action = raw.action as PenBlockAction;
+    if (!action || !penBlockActions.includes(action)) {
+      return cValidationError(c, `action must be one of: ${penBlockActions.join(", ")}`);
+    }
+
+    const subAction = typeof raw.subAction === "string" ? raw.subAction.trim() : undefined;
+    const customInstruction = typeof raw.customInstruction === "string" ? raw.customInstruction.trim() : undefined;
+    const surroundingProse = typeof raw.surroundingProse === "string" ? raw.surroundingProse : undefined;
+
+    const authoringPov = raw.authoringPov as AuthoringPov | null | undefined;
+    if (authoringPov !== undefined && authoringPov !== null && !PEN_AUTHORING_POVS.includes(authoringPov)) {
+      return cValidationError(c, `authoringPov must be one of: ${PEN_AUTHORING_POVS.join(", ")} or null`);
+    }
+
+    const draftIdParam = raw.draftId;
+    if (draftIdParam !== undefined && (typeof draftIdParam !== "string" || draftIdParam.trim().length === 0)) {
+      return cValidationError(c, "draftId must be a non-empty string");
+    }
+
+    const result = await transformPenSelection(userId, sessionId, {
+      draftId: typeof draftIdParam === "string" ? draftIdParam : undefined,
+      selection: {
+        text: selection.text,
+        from: typeof selection.from === "number" ? selection.from : undefined,
+        to: typeof selection.to === "number" ? selection.to : undefined,
+      },
+      action,
+      subAction,
+      customInstruction,
+      surroundingProse,
+      authoringPov: authoringPov ?? undefined,
+    });
+
+    return c.json(result);
+  } catch (error) {
+    if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
+    if (error instanceof PenBookOwnershipError) return cApiError(c, error.message, undefined, 403);
+    if (error instanceof PenTransformError) return cApiError(c, error.message, undefined, 422);
+    return cApiError(c, "Failed to transform pen selection", error);
   }
 });
 

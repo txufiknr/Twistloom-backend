@@ -205,3 +205,13 @@ export const PEN_ESSENTIALS_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
 export const PEN_FINALIZE_PROPOSE_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
   "PEN_FINALIZE_PROPOSE", 10, 60
 );
+
+/**
+ * POST /api/pen/sessions/:id/transform — AI block-action selection transformation.
+ *
+ * Charges `PEN_TRANSFORM` (1 credit) via `executeWithCredits`. Rate limit bounds burst
+ * and retry churn.
+ */
+export const PEN_TRANSFORM_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
+  "PEN_TRANSFORM", 20, 60
+);
