@@ -125,7 +125,6 @@ import { updateBook, updateBookVisibility, insertBook, uploadBookCoverImage, upl
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
 import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookPage, enrichBooksWithUserData } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache } from "../services/cache.js";
-import type { PaginationMeta } from "../types/api.js";
 import type { BookCreationStatus, BookGenerationPayload, BookMode, BookSortOption, BookStatus, BookVisibility, EnrichedBookData } from "../types/book.js";
 import { bookStatuses, bookVisibilities, bookModes, lastUpdatedFilterOptions, storyGenerationSteps } from "../types/book.js";
 import { createBookCore, createBookValidate, handleBookCreationError, updateBookGenerationStatus } from "../services/book-creation.js";

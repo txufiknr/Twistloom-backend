@@ -24,7 +24,7 @@ import type { Context } from "hono";
 import { books, users, userLikes, userFavorites, userSessions, userCompletedBooks, userPurchasedBooks, pages, storyStates, bookTranslations } from '../db/schema.js';
 import { applySorting } from '../utils/pagination.js';
 import { dbRead } from "../db/client.js";
-import { createRelevanceExpression, buildTokenizedSearchCondition } from "../utils/search.js";
+import { createRelevanceExpression } from "../utils/search.js";
 import { getEnrichedBook, getPageActionsFromDB, getPageFromDB } from "./book.js";
 import { cNotFoundError, cForbiddenError } from "../utils/error.js";
 import { getClientIp } from "../hono/express-shim.js";
@@ -387,8 +387,8 @@ export function buildLanguageFilterCondition(language?: string) {
   return or(
     eq(books.language, normalized),
     sql`EXISTS (
-      SELECT 1 FROM book_translations bt
-      WHERE bt.book_id = ${books.id} AND bt.language = ${normalized}
+      SELECT 1 FROM ${bookTranslations}
+      WHERE ${bookTranslations.bookId} = ${books.id} AND ${bookTranslations.language} = ${normalized}
     )`
   );
 }

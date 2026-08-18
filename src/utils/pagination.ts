@@ -52,7 +52,7 @@ export interface PaginationParams {
 /**
  * Paginated response interface with dynamic resource naming
  */
-export type PaginatedResponse<T, K extends string = 'items'> = {
+export type PaginatedResponse<T, K extends ResourceName = 'items'> = {
   [P in K]: T[];
 } & {
   pagination: PaginationMeta;
@@ -168,7 +168,7 @@ export function calculatePaginationMeta(
  * // Returns: { items: [...], pagination: { page: 1, limit: 20, ... } }
  * ```
  */
-export function createPaginatedResponse<T, K extends string = 'items'>(
+export function createPaginatedResponse<T, K extends ResourceName = 'items'>(
   items: T[],
   pagination: PaginationMeta,
   resourceName?: K
