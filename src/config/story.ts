@@ -492,6 +492,10 @@ export const PEN_DRAFT_CAST_LIMIT = 20;
 export const PEN_DRAFTS_PER_PARENT = 5;
 /** Maximum length of a draft's editorial `label` (draft shelf, D-3). */
 export const PEN_DRAFT_LABEL_MAX_LENGTH = 120;
+/** Maximum length of a draft's author-authored choice text (`actionText`, D-4 core). */
+export const PEN_DRAFT_ACTION_TEXT_MAX_LENGTH = 120;
+/** Maximum length of an AI-proposed action hint text (D-4: hint is AI-inferred, never author input). */
+export const PEN_DRAFT_ACTION_HINT_MAX_LENGTH = 300;
 /** Maximum number of author-supplied action choices accepted by /finalize. */
 export const PEN_FINALIZE_MAX_ACTIONS = 6;
 /** Maximum number of trigger keywords accepted on a lore entry. */

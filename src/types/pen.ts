@@ -139,6 +139,8 @@ export type PenDraft = {
   parentPageId: string | null;
   /** Editorial, non-unique name shown in the outline draft shelf (D-3). */
   label: string | null;
+  /** Author-authored choice text leading into this draft's page (D-4 core). */
+  actionText: string | null;
   /** Draft workspace — JSONB spans, NOT plain text (Model C). */
   draftBuffer: DraftSpan[];
   /** Exact TipTap HTML mirror of `draftBuffer` (autosave layer 2). */
@@ -161,6 +163,8 @@ export type PenDraftSummary = {
   parentPageId: string | null;
   /** Editorial label (D-3). */
   label: string | null;
+  /** Author-authored choice text leading into this draft's page (D-4 core). */
+  actionText: string | null;
   /** Plain-text length of the buffer (for the word-count chip). */
   charCount: number;
   createdAt: Date;
@@ -170,6 +174,7 @@ export type PenDraftSummary = {
 /** Allowed PATCH fields on a single `pen_drafts` row (autosave heartbeat). */
 export type PenDraftUpdates = {
   label?: string;
+  actionText?: string;
   draftBuffer?: DraftSpan[];
   draftHtml?: string;
   draftCharactersPresent?: PenDraftCharacter[];

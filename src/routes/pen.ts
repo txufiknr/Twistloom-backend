@@ -15,9 +15,9 @@ import { PEN_CONTINUE_RATE_LIMIT, PEN_ESSENTIALS_RATE_LIMIT, PEN_FINALIZE_PROPOS
 import { cApiError, cNotFoundError, cValidationError } from "../utils/error.js";
 import { dbWrite } from "../db/client.js";
 import { isBase64Upload } from "../services/image.js";
-import { PEN_ASSISTANCE_LEVEL_MAX, PEN_ASSISTANCE_LEVEL_MIN, PEN_AUTHORING_MODES, PEN_AUTHORING_POVS, PEN_DRAFT_BUFFER_MAX_CHARS, PEN_DRAFT_CAST_LIMIT, PEN_DRAFT_HTML_MAX_LENGTH, PEN_DRAFT_IMAGE_MAX_BYTES, PEN_DRAFT_SPAN_MAX_LENGTH, PEN_DRAFT_TEXT_MAX_LENGTH, PEN_DIRECTION_HINT_MAX_LENGTH, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_MAX_ACTIONS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_SCENE_FOCUS_MAX, PEN_SCENE_FOCUS_MIN, PEN_SESSION_STATUSES, PEN_CONTINUE_PROSE_MAX_LENGTH, PEN_DRAFT_LABEL_MAX_LENGTH } from "../config/story.js";
+import { PEN_ASSISTANCE_LEVEL_MAX, PEN_ASSISTANCE_LEVEL_MIN, PEN_AUTHORING_MODES, PEN_AUTHORING_POVS, PEN_DRAFT_BUFFER_MAX_CHARS, PEN_DRAFT_CAST_LIMIT, PEN_DRAFT_HTML_MAX_LENGTH, PEN_DRAFT_IMAGE_MAX_BYTES, PEN_DRAFT_SPAN_MAX_LENGTH, PEN_DRAFT_TEXT_MAX_LENGTH, PEN_DIRECTION_HINT_MAX_LENGTH, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_MAX_ACTIONS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_SCENE_FOCUS_MAX, PEN_SCENE_FOCUS_MIN, PEN_SESSION_STATUSES, PEN_CONTINUE_PROSE_MAX_LENGTH, PEN_DRAFT_LABEL_MAX_LENGTH, PEN_DRAFT_ACTION_TEXT_MAX_LENGTH, PEN_DRAFT_ACTION_HINT_MAX_LENGTH } from "../config/story.js";
 import { moods } from "../types/story.js";
-import { actionTypes } from "../types/story.js";
+import { actionTypes, actionHintTypes } from "../types/story.js";
 import { placeWeathers } from "../types/places.js";
 import {
   createPenSession,
@@ -409,7 +409,7 @@ router.post("/sessions/:id/drafts", requireAuth, async (c) => {
     if (!body || typeof body !== "object") {
       return cValidationError(c, "Request body must be a JSON object");
     }
-    const { parentPageId, label, activate } = body as { parentPageId?: unknown; label?: unknown; activate?: unknown };
+    const { parentPageId, label, actionText, activate } = body as { parentPageId?: unknown; label?: unknown; actionText?: unknown; activate?: unknown };
     if (parentPageId !== undefined && parentPageId !== null && typeof parentPageId !== "string") {
       return cValidationError(c, "parentPageId must be a string or null");
     }
@@ -419,6 +419,12 @@ router.post("/sessions/:id/drafts", requireAuth, async (c) => {
     if (typeof label === "string" && label.trim().length > PEN_DRAFT_LABEL_MAX_LENGTH) {
       return cValidationError(c, `label must be at most ${PEN_DRAFT_LABEL_MAX_LENGTH} characters`);
     }
+    if (actionText !== undefined && typeof actionText !== "string") {
+      return cValidationError(c, "actionText must be a string");
+    }
+    if (typeof actionText === "string" && actionText.trim().length > PEN_DRAFT_ACTION_TEXT_MAX_LENGTH) {
+      return cValidationError(c, `actionText must be at most ${PEN_DRAFT_ACTION_TEXT_MAX_LENGTH} characters`);
+    }
     if (activate !== undefined && typeof activate !== "boolean") {
       return cValidationError(c, "activate must be a boolean");
     }
@@ -426,6 +432,7 @@ router.post("/sessions/:id/drafts", requireAuth, async (c) => {
     const session = await createSessionDraft(userId, sessionId, {
       parentPageId: typeof parentPageId === "string" ? parentPageId : null,
       label: typeof label === "string" ? label : undefined,
+      actionText: typeof actionText === "string" ? actionText : undefined,
       activate: activate === true,
     });
     return c.json({ session });
@@ -475,8 +482,9 @@ router.patch("/sessions/:id/drafts/:draftId", requireAuth, async (c) => {
     if (!body || typeof body !== "object") {
       return cValidationError(c, "Request body must be a JSON object");
     }
-    const { label, draftBuffer, draftHtml, draftCharactersPresent, draftSceneEssentials, draftUpdatedAt } = body as {
+    const { label, actionText, draftBuffer, draftHtml, draftCharactersPresent, draftSceneEssentials, draftUpdatedAt } = body as {
       label?: unknown;
+      actionText?: unknown;
       draftBuffer?: unknown;
       draftHtml?: unknown;
       draftCharactersPresent?: unknown;
@@ -489,6 +497,12 @@ router.patch("/sessions/:id/drafts/:draftId", requireAuth, async (c) => {
     }
     if (typeof label === "string" && label.trim().length > PEN_DRAFT_LABEL_MAX_LENGTH) {
       return cValidationError(c, `label must be at most ${PEN_DRAFT_LABEL_MAX_LENGTH} characters`);
+    }
+    if (actionText !== undefined && typeof actionText !== "string") {
+      return cValidationError(c, "actionText must be a string");
+    }
+    if (typeof actionText === "string" && actionText.trim().length > PEN_DRAFT_ACTION_TEXT_MAX_LENGTH) {
+      return cValidationError(c, `actionText must be at most ${PEN_DRAFT_ACTION_TEXT_MAX_LENGTH} characters`);
     }
     if (draftBuffer !== undefined) {
       const bufferError = validateDraftBuffer(draftBuffer);
@@ -519,6 +533,7 @@ router.patch("/sessions/:id/drafts/:draftId", requireAuth, async (c) => {
 
     const draft = await updateSessionDraft(userId, sessionId, draftId, {
       label: typeof label === "string" ? label : undefined,
+      actionText: typeof actionText === "string" ? actionText : undefined,
       draftBuffer: draftBuffer as DraftSpan[] | undefined,
       draftHtml: typeof draftHtml === "string" ? draftHtml : undefined,
       draftCharactersPresent: draftCharactersPresent as PenDraftCharacter[] | undefined,
@@ -713,12 +728,18 @@ router.post("/sessions/:id/finalize/propose", requireAuth, rateLimit(PEN_FINALIZ
     const body = await readJsonBody(c);
 
     const input: PenStateProposalInput = {};
-    const raw = body as { draftText?: unknown } | null | undefined;
+    const raw = body as { draftText?: unknown; actionText?: unknown } | null | undefined;
     if (raw && typeof raw.draftText === "string") {
       if (raw.draftText.length > PEN_DRAFT_TEXT_MAX_LENGTH) {
         return cValidationError(c, `draftText must be at most ${PEN_DRAFT_TEXT_MAX_LENGTH} characters`);
       }
       input.draftText = raw.draftText;
+    }
+    if (raw && typeof raw.actionText === "string") {
+      if (raw.actionText.trim().length > PEN_DRAFT_ACTION_TEXT_MAX_LENGTH) {
+        return cValidationError(c, `actionText must be at most ${PEN_DRAFT_ACTION_TEXT_MAX_LENGTH} characters`);
+      }
+      input.actionText = raw.actionText;
     }
 
     const result = await proposePenStateUpdates(userId, sessionId, input);
@@ -816,6 +837,21 @@ router.post("/sessions/:id/finalize", requireAuth, rateLimit({ maxRequests: 10, 
     }
     if (body.adoptTimeOfDay !== undefined && (typeof body.adoptTimeOfDay !== "string" || body.adoptTimeOfDay.trim().length === 0 || body.adoptTimeOfDay.length > PEN_ESSENTIALS_MAX_FIELD_LENGTH)) {
       return cValidationError(c, `adoptTimeOfDay must be a non-empty string of at most ${PEN_ESSENTIALS_MAX_FIELD_LENGTH} characters`);
+    }
+    if (body.adoptActionType !== undefined && (typeof body.adoptActionType !== "string" || !Object.keys(actionTypes).includes(body.adoptActionType))) {
+      return cValidationError(c, `adoptActionType must be one of: ${Object.keys(actionTypes).join(", ")}`);
+    }
+    if (body.adoptActionHint !== undefined) {
+      const hint = body.adoptActionHint as { text?: unknown; type?: unknown };
+      if (!hint || typeof hint !== "object" || Array.isArray(hint)) {
+        return cValidationError(c, "adoptActionHint must be an object");
+      }
+      if (hint.text !== undefined && (typeof hint.text !== "string" || hint.text.length > PEN_DRAFT_ACTION_HINT_MAX_LENGTH)) {
+        return cValidationError(c, `adoptActionHint.text must be a string of at most ${PEN_DRAFT_ACTION_HINT_MAX_LENGTH} characters`);
+      }
+      if (hint.type !== undefined && (typeof hint.type !== "string" || !actionHintTypes.includes(hint.type as (typeof actionHintTypes)[number]))) {
+        return cValidationError(c, `adoptActionHint.type must be one of: ${actionHintTypes.join(", ")}`);
+      }
     }
 
     // Multi-draft: finalize publishes exactly one draft slot. Optional `draftId`

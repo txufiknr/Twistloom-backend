@@ -16,8 +16,8 @@ import { getTriggeredLoreEntries, listLoreEntries } from "./lore.js";
 import type { DBBook, DBPenSession, DBPenDraft } from "../types/schema.js";
 import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraft, PenDraftCharacter, PenDraftSceneEssentials, PenDraftSummary, PenDraftUpdates, PenEdit, PenSessionStatus, FinalizeViolation, CanonAmendment, PenEditType, PenOutlineData, PenOutlinePage, PenAuthorPage, AuthorshipOrigin } from "../types/pen.js";
 import type { BookMode } from "../types/book.js";
-import type { StoryState, Action, StoryGeneration, PersistedStoryPage, SceneCharacter, CharacterSceneRole, Mood } from "../types/story.js";
-import { moods } from "../types/story.js";
+import type { StoryState, Action, StoryGeneration, PersistedStoryPage, SceneCharacter, CharacterSceneRole, Mood, ActionType, ActionHint, ActionHintType } from "../types/story.js";
+import { moods, actionTypes, actionHintTypes } from "../types/story.js";
 import type { PlaceWeather } from "../types/places.js";
 import { placeWeathers } from "../types/places.js";
 import type { CandidateGenerationPage } from "../types/candidate-generation.js";
@@ -34,14 +34,14 @@ import { aiPrompt, createAIOptionsWithSchema } from "../utils/ai-chat.js";
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
-import { PEN_DRAFT_CAST_LIMIT, PEN_CONTINUE_MAX_TOKENS, penContinueLengthForAssistance, PEN_ESSENTIALS_MAX_TOKENS, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TOKENS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_FINALIZE_PROPOSE_MAX_ITEM_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TRAITS, PEN_DRAFT_BUFFER_MAX_CHARS, PEN_DRAFTS_PER_PARENT, PEN_DRAFT_LABEL_MAX_LENGTH } from "../config/story.js";
+import { PEN_DRAFT_CAST_LIMIT, PEN_CONTINUE_MAX_TOKENS, penContinueLengthForAssistance, PEN_ESSENTIALS_MAX_TOKENS, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TOKENS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_FINALIZE_PROPOSE_MAX_ITEM_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TRAITS, PEN_DRAFT_BUFFER_MAX_CHARS, PEN_DRAFTS_PER_PARENT, PEN_DRAFT_LABEL_MAX_LENGTH, PEN_DRAFT_ACTION_TEXT_MAX_LENGTH, PEN_DRAFT_ACTION_HINT_MAX_LENGTH } from "../config/story.js";
 import { generateId } from "../utils/uuid.js";
 import { executeWithCredits } from "./credits.js";
 import { persistPageWithState, insertStoryPage, getPageFromDB, mapToPersistedStoryPage } from "./book.js";
 import { insertStoryState } from "./story.js";
 import { advanceStoryState, createEmptyStoryState, createInitialHiddenState } from "../utils/story.js";
 import { resolvePageDelta, determineBranchIdForPage } from "../utils/prompt.js";
-import { sanitizeActionsForMode, validatePageActionsForMode, maxDestinationsPerActionForMode } from "../utils/book-mode.js";
+import { sanitizeActionsForMode, validatePageActionsForMode, maxDestinationsPerActionForMode, maxActionsForMode } from "../utils/book-mode.js";
 import { validateGeneratedPage } from "../utils/page-validation.js";
 import { runGate1 } from "./custom-actions.js";
 import { calculateHealthStatus } from "../utils/characters.js";
@@ -117,6 +117,7 @@ function toPenDraftSummary(draft: DBPenDraft): PenDraftSummary {
     id: draft.id,
     parentPageId: draft.parentPageId,
     label: draft.label,
+    actionText: draft.actionText,
     charCount,
     createdAt: draft.createdAt,
     updatedAt: draft.updatedAt,
@@ -591,11 +592,12 @@ export async function listSessionDrafts(userId: string, sessionId: string): Prom
 export async function createSessionDraft(
   userId: string,
   sessionId: string,
-  input: { parentPageId?: string | null; label?: string; activate?: boolean }
+  input: { parentPageId?: string | null; label?: string; actionText?: string; activate?: boolean }
 ): Promise<PenSessionPayload> {
   const session = await getPenSessionById(userId, sessionId, { client: dbWrite });
   const parentPageId = input.parentPageId ?? null;
   const label = input.label?.trim().slice(0, PEN_DRAFT_LABEL_MAX_LENGTH) || null;
+  const actionText = input.actionText?.trim().slice(0, PEN_DRAFT_ACTION_TEXT_MAX_LENGTH) || null;
 
   // The anchor page must belong to this session's book.
   if (parentPageId) {
@@ -611,7 +613,7 @@ export async function createSessionDraft(
     if (siblings.length >= PEN_DRAFTS_PER_PARENT) throw new PenDraftLimitError();
     return tx
       .insert(penDrafts)
-      .values({ sessionId, parentPageId, label, draftBuffer: [], draftCharactersPresent: [], draftSceneEssentials: null })
+      .values({ sessionId, parentPageId, label, actionText, draftBuffer: [], draftCharactersPresent: [], draftSceneEssentials: null })
       .returning();
   });
 
@@ -673,10 +675,14 @@ export async function updateSessionDraft(
     draftCharactersPresent?: PenDraftCharacter[];
     draftSceneEssentials?: PenDraftSceneEssentials | null;
     label?: string | null;
+    actionText?: string | null;
   } = {};
 
   if (updates.label !== undefined) {
     values.label = updates.label.trim().slice(0, PEN_DRAFT_LABEL_MAX_LENGTH) || null;
+  }
+  if (updates.actionText !== undefined) {
+    values.actionText = updates.actionText.trim().slice(0, PEN_DRAFT_ACTION_TEXT_MAX_LENGTH) || null;
   }
   if (updates.draftCharactersPresent !== undefined) {
     values.draftCharactersPresent = updates.draftCharactersPresent;
@@ -720,6 +726,7 @@ export async function discardSessionDraft(userId: string, sessionId: string, dra
       draftHtml: null,
       draftCharactersPresent: [],
       draftSceneEssentials: null,
+      actionText: null,
       updatedAt: new Date(),
     })
     .where(and(eq(penDrafts.id, draftId), eq(penDrafts.sessionId, sessionId)));
@@ -1452,7 +1459,7 @@ function coerceStateProposal(
   output: PenStateProposalAIOutput,
   currentState: StoryState | null,
   expectedPageNumber: number,
-): { inventory: InventoryItem[]; injuries: Injury[]; mood?: Mood; weather?: PlaceWeather; calendarDate?: string; timeOfDay?: string; keyEvents: string[]; keyObjects: string[] } {
+): { inventory: InventoryItem[]; injuries: Injury[]; mood?: Mood; weather?: PlaceWeather; calendarDate?: string; timeOfDay?: string; keyEvents: string[]; keyObjects: string[]; actionType?: ActionType; actionHint?: ActionHint } {
   const inventory: InventoryItem[] = [];
   if (Array.isArray(output.inventory)) {
     for (const raw of output.inventory) {
@@ -1486,7 +1493,52 @@ function coerceStateProposal(
   const keyEvents = coerceEssentialsList(output.keyEvents, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH);
   const keyObjects = coerceEssentialsList(output.keyObjects, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH);
 
-  return { inventory, injuries, mood, weather, calendarDate, timeOfDay, keyEvents, keyObjects };
+  const actionType = coerceActionType(output.actionType);
+  const actionHint = coerceProposedActionHint(output.actionHintText, output.actionHintType);
+
+  return { inventory, injuries, mood, weather, calendarDate, timeOfDay, keyEvents, keyObjects, actionType, actionHint };
+}
+
+/** Validates a raw AI action-type value against the canonical `actionTypes` keys. */
+function coerceActionType(value: unknown): ActionType | undefined {
+  if (typeof value !== "string") return undefined;
+  return (Object.keys(actionTypes) as string[]).includes(value) ? (value as ActionType) : undefined;
+}
+
+/** Validates a raw AI hint-type value against the canonical `actionHintTypes`. */
+function coerceActionHintType(value: unknown): ActionHintType {
+  return typeof value === "string" && (actionHintTypes as readonly string[]).includes(value) ? (value as ActionHintType) : "none";
+}
+
+/** Coerces the AI-proposed hint text + type into an engine `ActionHint` (empty → undefined). */
+function coerceProposedActionHint(text: unknown, type: unknown): ActionHint | undefined {
+  if (typeof text !== "string" || !text.trim()) return undefined;
+  return {
+    text: text.trim().slice(0, PEN_DRAFT_ACTION_HINT_MAX_LENGTH),
+    type: coerceActionHintType(type),
+  };
+}
+
+/**
+ * Builds the writer-authored incoming action for a pen publish (D-4 core).
+ * Returns `undefined` for novel mode (linear — the engine keeps the inherited
+ * transition) or when no choice text is set. The TEXT is always the writer's;
+ * only the type/hint are AI-inferred and passed via the adopt subset.
+ */
+function coerceWriterAction(
+  draftActionText: string | undefined,
+  adopt: { adoptActionType?: string; adoptActionHint?: { text?: string; type?: string } },
+  mode: BookMode,
+): Action | undefined {
+  const text = draftActionText?.trim();
+  if (mode === "novel" || !text) return undefined;
+  return {
+    text,
+    type: coerceActionType(adopt.adoptActionType) ?? "explore",
+    hint:
+      coerceProposedActionHint(adopt.adoptActionHint?.text, adopt.adoptActionHint?.type) ??
+      DEFAULT_CONTINUE_ACTION.hint,
+  };
 }
 
 /** Errors thrown while running a finalize state-proposal request. */
@@ -1563,6 +1615,7 @@ export async function proposePenStateUpdates(
     sceneType,
     essentials: inheritSceneEssentials(session.draftSceneEssentials, lastPage),
     draftText: input.draftText?.trim() ?? "",
+    actionText: input.actionText?.trim() ?? "",
     placeOptions: await buildPenPlaceOptions(userId, book.id, state),
   });
 
@@ -1650,6 +1703,8 @@ export async function proposePenStateUpdates(
     timeOfDay: result.timeOfDay,
     keyEvents: result.keyEvents,
     keyObjects: result.keyObjects,
+    actionType: result.actionType,
+    actionHint: result.actionHint,
   };
 }
 
@@ -1700,12 +1755,25 @@ export type PenFinalizeInput = {
   adoptCalendarDate?: string;
   /** Author-adopted page coarse time mark. See {@link adoptKeyEvents}. */
   adoptTimeOfDay?: string;
+  /**
+   * Author-adopted action type for the draft's choice text (D-4 core). Echoed
+   * from `/finalize/propose`, where the AI CLASSIFIES the writer's action text —
+   * the AI never authors the text itself.
+   */
+  adoptActionType?: string;
+  /**
+   * Author-adopted reader-facing hint for the draft's choice text (D-4 core).
+   * Echoed from `/finalize/propose` — AI-inferred, never author input.
+   */
+  adoptActionHint?: { text?: string; type?: string };
 };
 
 /** Body of `POST /api/pen/sessions/:id/finalize/propose`. */
 export type PenStateProposalInput = {
   /** The current in-progress draft prose (plain text) — the freshest story signal. */
   draftText?: string;
+  /** The author's choice text for this draft (D-4 core) — the AI classifies its type + writes its hint from it. */
+  actionText?: string;
 };
 
 /** Result of a finalize state-proposal request. */
@@ -1726,6 +1794,10 @@ export type PenStateProposalOutput = {
   keyEvents: string[];
   /** Proposed page key objects (editorial scene metadata). */
   keyObjects: string[];
+  /** AI-classified action type for the author's choice text (D-4 core — AI never writes the text itself). */
+  actionType?: ActionType;
+  /** AI-proposed reader-facing hint for the author's choice text (D-4 core — hint is AI-inferred, not author input). */
+  actionHint?: ActionHint;
 };
 
 /** Result of a `/finalize` request. */
@@ -1919,6 +1991,18 @@ export async function finalizePenDraft(
   // ── Phase B: publish through the engine ───────────────────────────────────
   const actions = buildNewPageActions(book, input.actions);
 
+  // D-4 core: branching books REQUIRE the writer's choice text — the writer
+  // owns the narrative choice; the engine/AI never decides it. Novel stays
+  // linear (its incoming transition is inherited, no reader choice involved).
+  const writerActionText = draft.actionText?.trim();
+  if ((book.mode === "interactive" || book.mode === "multiverse") && !writerActionText) {
+    throw new PenFinalizeError("Publishing a branching page requires the reader's choice text — enter it in the editor first");
+  }
+
+  // Carries the incoming action's text/type/hint to Phase C's reverse-edge
+  // write, which runs after `action` goes out of scope.
+  let publishedAction: Action = DEFAULT_CONTINUE_ACTION;
+
   let newPage: PersistedStoryPage;
 
   try {
@@ -1931,7 +2015,11 @@ export async function finalizePenDraft(
       const currentState = await getStoryStateWithBranch(book.id, session.currentPageId);
       if (!currentState) throw new PenFinalizeError("Story state unavailable; cannot finalize continuation");
 
-      const action: Action = currentPage.actions?.[0] ?? DEFAULT_CONTINUE_ACTION;
+      // The incoming action: the writer's own choice text when authoring a
+      // branch (novel or unset text keep the inherited transition). Only the
+      // type/hint are AI-inferred (echoed from `/finalize/propose`).
+      const action: Action = coerceWriterAction(writerActionText, input, book.mode) ?? currentPage.actions?.[0] ?? DEFAULT_CONTINUE_ACTION;
+      publishedAction = action;
       const actionedPage: CandidateGenerationPage = { ...currentPage, action };
 
       // Author-curated on-scene cast (full cast incl. MC). New/unknown names
@@ -2018,8 +2106,19 @@ export async function finalizePenDraft(
 
       const parentBranchId = currentPage.branchId ?? "main";
       const usedBranchIds = new Set<string>();
+
+      // D-4 core: when the writer's choice text already has a destination on
+      // the parent (a same-text sibling was published before), force a NEW
+      // branch so re-authors (novel/interactive) and parallel timelines
+      // (multiverse) diverge cleanly — and skip the reader-candidate cap
+      // (`MAX_CANDIDATE_PAGE_PER_ACTION`) that would otherwise block a pen
+      // publish past the 3rd same-text sibling.
+      const writerActionHasDestination = Boolean(
+        writerActionText &&
+          currentPage.actions?.some((a) => a.text === writerActionText && (a.destinationPageIds?.length ?? 0) > 0),
+      );
       const branchId = await determineBranchIdForPage({
-        generateNewBranchId: false,
+        generateNewBranchId: writerActionHasDestination,
         isFirstAlternative: true,
         parentBranchId,
         usedBranchIds,
@@ -2221,24 +2320,28 @@ export async function finalizePenDraft(
     // auto-creates a fresh slot under the new page on the next keystroke.
     await tx
       .update(penDrafts)
-      .set({ draftBuffer: [], draftHtml: null, draftCharactersPresent: [], draftSceneEssentials: null, updatedAt: new Date() })
+      .set({ draftBuffer: [], draftHtml: null, draftCharactersPresent: [], draftSceneEssentials: null, actionText: null, updatedAt: new Date() })
       .where(and(eq(penDrafts.id, draftId), eq(penDrafts.sessionId, sessionId)));
 
-    // §6.6 reverse-edge (B3/E3/E4): record this child as the destination of the
-    // action the author continued from — always `parent.actions[0]`, the action
-    // the pen navigates through (see the continuation path above). This is what
+    // §6.6 reverse-edge (B3/E3/E4, D-4 core): record this child as the
+    // destination of the choice that leads to it. In branching books that's
+    // the writer's own `actionText` (the parent gains a real reader choice);
+    // legacy novel continues always write through `actions[0]`. This is what
     // lets the outline tree's action folders and the peek's "leads to current
-    // page" highlight resolve the path. It also makes pen books readable
+    // page" highlight resolve the path, and it makes pen books readable
     // (reader actions with a destination are the ones surfaced).
     //
-    // Mode-aware write (deliberately NOT `enforceModeOnActionDestinations`,
+    // Find-or-add semantics (deliberately NOT `enforceModeOnActionDestinations`,
     // which prefers existing destinations for candidate-generation idempotency):
-    //   - novel / interactive (1 destination per action) → the latest
-    //     continuation REPLACES the old destination, because the author
-    //     re-authored that action's outcome. Keeping the old destination would
-    //     orphan every 2nd+ child written from the same parent (unreachable to
-    //     readers and rendered outside its action folder).
-    //   - multiverse (unlimited) → append the child (parallel timelines).
+    //   - text already on the parent → update ITS destination:
+    //       - novel / interactive (1 destination per action) → REPLACE, the
+    //         author re-authored that outcome (keeping the old destination
+    //         would orphan every 2nd+ child from the same parent);
+    //       - multiverse (unlimited) → append (parallel timelines).
+    //   - new text → drop inert "Continue" placeholders, then append the new
+    //     choice, enforcing the mode's action-count cap (maxActionsForMode) —
+    //     at cap, fail loudly so the author forks an existing choice instead.
+    //   - always validated through validatePageActionsForMode before writing.
     const parentPageId = session.currentPageId;
     if (parentPageId) {
       const [parentRow] = await tx
@@ -2247,22 +2350,42 @@ export async function finalizePenDraft(
         .where(eq(pages.id, parentPageId))
         .limit(1);
       const parentActions = parentRow?.actions ?? [];
-      if (parentActions.length > 0) {
-        await tx
-          .update(pages)
-          .set({
-            actions: parentActions.map((a, index) => {
-              if (index !== 0) return a;
-              const max = maxDestinationsPerActionForMode(book.mode);
-              const nextDestinations = Number.isFinite(max)
-                ? [newPage.id]
-                : Array.from(new Set([...(a.destinationPageIds ?? []), newPage.id]));
-              return { ...a, destinationPageIds: nextDestinations };
-            }),
-            updatedAt: new Date(),
-          })
-          .where(eq(pages.id, parentPageId));
-      }
+      const incomingText = writerActionText ?? parentActions[0]?.text ?? DEFAULT_CONTINUE_ACTION.text;
+      const isInertPlaceholder = (a: Action): boolean =>
+        a.text === DEFAULT_CONTINUE_ACTION.text && !((a.destinationPageIds?.length ?? 0) > 0);
+      const existing = parentActions.find((a) => a.text === incomingText);
+      const max = maxDestinationsPerActionForMode(book.mode);
+      const withDestination = (a: Action): Action => ({
+        ...a,
+        destinationPageIds: Number.isFinite(max)
+          ? [newPage.id]
+          : Array.from(new Set([...(a.destinationPageIds ?? []), newPage.id])),
+      });
+
+      const nextActions: Action[] =
+        existing
+          ? parentActions.map((a) => (a.text === incomingText ? withDestination(a) : a))
+          : (() => {
+              // New choice text — drop inert placeholders so readers never see a
+              // dead "Continue" next to the author's real choice, then enforce
+              // the mode's action-count cap.
+              const realActions = parentActions.filter((a) => !isInertPlaceholder(a));
+              if (realActions.length >= maxActionsForMode(book.mode)) {
+                throw new PenFinalizeError(
+                  `This page already has its full set of ${maxActionsForMode(book.mode)} choices — fork an existing choice to continue`,
+                );
+              }
+              return [
+                ...realActions,
+                withDestination({ text: incomingText, type: publishedAction.type, hint: publishedAction.hint }),
+              ];
+            })();
+
+      validatePageActionsForMode(book.mode, nextActions);
+      await tx
+        .update(pages)
+        .set({ actions: nextActions, updatedAt: new Date() })
+        .where(eq(pages.id, parentPageId));
     }
     });
   } catch (error) {

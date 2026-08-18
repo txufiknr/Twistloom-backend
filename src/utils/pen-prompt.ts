@@ -28,7 +28,7 @@
  */
 
 import type { StoryState } from "../types/story.js";
-import { moods } from "../types/story.js";
+import { moods, actionTypes, actionHintTypes } from "../types/story.js";
 import { placeWeathers } from "../types/places.js";
 import type { AuthoringMode, AuthoringPov, CoWritingPersona, LoreEntry, PenDraftSceneEssentials } from "../types/pen.js";
 import type { AIJsonProperty } from "../types/ai-chat.js";
@@ -709,6 +709,12 @@ export type PenStateProposalResult = {
   keyEvents: string[];
   /** Key objects this page, inferred from the draft + canon (editorial scene metadata). */
   keyObjects: string[];
+  /** AI-classified type for the author's choice text (D-4 core — the AI never writes the text itself). */
+  actionType?: string;
+  /** AI-inferred reader-facing hint TEXT for the author's choice text (D-4 core — hint is AI-authored, never author input). */
+  actionHintText?: string;
+  /** Hint classification for {@link actionHintText}. */
+  actionHintType?: string;
 };
 
 /** Structured-output schema for the finalize state proposal. */
@@ -771,6 +777,20 @@ export const PEN_STATE_PROPOSAL_SCHEMA: Record<keyof PenStateProposalResult, AIJ
     type: "array",
     description: "Important objects present or used on this page, inferred from the draft.",
     items: { type: "string" },
+  },
+  actionType: {
+    type: "string",
+    enum: [...Object.keys(actionTypes)],
+    description: "Best-fit ACTION TYPE for the author's choice text. Never 'custom' — the author already wrote the text; you only classify it.",
+  },
+  actionHintText: {
+    type: "string",
+    description: "A short, evocative reader-facing hint (~40 words) for the author's choice text — what choosing it entails, in the story's voice. Empty when the choice needs no hint.",
+  },
+  actionHintType: {
+    type: "string",
+    enum: [...actionHintTypes],
+    description: "Hint classification for actionHintText — one of the ACTION HINT TYPE OPTIONS.",
   },
 };
 
@@ -852,6 +872,8 @@ export function buildPenStateProposalPrompt(params: {
   /** The scene the current draft sits in (place + inherited scene fields) — the model carries it forward. */
   essentials?: PenDraftSceneEssentials | null;
   draftText: string;
+  /** The author's choice text leading into this page (D-4 core) — the model classifies its type and writes its hint. Empty in novel mode. */
+  actionText?: string;
   /** Known places as `{ value: placeId, name }` — rendered by name and used to constrain any place mention (BQ3). */
   placeOptions?: Array<{ value: string; name: string }>;
 }): PenStateProposalPrompt {
@@ -868,6 +890,7 @@ export function buildPenStateProposalPrompt(params: {
     sceneType,
     essentials,
     draftText,
+    actionText = "",
     placeOptions = [],
   } = params;
 
@@ -891,19 +914,28 @@ export function buildPenStateProposalPrompt(params: {
   });
   const contextSections = buildPenContextSections(canon, prose);
 
+  // D-4 core: the author OWNS the choice text — the model never rewrites or
+  // generates it, only classifies its type and writes a reader-facing hint.
+  const actionSection = actionText.trim()
+    ? `READER'S CHOICE (the author's verbatim choice text that leads INTO this page): "${actionText.trim()}"\nClassify its ACTION TYPE and write actionHintText — a short, evocative reader-facing hint (~40 words) for what choosing it entails, in the story's voice. Never rewrite the choice text.`
+    : "";
+
   return {
     systemPrompt: PEN_STATE_PROPOSAL_SYSTEM,
     userPrompt: [
       ...stableSections,
       ...contextSections,
       `CURRENT DRAFT:\n${draftText}`,
+      ...(actionSection ? [actionSection] : []),
       `CURRENT SCENE (the scene before this page publishes — carry forward what the draft does not change):\n${renderCurrentScene(essentials ?? null, placeIdToName)}`,
       `CURRENT INVENTORY & INJURIES (the state before this page publishes — carry forward what persists, change only what the draft supports):\nINVENTORY:\n${renderCurrentInventory(state ?? null)}\nINJURIES:\n${renderCurrentInjuries(state ?? null)}`,
       `CATEGORY OPTIONS: ${injuryCategories.join(", ")}`,
       `MOOD OPTIONS: ${moods.join(", ")}`,
       `WEATHER OPTIONS: ${placeWeathers.join(", ")}`,
+      `ACTION TYPE OPTIONS: ${Object.keys(actionTypes).join(", ")}`,
+      `ACTION HINT TYPE OPTIONS: ${actionHintTypes.join(", ")}`,
       `PLACE OPTIONS: ${placeNames}`,
-      "Compute the FULL resulting scene, inventory, injuries, key events, and key objects for the page being published.",
+      "Compute the FULL resulting scene, inventory, injuries, key events, key objects, and — when a reader's choice text is present — its action type and hint.",
     ].join("\n\n"),
   };
 }

@@ -2493,6 +2493,13 @@ export const penDrafts = pgTable(
     parentPageId: uuid("parent_page_id").references(() => pages.id, { onDelete: "set null" }),
     /** Editorial, non-unique name shown in the outline draft shelf (D-3). */
     label: text("label"),
+    /**
+     * Author-authored choice text that leads INTO this draft's page (D-4 core).
+     * `null` until the author types it in the editor (branching books only).
+     * Becomes the parent page's outgoing action `text` at finalize — the writer
+     * owns the narrative choice; AI never decides it.
+     */
+    actionText: text("action_text"),
     /** Draft workspace — JSONB spans, NOT plain text (Model C). */
     draftBuffer: jsonb("draft_buffer").$type<DraftSpan[]>().notNull().default(sql`'[]'::jsonb`),
     /** Exact TipTap HTML mirror of `draftBuffer` (autosave layer 2) — preserves rich formatting on refresh/other devices. */

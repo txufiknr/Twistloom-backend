@@ -1,0 +1,1 @@
+ALTER TABLE "pen_drafts" ADD COLUMN "action_text" text;
