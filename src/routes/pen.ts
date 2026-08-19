@@ -39,6 +39,10 @@ import {
   activateSessionDraft,
   updateSessionDraft,
   discardSessionDraft,
+  listPenNotes,
+  createPenNote,
+  updatePenNote,
+  deletePenNote,
   PenSessionNotFoundError,
   PenSessionConflictError,
   PenBookOwnershipError,
@@ -49,6 +53,7 @@ import {
   PenStateProposalError,
   PenDraftLimitError,
   PenDraftNotActiveError,
+  PenNoteNotFoundError,
   uploadPenDraftImage,
   PenImageUploadError,
 } from "../services/pen.js";
@@ -1042,6 +1047,112 @@ router.post("/sessions/:id/images", requireAuth, async (c) => {
     if (error instanceof PenBookOwnershipError) return cApiError(c, error.message, undefined, 403);
     if (error instanceof PenImageUploadError) return cApiError(c, error.message, undefined, 400);
     return cApiError(c, "Failed to upload pen draft image", error);
+  }
+});
+
+/**
+ * GET /api/pen/books/:bookId/notes
+ * List all scratchpad notes for an author's book.
+ */
+router.get("/books/:bookId/notes", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId");
+    if (!userId) return cApiError(c, "Authentication required", undefined, 401);
+    const bookId = c.req.param("bookId");
+
+    const notes = await listPenNotes(userId, bookId);
+    return c.json({ notes });
+  } catch (error) {
+    if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
+    if (error instanceof PenBookOwnershipError) return cApiError(c, error.message, undefined, 403);
+    return cApiError(c, "Failed to list pen notes", error);
+  }
+});
+
+/**
+ * POST /api/pen/books/:bookId/notes
+ * Create a new scratchpad note for an author's book.
+ * Body: { text: string, annotation?: string }
+ */
+router.post("/books/:bookId/notes", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId");
+    if (!userId) return cApiError(c, "Authentication required", undefined, 401);
+    const bookId = c.req.param("bookId");
+    const body = await readJsonBody(c);
+
+    if (!body || typeof body !== "object") {
+      return cValidationError(c, "Request body must be a JSON object");
+    }
+
+    const { text, annotation } = body as { text?: unknown; annotation?: unknown };
+    if (typeof text !== "string" || text.trim().length === 0) {
+      return cValidationError(c, "text must be a non-empty string");
+    }
+
+    const note = await createPenNote(userId, bookId, {
+      text,
+      annotation: typeof annotation === "string" ? annotation : undefined,
+    });
+
+    return c.json({ note }, 201);
+  } catch (error) {
+    if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
+    if (error instanceof PenBookOwnershipError) return cApiError(c, error.message, undefined, 403);
+    return cApiError(c, "Failed to create pen note", error);
+  }
+});
+
+/**
+ * PATCH /api/pen/notes/:id
+ * Update an existing scratchpad note.
+ * Body: { text?: string, annotation?: string | null }
+ */
+router.patch("/notes/:id", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId");
+    if (!userId) return cApiError(c, "Authentication required", undefined, 401);
+    const noteId = c.req.param("id");
+    const body = await readJsonBody(c);
+
+    if (!body || typeof body !== "object") {
+      return cValidationError(c, "Request body must be a JSON object");
+    }
+
+    const { text, annotation } = body as { text?: unknown; annotation?: unknown };
+    if (text !== undefined && (typeof text !== "string" || text.trim().length === 0)) {
+      return cValidationError(c, "text cannot be empty");
+    }
+
+    const note = await updatePenNote(userId, noteId, {
+      text: typeof text === "string" ? text : undefined,
+      annotation: annotation === null ? null : (typeof annotation === "string" ? annotation : undefined),
+    });
+
+    return c.json({ note });
+  } catch (error) {
+    if (error instanceof PenNoteNotFoundError) return cNotFoundError(c, error.message);
+    if (error instanceof PenBookOwnershipError) return cApiError(c, error.message, undefined, 403);
+    return cApiError(c, "Failed to update pen note", error);
+  }
+});
+
+/**
+ * DELETE /api/pen/notes/:id
+ * Delete an existing scratchpad note.
+ */
+router.delete("/notes/:id", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId");
+    if (!userId) return cApiError(c, "Authentication required", undefined, 401);
+    const noteId = c.req.param("id");
+
+    await deletePenNote(userId, noteId);
+    return c.json({ success: true });
+  } catch (error) {
+    if (error instanceof PenNoteNotFoundError) return cNotFoundError(c, error.message);
+    if (error instanceof PenBookOwnershipError) return cApiError(c, error.message, undefined, 403);
+    return cApiError(c, "Failed to delete pen note", error);
   }
 });
 

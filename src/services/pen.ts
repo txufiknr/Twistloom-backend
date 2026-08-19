@@ -9,12 +9,12 @@
  */
 
 import { eq, and, desc, ne, isNull } from "drizzle-orm";
-import { penSessions, penEdits, penDrafts, branches, pages } from "../db/schema.js";
+import { penSessions, penEdits, penDrafts, penNotes, branches, pages } from "../db/schema.js";
 import { dbRead, dbWrite, type DBClient } from "../db/client.js";
 import { getBookFromDB, getBookPages, deleteStoryPage } from "./book.js";
 import { getTriggeredLoreEntries, listLoreEntries } from "./lore.js";
 import type { DBBook, DBPenSession, DBPenDraft } from "../types/schema.js";
-import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraft, PenDraftCharacter, PenDraftSceneEssentials, PenDraftSummary, PenDraftUpdates, PenEdit, PenSessionStatus, FinalizeViolation, CanonAmendment, PenEditType, PenOutlineData, PenOutlinePage, PenAuthorPage, AuthorshipOrigin, PenTransformInput, PenTransformResult } from "../types/pen.js";
+import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraft, PenDraftCharacter, PenDraftSceneEssentials, PenDraftSummary, PenDraftUpdates, PenEdit, PenSessionStatus, FinalizeViolation, CanonAmendment, PenEditType, PenOutlineData, PenOutlinePage, PenAuthorPage, AuthorshipOrigin, PenTransformInput, PenTransformResult, PenNote, PenNoteInput, PenNoteUpdate } from "../types/pen.js";
 import type { BookMode } from "../types/book.js";
 import type { StoryState, Action, StoryGeneration, PersistedStoryPage, SceneCharacter, CharacterSceneRole, Mood, ActionType, ActionHint, ActionHintType } from "../types/story.js";
 import { moods, actionTypes, actionHintTypes } from "../types/story.js";
@@ -2920,3 +2920,145 @@ export async function getPenAuthorPage(userId: string, pageId: string): Promise<
     updatedAt: page.updatedAt,
   };
 }
+
+/** Errors thrown when a note is not found or inaccessible. */
+export class PenNoteNotFoundError extends Error {
+  constructor(message: string = "Note not found") {
+    super(message);
+    this.name = "PenNoteNotFoundError";
+  }
+}
+
+/**
+ * List all scratchpad notes for a book.
+ */
+export async function listPenNotes(userId: string, bookId: string): Promise<PenNote[]> {
+  const book = await getBookFromDB(bookId);
+  if (!book) throw new PenSessionNotFoundError("Book not found");
+  if (book.userId !== userId) throw new PenBookOwnershipError();
+
+  const rows = await dbRead
+    .select()
+    .from(penNotes)
+    .where(and(eq(penNotes.bookId, bookId), eq(penNotes.userId, userId)))
+    .orderBy(desc(penNotes.createdAt));
+
+  return rows.map((r) => ({
+    id: r.id,
+    bookId: r.bookId,
+    userId: r.userId,
+    text: r.text,
+    annotation: r.annotation,
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
+  }));
+}
+
+/**
+ * Create a new scratchpad note for a book.
+ */
+export async function createPenNote(
+  userId: string,
+  bookId: string,
+  input: PenNoteInput
+): Promise<PenNote> {
+  const book = await getBookFromDB(bookId);
+  if (!book) throw new PenSessionNotFoundError("Book not found");
+  if (book.userId !== userId) throw new PenBookOwnershipError();
+
+  const noteText = input.text?.trim();
+  if (!noteText) {
+    throw new Error("Note text is required");
+  }
+
+  const id = generateId();
+  const now = new Date();
+
+  const [created] = await dbWrite
+    .insert(penNotes)
+    .values({
+      id,
+      bookId,
+      userId,
+      text: noteText,
+      annotation: input.annotation?.trim() || null,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning();
+
+  return {
+    id: created.id,
+    bookId: created.bookId,
+    userId: created.userId,
+    text: created.text,
+    annotation: created.annotation,
+    createdAt: created.createdAt,
+    updatedAt: created.updatedAt,
+  };
+}
+
+/**
+ * Update an existing scratchpad note.
+ */
+export async function updatePenNote(
+  userId: string,
+  noteId: string,
+  input: PenNoteUpdate
+): Promise<PenNote> {
+  const [existing] = await dbRead
+    .select()
+    .from(penNotes)
+    .where(eq(penNotes.id, noteId))
+    .limit(1);
+
+  if (!existing) throw new PenNoteNotFoundError();
+  if (existing.userId !== userId) throw new PenBookOwnershipError("You do not own this note");
+
+  const updates: Partial<{ text: string; annotation: string | null; updatedAt: Date }> = {
+    updatedAt: new Date(),
+  };
+
+  if (typeof input.text === "string") {
+    const text = input.text.trim();
+    if (!text) throw new Error("Note text cannot be empty");
+    updates.text = text;
+  }
+
+  if (input.annotation !== undefined) {
+    updates.annotation = input.annotation ? input.annotation.trim() : null;
+  }
+
+  const [updated] = await dbWrite
+    .update(penNotes)
+    .set(updates)
+    .where(eq(penNotes.id, noteId))
+    .returning();
+
+  return {
+    id: updated.id,
+    bookId: updated.bookId,
+    userId: updated.userId,
+    text: updated.text,
+    annotation: updated.annotation,
+    createdAt: updated.createdAt,
+    updatedAt: updated.updatedAt,
+  };
+}
+
+/**
+ * Delete a scratchpad note.
+ */
+export async function deletePenNote(userId: string, noteId: string): Promise<void> {
+  const [existing] = await dbRead
+    .select()
+    .from(penNotes)
+    .where(eq(penNotes.id, noteId))
+    .limit(1);
+
+  if (!existing) throw new PenNoteNotFoundError();
+  if (existing.userId !== userId) throw new PenBookOwnershipError("You do not own this note");
+
+  await dbWrite.delete(penNotes).where(eq(penNotes.id, noteId));
+}
+

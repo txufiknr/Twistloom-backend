@@ -2672,3 +2672,29 @@ export const loreEntries = pgTable(
     index("lore_entries_trigger_gin_idx").using("gin", t.triggerKeywords),
   ]
 );
+
+/**
+ * Pen author scratchpad notes.
+ *
+ * Freeform notes, ideas, clipped passages, and scratchpad entries for an author's book.
+ * Fully decoupled from AI/engine prompts (0 credit cost, private writer scratchpad).
+ */
+export const penNotes = pgTable(
+  "pen_notes",
+  {
+    id: id(),
+    bookId: bookId("cascade"),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    /** Clipped selection or note body text. */
+    text: text("text").notNull(),
+    /** Optional author commentary, category label, or note idea. */
+    annotation: text("annotation"),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    index("pen_notes_book_idx").on(t.bookId),
+    index("pen_notes_user_idx").on(t.userId),
+    index("pen_notes_created_idx").on(t.createdAt.desc()),
+  ]
+);

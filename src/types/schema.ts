@@ -1,4 +1,4 @@
-import type { users, pages, storyStates, books, userSessions, userLikes, userFavorites, userComments, userPageProgress, userActivityLogs, bookGenerations, pageTranslations, bookTranslations, storyPrompts, userCounters, userFeedbacks, penSessions, penDrafts, penEdits, loreEntries, platformTestimonials } from "../db/schema.js";
+import type { users, pages, storyStates, books, userSessions, userLikes, userFavorites, userComments, userPageProgress, userActivityLogs, bookGenerations, pageTranslations, bookTranslations, storyPrompts, userCounters, userFeedbacks, penSessions, penDrafts, penEdits, loreEntries, penNotes, platformTestimonials } from "../db/schema.js";
 
 /** Complete user data as stored in database */
 export type DBUser = typeof users.$inferSelect;
@@ -92,3 +92,7 @@ export type DBNewPenEdit = typeof penEdits.$inferInsert;
 /** Complete story-bible (lore) entry as stored in database */
 export type DBLoreEntry = typeof loreEntries.$inferSelect;
 export type DBNewLoreEntry = typeof loreEntries.$inferInsert;
+
+/** Complete Pen author scratchpad note as stored in database */
+export type DBPenNote = typeof penNotes.$inferSelect;
+export type DBNewPenNote = typeof penNotes.$inferInsert;

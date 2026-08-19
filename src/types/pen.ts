@@ -487,3 +487,26 @@ export type PenTransformResult = {
   }>;
 };
 
+// ── Pen author scratchpad notes ───────────────────────────────────────────
+
+export type PenNote = {
+  id: string;
+  bookId: string;
+  userId: string;
+  text: string;
+  annotation?: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type PenNoteInput = {
+  text: string;
+  annotation?: string | null;
+};
+
+export type PenNoteUpdate = {
+  text?: string;
+  annotation?: string | null;
+};
+
+
