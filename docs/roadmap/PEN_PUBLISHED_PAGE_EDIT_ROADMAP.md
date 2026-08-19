@@ -1,7 +1,7 @@
 # Twistloom — Pen Post-Publish Page Prose Revision & Canon Verification Roadmap
 
 **Date:** August 19, 2026  
-**Status:** Shipped (Phases 1–3 Complete; Phase 4 Future Enhancement)  
+**Status:** Complete (Phases 1–4 Shipped)  
 **Scope:** Architecture and execution roadmap for enabling authors to edit finalized page prose in the Pen Co-Writing Editor while preserving engine canon invariants (story state deltas).
 
 ---
@@ -13,7 +13,7 @@
 | ✅ **DONE** | **Phase 1: UX Action Separation** | Modal action clarity & button separation | `PageViewerModal.tsx` (`onEditPage`, `onBranch`, `onNavigate`/`onFocusEditor`), `messages/en.json`, `messages/id.json` |
 | ✅ **DONE** | **Phase 2: Backend Edit API** | Ownership validation & DB update | `PATCH /api/pen/pages/:pageId/prose` in `routes/pen.ts`, `updatePenPageProse` in `services/pen.ts`, `PenApi.updatePageProse` in `pen-api.ts` |
 | ✅ **DONE** | **Phase 3: Frontend Editor Mode** | In-place published page revision workspace | `editingPublishedPage` state & amber banner in `PenEditorClient.tsx`, live word/char counts, floating direction bar suppression |
-| ⏳ **PLANNED** | **Phase 4: AI Delta Gate** | Advanced breaking-conflict review dialog | Compare proposed state against downstream invariants for large plot rewrites |
+| ✅ **DONE** | **Phase 4: AI Delta Gate & Conflict Review** | Heuristic diffing + AI canon invariance gate | `isPageProseDiffMinor`, `validatePublishedPageCanonInvariance`, `FinalizeVerificationDialog` integration for breaking plot conflicts |
 
 ---
 
@@ -182,9 +182,18 @@ For larger rewrites (e.g. adding an entire new paragraph or drastically shifting
     - Saving calls `penApi.updatePageProse`, invalidates React Query caches (`['pen', 'authorPage', pageId]`, `['pen', 'outline']`, `['pen', 'session', bookId]`), toasts success, and returns to the preserved active draft.
     - Canceling cleanly returns to the active draft without modifying the published page.
 
-### ⏳ Phase 4: AI Canon Delta Gate & Conflict Review (Backend + Frontend)
-- **Status:** **PLANNED** (Future enhancement for major plot deviations)
-- **Scope:**
-  - Add entity/keyword diff analysis in `updatePenPageProse` to distinguish small/stylistic edits (0-cost fast-path) from major multi-paragraph plot deviations.
-  - For large deviations, invoke `proposePenStateUpdates` against existing `story_states` and return `{ status: 'needs_review', violations }` if a downstream required item or invariant was broken.
-  - Wire `FinalizeVerificationDialog` to allow the author to review the conflict or override.
+### ✅ Phase 4: AI Canon Delta Gate & Conflict Review (Backend + Frontend)
+- **Status:** **COMPLETE**
+- **Changes Delivered:**
+  - **Heuristic Diff Gate (`isPageProseDiffMinor`)**:
+    - Evaluates word delta ratio against `PEN_PAGE_EDIT_DIFF_TOLERANCE` ($15\%$).
+    - Verifies that all tracked characters, places, and inventory items present in the original text remain preserved in the revised prose.
+    - Minor edits commit immediately via the 0-cost fast-path.
+  - **AI Canon Delta Recalculation & Invariance Gate (`validatePublishedPageCanonInvariance`)**:
+    - When word deviation $> 15\%$ or entities differ, triggers AI state proposal (`buildPenStateProposalPrompt`) on the revised text.
+    - Evaluates if required inventory items or characters from the original state were dropped while downstream child pages exist.
+    - If high-severity contradictions are detected and `force !== true`, returns `{ status: 'needs_review', violations }` (HTTP 422).
+  - **Conflict Review Dialog (`PenEditorClient.tsx`)**:
+    - Surfaces breaking conflicts inside `FinalizeVerificationDialog` with highlighted excerpts and suggestions.
+    - Supports **"Edit in draft"** (focuses prose editor to fix the excerpt) and **"Proceed anyway"** (`force = true` override).
+    - When verified or forced, updates `pages.text`, syncs `story_states` (inventory, injuries, etc.), and bumps `books.canonVersion`.

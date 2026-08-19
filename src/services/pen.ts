@@ -9,11 +9,11 @@
  */
 
 import { eq, and, desc, ne, isNull, sql } from "drizzle-orm";
-import { penSessions, penEdits, penDrafts, penNotes, branches, pages, books } from "../db/schema.js";
+import { penSessions, penEdits, penDrafts, penNotes, branches, pages, books, storyStates } from "../db/schema.js";
 import { dbRead, dbWrite, type DBClient } from "../db/client.js";
 import { getBookFromDB, getBookPages, deleteStoryPage } from "./book.js";
 import { getTriggeredLoreEntries, listLoreEntries } from "./lore.js";
-import type { DBBook, DBPenSession, DBPenDraft } from "../types/schema.js";
+import type { DBBook, DBPenSession, DBPenDraft, DBPage } from "../types/schema.js";
 import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraft, PenDraftCharacter, PenDraftSceneEssentials, PenDraftSummary, PenDraftUpdates, PenEdit, PenSessionStatus, FinalizeViolation, CanonAmendment, PenEditType, PenOutlineData, PenOutlinePage, PenAuthorPage, AuthorshipOrigin, PenTransformInput, PenTransformResult, PenNote, PenNoteInput, PenNoteUpdate } from "../types/pen.js";
 import type { BookMode } from "../types/book.js";
 import type { StoryState, Action, StoryGeneration, PersistedStoryPage, SceneCharacter, CharacterSceneRole, Mood, ActionType, ActionHint, ActionHintType } from "../types/story.js";
@@ -34,7 +34,7 @@ import { aiPrompt, createAIOptionsWithSchema } from "../utils/ai-chat.js";
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
-import { PEN_DRAFT_CAST_LIMIT, PEN_CONTINUE_MAX_TOKENS, penContinueLengthForAssistance, PEN_ESSENTIALS_MAX_TOKENS, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TOKENS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_FINALIZE_PROPOSE_MAX_ITEM_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TRAITS, PEN_DRAFT_BUFFER_MAX_CHARS, PEN_DRAFTS_PER_PARENT, PEN_DRAFT_LABEL_MAX_LENGTH, PEN_DRAFT_ACTION_TEXT_MAX_LENGTH, PEN_DRAFT_ACTION_HINT_MAX_LENGTH, PEN_TRANSFORM_MAX_TOKENS, PEN_TRANSFORM_SELECTION_MAX_LENGTH } from "../config/story.js";
+import { PEN_DRAFT_CAST_LIMIT, PEN_CONTINUE_MAX_TOKENS, penContinueLengthForAssistance, PEN_ESSENTIALS_MAX_TOKENS, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TOKENS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_FINALIZE_PROPOSE_MAX_ITEM_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TRAITS, PEN_DRAFT_BUFFER_MAX_CHARS, PEN_DRAFTS_PER_PARENT, PEN_DRAFT_LABEL_MAX_LENGTH, PEN_DRAFT_ACTION_TEXT_MAX_LENGTH, PEN_DRAFT_ACTION_HINT_MAX_LENGTH, PEN_TRANSFORM_MAX_TOKENS, PEN_TRANSFORM_SELECTION_MAX_LENGTH, PEN_PAGE_EDIT_DIFF_TOLERANCE } from "../config/story.js";
 import { generateId } from "../utils/uuid.js";
 import { executeWithCredits } from "./credits.js";
 import { persistPageWithState, insertStoryPage, getPageFromDB, mapToPersistedStoryPage } from "./book.js";
@@ -2961,18 +2961,128 @@ export async function updatePenPageAction(
   return getPenAuthorPage(userId, pageId);
 }
 
+export type UpdatePenPageProseInput = {
+  text: string;
+  force?: boolean;
+};
+
+export type UpdatePenPageProseOutput =
+  | { status: "updated"; page: PenAuthorPage }
+  | { status: "needs_review"; violations: FinalizeViolation[] };
+
 /**
- * Updates the prose text of a published page with ownership verification.
+ * Fast-path heuristic diff evaluator.
+ * Checks whether the revised page prose is a minor stylistic/typo edit:
+ * 1. Word count delta ratio <= PEN_PAGE_EDIT_DIFF_TOLERANCE (15%).
+ * 2. Tracked canonical entities (characters, places, inventory items) present in the old text
+ *    are still preserved in the revised prose.
+ */
+function isPageProseDiffMinor(
+  oldText: string,
+  newText: string,
+  state: StoryState | null
+): boolean {
+  const oldWords = oldText.toLowerCase().split(/\s+/).filter(Boolean);
+  const newWords = newText.toLowerCase().split(/\s+/).filter(Boolean);
+
+  const oldLen = Math.max(1, oldWords.length);
+  const newLen = newWords.length;
+  const wordDiffRatio = Math.abs(newLen - oldLen) / oldLen;
+
+  if (wordDiffRatio > PEN_PAGE_EDIT_DIFF_TOLERANCE) {
+    return false;
+  }
+
+  // Check if tracked entities in state that were mentioned in oldText are still in newText
+  if (state) {
+    const lowerOld = oldText.toLowerCase();
+    const lowerNew = newText.toLowerCase();
+
+    // Check characters
+    if (state.characters) {
+      for (const charName of Object.keys(state.characters)) {
+        const lowerName = charName.toLowerCase();
+        if (lowerOld.includes(lowerName) && !lowerNew.includes(lowerName)) {
+          return false;
+        }
+      }
+    }
+
+    // Check inventory items
+    if (Array.isArray(state.inventory)) {
+      for (const item of state.inventory) {
+        if (item.name) {
+          const lowerItem = item.name.toLowerCase();
+          if (lowerOld.includes(lowerItem) && !lowerNew.includes(lowerItem)) {
+            return false;
+          }
+        }
+      }
+    }
+
+    // Check places
+    if (state.places) {
+      for (const placeName of Object.keys(state.places)) {
+        const lowerPlace = placeName.toLowerCase();
+        if (lowerOld.includes(lowerPlace) && !lowerNew.includes(lowerPlace)) {
+          return false;
+        }
+      }
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Compares the old page's recorded state against the newly recalculated AI proposal.
+ * Flags severe breaking contradictions (e.g. inventory item dropped when downstream pages branch off it).
+ */
+function validatePublishedPageCanonInvariance(
+  oldState: StoryState | null,
+  newProposal: PenStateProposalAIOutput,
+  hasChildren: boolean
+): FinalizeViolation[] {
+  const violations: FinalizeViolation[] = [];
+  if (!oldState) return violations;
+
+  // 1. Inventory Invariance Check
+  if (Array.isArray(oldState.inventory) && oldState.inventory.length > 0) {
+    const newInventoryNames = new Set((newProposal.inventory ?? []).map((i) => (i.name ?? "").toLowerCase().trim()));
+    for (const oldItem of oldState.inventory) {
+      if (oldItem.name && !newInventoryNames.has(oldItem.name.toLowerCase().trim())) {
+        violations.push({
+          severity: hasChildren ? "high" : "low",
+          source: "fact",
+          entryName: oldItem.name,
+          field: "inventory",
+          expected: `${oldItem.name} remains in story inventory`,
+          found: `${oldItem.name} omitted in revised page prose`,
+          excerpt: `Previously acquired item: ${oldItem.name}`,
+          suggestion: hasChildren
+            ? `Downstream pages may depend on ${oldItem.name}. Keep its acquisition in this page or proceed with override.`
+            : `Ensure the removal of ${oldItem.name} is intentional.`,
+        });
+      }
+    }
+  }
+
+  return violations;
+}
+
+/**
+ * Updates the prose text of a published page with ownership verification,
+ * heuristic diffing (fast-path), and AI canon invariance verification (slow-path).
  *
  * @param userId - The authenticated user's id (ownership guard)
  * @param pageId - The published page to update
- * @param input - { text: string }
+ * @param input - { text: string, force?: boolean }
  */
 export async function updatePenPageProse(
   userId: string,
   pageId: string,
-  input: { text: string }
-): Promise<PenAuthorPage> {
+  input: UpdatePenPageProseInput
+): Promise<UpdatePenPageProseOutput> {
   const page = await getPageFromDB(pageId);
   if (!page) throw new PenSessionNotFoundError("Page not found");
   const book = await getBookFromDB(page.bookId);
@@ -2984,11 +3094,112 @@ export async function updatePenPageProse(
     throw new Error("Page prose cannot be empty");
   }
 
+  const oldText = page.text ?? "";
+  const existingState = await getStoryStateWithBranch(book.id, pageId);
+
+  // Check if downstream child pages exist
+  const childPages = await dbRead.select({ id: pages.id }).from(pages).where(eq(pages.parentId, pageId));
+  const hasChildren = childPages.length > 0;
+
+  // ── Tier 1: 0-Cost Fast-Path (Minor / Typo / Entity-preserving edit) ──
+  const isMinor = isPageProseDiffMinor(oldText, trimmedText, existingState);
+
+  if (isMinor) {
+    await dbWrite.transaction(async (tx) => {
+      await tx
+        .update(pages)
+        .set({ text: trimmedText, updatedAt: new Date() })
+        .where(eq(pages.id, pageId));
+
+      await tx
+        .update(books)
+        .set({ canonVersion: sql`${books.canonVersion} + 1`, updatedAt: new Date() })
+        .where(eq(books.id, book.id));
+    });
+
+    const updatedPage = await getPenAuthorPage(userId, pageId);
+    return { status: "updated", page: updatedPage };
+  }
+
+  // ── Tier 2: Slow-Path (AI Canon Delta Verification) ─────────────────
+  let stateBeforePage: StoryState | null = null;
+  let pageTexts: string[] = [];
+  let lastPage: PersistedStoryPage | undefined = undefined;
+
+  if (page.parentId) {
+    stateBeforePage = await getStoryStateWithBranch(book.id, page.parentId);
+    const branch = await getBranchPath(page.parentId);
+    pageTexts = branch.pages.map((p) => p.text).filter(Boolean);
+    lastPage = branch.pages[branch.pages.length - 1];
+  }
+
+  const mcName = book.mc?.knownName || book.mc?.name || "";
+  const language = book.language || "en";
+
+  const loreHaystack = [stateBeforePage?.contextHistory ?? "", ...pageTexts, trimmedText].join("\n");
+  const lore = await getTriggeredLoreEntries(book.id, loreHaystack);
+
+  const { systemPrompt, userPrompt } = buildPenStateProposalPrompt({
+    state: stateBeforePage,
+    lore,
+    pageTexts,
+    mcName,
+    language,
+    bookSummary: book.summary ?? null,
+    storyStartDate: book.storyStartDate ?? null,
+    momentum: lastPage?.momentum ?? null,
+    sceneType: lastPage?.sceneType ?? null,
+    essentials: null,
+    draftText: trimmedText,
+    actionText: "",
+    placeOptions: await buildPenPlaceOptions(userId, book.id, stateBeforePage),
+  });
+
+  const promptConfig: AIPromptForJson<PenStateProposalAIOutput> = {
+    schema: PEN_STATE_PROPOSAL_SCHEMA,
+    requiredFields: PEN_STATE_PROPOSAL_REQUIRED_FIELDS,
+    fallbackField: "inventory",
+    baseOptions: {
+      modelSelection: AI_CHAT_MODELS_WRITING,
+      context: "pen-finalize-propose",
+      systemPrompt,
+      config: { ...AI_CHAT_CONFIG_DEFAULT, maxOutputToken: PEN_FINALIZE_PROPOSE_MAX_TOKENS },
+    },
+  };
+
+  const aiResponse = await aiPrompt<PenStateProposalAIOutput>(userPrompt, createAIOptionsWithSchema(promptConfig));
+  const output = aiResponse.result;
+
+  const proposal = output && typeof output === "object"
+    ? coerceStateProposal(output, stateBeforePage, page.page)
+    : null;
+
+  if (proposal && output) {
+    const violations = validatePublishedPageCanonInvariance(existingState, output, hasChildren);
+    const highViolations = violations.filter((v) => v.severity === "high");
+
+    if (highViolations.length > 0 && !input.force) {
+      return { status: "needs_review", violations };
+    }
+  }
+
+  // Commit verified (or forced) major update
   await dbWrite.transaction(async (tx) => {
     await tx
       .update(pages)
       .set({ text: trimmedText, updatedAt: new Date() })
       .where(eq(pages.id, pageId));
+
+    if (proposal && existingState) {
+      await tx
+        .update(storyStates)
+        .set({
+          inventory: proposal.inventory as any,
+          injuries: proposal.injuries as any,
+          updatedAt: new Date(),
+        })
+        .where(eq(storyStates.pageId, pageId));
+    }
 
     await tx
       .update(books)
@@ -2996,7 +3207,8 @@ export async function updatePenPageProse(
       .where(eq(books.id, book.id));
   });
 
-  return getPenAuthorPage(userId, pageId);
+  const updatedPage = await getPenAuthorPage(userId, pageId);
+  return { status: "updated", page: updatedPage };
 }
 
 /** Errors thrown when a note is not found or inaccessible. */

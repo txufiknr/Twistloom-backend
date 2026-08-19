@@ -309,8 +309,8 @@ router.patch("/pages/:pageId/actions", requireAuth, async (c) => {
 
 /**
  * PATCH /api/pen/pages/:pageId/prose
- * Update the prose text of a published page.
- * Body: { text: string }
+ * Update the prose text of a published page with fast-path & AI canon invariance checking.
+ * Body: { text: string, force?: boolean }
  */
 router.patch("/pages/:pageId/prose", requireAuth, async (c) => {
   try {
@@ -323,15 +323,21 @@ router.patch("/pages/:pageId/prose", requireAuth, async (c) => {
       return cValidationError(c, "Request body must be a JSON object");
     }
 
-    const { text } = body as { text?: unknown };
+    const { text, force } = body as { text?: unknown; force?: unknown };
     if (typeof text !== "string" || text.trim().length === 0) {
       return cValidationError(c, "text must be a non-empty string");
     }
 
-    const page = await updatePenPageProse(userId, pageId, {
+    const outcome = await updatePenPageProse(userId, pageId, {
       text: text.trim(),
+      force: Boolean(force),
     });
-    return c.json({ page });
+
+    if (outcome.status === "needs_review") {
+      return c.json(outcome, 422);
+    }
+
+    return c.json(outcome, 200);
   } catch (error) {
     if (error instanceof PenBookOwnershipError) return cApiError(c, error.message, undefined, 403);
     if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);

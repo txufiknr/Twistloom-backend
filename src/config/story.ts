@@ -576,4 +576,11 @@ export const PEN_DRAFT_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 export const PEN_TRANSFORM_SELECTION_MAX_LENGTH = 5000;
 
 /** Output-token budget for block-action transformation generations. */
-export const PEN_TRANSFORM_MAX_TOKENS = 1200;
+export const PEN_TRANSFORM_MAX_TOKENS = 1200;
+
+/**
+ * Maximum word-count / entity deviation ratio ($|\Delta| / \text{original}$) before
+ * published page prose revision triggers the AI Canon Invariance delta gate.
+ * Changes below this threshold with all tracked entities intact skip AI re-verification (0-cost fast path).
+ */
+export const PEN_PAGE_EDIT_DIFF_TOLERANCE = 0.15;
