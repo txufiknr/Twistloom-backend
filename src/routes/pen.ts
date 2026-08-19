@@ -537,13 +537,14 @@ router.patch("/sessions/:id/drafts/:draftId", requireAuth, async (c) => {
     if (!body || typeof body !== "object") {
       return cValidationError(c, "Request body must be a JSON object");
     }
-    const { label, actionText, draftBuffer, draftHtml, draftCharactersPresent, draftSceneEssentials, draftUpdatedAt } = body as {
+    const { label, actionText, draftBuffer, draftHtml, draftCharactersPresent, draftSceneEssentials, isEnding, draftUpdatedAt } = body as {
       label?: unknown;
       actionText?: unknown;
       draftBuffer?: unknown;
       draftHtml?: unknown;
       draftCharactersPresent?: unknown;
       draftSceneEssentials?: unknown;
+      isEnding?: unknown;
       draftUpdatedAt?: unknown;
     };
 
@@ -558,6 +559,9 @@ router.patch("/sessions/:id/drafts/:draftId", requireAuth, async (c) => {
     }
     if (typeof actionText === "string" && actionText.trim().length > PEN_DRAFT_ACTION_TEXT_MAX_LENGTH) {
       return cValidationError(c, `actionText must be at most ${PEN_DRAFT_ACTION_TEXT_MAX_LENGTH} characters`);
+    }
+    if (isEnding !== undefined && typeof isEnding !== "boolean") {
+      return cValidationError(c, "isEnding must be a boolean");
     }
     if (draftBuffer !== undefined) {
       const bufferError = validateDraftBuffer(draftBuffer);
@@ -593,6 +597,7 @@ router.patch("/sessions/:id/drafts/:draftId", requireAuth, async (c) => {
       draftHtml: typeof draftHtml === "string" ? draftHtml : undefined,
       draftCharactersPresent: draftCharactersPresent as PenDraftCharacter[] | undefined,
       draftSceneEssentials: draftSceneEssentials as PenDraftSceneEssentials | null | undefined,
+      isEnding: typeof isEnding === "boolean" ? isEnding : undefined,
       draftUpdatedAt: typeof draftUpdatedAt === "string" ? draftUpdatedAt : undefined,
     });
     return c.json({ draft });

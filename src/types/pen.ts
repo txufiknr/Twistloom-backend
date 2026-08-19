@@ -149,6 +149,8 @@ export type PenDraft = {
   draftCharactersPresent: PenDraftCharacter[];
   /** Author-curated scene essentials for the NEXT page. */
   draftSceneEssentials?: PenDraftSceneEssentials | null;
+  /** Author-marked terminal branch / story conclusion. */
+  isEnding?: boolean;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -174,6 +176,8 @@ export type PenDraftSummary = {
    * the delta gate before continuing/finalizing.
    */
   isStale: boolean;
+  /** Author-marked terminal branch / story conclusion. */
+  isEnding?: boolean;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -186,6 +190,7 @@ export type PenDraftUpdates = {
   draftHtml?: string;
   draftCharactersPresent?: PenDraftCharacter[];
   draftSceneEssentials?: PenDraftSceneEssentials | null;
+  isEnding?: boolean;
   /** Client wall-clock (ms epoch, ISO string) of the most recent keystroke — last-write-wins key. */
   draftUpdatedAt?: string;
 };

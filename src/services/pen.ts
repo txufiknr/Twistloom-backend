@@ -34,7 +34,7 @@ import { aiPrompt, createAIOptionsWithSchema } from "../utils/ai-chat.js";
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
-import { PEN_DRAFT_CAST_LIMIT, PEN_CONTINUE_MAX_TOKENS, penContinueLengthForAssistance, PEN_ESSENTIALS_MAX_TOKENS, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TOKENS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_FINALIZE_PROPOSE_MAX_ITEM_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TRAITS, PEN_DRAFT_BUFFER_MAX_CHARS, PEN_DRAFTS_PER_PARENT, PEN_DRAFT_LABEL_MAX_LENGTH, PEN_DRAFT_ACTION_TEXT_MAX_LENGTH, PEN_DRAFT_ACTION_HINT_MAX_LENGTH, PEN_TRANSFORM_MAX_TOKENS, PEN_TRANSFORM_SELECTION_MAX_LENGTH, PEN_PAGE_EDIT_DIFF_TOLERANCE } from "../config/story.js";
+import { PEN_DRAFT_CAST_LIMIT, PEN_CONTINUE_MAX_TOKENS, penContinueLengthForAssistance, PEN_ESSENTIALS_MAX_TOKENS, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TOKENS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_FINALIZE_PROPOSE_MAX_ITEM_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TRAITS, PEN_DRAFT_BUFFER_MAX_CHARS, PEN_DRAFTS_PER_PARENT, PEN_DRAFT_LABEL_MAX_LENGTH, PEN_DRAFT_ACTION_TEXT_MAX_LENGTH, PEN_DRAFT_ACTION_HINT_MAX_LENGTH, PEN_TRANSFORM_MAX_TOKENS, PEN_TRANSFORM_SELECTION_MAX_LENGTH, PEN_PAGE_EDIT_DIFF_TOLERANCE, PEN_MIN_ENDING_PAGE } from "../config/story.js";
 import { generateId } from "../utils/uuid.js";
 import { executeWithCredits } from "./credits.js";
 import { persistPageWithState, insertStoryPage, getPageFromDB, mapToPersistedStoryPage } from "./book.js";
@@ -138,6 +138,7 @@ function toPenDraftSummary(draft: DBPenDraft, canonVersion: number): PenDraftSum
     actionText: draft.actionText,
     charCount,
     isStale,
+    isEnding: draft.isEnding ?? false,
     createdAt: draft.createdAt,
     updatedAt: draft.updatedAt,
   };
@@ -585,12 +586,13 @@ export async function listSessionDrafts(userId: string, sessionId: string): Prom
 export async function createSessionDraft(
   userId: string,
   sessionId: string,
-  input: { parentPageId?: string | null; label?: string; actionText?: string; activate?: boolean }
+  input: { parentPageId?: string | null; label?: string; actionText?: string; isEnding?: boolean; activate?: boolean }
 ): Promise<PenSessionPayload> {
   const session = await getPenSessionById(userId, sessionId, { client: dbWrite });
   const parentPageId = input.parentPageId ?? null;
   const label = input.label?.trim().slice(0, PEN_DRAFT_LABEL_MAX_LENGTH) || null;
   const actionText = input.actionText?.trim().slice(0, PEN_DRAFT_ACTION_TEXT_MAX_LENGTH) || null;
+  const isEnding = input.isEnding ?? false;
 
   // The anchor page must belong to this session's book.
   if (parentPageId) {
@@ -606,7 +608,7 @@ export async function createSessionDraft(
     if (siblings.length >= PEN_DRAFTS_PER_PARENT) throw new PenDraftLimitError();
     return tx
       .insert(penDrafts)
-      .values({ sessionId, parentPageId, label, actionText, draftBuffer: [], draftCharactersPresent: [], draftSceneEssentials: null })
+      .values({ sessionId, parentPageId, label, actionText, isEnding, draftBuffer: [], draftCharactersPresent: [], draftSceneEssentials: null })
       .returning();
   });
 
@@ -669,6 +671,7 @@ export async function updateSessionDraft(
     draftSceneEssentials?: PenDraftSceneEssentials | null;
     label?: string | null;
     actionText?: string | null;
+    isEnding?: boolean;
   } = {};
 
   if (updates.label !== undefined) {
@@ -682,6 +685,9 @@ export async function updateSessionDraft(
   }
   if (updates.draftSceneEssentials !== undefined) {
     values.draftSceneEssentials = updates.draftSceneEssentials;
+  }
+  if (updates.isEnding !== undefined) {
+    values.isEnding = updates.isEnding;
   }
 
   // Buffer/html: last-write-wins against the client's keystroke timestamp.
@@ -2151,6 +2157,10 @@ export async function finalizePenDraft(
     ? ((await getPageFromDB(session.currentPageId))?.page ?? 0) + 1
     : 1;
 
+  if (input.isEnding && pageNumber < PEN_MIN_ENDING_PAGE) {
+    throw new PenFinalizeError(`Ending pages must be at or above page ${PEN_MIN_ENDING_PAGE}, got page ${pageNumber}`);
+  }
+
   // ── Phase A: delta gate (advisory, never blocks) ─────────────────────────
   const violations = runFinalizeDeltaGate(session, book.canonVersion);
   const highFindings = violations.filter((v) => v.severity === "high");
@@ -2306,6 +2316,7 @@ export async function finalizePenDraft(
         usedBranchIds,
         context: "pen-finalize",
         book: { id: book.id, storyStartDate: book.storyStartDate ?? undefined, mode: book.mode, visibility: book.visibility, status: book.status },
+        allowEmptyActions: input.isEnding === true,
       });
     } else {
       // First page of the book (mirrors initializeBook's page-1 path).
@@ -2487,7 +2498,7 @@ export async function finalizePenDraft(
     // auto-creates a fresh slot under the new page on the next keystroke.
     await tx
       .update(penDrafts)
-      .set({ draftBuffer: [], draftHtml: null, draftCharactersPresent: [], draftSceneEssentials: null, actionText: null, updatedAt: new Date() })
+      .set({ draftBuffer: [], draftHtml: null, draftCharactersPresent: [], draftSceneEssentials: null, actionText: null, isEnding: false, updatedAt: new Date() })
       .where(and(eq(penDrafts.id, draftId), eq(penDrafts.sessionId, sessionId)));
 
     // §6.6 reverse-edge (B3/E3/E4, D-4 core): record this child as the

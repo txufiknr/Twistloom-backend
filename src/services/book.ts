@@ -547,7 +547,8 @@ export async function persistPageWithState(params: {
   branchId: string;
   usedBranchIds: Set<string>; // must be passed in for within-call collision safety on retry
   context?: string;
-  book: Pick<Book, 'storyStartDate' | 'mode' | 'id' | 'visibility' | 'status'>
+  book: Pick<Book, 'storyStartDate' | 'mode' | 'id' | 'visibility' | 'status'>;
+  allowEmptyActions?: boolean;
 }): Promise<PersistedStoryPage> {
   const {
     userId,
@@ -560,7 +561,8 @@ export async function persistPageWithState(params: {
     action,
     usedBranchIds,
     context = "persistPageWithState",
-    book
+    book,
+    allowEmptyActions,
   } = params;
 
   const { storyStartDate, mode } = book;
@@ -580,7 +582,7 @@ export async function persistPageWithState(params: {
 
   // Double-defense: revalidate the page before persisting (text length, JSON
   // leaks, actions). Throw here rather than silently inserting bad data.
-  validateGeneratedPage(generatedStoryPage, mode, 'persistPageWithState');
+  validateGeneratedPage(generatedStoryPage, mode, 'persistPageWithState', { allowEmpty: allowEmptyActions });
 
   const { momentum: calculatedMomentum } = calculateStoryMomentum({
     state: newState,

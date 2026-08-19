@@ -2504,6 +2504,8 @@ export const penDrafts = pgTable(
     draftCharactersPresent: jsonb("draft_characters_present").$type<PenDraftCharacter[]>().notNull().default(sql`'[]'::jsonb`),
     /** Author-curated scene essentials for the NEXT page. */
     draftSceneEssentials: jsonb("draft_scene_essentials").$type<PenDraftSceneEssentials | null>().default(null),
+    /** Author-marked terminal branch / story conclusion. */
+    isEnding: boolean("is_ending").notNull().default(false),
     createdAt,
     updatedAt,
   },

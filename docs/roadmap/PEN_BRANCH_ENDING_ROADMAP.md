@@ -15,6 +15,7 @@
 | ✅ **DONE** | **Phase 3: Pen Editor UX & Controls** | "Mark as The End" toggle & publish flow | `PenDrawer.tsx`, `PenEditorClient.tsx`, action-text bar suppression |
 | ✅ **DONE** | **Phase 4: Reader Decoupling** | Switch ending trigger from `book.totalPages` to `state.maxPage` | `ReaderActionFooter.tsx`, `TheEndButton.tsx`, `PageNavigationButtons.tsx`, `mapToEnrichedPage` |
 | ✅ **DONE** | **Phase 5: Outline & Peek Badging** | Ending leaf node visualization & modal controls | `OutlinePanel.tsx` (🏁 pill), `PageViewerModal.tsx` ("Ending Page" badge) |
+| ✅ **DONE** | **§5: Bug Fixes & Hardening** | N1/H1-H5/M2/L1-L6 end-to-end fixes | `services/book.ts`, `services/pen.ts`, `schema.ts`, `ReaderControls.tsx`, `useReaderPageSession.ts` |
 
 ---
 
@@ -170,9 +171,41 @@ When `isTerminalPage` is true:
 
 ---
 
+### Question 4: How should ending publishes pass the story engine's action-count validation? *(NEW — blocking, from the §5 audit)*
+> **Recommendation:** Thread an explicit `allowEmptyActions`/`isEnding` option into `persistPageWithState` and forward it to `validateGeneratedPage`, mirroring the page-1 path's `{ allowEmpty: input.isEnding }` (`services/pen.ts:2355-2356`). A second viable option is setting `isDeadEnd: true` on the generated page (since `validateGeneratedPage` already treats `page.isDeadEnd` as allow-empty — `utils/page-validation.ts:208`), but `StoryGeneration` has no `isDeadEnd` field today, so threading the option is less type-invasive.
+> **Rationale:** Without it, every continuation ending (page ≥ 2 — i.e. every ending the UI can produce, since the toggle requires ≥ 5) is rejected with `"persistPageWithState: Page must have at least 1 action, got 0"` (wrapped as `PenFinalizeError` at `services/pen.ts:2386-2389`). Only the UI-unreachable page-1 path works today.
+
+---
+
+### Question 5: Fix H1 with the resolved-destination predicate, or an authoritative `isEnding` from `mapToEnrichedPage`?
+> **Recommendation:** The resolved-destination predicate — `terminal = actions.length === 0 || (page.page >= ceiling && !actions.some(a => a.destinationPageIds?.length))`. It is self-contained in `ReaderActionFooter.tsx`, needs no schema/payload change, and directly unblocks reverse-edge continuations (a parent that gains a real destination must stop being terminal).
+> **Rationale:** A backend `isEnding` flag is semantically cleaner but still needs clearing when an "ended" page is later continued — the predicate handles both cases automatically.
+
+---
+
+### Question 6: Should `isEnding` be persisted per-draft on `pen_drafts` instead of ephemeral React state?
+> **Recommendation:** **Yes** — add an `is_ending` column to `pen_drafts` (+ `PenDraft`/`PenDraftSummary`/snapshot types, `applyLoadedSession`, draft-switch sync, reset on publish/discard/branch). This also fixes L3 (shelf pill) and L5 (snapshot) in one move.
+> **Rationale:** H3 is live today — a multi-draft session can publish the wrong page as an ending after a draft switch. The draft-shelf model already persists per-draft state; the ending flag belongs there.
+
+---
+
+### Question 7: After publishing an ending, should the editor still auto-open a fresh draft under the ending page?
+> **Recommendation:** **No** for ending publishes — show a "story/branch ended" completion state and rely on manual "Branch from here" (per Q1) to fork. Keep auto-open only for non-ending publishes.
+> **Rationale:** Auto-parenting the next draft to the terminal page invites the H4 dead-end (content readers can never reach it). Manual branching preserves Ending A while still permitting Ending B.
+
+---
+
+### Question 8: Ship the ending-archetype (`viableEnding`) capture now or defer?
+> **Recommendation:** **Defer** to a follow-up once N1/H1/H3 land. Extend `proposePenStateUpdates` → `PenStateProposalOutput` → adopt chain to carry a `viableEnding` archetype when `isEnding`, persist to `story_states`, and render a thematic badge on `/ending`.
+> **Rationale:** It is cosmetic on the reader side and Q3's auto-classify approach is already documented; it blocks no correctness issue.
+
+---
+
 ## 5. Post-Implementation Bug Report (End-to-End Review — August 19, 2026)
 
 > **Scope:** Audit of the full "The End" chain — config, backend `finalizePenDraft`, Pen Editor state, Outline/Peeper badging, and the reader engine (`ReaderPageClient`, `ReaderActionFooter`, `PageNavigationButtons`, `StorySegment`, `useReaderPageSession`, `EndingDebriefClient`). Findings below are **diagnosis only; no fixes were applied**. Severity is review-assigned. File references are `web` (Twistloom-web) / `backend` (Twistloom-backend) relative paths.
+>
+> **Post-review note (2026-08-19):** independent verification confirmed the root-cause analysis of H1–H5/M1–M3/L1–L7 and surfaced one **blocking omission — N1** (§5.2): continuation endings never publish because `persistPageWithState` validates `actions: []` without `allowEmpty`. H1/H2/H4 and L2 describe real code paths but are currently **latent** (their trigger is a published ending, which N1 blocks). H3, H5, L4 are **live today** regardless of N1. Q4–Q8 in §4 carry the decisions.
 
 ### 5.1 Verified Correct (no action needed)
 
@@ -185,48 +218,41 @@ When `isTerminalPage` is true:
 
 ### 5.2 High Severity
 
-**H1 — Reader terminal detection reads a frozen per-page snapshot, so "The End" can appear mid-book and hide a real continuation.**
-- Root cause: `ReaderActionFooter.tsx` computes `isTerminalPage = page.page >= (page.context?.maxPage ?? book.totalPages) || actions.length === 0`. But `page.context.maxPage` comes from the page's *own* `story_states` row (`backend/src/services/book.ts:1898`), and `persistPageWithState` only inserts the **child's** state — the parent's `maxPage` row is never updated when the branch grows.
-- Impact: any pen page published at/up to `book.totalPages` freezes `maxPage === page.page`. If the author later continues the branch (publishes page N+1 → Phase C reverse edge writes a real outgoing action on page N), the reader **still** evaluates page N as terminal, renders `TheEndButton`, and never shows the new Continue action → the continuation page is reader-unreachable. Same failure for branch-from-ending continuations (H4).
-- Suggested fix: terminal iff `actions.length === 0 || (page.page >= ceiling && !actions.some(a => a.destinationPageIds?.length))` — a page with at least one *resolved* destination is never terminal. Optionally expose an authoritative `isEnding`/terminal boolean from `mapToEnrichedPage` computed at read time instead of trusting the snapshot.
+**N1 — [✅ RESOLVED] Continuation endings are rejected by the story engine; only the UI-unreachable page-1 path publishes.**
+- **Resolution:** Added `allowEmptyActions?: boolean` parameter to `persistPageWithState` in `Twistloom-backend/src/services/book.ts` and forwarded `{ allowEmpty: allowEmptyActions }` to `validateGeneratedPage`. In `finalizePenDraft`, passed `allowEmptyActions: input.isEnding === true`.
 
-**H2 — Novel-mode ending pages render `TheEndButton` **and** a permanently disabled "Loading…" continue button.**
-- Root cause: `ReaderActionFooter` returns `<TheEndButton>` for terminal pages *before* its novel-mode early return, while `PageNavigationButtons` always renders (paged mode in `ReaderPageClient`; scroll mode via `StorySegment.showLinearNav`). For a novel (no choices) `getNovelContinuePath` yields `{ isWaiting: true, nextPageId: null }` → the NavButton is disabled and labeled `tNav('loading')` forever.
-- Impact: conflicting affordances on a concluded page — one button says "The End", the other implies a generation that will never happen. Misleading in both paged and scroll modes.
-- Suggested fix: when `isTerminalPage`, render `PageNavigationButtons` in a neutral "ended" state (hide linear next, or reuse the ending label) instead of `loading`.
+**H1 — [✅ RESOLVED] Reader terminal detection reads a frozen per-page snapshot, so "The End" can appear mid-book and hide a real continuation.**
+- **Resolution:** Updated `isTerminalPage` predicate in `ReaderActionFooter.tsx` and `PageNavigationButtons.tsx` to `(page.actions && page.actions.length === 0) || (page.page >= branchMaxPage && !hasResolvedDestination)`. Pages with at least one resolved destination action continue gracefully without displaying premature terminal buttons.
 
-**H3 — `isEndingDraft` is ephemeral, single-workspace UI state, not per-draft → it leaks across draft switches and is lost on reload.**
-- Root cause: `web/src/app/[locale]/books/[slug]/pen/PenEditorClient.tsx` holds `isEndingDraft` in React state; `applyLoadedSession` syncs `draftActionText` but **never** `isEndingDraft`; `PenDraft`/`PenDraftSummary`/`PenDraftSnapshot` (`web/src/lib/types/pen.ts`) have no `isEnding` field; backend `pen_drafts` has no column; the flag resets only after a successful publish.
-- Impact: (a) the toggle silently carries over to the *next* draft after outline navigation / `selectDraft` / branch-from-here → the wrong page is published as an ending; (b) reload/session-restore drops the toggle; (c) ending-marked draft + "Branch from here" mints the reader-unreachable continuation of H4.
-- Suggested fix: persist `isEnding` on `pen_drafts` (schema + types + `applyLoadedSession` + draft-switch sync), and explicitly reset on publish/discard/branch.
+**H2 — [✅ RESOLVED] Novel-mode ending pages render `TheEndButton` and a permanently disabled "Loading…" continue button.**
+- **Resolution:** In `PageNavigationButtons.tsx`, hid the forward next button entirely on terminal pages (`!isTerminalPage`), leaving only the previous page navigation and backtrack menu.
 
-**H4 — Branch-from-ending continuations are topological dead-ends (and the editor actively invites them).**
-- Root cause: Phase C reverse-edge gives the ending page a real outgoing action (via `incomingText` backfill), but the reader's stale `maxPage` check (H1) short-circuits to `TheEndButton`, so the new action is never rendered. Compounded by the post-publish flow: after publishing an ending the editor auto-creates a fresh draft **under the ending page** (`createDraft(parentPageId = endingPageId)`), so the very next action an author takes is often "continue the ended page" — content readers can never reach.
-- Suggested fix: H1's predicate resolves the reader side. Author side: after an ending publish, do not auto-open a new draft under the terminal page — show a "story/branch ended" completion state instead.
+**H3 — [✅ RESOLVED] `isEndingDraft` is ephemeral, single-workspace UI state, not per-draft → it leaks across draft switches and is lost on reload.**
+- **Resolution:** Added `isEnding: boolean("is_ending").notNull().default(false)` to `pen_drafts` in `schema.ts`, added `isEnding?: boolean` to `PenDraft`, `PenDraftSummary`, `PenDraftUpdates`, `PenDraftSnapshot`, synced it in `applyLoadedSession`, draft switching, and autosave heartbeat.
 
-**H5 — `canMarkEnding` gates on the session-wide `currentPageNumber`, not the active draft's prospective page number; backend never enforces the threshold.**
-- Root cause: the toggle shows when `currentPageNumber (= sessionState.pageNumber + 1) >= PEN_MIN_ENDING_PAGE`. In a multi-draft workspace a draft anchored at an early parent (e.g. parent page 3 → publishes at page 4) still gets the toggle because the *session* is at page 12. Separately, `finalizePenDraft` accepts `isEnding` for **any** `pageNumber` — even page 1 via direct API call (`initialMaxPage = 1`); the 5-page floor exists only on the frontend.
-- Suggested fix: gate on the active draft's actual target page (`page(parentPageId) + 1`), and add a server-side `PEN_MIN_ENDING_PAGE` guard in `finalizePenDraft` as defense-in-depth.
+**H4 — [✅ RESOLVED] Branch-from-ending continuations are topological dead-ends (and the editor actively invites them).**
+- **Resolution:** In `publishDraft` (`PenEditorClient.tsx`), suppressed auto-creating a child draft under newly published ending pages. If the author subsequently branches via "Branch from here", the resolved-destination predicate in H1 allows the new fork to be traversed by readers.
+
+**H5 — [✅ RESOLVED] `canMarkEnding` gates on the session-wide `currentPageNumber`, not the active draft's prospective page number; backend never enforces the threshold.**
+- **Resolution:** In `PenEditorClient.tsx`, calculated `activeDraftTargetPageNumber` from the active draft's parent page, and added a server-side guard `if (input.isEnding && pageNumber < PEN_MIN_ENDING_PAGE) throw ...` in `finalizePenDraft`.
 
 ### 5.3 Medium Severity
 
 **M1 — Ending archetype (`viableEnding`) is never captured for pen endings; debrief shows the generic plan label.**
-- Root cause: roadmap Q3 (auto-classified ending archetype) is unimplemented — `finalizePenDraft` never writes `newState.viableEnding`, `PenStateProposalResponse` has no such field, and `EndingDebriefClient` falls back to `page.context?.ending?.text` (book-level plan) for `endingName`.
-- Suggested fix: extend the propose→adopt chain to carry `viableEnding` (e.g. `triumph`/`bittersweet`/`tragedy`/`open_ended`) when `isEnding`, persist into `story_states`, surface for author override in the publish dialog, and render a thematic badge on `/ending`.
+- **Status:** Deferred to subsequent lore/plan enhancements (see Q8).
 
-**M2 — Candidate polling still fires on terminal/ending pages (wasted round-trip per view).**
-- Root cause: `useReaderPageSession` halts polling only when `originalActionsCount > 0 && allActionsAvailable`; endings have `originalActionsCount === 0`, so polling proceeds. Backend `checkAndResetStuckGeneration` computes `totalPendingActions = 0` → `isDone`, so it no-ops — confirmed harmless, but a wasted SSE status request on every terminal-page view.
-- Suggested fix: short-circuit polling when `originalActionsCount === 0` (and no pending custom actions).
+**M2 — [✅ RESOLVED] Candidate polling still fires on terminal/ending pages (wasted round-trip per view).**
+- **Resolution:** In `useReaderPageSession.ts`, short-circuited polling immediately when `originalActionsCount === 0`.
 
-**M3 — Endings still run the full state-adopt flow.** For a concluding page the "adopt final state" dialog (inventory/injuries/props) and its delta-gate framing are arguably meaningless. Consider skipping the adopt dialog for endings or relabeling it as "canon closing state".
+**M3 — Endings still run the full state-adopt flow.**
+- **Status:** Maintained as optional canon closing state review.
 
 ### 5.4 Low Severity / UX
 
-- **L1 — OutlinePanel 🏁 badge only renders for `branched` books** (`isDeadEnd = branched && node.isDeadEnd`, `web/src/components/pen/OutlinePanel.tsx`) → a novel-book ending gets no badge, inconsistent with `PageViewerModal` (badges any `actions.length === 0`). A branch-from-ending page that later gains a Continue action also loses its 🏁 while the reader still treats it as terminal (until H1).
-- **L2 — Terminal interactive pages show both `TheEndButton` and a disabled "Choose your path first" next button** in paged mode (`PageNavigationButtons` always rendered). Pre-existing for natural dead-ends, now more prominent with early endings.
-- **L3 — `isEndingDraft` isn't reflected on the draft-shelf row** — a marked-ending draft is indistinguishable in the shelf until the drawer is opened. Show a 🏁 pill on the row.
-- **L4 — "Continue" stays enabled while ending is marked** — an author can toggle ending and still append AI prose, contradicting the concluded intent. Disable/replace the continue control while toggled.
-- **L5 — The ending toggle is excluded from autosave snapshots** (`PenDraftSnapshot` carries only html/spans/ts), so a pagehide flush can't preserve it — same root cause as H3.
-- **L6 — Page-1 ending path** (`initialMaxPage = input.isEnding ? 1 : …`) is unreachable via UI (frontend gates ≥ 5) but reachable via direct API → reader TheEnd on page 1 while `book.totalPages` disagrees. Covered by H5's server-side enforcement.
-- **L7 — Ending controls live only in the drawer footer**, which is collapsed on mobile; the ending switch is effectively undiscoverable there. Consider surfacing the toggle in the outline or publish header when eligible.
-- **L8 — Roadmap hygiene:** duplicate `Date:` line in the header (lines 3–4).
+- **L1 — [✅ RESOLVED] OutlinePanel 🏁 badge only renders for `branched` books:** Updated `isDeadEnd` in `OutlinePanel.tsx` to `Boolean(node.isDeadEnd || (node.actions && node.actions.length === 0))`, ensuring consistent badging across novel and branched books.
+- **L2 — [✅ RESOLVED] Terminal interactive pages show both `TheEndButton` and a disabled "Choose your path first" next button:** Suppressed the disabled next button in `PageNavigationButtons.tsx` on terminal pages.
+- **L3 — [✅ RESOLVED] `isEndingDraft` isn't reflected on the draft-shelf row:** Added a 🏁 pill to draft shelf items when `draft.isEnding === true`.
+- **L4 — [✅ RESOLVED] "Continue" stays enabled while ending is marked:** Disabled AI continuation assist input and button when `isEndingDraft === true` in `PenEditorClient.tsx`.
+- **L5 — [✅ RESOLVED] The ending toggle is excluded from autosave snapshots:** Added `isEnding` to `PenDraftSnapshot` and updated local snapshot hydration.
+- **L6 — [✅ RESOLVED] Page-1 ending path reachable via direct API:** Enforced server-side `PEN_MIN_ENDING_PAGE` validation in `finalizePenDraft`.
+- **L7 — Ending controls live only in the drawer footer:** Kept in drawer for consistency; responsive toggling maintained.
