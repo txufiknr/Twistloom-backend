@@ -17,8 +17,6 @@
 - [ ] need change to cursor pagination?
 
 [ ] pas split multi-turn udah stable, DRY infer state delta dari story page sama pen finalize propose
-[ ] buildNextPageFieldInstructionSections: can you make it be more manageable (type-safe, maybe should define them as separate consts in new config file, thus reducing boilerplate in `prompt.ts`)?
-[ ] shouldn't we add generic type <T> in `FieldInstructionSection`? thus `field` can be properly typed with keyof T object keys?
 
 ---
 
@@ -72,14 +70,31 @@ error: 402 This request requires more credits, or fewer max_tokens. You requeste
 
 TODO-leveling-system-chatgpt.md
 
-can you do the same for this "character leveling system" elaboration from chatgpt?
+please learn this "character leveling system" elaboration from chatgpt
+What do you think about this optional leveling system in Twistloom?
+
+I think this is good opportunity because:
+- gamers like adventure (widen target audiences) 
+- Now it moving towards AI-native Interactive fiction where writers can write any genre, not only psychological thrillers
+- there's Pen text adventure mode
+
+So:
+- add MC & character's in-world level (and world's `maxLevel` as book meta or story state)
+- enable with "Enable level system" in Pen setup wizard or when creating book
+- add `levelRecognition` (known/unknown/approximate) in Character or CharacterRelationship type
+
+Please elaborate, grounded on actual codebase
+
+
 please thoroughly learn and examine current implementation around StoryState, Character, and CharacterRelationship type in @src/types/character.ts @src/types/story.ts @src/utils/story.ts @src/utils/characters.ts 
 please write a comprehensive roadmap MD for this in @docs/roadmap\ , grounded on actual codebase
 
-
 LEVELING SYSTEM:
-- text adventure pen draft book enable level by default
-- show character's level in CastChip.tsx
+- add MC & character's in-world `level` (and world's `maxLevel`)
+- enable with "Enable level system" when create pen book (auto-checked for "text adventure" mode)
+- for original & on-demand book generation, AI should infer whether leveling system is necessary
+- add `levelRecognition` in `Character`/`CharacterRelationship` type
+- show character's level in `CastChip.tsx`
 
 ---
 

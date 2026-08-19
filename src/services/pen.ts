@@ -8,8 +8,8 @@
  * @see docs/roadmap/AI_CO_WRITING_PEN_ROADMAP.md §5.3, Phase 1.a, Phase 1.b
  */
 
-import { eq, and, desc, ne, isNull } from "drizzle-orm";
-import { penSessions, penEdits, penDrafts, penNotes, branches, pages } from "../db/schema.js";
+import { eq, and, desc, ne, isNull, sql } from "drizzle-orm";
+import { penSessions, penEdits, penDrafts, penNotes, branches, pages, books } from "../db/schema.js";
 import { dbRead, dbWrite, type DBClient } from "../db/client.js";
 import { getBookFromDB, getBookPages, deleteStoryPage } from "./book.js";
 import { getTriggeredLoreEntries, listLoreEntries } from "./lore.js";
@@ -2957,6 +2957,44 @@ export async function updatePenPageAction(
     .update(pages)
     .set({ actions: updatedActions, updatedAt: new Date() })
     .where(eq(pages.id, pageId));
+
+  return getPenAuthorPage(userId, pageId);
+}
+
+/**
+ * Updates the prose text of a published page with ownership verification.
+ *
+ * @param userId - The authenticated user's id (ownership guard)
+ * @param pageId - The published page to update
+ * @param input - { text: string }
+ */
+export async function updatePenPageProse(
+  userId: string,
+  pageId: string,
+  input: { text: string }
+): Promise<PenAuthorPage> {
+  const page = await getPageFromDB(pageId);
+  if (!page) throw new PenSessionNotFoundError("Page not found");
+  const book = await getBookFromDB(page.bookId);
+  if (!book) throw new PenSessionNotFoundError("Book not found");
+  if (book.userId !== userId) throw new PenBookOwnershipError();
+
+  const trimmedText = input.text.trim();
+  if (!trimmedText) {
+    throw new Error("Page prose cannot be empty");
+  }
+
+  await dbWrite.transaction(async (tx) => {
+    await tx
+      .update(pages)
+      .set({ text: trimmedText, updatedAt: new Date() })
+      .where(eq(pages.id, pageId));
+
+    await tx
+      .update(books)
+      .set({ canonVersion: sql`${books.canonVersion} + 1`, updatedAt: new Date() })
+      .where(eq(books.id, book.id));
+  });
 
   return getPenAuthorPage(userId, pageId);
 }

@@ -35,6 +35,7 @@ import {
   getPenOutline,
   getPenAuthorPage,
   updatePenPageAction,
+  updatePenPageProse,
   listSessionDrafts,
   createSessionDraft,
   activateSessionDraft,
@@ -303,6 +304,38 @@ router.patch("/pages/:pageId/actions", requireAuth, async (c) => {
     if (error instanceof PenBookOwnershipError) return cApiError(c, error.message, undefined, 403);
     if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
     return cApiError(c, "Failed to update pen page action", error);
+  }
+});
+
+/**
+ * PATCH /api/pen/pages/:pageId/prose
+ * Update the prose text of a published page.
+ * Body: { text: string }
+ */
+router.patch("/pages/:pageId/prose", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId");
+    if (!userId) return cApiError(c, "Authentication required", undefined, 401);
+    const pageId = c.req.param("pageId");
+    const body = await readJsonBody(c);
+
+    if (!body || typeof body !== "object") {
+      return cValidationError(c, "Request body must be a JSON object");
+    }
+
+    const { text } = body as { text?: unknown };
+    if (typeof text !== "string" || text.trim().length === 0) {
+      return cValidationError(c, "text must be a non-empty string");
+    }
+
+    const page = await updatePenPageProse(userId, pageId, {
+      text: text.trim(),
+    });
+    return c.json({ page });
+  } catch (error) {
+    if (error instanceof PenBookOwnershipError) return cApiError(c, error.message, undefined, 403);
+    if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
+    return cApiError(c, "Failed to update pen page prose", error);
   }
 });
 
