@@ -91,6 +91,10 @@ export function getEnrichedUserSelect() {
     branchesOpened: sql<number>`COALESCE(${userCounters.branchesOpened},0)`,
     topupCredits: sql<number>`COALESCE(${userCounters.topupCredits},0)`,
     referredUsers: sql<number>`COALESCE(${userCounters.referredUsers},0)`,
+    referralRewards: sql<number>`COALESCE((
+      SELECT SUM(credits) FROM transactions
+      WHERE user_id = users.user_id AND type = 'reward' AND context = 'referral_bonus' AND metadata->>'referredUserId' IS NOT NULL
+    ), COALESCE(${userCounters.referredUsers}, 0) * ${REFERRAL_BONUS})`,
     followersCount: sql<number>`COALESCE(${userCounters.followersCount},0)`,
     followingCount: sql<number>`COALESCE(${userCounters.followingCount},0)`,
     // Comments the user wrote (top-level, parent_comment_id IS NULL) — SSOT-backed

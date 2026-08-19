@@ -60,6 +60,7 @@ export interface UserStats {
   branchesOpened: number;
   topupCredits: number;
   referredUsers: number;
+  referralRewards: number;
   followersCount: number;
   followingCount: number;
   commentsCount: number;

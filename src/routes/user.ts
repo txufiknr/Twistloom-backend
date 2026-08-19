@@ -122,6 +122,7 @@ const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
  * @returns {number} user.accountDaysOld - Days since account creation
  * @returns {number} user.topupCredits - Total credits topped up
  * @returns {number} user.referredUsers - Referred users count
+ * @returns {number} user.referralRewards - Total credits earned from referrals
  * @returns {number} user.activeCheckinStreak - Current check-in streak
  * @returns {number} user.maxCheckinStreak - Longest check-in streak
  * @returns {number} user.customActionsWritten - Custom actions authored
@@ -162,6 +163,7 @@ const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
  *     "accountDaysOld": 380,
  *     "topupCredits": 200,
  *     "referredUsers": 3,
+ *     "referralRewards": 30,
  *     "activeCheckinStreak": 5,
  *     "maxCheckinStreak": 12,
  *     "customActionsWritten": 2,
@@ -194,11 +196,36 @@ router.get('/', requireAuth, async (c: Context<AppEnv>) => {
     // with GET /api/users/:identifier. The frontend reads user.subscription.tier
     // for VIP gating — keeping it as a single authoritative field prevents SSOT drift.
     const { tier, ...restUser } = user;
+    const stats: UserStats = {
+      readsCount: user.readsCount,
+      likedBooksCount: user.likedBooksCount,
+      savedBooksCount: user.savedBooksCount,
+      likesReceived: user.likesReceived,
+      accountDaysOld: user.accountDaysOld,
+      emailVerified: user.emailVerified,
+      havePurchased: user.havePurchased,
+      booksGenerated: user.booksGenerated,
+      booksCompleted: user.booksCompleted,
+      pagesRead: user.pagesRead,
+      pagesGenerated: user.pagesGenerated,
+      branchesOpened: user.branchesOpened,
+      topupCredits: user.topupCredits,
+      referredUsers: user.referredUsers,
+      referralRewards: user.referralRewards,
+      followersCount: user.followersCount,
+      followingCount: user.followingCount,
+      commentsCount: user.commentsCount,
+      activeCheckinStreak: streaks.activeStreak,
+      maxCheckinStreak: streaks.longestStreak,
+      customActionsWritten: user.customActionsWritten,
+    };
+
     return c.json({
       user: {
         ...restUser,
         activeCheckinStreak: streaks.activeStreak,
         maxCheckinStreak: streaks.longestStreak,
+        stats,
         subscription: { tier },
         linkedMethods: providers.map(p => p.provider),
       }
@@ -828,6 +855,7 @@ router.get("/users/:identifier", optionalAuth, async (c: Context<AppEnv>) => {
           branchesOpened: userData.branchesOpened,
           topupCredits: userData.topupCredits,
           referredUsers: userData.referredUsers,
+          referralRewards: userData.referralRewards,
           followersCount: userData.followersCount,
           followingCount: userData.followingCount,
           commentsCount: userData.commentsCount,
