@@ -65,6 +65,14 @@ export type PenSessionPayload = DBPenSession & {
   bookMode: BookMode;
   /** All in-flight draft slots for this session (lightweight summaries). */
   drafts: PenDraftSummary[];
+  /** Draft workspace — JSONB spans of the ACTIVE draft row (legacy column dropped, Phase 4). */
+  draftBuffer: DraftSpan[];
+  /** Exact TipTap HTML mirror of the ACTIVE draft's buffer. */
+  draftHtml: string | null;
+  /** Author-curated cast of the ACTIVE draft row's scene. */
+  draftCharactersPresent: PenDraftCharacter[];
+  /** Author-curated scene essentials of the ACTIVE draft row. */
+  draftSceneEssentials: PenDraftSceneEssentials | null;
 };
 
 /**
@@ -94,7 +102,7 @@ async function toPenSessionPayload(session: DBPenSession, options: { client?: DB
     draftHtml: active?.draftHtml ?? null,
     draftCharactersPresent: active?.draftCharactersPresent ?? [],
     draftSceneEssentials: active?.draftSceneEssentials ?? null,
-    drafts: drafts.map(toPenDraftSummary),
+    drafts: drafts.map((draft) => toPenDraftSummary(draft, book.canonVersion)),
   };
 }
 
@@ -110,15 +118,26 @@ async function listPenDraftRows(sessionId: string, client: DBClient = dbRead): P
     .orderBy(desc(penDrafts.updatedAt));
 }
 
-/** Converts a stored draft row into the lightweight outline-shelf summary. */
-function toPenDraftSummary(draft: DBPenDraft): PenDraftSummary {
-  const charCount = (draft.draftBuffer ?? []).reduce((sum, span) => sum + (span.text?.length ?? 0), 0);
+/**
+ * Converts a stored draft row into the lightweight outline-shelf summary.
+ *
+ * `isStale` mirrors the delta-gate eligible set (roadmap §8): true when any
+ * span is `dirty` or was validated against an older `books.canonVersion` than
+ * the book's current one — i.e. the draft will hit the delta gate.
+ */
+function toPenDraftSummary(draft: DBPenDraft, canonVersion: number): PenDraftSummary {
+  const spans = draft.draftBuffer ?? [];
+  const charCount = spans.reduce((sum, span) => sum + (span.text?.length ?? 0), 0);
+  const isStale = spans.some(
+    (span) => span.validationState === "dirty" || (span.validatedAgainst !== undefined && span.validatedAgainst !== canonVersion)
+  );
   return {
     id: draft.id,
     parentPageId: draft.parentPageId,
     label: draft.label,
     actionText: draft.actionText,
     charCount,
+    isStale,
     createdAt: draft.createdAt,
     updatedAt: draft.updatedAt,
   };
@@ -268,7 +287,6 @@ export async function createPenSession(
         assistanceLevel,
         authoringPov: params.authoringPov ?? null,
         status: "active",
-        draftBuffer: [],
       })
       .returning();
 
@@ -446,25 +464,12 @@ export async function getPenSessionState(userId: string, sessionId: string): Pro
   return { state, currentPageId: session.currentPageId, pageNumber: state?.page ?? 0, pageEssentials };
 }
 
-/** Allowed PATCH fields on a pen session. */
+/** Allowed PATCH fields on a pen session (draft fields removed in Phase 4 — autosave goes through `PATCH /drafts/:id`). */
 export type PenSessionUpdates = {
   assistanceLevel?: number;
   status?: PenSessionStatus;
   currentPageId?: string | null;
   authoringPov?: AuthoringPov | null;
-  draftCharactersPresent?: PenDraftCharacter[];
-  draftSceneEssentials?: PenDraftSceneEssentials | null;
-  /**
-   * Draft workspace (autosave layer 2, roadmap §18.1). Flushed together with
-   * `draftHtml` by the frontend's heartbeat autosave. Applied ONLY when
-   * `draftUpdatedAt` is newer than the server's current `updatedAt` (last-write-
-   * wins), so a stale draft from another device can never clobber fresher prose.
-   */
-  draftBuffer?: DraftSpan[];
-  /** Exact TipTap HTML mirror of `draftBuffer` — restores rich formatting on refresh/other devices. */
-  draftHtml?: string;
-  /** Client wall-clock (ms epoch, ISO string) of the most recent keystroke in this draft. */
-  draftUpdatedAt?: string;
 };
 
 /**
@@ -523,21 +528,7 @@ export async function updatePenSession(
     }
   }
 
-  // 3) Draft-workspace writes route to the ACTIVE draft (compat path — new
-  //    clients autosave via `PATCH /drafts/:id` instead, roadmap §6.1).
-  const draftUpdates: PenDraftUpdates = {};
-  if (updates.draftCharactersPresent !== undefined) draftUpdates.draftCharactersPresent = updates.draftCharactersPresent;
-  if (updates.draftSceneEssentials !== undefined) draftUpdates.draftSceneEssentials = updates.draftSceneEssentials;
-  if (updates.draftBuffer !== undefined) draftUpdates.draftBuffer = updates.draftBuffer;
-  if (updates.draftHtml !== undefined) draftUpdates.draftHtml = updates.draftHtml;
-  if (updates.draftUpdatedAt !== undefined) draftUpdates.draftUpdatedAt = updates.draftUpdatedAt;
-
-  const activeDraftId = existing.activeDraftId ?? values.activeDraftId ?? null;
-  if (Object.keys(draftUpdates).length > 0 && activeDraftId) {
-    await updateSessionDraft(userId, sessionId, activeDraftId, draftUpdates);
-  }
-
-  // 4) Persist session-level changes.
+  // 3) Persist session-level changes.
   if (Object.keys(values).length > 0) {
     const [updated] = await dbWrite
       .update(penSessions)
@@ -548,7 +539,7 @@ export async function updatePenSession(
     return toPenSessionPayload(updated, { client: dbWrite });
   }
 
-  // Nothing accepted (only a stale draft write or a no-op) — return unchanged.
+  // Nothing accepted (a no-op) — return unchanged.
   return toPenSessionPayload(existing, { client: dbWrite });
 }
 
@@ -576,8 +567,10 @@ export async function discardPenDraft(userId: string, sessionId: string): Promis
 
 /** Lists every in-flight draft slot for the outline shelf (ownership verified). */
 export async function listSessionDrafts(userId: string, sessionId: string): Promise<PenDraftSummary[]> {
-  await getPenSessionById(userId, sessionId);
-  return (await listPenDraftRows(sessionId)).map(toPenDraftSummary);
+  const session = await getPenSessionById(userId, sessionId);
+  const book = await getBookFromDB(session.bookId);
+  if (!book) throw new PenSessionNotFoundError("Book not found for this session");
+  return (await listPenDraftRows(sessionId)).map((draft) => toPenDraftSummary(draft, book.canonVersion));
 }
 
 /**
@@ -2487,7 +2480,7 @@ export async function finalizePenDraft(
 
     await tx
       .update(penSessions)
-      .set({ draftBuffer: [], draftCharactersPresent: [], draftSceneEssentials: null, currentPageId: newPage.id, activeDraftId: null, status: "active", updatedAt: new Date() })
+      .set({ currentPageId: newPage.id, activeDraftId: null, status: "active", updatedAt: new Date() })
       .where(and(eq(penSessions.id, sessionId), eq(penSessions.userId, userId)));
 
     // The published draft slot is cleared (multi-draft workspace): the editor
@@ -2874,7 +2867,7 @@ export async function getPenOutline(userId: string, bookId: string): Promise<Pen
       ? {
           sessionId: sessionRow.id,
           activeDraftId: sessionRow.activeDraftId,
-          drafts: (await listPenDraftRows(sessionRow.id)).map(toPenDraftSummary),
+          drafts: (await listPenDraftRows(sessionRow.id)).map((draft) => toPenDraftSummary(draft, book.canonVersion)),
         }
       : null,
   };

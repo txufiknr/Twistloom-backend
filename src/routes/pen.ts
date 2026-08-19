@@ -347,7 +347,8 @@ router.patch("/pages/:pageId/prose", requireAuth, async (c) => {
 
 /**
  * PATCH /api/pen/sessions/:id
- * Update assistanceLevel, status, or currentPageId on a session the user owns.
+ * Update assistanceLevel, status, currentPageId, or authoringPov on a session
+ * the user owns. Draft-workspace fields moved to `PATCH /drafts/:id` (Phase 4).
  */
 router.patch("/sessions/:id", requireAuth, async (c) => {
   try {
@@ -359,16 +360,11 @@ router.patch("/sessions/:id", requireAuth, async (c) => {
     if (!body || typeof body !== "object") {
       return cValidationError(c, "Request body must be a JSON object");
     }
-    const { assistanceLevel, status, currentPageId, authoringPov, draftCharactersPresent, draftSceneEssentials, draftBuffer, draftHtml, draftUpdatedAt } = body as {
+    const { assistanceLevel, status, currentPageId, authoringPov } = body as {
       assistanceLevel?: number;
       status?: PenSessionStatus;
       currentPageId?: string | null;
       authoringPov?: AuthoringPov | null;
-      draftCharactersPresent?: PenDraftCharacter[];
-      draftSceneEssentials?: PenDraftSceneEssentials | null;
-      draftBuffer?: DraftSpan[];
-      draftHtml?: string;
-      draftUpdatedAt?: string;
     };
 
     if (assistanceLevel !== undefined && (typeof assistanceLevel !== "number" || assistanceLevel < PEN_ASSISTANCE_LEVEL_MIN || assistanceLevel > PEN_ASSISTANCE_LEVEL_MAX)) {
@@ -383,36 +379,8 @@ router.patch("/sessions/:id", requireAuth, async (c) => {
     if (authoringPov !== undefined && authoringPov !== null && !PEN_AUTHORING_POVS.includes(authoringPov)) {
       return cValidationError(c, `authoringPov must be one of: ${PEN_AUTHORING_POVS.join(", ")} or null`);
     }
-    if (draftCharactersPresent !== undefined) {
-      if (!Array.isArray(draftCharactersPresent) || draftCharactersPresent.length > PEN_DRAFT_CAST_LIMIT) {
-        return cValidationError(c, `draftCharactersPresent must be an array of at most ${PEN_DRAFT_CAST_LIMIT} cast members`);
-      }
-      for (const member of draftCharactersPresent) {
-        const memberError = validateDraftCastMember(member);
-        if (memberError) return cValidationError(c, memberError);
-      }
-    }
 
-    if (draftSceneEssentials !== undefined) {
-      const essentialsError = validateDraftSceneEssentials(draftSceneEssentials);
-      if (essentialsError) return cValidationError(c, essentialsError);
-    }
-
-    if (draftBuffer !== undefined) {
-      const bufferError = validateDraftBuffer(draftBuffer);
-      if (bufferError) return cValidationError(c, bufferError);
-    }
-    if (draftHtml !== undefined && typeof draftHtml !== "string") {
-      return cValidationError(c, "draftHtml must be a string");
-    }
-    if (typeof draftHtml === "string" && draftHtml.length > PEN_DRAFT_HTML_MAX_LENGTH) {
-      return cValidationError(c, `draftHtml must be at most ${PEN_DRAFT_HTML_MAX_LENGTH} characters`);
-    }
-    if (draftUpdatedAt !== undefined && (typeof draftUpdatedAt !== "string" || Number.isNaN(Date.parse(draftUpdatedAt)))) {
-      return cValidationError(c, "draftUpdatedAt must be a valid date string");
-    }
-
-    const session = await updatePenSession(userId, sessionId, { assistanceLevel, status, currentPageId, authoringPov, draftCharactersPresent, draftSceneEssentials, draftBuffer, draftHtml, draftUpdatedAt });
+    const session = await updatePenSession(userId, sessionId, { assistanceLevel, status, currentPageId, authoringPov });
     return c.json({ session });
   } catch (error) {
     if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);

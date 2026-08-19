@@ -167,6 +167,13 @@ export type PenDraftSummary = {
   actionText: string | null;
   /** Plain-text length of the buffer (for the word-count chip). */
   charCount: number;
+  /**
+   * Delta-gate staleness flag (roadmap §8): `true` when any span is `dirty` or
+   * was validated against an older `books.canonVersion` than the current one.
+   * Surfaced as the shelf's stale badge so the author knows the draft will hit
+   * the delta gate before continuing/finalizing.
+   */
+  isStale: boolean;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -185,35 +192,6 @@ export type PenDraftUpdates = {
 
 /** Rolled-up authorship of a published page (`pages.authorshipOrigin`). */
 export type AuthorshipOrigin = "human" | "ai" | "revised";
-
-/** A Pen session: one active draft workspace per (user, book). */
-export type PenSession = {
-  id: string;
-  userId: string;
-  bookId: string;
-  authoringMode: AuthoringMode;
-  /** Published page the author is continuing from (null until page 1 finalizes). */
-  currentPageId: string | null;
-  /** Draft workspace — JSONB spans, NOT plain text (Model C). */
-  draftBuffer: DraftSpan[];
-  /** Exact TipTap HTML mirror of `draftBuffer` (roadmap §18.1 layer 2) — preserves rich formatting across refresh/other devices. Null on pre-layer-2 rows. */
-  draftHtml?: string | null;
-  /** Author-curated cast for the current draft's scene (§10 Decision M). */
-  draftCharactersPresent: PenDraftCharacter[];
-  /** Author-curated scene essentials for the next page (setting: place/mood/weather/date/time/keys). */
-  draftSceneEssentials?: PenDraftSceneEssentials | null;
-  /** 0 (all human) to 1 (all AI) — maps to credit cost tiers. */
-  assistanceLevel: number;
-  /**
-   * Session-level POV default (§10 E). Derived from the author's prose by the
-   * editor; overridable per interaction. Text adventure ignores it (always
-   * second-person).
-   */
-  authoringPov?: AuthoringPov | null;
-  status: PenSessionStatus;
-  createdAt: Date;
-  updatedAt: Date;
-};
 
 /** Audit trail of one AI/human interaction within a session. Source of truth for attribution. */
 export type PenEdit = {

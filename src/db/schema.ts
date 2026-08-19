@@ -2478,10 +2478,6 @@ export const portalBlogPosts = pgTable(
  * (penSessions holds the backward `active_draft_id` ref; this table's
  * `sessionId` is a lazy forward ref to penSessions).
  *
- * Legacy `pen_sessions.draftBuffer/draftHtml/draftCharactersPresent/
- * draftSceneEssentials` columns remain (backfilled empty) for a transition
- * window, then dropped — see the cleanup migration.
- *
  * @see docs/roadmap/PEN_DRAFT_SHELF_ROADMAP.md
  */
 export const penDrafts = pgTable(
@@ -2518,13 +2514,18 @@ export const penDrafts = pgTable(
 );
 
 /**
- * Pen (AI Co-Writing) sessions — Phase 0.a (Model C, draft-then-finalize).
+ * Pen (AI Co-Writing) sessions — multi-draft workspace.
  *
- * One active session per (user, book). The draft is a private JSONB span buffer
- * (`draftBuffer`), NOT plain text. `/finalize` is the only way a draft becomes
+ * One active session per (user, book). The draft is stored in `pen_drafts`
+ * rows; the session persists the workspace (`active_draft_id`) and
+ * navigation/authoring config. `/finalize` is the only way a draft becomes
  * a published page; `/discard` throws it away for free.
  *
- * @see docs/roadmap/AI_CO_WRITING_PEN_ROADMAP.md §5.3, Phase 0.a
+ * Legacy `draftBuffer/draftHtml/draftCharactersPresent/draftSceneEssentials`
+ * columns were dropped in the Phase 4 cleanup — the payload now exposes those
+ * as a VIEW of the active `pen_drafts` row.
+ *
+ * @see docs/roadmap/PEN_DRAFT_SHELF_ROADMAP.md
  */
 export const penSessions = pgTable(
   "pen_sessions",
@@ -2550,32 +2551,6 @@ export const penSessions = pgTable(
      * @see docs/roadmap/PEN_DRAFT_SHELF_ROADMAP.md D-2
      */
     activeDraftId: uuid("active_draft_id"),
-    /** Draft workspace — JSONB spans, NOT plain text (Model C). */
-    draftBuffer: jsonb("draft_buffer").$type<DraftSpan[]>().notNull().default(sql`'[]'::jsonb`),
-    /**
-     * Exact TipTap HTML of the live draft (roadmap §18.1 autosave layer 2).
-     * Mirrors `draftBuffer` (the engine-facing span array) so a page refresh or
-     * a second device can restore the draft WITHOUT flattening rich formatting
-     * (headings/lists/quotes/bold/images) through the plain-text span model.
-     * `null` for sessions written before layer 2 shipped — those restore from
-     * `draftBuffer` via the span→HTML builder as before.
-     */
-    draftHtml: text("draft_html"),
-    /**
-     * Author-curated cast physically present in the current draft's scene
-     * (§10 Decision M). Full on-scene cast INCLUDING the main character; the
-     * author checklists this in the editor before /finalize. Cleared with the
-     * draft on /finalize and /discard.
-     */
-    draftCharactersPresent: jsonb("draft_characters_present").$type<PenDraftCharacter[]>().notNull().default(sql`'[]'::jsonb`),
-    /**
-     * Author-curated scene essentials for the NEXT page (setting: placeId,
-     * mood, weather, calendarDate, timeOfDay, keyEvents, keyObjects). Cleared
-     * with the draft on /finalize and /discard, mirroring
-     * `draftCharactersPresent`. Blank fields are undefined so /finalize falls
-     * back to the previous published page's values.
-     */
-    draftSceneEssentials: jsonb("draft_scene_essentials").$type<PenDraftSceneEssentials | null>().default(null),
     /** 0 (all human) to 1 (all AI) — maps to credit cost tiers (§8). */
     assistanceLevel: real("assistance_level").notNull().default(0.5),
     /** Session-level POV default (§10 E). Null → derive from the author's prose. */

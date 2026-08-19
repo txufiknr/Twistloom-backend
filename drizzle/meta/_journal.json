@@ -456,6 +456,13 @@
       "when": 1787100279238,
       "tag": "0065_smiling_baron_strucker",
       "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1787129779162,
+      "tag": "0066_quick_mattie_franklin",
+      "breakpoints": true
     }
   ]
 }
