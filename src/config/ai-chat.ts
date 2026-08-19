@@ -33,15 +33,13 @@ export const MAX_SCHEMA_LENGTH: number = 30_000;
 export const STORY_PAGE_MAX_OUTPUT_TOKEN: number = 2200;
 /** See {@link STORY_PAGE_MAX_OUTPUT_TOKEN} doc for the full rationale. */
 export const STATE_DELTA_MAX_OUTPUT_TOKEN: number = 1800;
-/**
- * Evaluator-pass budgets for each split turn — mirrors how
- * EVALUATION_SCORING_OUTPUT_TOKEN is added on top of `config.maxOutputToken`
- * for the legacy single-shot evaluator (ai-chat.ts, aiPrompt). Roughly half
- * of EVALUATION_SCORING_OUTPUT_TOKEN each, same asymmetric-split rationale.
- */
-export const STORY_PAGE_EVALUATION_OUTPUT_TOKEN: number = 1100;
-/** See {@link STORY_PAGE_EVALUATION_OUTPUT_TOKEN} doc. */
-export const STATE_DELTA_EVALUATION_OUTPUT_TOKEN: number = 900;
+// STORY_PAGE_EVALUATION_OUTPUT_TOKEN / STATE_DELTA_EVALUATION_OUTPUT_TOKEN
+// (per-turn evaluator budgets) were removed here — checkpoint 2 (Part 5.5
+// Q2) redesigned evaluation from one pass per turn to a single pass on the
+// merged object, reusing EVALUATION_SCORING_OUTPUT_TOKEN above unchanged
+// (see ai-chat.ts's runEvaluationPass / prompt.ts's evaluateMergedStoryGeneration)
+// — these two never got wired to anything after that redesign and were
+// caught as dead exports during the checkpoint-4 lint/typecheck pass.
 
 /**
  * Feature flag gating the multi-turn (stage-split) page generation pipeline

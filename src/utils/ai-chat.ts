@@ -1421,8 +1421,6 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
     documents = [],
     context = 'ai',
     logPrompts = false,
-    logEvaluationResult = false,
-    evaluatorFallbackLimit = EVALUATION_FALLBACK_LIMIT,
     meta
   } = options;
 
@@ -1623,6 +1621,18 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
  *
  * @param result - The already-generated content to evaluate (`result.output`
  * is fed to the evaluator as a "GENERATED JSON (from previous AI)" document).
+ * @typeParam T - Matches `aiPrompt`'s own constraint (`Record<string, unknown> | string`),
+ * not just object shapes — `aiPrompt<T>` calls this internally with its own
+ * `T` unchanged (see the inline call site below), so a narrower constraint
+ * here would reject exactly the callers `aiPrompt` needs to pass through.
+ * Caught as a real `tsc` error (not just an esbuild-syntax gap) during the
+ * checkpoint-4 audit: the original narrower `T extends Record<string, unknown>`
+ * compiled fine in isolation but broke at aiPrompt's own call site, since
+ * `aiPrompt`'s `T` can be `string` and TypeScript can't prove otherwise
+ * generically. `buildEvaluationSchemaDefinition<T>` inside this function
+ * keeps its own stricter `Record<string, unknown>`-only constraint safely —
+ * it's called without an explicit type argument and its parameter doesn't
+ * reference `T`, so its inference is independent of this widening.
  * @param systemPrompt - The system prompt to reuse for the evaluation call —
  * pass the SAME (already provider/output-format-resolved) string used for
  * the generation call that produced `result`, not `options.systemPrompt`
@@ -1634,7 +1644,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
  * should fall back to parsing `result.output` themselves in that case,
  * exactly as aiPrompt's own post-block code already does.
  */
-export async function runEvaluationPass<T extends Record<string, unknown>>(
+export async function runEvaluationPass<T extends Record<string, unknown> | string>(
   result: AIResponse<string>,
   evaluatorPrompt: string,
   options: AIPromptOptions & { evaluatorFallbackLimit?: number },

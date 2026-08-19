@@ -1,6 +1,6 @@
 import type { Book, BookMode } from "./book.js";
 import type { CandidateGenerationPage } from "./candidate-generation.js";
-import type { ActionedStoryPage, StateDeltaGenerationWithBranch, StoryPageGeneration, StoryState } from "./story.js";
+import type { ActionedStoryPage, StoryState } from "./story.js";
 import type { AIChatConfig, AIDocument, AIJsonProperty, GenerationStage } from "./ai-chat.js";
 
 export type GenerateBookCreationPromptParams = {
@@ -86,20 +86,6 @@ export type BuildNextPagePromptParams = {
    */
   useStringEvaluatorOutput?: boolean;
 }
-
-/**
- * Context for a single generation stage (Turn A or Turn B) in the multi-turn
- * page-generation pipeline — MULTI_TURN_PAGE_GENERATION_ROADMAP.md Part 2.3.
- *
- * Extends BuildNextPagePromptParams with the one thing only Turn B needs:
- * Turn A's already-generated StoryPage. buildStateDeltaPrompt,
- * buildStateDeltaFieldInstructions's isMultiTurn ID-handoff instructions, and
- * evaluateMergedStoryGeneration's merge step all read it off this field.
- * Turn A leaves it undefined — there's nothing to hand it yet.
- */
-export type StageContext = BuildNextPagePromptParams & {
-  generatedPage?: StoryPageGeneration;
-};
 
 /**
  * Everything runGenerationStage (prompt.ts) needs to run ONE generation turn

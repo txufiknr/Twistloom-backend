@@ -17,8 +17,8 @@
 - [ ] need change to cursor pagination?
 
 [ ] pas split multi-turn udah stable, DRY infer state delta dari story page sama pen finalize propose
-[ ] buildNextPageFieldInstructionSections: can you make it be more manageable (type-safe, defined as separate consts in new config file)? should we add generic type <T> in `FieldInstructionSection`?
-[ ] buildStoryPageReviewChecklist, buildStateDeltaEvaluatorPrompt: still unused
+[ ] buildNextPageFieldInstructionSections: can you make it be more manageable (type-safe, maybe should define them as separate consts in new config file, thus reducing boilerplate in `prompt.ts`)?
+[ ] shouldn't we add generic type <T> in `FieldInstructionSection`? thus `field` can be properly typed with keyof T object keys?
 
 ---
 

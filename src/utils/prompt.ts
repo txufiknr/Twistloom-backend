@@ -1,4 +1,4 @@
-import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_CREATIVE, DEFAULT_MAX_OUTPUT_TOKEN, STORY_PAGE_MAX_OUTPUT_TOKEN, STATE_DELTA_MAX_OUTPUT_TOKEN, STORY_PAGE_EVALUATION_OUTPUT_TOKEN, STATE_DELTA_EVALUATION_OUTPUT_TOKEN, USE_MULTI_TURN_GENERATION } from "../config/ai-chat.js";
+import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_CREATIVE, DEFAULT_MAX_OUTPUT_TOKEN, STORY_PAGE_MAX_OUTPUT_TOKEN, STATE_DELTA_MAX_OUTPUT_TOKEN, USE_MULTI_TURN_GENERATION } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING, AI_CHAT_MODELS_EVALUATION } from "../config/ai-clients.js";
 import { characterImportances, characterStatuses } from "../config/enums.js";
 import { actionTypes, archetypes, stabilityLevels, manipulationAffinities, truthLevels, threatProximities, realityStabilities, endingTypes, finalePhases, factTypes, sceneTypes, storyMomentums } from "../config/enums.js";
@@ -39,11 +39,11 @@ import { DEFAULT_CANDIDATE_PAGE_PER_ACTION, MAX_CANDIDATE_PAGE_PER_ACTION } from
 import { canonicalPlaceTypes } from "../config/enums.js";
 import type { PlaceMemory } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
-import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, FutureNoteSchedule, FutureNoteStateTrigger, MemoryIntegrity, PastEvent, PlotFlag, SanityState, SceneType, StateDelta, StateDeltaGeneration, StateDeltaGenerationWithBranch, StoryGeneration, StoryOutline, StoryPage, StoryPageGeneration, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
-import type { AIChatConfig, AIChatConfigCaps, AIPromptForJson, AIPromptForJsonParams, AIResponse, GenerationStage } from "../types/ai-chat.js";
+import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, FutureNoteSchedule, FutureNoteStateTrigger, MemoryIntegrity, PastEvent, PlotFlag, SanityState, SceneType, StateDelta, StateDeltaGenerationWithBranch, StoryGeneration, StoryOutline, StoryPage, StoryPageGeneration, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
+import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPromptForJsonParams, AIResponse, AIResponseProvider } from "../types/ai-chat.js";
 import type { CharacterMemory, CharacterRelationship, Injury, InventoryItem, PastInteraction, HealthStatus, StoryMCCandidate } from "../types/character.js";
 import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, CreateBookResponse, BookStatus, BookMode } from "../types/book.js";
-import type { BuildNextPageParams, GenerateBookCreationPromptParams, BuildNextPagePromptParams, StageContext, GenerationStageDefinition } from "../types/prompt.js";
+import type { BuildNextPageParams, GenerateBookCreationPromptParams, BuildNextPagePromptParams, GenerationStageDefinition } from "../types/prompt.js";
 import type { AIChatStreamResult, ProgressCallback } from "../types/sse.js";
 import type { CandidateGenerationPage, CandidatePagesGeneration } from "../types/candidate-generation.js";
 import { ucfirst } from "./formatter.js";
@@ -2012,17 +2012,70 @@ ${outputFormatBlurb}
  * disabled, failed, or unavailable) — exactly the same graceful-degradation
  * contract aiPrompt's own inline evaluation step already provides.
  */
+/**
+ * Single post-merge evaluation pass on the MERGED StoryGeneration object
+ * (Turn A + Turn B combined) — MULTI_TURN_PAGE_GENERATION_ROADMAP.md Part
+ * 5.5 Q2. This is the resolved design for evaluation in the multi-turn
+ * pipeline: rather than each turn running its own evaluator (which would
+ * double evaluator-call cost per candidate on top of the base 1→2 generation
+ * calls), evaluation runs exactly ONCE, after both turns are done and merged
+ * — matching today's single-shot flow's call count (1 generation-equivalent
+ * unit + 1 evaluation), not doubling it.
+ *
+ * Reuses buildNextPageEvaluatorPrompt (the legacy, UNCHANGED evaluator
+ * prompt/rubric) unmodified — it already targets the full StoryGeneration
+ * shape, so it's exactly correct for evaluating a merged object with zero
+ * new prompt content needed. This superseded the per-turn
+ * buildStoryPageEvaluatorPrompt/buildStateDeltaEvaluatorPrompt pair from
+ * checkpoint 1 (removed here — see the roadmap's checkpoint log for why).
+ *
+ * @param carrierResult - Turn B's own AIResponse, used to carry forward
+ * provider/model bookkeeping fields for the merged response (Turn B is the
+ * natural choice — it had full context of Turn A's output, so it's the more
+ * "final" of the two — a bookkeeping choice, not a correctness one).
+ * @param documents,cachedContentId,config,bookId - Passed through from the
+ * SAME setup Turn A/Turn B already used (not rebuilt), matching the legacy
+ * single-shot flow's behavior of reusing one shared `options` object for
+ * both generation and evaluation. `cachedContentId` is suffixed `:story_page`
+ * here (not a new `:evaluation` slot) since this evaluation call reuses
+ * Turn A's exact systemPrompt — the two share identical cache content, so
+ * this reuses Turn A's already-warmed cache instead of paying to create a
+ * new one. A real gap caught during the checkpoint-4 audit: the original
+ * version of this function passed only `{ modelSelection }`, silently
+ * dropping the book-level context documents (characters/places) and the
+ * cache benefit that the legacy evaluator always had.
+ * @param baseContext - Unsuffixed base context string (e.g.
+ * `story-page-candidate:b-${bookId}`) — `runEvaluationPass` appends
+ * `-evaluation` itself; passing an already-suffixed string here (a bug
+ * caught in the same audit pass) would double it in logs/telemetry.
+ */
 async function evaluateMergedStoryGeneration(
   merged: StoryGeneration,
   carrierResult: AIResponse<unknown>,
   params: BuildNextPagePromptParams,
   systemPrompt: string,
-  evaluationContext: string,
+  documents: AIDocument[],
+  cachedContentId: string | undefined,
+  config: AIChatConfig,
+  bookId: string,
+  baseContext: string,
   onProgress?: ProgressCallback,
   onGenerationProgress?: (step: StoryGenerationStep) => Promise<void>,
 ): Promise<AIResponse<StoryGeneration>> {
+  // Real bug caught during the checkpoint-4 audit: `carrierResult: AIResponse<unknown>`
+  // (Turn B's own response) has `.result?: unknown` — spreading it directly
+  // into a variable typed `AIResponse<string>` fails `tsc` (`unknown` is not
+  // assignable to `string | undefined`) even though `.output` is
+  // overridden right after, because object spread preserves each source
+  // property's own type, and TypeScript checks the WHOLE resulting object
+  // against the annotation, not just the properties actually read
+  // afterward. esbuild's syntax-only check (used throughout this project
+  // for per-file verification) doesn't catch this class of error at all —
+  // it doesn't type-check. Fixed by excluding `.result` before spreading,
+  // since it's being replaced by `merged`/`correctedOutput` regardless.
+  const { result: _carrierResult, ...carrierMeta } = carrierResult;
   const baseResult: AIResponse<string> = {
-    ...carrierResult,
+    ...carrierMeta,
     output: JSON.stringify(merged),
   };
 
@@ -2047,9 +2100,16 @@ async function evaluateMergedStoryGeneration(
   const evaluated = await runEvaluationPass<StoryGeneration>(
     baseResult,
     evaluatorPrompt,
-    { modelSelection: AI_CHAT_MODELS_EVALUATION },
+    {
+      modelSelection: AI_CHAT_MODELS_EVALUATION,
+      config,
+      documents,
+      cachedContentId: cachedContentId ? `${cachedContentId}:story_page` : undefined,
+      logPrompts: true,
+      meta: { bookId },
+    },
     systemPrompt,
-    evaluationContext,
+    baseContext,
     onProgress,
     onGenerationProgress,
   );
@@ -5395,7 +5455,7 @@ async function generateStoryGenerationMultiTurn(options: {
   const merged: StoryGeneration = { ...storyPage, ...stateDelta };
 
   // ── Single post-merge evaluation pass (Part 5.5 Q2) ─────────────────────
-  return evaluateMergedStoryGeneration(merged, stateDeltaResponse, promptParams, systemPrompt, `${baseContext}:evaluation`);
+  return evaluateMergedStoryGeneration(merged, stateDeltaResponse, promptParams, systemPrompt, documents, cachedContentId, config, book.id, baseContext);
 }
 
 /**
@@ -5651,8 +5711,19 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
   // the combined path's one shared `response` reused for every persisted
   // page — see generatedAlternatives below, which normalizes both shapes
   // to the same { result, response } pairing so the persist loop doesn't
-  // need to know which path produced them.
-  let generatedAlternatives: { result: StoryGeneration; response: AIResponse<StoryGeneration> }[];
+  // need to know which path produced them. `response` is typed as
+  // AIResponseProvider (not AIResponse<StoryGeneration>) deliberately: it's
+  // the exact type persistPageWithState's aiResponseProvider param actually
+  // wants (provider/model/eval* bookkeeping only, generic-independent), and
+  // it's the only type both paths can satisfy — the legacy branch's shared
+  // response is AIResponse<CandidatePagesGeneration>, not
+  // AIResponse<StoryGeneration>, since it's ONE combined response for the
+  // whole batch, not per-alternative (a real `tsc` error caught during the
+  // checkpoint-4 audit: AIResponse<CandidatePagesGeneration> doesn't
+  // structurally satisfy AIResponse<StoryGeneration>, but both satisfy
+  // AIResponseProvider trivially, since neither of AIResponseProvider's
+  // picked fields depends on the generic parameter at all).
+  let generatedAlternatives: { result: StoryGeneration; response: AIResponseProvider }[];
 
   if (USE_MULTI_TURN_GENERATION) {
     const settled = await Promise.allSettled(
