@@ -1,7 +1,8 @@
 # Twistloom — Pen Branch Ending ("The End") & Dynamic StoryState.maxPage Roadmap
 
 **Date:** August 19, 2026  
-**Status:** Proposed / In Design  
+**Date:** August 19, 2026  
+**Status:** Complete (Implemented & Verified)  
 **Scope:** Architecture and execution roadmap for enabling writers to mark any story page ($\ge \text{PEN\_MIN\_ENDING\_PAGE}$) as a terminal conclusion ("The End"), decoupling reader completion from the book-level `book.totalPages` estimate in favor of the authoritative, path-local `story_states.maxPage`, and wiring seamless support across the Pen Editor, Outline Tree, and Story Reader.
 
 ---
@@ -10,11 +11,11 @@
 
 | Status | Phase | Scope | Key Deliverables & Files |
 |---|---|---|---|
-| ◻️ **PLANNED** | **Phase 1: Config & Contract Alignment** | Minimum ending page threshold & API types | `config/story.ts`, `config/pen.ts`, `types/pen.ts`, `types/story.ts` |
-| ◻️ **PLANNED** | **Phase 2: Backend Finalize Service** | Terminal page publishing & state capping | `finalizePenDraft` in `services/pen.ts`, `POST /api/pen/sessions/:id/finalize` in `routes/pen.ts` |
-| ◻️ **PLANNED** | **Phase 3: Pen Editor UX & Controls** | "Mark as The End" toggle & publish flow | `PenDrawer.tsx`, `PenEditorClient.tsx`, action-text bar suppression |
-| ◻️ **PLANNED** | **Phase 4: Reader Decoupling** | Switch ending trigger from `book.totalPages` to `state.maxPage` | `ReaderActionFooter.tsx`, `TheEndButton.tsx`, `PageNavigationButtons.tsx`, `ReaderScrollContainer.tsx` |
-| ◻️ **PLANNED** | **Phase 5: Outline & Peek Badging** | Ending leaf node visualization & modal controls | `OutlinePanel.tsx` (🏁 pill), `PageViewerModal.tsx` ("Ending Page" badge) |
+| ✅ **DONE** | **Phase 1: Config & Contract Alignment** | Minimum ending page threshold & API types | `config/story.ts`, `config/pen.ts`, `types/pen.ts`, `types/story.ts`, `messages/*.json` |
+| ✅ **DONE** | **Phase 2: Backend Finalize Service** | Terminal page publishing & state capping | `finalizePenDraft` in `services/pen.ts`, `POST /api/pen/sessions/:id/finalize` in `routes/pen.ts` |
+| ✅ **DONE** | **Phase 3: Pen Editor UX & Controls** | "Mark as The End" toggle & publish flow | `PenDrawer.tsx`, `PenEditorClient.tsx`, action-text bar suppression |
+| ✅ **DONE** | **Phase 4: Reader Decoupling** | Switch ending trigger from `book.totalPages` to `state.maxPage` | `ReaderActionFooter.tsx`, `TheEndButton.tsx`, `PageNavigationButtons.tsx`, `mapToEnrichedPage` |
+| ✅ **DONE** | **Phase 5: Outline & Peek Badging** | Ending leaf node visualization & modal controls | `OutlinePanel.tsx` (🏁 pill), `PageViewerModal.tsx` ("Ending Page" badge) |
 
 ---
 

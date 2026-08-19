@@ -958,6 +958,9 @@ router.post("/sessions/:id/finalize", requireAuth, rateLimit({ maxRequests: 10, 
     if (body.force !== undefined && typeof body.force !== "boolean") {
       return cValidationError(c, "force must be a boolean");
     }
+    if (body.isEnding !== undefined && typeof body.isEnding !== "boolean") {
+      return cValidationError(c, "isEnding must be a boolean");
+    }
     if (body.actions !== undefined && (!Array.isArray(body.actions) || body.actions.length > PEN_FINALIZE_MAX_ACTIONS)) {
       return cValidationError(c, `actions must be an array of at most ${PEN_FINALIZE_MAX_ACTIONS} items`);
     }

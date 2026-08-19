@@ -1427,6 +1427,8 @@ export type EnrichedStoryPageContext = {
   threads: StoryThread[];
   /** Outline towards planned ending */
   ending?: Omit<Ending, 'changeReason' | 'changeViabilityBefore' | 'changeViabilityAfter'>;
+  /** Current branch target ceiling / terminal page number */
+  maxPage?: number;
 };
 
 /**

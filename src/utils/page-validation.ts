@@ -136,6 +136,7 @@ export function validatePageActions(
   actions: unknown,
   mode?: BookMode,
   label?: string,
+  options?: { allowEmpty?: boolean },
 ): void {
   const tag = label ? `${label}: ` : '';
 
@@ -143,6 +144,9 @@ export function validatePageActions(
     throw new Error(`${tag}Actions must be an array, got ${typeof actions}`);
   }
   if (actions.length < 1) {
+    if (options?.allowEmpty) {
+      return;
+    }
     throw new Error(`${tag}Page must have at least 1 action, got 0`);
   }
   if (mode && mode !== 'novel' && actions.length > MAX_ACTIONS_PER_PAGE) {
@@ -186,6 +190,7 @@ export function checkPageActions(
 export interface PageCheckInput {
   text: string;
   actions?: unknown;
+  isDeadEnd?: boolean;
 }
 
 /**
@@ -196,10 +201,12 @@ export function validateGeneratedPage(
   page: PageCheckInput,
   mode?: BookMode,
   label?: string,
+  options?: { allowEmpty?: boolean },
 ): void {
   validateTextLength(page.text, MIN_CHARS_PER_PAGE, label);
   validateNoJsonLeak(page.text, label);
-  validatePageActions(page.actions, mode, label);
+  const allowEmpty = options?.allowEmpty ?? page.isDeadEnd ?? false;
+  validatePageActions(page.actions, mode, label, { allowEmpty });
 }
 
 /**

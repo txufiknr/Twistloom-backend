@@ -13,7 +13,7 @@ import { penSessions, penEdits, penDrafts, penNotes, branches, pages, books, sto
 import { dbRead, dbWrite, type DBClient } from "../db/client.js";
 import { getBookFromDB, getBookPages, deleteStoryPage } from "./book.js";
 import { getTriggeredLoreEntries, listLoreEntries } from "./lore.js";
-import type { DBBook, DBPenSession, DBPenDraft, DBPage } from "../types/schema.js";
+import type { DBBook, DBPenSession, DBPenDraft } from "../types/schema.js";
 import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraft, PenDraftCharacter, PenDraftSceneEssentials, PenDraftSummary, PenDraftUpdates, PenEdit, PenSessionStatus, FinalizeViolation, CanonAmendment, PenEditType, PenOutlineData, PenOutlinePage, PenAuthorPage, AuthorshipOrigin, PenTransformInput, PenTransformResult, PenNote, PenNoteInput, PenNoteUpdate } from "../types/pen.js";
 import type { BookMode } from "../types/book.js";
 import type { StoryState, Action, StoryGeneration, PersistedStoryPage, SceneCharacter, CharacterSceneRole, Mood, ActionType, ActionHint, ActionHintType } from "../types/story.js";
@@ -1904,6 +1904,8 @@ export class PenFinalizeError extends Error {
  */
 export type PenFinalizeInput = {
   force?: boolean;
+  /** Mark this page as the story / branch conclusion ("The End" / 🏁). Sets actions to [] and caps StoryState.maxPage. */
+  isEnding?: boolean;
   amendments?: CanonAmendment[];
   actions?: { text: string; type: string; hint?: { text?: string; type?: string } }[];
   /**
@@ -2164,13 +2166,13 @@ export async function finalizePenDraft(
   }
 
   // ── Phase B: publish through the engine ───────────────────────────────────
-  const actions = buildNewPageActions(book, input.actions);
+  const actions = input.isEnding ? [] : buildNewPageActions(book, input.actions);
 
   // D-4 core: branching books REQUIRE the writer's choice text — the writer
   // owns the narrative choice; the engine/AI never decides it. Novel stays
   // linear (its incoming transition is inherited, no reader choice involved).
   const writerActionText = draft.actionText?.trim();
-  if ((book.mode === "interactive" || book.mode === "multiverse") && !writerActionText) {
+  if ((book.mode === "interactive" || book.mode === "multiverse") && !writerActionText && !input.isEnding) {
     throw new PenFinalizeError("Publishing a branching page requires the reader's choice text — enter it in the editor first");
   }
 
@@ -2263,21 +2265,17 @@ export async function finalizePenDraft(
         context: "pen-finalize",
       });
 
-      // Decision R (§10): soft target that never walls — and, for branched
-      // stories, never lets a shallow branch "shrink" the phase denominator of
-      // the branch chain it belongs to. maxPage = the best of three sources:
-      //   - currentState.maxPage: the inherited, path-local ceiling from the
-      //     branch chain (monotonic — advanceStoryState carries it forward), so
-      //     a deep spine keeps its scale while a shallow side-branch reads
-      //     "N of the same Y" instead of a suddenly-reset budget;
-      //   - book.totalPages: the author's editable target estimate (soft);
-      //   - pageNumber: the real page about to publish, so a book that runs
-      //     past its target never walls ("Mark complete" stays authoritative).
-      newState.maxPage = Math.max(
-        currentState.maxPage,
-        book.totalPages ?? pageNumber,
-        pageNumber,
-      );
+      // Terminal branch conclusion ("The End") caps maxPage to this page;
+      // otherwise, advance maxPage with monotonic growth against target totalPages.
+      if (input.isEnding) {
+        newState.maxPage = pageNumber;
+      } else {
+        newState.maxPage = Math.max(
+          currentState.maxPage,
+          book.totalPages ?? pageNumber,
+          pageNumber,
+        );
+      }
 
       const parentBranchId = currentPage.branchId ?? "main";
       const usedBranchIds = new Set<string>();
@@ -2361,8 +2359,8 @@ export async function finalizePenDraft(
         ...(pageOneAdopted.keyObjects.length ? { keyObjects: pageOneAdopted.keyObjects } : {}),
         stateDelta: {},
       };
-      validateGeneratedPage(pageToInsert, book.mode, "pen-finalize");
-      validatePageActionsForMode(book.mode, pageToInsert.actions);
+      validateGeneratedPage(pageToInsert, book.mode, "pen-finalize", { allowEmpty: input.isEnding });
+      validatePageActionsForMode(book.mode, pageToInsert.actions, { allowEmpty: input.isEnding });
 
       newPage = await insertStoryPage(userId, 1, pageToInsert, {
         bookId: book.id,
@@ -2371,8 +2369,9 @@ export async function finalizePenDraft(
         storyStartDate: book.storyStartDate ?? undefined,
       });
 
+      const initialMaxPage = input.isEnding ? 1 : (book.totalPages ?? newPage.page);
       const initialState: StoryState = {
-        ...createEmptyStoryState(newPage.id, 1, book.totalPages ?? newPage.page),
+        ...createEmptyStoryState(newPage.id, 1, initialMaxPage),
         hiddenState: createInitialHiddenState(),
       };
       // The page-1 cast has no prior state, so newly-checked characters must be
@@ -3194,8 +3193,8 @@ export async function updatePenPageProse(
       await tx
         .update(storyStates)
         .set({
-          inventory: proposal.inventory as any,
-          injuries: proposal.injuries as any,
+          inventory: proposal.inventory,
+          injuries: proposal.injuries,
           updatedAt: new Date(),
         })
         .where(eq(storyStates.pageId, pageId));

@@ -583,4 +583,10 @@ export const PEN_TRANSFORM_MAX_TOKENS = 1200;
  * published page prose revision triggers the AI Canon Invariance delta gate.
  * Changes below this threshold with all tracked entities intact skip AI re-verification (0-cost fast path).
  */
-export const PEN_PAGE_EDIT_DIFF_TOLERANCE = 0.15;
+export const PEN_PAGE_EDIT_DIFF_TOLERANCE = 0.15;
+
+/**
+ * Minimum published page number required before an author can mark a page
+ * as a terminal story / branch conclusion ("The End" / 🏁).
+ */
+export const PEN_MIN_ENDING_PAGE = 5;

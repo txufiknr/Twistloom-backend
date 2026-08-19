@@ -1895,6 +1895,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
       plotFlags,
       threads: activeThreads,
       ending: viableEnding,
+      maxPage: storyState.maxPage,
       // Filter only necessary fields for frontend
       places: Object.entries(places).map(([placeId, place]) => ({
         placeId,

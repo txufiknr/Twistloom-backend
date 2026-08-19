@@ -96,7 +96,11 @@ export function clampCandidateCountForMode(mode: BookMode, requested: number): n
  * @param actions - The actions array about to be persisted
  * @throws Error if the action count violates the mode's branching contract
  */
-export function validatePageActionsForMode(mode: BookMode, actions: Action[]): void {
+export function validatePageActionsForMode(
+  mode: BookMode,
+  actions: Action[],
+  options?: { allowEmpty?: boolean }
+): void {
   if (!bookModes.includes(mode)) {
     throw new Error(`validatePageActionsForMode: unknown book mode "${mode}"`);
   }
@@ -105,6 +109,9 @@ export function validatePageActionsForMode(mode: BookMode, actions: Action[]): v
   const actionCount = actions.length;
 
   if (actionCount < 1) {
+    if (options?.allowEmpty) {
+      return;
+    }
     throw new Error(
       `Mode "${mode}" requires at least 1 action per page, but generated page has ${actionCount}.`,
     );
