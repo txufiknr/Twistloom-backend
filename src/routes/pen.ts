@@ -34,6 +34,7 @@ import {
   getPenSessionState,
   getPenOutline,
   getPenAuthorPage,
+  updatePenPageAction,
   listSessionDrafts,
   createSessionDraft,
   activateSessionDraft,
@@ -263,6 +264,45 @@ router.get("/pages/:pageId", requireAuth, async (c) => {
     if (error instanceof PenBookOwnershipError) return cApiError(c, error.message, undefined, 403);
     if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
     return cApiError(c, "Failed to load pen page", error);
+  }
+});
+
+/**
+ * PATCH /api/pen/pages/:pageId/actions
+ * Update the text of a specific action on a published page.
+ * Body: { actionIndex: number, text: string }
+ */
+router.patch("/pages/:pageId/actions", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId");
+    if (!userId) return cApiError(c, "Authentication required", undefined, 401);
+    const pageId = c.req.param("pageId");
+    const body = await readJsonBody(c);
+
+    if (!body || typeof body !== "object") {
+      return cValidationError(c, "Request body must be a JSON object");
+    }
+
+    const { actionIndex, text } = body as { actionIndex?: unknown; text?: unknown };
+    if (typeof actionIndex !== "number" || !Number.isInteger(actionIndex) || actionIndex < 0) {
+      return cValidationError(c, "actionIndex must be a non-negative integer");
+    }
+    if (typeof text !== "string" || text.trim().length === 0) {
+      return cValidationError(c, "text must be a non-empty string");
+    }
+    if (text.trim().length > PEN_DRAFT_ACTION_TEXT_MAX_LENGTH) {
+      return cValidationError(c, `text must be at most ${PEN_DRAFT_ACTION_TEXT_MAX_LENGTH} characters`);
+    }
+
+    const page = await updatePenPageAction(userId, pageId, {
+      actionIndex,
+      text: text.trim(),
+    });
+    return c.json({ page });
+  } catch (error) {
+    if (error instanceof PenBookOwnershipError) return cApiError(c, error.message, undefined, 403);
+    if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
+    return cApiError(c, "Failed to update pen page action", error);
   }
 });
 

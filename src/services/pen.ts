@@ -2921,6 +2921,46 @@ export async function getPenAuthorPage(userId: string, pageId: string): Promise<
   };
 }
 
+/**
+ * Updates the text of a specific action on a published page.
+ *
+ * @param userId - The authenticated user's id (ownership guard)
+ * @param pageId - The published page to update
+ * @param input - { actionIndex: number, text: string }
+ */
+export async function updatePenPageAction(
+  userId: string,
+  pageId: string,
+  input: { actionIndex: number; text: string }
+): Promise<PenAuthorPage> {
+  const page = await getPageFromDB(pageId);
+  if (!page) throw new PenSessionNotFoundError("Page not found");
+  const book = await getBookFromDB(page.bookId);
+  if (!book) throw new PenSessionNotFoundError("Book not found");
+  if (book.userId !== userId) throw new PenBookOwnershipError();
+
+  const currentActions = page.actions ?? [];
+  if (input.actionIndex < 0 || input.actionIndex >= currentActions.length) {
+    throw new Error("Invalid action index");
+  }
+
+  const trimmedText = input.text.trim();
+  if (!trimmedText) {
+    throw new Error("Action text cannot be empty");
+  }
+
+  const updatedActions = currentActions.map((action, idx) =>
+    idx === input.actionIndex ? { ...action, text: trimmedText } : action
+  );
+
+  await dbWrite
+    .update(pages)
+    .set({ actions: updatedActions, updatedAt: new Date() })
+    .where(eq(pages.id, pageId));
+
+  return getPenAuthorPage(userId, pageId);
+}
+
 /** Errors thrown when a note is not found or inaccessible. */
 export class PenNoteNotFoundError extends Error {
   constructor(message: string = "Note not found") {
