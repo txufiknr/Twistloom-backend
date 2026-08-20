@@ -5326,8 +5326,9 @@ router.get("/share/:username/:bookSlug/:pageId", async (c) => {
       .limit(1);
     if (!shareLog) return cNotFoundError(c, 'Not found');
 
-    // ── Compute ending stats ───────────────────────────────────────────────
+    // ── Compute ending stats & psychological profile ───────────────────────
     const endingStats = await computeEndingStats(book.id, pageId, user.userId);
+    const profileResult = await getPsychologicalProfileResult(book.id, pageId);
 
     // ── Get page text ──────────────────────────────────────────────────────
     const page = await getPageFromDB(pageId);
@@ -5345,6 +5346,13 @@ router.get("/share/:username/:bookSlug/:pageId", async (c) => {
         text: page?.text ?? null,
         percentage: endingStats.endingPercentage,
       },
+      profile: profileResult ? {
+        archetype: profileResult.archetype,
+        archetypeKey: profileResult.archetypeKey,
+        stability: profileResult.stability,
+        dominantTraits: profileResult.dominantTraits,
+        rarityPercentage: profileResult.rarityPercentage,
+      } : null,
     });
   } catch (error) {
     console.error('[GET /share/:username/:bookSlug/:pageId] ❌ Error:', error);
@@ -5485,19 +5493,24 @@ router.post("/:identifier/purchase", requireAuth, async (c) => {
  *
  * Response (200):
  * {
- *   "archetype": "the_paranoid",
- *   "stability": "cracking",
- *   "dominantTraits": ["fearful", "suspicious", "cautious"],
- *   "manipulationAffinity": "fear",
- *   "ending": {
- *     "type": "false_reality",
- *     "summary": "Paranoia pays off: the world actually isn't real."
+ *   "archetype": "Hyper-Vigilant",
+ *   "archetypeKey": "hyper_vigilant",
+ *   "stability": "fractured",
+ *   "diagnosticSummary": "You read hostility into every quiet corner...",
+ *   "dominantTraits": ["suspicious", "cautious", "watchful"],
+ *   "vectors": { "curiosity": 42, "paranoia": 88, "trust": 12, "pragmatism": 38 },
+ *   "divergencePoint": {
+ *     "pageNumber": 14,
+ *     "locationName": "The Flooded Basement",
+ *     "choiceSnippet": "You chose to trust the locked door instead of the open one.",
+ *     "shiftDescription": "Shifted psychological trajectory permanently on page 14."
  *   },
+ *   "rarityPercentage": 8.4,
  *   "missedTeasers": [
  *     {
- *       "archetype": "the_explorer",
+ *       "archetypeKey": "obsessive_investigator",
  *       "trigger": "you let fear close your eyes",
- *       "wouldHaveEnded": "loop",
+ *       "wouldHaveEnded": "truth_uncovered",
  *       "teaser": "If you'd trusted just once, you'd have uncovered the truth beneath the lies."
  *     }
  *   ]
@@ -5508,27 +5521,43 @@ router.get("/:identifier/psychological-profile", requireAuth, async (c) => {
     const { identifier } = c.req.param();
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
     const userId = c.get("userId")!;
+    const pageId = c.req.query("pageId");
 
-    // Fetch the book to verify ownership/access
+    // Fetch the book to verify existence and access
     const book = await resolveBook(bookIdentifier);
     if (!book) {
       return cNotFoundError(c, "Book not found");
     }
 
-    // Only the book owner can view the psychological profile
+    // The psychological profile (divergence point, missed endings, rarity) is
+    // ending-spoiler content. Non-owners must have completed the requested
+    // ending branch (any branch if no pageId given) — regardless of visibility —
+    // so readers cannot probe endings they have not reached.
     if (book.userId !== userId) {
-      return cForbiddenError(c, "You do not have access to this book's psychological profile");
+      const completionConditions = [eq(userCompletedBooks.userId, userId), eq(userCompletedBooks.bookId, book.id)];
+      if (pageId) completionConditions.push(eq(userCompletedBooks.pageId, pageId));
+      const [completed] = await dbRead
+        .select({ id: userCompletedBooks.id })
+        .from(userCompletedBooks)
+        .where(and(...completionConditions))
+        .limit(1);
+      if (!completed) {
+        return cForbiddenError(c, "You must complete this ending to view its psychological profile");
+      }
     }
 
-    const result = await getPsychologicalProfileResult(book.id);
+    const result = await getPsychologicalProfileResult(book.id, pageId);
     if (!result) {
       return cNotFoundError(c, "No psychological profile data found for this book");
     }
 
-    return c.json(result);
+    return c.json({
+      success: true,
+      profile: result,
+    });
   } catch (error) {
     console.error("[GET /psychological-profile] ❌ Error:", error);
-    cApiError(c, "Failed to get psychological profile", error);
+    return cApiError(c, "Failed to get psychological profile", error);
   }
 });
 

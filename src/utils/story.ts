@@ -1716,7 +1716,7 @@ export function updateWorldClock(state: StoryState, sceneType?: SceneType, minut
  * @example
  * ```typescript
  * const profile = derivePsychologicalProfile(state);
- * // Returns: { archetype: "the_paranoid", stability: "cracking", ... }
+ * // Returns: { archetype: "hyper_vigilant", stability: "fractured", ... }
  * ```
  */
 export function derivePsychologicalProfile(state: StoryState, context: NarrativeContext): PsychologicalProfile {
@@ -1724,7 +1724,7 @@ export function derivePsychologicalProfile(state: StoryState, context: Narrative
   const { momentum = 'building', sceneType = 'transition', phase = 'EARLY' } = context;
   
   // Determine archetype based on dominant behavioral patterns
-  let archetype: Archetype = "the_explorer";
+  let archetype: Archetype = "obsessive_investigator";
   let manipulationAffinity: ManipulationAffinity = "fear";
   
   // Use a Set to automatically prevent duplicate traits (e.g., "curious", "curious")
@@ -1732,36 +1732,36 @@ export function derivePsychologicalProfile(state: StoryState, context: Narrative
   
   // 1. Determine Archetype (priority queue — strongest/rarest signals win ties)
   // Memory corruption is the rarest, most defining signal, so it is evaluated
-  // FIRST: a corrupted-memory MC must not be mis-assigned to the_explorer /
-  // the_risk_taker just because they are also curious/fearful. Assigning the
+  // FIRST: a corrupted-memory MC must not be mis-assigned to obsessive_investigator /
+  // reckless_gambler just because they are also curious/fearful. Assigning the
   // wrong archetype desyncs dominantTraits and primaryWeakness from the real state.
   if (memoryIntegrity !== "stable" && flags.trust === "medium") {
-    archetype = "the_denier";
+    archetype = "cold_realist";
     manipulationAffinity = "confusion";
     traitSet.add("rationalizing").add("avoidant").add("conflicted");
   }
   else if (flags.curiosity === "high" && flags.fear !== "high") {
-    archetype = "the_explorer";
+    archetype = "obsessive_investigator";
     manipulationAffinity = "confusion";
     traitSet.add("curious").add("investigative");
   } 
   else if (flags.fear === "high" && flags.trust === "low") {
-    archetype = "the_paranoid";
+    archetype = "hyper_vigilant";
     manipulationAffinity = "fear";
     traitSet.add("fearful").add("suspicious").add("cautious");
   } 
   else if (flags.curiosity === "high" && flags.fear === "high") {
-    archetype = "the_risk_taker";
+    archetype = "reckless_gambler";
     manipulationAffinity = "control_loss";
     traitSet.add("bold").add("impulsive").add("conflicted");
   } 
   else if (flags.guilt === "high" && traumaTags.length > 0) {
-    archetype = "the_guilty";
+    archetype = "selfless_martyr";
     manipulationAffinity = "guilt";
     traitSet.add("remorseful").add("self-blaming").add("haunted");
   } 
   else if (flags.fear === "high" && flags.curiosity === "low") {
-    archetype = "the_avoider";
+    archetype = "the_fatalist";
     manipulationAffinity = "control_loss";
     traitSet.add("cautious").add("hesitant").add("safety-seeking");
   }
@@ -2093,7 +2093,7 @@ export function detectProfileShift(state: StoryState): boolean {
   // PROFILE-BASED SHIFT DETECTION
   
   // Detect archetype shift (fundamental behavioral pattern change)
-  if (profile.archetype === "the_explorer" && nowAvoiding && !state.hiddenState.profileShift) {
+  if (profile.archetype === "obsessive_investigator" && nowAvoiding && !state.hiddenState.profileShift) {
     state.hiddenState.profileShift = {
       detected: true,
       shiftType: "archetype_collapse",

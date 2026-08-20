@@ -1,0 +1,1 @@
+ALTER TABLE "pen_drafts" ADD COLUMN "is_ending" boolean DEFAULT false NOT NULL;

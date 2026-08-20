@@ -463,6 +463,13 @@
       "when": 1787129779162,
       "tag": "0066_quick_mattie_franklin",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1787191071185,
+      "tag": "0067_warm_white_queen",
+      "breakpoints": true
     }
   ]
 }

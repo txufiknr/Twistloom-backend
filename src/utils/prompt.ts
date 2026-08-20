@@ -4056,7 +4056,7 @@ function formatSanityState(sanityState: SanityState | undefined): string {
  * 
  * @example
  * PSYCHOLOGICAL PROFILE (Behavioral analysis):
- * • Archetype: the_paranoid — Tactics: Validate their worst fears. Scatter subtle, unreliable clues that make every shadow and ally seem like a lethal threat.
+ * • Archetype: hyper_vigilant — Tactics: Validate their worst fears. Scatter subtle, unreliable clues that make every shadow and ally seem like a lethal threat.
  * • Stability: cracking — Impact: Under psychological stress. Experiencing paranoia, doubt, intrusive thoughts, or growing instability. → Interpret ambiguous events with growing suspicion.
  * • Traits: suspicion, anxiety, hypervigilance
  * 

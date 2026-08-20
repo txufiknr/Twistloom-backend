@@ -854,7 +854,7 @@ export function buildEvaluationSchemaDefinition<T extends Record<string, unknown
 export const EVALUATION_REQUIRED_FIELDS = ['output', 'scoreBefore', 'scoreAfter', 'actionFlags', 'integrityFlags'] satisfies Array<keyof AIJsonEvaluation<Record<string, unknown>>>;
 
 export const PSYCHOLOGICAL_PROFILE_DEFAULTS: PsychologicalProfile = {
-  archetype: 'the_explorer' satisfies Archetype,
+  archetype: 'obsessive_investigator' satisfies Archetype,
   stability: 'stable' satisfies StabilityLevel,
   dominantTraits: ['curious', 'cautious'],
   manipulationAffinity: 'fear' satisfies ManipulationAffinity,

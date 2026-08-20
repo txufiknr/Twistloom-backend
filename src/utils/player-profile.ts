@@ -76,13 +76,13 @@ function derivePrimaryWeakness(
   traits: Pick<PsychologicalProfileMetrics, 'curiosity' | 'fear' | 'aggression' | 'denial' | 'trust' | 'guilt'>
 ): PrimaryWeakness {
   switch (archetype) {
-    case 'the_explorer':   return 'truth_seeking';
-    case 'the_risk_taker': return traits.guilt > 0.6 ? 'guilt' : 'need_for_control';
-    case 'the_paranoid':   return 'avoidance';
-    case 'the_guilty':     return 'guilt';
-    case 'the_avoider':    return 'avoidance';
-    case 'the_denier':     return traits.trust > 0.6 ? 'trust_hunger' : 'avoidance';
-    default:               return 'fear_of_loss';
+    case 'obsessive_investigator': return 'truth_seeking';
+    case 'reckless_gambler':       return traits.guilt > 0.6 ? 'guilt' : 'need_for_control';
+    case 'hyper_vigilant':         return 'avoidance';
+    case 'selfless_martyr':        return 'guilt';
+    case 'the_fatalist':           return 'avoidance';
+    case 'cold_realist':           return traits.trust > 0.6 ? 'trust_hunger' : 'avoidance';
+    default:                       return 'fear_of_loss';
   }
 }
 

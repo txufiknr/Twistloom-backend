@@ -1871,7 +1871,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
   // plotFlags:      all narrative flags accumulated from page 1 through current page.
   let context: EnrichedStoryPageContext | undefined;
   if (storyState) {
-    const { places, characters, injuries, inventory, healthStatus, sanityState, contextHistory, actionsHistory, plotFlags, threads, viableEnding } = storyState;
+    const { places, characters, injuries, inventory, healthStatus, sanityState, contextHistory, actionsHistory, plotFlags, threads, viableEnding, flags, traumaTags } = storyState;
     const { phase } = getStoryStateInfo(storyState);
     const activeThreads = threads.filter(t => ['open', 'developing'].includes(t.status));
     // Reader-safe composure slice (omit decayRate — engine-only)
@@ -1895,6 +1895,8 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
       contextHistory,
       actionsHistory,
       plotFlags,
+      flags,
+      traumaTags,
       threads: activeThreads,
       ending: viableEnding,
       maxPage: storyState.maxPage,

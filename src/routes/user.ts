@@ -80,6 +80,7 @@ import type { PaginationMeta } from '../types/api.js';
 import { ACHIEVEMENT_REGISTRY } from '../config/achievements.js';
 import type { AppEnv } from "../hono/env.js";
 import { getClientIp } from "../hono/express-shim.js";
+import { getUserMindMatrix } from "../services/psychological-profile.js";
 
 const router = new Hono<AppEnv>();
 
@@ -4027,6 +4028,40 @@ router.get('/beta-duties', requireAuth, async (c: Context<AppEnv>) => {
   } catch (error) {
     console.error('[GET /user/beta-duties] ❌', error);
     return cApiError(c, 'Failed to retrieve beta duties', error);
+  }
+});
+
+/**
+ * GET /api/users/:identifier/mind-matrix
+ *
+ * Returns the public user's aggregate longitudinal Reader Mind Matrix across all completed stories.
+ */
+router.get('/users/:identifier/mind-matrix', optionalAuth, async (c: Context<AppEnv>) => {
+  try {
+    const resolved = await resolveProfileUserId(c);
+    if (!resolved) return cNotFoundError(c, 'User not found');
+
+    const matrix = await getUserMindMatrix(resolved.userId);
+    return c.json({ success: true, matrix });
+  } catch (error) {
+    console.error('[GET /users/:identifier/mind-matrix] ❌', error);
+    return cApiError(c, 'Failed to get user mind matrix', error);
+  }
+});
+
+/**
+ * GET /api/user/mind-matrix
+ *
+ * Returns the authenticated user's own aggregate longitudinal Reader Mind Matrix.
+ */
+router.get('/user/mind-matrix', requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get('userId')!;
+    const matrix = await getUserMindMatrix(userId);
+    return c.json({ success: true, matrix });
+  } catch (error) {
+    console.error('[GET /user/mind-matrix] ❌', error);
+    return cApiError(c, 'Failed to get user mind matrix', error);
   }
 });
 

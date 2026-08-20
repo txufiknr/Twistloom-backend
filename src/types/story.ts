@@ -729,19 +729,49 @@ export type Difficulty = typeof difficulties[number];
  * instructions on how to exploit those patterns to generate personalized horror.
  */
 export const archetypes = {
-  /** Curious, seeks knowledge, investigates */
-  "the_explorer": "Exploit their curiosity. Lure them deeper with partial answers, then trap them with terrifying truths.",
-  /** Cautious, avoids danger, prefers safety */
-  "the_avoider": "Punish their hesitation. Slowly close off safe routes and force claustrophobic, unavoidable confrontations.",
-  /** Bold, takes chances, confrontational */
-  "the_risk_taker": "Turn their boldness against them. Let their rash actions trigger immediate, devastating environmental consequences.",
-  /** Suspicious, distrustful, fearful */
-  "the_paranoid": "Validate their worst fears. Scatter subtle, unreliable clues that make every shadow and ally seem like a lethal threat.",
-  /** Remorseful, self-blaming, haunted */
-  "the_guilty": "Haunt them with their past. Echo their past mistakes in the environment and leverage heavy moral pressure.",
-  /** In denial, avoids truth, rationalizes */
-  "the_denier": "Shatter their rationalizations. Introduce undeniable, grotesque reality breaks that force them to face the horrifying truth."
-};
+  /** Obsessive pursuit of truth at the cost of personal safety and composure */
+  "obsessive_investigator": "Exploit their morbid curiosity. Lure them deeper with forbidden knowledge, then trap them with terrifying truths.",
+  /** Utilitarian calculus; discards sentimentality to maximize survival odds */
+  "cold_realist": "Shatter their emotional detachment. Introduce grotesque moral dilemmas where cold logic fails or demands horrific sacrifices.",
+  /** Absorbs psychological distress and mortal danger to shield companions */
+  "selfless_martyr": "Haunt them with survivor's guilt. Threaten their companions and force unbearable protective sacrifices.",
+  /** Anticipates betrayal in every shadow; treats every anomaly as a lethal threat */
+  "hyper_vigilant": "Validate their worst paranoias. Scatter ambiguous, unreliable clues that make every ally appear compromised.",
+  /** Under psychological tension, leans into high-entropy, chaotic actions */
+  "reckless_gambler": "Turn their boldness against them. Let their rash, impulsive gambles trigger catastrophic environmental collapses.",
+  /** Moves with eerie composure, accepting impending doom as inevitable */
+  "the_fatalist": "Punish their resignation. Slowly constrict their agency and force claustrophobic, unavoidable existential confrontations.",
+} as const;
+
+/** Union type of all 6 canonical psychological archetypes */
+export type Archetype = keyof typeof archetypes;
+
+/**
+ * Canonical 4 mental stability tiers for the reader-facing forensic debrief
+ * (ending report, Reader Mind Matrix, share card).
+ *
+ * READER-OUTWARD: derived from the reader's `sanityState`
+ * (composure / hasCrashed / traumaTags) by `resolveStabilityTier()` in
+ * services/psychological-profile.ts, and surfaced in the post-ending
+ * `PsychologicalProfilePayload`.
+ *
+ * NOT the same system as `stabilityLevels` (`StabilityLevel`) below — do not
+ * mix the two sets of values:
+ * - `stabilityLevels` (stable|cracking|unstable) is ENGINE-INWARD — the AI's
+ *   "narrative lens" written to `PsychologicalProfile.stability` and consumed
+ *   by prompt.ts (formatPsychologicalProfile, future-note stability triggers).
+ * - `stabilityTiers` (this type) is READER-OUTWARD — the debrief taxonomy.
+ *
+ * Legacy stored `StabilityLevel` values are bridged into these tiers by
+ * `resolveStabilityTier()`.
+ */
+export const stabilityTiers = [
+  "lucid",
+  "volatile",
+  "fractured",
+  "unraveling",
+] as const;
+export type StabilityTier = typeof stabilityTiers[number];
 
 /**
  * Available stability levels for psychological profiles
@@ -749,6 +779,19 @@ export const archetypes = {
  * These define the MC's mental coherence and act as a strict "narrative lens"
  * for the AI, dictating how reliably it is allowed to describe reality.
  * Answers: "How psychologically compromised is the MC?"
+ *
+ * ENGINE-INWARD: written to `PsychologicalProfile.stability` by the story
+ * engine and consumed directly by prompt.ts (`formatPsychologicalProfile`,
+ * `formatFutureNotes` currentStability, `FutureNoteStateTrigger`).
+ *
+ * NOT the same system as `stabilityTiers` (`StabilityTier`) above — do not
+ * mix the two sets of values:
+ * - `stabilityLevels` (this type) is the AI narrative lens (3 levels).
+ * - `stabilityTiers` (lucid|volatile|fractured|unraveling) is the reader-facing
+ *   debrief taxonomy (4 tiers) derived from `sanityState`.
+ *
+ * Legacy values of this type are bridged into the debrief tiers by
+ * `resolveStabilityTier()`.
  */
 export const stabilityLevels = {
   /** Mentally coherent, rational thinking → Subtle manipulation, gradual escalation */
@@ -777,14 +820,6 @@ export const manipulationAffinities = {
   /** Helplessness, traps, forced situations */
   "control_loss": "Removed agency, decision-based traps, personal helplessness"
 };
-
-/**
- * Union type of all possible archetype keys
- * 
- * Generated from the archetypes object to ensure type safety
- * when specifying MC behavioral patterns.
- */
-export type Archetype = keyof typeof archetypes;
 
 /**
  * Union type of all possible stability level keys
@@ -1425,6 +1460,14 @@ export type EnrichedStoryPageContext = {
   plotFlags: PlotFlag[];
   /** Collection of ongoing narrative threads in the story */
   threads: StoryThread[];
+  /**
+   * Psychological pressure dials (trust/fear/guilt/curiosity). Exposed so the
+   * client-side fallback profile heuristic (`deriveLocalPsychologicalProfile`)
+   * can mirror the backend vector math exactly — see psychological-theme.ts.
+   */
+  flags: PsychologicalFlags;
+  /** Accumulated trauma tags from page 1 through the current page. */
+  traumaTags: string[];
   /** Outline towards planned ending */
   ending?: Omit<Ending, 'changeReason' | 'changeViabilityBefore' | 'changeViabilityAfter'>;
   /** Current branch target ceiling / terminal page number */

@@ -391,12 +391,12 @@ export const MAJOR_EVENT_CLIMAX_FLOOR = 0.55; // minimum raw score for a major e
 
 /** How strongly each archetype gravitates toward each action type. */
 export const ARCHETYPE_ACTION_AFFINITY: Record<Archetype, Partial<Record<ActionType, number>>> = {
-  the_explorer:   { explore: 0.85, risk: 0.65, social: 0.55 },
-  the_paranoid:   { escape: 0.80, explore: 0.65, ignore: 0.50 },
-  the_risk_taker: { attack: 0.80, risk: 0.85, explore: 0.65 },
-  the_guilty:     { protect: 0.80, social: 0.60, heal: 0.65 },
-  the_avoider:    { escape: 0.85, ignore: 0.80 },
-  the_denier:     { ignore: 0.80, deceive: 0.75, social: 0.60 },
+  obsessive_investigator: { explore: 0.85, risk: 0.65, social: 0.55 },
+  cold_realist:           { ignore: 0.80, deceive: 0.75, social: 0.60 },
+  selfless_martyr:        { protect: 0.80, social: 0.60, heal: 0.65 },
+  hyper_vigilant:         { escape: 0.80, explore: 0.65, ignore: 0.50 },
+  reckless_gambler:       { attack: 0.80, risk: 0.85, explore: 0.65 },
+  the_fatalist:           { escape: 0.85, ignore: 0.80 },
 };
 
 /** How well a hint type aligns with what manipulates this reader (pulls them in). */
