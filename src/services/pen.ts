@@ -8,7 +8,7 @@
  * @see docs/roadmap/AI_CO_WRITING_PEN_ROADMAP.md §5.3, Phase 1.a, Phase 1.b
  */
 
-import { eq, and, desc, ne, isNull, sql } from "drizzle-orm";
+import { eq, and, desc, isNull, sql } from "drizzle-orm";
 import { penSessions, penEdits, penDrafts, penNotes, branches, pages, books, storyStates } from "../db/schema.js";
 import { dbRead, dbWrite, type DBClient } from "../db/client.js";
 import { getBookFromDB, getBookPages, deleteStoryPage } from "./book.js";
@@ -559,10 +559,10 @@ export async function closePenSession(userId: string, sessionId: string): Promis
 }
 
 /**
- * Clears the ACTIVE draft without charging credits (`/discard`). Ownership is
- * verified. If the discarded draft was active, the most recently touched
- * sibling becomes active (or `activeDraftId` resets to null when none remain).
- * Returns the updated session payload.
+ * Permanently deletes the ACTIVE draft without charging credits (`/discard`).
+ * Ownership is verified. The most recently touched sibling becomes active (or
+ * `activeDraftId` resets to null when none remain). Returns the updated
+ * session payload.
  */
 export async function discardPenDraft(userId: string, sessionId: string): Promise<PenSessionPayload> {
   const session = await getPenSessionById(userId, sessionId, { client: dbWrite });
@@ -716,24 +716,19 @@ export async function updateSessionDraft(
 }
 
 /**
- * Clears a single draft slot (ownership verified). If it was the active draft,
- * the most recently touched sibling becomes active (or `activeDraftId` resets
- * to null). Returns the session payload.
+ * Permanently deletes a single draft slot (ownership verified). If it was the
+ * active draft, the most recently touched sibling becomes active (or
+ * `activeDraftId` resets to null). The row is hard-deleted rather than cleared
+ * in place so a discarded slot never reappears in the shelf or counts against
+ * the per-parent cap; the audit trail survives because `penEdits.draftId`
+ * cascades to null on delete. Returns the session payload.
  */
 export async function discardSessionDraft(userId: string, sessionId: string, draftId: string): Promise<PenSessionPayload> {
   const session = await getPenSessionById(userId, sessionId, { client: dbWrite });
   await getSessionDraftRow(sessionId, draftId, dbWrite);
 
   await dbWrite
-    .update(penDrafts)
-    .set({
-      draftBuffer: [],
-      draftHtml: null,
-      draftCharactersPresent: [],
-      draftSceneEssentials: null,
-      actionText: null,
-      updatedAt: new Date(),
-    })
+    .delete(penDrafts)
     .where(and(eq(penDrafts.id, draftId), eq(penDrafts.sessionId, sessionId)));
 
   let updatedSession: DBPenSession = session;
@@ -741,7 +736,7 @@ export async function discardSessionDraft(userId: string, sessionId: string, dra
     const [next] = await dbWrite
       .select()
       .from(penDrafts)
-      .where(and(eq(penDrafts.sessionId, sessionId), ne(penDrafts.id, draftId)))
+      .where(eq(penDrafts.sessionId, sessionId))
       .orderBy(desc(penDrafts.updatedAt))
       .limit(1);
     const [activated] = await dbWrite

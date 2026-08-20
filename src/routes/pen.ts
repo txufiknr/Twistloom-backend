@@ -408,7 +408,8 @@ router.post("/sessions/:id/close", requireAuth, async (c) => {
 
 /**
  * POST /api/pen/sessions/:id/discard
- * Clear the draft buffer (zero cost). The session itself is preserved.
+ * Permanently delete the active draft slot (zero cost). The session itself is
+ * preserved; the most recently touched sibling becomes the new active draft.
  */
 router.post("/sessions/:id/discard", requireAuth, async (c) => {
   try {
@@ -609,9 +610,9 @@ router.patch("/sessions/:id/drafts/:draftId", requireAuth, async (c) => {
 
 /**
  * DELETE /api/pen/sessions/:id/drafts/:draftId
- * Clears a single draft slot (zero cost). If it was the active draft, the most
- * recently touched sibling becomes active (or the editor empties). Returns the
- * session payload.
+ * Permanently deletes a single draft slot (zero cost). If it was the active
+ * draft, the most recently touched sibling becomes active (or the editor
+ * empties). Returns the session payload.
  */
 router.delete("/sessions/:id/drafts/:draftId", requireAuth, async (c) => {
   try {

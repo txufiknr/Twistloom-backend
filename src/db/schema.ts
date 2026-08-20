@@ -2572,9 +2572,9 @@ export const penSessions = pgTable(
      *
      * Deliberately a PLAIN uuid, NOT a `references()` FK: a DB-level back-ref
      * here creates a circular-FK type cycle with `penDrafts.session_id` that
-     * TS cannot resolve (both tables end up `any`). Draft rows are never
-     * hard-deleted (discard/finalize clear them in place), so the FK's
-     * `onDelete: set null` would never fire; a dangling pointer is defensively
+     * TS cannot resolve (both tables end up `any`). Draft rows are hard-deleted
+     * on discard and cleared in place on finalize, so the FK's
+     * `onDelete: set null` would rarely fire; a dangling pointer is defensively
      * ignored by `toPenSessionPayload`. The cascade direction (session delete →
      * draft delete) is enforced by `penDrafts.session_id`.
      *
