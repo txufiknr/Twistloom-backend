@@ -1,7 +1,8 @@
-import type { Book, BookMode } from "./book.js";
+import type { Book, BookMode, StoryGenerationStep } from "./book.js";
 import type { CandidateGenerationPage } from "./candidate-generation.js";
 import type { ActionedStoryPage, StoryState } from "./story.js";
 import type { AIChatConfig, AIDocument, AIJsonProperty, GenerationStage } from "./ai-chat.js";
+import type { ProgressCallback } from "./sse.js";
 
 export type GenerateBookCreationPromptParams = {
   /** Whether to include prompt generation logging information. */
@@ -36,6 +37,19 @@ export type BuildNextPageParams = {
   candidateCount?: number;
   /** Opt-in generation-time canon/consistency pass */
   enableCanonValidation?: boolean;
+  /**
+   * Optional SSE/progress hooks — threaded through to every underlying
+   * aiPrompt/executePromptForJSON call (both the legacy single-shot path
+   * and the multi-turn StoryPage/StateDelta/evaluation calls) so callers
+   * that DO supply them get consistent progress events regardless of which
+   * path USE_MULTI_TURN_GENERATION selects. Added at checkpoint 5
+   * (external review) for parity — no caller in this codebase passes them
+   * today (the legacy path never accepted them either, so this isn't a
+   * regression fix so much as making both paths equally capable going
+   * forward, and removing any doubt about it either way).
+   */
+  onProgress?: ProgressCallback;
+  onGenerationProgress?: (step: StoryGenerationStep) => Promise<void>;
 };
 
 export type BuildNextPagePromptParams = {

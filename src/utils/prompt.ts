@@ -5,6 +5,7 @@ import { actionTypes, archetypes, stabilityLevels, manipulationAffinities, truth
 import type { StoryState, Action, PsychologicalFlags, PsychologicalProfile, HiddenState, PersistedStoryPage, ActionHintType, AIActionConfig, StabilityLevel } from "../types/story.js";
 import { moodValues, weatherValues, sceneTypeValues, sceneRoleValues, momentumValues, actionTypeValues, hintTypeValues, memoryIntegrityValues, difficultyValues, plotFlagTypeValues, injuryCategoryValues, threadPriorityValues, threadTruthValues, threadStatusValues, endingTypeValues, factTypeValues, phaseValues, stabilityLevelValues, healthConditionValues, canonicalPlaceTypeValues, accessibilityValues, recognitionLevelValues, genderValues, characterStatusValues, characterImportanceValues, relationshipTypeValues, relationshipStatusValues, twistTypeValues, psychologicalFlagTypeValues, flagLevelValues } from "../config/enums.js";
 import { createNonRetryableError } from "./retry.js";
+import { createCacheKey } from "./cache.js";
 import { TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS, MAX_THREADS_CLUES, MAX_ACTION_CHOICES_FINALE, FUTURE_NOTE_LOOKAHEAD_DAYS } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { aiPrompt, createAIOptionsWithSchema, resolveUseStringEvaluator, runEvaluationPass } from "./ai-chat.js";
@@ -2033,17 +2034,20 @@ ${outputFormatBlurb}
  * provider/model bookkeeping fields for the merged response (Turn B is the
  * natural choice — it had full context of Turn A's output, so it's the more
  * "final" of the two — a bookkeeping choice, not a correctness one).
- * @param documents,cachedContentId,config,bookId - Passed through from the
- * SAME setup Turn A/Turn B already used (not rebuilt), matching the legacy
- * single-shot flow's behavior of reusing one shared `options` object for
- * both generation and evaluation. `cachedContentId` is suffixed `:story_page`
- * here (not a new `:evaluation` slot) since this evaluation call reuses
- * Turn A's exact systemPrompt — the two share identical cache content, so
- * this reuses Turn A's already-warmed cache instead of paying to create a
- * new one. A real gap caught during the checkpoint-4 audit: the original
- * version of this function passed only `{ modelSelection }`, silently
- * dropping the book-level context documents (characters/places) and the
- * cache benefit that the legacy evaluator always had.
+ * @param documents,config,bookId - Passed through from the SAME setup Turn
+ * A/Turn B already used (not rebuilt), matching the legacy single-shot
+ * flow's behavior of reusing one shared `options` object for both
+ * generation and evaluation. A real gap caught during the checkpoint-4
+ * audit: the original version of this function passed only
+ * `{ modelSelection }`, silently dropping the book-level context documents
+ * (characters/places) that the legacy evaluator always had — `documents`
+ * fixes that. No `cachedContentId` is passed at all (checkpoint-5 fix,
+ * external review — see BUG-01 in the code below): an earlier version
+ * reused Turn A's `:story_page` cache slot on the theory that this call's
+ * cache content matches Turn A's, but `runEvaluationPass` always appends a
+ * candidate-specific document before that content is hashed, so it never
+ * actually matches — reusing the ID just thrashed the shared slot every
+ * parallel alternative's Turn A depends on.
  * @param baseContext - Unsuffixed base context string (e.g.
  * `story-page-candidate:b-${bookId}`) — `runEvaluationPass` appends
  * `-evaluation` itself; passing an already-suffixed string here (a bug
@@ -2055,7 +2059,6 @@ async function evaluateMergedStoryGeneration(
   params: BuildNextPagePromptParams,
   systemPrompt: string,
   documents: AIDocument[],
-  cachedContentId: string | undefined,
   config: AIChatConfig,
   bookId: string,
   baseContext: string,
@@ -2097,6 +2100,33 @@ async function evaluateMergedStoryGeneration(
   // many alternatives the outer request has.
   const evaluatorPrompt = buildNextPageEvaluatorPrompt({ ...params, candidateCount: 1 });
 
+  // Cache key fix (checkpoint 5, refined after user follow-up question):
+  // an earlier version of this fix passed `cachedContentId: undefined`
+  // outright, reasoning that no valid ID could safely reuse Turn A's
+  // `:story_page` slot (see BUG-01 below). That was safe but left two
+  // things on the table: (1) it forwent a real, if narrower, caching
+  // opportunity — retries of THIS SAME evaluation call across the provider
+  // waterfall (e.g. Gemini fails transiently, gets retried) could have hit
+  // a genuinely valid cache if one existed; (2) `undefined` doesn't mean
+  // "no cache" identically for every provider — Gemini's
+  // resolveGeminiCachedContent short-circuits to no caching at all when
+  // cachedContentId is falsy (ai-chat.ts: `if (!cachedContentId) return
+  // null`), but buildMistralPromptCacheKey falls back to a SHARED generic
+  // key ('twistloom:mistral:shared') instead, the same fallback used by
+  // callers that never had book-specific context (pen.ts,
+  // canon-validation.ts) — meaning `undefined` here would have put this
+  // call's Mistral cache bucket in with unrelated prompts from other
+  // features entirely, not just avoided the Turn-A collision.
+  //
+  // Fixed properly: derive a genuinely content-based key from the actual
+  // merged object being evaluated, using the same createCacheKey utility
+  // buildBookMetaDocuments already uses for the book-level base ID. This is
+  // unique per (bookId + merged content), so it can never collide with
+  // Turn A's `:story_page` slot (different content → different hash) or
+  // with unrelated callers' shared fallback key — while still caching
+  // validly within this one evaluation call's own retries.
+  const evaluationCachedContentId = await createCacheKey([bookId, merged]);
+
   const evaluated = await runEvaluationPass<StoryGeneration>(
     baseResult,
     evaluatorPrompt,
@@ -2104,7 +2134,21 @@ async function evaluateMergedStoryGeneration(
       modelSelection: AI_CHAT_MODELS_EVALUATION,
       config,
       documents,
-      cachedContentId: cachedContentId ? `${cachedContentId}:story_page` : undefined,
+      cachedContentId: evaluationCachedContentId,
+      // BUG-02 fix (checkpoint 5, external review): buildEvaluationSchemaDefinition
+      // (schema/story.ts) builds `output`'s structured-object-mode schema
+      // from `options.outputJsonStructure`/`options.outputJsonRequired` —
+      // omitting them (as this call did before) doesn't fall back to
+      // anything sensible, it sends `properties: undefined` whenever
+      // useStringEvaluatorOutput resolves to false for the given provider,
+      // which providers requiring `properties` on a `type: 'object'` schema
+      // would reject outright. STORY_GENERATION_SCHEMA_DEFINITION/
+      // STORY_GENERATION_REQUIRED_FIELDS are exactly what the legacy
+      // single-shot flow already supplies for the equivalent evaluation
+      // call, and are exactly correct here too — merged is always a full
+      // StoryGeneration regardless of which path produced it.
+      outputJsonStructure: STORY_GENERATION_SCHEMA_DEFINITION,
+      outputJsonRequired: STORY_GENERATION_REQUIRED_FIELDS,
       logPrompts: true,
       meta: { bookId },
     },
@@ -5387,8 +5431,10 @@ async function generateStoryGenerationMultiTurn(options: {
   actionedPage: CandidateGenerationPage;
   baseContext: string;
   fateContext?: { fateIndex: number; fateCount: number };
+  onProgress?: ProgressCallback;
+  onGenerationProgress?: (step: StoryGenerationStep) => Promise<void>;
 }): Promise<AIResponse<StoryGeneration>> {
-  const { setup, book, actionedPage, baseContext, fateContext } = options;
+  const { setup, book, actionedPage, baseContext, fateContext, onProgress, onGenerationProgress } = options;
   const { promptParams, advancedState, action, config, documents, cachedContentId, systemPrompt, nextPreset } = setup;
   const { sceneType } = actionedPage;
 
@@ -5416,7 +5462,7 @@ async function generateStoryGenerationMultiTurn(options: {
     cachedContentId,
     context: baseContext,
     bookId: book.id,
-  });
+  }, onProgress, onGenerationProgress);
 
   if (!storyPageResponse.result) {
     throw new Error('Failed to generate page: no result (story_page turn)');
@@ -5444,7 +5490,7 @@ async function generateStoryGenerationMultiTurn(options: {
     cachedContentId,
     context: baseContext,
     bookId: book.id,
-  });
+  }, onProgress, onGenerationProgress);
 
   if (!stateDeltaResponse.result) {
     throw new Error('Failed to generate page: no result (state_delta turn)');
@@ -5452,10 +5498,28 @@ async function generateStoryGenerationMultiTurn(options: {
   const stateDelta = stateDeltaResponse.result;
 
   // ── Merge (same shape/precedence as the legacy single-shot response) ───
-  const merged: StoryGeneration = { ...storyPage, ...stateDelta };
+  // BUG-04 fix (checkpoint 5, external review): apply the calendarDate
+  // fallback HERE, at merge time — not left to the downstream code in
+  // generateNextPage/generateNextPages that also applies it. Two real
+  // reasons, not just redundancy: (1) StateDeltaGenerationWithBranch has no
+  // `calendarDate` field in its TYPE, but structured-output parsing is a
+  // runtime JSON.parse — if a provider doesn't strictly enforce
+  // `additionalProperties: false` and Turn B's raw output happens to
+  // include a stray `calendarDate` key, `{...storyPage, ...stateDelta}`
+  // would silently let it overwrite Turn A's correct value, since spread
+  // order doesn't care what TypeScript's type says should be there; (2)
+  // evaluateMergedStoryGeneration scores `merged` BEFORE that downstream
+  // fallback would ever run, so leaving it unapplied here meant the
+  // evaluator could see (and penalize) a transiently-missing date that was
+  // always going to be filled in correctly by the time the page persists.
+  const merged: StoryGeneration = {
+    ...storyPage,
+    ...stateDelta,
+    calendarDate: storyPage.calendarDate ?? actionedPage.calendarDate,
+  };
 
   // ── Single post-merge evaluation pass (Part 5.5 Q2) ─────────────────────
-  return evaluateMergedStoryGeneration(merged, stateDeltaResponse, promptParams, systemPrompt, documents, cachedContentId, config, book.id, baseContext);
+  return evaluateMergedStoryGeneration(merged, stateDeltaResponse, promptParams, systemPrompt, documents, config, book.id, baseContext, onProgress, onGenerationProgress);
 }
 
 /**
@@ -5518,7 +5582,7 @@ async function generateStoryGenerationMultiTurn(options: {
  * ```
  */
 export async function generateNextPage(params: BuildNextPageParams): Promise<PersistedStoryPage> {
-  const { book, userId, actionedPage, generateNewBranchId = false, enableCanonValidation } = params;
+  const { book, userId, actionedPage, generateNewBranchId = false, enableCanonValidation, onProgress, onGenerationProgress } = params;
   const context = "generateNextPage";
 
   // 1 & 2. Setup context, config, and prompts
@@ -5535,12 +5599,18 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
   // executePromptForJSON call below, so every line after this branch (4
   // onward — validate, canon, resolvePageDelta, branchId, persist, embeds)
   // is completely unchanged and unaware of which path produced `response`.
+  // onProgress/onGenerationProgress (checkpoint 5, external review): threaded
+  // through to both branches for parity — no caller supplies these today
+  // (neither did the legacy path before this checkpoint), but both paths
+  // now handle them identically if one ever does.
   const response = USE_MULTI_TURN_GENERATION
     ? await generateStoryGenerationMultiTurn({
         setup,
         book,
         actionedPage,
         baseContext: `story-page-candidate:b-${book.id}`,
+        onProgress,
+        onGenerationProgress,
       })
     : await executePromptForJSON<StoryGeneration>({
         prompt,
@@ -5565,7 +5635,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
         fieldInstructions,
         reviewChecklist,
         evaluatorPrompt,
-      });
+      }, onProgress, onGenerationProgress);
   
   // 4. Validate AI response
   if (!response.result) {
@@ -5672,7 +5742,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
  * caller can reuse the existing pages.
  */
 export async function generateNextPages(params: BuildNextPageParams): Promise<PersistedStoryPage[]> {
-  const { book, userId, actionedPage, generateNewBranchId = false, candidateCount: providedCandidateCount = DEFAULT_CANDIDATE_PAGE_PER_ACTION, enableCanonValidation } = params;
+  const { book, userId, actionedPage, generateNewBranchId = false, candidateCount: providedCandidateCount = DEFAULT_CANDIDATE_PAGE_PER_ACTION, enableCanonValidation, onProgress, onGenerationProgress } = params;
   
   // Fast path: Route to single page generation if only 1 is requested
   // (forwards enableCanonValidation via full params)
@@ -5734,6 +5804,8 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
           actionedPage,
           baseContext: `story-page-candidates:b-${book.id}:fate-${index + 1}`,
           fateContext: { fateIndex: index, fateCount: candidateCount },
+          onProgress,
+          onGenerationProgress,
         })
       )
     );
@@ -5776,7 +5848,7 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
       fieldInstructions,
       reviewChecklist,
       evaluatorPrompt,
-    });
+    }, onProgress, onGenerationProgress);
 
     // 4. Validate AI response
     if (!response.result) {

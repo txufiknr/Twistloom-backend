@@ -598,7 +598,7 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
     required: ['threadId', 'clue', 'isFalse'] satisfies (keyof AddThreadClue)[],
     additionalProperties: false
   } },
-  closeThreads: { type: 'array', description: 'Thread titles to be closed if any.', items: { type: 'string' } },
+  closeThreads: { type: 'array', description: 'Thread IDs to be closed if any.', items: { type: 'string' } },
   futureNoteAdd: {
     type: 'array',
     description: `Future notes to add. Max ${MAX_FUTURE_NOTES}. Narrative obligations towards viableEnding (plans, foreshadowing, future reveals, scenes, twists, etc).`,
