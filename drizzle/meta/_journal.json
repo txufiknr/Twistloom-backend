@@ -470,6 +470,13 @@
       "when": 1787191071185,
       "tag": "0067_warm_white_queen",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1787233653036,
+      "tag": "0068_optimal_professor_monster",
+      "breakpoints": true
     }
   ]
 }
