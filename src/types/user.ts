@@ -131,6 +131,8 @@ export type UserActivityType =
   'referrer_set' |
   'shared_ending' |
   'beta_tester_joined' |
+  'beta_duty_completed' |
+  'beta_duty_reward_claimed' |
   'quest_completed' |
   'quest_reward_claimed';
 

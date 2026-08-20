@@ -14,6 +14,7 @@ import type { ActionProgressStatus } from "../types/candidate-generation.js";
 import type { StoryThread, StoryThreadTranslation } from "../types/story-thread.js";
 import type { CustomActionOutcome, CustomActionRejectionCategory } from "../types/custom-action.js";
 import type { QuestStatus } from "../types/quests.js";
+import type { BetaDutyStatus } from "../types/beta-duties.js";
 import type { CanonValidationOutcome, CanonViolation, CanonViolationType } from "../types/canon-validation.js";
 import type { AuthorshipOrigin, AuthoringMode, AuthoringPov, DraftSpan, EditorPrefs, PenDraftCharacter, PenDraftSceneEssentials, PenEditType, PenSessionStatus, LoreEntryType } from "../types/pen.js";
 import type { TransactionType } from "../types/credits.js";
@@ -1524,6 +1525,33 @@ export const userQuests = pgTable(
     unique("user_quests_user_quest_unique").on(t.userId, t.questId),
     index("user_quests_user_idx").on(t.userId),
     index("user_quests_status_idx").on(t.status),
+  ]
+);
+
+/**
+ * User Beta Duties Table
+ * Records the per-user state machine for each beta duty: `in_progress` →
+ * `completed` (auto-detected) → `claimed` (credit reward redeemed).
+ *
+ * Only one row exists per (user, duty). The unique constraint on
+ * `(user_id, duty_id)` is the structural guard that makes claims idempotent.
+ */
+export const userBetaDuties = pgTable(
+  "user_beta_duties",
+  {
+    id: id(),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    dutyId: text("duty_id").notNull(), // Links directly to BETA_DUTY_REGISTRY ids
+    status: text("status").$type<BetaDutyStatus>().notNull().default('in_progress'),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    unique("user_beta_duties_user_duty_unique").on(t.userId, t.dutyId),
+    index("user_beta_duties_user_idx").on(t.userId),
+    index("user_beta_duties_status_idx").on(t.status),
   ]
 );
 
