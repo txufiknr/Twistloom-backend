@@ -178,6 +178,8 @@ export type PenDraftSummary = {
   isStale: boolean;
   /** Author-marked terminal branch / story conclusion. */
   isEnding?: boolean;
+  /** Plain-text preview snippet for popover hover. */
+  textPreview?: string | null;
   createdAt: Date;
   updatedAt: Date;
 };

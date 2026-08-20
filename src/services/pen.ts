@@ -131,6 +131,10 @@ function toPenDraftSummary(draft: DBPenDraft, canonVersion: number): PenDraftSum
   const isStale = spans.some(
     (span) => span.validationState === "dirty" || (span.validatedAgainst !== undefined && span.validatedAgainst !== canonVersion)
   );
+  const plainText = draft.draftHtml
+    ? draft.draftHtml.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim()
+    : spans.map((s) => s.text || "").join("").trim();
+  const textPreview = plainText ? previewOf(plainText) : null;
   return {
     id: draft.id,
     parentPageId: draft.parentPageId,
@@ -139,6 +143,7 @@ function toPenDraftSummary(draft: DBPenDraft, canonVersion: number): PenDraftSum
     charCount,
     isStale,
     isEnding: draft.isEnding ?? false,
+    textPreview,
     createdAt: draft.createdAt,
     updatedAt: draft.updatedAt,
   };
