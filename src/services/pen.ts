@@ -47,6 +47,7 @@ import { runGate1 } from "./custom-actions.js";
 import { calculateHealthStatus } from "../utils/characters.js";
 import { uploadPenDraftImage as uploadPenDraftImageToKit, persistUploadedImage, deleteFileFromImageKit } from "./image.js";
 import type { ImageUploadSource } from "../types/image.js";
+import { htmlToPlainText } from "../utils/text-processing.js";
 
 /**
  * The API-facing session payload. Extends the stored session with the book's
@@ -132,7 +133,7 @@ function toPenDraftSummary(draft: DBPenDraft, canonVersion: number): PenDraftSum
     (span) => span.validationState === "dirty" || (span.validatedAgainst !== undefined && span.validatedAgainst !== canonVersion)
   );
   const plainText = draft.draftHtml
-    ? draft.draftHtml.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim()
+    ? htmlToPlainText(draft.draftHtml)
     : spans.map((s) => s.text || "").join("").trim();
   const textPreview = plainText ? previewOf(plainText) : null;
   return {
@@ -766,12 +767,9 @@ export class PenContinueError extends Error {
 
 /**
  * Defensive HTML stripping for author prose fed into prompts + the audit trail
- * (BE2/BQ1). The frontend sends plain text, but a hostile/buggy client can
- * still inject markup that would reach the model and bloat `pen_edits`.
+ * (BE2/BQ1). Uses the shared `htmlToPlainText` from `utils/text-processing`.
  */
-function stripHtmlTags(value: string): string {
-  return value.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
-}
+const stripHtmlTags = htmlToPlainText;
 
 /** Body of `POST /api/pen/sessions/:id/continue`. Discriminated by `type`. */
 export type PenContinueInput =

@@ -554,3 +554,26 @@ export function parseTrait(trait: string): { key: string; value: string } {
     value: trait.slice(colonIndex + 2).trim()
   };
 }
+
+/**
+ * Strips HTML tags and collapses whitespace, producing normalised plain text.
+ * Shared by `toPenDraftSummary`, `stripHtmlTags` (continue/edit audit trail),
+ * and any other backend path that needs a lightweight HTML-to-plain-text
+ * conversion without pulling in a DOM parser.
+ *
+ * @param html - The HTML string to strip.
+ * @returns Trimmed plain text with single-space whitespace.
+ */
+export function htmlToPlainText(html: string): string {
+  if (!html) return '';
+  return html
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#0*39;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
