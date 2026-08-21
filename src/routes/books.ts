@@ -112,6 +112,7 @@ import { stripHtml } from '../utils/sanitize-html.js';
 import { eq, and, desc, sql, ne, inArray, arrayOverlaps } from "drizzle-orm";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
 import { getBook, getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage, tryAcquireWorkflowDispatchGate } from "../services/book.js";
+import { getPreviewBookPage } from "../services/book-preview.js";
 import { shouldUseCache, getFreshPromptForUser, trackPromptView, savePromptToCache } from "../services/prompt-cache.js";
 import { streamCachedPrompt } from "../utils/prompt-stream.js";
 import { PROMPT_CACHE_CONFIG } from "../config/prompt-cache.js";
@@ -4315,13 +4316,38 @@ router.get("/:identifier/:pageId", optionalAuth, async (c) => {
   try {
     const headerLanguage = c.get("headerLanguage");
     const { identifier, pageId } = c.req.param();
-    const { prefetch, translate: shouldTranslate, credits, actioning } = c.req.query();
+    const { prefetch, translate: shouldTranslate, credits, actioning, preview } = c.req.query();
     const userId = c.get("userId");
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier; // Book slug or id (uuid v7)
     const skipVisit = !userId || prefetch === 'true' || c.req.method === 'HEAD'; // Skip for non-actual user navigation
     const translate = shouldTranslate === 'true'; // Should translate to Accept-Language header
     const consumeCredits = credits === 'true'; // Should consume credits
     const takeAction = !!userId && actioning === 'true'; // Should insert to user page progress
+
+    // ── Pen Live Preview mode (`?preview=1` / `?preview=true`, roadmap Phase 0) ─
+    //
+    // Owner-only, stable, side-effect-free payload for an in-progress pen draft
+    // book. Bypasses the normal reader access-control + visit machinery entirely:
+    // ownership is enforced inside `getPreviewBookPage` (non-owners → 404, no
+    // leak), visits/credits/actioning are never applied, and the response is
+    // `no-store` (draft state changes every keystroke). The web client currently
+    // sends `preview=true`; `1` is accepted for parity with the roadmap doc.
+    if (preview === '1' || preview === 'true') {
+      if (!userId) return cUnauthorizedError(c, "Authentication required to preview this book");
+
+      const result = await getPreviewBookPage({
+        userId,
+        bookIdentifier,
+        pageId: pageId as string,
+        translate,
+        headerLanguage,
+      });
+
+      if (!result) return cNotFoundError(c, "Book or page not found");
+
+      c.header('Cache-Control', 'no-store');
+      return c.json({ page: result.page, book: result.book });
+    }
 
     const { visitDetails, book, dbPage, sourceAction, isUserTakeAction } = await visitBookPage({
       userId,
