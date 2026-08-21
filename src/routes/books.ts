@@ -289,11 +289,15 @@ router.post("/pen", requireAuth, async (c) => {
     const authoringMode = body.authoringMode ?? PEN_DEFAULT_AUTHORING_MODE;
     const language = typeof body.language === "string" ? body.language.trim().toLowerCase() : "";
     const summary = typeof body.summary === "string" ? body.summary.trim() : "";
+    const mode = body.mode ?? PEN_DEFAULT_BOOK_MODE;
 
     if (title && title.length < PEN_TITLE_MIN_LENGTH) return cValidationError(c, `title must be at least ${PEN_TITLE_MIN_LENGTH} characters`);
     if (title.length > PEN_TITLE_MAX_LENGTH) return cValidationError(c, `title must be at most ${PEN_TITLE_MAX_LENGTH} characters`);
     if (typeof authoringMode !== "string" || !PEN_AUTHORING_MODES.includes(authoringMode)) {
       return cValidationError(c, `authoringMode must be 'storyteller' or 'text_adventure'`);
+    }
+    if (typeof mode !== "string" || !bookModes.includes(mode as BookMode)) {
+      return cValidationError(c, `mode must be one of: ${bookModes.join(', ')}`);
     }
     if (!language) return cValidationError(c, "language is required");
     if (!isValidLanguageCode(language)) return cValidationError(c, "language must be a valid ISO 639-1 code");
@@ -311,7 +315,7 @@ router.post("/pen", requireAuth, async (c) => {
       title: title || PEN_DEFAULT_TITLE,
       summary: summary || null,
       mc: placeholderMc,
-      mode: PEN_DEFAULT_BOOK_MODE,
+      mode: mode as BookMode,
       language,
       keywords: [],
       isOriginal: false,
@@ -323,11 +327,11 @@ router.post("/pen", requireAuth, async (c) => {
       activityType: "book_created",
       targetType: "book",
       targetId: created.id,
-      metadata: { source: "pen", authoringMode, language },
+      metadata: { source: "pen", authoringMode, mode, language },
     }, { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } });
     void updateUserLastActivity(userId);
 
-    console.log(`[POST /books/pen] 📔 Blank Pen book created:`, { id: created.id, slug: created.slug, title: created.title, language, authoringMode });
+    console.log(`[POST /books/pen] 📔 Blank Pen book created:`, { id: created.id, slug: created.slug, title: created.title, language, authoringMode, mode });
     return c.json({ book: mapBookFromDb(created) }, 201);
   } catch (error) {
     return cApiError(c, "Failed to create pen book", error);
