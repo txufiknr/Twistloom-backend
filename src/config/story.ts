@@ -505,6 +505,37 @@ export const PEN_LORE_DESCRIPTION_MAX_LENGTH = 5000;
 /** Placeholder MC seed for Pen-created books (schema NOT NULL); author shapes the real MC later. */
 export const PEN_PLACEHOLDER_MC: StoryMC = { name: "MC", age: 0, gender: "male", bio: "" };
 
+// ============================================================================
+// TEXT ADVENTURE LATENT SIBLING BRANCHES (B6) + GATE 2 (§18.8 / roadmap §6)
+// ============================================================================
+
+/**
+ * Number of latent sibling branches a Text Adventure `/continue` generates for
+ * an interactive/multiverse book (B6, roadmap §1 principles 4–5). These are
+ * alternate futures the player's command *could* have produced — generated
+ * lazily server-side and hidden until explored. `novel` books stay linear (no
+ * branching contract), so the generation is force-skipped regardless of value.
+ */
+export const PEN_TA_LATENT_BRANCH_COUNT = 2;
+
+/**
+ * Whether `/finalize` promotes a Text Adventure draft's latent sibling branches
+ * into real book branches — making TA+Interactive/Multiverse *actually* branch
+ * rather than merely authoring a linear slice. When `false`, latent siblings are
+ * still generated + stored (powering the F10 outline "ghost" nodes) but are not
+ * written into the published story graph. Gated for safe, reversible rollout.
+ */
+export const PEN_TA_PROMOTE_LATENT_BRANCHES = true;
+
+/**
+ * Whether a Text Adventure `/continue` runs Gate 2 canon validation (roadmap
+ * §6 / §18.8) on the generated continuation: a best-effort deterministic
+ * cross-check against the triggered story-bible (lore) entries. A flagged
+ * contradiction marks the span `dirty` so the authoritative finalize delta gate
+ * re-checks it. Conservative by design (skews toward false negatives).
+ */
+export const PEN_TA_GATE2_CANON_CHECK = true;
+
 /** Output-token budget for the Page Essentials auto-fill (§10 Decision M — a constrained JSON classification task, so a small cap suffices). */
 export const PEN_ESSENTIALS_MAX_TOKENS = 400;
 /** Maximum number of `keyEvents` / `keyObjects` items the auto-fill may propose. */

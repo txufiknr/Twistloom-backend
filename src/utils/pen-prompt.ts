@@ -273,24 +273,34 @@ export type PenContinuePrompt = {
  * @returns `{ systemPrompt, userPrompt }` implementing the single-request
  *   validate-and-generate contract.
  */
+/** Common (mode-independent) parameters for {@link buildPenContinuePrompt}. */
+export type PenContinueCommonParams = {
+  state?: StoryState | null;
+  authoringMode: AuthoringMode;
+  authoringPov?: AuthoringPov;
+  persona?: CoWritingPersona;
+  lore?: LoreEntry[];
+  pageTexts: string[];
+  mcName: string;
+  language: string;
+  bookSummary?: string | null;
+  storyStartDate?: string | null;
+  momentum?: string | null;
+  sceneType?: string | null;
+  essentials?: PenDraftSceneEssentials | null;
+  /** Continuation-length tier — added as a tail directive (§8 short/medium/long). */
+  length?: PenContinueLength;
+  /**
+   * When set, the prompt is steered to produce a DIVERGENT latent sibling
+   * (B6): an alternate "what-if" resolution of the same command, distinct
+   * from the primary continuation. `0`-based index among the generated
+   * siblings, used only for labeling/seed variety, not semantics.
+   */
+  latentBranchIndex?: number;
+};
+
 export function buildPenContinuePrompt(
-  params: {
-    state?: StoryState | null;
-    authoringMode: AuthoringMode;
-    authoringPov?: AuthoringPov;
-    persona?: CoWritingPersona;
-    lore?: LoreEntry[];
-    pageTexts: string[];
-    mcName: string;
-    language: string;
-    bookSummary?: string | null;
-    storyStartDate?: string | null;
-    momentum?: string | null;
-    sceneType?: string | null;
-    essentials?: PenDraftSceneEssentials | null;
-    /** Continuation-length tier — added as a tail directive (§8 short/medium/long). */
-    length?: PenContinueLength;
-  } & (
+  params: PenContinueCommonParams & (
     | { prose: string; directionHint?: string }
     | { command: string }
   )
@@ -323,6 +333,11 @@ export function buildPenContinuePrompt(
 
   if (authoringMode === "text_adventure") {
     const command = "command" in params ? params.command : "";
+    const latentIndex = "latentBranchIndex" in params ? params.latentBranchIndex : undefined;
+    const divergenceNote =
+      typeof latentIndex === "number"
+        ? `\n\nDIVERGENT ALTERNATIVE (variant ${latentIndex + 1} of several): Resolve the SAME command into a DIFFERENT, plausible alternate future — a "what-if" that meaningfully diverges from the primary continuation in outcome, tone, or discovery. Do NOT repeat the primary path; surprise the reader.`
+        : "";
     return {
       systemPrompt,
       userPrompt: [
@@ -331,6 +346,7 @@ export function buildPenContinuePrompt(
         `PLAYER COMMAND:\n> ${command}`,
         length ? `APPROXIMATE LENGTH: append about ${PEN_CONTINUE_WORDS[length]} words (${length.toUpperCase()}).` : "",
         'Resolve the command into the story. Write ONLY the continuation text (no ">", no out-of-character notes).',
+        divergenceNote,
       ].join("\n\n"),
     };
   }

@@ -14,7 +14,7 @@ import { dbRead, dbWrite, type DBClient } from "../db/client.js";
 import { getBookFromDB, getBookPages, deleteStoryPage } from "./book.js";
 import { getTriggeredLoreEntries, listLoreEntries } from "./lore.js";
 import type { DBBook, DBPenSession, DBPenDraft } from "../types/schema.js";
-import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraft, PenDraftCharacter, PenDraftSceneEssentials, PenDraftSummary, PenDraftUpdates, PenEdit, PenSessionStatus, FinalizeViolation, CanonAmendment, PenEditType, PenOutlineData, PenOutlinePage, PenAuthorPage, AuthorshipOrigin, PenTransformInput, PenTransformResult, PenNote, PenNoteInput, PenNoteUpdate } from "../types/pen.js";
+import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraft, PenDraftCharacter, PenDraftSceneEssentials, PenDraftSummary, PenDraftUpdates, PenEdit, PenSessionStatus, FinalizeViolation, CanonAmendment, PenEditType, PenOutlineData, PenOutlinePage, PenAuthorPage, AuthorshipOrigin, PenTransformInput, PenTransformResult, PenNote, PenNoteInput, PenNoteUpdate, LoreEntry, PenLatentBranch } from "../types/pen.js";
 import type { BookMode } from "../types/book.js";
 import type { StoryState, Action, StoryGeneration, PersistedStoryPage, SceneCharacter, CharacterSceneRole, Mood, ActionType, ActionHint, ActionHintType } from "../types/story.js";
 import { moods, actionTypes, actionHintTypes } from "../types/story.js";
@@ -28,13 +28,14 @@ import type { Gender } from "../types/user.js";
 import { getBranchPath } from "../utils/branch-traversal.js";
 import { processCharacterUpdates, isMainCharacterValid } from "../utils/characters.js";
 import { getStoryStateWithBranch } from "./story-branch.js";
-import { buildPenContinuePrompt, PEN_CONTINUE_SCHEMA, PEN_CONTINUE_REQUIRED_FIELDS, buildPenEssentialsAutofillPrompt, PEN_ESSENTIALS_SCHEMA, PEN_ESSENTIALS_REQUIRED_FIELDS, PEN_ESSENTIALS_REVIEW_SCHEMA, buildPenStateProposalPrompt, PEN_STATE_PROPOSAL_SCHEMA, PEN_STATE_PROPOSAL_REQUIRED_FIELDS, buildPenTransformPrompt, PEN_TRANSFORM_SCHEMA, PEN_TRANSFORM_REQUIRED_FIELDS } from "../utils/pen-prompt.js";
+import { buildPenContinuePrompt, PEN_CONTINUE_SCHEMA, PEN_CONTINUE_REQUIRED_FIELDS, buildPenEssentialsAutofillPrompt, PEN_ESSENTIALS_SCHEMA, PEN_ESSENTIALS_REQUIRED_FIELDS, PEN_ESSENTIALS_REVIEW_SCHEMA, buildPenStateProposalPrompt, PEN_STATE_PROPOSAL_SCHEMA, PEN_STATE_PROPOSAL_REQUIRED_FIELDS, buildPenTransformPrompt, PEN_TRANSFORM_SCHEMA, PEN_TRANSFORM_REQUIRED_FIELDS, type PenContinueCommonParams } from "../utils/pen-prompt.js";
 import type { PenContinueResult as PenContinueAIOutput, PenEssentialsAutofillResult as PenEssentialsAIOutput, PenStateProposalResult as PenStateProposalAIOutput, PenTransformResult as PenTransformAIOutput } from "../utils/pen-prompt.js";
 import { aiPrompt, createAIOptionsWithSchema } from "../utils/ai-chat.js";
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
-import { PEN_DRAFT_CAST_LIMIT, PEN_CONTINUE_MAX_TOKENS, penContinueLengthForAssistance, PEN_ESSENTIALS_MAX_TOKENS, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TOKENS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_FINALIZE_PROPOSE_MAX_ITEM_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TRAITS, PEN_DRAFT_BUFFER_MAX_CHARS, PEN_DRAFTS_PER_PARENT, PEN_DRAFT_LABEL_MAX_LENGTH, PEN_DRAFT_ACTION_TEXT_MAX_LENGTH, PEN_DRAFT_ACTION_HINT_MAX_LENGTH, PEN_TRANSFORM_MAX_TOKENS, PEN_TRANSFORM_SELECTION_MAX_LENGTH, PEN_PAGE_EDIT_DIFF_TOLERANCE, PEN_MIN_ENDING_PAGE } from "../config/story.js";
+import type { PenContinueLength } from "../config/story.js";
+import { PEN_DRAFT_CAST_LIMIT, PEN_CONTINUE_MAX_TOKENS, penContinueLengthForAssistance, PEN_ESSENTIALS_MAX_TOKENS, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TOKENS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_FINALIZE_PROPOSE_MAX_ITEM_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TRAITS, PEN_DRAFT_BUFFER_MAX_CHARS, PEN_DRAFTS_PER_PARENT, PEN_DRAFT_LABEL_MAX_LENGTH, PEN_DRAFT_ACTION_TEXT_MAX_LENGTH, PEN_DRAFT_ACTION_HINT_MAX_LENGTH, PEN_TRANSFORM_MAX_TOKENS, PEN_TRANSFORM_SELECTION_MAX_LENGTH, PEN_PAGE_EDIT_DIFF_TOLERANCE, PEN_MIN_ENDING_PAGE, PEN_TA_LATENT_BRANCH_COUNT, PEN_TA_PROMOTE_LATENT_BRANCHES, PEN_TA_GATE2_CANON_CHECK } from "../config/story.js";
 import { generateId } from "../utils/uuid.js";
 import { executeWithCredits } from "./credits.js";
 import { persistPageWithState, insertStoryPage, getPageFromDB, mapToPersistedStoryPage } from "./book.js";
@@ -795,6 +796,105 @@ function continueCreditKey(session: { assistanceLevel: number }): "PEN_CONTINUE_
 }
 
 /**
+ * Gate 2 (TA canon validation, §18.8 / roadmap §6) — best-effort deterministic
+ * cross-check of a generated continuation against the triggered story-bible
+ * (`lore`) entries. Flags a likely contradiction when the continuation NAMES a
+ * lore entity and states the OPPOSITE of a canonical attribute the entry
+ * describes, with the negation occurring within a short window of either the
+ * name or the contested token.
+ *
+ * Conservative by design: it skews toward false negatives (only fires on an
+ * explicit name + negation + canonical-token triple) so it never silently
+ * drops valid prose. The authoritative re-check still runs at `/finalize`
+ * (delta gate). A `true` here marks the span `dirty` for that re-check.
+ */
+const CANON_NEGATION = /\b(not|never|no longer|n't|wasn'?t|isn'?t|aren'?t|without|lacks?|lacking|refuses?|denies?)\b/i;
+const CANON_STOPWORDS = new Set([
+  "that", "with", "from", "they", "them", "then", "than", "this", "have", "has", "had",
+  "were", "will", "your", "about", "into", "over", "under", "when", "what", "which",
+]);
+
+function detectLoreContradiction(text: string, lore: LoreEntry[]): boolean {
+  if (!lore.length || !text.trim()) return false;
+  const lower = text.toLowerCase();
+  for (const entry of lore) {
+    const name = entry.name?.trim().toLowerCase();
+    if (!name || !lower.includes(name)) continue;
+    const tokens = (entry.description ?? "")
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((w) => w.length > 3 && !CANON_STOPWORDS.has(w));
+    if (!tokens.length) continue;
+    const namePos = lower.indexOf(name);
+    for (const token of tokens) {
+      const tokenPos = lower.indexOf(token);
+      if (tokenPos < 0) continue;
+      const lo = Math.min(namePos, tokenPos);
+      const hi = Math.max(namePos, tokenPos);
+      const between = lower.slice(lo, hi + token.length);
+      if (hi - lo <= 40 && CANON_NEGATION.test(between)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Generates the latent sibling branches (B6) for a Text Adventure `/continue`
+ * in a branching (interactive/multiverse) book. Each sibling is an alternate
+ * "what-if" resolution of the SAME player command, produced by the same prompt
+ * pipeline with a divergence steer. Returns an empty array when `count` is 0.
+ *
+ * Runs inside the caller's credits transaction so the AI spend is already
+ * authorized. Individual failures are swallowed (logged) — latent branches are
+ * an enhancement, never a blocker for the main continuation.
+ *
+ * @param shared - The assembled prompt context (state, lore, prose, etc.) shared with the primary continuation.
+ * @param command - The player's command text being resolved.
+ * @param continueLength - Continuation-length tier (short/medium/long).
+ * @param count - How many divergent siblings to produce.
+ * @param authoringPov - Optional per-interaction POV override.
+ */
+async function generateLatentBranches(params: {
+  shared: PenContinueCommonParams;
+  command: string;
+  continueLength: PenContinueLength;
+  count: number;
+  authoringPov?: AuthoringPov;
+}): Promise<PenLatentBranch[]> {
+  if (params.count <= 0) return [];
+  const branches: PenLatentBranch[] = [];
+  for (let i = 0; i < params.count; i++) {
+    try {
+      const { systemPrompt, userPrompt } = buildPenContinuePrompt({
+        ...params.shared,
+        command: params.command,
+        authoringPov: params.authoringPov,
+        length: params.continueLength,
+        latentBranchIndex: i,
+      });
+      const promptConfig: AIPromptForJson<PenContinueAIOutput> = {
+        schema: PEN_CONTINUE_SCHEMA,
+        requiredFields: PEN_CONTINUE_REQUIRED_FIELDS,
+        fallbackField: "text",
+        baseOptions: {
+          modelSelection: AI_CHAT_MODELS_WRITING,
+          context: "pen-continue-latent",
+          systemPrompt,
+          config: { ...AI_CHAT_CONFIG_DEFAULT, maxOutputToken: PEN_CONTINUE_MAX_TOKENS[params.continueLength] },
+        },
+      };
+      const { result } = await aiPrompt<PenContinueAIOutput>(userPrompt, createAIOptionsWithSchema(promptConfig));
+      if (result?.text && result.text.trim().length > 0) {
+        branches.push({ id: generateId(), text: result.text.trim() });
+      }
+    } catch (err) {
+      console.warn(`[continuePenDraft] latent branch ${i} generation failed:`, err);
+    }
+  }
+  return branches;
+}
+
+/**
  * Runs the `/continue` generation for an owned pen session (Phase 1.b).
  *
  * Single-request validate-and-generate contract: one AI call returns
@@ -964,7 +1064,32 @@ export async function continuePenDraft(
 
       // Clean AI output is considered validated against the current canon version;
       // self-reported issues (or any flagged output) leave the span dirty.
-      const clean = issues.length === 0;
+      let clean = issues.length === 0;
+
+      // Gate 2 (§18.8 / roadmap §6): best-effort deterministic canon cross-check
+      // of the continuation against the triggered story-bible entries. A flagged
+      // contradiction downgrades the span to `dirty` so the finalize delta gate
+      // re-checks it authoritatively.
+      if (clean && PEN_TA_GATE2_CANON_CHECK && input.type === "text_adventure" && detectLoreContradiction(output.text, lore)) {
+        clean = false;
+      }
+
+      // B6: lazily generate latent sibling branches for a Text Adventure
+      // continuation in a branching (interactive/multiverse) book. Each is an
+      // alternate "what-if" resolution of the same command, hidden until
+      // explored. Novel stays linear (no branching contract) so it is skipped.
+      const branched = book.mode === "interactive" || book.mode === "multiverse";
+      let latentSiblings: PenLatentBranch[] = [];
+      if (input.type === "text_adventure" && branched && PEN_TA_LATENT_BRANCH_COUNT > 0) {
+        latentSiblings = await generateLatentBranches({
+          shared,
+          command: authorInput,
+          continueLength,
+          count: PEN_TA_LATENT_BRANCH_COUNT,
+          authoringPov,
+        });
+      }
+
       const span: DraftSpan = {
         id: generateId(),
         text: output.text.trim(),
@@ -972,12 +1097,15 @@ export async function continuePenDraft(
         validationState: clean ? "validated" : "dirty",
         validatedAgainst: clean ? book.canonVersion : undefined,
         authoringPov: authoringPov ?? null,
+        ...(latentSiblings.length ? { latentSiblings } : {}),
       };
 
       // BE8: bound the buffer's total size so long sessions can't grow an
-      // unbounded JSONB payload (bloats session reads + finalize rollup).
+      // unbounded JSONB payload (bloats session reads + finalize rollup). The
+      // latent-sibling payload is counted too, since it lives on the span.
       const existingTotal = (current.draftBuffer ?? []).reduce((sum, s) => sum + (s.text?.length ?? 0), 0);
-      if (existingTotal + span.text.length > PEN_DRAFT_BUFFER_MAX_CHARS) {
+      const latentTotal = latentSiblings.reduce((sum, b) => sum + b.text.length, 0);
+      if (existingTotal + span.text.length + latentTotal > PEN_DRAFT_BUFFER_MAX_CHARS) {
         throw new PenContinueError("Draft is at its maximum size — finalize or trim before continuing");
       }
       const nextBuffer = [...(current.draftBuffer ?? []), span];
@@ -2183,6 +2311,11 @@ export async function finalizePenDraft(
 
   let newPage: PersistedStoryPage;
 
+  // B6 (finalize promotion): rows of latent sibling pages promoted into the book
+  // graph for a Text Adventure + multiverse continuation, appended as additional
+  // destinations of the SAME command's parent action (parallel timelines).
+  const promotedSiblingRows: { id: string; text: string }[] = [];
+
   try {
     if (session.currentPageId) {
       // Continuation: single-page engine path (mirrors generateNextPage).
@@ -2316,6 +2449,67 @@ export async function finalizePenDraft(
         book: { id: book.id, storyStartDate: book.storyStartDate ?? undefined, mode: book.mode, visibility: book.visibility, status: book.status },
         allowEmptyActions: input.isEnding === true,
       });
+
+        // B6 (finalize promotion): for a Text Adventure continuation in a
+        // MULTIVERSE book, promote the draft's latent sibling branches into real
+        // book branches — parallel timelines reachable from the SAME command.
+        // This is what makes TA+Multiverse *actually* branch (roadmap §1
+        // principles 4–5) rather than authoring one linear slice. Interactive's
+        // one-destination-per-action contract cannot hold multiple siblings of a
+        // single command, so promotion is multiverse-only; interactive still
+        // gets the latent siblings generated + stored (F10 ghost nodes) but
+        // they are not linked into the graph.
+        if (
+          PEN_TA_PROMOTE_LATENT_BRANCHES &&
+          session.authoringMode === "text_adventure" &&
+          book.mode === "multiverse" &&
+          !input.isEnding
+        ) {
+          const sourceSpan = [...spans]
+            .reverse()
+            .find((s) => s.origin === "ai" && Array.isArray(s.latentSiblings) && s.latentSiblings.length > 0);
+          if (sourceSpan?.latentSiblings?.length) {
+            for (const sibling of sourceSpan.latentSiblings) {
+              try {
+                const siblingGenerated: StoryGeneration = { ...generatedStoryPage, text: sibling.text };
+                const { newState: siblingState, fullStateDelta: siblingDelta } = resolvePageDelta({
+                  generatedStoryPage: siblingGenerated,
+                  advancedState,
+                  currentState,
+                  expectedPageNumber: pageNumber,
+                  context: "pen-finalize-latent",
+                });
+                const siblingBranchId = await determineBranchIdForPage({
+                  generateNewBranchId: true,
+                  isFirstAlternative: false,
+                  parentBranchId,
+                  usedBranchIds,
+                  actionedPage,
+                  action,
+                });
+                usedBranchIds.add(siblingBranchId);
+                const siblingPage = await persistPageWithState({
+                  userId,
+                  expectedPageNumber: pageNumber,
+                  generatedStoryPage: siblingGenerated,
+                  fullStateDelta: siblingDelta,
+                  newState: siblingState,
+                  aiResponseProvider: PEN_AI_RESPONSE_PROVIDER,
+                  actionedPage,
+                  action,
+                  branchId: siblingBranchId,
+                  usedBranchIds,
+                  context: "pen-finalize-latent",
+                  book: { id: book.id, storyStartDate: book.storyStartDate ?? undefined, mode: book.mode, visibility: book.visibility, status: book.status },
+                  allowEmptyActions: false,
+                });
+                promotedSiblingRows.push({ id: siblingPage.id, text: sibling.text });
+              } catch (sibErr) {
+                console.warn(`[finalizePenDraft] latent sibling promotion failed:`, sibErr);
+              }
+            }
+          }
+        }
     } else {
       // First page of the book (mirrors initializeBook's page-1 path).
       const { charactersPresent: castPresent, newCharacters: castNewCharacters } = resolveDraftCharacters(
@@ -2487,6 +2681,29 @@ export async function finalizePenDraft(
       });
     }
 
+    // B6: attribute each promoted latent sibling page to the audit trail so
+    // authorship + AI-contribution rollups cover the parallel timelines too.
+    for (const row of promotedSiblingRows) {
+      await tx.insert(penEdits).values({
+        id: generateId(),
+        sessionId,
+        userId,
+        bookId: book.id,
+        pageId: row.id,
+        draftId,
+        editType: "ai_continued",
+        authorInput: null,
+        aiOutput: row.text,
+        finalText: row.text,
+        contextPageId: session.currentPageId,
+        charOffsetStart: null,
+        charOffsetEnd: null,
+        authoringMode: session.authoringMode,
+        authoringPov: session.authoringPov ?? null,
+        createdAt: new Date(),
+      });
+    }
+
     await tx
       .update(penSessions)
       .set({ currentPageId: newPage.id, activeDraftId: null, status: "active", updatedAt: new Date() })
@@ -2531,12 +2748,15 @@ export async function finalizePenDraft(
         a.text === DEFAULT_CONTINUE_ACTION.text && !((a.destinationPageIds?.length ?? 0) > 0);
       const existing = parentActions.find((a) => a.text === incomingText);
       const max = maxDestinationsPerActionForMode(book.mode);
-      const withDestination = (a: Action): Action => ({
-        ...a,
-        destinationPageIds: Number.isFinite(max)
-          ? [newPage.id]
-          : Array.from(new Set([...(a.destinationPageIds ?? []), newPage.id])),
-      });
+      const withDestination = (a: Action): Action => {
+        // Union the existing destinations with the primary continuation and any
+        // B6-promoted latent sibling pages (multiverse only). Respect the
+        // per-action destination cap by keeping the most-recently-added ids
+        // (primary first, then siblings) when over budget.
+        const ids = Array.from(new Set([...(a.destinationPageIds ?? []), newPage.id, ...promotedSiblingRows.map((r) => r.id)]));
+        const capped = Number.isFinite(max) && ids.length > max ? ids.slice(ids.length - max) : ids;
+        return { ...a, destinationPageIds: capped };
+      };
 
       const nextActions: Action[] =
         existing

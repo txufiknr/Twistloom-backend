@@ -70,6 +70,42 @@ export type DraftSpan = {
   validatedAgainst?: number;
   /** POV used for this interaction (§10 E). Null → session default applies. */
   authoringPov?: AuthoringPov | null;
+  /**
+   * Latent sibling branches generated for a Text Adventure continuation (B6,
+   * roadmap §1 principles 4–5). These are alternate futures the player's
+   * command *could* have produced — generated lazily server-side, hidden until
+   * explored, and only present on `ai` spans produced by a TA `/continue` in a
+   * branching (interactive/multiverse) book. The authoring client may later
+   * surface them as read-only "ghost" nodes (F10), and `/finalize` may promote
+   * them into real book branches so TA+Interactive/Multiverse actually branches.
+   */
+  latentSiblings?: PenLatentBranch[];
+};
+
+/**
+ * A single latent sibling branch produced during a Text Adventure `/continue`
+ * (B6). The player's command resolves into the main continuation (the page the
+ * author experiences) plus these alternate "what-if" futures. They stay hidden
+ * in the graph until a reader/author lands on them (lazy expansion).
+ *
+ * @example
+ * ```typescript
+ * const branch: PenLatentBranch = {
+ *   id: 'lb_8f2',
+ *   text: 'You hesitate — and the door seals shut behind you.',
+ *   label: 'If you had hesitated',
+ * };
+ * ```
+ */
+export type PenLatentBranch = {
+  /** Unique id for this latent branch within the draft buffer. */
+  id: string;
+  /** The alternate continuation text (an AI-resolved "what-if" future). */
+  text: string;
+  /** Short human-readable label for the divergence (e.g. "If you had hesitated"). */
+  label?: string;
+  /** The `pen_edits` row this latent branch rolled up into once promoted at /finalize. */
+  editId?: string;
 };
 
 /**
