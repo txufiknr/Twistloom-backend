@@ -103,8 +103,8 @@ const CREDIT_COSTS_BASE = {
   CHOOSE_CUSTOM_ACTION: 2, // TODO: use
   /** Cost to add new custom characters (future feature) */
   SUMMON_NEW_CHARACTER: 50, // TODO: use
-  /** Cost per page when using time travel (reset chosen actions) */
-  TIME_TRAVEL_PER_PAGE: 5, // TODO: use
+  /** Cost to commit to an alternative branch (Phase 2 "Take This Path" time travel) */
+  TIME_TRAVEL_COMMIT: 5,
   /** Cost to unlock alternate endings (future feature) */
   UNLOCK_ALTERNATE_ENDING: 10, // TODO: use
 

@@ -112,6 +112,7 @@ import { stripHtml } from '../utils/sanitize-html.js';
 import { eq, and, desc, sql, ne, inArray, arrayOverlaps } from "drizzle-orm";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
 import { getBook, getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage, tryAcquireWorkflowDispatchGate } from "../services/book.js";
+import { getBookAnalytics } from "../services/analytics.js";
 import { getPreviewBookPage } from "../services/book-preview.js";
 import { shouldUseCache, getFreshPromptForUser, trackPromptView, savePromptToCache } from "../services/prompt-cache.js";
 import { streamCachedPrompt } from "../utils/prompt-stream.js";
@@ -767,6 +768,30 @@ router.get('/generations/active', requireAuth, async (c) => {
  *   ...
  * }
  */
+router.get('/:bookId/analytics', requireAuth, async (c) => {
+  try {
+    const bookId = c.req.param('bookId');
+    const userId = c.get('userId');
+    if (!userId) return cApiError(c, 'Authentication required', undefined, 401);
+
+    const detail = await getBookAnalytics(bookId);
+    if (!detail) return cNotFoundError(c, 'Book not found');
+
+    const [owner] = await dbRead
+      .select({ ownerId: books.userId })
+      .from(books)
+      .where(eq(books.id, bookId))
+      .limit(1);
+    if (owner?.ownerId !== userId) {
+      return cForbiddenError(c, 'You do not have access to this book’s analytics');
+    }
+
+    return c.json(detail);
+  } catch (error) {
+    return cApiError(c, 'Failed to load book analytics', error);
+  }
+});
+
 router.get('/:bookId/status', requireAuth, async (c) => {
   try {
     const { bookId } = c.req.param();

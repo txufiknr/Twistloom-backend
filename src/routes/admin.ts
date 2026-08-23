@@ -20,15 +20,16 @@
  */
 
 import { Hono } from "hono";
-import { eq, desc, and, or, inArray, sql, gte, lte, isNotNull, isNull, ilike } from "drizzle-orm";
+import { eq, desc, and, or, inArray, sql, gte, lte, isNotNull, isNull, ilike, count, countDistinct, avg, sum } from "drizzle-orm";
 import { requireAuth } from "../middleware/nextauth.js";
 import { requireSuperAdmin, requirePermission, resolveAdminAccess, normalizePermissions, isSuperAdminUserId, ADMIN_PERMISSIONS } from "../middleware/admin-auth.js";
 import { cApiError, cValidationError, cNotFoundError } from "../utils/error.js";
 import { reconstructStoryState } from "../utils/branch-traversal.js";
+import { getBookAnalytics } from "../services/analytics.js";
 import { getBookFromDB, getPageFromDB, invalidateEnrichedBookCache } from "../services/book.js";
 import { getStoryState } from "../services/story.js";
 import { dbRead, dbWrite } from "../db/client.js";
-import { socialMentions, bookTestimonials, adminUsers, usage, users, userFeedbacks, books, portalBlogPosts, platformTestimonials } from "../db/schema.js";
+import { socialMentions, bookTestimonials, adminUsers, usage, users, userFeedbacks, books, portalBlogPosts, platformTestimonials, pages, userPageProgress } from "../db/schema.js";
 import type { AppEnv } from "../hono/env.js";
 import { bookStatuses, bookVisibilities, type BookStatus, type BookVisibility } from "../types/book.js";
 import { feedbackAdminStatuses, feedbackCategories, type FeedbackAdminStatus, type FeedbackCategory } from "../types/user.js";
@@ -1185,6 +1186,197 @@ router.get("/usage/chart",
       return c.json({ from: fromDate.toISOString(), to: toDate.toISOString(), records: rows });
     } catch (error) {
       return cApiError(c, "Failed to fetch usage chart data", error);
+    }
+  }
+);
+
+/**
+ * GET /admin/usage
+ *
+ * Paginated raw usage rows feeding the admin data table (complement to the
+ * aggregated `/usage/chart` endpoint used for charts). Supports date range and
+ * provider filters. One row per (date, provider, context, model) from the
+ * `usage` table.
+ *
+ * @param from - Start date (YYYY-MM-DD)
+ * @param to - End date (YYYY-MM-DD)
+ * @param provider - Optional provider filter
+ * @param limit - Maximum rows to return (default: 50, max: 200)
+ * @param offset - Number of rows to skip (default: 0)
+ * @returns { total, limit, offset, usage } row envelope
+ */
+router.get("/usage",
+  requireAuth,
+  requirePermission("usage"),
+  async (c) => {
+    try {
+      const { from, to, provider, limit = "50", offset = "0" } = c.req.query();
+      const limitNum = Math.min(Math.max(Number(limit) || 50, 1), 200);
+      const offsetNum = Math.max(Number(offset) || 0, 0);
+
+      const conditions = [];
+      if (typeof from === "string" && from.length > 0) {
+        conditions.push(gte(usage.date, from));
+      }
+      if (typeof to === "string" && to.length > 0) {
+        conditions.push(lte(usage.date, to));
+      }
+      if (typeof provider === "string" && provider.length > 0) {
+        conditions.push(eq(usage.provider, provider as (typeof usage.$inferSelect)["provider"]));
+      }
+
+      const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+      const rows = await dbRead
+        .select()
+        .from(usage)
+        .where(whereClause)
+        .orderBy(desc(usage.date))
+        .limit(limitNum)
+        .offset(offsetNum);
+
+      const [{ count }] = await dbRead
+        .select({ count: sql<number>`count(*)` })
+        .from(usage)
+        .where(whereClause);
+
+      return c.json({
+        total: Number(count),
+        limit: limitNum,
+        offset: offsetNum,
+        usage: rows,
+      });
+    } catch (error) {
+      return cApiError(c, "Failed to list usage", error);
+    }
+  }
+);
+
+// ============================================================================
+// READER ENGAGEMENT ANALYTICS (roadmap 1.9 / P6)
+// ============================================================================
+
+/**
+ * GET /admin/analytics
+ *
+ * Internal reader-engagement analytics. Book-level table:
+ * reads, unique readers, avg page reached, completion rate, reread rate.
+ * Aggregates computed via two grouped sub-queries joined in JS (no N+1).
+ */
+router.get("/analytics",
+  requireAuth,
+  requirePermission("analytics"),
+  async (c) => {
+    try {
+      const { search, limit = "50", offset = "0" } = c.req.query();
+      const limitNum = Math.min(Math.max(Number(limit) || 50, 1), 200);
+      const offsetNum = Math.max(Number(offset) || 0, 0);
+
+      const bookConditions = [];
+      if (typeof search === "string" && search.length > 0) {
+        bookConditions.push(ilike(books.title, `%${search}%`));
+      }
+      const bookWhere = bookConditions.length > 0 ? and(...bookConditions) : undefined;
+
+      const bookRows = await dbRead
+        .select({
+          id: books.id,
+          title: books.title,
+          slug: books.slug,
+          readCount: books.readCount,
+          totalPages: books.totalPages,
+        })
+        .from(books)
+        .where(bookWhere)
+        .orderBy(desc(books.readCount))
+        .limit(limitNum)
+        .offset(offsetNum);
+
+      const [{ count: totalRows }] = await dbRead
+        .select({ count: sql<number>`count(*)` })
+        .from(books)
+        .where(bookWhere);
+
+      const bookIds = bookRows.map((b) => b.id);
+      const progressAgg: Record<string, { uniqueReaders: number; progressEvents: number; avgPage: number }> = {};
+      const visitAgg: Record<string, number> = {};
+
+      if (bookIds.length > 0) {
+        const pAgg = await dbRead
+          .select({
+            bookId: userPageProgress.bookId,
+            uniqueReaders: countDistinct(userPageProgress.userId),
+            progressEvents: count(),
+            avgPage: avg(pages.page),
+          })
+          .from(userPageProgress)
+          .innerJoin(pages, eq(userPageProgress.actionedPageId, pages.id))
+          .where(inArray(userPageProgress.bookId, bookIds))
+          .groupBy(userPageProgress.bookId);
+
+        for (const row of pAgg) {
+          progressAgg[row.bookId] = {
+            uniqueReaders: Number(row.uniqueReaders ?? 0),
+            progressEvents: Number(row.progressEvents ?? 0),
+            avgPage: row.avgPage != null ? Number(row.avgPage) : 0,
+          };
+        }
+
+        const vAgg = await dbRead
+          .select({ bookId: pages.bookId, visitSum: sum(pages.visitCount) })
+          .from(pages)
+          .where(inArray(pages.bookId, bookIds))
+          .groupBy(pages.bookId);
+
+        for (const row of vAgg) {
+          visitAgg[row.bookId] = Number(row.visitSum ?? 0);
+        }
+      }
+
+      const analytics = bookRows.map((b) => {
+        const pa = progressAgg[b.id];
+        const visitSum = visitAgg[b.id] ?? 0;
+        const uniqueReaders = pa?.uniqueReaders ?? 0;
+        const avgPage = pa?.avgPage ?? 0;
+        const completionRate = b.totalPages > 0 ? Math.min(1, avgPage / b.totalPages) : 0;
+        const rereadRate = visitSum > 0 ? Math.max(0, (visitSum - uniqueReaders) / visitSum) : 0;
+        return {
+          bookId: b.id,
+          title: b.title,
+          slug: b.slug,
+          reads: b.readCount,
+          totalPages: b.totalPages,
+          uniqueReaders,
+          progressEvents: pa?.progressEvents ?? 0,
+          avgPageReached: Math.round(avgPage),
+          completionRate,
+          rereadRate,
+        };
+      });
+
+      return c.json({ total: Number(totalRows), limit: limitNum, offset: offsetNum, books: analytics });
+    } catch (error) {
+      return cApiError(c, "Failed to list analytics", error);
+    }
+  }
+);
+
+/**
+ * GET /admin/analytics/:bookId
+ *
+ * Per-page drop-off + momentum curve for a single book.
+ */
+router.get("/analytics/:bookId",
+  requireAuth,
+  requirePermission("analytics"),
+  async (c) => {
+    try {
+      const { bookId } = c.req.param();
+      const detail = await getBookAnalytics(bookId);
+      if (!detail) return cNotFoundError(c, "Book not found");
+      return c.json(detail);
+    } catch (error) {
+      return cApiError(c, "Failed to load book analytics", error);
     }
   }
 );
