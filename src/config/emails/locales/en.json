@@ -100,5 +100,12 @@
   "monthly.footer": "<a href=\"{{url}}\" style=\"color: #8b0000;\">Manage email preferences</a>",
 
   "announcement.fromTeam": "A message from the {{appName}} team",
-  "announcement.footer": "Don't want these dispatches? <a href=\"{{url}}\" style=\"color: #8b0000;\">Manage preferences</a> or turn off product announcements anytime."
+  "announcement.footer": "Don't want these dispatches? <a href=\"{{url}}\" style=\"color: #8b0000;\">Manage preferences</a> or turn off product announcements anytime.",
+
+  "storyPublished.subject": "A new story from someone you follow — {{appName}}",
+  "storyPublished.heading": "The plot thickens, {{name}}.",
+  "storyPublished.body1": "<strong>{{authorName}}</strong> just published a new book: <strong>{{bookTitle}}</strong>.",
+  "storyPublished.body2": "The first page is already open. Step in before the trail goes cold.",
+  "storyPublished.cta": "Read the story",
+  "storyPublished.footer": "Not your kind of story? <a href=\"{{url}}\" style=\"color: #8b0000;\">Manage email preferences</a> anytime."
 }

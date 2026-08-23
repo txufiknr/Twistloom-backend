@@ -20,6 +20,7 @@ export { getFeedbackInternalTemplate } from './feedback-internal.js';
 export { getWeeklyRecommendationsTemplate } from './weekly-recommendations.js';
 export { getMonthlyActivityTemplate } from './monthly-activity.js';
 export { getAnnouncementTemplate } from './announcement.js';
+export { getStoryPublishedTemplate } from './story-published.js';
 
 export type { FeedbackInternalTemplateParams } from './feedback-internal.js';
 export type { RecommendedBookEmailItem } from './weekly-recommendations.js';

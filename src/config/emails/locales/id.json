@@ -100,5 +100,12 @@
   "monthly.footer": "<a href=\"{{url}}\" style=\"color: #8b0000;\">Kelola preferensi email</a>",
 
   "announcement.fromTeam": "Pesan dari tim {{appName}}",
-  "announcement.footer": "Tidak ingin kiriman ini? <a href=\"{{url}}\" style=\"color: #8b0000;\">Kelola preferensi</a> atau matikan pengumuman produk kapan saja."
+  "announcement.footer": "Tidak ingin kiriman ini? <a href=\"{{url}}\" style=\"color: #8b0000;\">Kelola preferensi</a> atau matikan pengumuman produk kapan saja.",
+
+  "storyPublished.subject": "Cerita baru dari akun yang kamu ikuti — {{appName}}",
+  "storyPublished.heading": "Alur cerita makin tebal, {{name}}.",
+  "storyPublished.body1": "<strong>{{authorName}}</strong> baru saja menerbitkan buku baru: <strong>{{bookTitle}}</strong>.",
+  "storyPublished.body2": "Halaman pertamanya sudah terbuka. Masuk sebelum jejaknya hilang.",
+  "storyPublished.cta": "Baca ceritanya",
+  "storyPublished.footer": "Bukan cerita yang kamu suka? <a href=\"{{url}}\" style=\"color: #8b0000;\">Kelola preferensi email</a> kapan saja."
 }

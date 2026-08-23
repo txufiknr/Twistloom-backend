@@ -17,6 +17,8 @@ export interface EmailPreferences {
   monthlyActivitySummary: boolean;
   /** Unscheduled product announcements from Twistloom */
   productAnnouncements: boolean;
+  /** New story published by someone the user follows */
+  storyPublished: boolean;
   /**
    * Email language override.
    * `null` = follow account `preferredLocale` (same as app language).
@@ -29,6 +31,7 @@ export type EmailPreferencesUpdate = {
   weeklyRecommendations?: boolean;
   monthlyActivitySummary?: boolean;
   productAnnouncements?: boolean;
+  storyPublished?: boolean;
   /** Pass `null` to clear override (same as app) */
   emailLocale?: EmailLocale | null;
 };
@@ -38,6 +41,7 @@ export const DEFAULT_EMAIL_PREFERENCES: EmailPreferences = {
   weeklyRecommendations: true,
   monthlyActivitySummary: true,
   productAnnouncements: true,
+  storyPublished: true,
   emailLocale: null,
 };
 
@@ -46,6 +50,7 @@ export const EMAIL_PREFERENCE_BOOL_KEYS = [
   'weeklyRecommendations',
   'monthlyActivitySummary',
   'productAnnouncements',
+  'storyPublished',
 ] as const satisfies readonly (keyof EmailPreferences)[];
 
 export type EmailPreferenceBoolKey = (typeof EMAIL_PREFERENCE_BOOL_KEYS)[number];

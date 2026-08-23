@@ -42,6 +42,8 @@ export function normalizeEmailPreferences(
       raw?.monthlyActivitySummary ?? DEFAULT_EMAIL_PREFERENCES.monthlyActivitySummary,
     productAnnouncements:
       raw?.productAnnouncements ?? DEFAULT_EMAIL_PREFERENCES.productAnnouncements,
+    storyPublished:
+      raw?.storyPublished ?? DEFAULT_EMAIL_PREFERENCES.storyPublished,
     emailLocale,
   };
 }
@@ -220,6 +222,7 @@ export type UnsubscribeCategory =
   | 'weeklyRecommendations'
   | 'monthlyActivitySummary'
   | 'productAnnouncements'
+  | 'storyPublished'
   | 'all';
 
 interface UnsubscribePayload {
@@ -232,6 +235,7 @@ const UNSUBSCRIBE_CATEGORIES: UnsubscribeCategory[] = [
   'weeklyRecommendations',
   'monthlyActivitySummary',
   'productAnnouncements',
+  'storyPublished',
   'all',
 ];
 
@@ -293,6 +297,7 @@ export async function applyUnsubscribe(
       weeklyRecommendations: false,
       monthlyActivitySummary: false,
       productAnnouncements: false,
+      storyPublished: false,
     });
   }
   return updateEmailPreferences(userId, { [category]: false });

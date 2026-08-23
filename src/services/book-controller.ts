@@ -21,7 +21,7 @@
 
 import { sql, and, or, eq, desc, inArray, arrayOverlaps, isNotNull } from "drizzle-orm";
 import type { Context } from "hono";
-import { books, users, userLikes, userFavorites, userSessions, userCompletedBooks, userPurchasedBooks, pages, storyStates, bookTranslations } from '../db/schema.js';
+import { books, users, userLikes, userFavorites, userSessions, userCompletedBooks, userPurchasedBooks, pages, storyStates, bookTranslations, userFollows } from '../db/schema.js';
 import { applySorting } from '../utils/pagination.js';
 import { dbRead } from "../db/client.js";
 import { createRelevanceExpression } from "../utils/search.js";
@@ -693,9 +693,11 @@ export function buildBookQuery<T>(
     currentUserId?: string | null;
     /** Collection name to filter favorites (only applies when sortBy=favorites) */
     collection?: string;
+    /** When true + authenticated + default `newest` sort: bubble books from followed authors to the top. */
+    followingFirst?: boolean;
   }
 ) {
-  const { baseQuery, baseCondition, search, bookSortBy, genericSortBy, sortOrder, tags, language, lastUpdated, minAge, maxAge, gender, mode, minRating, maxRating, minRatingCount, currentUserId, collection } = params;
+  const { baseQuery, baseCondition, search, bookSortBy, genericSortBy, sortOrder, tags, language, lastUpdated, minAge, maxAge, gender, mode, minRating, maxRating, minRatingCount, currentUserId, collection, followingFirst } = params;
 
   // Build filter conditions using shared helpers
   const timeCondition      = buildTimeFilterCondition(lastUpdated);
@@ -737,7 +739,7 @@ export function buildBookQuery<T>(
   // Apply primary sorting: book-specific sorting (acts as category filter).
   // Pass countQuery so sort-specific WHERE conditions are applied to both queries.
   if (bookSortBy) {
-    query = applyBookSorting(query, bookSortBy, currentUserId, collection, countQuery);
+    query = applyBookSorting(query, bookSortBy, currentUserId, collection, countQuery, followingFirst);
   }
 
   // Apply orderBy for search relevance
@@ -796,7 +798,7 @@ export function combineFilterConditions(...conditions: (ReturnType<typeof sql> |
  * Type safety is maintained through the actual database operations and SQL generation.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', currentUserId?: string | null, collection?: string, countQuery?: any): any {
+function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', currentUserId?: string | null, collection?: string, countQuery?: any, followingFirst?: boolean): any {
   switch (sortBy) {
     case 'for-you': {
       // Recommend books based on user's reading history (from userSessions)
@@ -1021,8 +1023,39 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
       return query.orderBy(desc(books.updatedAt));
     }
 
+    case 'following': {
+      // Books authored by people the current user follows (requires auth).
+      // Sorted newest-first. Anonymous viewers get an empty result.
+      if (!currentUserId) {
+        const noop = query.where(sql`1=0`);
+        if (countQuery) countQuery.where(sql`1=0`);
+        return noop;
+      }
+      const followingCondition = sql`EXISTS (
+        SELECT 1 FROM ${userFollows}
+        WHERE ${userFollows.followerId} = ${currentUserId}
+          AND ${userFollows.followingId} = ${books.userId}
+      )`;
+      query = query.where(followingCondition);
+      if (countQuery) countQuery.where(followingCondition);
+      return query.orderBy(desc(books.createdAt));
+    }
+
     case 'newest':
     default: {
+      // When an authenticated user is on the default "All Stories" feed and
+      // `followingFirst` is requested, bubble books from followed authors to
+      // the top while still showing everything else below (newest-first within
+      // each group). Degrades to plain `createdAt DESC` when not signed in or
+      // when the user follows nobody.
+      if (followingFirst && currentUserId) {
+        const followedFirst = sql`(CASE WHEN EXISTS (
+          SELECT 1 FROM ${userFollows}
+          WHERE ${userFollows.followerId} = ${currentUserId}
+            AND ${userFollows.followingId} = ${books.userId}
+        ) THEN 0 ELSE 1 END)`;
+        return query.orderBy(followedFirst, desc(books.createdAt));
+      }
       return query.orderBy(desc(books.createdAt));
     }
   }

@@ -25,11 +25,12 @@ import {
   getWeeklyRecommendationsTemplate,
   getMonthlyActivityTemplate,
   getAnnouncementTemplate,
+  getStoryPublishedTemplate,
   type FeedbackInternalTemplateParams,
   type RecommendedBookEmailItem,
   type MonthlyActivityStats,
 } from '../config/emails/index.js';
-import { t } from '../config/emails/i18n.js';
+import { t, emailLocalePathPrefix } from '../config/emails/i18n.js';
 import { getErrorMessage } from './error.js';
 import {
   resolveEmailLocale,
@@ -460,6 +461,53 @@ export async function sendAnnouncementEmail(
       title,
       bodyHtml,
       cta,
+      preferencesUrlForLocale(locale),
+    ),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Follower engagement: new story published by a followed author
+// ---------------------------------------------------------------------------
+
+interface SendStoryPublishedEmailOptions {
+  /** Recipient (follower) email */
+  to: string;
+  /** Recipient display name */
+  name: string;
+  /** Author (publisher) display name */
+  authorName: string;
+  /** Published book title */
+  bookTitle: string;
+  /** Published book slug (for the deep link) */
+  bookSlug: string;
+  /** Recipient user id (for locale resolution + preferences deep link) */
+  userId: string;
+  /** Optional explicit locale override */
+  locale?: EmailLocale;
+}
+
+export async function sendStoryPublishedEmail(
+  opts: SendStoryPublishedEmailOptions,
+): Promise<boolean> {
+  const locale = opts.locale
+    ? coerceLocale(opts.locale)
+    : await localeForUser(opts.userId);
+
+  const base = process.env.FRONTEND_URL?.replace(/\/$/, '') ?? '';
+  const prefix = emailLocalePathPrefix(locale);
+  const bookUrl = `${base}${prefix}/books/${encodeURIComponent(opts.bookSlug)}`;
+
+  return sendEmail({
+    to: opts.to,
+    subject: t(locale, 'storyPublished.subject', { appName: APP_NAME }),
+    html: getStoryPublishedTemplate(
+      locale,
+      APP_NAME,
+      opts.name,
+      opts.authorName,
+      opts.bookTitle,
+      bookUrl,
       preferencesUrlForLocale(locale),
     ),
   });

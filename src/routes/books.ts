@@ -2245,6 +2245,8 @@ router.get("/:id/similar", optionalAuth, async (c) => {
 router.get("/explore", optionalAuth, async (c) => {
   try {
     const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE, search, sortBy, sortOrder, lastUpdated, language, tags, ageRange, gender, mode, collection, profileUserId } = extractPaginationParams(c.req.query());
+    const followingFirstParam = c.req.query().followingFirst as string | undefined;
+    const followingFirst = followingFirstParam === 'true' || followingFirstParam === '1';
     const userId = c.get("userId") || null;
     
     // Extract tags from query parameter (comma-separated)
@@ -2341,7 +2343,7 @@ router.get("/explore", optionalAuth, async (c) => {
     // 'likes', we are viewing another user's list — no auth needed since the
     // target user is explicit. 'recommendations' and 'for-you' still require
     // auth because they use the viewer's own reading history.
-    const sortNeedsAuth = ['creations', 'reads', 'recommendations', 'favorites', 'likes', 'for-you', 'pen-drafts'].includes(bookSortBy);
+    const sortNeedsAuth = ['creations', 'reads', 'recommendations', 'favorites', 'likes', 'for-you', 'pen-drafts', 'following'].includes(bookSortBy);
     const profileUserIdBypasses = ['creations', 'reads', 'favorites', 'likes'];
     const requiresAuth = sortNeedsAuth && !(profileUserId && profileUserIdBypasses.includes(bookSortBy));
     if (requiresAuth && !userId) {
@@ -2437,6 +2439,7 @@ router.get("/explore", optionalAuth, async (c) => {
         minRatingCount,
         currentUserId: null,
         collection,
+        followingFirst,
       });
 
       const [totalCountResult] = await countQuery;
@@ -2479,6 +2482,7 @@ router.get("/explore", optionalAuth, async (c) => {
         minRatingCount,
         currentUserId: profileUserId || userId,
         collection,
+        followingFirst,
       });
 
       const [totalCountResult] = await countQuery;

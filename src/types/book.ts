@@ -434,6 +434,7 @@ export const bookSortOptions = [
   'pen-drafts', // User's own in-progress Pen books (is_pen_book + authoring_status='draft')
   'favorites', // User's saved books
   'likes', // Books the user liked (user_likes)
+  'following', // Books from people the user follows (requires auth)
 ] as const;
 
 export type BookSortOption = typeof bookSortOptions[number];

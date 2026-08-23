@@ -20,6 +20,7 @@ import { sanitizeActionsForMode } from "../utils/book-mode.js";
 import { validateGeneratedPage } from "../utils/page-validation.js";
 import { MAX_GENERATION_DURATION_MS } from "../config/book-creation.js";
 import { isPublicActiveBook, notifyForumBranchAdded } from "./forum-queue.js";
+import { notifyFollowersOfPublishedBook } from "./book-publish-notification.js";
 import { getEnrichedBookSelect } from "./book-controller.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage, DBUpdateBook } from "../types/schema.js";
 import type { Book, BookSlugGenerationResult, BookStatus, BookVisibility, EnrichedBookData, EnrichedPageOptions, PublicStats } from "../types/book.js";
@@ -1045,6 +1046,44 @@ export async function updateBook(
   options?: { client?: DBClient; invalidateCache?: boolean }
 ): Promise<DBBook> {
   const { client = dbWrite, invalidateCache = true } = options ?? {};
+
+  // ── Publish-transition detection (visibility: non-public → 'public') ─────
+  // This is the single chokepoint for "publishing" a book, so follower
+  // notifications live here — every path that flips a book public (the
+  // PATCH /visibility route used by AI / pen / story books, admin tools, etc.)
+  // is covered automatically. Only do the extra read when a visibility change
+  // is actually requested (publishing is rare, so common edits stay cheap).
+  let publishNotify: { authorId: string; bookId: string; bookSlug: string; bookTitle: string } | null = null;
+  if (updates.visibility === 'public') {
+    const [current] = await client
+      .select({
+        visibility: books.visibility,
+        status: books.status,
+        isOriginal: books.isOriginal,
+        userId: books.userId,
+        slug: books.slug,
+        title: books.title,
+      })
+      .from(books)
+      .where(eq(books.id, bookId))
+      .limit(1);
+
+    if (
+      current &&
+      current.visibility !== 'public' &&
+      current.status === 'active' &&
+      !current.isOriginal &&
+      current.userId
+    ) {
+      publishNotify = {
+        authorId: current.userId,
+        bookId,
+        bookSlug: current.slug ?? '',
+        bookTitle: current.title,
+      };
+    }
+  }
+
   const [updated] = await client
     .update(books)
     .set({ ...updates, updatedAt: new Date() })
@@ -1058,6 +1097,15 @@ export async function updateBook(
     // Book metadata changes (e.g. title → main-branch branchName) must not
     // leave a stale 30-day page 1 payload behind
     await invalidatePageOneCache(bookId);
+  }
+
+  // Fire follower notifications outside the (possible) transaction so a publish
+  // is always announced even if this call is nested in a larger tx. Best-effort:
+  // a failure here must never break the publish itself.
+  if (publishNotify) {
+    void notifyFollowersOfPublishedBook(publishNotify).catch((e) => {
+      console.error('[updateBook] ❌ Failed to notify followers of published book:', getErrorMessage(e));
+    });
   }
 
   return updated;

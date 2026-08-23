@@ -9,6 +9,7 @@ import emailRouter from "./email.js";
 import blogRouter from "./blog.js";
 import penRouter from "./pen.js";
 import loreRouter from "./lore.js";
+import notificationsRouter from "./notifications.js";
 import { APP_NAME, VERSION } from "../config/constants.js";
 import type { AppEnv } from "../hono/env.js";
 
@@ -43,5 +44,6 @@ router.route("/email", emailRouter);
 router.route("/blog", blogRouter);
 router.route("/pen", penRouter);
 router.route("/pen", loreRouter);
+router.route("/notifications", notificationsRouter);
 
 export default router;
