@@ -1446,7 +1446,14 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
 
     // Append outputFormat to systemPrompt when structured output is active or provider is gemini
     const shouldAppendOutputFormat = options.outputFormat && (supportsStructuredOutput || provider === 'gemini');
-    const systemPrompt = shouldAppendOutputFormat ? `${originalSystemPrompt}\n\n---\n${options.outputFormat}` : originalSystemPrompt;
+    // Labeled (external review, checkpoint 7, Finding 2 Fix B): a plain
+    // `---\n${format}` separator with no heading reads, to a model, as
+    // "more free-form instructions" rather than "the JSON shape you must
+    // match" — indistinguishable from other unlabeled `---`-separated
+    // blocks already in the prompt (task, field instructions, review
+    // checklist). Purely additive/cosmetic; does not change when this
+    // block is appended, only how the model is told to read it.
+    const systemPrompt = shouldAppendOutputFormat ? `${originalSystemPrompt}\n\n---\nEXPECTED OUTPUT JSON FORMAT (the exact shape the response must match):\n${options.outputFormat}` : originalSystemPrompt;
 
     try {
       const models = modelSelection[provider];
@@ -1670,10 +1677,23 @@ export async function runEvaluationPass<T extends Record<string, unknown> | stri
 
   // Resolve 'auto' once at the evaluation level. The resolved boolean threads
   // through to both schema building and result parsing, ensuring they stay in sync.
+  //
+  // Duplicate-output-format bug fix (external review, checkpoint 7,
+  // Finding 2): `options.outputFormat`, when set, is the GENERATION call's
+  // schema-shape text — the `systemPrompt` argument passed into this
+  // function already has it appended exactly once (aiPrompt's own
+  // shouldAppendOutputFormat logic, applied for the generation call that
+  // produced `result`). Letting `outputFormat` survive the `...options`
+  // spread here means the INNER aiPrompt call below would append it a
+  // SECOND time on top of that already-baked-in copy — aiPrompt has no way
+  // to know the systemPrompt it's given already carries one. Stripped at
+  // the source so neither `evaluationOptions` nor anything spread from it
+  // downstream can carry it forward.
+  const { outputFormat: _outputFormat, ...optionsWithoutOutputFormat } = options;
   const evaluationOptions: AIPromptOptions = {
-    ...options,
+    ...optionsWithoutOutputFormat,
     modelSelection: AI_CHAT_MODELS_EVALUATION,
-    useStringEvaluatorOutput: resolveUseStringEvaluator({ ...options, modelSelection: AI_CHAT_MODELS_EVALUATION }),
+    useStringEvaluatorOutput: resolveUseStringEvaluator({ ...optionsWithoutOutputFormat, modelSelection: AI_CHAT_MODELS_EVALUATION }),
   };
 
   try {
@@ -1719,13 +1739,60 @@ export async function runEvaluationPass<T extends Record<string, unknown> | stri
       // evaluationOptions.useStringEvaluatorOutput is already resolved to a
       // boolean (see resolveUseStringEvaluator above). When true: output is
       // JSON string → parse. When false: output is structured object → use directly.
+      //
+      // Newline-stripping bug fix (external review, checkpoint 7): this used
+      // to be a bare `JSON.parse(raw)` — any minor escaping slip (a raw
+      // newline byte instead of `\n`, one stray unescaped quote) threw,
+      // silently discarding the ENTIRE correction and falling back to the
+      // pre-correction text. Routing through parseAISafely instead — the
+      // same multi-stage repair pipeline (sanitise → extract → jsonrepair →
+      // isdk-repair → heuristic fixes) every OTHER provider's structured
+      // output already goes through, and the same fix already applied to
+      // aiPrompt's own Gemini string-mode fallback for the identical
+      // constrained-decoder-limit reason — means a minor escaping issue gets
+      // *repaired*, not discarded.
+      //
+      // Instantiated as parseAISafely<Record<string, unknown>> rather than
+      // parseAISafely<T> — T here can be `string` (inherited from aiPrompt's
+      // own wider constraint so this function can be called from inside it),
+      // which parseAISafely's own `T extends Record<string, unknown>`
+      // constraint would reject; the result is cast to T below instead,
+      // which is always valid since T is constrained to be assignable from
+      // Record<string, unknown> whenever this string-mode branch is
+      // meaningfully reached (correcting free-form `string` output via a
+      // JSON-object evaluator wrapper isn't a real usage pattern).
+      // `options.outputJsonStructure`/`outputJsonRequired`/
+      // `outputJsonFallbackField` are T's own schema/required-fields/fallback
+      // (not the AIJsonEvaluation<T> wrapper's — those already flow into
+      // `evaluationOptions` for the wrapper build above), so reusing them
+      // here is exactly correct: the same schema T's generation call was
+      // validated against.
       let correctedOutput: T | undefined;
       if (evaluationOptions.useStringEvaluatorOutput) {
-        try {
-          const raw = evaluationResult.output as unknown as string;
-          correctedOutput = raw ? JSON.parse(raw) as T : undefined;
-        } catch {
-          console.warn(`[${evaluationContext}] ⚠️ Failed to parse evaluator string output as JSON — falling back to original`);
+        const raw = evaluationResult.output as unknown as string;
+        if (raw) {
+          try {
+            const parsed = await parseAISafely<Record<string, unknown>>(
+              { output: raw, provider: evalProvider },
+              {
+                schema: options.outputJsonStructure,
+                requiredFields: options.outputJsonRequired ?? [],
+                fallbackField: options.outputJsonFallbackField,
+                logContext: evaluationContext,
+              },
+            );
+            correctedOutput = parsed && Object.keys(parsed).length > 0 ? (parsed as T) : undefined;
+          } catch {
+            // parseAISafely is designed not to throw on malformed input (it
+            // repairs rather than rejects), but this local catch is kept —
+            // matching the original bare-JSON.parse code's own local
+            // try/catch — so an unexpected failure here still gets the
+            // specific warning below instead of falling through to the
+            // outer catch's more generic "evaluation failed" message.
+          }
+          if (!correctedOutput) {
+            console.warn(`[${evaluationContext}] ⚠️ Failed to parse evaluator string output as JSON — falling back to original`);
+          }
         }
       } else {
         correctedOutput = evaluationResult.output;

@@ -819,22 +819,37 @@ export function extractPartialJSON<T extends Record<string, unknown>>(
 
 /**
  * Strips non-printable and invisible Unicode characters from a string, then
- * collapses all whitespace runs to a single space.
+ * collapses HORIZONTAL whitespace runs to a single space.
  *
  * Four categories removed:
- *   - Control characters (U+0000–U+001F, U+007F–U+009F): null bytes, ESC, etc.
+ *   - Control characters (U+0000–U+001F, U+007F–U+009F) EXCEPT tab/LF/CR:
+ *     null bytes, ESC, etc. — see the newline-preservation note below.
  *   - Unicode replacement character (U+FFFD): from charset mis-decoding.
  *   - Zero-width characters (U+200B–U+200F, U+FEFF BOM): from copy-paste.
- *   - Redundant whitespace: collapsed so downstream regexes are simpler.
+ *   - Redundant horizontal whitespace: collapsed so downstream regexes are
+ *     simpler — but `\n`/`\r` are preserved, not collapsed into it.
+ *
+ * Newline-stripping bug fix (external review, checkpoint 7, Finding 1): the
+ * control-char strip used to include `\t`/`\n`/`\r` (all fall within
+ * U+0000–U+001F), and the whitespace-collapse used to fold any run
+ * containing a newline into a single plain space — meaning if a provider's
+ * raw AI response ever contained an actual newline byte (paragraph breaks
+ * emitted as raw LF instead of the JSON `\n` escape — some providers do
+ * this even when the surrounding text is otherwise valid), this function
+ * silently deleted every paragraph break in the page/document text before
+ * the JSON parser ever saw it, with no error, warning, or trace. Now
+ * `\t`/`\n`/`\r` survive both passes intact; only genuinely inert control
+ * bytes (NUL, ESC, VT, FF, etc.) and non-newline whitespace runs are
+ * touched.
  *
  * @internal
  */
 function sanitise(input: string): string {
   return input
-    .replace(/[\u0000-\u001F\u007F-\u009F]/g, '') // control chars
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '') // control chars — \t(09) \n(0A) \r(0D) excluded
     .replace(/\uFFFD/g, '')                         // Unicode replacement char
     .replace(/[\u200B-\u200F\uFEFF]/g, '')          // zero-width / BOM chars
-    .replace(/\s+/g, ' ')                           // collapse whitespace
+    .replace(/[^\S\r\n]+/g, ' ')                    // collapse horizontal whitespace only — \r/\n untouched
     .trim();
 }
 

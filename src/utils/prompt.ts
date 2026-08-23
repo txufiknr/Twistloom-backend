@@ -39,7 +39,7 @@ import { formatLanguage } from "./translation.js";
 import { DEFAULT_CANDIDATE_PAGE_PER_ACTION, MAX_CANDIDATE_PAGE_PER_ACTION } from "../config/candidate-generation.js";
 import type { PlaceMemory } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
-import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, FutureNoteSchedule, FutureNoteStateTrigger, MemoryIntegrity, PastEvent, PlotFlag, SanityState, StateDelta, StateDeltaGenerationWithBranch, StoryGeneration, StoryOutline, StoryPage, StoryPageGeneration, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
+import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, FutureNoteSchedule, FutureNoteStateTrigger, MemoryIntegrity, PastEvent, PlotFlag, SanityState, SceneType, StateDelta, StateDeltaGenerationWithBranch, StoryGeneration, StoryOutline, StoryPage, StoryPageGeneration, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPromptForJsonParams, AIResponse, AIResponseProvider } from "../types/ai-chat.js";
 import type { CharacterMemory, CharacterRelationship, Injury, InventoryItem, PastInteraction, HealthStatus, StoryMCCandidate } from "../types/character.js";
 import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, CreateBookResponse, BookStatus, BookMode } from "../types/book.js";
@@ -1480,7 +1480,14 @@ function buildStateDeltaReviewChecklist(state: StoryState, language: string): st
 
 function buildEvaluatorOuputFormatBlurb(useStringEvaluatorOutput: boolean): string {
   return useStringEvaluatorOutput
-    ? 'CRITICAL — the "output" field must be the FULL corrected JSON serialized as a VALID JSON STRING (see "EXPECTED JSON SCHEMA"). Begin with "{" and end exactly with "}" (raw JSON text, properly escaped inside the string).'
+    // Newline-preservation clause added (external review, checkpoint 7,
+    // Finding 1): string-mode asks the model to re-encode the ENTIRE
+    // corrected object as an escaped JSON string — every paragraph break in
+    // the prose has to survive that re-encoding as a literal `\n` escape.
+    // Without this instruction the model has no explicit signal that
+    // reflowing/removing those breaks is wrong, and nothing else in this
+    // prompt says so either.
+    ? 'CRITICAL — the "output" field must be the FULL corrected JSON serialized as a VALID JSON STRING (see "EXPECTED JSON SCHEMA"). Begin with "{" and end exactly with "}" (raw JSON text, properly escaped inside the string). PRESERVE every inner escape sequence verbatim: a paragraph break inside the corrected JSON must be written as \\n (backslash-n) — never as a literal newline, never removed or reflowed. Preserve "**"/"*" emphasis markers exactly as written.'
     : '';
 }
 
@@ -1535,6 +1542,7 @@ Only rewrite if total scoreBefore < 75, if any single dimension scores below its
 Follow writing style in "WRITING STYLE:" and "PAGE FORMAT:" rules creatively.
 Preserve the original narrative voice and story trajectory. Fix the minimum necessary — do not over-correct.
 Do not introduce plot elements not implied by prior context. Do not change characters' names.
+CRITICAL — the "text" field must be preserved VERBATIM unless a substantive correction forces a rewrite: keep every paragraph break ("\\n" inside the corrected JSON is a real line break — re-emit it as "\\n", never delete, merge, or reflow it) and every "**"/"*" emphasis marker exactly as written. Never "clean up", rewrap, or normalize prose formatting during scoring or correction — that is not a real fix.
 
 STEP 4 — RE-SCORE (scoreAfter)
 Score the corrected content. If no corrections were made, scoreAfter = scoreBefore.
@@ -1851,6 +1859,15 @@ async function evaluateMergedStoryGeneration(
       // StoryGeneration regardless of which path produced it.
       outputJsonStructure: STORY_GENERATION_SCHEMA_DEFINITION,
       outputJsonRequired: STORY_GENERATION_REQUIRED_FIELDS,
+      // Gap found while implementing the checkpoint-7 newline-stripping fix:
+      // runEvaluationPass's string-mode branch now routes the corrected
+      // output through parseAISafely (not a bare JSON.parse), which reads
+      // options.outputJsonFallbackField for its own repair fallback — this
+      // was missing here even though outputJsonStructure/outputJsonRequired
+      // (the other two BUG-02 fields) were already added at checkpoint 5.
+      // 'text' matches the legacy single-shot flow's equivalent evaluation
+      // call for the same schema.
+      outputJsonFallbackField: 'text',
       logPrompts: true,
       meta: { bookId },
     },
@@ -1916,6 +1933,7 @@ STEP 3 — CORRECT
 Only rewrite if total scoreBefore < 80, or if any single dimension scores below its threshold.
 Preserve the original creative direction. Fix the minimum necessary — do not over-correct.
 Do not introduce plot elements that contradict the theme or MC candidate.
+CRITICAL — preserve every paragraph break in any prose field ("\n" inside the corrected JSON is a real line break — re-emit it as "\n", never delete, merge, or reflow it) and every "**"/"*" emphasis marker exactly as written. Never "clean up" or normalize prose formatting during scoring or correction.
 
 STEP 4 — RE-SCORE (scoreAfter)
 Score the corrected content. If no corrections were made, scoreAfter = scoreBefore.
