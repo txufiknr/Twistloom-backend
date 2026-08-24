@@ -158,6 +158,7 @@ import type { CustomActionValidationResult, CustomActionPreviewResponse, CustomA
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { MAX_BRANCHING_PREGENERATION_DEPTH } from "../config/story.js";
 import { getBookModeCreditCostForUser, getCreditCostForUser } from "../config/credits.js";
+import { getReaderPath, reconstructFork, resolveCurrentPageId } from "../services/time-travel.js";
 import { CREDIT_ERRORS } from "../config/errors.js";
 import { getRefundForStep, isAtPointOfNoReturn, BOOK_GENERATION_COST } from "../config/generation-refund.js";
 import { triggerBookGenerationWorkflow, isGenerationStale } from "../services/book-creation.js";
@@ -4428,6 +4429,156 @@ router.get("/:identifier/testimonials", optionalAuth, async (c) => {
  * @header Accept-Language - Desired language code (e.g., "en", "es", "fr")
  * @returns Page with actions and book metadata
  */
+/**
+ * GET /:identifier/time-travel/path
+ *
+ * Story Time Travel — Phase 1 (Fate Peek). Returns the reader's path as a list
+ * of nodes, marking forks and enumerating each fork's alternatives (with
+ * whether a generated continuation already exists). Pure read, no AI, no
+ * credits. Guests must pass `?pageId=` (their current page); authed readers
+ * resolve their frontier from their session.
+ */
+router.get("/:identifier/time-travel/path", optionalAuth, async (c) => {
+  try {
+    const { identifier } = c.req.param();
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+    const bookId = isValidUuid(bookIdentifier)
+      ? bookIdentifier
+      : (await dbRead
+          .select({ id: books.id })
+          .from(books)
+          .where(eq(books.slug, bookIdentifier))
+          .limit(1)
+          .then((rows) => rows[0]?.id ?? null));
+    if (!bookId) return cNotFoundError(c, "Book not found");
+
+    const userId = c.get("userId");
+    const { pageId } = c.req.query();
+    const currentPageId = await resolveCurrentPageId(
+      bookId,
+      userId,
+      typeof pageId === "string" ? pageId : undefined,
+    );
+    if (!currentPageId) return c.json({ path: [] });
+
+    const result = await getReaderPath(bookId, currentPageId);
+    return c.json(result);
+  } catch (error) {
+    return cApiError(c, "Failed to retrieve time travel path", error);
+  }
+});
+
+/**
+ * GET /:identifier/:pageId/reconstruct
+ *
+ * Story Time Travel — Phase 1 (Fate Peek). Reconstructs a single fork: the
+ * fork page's own snapshot, the taken action, and every alternative with its
+ * generated branch tip + a deterministic state diff vs the reader's current
+ * branch. Pure read, no AI, no credits. Optional `?readerPageId=` overrides
+ * session-based frontier resolution.
+ */
+router.get("/:identifier/:pageId/reconstruct", optionalAuth, async (c) => {
+  try {
+    const { identifier, pageId } = c.req.param();
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+    const bookId = isValidUuid(bookIdentifier)
+      ? bookIdentifier
+      : (await dbRead
+          .select({ id: books.id })
+          .from(books)
+          .where(eq(books.slug, bookIdentifier))
+          .limit(1)
+          .then((rows) => rows[0]?.id ?? null));
+    if (!bookId) return cNotFoundError(c, "Book not found");
+
+    const userId = c.get("userId");
+    const { readerPageId } = c.req.query();
+    const resolvedReaderPageId = await resolveCurrentPageId(
+      bookId,
+      userId,
+      typeof readerPageId === "string" ? readerPageId : undefined,
+    );
+
+    const result = await reconstructFork(bookId, pageId, resolvedReaderPageId);
+    if (userId) {
+      await logUserActivity({
+        userId,
+        activityType: "time_travel_preview",
+        targetType: "book",
+        targetId: bookId,
+        metadata: { forkPageId: pageId },
+      });
+    }
+    return c.json(result);
+  } catch (error) {
+    return cApiError(c, "Failed to reconstruct fork", error);
+  }
+});
+
+/**
+ * POST /:identifier/:pageId/time-travel/commit
+ *
+ * Story Time Travel — Phase 2 (Take This Path). Charges `TIME_TRAVEL_COMMIT`
+ * and confirms the alternative has a generated continuation. On success the
+ * client navigates to `nextPageId` (the first page of the alternative branch),
+ * stepping the reader into the alternative. No server-side state mutation of
+ * the reader's existing branch is needed — the branch pages already exist.
+ */
+router.post("/:identifier/:pageId/time-travel/commit", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId")!;
+    const { identifier, pageId } = c.req.param();
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+    const bookId = isValidUuid(bookIdentifier)
+      ? bookIdentifier
+      : (await dbRead
+          .select({ id: books.id })
+          .from(books)
+          .where(eq(books.slug, bookIdentifier))
+          .limit(1)
+          .then((rows) => rows[0]?.id ?? null));
+    if (!bookId) return cNotFoundError(c, "Book not found");
+
+    const body = (await c.req.json().catch(() => ({}))) as { nextPageId?: unknown };
+    const nextPageId = typeof body.nextPageId === "string" ? body.nextPageId : null;
+    if (!nextPageId) return cValidationError(c, "nextPageId is required");
+
+    // Verify the alternative exists and is generated
+    const [forkPage] = await dbRead
+      .select({ actions: pages.actions })
+      .from(pages)
+      .where(eq(pages.id, pageId))
+      .limit(1);
+    const action = (forkPage?.actions ?? []).find((a) =>
+      (a.destinationPageIds ?? []).includes(nextPageId),
+    );
+    if (!action) return cNotFoundError(c, "Alternative path not found at this fork");
+
+    try {
+      await executeWithCredits(
+        userId,
+        "TIME_TRAVEL_COMMIT",
+        async () => ({ ok: true as const }),
+        { context: "time_travel_commit", metadata: { bookId, forkPageId: pageId, nextPageId } },
+      );
+    } catch {
+      return c.json({ error: "Credit charge failed. You may not have enough credits." }, 402);
+    }
+
+    await logUserActivity({
+      userId,
+      activityType: "time_travel_commit",
+      targetType: "book",
+      targetId: bookId,
+      metadata: { forkPageId: pageId, nextPageId },
+    });
+
+    return c.json({ ok: true, nextPageId });
+  } catch (error) {
+    return cApiError(c, "Failed to commit time travel", error);
+  }
+});
+
 router.get("/:identifier/:pageId", optionalAuth, async (c) => {
   try {
     const headerLanguage = c.get("headerLanguage");

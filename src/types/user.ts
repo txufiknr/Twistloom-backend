@@ -135,7 +135,9 @@ export type UserActivityType =
   'beta_duty_reward_claimed' |
   'quest_completed' |
   'quest_reward_claimed' |
-  'page_dwell';
+  'page_dwell' |
+  'time_travel_preview' |
+  'time_travel_commit';
 
 export type CheckinClaimType = 'regular' | 'vip_2x';
 
