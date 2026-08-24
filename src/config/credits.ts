@@ -105,6 +105,8 @@ const CREDIT_COSTS_BASE = {
   SUMMON_NEW_CHARACTER: 50, // TODO: use
   /** Cost to commit to an alternative branch (Phase 2 "Take This Path" time travel) */
   TIME_TRAVEL_COMMIT: 5,
+  /** Cost to generate an AI-narrated "what happens if" summary of an alternative (Q5) */
+  TIME_TRAVEL_NARRATE: 2,
   /** Cost to unlock alternate endings (future feature) */
   UNLOCK_ALTERNATE_ENDING: 10, // TODO: use
 

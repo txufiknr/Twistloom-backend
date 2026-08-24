@@ -158,7 +158,8 @@ import type { CustomActionValidationResult, CustomActionPreviewResponse, CustomA
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { MAX_BRANCHING_PREGENERATION_DEPTH } from "../config/story.js";
 import { getBookModeCreditCostForUser, getCreditCostForUser } from "../config/credits.js";
-import { getReaderPath, reconstructFork, resolveCurrentPageId } from "../services/time-travel.js";
+import { getReaderPath, reconstructFork, resolveCurrentPageId, narrateForkAlternative } from "../services/time-travel.js";
+import { savedPaths } from "../db/schema.js";
 import { CREDIT_ERRORS } from "../config/errors.js";
 import { getRefundForStep, isAtPointOfNoReturn, BOOK_GENERATION_COST } from "../config/generation-refund.js";
 import { triggerBookGenerationWorkflow, isGenerationStale } from "../services/book-creation.js";
@@ -4617,6 +4618,241 @@ router.post("/:identifier/:pageId/time-travel/commit", requireAuth, async (c) =>
     return c.json({ ok: true, nextPageId });
   } catch (error) {
     return cApiError(c, "Failed to commit time travel", error);
+  }
+});
+
+/**
+ * POST /:identifier/time-travel/narrate
+ *
+ * AI-narrated "what happens if" summary (Q5). Charges `TIME_TRAVEL_NARRATE`
+ * and returns a short prose narration of the selected alternative. The
+ * narration is grounded in the structured diffs — no new plot is invented.
+ */
+router.post("/:identifier/time-travel/narrate", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId")!;
+    const { identifier } = c.req.param();
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+    const bookId = isValidUuid(bookIdentifier)
+      ? bookIdentifier
+      : (await dbRead
+          .select({ id: books.id })
+          .from(books)
+          .where(eq(books.slug, bookIdentifier))
+          .limit(1)
+          .then((rows) => rows[0]?.id ?? null));
+    if (!bookId) return cNotFoundError(c, "Book not found");
+
+    const body = (await c.req.json().catch(() => ({}))) as {
+      forkPageId?: unknown;
+      alternativeNextPageId?: unknown;
+    };
+    const forkPageId = typeof body.forkPageId === "string" ? body.forkPageId : null;
+    const alternativeNextPageId =
+      typeof body.alternativeNextPageId === "string" ? body.alternativeNextPageId : null;
+    if (!forkPageId || !alternativeNextPageId) {
+      return cValidationError(c, "forkPageId and alternativeNextPageId are required");
+    }
+
+    // Resolve the reader's current page so reconstructFork can compute diffs.
+    const readerPageId = await resolveCurrentPageId(bookId, userId, undefined);
+    const reconstruct = await reconstructFork(bookId, forkPageId, readerPageId);
+
+    // Find the target alternative and its diffs.
+    const alt = reconstruct.alternatives.find(
+      (a) => a.nextPageId === alternativeNextPageId,
+    );
+    if (!alt) return cNotFoundError(c, "Alternative not found at this fork");
+
+    // Book title for the narration prompt.
+    const [bookRow] = await dbRead
+      .select({ title: books.title })
+      .from(books)
+      .where(eq(books.id, bookId))
+      .limit(1);
+
+    // Narrate first (LLM call), then charge — so the user isn't charged when
+    // the LLM fails.
+    const narration = await narrateForkAlternative({
+      bookTitle: bookRow?.title ?? "Untitled",
+      takenActionText: reconstruct.takenAction ?? "",
+      alternativeText: alt.text,
+      diffs: alt.diffs,
+    });
+
+    if (!narration) {
+      return c.json(
+        { error: "AI narration unavailable. Please try again." },
+        502,
+      );
+    }
+
+    // Charge after a successful narration.
+    try {
+      await executeWithCredits(
+        userId,
+        "TIME_TRAVEL_NARRATE",
+        async () => ({ ok: true as const }),
+        {
+          context: "time_travel_narrate",
+          metadata: { bookId, forkPageId, alternativeNextPageId },
+        },
+      );
+    } catch {
+      return c.json({ error: "Credit charge failed. You may not have enough credits." }, 402);
+    }
+
+    await logUserActivity({
+      userId,
+      activityType: "time_travel_preview",
+      targetType: "book",
+      targetId: bookId,
+      metadata: { forkPageId, alternativeNextPageId, narrated: true },
+    });
+
+    return c.json({ narration });
+  } catch (error) {
+    return cApiError(c, "Failed to generate AI narration", error);
+  }
+});
+
+/**
+ * GET /:identifier/time-travel/saved
+ *
+ * Lists all saved time-travel paths for the current user on this book.
+ */
+router.get("/:identifier/time-travel/saved", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId")!;
+    const { identifier } = c.req.param();
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+    const bookId = isValidUuid(bookIdentifier)
+      ? bookIdentifier
+      : (await dbRead
+          .select({ id: books.id })
+          .from(books)
+          .where(eq(books.slug, bookIdentifier))
+          .limit(1)
+          .then((rows) => rows[0]?.id ?? null));
+    if (!bookId) return cNotFoundError(c, "Book not found");
+
+    const rows = await dbRead
+      .select({
+        id: savedPaths.id,
+        forkPageId: savedPaths.forkPageId,
+        alternativeNextPageId: savedPaths.alternativeNextPageId,
+        label: savedPaths.label,
+        createdAt: savedPaths.createdAt,
+      })
+      .from(savedPaths)
+      .where(and(eq(savedPaths.userId, userId), eq(savedPaths.bookId, bookId)))
+      .orderBy(desc(savedPaths.createdAt));
+
+    return c.json({ saved: rows });
+  } catch (error) {
+    return cApiError(c, "Failed to list saved paths", error);
+  }
+});
+
+/**
+ * POST /:identifier/time-travel/saved
+ *
+ * Save a time-travel path (bookmark an alternative).
+ */
+router.post("/:identifier/time-travel/saved", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId")!;
+    const { identifier } = c.req.param();
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+    const bookId = isValidUuid(bookIdentifier)
+      ? bookIdentifier
+      : (await dbRead
+          .select({ id: books.id })
+          .from(books)
+          .where(eq(books.slug, bookIdentifier))
+          .limit(1)
+          .then((rows) => rows[0]?.id ?? null));
+    if (!bookId) return cNotFoundError(c, "Book not found");
+
+    const body = (await c.req.json().catch(() => ({}))) as {
+      forkPageId?: unknown;
+      alternativeNextPageId?: unknown;
+      label?: unknown;
+    };
+    const forkPageId = typeof body.forkPageId === "string" ? body.forkPageId : null;
+    const alternativeNextPageId =
+      typeof body.alternativeNextPageId === "string" ? body.alternativeNextPageId : null;
+    if (!forkPageId || !alternativeNextPageId) {
+      return cValidationError(c, "forkPageId and alternativeNextPageId are required");
+    }
+
+    // Verify both pages exist and belong to this book.
+    const pageCount = await dbRead
+      .select({ id: pages.id })
+      .from(pages)
+      .where(
+        and(
+          eq(pages.bookId, bookId),
+          inArray(pages.id, [forkPageId, alternativeNextPageId]),
+        ),
+      );
+    if (pageCount.length !== 2) {
+      return cNotFoundError(c, "One or both pages not found in this book");
+    }
+
+    // Upsert: try insert, ignore on conflict (unique constraint).
+    await dbWrite
+      .insert(savedPaths)
+      .values({
+        userId,
+        bookId,
+        forkPageId,
+        alternativeNextPageId,
+        label: typeof body.label === "string" ? body.label : null,
+      })
+      .onConflictDoNothing();
+
+    return c.json({ ok: true });
+  } catch (error) {
+    return cApiError(c, "Failed to save path", error);
+  }
+});
+
+/**
+ * DELETE /:identifier/time-travel/saved/:savedPathId
+ *
+ * Remove a saved time-travel path.
+ */
+router.delete("/:identifier/time-travel/saved/:savedPathId", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId")!;
+    const { identifier, savedPathId } = c.req.param();
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+    const bookId = isValidUuid(bookIdentifier)
+      ? bookIdentifier
+      : (await dbRead
+          .select({ id: books.id })
+          .from(books)
+          .where(eq(books.slug, bookIdentifier))
+          .limit(1)
+          .then((rows) => rows[0]?.id ?? null));
+    if (!bookId) return cNotFoundError(c, "Book not found");
+
+    const deleted = await dbWrite
+      .delete(savedPaths)
+      .where(
+        and(
+          eq(savedPaths.id, savedPathId),
+          eq(savedPaths.userId, userId),
+          eq(savedPaths.bookId, bookId),
+        ),
+      )
+      .returning({ id: savedPaths.id });
+
+    if (deleted.length === 0) return cNotFoundError(c, "Saved path not found");
+    return c.json({ ok: true });
+  } catch (error) {
+    return cApiError(c, "Failed to delete saved path", error);
   }
 });
 

@@ -19,6 +19,9 @@ import { pages, userSessions, actionProgress } from "../db/schema.js";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { StoryState } from "../types/story.js";
 import { getStoryState } from "./story.js";
+import { aiPrompt } from "../utils/ai-chat.js";
+import { AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
+import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 
 export type TimeTravelDiffDimension =
   | "character"
@@ -485,4 +488,61 @@ export function diffStoryStates(reader: StoryState, alt: StoryState): DiffLine[]
   // pure diff only reports genuine field-level divergence.
 
   return lines;
+}
+
+// ── AI-narrated "what happens if" summaries (Q5) ──────────────────────────
+// Maps diff dimension IDs to human-readable labels for the narration prompt.
+const NARRATE_DIMENSION_LABELS: Record<string, string> = {
+  character: "Characters",
+  plotFlag: "Plot",
+  inventory: "Inventory",
+  sanity: "Composure",
+  injury: "Injuries",
+};
+
+/**
+ * Produces a short, atmospheric, second-person narration of what stepping onto
+ * an alternative path would feel like, based strictly on the structured diffs
+ * returned by `diffStoryStates`. Returns `null` if the LLM call fails or
+ * returns an empty response — the caller should treat `null` as a transient
+ * failure and surface a user-facing error.
+ *
+ * The narration is free-form prose; it does NOT invent new plot beyond the
+ * provided diffs, keeping it grounded in the actual world-state divergence.
+ */
+export async function narrateForkAlternative(input: {
+  bookTitle: string;
+  takenActionText: string;
+  alternativeText: string;
+  diffs: { dimension: string; text: string }[];
+}): Promise<string | null> {
+  const diffText =
+    input.diffs.length > 0
+      ? input.diffs
+          .map((d) => `- ${NARRATE_DIMENSION_LABELS[d.dimension] ?? d.dimension}: ${d.text}`)
+          .join("\n")
+      : "(No concrete differences were detected — the two roads are effectively identical up to this point.)";
+
+  const userPrompt =
+    `Book: "${input.bookTitle}".\n` +
+    `At a fork, the reader chose "${input.takenActionText}". ` +
+    `The alternative road not taken is "${input.alternativeText}".\n\n` +
+    `Here is the structured difference between the reader's road and that alternative, ` +
+    `measured at the first page after the fork:\n${diffText}\n\n` +
+    `Write a vivid, second-person, 2-3 sentence narration describing what stepping onto ` +
+    `"${input.alternativeText}" would feel like and what changes. Do not invent new plot; ` +
+    `only reflect the differences above. Keep it under 60 words.`;
+
+  const res = await aiPrompt<string>(userPrompt, {
+    systemPrompt:
+      "You are a literary narrator for an interactive branching fiction app. " +
+      "You describe alternate paths the reader could have taken, based strictly on the " +
+      "provided structured differences. Be atmospheric but concise.",
+    modelSelection: AI_CHAT_MODELS_WRITING,
+    config: { ...AI_CHAT_CONFIG_DEFAULT, maxOutputToken: 240, temperature: 0.8 },
+    context: "time-travel-narrate",
+  });
+
+  if (res.provider === "none" || !res.output) return null;
+  return res.output.trim();
 }

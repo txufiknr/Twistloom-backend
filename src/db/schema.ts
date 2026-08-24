@@ -2702,4 +2702,34 @@ export const penNotes = pgTable(
     index("pen_notes_user_idx").on(t.userId),
     index("pen_notes_created_idx").on(t.createdAt.desc()),
   ]
+);
+
+/**
+ * Saved time-travel paths.
+ *
+ * Readers can bookmark a specific alternative they explored so they can
+ * quickly return to it later without re-walking the fork tree. One row per
+ * saved path; duplicates are rejected by the unique constraint on
+ * (user_id, book_id, fork_page_id, alternative_next_page_id).
+ */
+export const savedPaths = pgTable(
+  "saved_paths",
+  {
+    id: id(),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    bookId: bookId("cascade"),
+    /** The fork page where the alternative diverges. */
+    forkPageId: uuid("fork_page_id").notNull().references(() => pages.id, { onDelete: "cascade" }),
+    /** The first page of the alternative branch (the `nextPageId` from reconstructFork). */
+    alternativeNextPageId: uuid("alternative_next_page_id").notNull().references(() => pages.id, { onDelete: "cascade" }),
+    /** Optional user-provided label (e.g. "the path where Miranda lives"). */
+    label: text("label"),
+    createdAt,
+  },
+  (t) => [
+    unique("saved_paths_user_book_fork_alt_unique").on(t.userId, t.bookId, t.forkPageId, t.alternativeNextPageId),
+    index("saved_paths_user_idx").on(t.userId),
+    index("saved_paths_book_idx").on(t.bookId),
+    index("saved_paths_created_idx").on(t.createdAt.desc()),
+  ]
 );
