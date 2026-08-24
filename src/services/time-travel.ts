@@ -15,8 +15,8 @@
  */
 
 import { dbRead } from "../db/client.js";
-import { pages, userSessions, actionProgress } from "../db/schema.js";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { pages, userSessions, actionProgress, userPageProgress } from "../db/schema.js";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { StoryState } from "../types/story.js";
 import { getStoryState } from "./story.js";
 import { aiPrompt } from "../utils/ai-chat.js";
@@ -149,6 +149,126 @@ export async function resolveCurrentPageId(
 }
 
 /**
+ * Fallback path reconstruction from `user_page_progress` when `storyStates`
+ * snapshots are unavailable (cleaned up + parent-chain reconstruction failed).
+ *
+ * Queries the user's page-progress rows (NOT cleaned up) and batch-resolves
+ * each page's available actions to identify forks, mirroring the shape
+ * produced by the primary `storyStates`-based path.
+ */
+async function getReaderPathFromProgress(
+  bookId: string,
+  userId: string,
+): Promise<GetTimeTravelPathResponse> {
+  // 1. Fetch all progress rows for this user+book, ordered chronologically.
+  const progressRows = await dbRead
+    .select({
+      actionedPageId: userPageProgress.actionedPageId,
+      nextPageId: userPageProgress.nextPageId,
+      action: userPageProgress.action,
+    })
+    .from(userPageProgress)
+    .where(and(
+      eq(userPageProgress.userId, userId),
+      eq(userPageProgress.bookId, bookId),
+    ))
+    .orderBy(asc(userPageProgress.createdAt));
+
+  if (progressRows.length === 0) return { path: [] };
+
+  // 2. Batch-fetch page rows for every source page.
+  const pageIds = [...new Set(progressRows.map((r) => r.actionedPageId))];
+  const pageRows = pageIds.length
+    ? await dbRead
+        .select({ id: pages.id, page: pages.page, actions: pages.actions })
+        .from(pages)
+        .where(inArray(pages.id, pageIds))
+    : [];
+  const pageMap = new Map(pageRows.map((r) => [r.id, r]));
+
+  // 3. Collect alternative nextPageIds for branch/count lookups.
+  const forkPageIds: string[] = [];
+  const altNextPageIds: string[] = [];
+  for (const row of progressRows) {
+    const pageRow = pageMap.get(row.actionedPageId);
+    const actions = (pageRow?.actions ?? []) as ActionLike[];
+    if (actions.length > 1) {
+      forkPageIds.push(row.actionedPageId);
+      for (const a of actions) {
+        if (a.text === row.action.text) continue;
+        const destIds = a.destinationPageIds ?? [];
+        if (destIds.length > 0 && destIds[0]) altNextPageIds.push(destIds[0]);
+      }
+    }
+  }
+
+  // 4. Batch branch + count lookups (same as primary path).
+  const branchRows = altNextPageIds.length
+    ? await dbRead
+        .select({ id: pages.id, branchId: pages.branchId })
+        .from(pages)
+        .where(inArray(pages.id, altNextPageIds))
+    : [];
+  const branchMap = new Map(branchRows.map((r) => [r.id, r.branchId] as const));
+  const branchIds = [...new Set(branchRows.map((r) => r.branchId).filter(Boolean))] as string[];
+  const countRows = branchIds.length
+    ? await dbRead
+        .select({ branchId: pages.branchId, count: sql<number>`count(*)::int` })
+        .from(pages)
+        .where(and(eq(pages.bookId, bookId), inArray(pages.branchId, branchIds)))
+        .groupBy(pages.branchId)
+    : [];
+  const countMap = new Map(countRows.map((r) => [r.branchId, r.count] as const));
+
+  // 5. In-flight generations.
+  const generatingMap = await getGeneratingActionsBatch(forkPageIds);
+
+  // 6. Build path nodes.
+  const path: TimeTravelPathNode[] = [];
+  for (const row of progressRows) {
+    const pageRow = pageMap.get(row.actionedPageId);
+    const actions = (pageRow?.actions ?? []) as ActionLike[];
+    const isFork = actions.length > 1;
+    const alternatives: TimeTravelAlternative[] = [];
+
+    if (isFork) {
+      const generating = generatingMap.get(row.actionedPageId) ?? new Set<string>();
+      for (const a of actions) {
+        if (a.text === row.action.text) continue;
+        const destIds = a.destinationPageIds ?? [];
+        const hasGenerated = destIds.length > 0;
+        const nextPageId = hasGenerated ? destIds[0] : null;
+        const isGenerating = !hasGenerated && generating.has(a.text);
+        let branchId: string | null = null;
+        let generatedPageCount = 0;
+        if (hasGenerated && nextPageId) {
+          branchId = branchMap.get(nextPageId) ?? null;
+          if (branchId) generatedPageCount = countMap.get(branchId) ?? 0;
+        }
+        alternatives.push({
+          text: a.text,
+          nextPageId,
+          hasGeneratedPath: hasGenerated,
+          branchId,
+          generatedPageCount,
+          isGenerating,
+        });
+      }
+    }
+
+    path.push({
+      page: pageRow?.page ?? 0,
+      pageId: row.actionedPageId,
+      chosenActionText: row.action.text,
+      isFork,
+      alternatives,
+    });
+  }
+
+  return { path };
+}
+
+/**
  * Build the reader's path as a list of nodes with fork/alternative info,
  * used to render the Fate tab.
  */
@@ -165,11 +285,13 @@ export async function getReaderPath(
   // frontier page (resolved once by the caller and passed as `fallbackPageId`).
   const resolvedPageId = currentPageId ?? fallbackPageId ?? null;
   let stateRow: StoryState | null = null;
-  if (currentPageId) stateRow = await getStoryState(currentPageId);
+  // Use a deeper traversal (20 hops) than the default 3 — time-travel needs a
+  // surviving snapshot higher up the chain to reconstruct the full path.
+  if (currentPageId) stateRow = await getStoryState(currentPageId, { maxTraversalDepth: 20 });
 
   if (!stateRow && userId && fallbackPageId) {
     console.log("[time-travel] snapshot missing for", currentPageId, "— trying session frontier", fallbackPageId);
-    stateRow = await getStoryState(fallbackPageId);
+    stateRow = await getStoryState(fallbackPageId, { maxTraversalDepth: 20 });
   }
 
   console.log("[time-travel] getReaderPath", {
@@ -180,7 +302,14 @@ export async function getReaderPath(
     historyLen: (stateRow?.actionsHistory ?? []).length,
   });
 
-  if (!stateRow) return { path: [] };
+  if (!stateRow) {
+    // Fallback: reconstruct path from user_page_progress (not cleaned up).
+    if (userId) {
+      console.log("[time-travel] getReaderPath falling back to user_page_progress for user", userId);
+      return getReaderPathFromProgress(bookId, userId);
+    }
+    return { path: [] };
+  }
 
   const history = (stateRow.actionsHistory ?? []) as Array<{
     pageId: string;

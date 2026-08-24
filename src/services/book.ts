@@ -36,7 +36,7 @@ import { formatSystemPromptWithDocuments } from "../utils/ai-chat.js";
 import { IS_PRODUCTION } from "../config/env.js";
 import { geminiGenerateImage } from "../utils/ai-image.js";
 import { retryWithBranchConflict, isUniqueConstraintError } from "../utils/retry.js";
-import { generateBranchId } from "./story-branch.js";
+import { generateBranchId, getStoryStateWithBranch } from "./story-branch.js";
 import { deleteFileFromImageKit, persistUploadedImage, uploadBookCover, uploadBookCharacterImage } from "./image.js";
 import { sanitizeText, generateSlug, sanitizeKeywords, parseTrait } from "../utils/text-processing.js";
 import { generateId, isValidUuid } from "../utils/uuid.js";
@@ -1881,8 +1881,12 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
       : (userId ? getPageActionsFromDB(userId, bookId, pageId) : Promise.resolve<SelectedAction[]>([])),
 
     // Get story state for context — actionsHistory and plotFlags are fully
-    // accumulated from page 1 to current by persistPageWithState
-    getStoryStateFromPage(dbPage),
+    // accumulated from page 1 to current by persistPageWithState.
+    // Uses branch-aware reconstruction to survive aggressive state cleanup:
+    // walks the full branch path, finds the nearest stored snapshot, and
+    // applies deltas forward. Falls back to the shallow parent-chain path
+    // inside getStoryState when direct lookup / deleted-cache hit succeeds.
+    getStoryStateWithBranch(dbPage.bookId, dbPage.id, { persistState: true }),
 
     // Handle translation if needed
     targetLanguage && pageToTranslate ? getPageTranslation({
