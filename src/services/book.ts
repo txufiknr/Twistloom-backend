@@ -29,7 +29,7 @@ import { actionTypes, type StoryPage, type PersistedStoryPage, type UserStoryPag
 import type { CanonValidationSummary } from "../types/canon-validation.js";
 import { getStoryStateFromPage, insertStoryState } from "./story.js";
 import { formatPlacesForPrompt, resolvePlaceLoreNames } from "../utils/places.js";
-import { buildCustomActionAction } from "../utils/custom-action.js";
+import { buildCustomActionAction, deriveActionRisk } from "../utils/custom-action.js";
 import { formatBookMetaForPrompt } from "../utils/books.js";
 import { calculateHealthStatus, formatCharactersForPrompt, formatPlannedCharactersForPrompt, resolveCharacterLoreNames } from "../utils/characters.js";
 import { formatSystemPromptWithDocuments } from "../utils/ai-chat.js";
@@ -597,7 +597,9 @@ export async function persistPageWithState(params: {
   const actionsWithTendency = generatedStoryPage.actions.map<Action>(action => ({
     ...action,
     tendency: calculateActionTendency(action, newState),
-    source: 'ai'
+    source: 'ai',
+    // Engine-derived per-action risk (deterministic, no AI authoring).
+    risk: deriveActionRisk(action.type),
   }));
 
   const pageToInsert: StoryPage = {

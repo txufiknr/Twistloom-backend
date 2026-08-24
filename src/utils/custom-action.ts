@@ -39,24 +39,30 @@ export function buildCustomActionAction(params: {
     source: 'custom',
     ...(params.customActionId ? { customActionId: params.customActionId } : {}),
     originalText: raw,
-    // Conservative per-action risk heuristic for reader-authored choices (no
-    // extra AI call). Only clearly dangerous action types get flagged; benign
-    // choices omit `risk` and fall back to the client's page-level derivation.
-    ...deriveCustomActionRisk(params.actionType),
+    // Per-action risk cue derived in the engine (no AI authoring). Clearly
+    // dangerous action types get flagged; benign choices omit `risk` and fall
+    // back to the client's page-level derivation.
+    ...(deriveActionRisk(params.actionType) ?? {}),
   };
 }
 
 /**
- * Maps a reader-authored action type to a per-action risk cue. Returns `{}`
- * (no `risk`) for types that aren't clearly high-stakes, so we never spam the
- * badge on benign custom choices.
+ * Engine-derived per-action risk cue. Pure, deterministic — maps the
+ * (already AI-classified) `actionType` to a risk category. This is the single
+ * source of truth for `Action.risk` on BOTH AI-generated and reader-authored
+ * actions; the frontend prefers it and falls back to its own page-level
+ * `deriveActionRisk` only when this is absent. Returns `undefined` for benign
+ * types so we never spam the badge.
  */
-function deriveCustomActionRisk(actionType: ActionTypeStory): ActionRiskMetadata | Record<string, never> {
-  if (actionType === 'attack' || actionType === 'risk' || actionType === 'escape') {
-    return { isHighRisk: true, riskType: 'physical', severity: 'high' };
+export function deriveActionRisk(actionType: ActionTypeStory): ActionRiskMetadata | undefined {
+  switch (actionType) {
+    case 'attack':
+    case 'risk':
+    case 'escape':
+      return { isHighRisk: true, riskType: 'physical', severity: 'high' };
+    case 'deceive':
+      return { isHighRisk: true, riskType: 'reality_slip', severity: 'high' };
+    default:
+      return undefined;
   }
-  if (actionType === 'deceive') {
-    return { isHighRisk: true, riskType: 'reality_slip', severity: 'high' };
-  }
-  return {};
 }

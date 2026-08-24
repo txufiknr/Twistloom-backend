@@ -105,7 +105,7 @@ import { getClientIp } from "../hono/express-shim.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
 import { rateLimit } from "../middleware/rate-limit.js";
-import { books, branches, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress, userCompletedBooks, uploadedImages, userActivityLogs, pages, bookTestimonials, pageReactions } from "../db/schema.js";
+import { books, branches, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress, userCompletedBooks, uploadedImages, userActivityLogs, pages, bookTestimonials, pageReactions, userSessions } from "../db/schema.js";
 import { getErrorMessage, cApiError, cForbiddenError, cNotFoundError, cRateLimitError, cUnauthorizedError, cValidationError } from "../utils/error.js";
 import { sanitizeTextForDB, sanitizeKeywords } from '../utils/text-processing.js';
 import { stripHtml } from '../utils/sanitize-html.js';
@@ -148,7 +148,7 @@ import { getLockedPaths } from "../services/locked-paths.js";
 import { runGate0, runGate1, buildCustomActionValidationPrompt, buildCanonicalAction, getRejectionMessage, CUSTOM_ACTION_VALIDATION_SCHEMA_DEFINITION, CUSTOM_ACTION_VALIDATION_REQUIRED_FIELDS, generatePageForCustomAction, CUSTOM_ACTION_GENERATION_STALE_MS } from "../services/custom-actions.js";
 import { loadOwnCustomActions, mapCustomActionRowToAction } from "../services/book.js";
 import { customActions } from "../db/schema.js";
-import { getStoryStateFromPage, computeEndingStats, setActiveSession } from "../services/story.js";
+import { getStoryStateFromPage, getStoryState, computeEndingStats, setActiveSession } from "../services/story.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 import { notifyForumOfBookChange, notifyForumStoryArchived } from "../services/forum-queue.js";
 import { createAIOptionsWithSchema, aiPrompt } from "../utils/ai-chat.js";
@@ -4463,12 +4463,15 @@ router.get("/:identifier/testimonials", optionalAuth, async (c) => {
       });
 
       const currentPageId = await resolveCurrentPageId(bookId, userId, suppliedPageId);
-      if (!currentPageId) {
+      // Resolve the session frontier once and pass it as the fallback so
+      // getReaderPath doesn't re-resolve it (avoids a second lookup).
+      const frontier = userId ? await resolveCurrentPageId(bookId, userId, undefined) : null;
+      if (!currentPageId && !frontier) {
         console.log("[time-travel/path] no currentPageId resolved -> empty path");
         return c.json({ path: [] });
       }
 
-      const result = await getReaderPath(bookId, currentPageId, userId);
+      const result = await getReaderPath(bookId, currentPageId, userId, frontier);
       console.log("[time-travel/path] result", {
         currentPageId,
         pathLen: result.path.length,
@@ -4567,6 +4570,17 @@ router.post("/:identifier/:pageId/time-travel/commit", requireAuth, async (c) =>
     );
     if (!action) return cNotFoundError(c, "Alternative path not found at this fork");
 
+    // Defense-in-depth: reject re-committing the reader's *own* (already-taken)
+    // path. The frontend never sends it, but the API must not trust that.
+    const readerPageId = await resolveCurrentPageId(bookId, userId, undefined);
+    if (readerPageId) {
+      const readerState = await getStoryState(readerPageId);
+      const taken = (readerState?.actionsHistory ?? []).find((h) => h.pageId === pageId);
+      if (taken && taken.nextPageId === nextPageId) {
+        return cValidationError(c, "You are already on this path");
+      }
+    }
+
     try {
       await executeWithCredits(
         userId,
@@ -4576,6 +4590,20 @@ router.post("/:identifier/:pageId/time-travel/commit", requireAuth, async (c) =>
       );
     } catch {
       return c.json({ error: "Credit charge failed. You may not have enough credits." }, 402);
+    }
+
+    // Explicitly re-base the session onto the alternative's first page so Phase
+    // 2 doesn't silently depend on the client navigation GET's side effects.
+    const [nextPage] = await dbRead
+      .select({ page: pages.page })
+      .from(pages)
+      .where(eq(pages.id, nextPageId))
+      .limit(1);
+    if (nextPage) {
+      await dbWrite
+        .update(userSessions)
+        .set({ frontierPageId: nextPageId, frontierPageNumber: nextPage.page })
+        .where(and(eq(userSessions.userId, userId), eq(userSessions.bookId, bookId)));
     }
 
     await logUserActivity({

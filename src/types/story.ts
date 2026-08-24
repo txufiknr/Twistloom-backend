@@ -1502,7 +1502,9 @@ export type NarrativeContext = {
 export type ActionSource = 'ai' | 'custom' | 'community';
 
 /**
- * Per-action atmospheric risk cue, AI-authored during page generation.
+ * Per-action atmospheric risk cue, engine-derived (see `deriveActionRisk` in
+ * custom-action.ts) from the action's `type` after generation — never emitted
+ * by the AI.
  *
  * Distinct from the client-side `deriveActionRisk(pageContext)` fallback: that
  * heuristic is page-level (every choice on a compromised page shares one
@@ -1551,10 +1553,11 @@ export type Action = {
    */
   tendency?: number;
   /**
-   * AI-authored per-action risk cue (see `ActionRiskMetadata`). Optional —
-   * absent on calm/legacy pages. When present, clients prefer it over the
-   * page-level `deriveActionRisk` fallback so each choice shows its own
-   * category instead of a single shared one.
+   * Engine-derived per-action risk cue (see `ActionRiskMetadata`), computed by
+   * `deriveActionRisk(action.type)` after generation. Optional — absent on
+   * calm/legacy pages. When present, clients prefer it over the page-level
+   * `deriveActionRisk` fallback so each choice shows its own category instead
+   * of a single shared one.
    */
   risk?: ActionRiskMetadata;
 };
@@ -1570,7 +1573,10 @@ export type SelectedAction = Pick<Action, 'text' | 'type' | 'hint' | 'source'> &
   // isPaid?: boolean;
 };
 
-export type ActionGeneration = Omit<Action, 'destinationPageIds' | 'source' | 'tendency' | 'customActionId' | 'originalText'>;
+// `risk` is intentionally excluded: it is engine-derived (custom-action.ts
+// `deriveActionRisk`) at build time, never emitted by the AI. The persisted
+// `Action` keeps `risk?` (set by the engine after generation).
+export type ActionGeneration = Omit<Action, 'destinationPageIds' | 'source' | 'tendency' | 'customActionId' | 'originalText' | 'risk'>;
 // export type ActionHistory = Action & { page: number };
 export type ActionTranslation = {
   /** Original action text (serves as unique identifier) */

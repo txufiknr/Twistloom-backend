@@ -76,6 +76,7 @@ import { delay } from './time.js';
 import { isValidUuid } from './uuid.js';
 import type { DBPage } from '../types/schema.js';
 import { clampCandidateCountForMode, enforceModeOnActionDestinations } from './book-mode.js';
+import { deriveActionRisk } from './custom-action.js';
 
 /**
  * Performance metrics for candidate generation
@@ -978,7 +979,12 @@ export async function ensureCandidatesForPageWithStrategy(
         action.destinationPageIds,
         candidatePages.map(p => p.id),
       );
-      const updatedAction: Action = { ...action, destinationPageIds };
+      const updatedAction: Action = {
+        ...action,
+        destinationPageIds,
+        // Engine-derived per-action risk (deterministic, no AI authoring).
+        risk: deriveActionRisk(action.type),
+      };
 
       if (existingIndex !== undefined) {
         // Direct update at existing position - O(1) operation

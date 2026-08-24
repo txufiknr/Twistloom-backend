@@ -4,7 +4,7 @@ import type { RelationshipUpdate, InitialInventoryItem, InitialInjury, Inventory
 import { canonicalPlaceTypes, type NewPlace, type PlaceUpdate, placeWeathers, type PlaceConnectionUpdate, placeAccessibilities } from "../types/places.js";
 import { actionHintTypes, actionTypes, characterSceneRoles, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, sceneTypes, difficulties, endingTypes, storyMomentums, stabilityLevels, storyPhaseKeys, futureNoteTriggerTypes, memoryIntegrities } from "../types/story.js";
 import type { AIJsonActionFlag, AIJsonEvaluation, AIJsonEvaluationFix, AIJsonEvaluationIssue, AIJsonIntegrityFlag, AIJsonProperty, AIJsonScoreAfter, AIJsonScoreBefore, AIJsonScoreBreakdown, AIPromptOptions } from "../types/ai-chat.js";
-import type { ActionHint, ActionRiskMetadata, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, FactUpdate, StateDeltaGeneration, StateDeltaGenerationWithBranch, ActionGeneration, FutureNoteGeneration, FlagUpdate, PlotFlagType, InitialPlotFlag, SceneCharacter, SanityState } from "../types/story.js";
+import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, FactUpdate, StateDeltaGeneration, StateDeltaGenerationWithBranch, ActionGeneration, FutureNoteGeneration, FlagUpdate, PlotFlagType, InitialPlotFlag, SceneCharacter, SanityState } from "../types/story.js";
 import { threadPriorities, threadStatuses, threadTruths, type UpdateThread, type NewThread, type AddThreadClue, type InitialThreadClue } from "../types/story-thread.js";
 import type { CandidatePagesGeneration } from "../types/candidate-generation.js";
 import { genders } from "../types/user.js";
@@ -30,21 +30,6 @@ export const STORY_ACTION_SCHEMA: AIJsonProperty = { type: 'array', items: {
       } satisfies Record<keyof ActionHint, AIJsonProperty>,
       required: ['text', 'type'] satisfies (keyof ActionHint)[],
       additionalProperties: false
-    },
-    risk: {
-      type: 'object',
-      description: 'Per-action risk cue. Omit the whole field when this choice is low-stakes / consequence-free.',
-      properties: {
-        isHighRisk: { type: 'boolean', description: 'true only when THIS specific choice is high-stakes' },
-        riskType: {
-          type: 'string',
-          enum: ['psychological', 'physical', 'reality_slip'],
-          description: "The single dominant danger of THIS action: 'physical' = bodily harm / direct confrontation / entering danger; 'reality_slip' = reality destabilizing / denying what was seen / tampering with the unreal; 'psychological' = composure / trust / emotional exposure collapse",
-        },
-        severity: { type: 'string', enum: ['high', 'extreme'], description: 'extreme when the choice is clearly fatal or world-shattering' },
-      } satisfies Record<keyof ActionRiskMetadata, AIJsonProperty>,
-      required: ['isHighRisk', 'riskType'] satisfies (keyof ActionRiskMetadata)[],
-      additionalProperties: false,
     },
   } satisfies Record<keyof ActionGeneration, AIJsonProperty>,
   required: ['text', 'type', 'hint'] satisfies (keyof ActionGeneration)[],
