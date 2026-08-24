@@ -16,25 +16,52 @@
 
 import { dbRead } from "../db/client.js";
 import { pages, userSessions, actionProgress, userPageProgress } from "../db/schema.js";
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { StoryState } from "../types/story.js";
+import type { CharacterStatus } from "../types/character.js";
 import { getStoryState } from "./story.js";
 import { aiPrompt } from "../utils/ai-chat.js";
 import { AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 
-export type TimeTravelDiffDimension =
-  | "character"
-  | "plotFlag"
-  | "inventory"
-  | "sanity"
-  | "injury"
-  | "phase";
+/** A set-membership change between the reader's path and an alternative. */
+export type TimeTravelSetChange = "added" | "removed";
 
-export type DiffLine = {
-  dimension: TimeTravelDiffDimension;
-  text: string;
-};
+/**
+ * A semantic story-state difference returned to the web client.
+ *
+ * The backend owns comparison semantics while the frontend owns localization
+ * and presentation. Raw story values therefore remain structured and this
+ * wire type intentionally contains no reader-facing prose.
+ */
+export type TimeTravelDiff =
+  | {
+      type: "characterStatus";
+      characterId: string;
+      name: string | null;
+      before: CharacterStatus;
+      after: CharacterStatus;
+    }
+  | {
+      type: "plotFlag";
+      change: TimeTravelSetChange;
+      value: string;
+    }
+  | {
+      type: "inventory";
+      change: TimeTravelSetChange;
+      value: string;
+    }
+  | {
+      type: "composure";
+      before: { value: number; max: number };
+      after: { value: number; max: number };
+    }
+  | {
+      type: "injury";
+      change: TimeTravelSetChange;
+      value: string;
+    };
 
 export type TimeTravelAlternative = {
   /** Action text of the alternative choice. */
@@ -69,7 +96,7 @@ export type GetTimeTravelPathResponse = {
 
 export type ReconstructAlternative = TimeTravelAlternative & {
   /** Diff between the reader's branch and this alternative at equal depth (first page after the fork). */
-  diffs: DiffLine[];
+  diffs: TimeTravelDiff[];
 };
 
 export type ReconstructForkResponse = {
@@ -113,20 +140,6 @@ async function getGeneratingActionsBatch(
     map.get(r.pageId)!.add(r.actionText);
   }
   return map;
-}
-
-/** Tip page (highest page number) of a branch. */
-export async function getBranchTip(
-  bookId: string,
-  branchId: string,
-): Promise<{ id: string; page: number } | null> {
-  const [tip] = await dbRead
-    .select({ id: pages.id, page: pages.page })
-    .from(pages)
-    .where(and(eq(pages.bookId, bookId), eq(pages.branchId, branchId)))
-    .orderBy(desc(pages.page))
-    .limit(1);
-  return tip ?? null;
 }
 
 /**
@@ -436,8 +449,8 @@ export async function getReaderPath(
  * branches at **equal depth** — the reader's first page after the fork against
  * the alternative's first page after the fork — so the diff isolates what
  * actually diverged *because of the choice*, not differences that merely
- * happened later on a longer branch. A separate "reaches page N" note (below)
- * still captures length asymmetry.
+ * happened later on a longer branch. Branch length is metadata, not a
+ * story-state difference, so it is intentionally excluded from the diff.
  */
 export async function reconstructFork(
   bookId: string,
@@ -507,8 +520,6 @@ export async function reconstructFork(
     : [];
   const countMap = new Map(countRows.map((r) => [r.branchId, r.count] as const));
 
-  const readerCurrentPage = readerState?.page ?? 0;
-
   const alternatives: ReconstructAlternative[] = [];
 
   for (const a of actions) {
@@ -523,7 +534,7 @@ export async function reconstructFork(
     const isGenerating = !hasGenerated && generating.has(a.text);
     let branchId: string | null = null;
     let generatedPageCount = 0;
-    const diffs: DiffLine[] = [];
+    const diffs: TimeTravelDiff[] = [];
 
     if (hasGenerated && nextPageId) {
       branchId = branchMap.get(nextPageId) ?? null;
@@ -534,16 +545,6 @@ export async function reconstructFork(
       const altPostState = await getState(nextPageId);
       if (readerCompareState && altPostState) {
         diffs.push(...diffStoryStates(readerCompareState, altPostState));
-      }
-
-      // Length note: if the alternative's branch tip is *shorter* than the
-      // reader's current page, surface how far it currently reaches.
-      const tip = branchId ? await getBranchTip(bookId, branchId) : null;
-      if (tip && readerCurrentPage > 0 && tip.page < readerCurrentPage) {
-        diffs.push({
-          dimension: "phase",
-          text: `This path currently reaches page ${tip.page}`,
-        });
       }
     }
 
@@ -565,8 +566,8 @@ export async function reconstructFork(
  * Deterministic, zero-AI diff between the reader's current canon branch and an
  * alternative branch. Emits a line only where the two actually differ.
  */
-export function diffStoryStates(reader: StoryState, alt: StoryState): DiffLine[] {
-  const lines: DiffLine[] = [];
+export function diffStoryStates(reader: StoryState, alt: StoryState): TimeTravelDiff[] {
+  const lines: TimeTravelDiff[] = [];
 
   // Characters: compare fate status
   const readerChars = reader.characters ?? {};
@@ -576,71 +577,82 @@ export function diffStoryStates(reader: StoryState, alt: StoryState): DiffLine[]
     const r = readerChars[id];
     const a = altChars[id];
     if (!r || !a || r.status === a.status) continue;
-    const name = r.knownName || a.knownName || "Someone";
-    if (r.status === "dead" && a.status !== "dead") {
-      lines.push({ dimension: "character", text: `${name} is not dead` });
-    } else if (r.status !== "dead" && a.status === "dead") {
-      lines.push({ dimension: "character", text: `${name} died` });
-    } else {
-      lines.push({ dimension: "character", text: `${name} is ${a.status} (was ${r.status})` });
-    }
+    lines.push({
+      type: "characterStatus",
+      characterId: id,
+      name: r.knownName || a.knownName || null,
+      before: r.status,
+      after: a.status,
+    });
   }
 
   // Plot flags: set diff on `fact`
   const readerFacts = new Set((reader.plotFlags ?? []).map((f) => f.fact));
   const altFacts = new Set((alt.plotFlags ?? []).map((f) => f.fact));
   for (const f of readerFacts) {
-    if (!altFacts.has(f)) lines.push({ dimension: "plotFlag", text: `flag '${f}' was never set` });
+    if (!altFacts.has(f)) lines.push({ type: "plotFlag", change: "removed", value: f });
   }
   for (const f of altFacts) {
-    if (!readerFacts.has(f)) lines.push({ dimension: "plotFlag", text: `new flag: '${f}'` });
+    if (!readerFacts.has(f)) lines.push({ type: "plotFlag", change: "added", value: f });
   }
 
   // Inventory: set diff on item name
   const readerItems = new Set((reader.inventory ?? []).map((i) => i.name));
   const altItems = new Set((alt.inventory ?? []).map((i) => i.name));
   for (const i of readerItems) {
-    if (!altItems.has(i)) lines.push({ dimension: "inventory", text: `You never obtained ${i}` });
+    if (!altItems.has(i)) lines.push({ type: "inventory", change: "removed", value: i });
   }
   for (const i of altItems) {
-    if (!readerItems.has(i)) lines.push({ dimension: "inventory", text: `You gained: ${i}` });
+    if (!readerItems.has(i)) lines.push({ type: "inventory", change: "added", value: i });
   }
 
   // Sanity / composure
   const rc = reader.sanityState?.composure;
   const ac = alt.sanityState?.composure;
-  if (rc !== undefined && ac !== undefined && rc !== ac) {
-    const max = alt.sanityState?.maxComposure ?? 100;
-    lines.push({ dimension: "sanity", text: `Composure ${rc}/${max} → ${ac}/${max}` });
+  const readerMaxComposure = reader.sanityState?.maxComposure ?? 100;
+  const altMaxComposure = alt.sanityState?.maxComposure ?? 100;
+  if (
+    rc !== undefined &&
+    ac !== undefined &&
+    (rc !== ac || readerMaxComposure !== altMaxComposure)
+  ) {
+    lines.push({
+      type: "composure",
+      before: { value: rc, max: readerMaxComposure },
+      after: { value: ac, max: altMaxComposure },
+    });
   }
 
   // Injuries: set diff on description
   const readerInj = new Set((reader.injuries ?? []).map((i) => i.description));
   const altInj = new Set((alt.injuries ?? []).map((i) => i.description));
   for (const i of readerInj) {
-    if (!altInj.has(i)) lines.push({ dimension: "injury", text: `No ${i}` });
+    if (!altInj.has(i)) lines.push({ type: "injury", change: "removed", value: i });
   }
   for (const i of altInj) {
-    if (!readerInj.has(i)) lines.push({ dimension: "injury", text: `Acquired: ${i}` });
+    if (!readerInj.has(i)) lines.push({ type: "injury", change: "added", value: i });
   }
-
-  // NOTE: length/phase comparison ("reaches page N") is intentionally NOT done
-  // here. `reconstructFork` calls this with branches compared at equal depth
-  // (first page after the fork) and emits the length note separately, so this
-  // pure diff only reports genuine field-level divergence.
 
   return lines;
 }
 
 // ── AI-narrated "what happens if" summaries (Q5) ──────────────────────────
-// Maps diff dimension IDs to human-readable labels for the narration prompt.
-const NARRATE_DIMENSION_LABELS: Record<string, string> = {
-  character: "Characters",
-  plotFlag: "Plot",
-  inventory: "Inventory",
-  sanity: "Composure",
-  injury: "Injuries",
-};
+
+/** Convert one structured difference into internal grounding text for the LLM. */
+function formatTimeTravelDiffForPrompt(diff: TimeTravelDiff): string {
+  switch (diff.type) {
+    case "characterStatus":
+      return `Character: ${diff.name ?? "Someone"} changed from ${diff.before} to ${diff.after}`;
+    case "plotFlag":
+      return `Plot flag ${diff.change}: ${diff.value}`;
+    case "inventory":
+      return `Inventory item ${diff.change}: ${diff.value}`;
+    case "composure":
+      return `Composure changed from ${diff.before.value}/${diff.before.max} to ${diff.after.value}/${diff.after.max}`;
+    case "injury":
+      return `Injury ${diff.change}: ${diff.value}`;
+  }
+}
 
 /**
  * Produces a short, atmospheric, second-person narration of what stepping onto
@@ -656,13 +668,11 @@ export async function narrateForkAlternative(input: {
   bookTitle: string;
   takenActionText: string;
   alternativeText: string;
-  diffs: { dimension: string; text: string }[];
+  diffs: TimeTravelDiff[];
 }): Promise<string | null> {
   const diffText =
     input.diffs.length > 0
-      ? input.diffs
-          .map((d) => `- ${NARRATE_DIMENSION_LABELS[d.dimension] ?? d.dimension}: ${d.text}`)
-          .join("\n")
+      ? input.diffs.map((diff) => `- ${formatTimeTravelDiffForPrompt(diff)}`).join("\n")
       : "(No concrete differences were detected — the two roads are effectively identical up to this point.)";
 
   const userPrompt =

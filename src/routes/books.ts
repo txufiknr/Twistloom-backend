@@ -4652,16 +4652,30 @@ router.post("/:identifier/time-travel/narrate", requireAuth, async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as {
       forkPageId?: unknown;
       alternativeNextPageId?: unknown;
+      readerPageId?: unknown;
     };
     const forkPageId = typeof body.forkPageId === "string" ? body.forkPageId : null;
     const alternativeNextPageId =
       typeof body.alternativeNextPageId === "string" ? body.alternativeNextPageId : null;
+    const suppliedReaderPageId =
+      typeof body.readerPageId === "string" ? body.readerPageId : null;
     if (!forkPageId || !alternativeNextPageId) {
       return cValidationError(c, "forkPageId and alternativeNextPageId are required");
     }
 
-    // Resolve the reader's current page so reconstructFork can compute diffs.
-    const readerPageId = await resolveCurrentPageId(bookId, userId, undefined);
+    // Keep narration grounded in the same page the reader previewed. Unlike
+    // resolveCurrentPageId's general guest override, this charged route first
+    // verifies that an explicitly supplied page belongs to this book.
+    if (suppliedReaderPageId) {
+      const [readerPage] = await dbRead
+        .select({ id: pages.id })
+        .from(pages)
+        .where(and(eq(pages.id, suppliedReaderPageId), eq(pages.bookId, bookId)))
+        .limit(1);
+      if (!readerPage) return cValidationError(c, "readerPageId is not a page in this book");
+    }
+
+    const readerPageId = await resolveCurrentPageId(bookId, userId, suppliedReaderPageId);
     const reconstruct = await reconstructFork(bookId, forkPageId, readerPageId);
 
     // Find the target alternative and its diffs.
