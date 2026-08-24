@@ -113,6 +113,7 @@ import { eq, and, desc, sql, ne, inArray, arrayOverlaps } from "drizzle-orm";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
 import { getBook, getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage, tryAcquireWorkflowDispatchGate } from "../services/book.js";
 import { getBookAnalytics } from "../services/analytics.js";
+import { hasActiveVipSubscription } from "../services/subscription.js";
 import { getPreviewBookPage } from "../services/book-preview.js";
 import { shouldUseCache, getFreshPromptForUser, trackPromptView, savePromptToCache } from "../services/prompt-cache.js";
 import { streamCachedPrompt } from "../utils/prompt-stream.js";
@@ -774,7 +775,7 @@ router.get('/:bookId/analytics', requireAuth, async (c) => {
     const userId = c.get('userId');
     if (!userId) return cApiError(c, 'Authentication required', undefined, 401);
 
-    const detail = await getBookAnalytics(bookId);
+    const detail = await getBookAnalytics(bookId, await hasActiveVipSubscription(userId));
     if (!detail) return cNotFoundError(c, 'Book not found');
 
     const [owner] = await dbRead
@@ -789,6 +790,47 @@ router.get('/:bookId/analytics', requireAuth, async (c) => {
     return c.json(detail);
   } catch (error) {
     return cApiError(c, 'Failed to load book analytics', error);
+  }
+});
+
+router.post('/:bookId/analytics/dwell', requireAuth, async (c) => {
+  try {
+    const bookId = c.req.param('bookId');
+    const userId = c.get('userId');
+    if (!userId) return cApiError(c, 'Authentication required', undefined, 401);
+
+    const body = await c.req.json<{ pageId?: string; dwellMs?: number }>();
+    if (!body.pageId || typeof body.dwellMs !== 'number') {
+      return cValidationError(c, 'pageId and numeric dwellMs are required');
+    }
+    const dwellMs = Math.max(0, Math.min(body.dwellMs, 60 * 60 * 1000));
+    if (!Number.isFinite(dwellMs)) {
+      return cValidationError(c, 'dwellMs must be a finite number');
+    }
+
+    const [owner] = await dbRead
+      .select({ ownerId: books.userId })
+      .from(books)
+      .where(eq(books.id, bookId))
+      .limit(1);
+    if (owner?.ownerId !== userId) {
+      return cForbiddenError(c, 'You do not have access to this book’s analytics');
+    }
+
+    await dbWrite
+      .insert(userActivityLogs)
+      .values({
+        userId: userId as string,
+        activityType: 'page_dwell',
+        targetType: 'page',
+        targetId: body.pageId,
+        metadata: { dwellMs, bookId },
+        createdAt: new Date(),
+      });
+
+    return c.json({ success: true });
+  } catch (error) {
+    return cApiError(c, 'Failed to record page dwell', error);
   }
 });
 
@@ -2269,7 +2311,7 @@ router.get("/:id/similar", optionalAuth, async (c) => {
  */
 router.get("/explore", optionalAuth, async (c) => {
   try {
-    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE, search, sortBy, sortOrder, lastUpdated, language, tags, ageRange, gender, mode, collection, profileUserId } = extractPaginationParams(c.req.query());
+    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE, search, sortBy, lastUpdated, language, tags, ageRange, gender, mode, collection, profileUserId } = extractPaginationParams(c.req.query());
     const followingFirstParam = c.req.query().followingFirst as string | undefined;
     const followingFirst = followingFirstParam === 'true' || followingFirstParam === '1';
     const userId = c.get("userId") || null;
@@ -2413,6 +2455,44 @@ router.get("/explore", optionalAuth, async (c) => {
         ? and(eq(books.status, 'active'), eq(books.visibility, 'public'), eq(books.userId, profileUserId))!
         : and(eq(books.status, 'active'), eq(books.visibility, 'public'))!;
 
+    // Unfiltered denominator for the "found M from N total" label. Counted over
+    // the same base condition as the result set but WITHOUT the tag/search/age/
+    // gender/mode/rating/lastUpdated filters, so it reflects the true catalogue
+    // size regardless of active filters. Single indexed COUNT(*), cheap.
+    //
+    // Optimisation: when NO narrowing filters are active, the filtered count
+    // (`totalCount`) is by definition identical to the unfiltered grandTotal, so
+    // we can reuse `totalCount` and skip the extra COUNT(*) entirely on the
+    // hottest (unfiltered browse) path. The standalone count only runs when a
+    // filter could shrink the result set relative to `baseCondition`.
+    const noNarrowingFilters =
+      !profileUserId &&
+      !isCreations &&
+      !isPenDrafts &&
+      !search &&
+      tagsArray.length === 0 &&
+      !language &&
+      !lastUpdated &&
+      !ageRange &&
+      !gender &&
+      !mode &&
+      !statusFilter &&
+      !ratingParam &&
+      !ratingCountParam &&
+      bookSortBy !== 'reads' &&
+      bookSortBy !== 'favorites' &&
+      bookSortBy !== 'recommendations' &&
+      bookSortBy !== 'for-you';
+
+    let grandTotalFromQuery: number | null = null;
+    if (!noNarrowingFilters) {
+      const [grandTotalResult] = await dbRead
+        .select({ count: sql<number>`count(*)::int` })
+        .from(books)
+        .where(baseCondition);
+      grandTotalFromQuery = (grandTotalResult?.count as number) ?? 0;
+    }
+
     // Cache strategy: don't cache user-specific or filtered queries
     const shouldCache = page === 1 && !profileUserId && !isCreations && !isPenDrafts && !search && tagsArray.length === 0 && !language && !lastUpdated && !ageRange && !gender && !mode && !statusFilter && !ratingParam && !ratingCountParam && bookSortBy !== 'reads' && bookSortBy !== 'favorites' && bookSortBy !== 'recommendations' && bookSortBy !== 'for-you';
     //
@@ -2449,9 +2529,7 @@ router.get("/explore", optionalAuth, async (c) => {
         baseQuery,
         baseCondition,
         search: sanitizedSearch,
-        bookSortBy, // Primary: book-specific sorting
-        genericSortBy: sortBy, // Secondary: generic fallback (when no search)
-        sortOrder,
+        bookSortBy, // Primary: book-specific sorting (already validated)
         tags: tagsArray,
         language: sanitizedLanguage,
         lastUpdated,
@@ -2473,6 +2551,8 @@ router.get("/explore", optionalAuth, async (c) => {
       // Apply pagination
       const offset = (page - 1) * limit;
       const booksResult: EnrichedBookData[] = await query.limit(limit).offset(offset);
+      // `grandTotal` is attached downstream (after the cache/result is resolved)
+      // to avoid a temporal-dead-zone reference inside this closure.
       const pagination = calculatePaginationMeta(page, limit, totalCount);
 
       return createPaginatedResponse(booksResult, pagination, 'books');
@@ -2493,8 +2573,6 @@ router.get("/explore", optionalAuth, async (c) => {
         baseCondition,
         search: sanitizedSearch,
         bookSortBy,
-        genericSortBy: sortBy,
-        sortOrder,
         tags: tagsArray,
         language: sanitizedLanguage,
         lastUpdated,
@@ -2515,6 +2593,8 @@ router.get("/explore", optionalAuth, async (c) => {
 
       const offset = (page - 1) * limit;
       const booksResult: EnrichedBookData[] = await query.limit(limit).offset(offset);
+      // `grandTotal` is attached downstream (after the cache/result is resolved)
+      // to avoid a temporal-dead-zone reference inside this closure.
       const pagination = calculatePaginationMeta(page, limit, totalCount);
 
       return createPaginatedResponse(booksResult, pagination, 'books');
@@ -2535,6 +2615,13 @@ router.get("/explore", optionalAuth, async (c) => {
     } else {
       result = await fetchDirectBooks();
     }
+
+    // Attach the unfiltered denominator to the pagination meta (does not mutate
+    // the cached object — spreads into a fresh pagination object). When no
+    // narrowing filters were applied we reuse the already-computed `totalCount`,
+    // avoiding the extra COUNT(*) on the hottest path.
+    const grandTotal = grandTotalFromQuery ?? result.pagination.totalCount ?? 0;
+    result = { ...result, pagination: { ...result.pagination, grandTotal } };
 
     // Add HTTP cache headers: public CDN caching ONLY for anonymous requests
     if (shouldCache && !userId) {

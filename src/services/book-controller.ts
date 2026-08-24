@@ -22,7 +22,7 @@
 import { sql, and, or, eq, desc, inArray, arrayOverlaps, isNotNull } from "drizzle-orm";
 import type { Context } from "hono";
 import { books, users, userLikes, userFavorites, userSessions, userCompletedBooks, userPurchasedBooks, pages, storyStates, bookTranslations, userFollows } from '../db/schema.js';
-import { applySorting } from '../utils/pagination.js';
+
 import { dbRead } from "../db/client.js";
 import { createRelevanceExpression } from "../utils/search.js";
 import { getEnrichedBook, getPageActionsFromDB, getPageFromDB } from "./book.js";
@@ -647,10 +647,9 @@ export async function enrichBooksWithUserData(
  *   baseQuery: dbRead.select(getEnrichedBookSelect(userId)).from(books),
  *   baseCondition: eq(books.userId, userId),
  *   search: sanitizedSearch,
- *   bookSortBy: 'trending',
- *   genericSortBy: 'updatedAt',
- *   sortOrder: 'desc',
- *   tags: ['thriller', 'mystery'],
+  *   bookSortBy: 'trending',
+  *   sortOrder: 'desc',
+  *   tags: ['thriller', 'mystery'],
  *   language: 'en',
  *   lastUpdated: 'this-week'
  * }, books, userId);
@@ -666,10 +665,6 @@ export function buildBookQuery<T>(
     search?: string;
     /** Book-specific sort option (primary sort) */
     bookSortBy?: BookSortOption;
-    /** Generic field to sort by (secondary sort, used when no search) */
-    genericSortBy?: string;
-    /** Sort direction for secondary sort */
-    sortOrder?: 'asc' | 'desc';
     /** Tags array for filtering */
     tags?: string[];
     /** Language filter */
@@ -697,7 +692,7 @@ export function buildBookQuery<T>(
     followingFirst?: boolean;
   }
 ) {
-  const { baseQuery, baseCondition, search, bookSortBy, genericSortBy, sortOrder, tags, language, lastUpdated, minAge, maxAge, gender, mode, minRating, maxRating, minRatingCount, currentUserId, collection, followingFirst } = params;
+  const { baseQuery, baseCondition, search, bookSortBy, tags, language, lastUpdated, minAge, maxAge, gender, mode, minRating, maxRating, minRatingCount, currentUserId, collection, followingFirst } = params;
 
   // Build filter conditions using shared helpers
   const timeCondition      = buildTimeFilterCondition(lastUpdated);
@@ -745,11 +740,11 @@ export function buildBookQuery<T>(
   // Apply orderBy for search relevance
   if (search) {
     const relevanceExpression = createRelevanceExpression(search, books);
+    // `books.id` is appended as a stable, unique tie-breaker so that rows with
+    // equal relevance score keep a deterministic order across pages (offset
+    // pagination correctness — avoids duplicates/skips when ties exist).
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    query = (query as any).orderBy(desc(relevanceExpression));
-  } else if (genericSortBy) {
-    // Apply generic column sorting only when no search
-    query = applySorting(query, genericSortBy, sortOrder);
+    query = (query as any).orderBy(desc(relevanceExpression), desc(books.id));
   }
 
   return {
@@ -848,26 +843,27 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
             WHERE us_exclude.user_id = ${currentUserId} AND us_exclude.book_id = books.id
           )`);
       }
-      return query.orderBy(desc(overlapScore)).orderBy(desc(books.trendingScore));
+      return query.orderBy(desc(overlapScore), desc(books.trendingScore), desc(books.id));
     }
 
     case 'popular': {
       // Sort by branchesCount/totalPages ratio (pre-calculated branchesCount maintained by trigger)
       return query.orderBy(
-        sql`(COALESCE(${books.branchesCount}, 0)::float / NULLIF(${books.totalPages}, 0)) DESC`
+        sql`(COALESCE(${books.branchesCount}, 0)::float / NULLIF(${books.totalPages}, 0)) DESC`,
+        desc(books.id)
       );
     }
 
     case 'trending': {
       // Sort by pre-calculated trendingScore (updated daily via cron job with time decay)
-      return query.orderBy(desc(books.trendingScore));
+      return query.orderBy(desc(books.trendingScore), desc(books.id));
     }
 
     case 'top-picks': {
       // Sort by latest topPick timestamp (only books marked as top picks)
       query = query
         .where(sql`${books.topPick} IS NOT NULL`)
-        .orderBy(desc(books.topPick));
+        .orderBy(desc(books.topPick), desc(books.id));
       if (countQuery) countQuery.where(sql`${books.topPick} IS NOT NULL`);
       return query;
     }
@@ -880,7 +876,7 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
       query = query
         .where(eq(books.isOriginal, true))
         .where(sql`${books.imageId} IS NOT NULL`)
-        .orderBy(desc(books.createdAt));
+        .orderBy(desc(books.createdAt), desc(books.id));
       if (countQuery) {
         countQuery.where(eq(books.isOriginal, true))
           .where(sql`${books.imageId} IS NOT NULL`);
@@ -898,7 +894,7 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
       query = query
         .where(eq(books.isPenBook, true))
         .where(sql`${books.authoringStatus} = 'complete'`)
-        .orderBy(desc(books.createdAt));
+        .orderBy(desc(books.createdAt), desc(books.id));
       if (countQuery) {
         countQuery.where(eq(books.isPenBook, true))
           .where(sql`${books.authoringStatus} = 'complete'`);
@@ -928,7 +924,7 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
       return query.orderBy(sql`COALESCE((
         SELECT us.updated_at FROM user_sessions us
         WHERE us.user_id = ${currentUserId} AND us.book_id = books.id
-      ), ${books.updatedAt}) DESC`);
+      ), ${books.updatedAt}) DESC`, desc(books.id));
     }
 
     case 'favorites': {
@@ -951,7 +947,7 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
       return query.orderBy(sql`(
         SELECT uf.created_at FROM user_favorites uf
         WHERE uf.user_id = ${currentUserId} AND uf.book_id = books.id
-      ) DESC`);
+      ) DESC`, desc(books.id));
     }
 
     case 'likes': {
@@ -973,7 +969,7 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
       return query.orderBy(sql`(
         SELECT ul.created_at FROM user_likes ul
         WHERE ul.user_id = ${currentUserId} AND ul.target_type = 'book' AND ul.target_id = books.id
-      ) DESC`);
+      ) DESC`, desc(books.id));
     }
 
     case 'recommendations': {
@@ -997,13 +993,13 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
       )`;
       query = query.where(recCondition);
       if (countQuery) countQuery.where(recCondition);
-      return query.orderBy(desc(books.trendingScore));
+      return query.orderBy(desc(books.trendingScore), desc(books.id));
     }
 
     case 'creations': {
       // User's own created books (any status) — baseCondition already scopes
       // to the owner; here we only apply a deterministic sort (no filtering).
-      return query.orderBy(desc(books.createdAt));
+      return query.orderBy(desc(books.createdAt), desc(books.id));
     }
 
     case 'pen-drafts': {
@@ -1020,7 +1016,7 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
       query = query.where(penDraftCondition);
       if (countQuery) countQuery.where(penDraftCondition);
       // Most recently edited in-progress draft first.
-      return query.orderBy(desc(books.updatedAt));
+      return query.orderBy(desc(books.updatedAt), desc(books.id));
     }
 
     case 'following': {
@@ -1038,7 +1034,7 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
       )`;
       query = query.where(followingCondition);
       if (countQuery) countQuery.where(followingCondition);
-      return query.orderBy(desc(books.createdAt));
+      return query.orderBy(desc(books.createdAt), desc(books.id));
     }
 
     case 'newest':
@@ -1054,9 +1050,9 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
           WHERE ${userFollows.followerId} = ${currentUserId}
             AND ${userFollows.followingId} = ${books.userId}
         ) THEN 0 ELSE 1 END)`;
-        return query.orderBy(followedFirst, desc(books.createdAt));
+        return query.orderBy(followedFirst, desc(books.createdAt), desc(books.id));
       }
-      return query.orderBy(desc(books.createdAt));
+      return query.orderBy(desc(books.createdAt), desc(books.id));
     }
   }
 }

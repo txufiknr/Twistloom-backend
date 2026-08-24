@@ -134,7 +134,8 @@ export type UserActivityType =
   'beta_duty_completed' |
   'beta_duty_reward_claimed' |
   'quest_completed' |
-  'quest_reward_claimed';
+  'quest_reward_claimed' |
+  'page_dwell';
 
 export type CheckinClaimType = 'regular' | 'vip_2x';
 

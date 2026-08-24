@@ -54,4 +54,11 @@ export interface PaginationMeta {
   hasNext: boolean;
   /** Whether previous page exists */
   hasPrevious: boolean;
+  /**
+   * Total number of items ignoring the active search/filter (the unfiltered
+   * denominator). Optional — only present when the caller needs a "found M from
+   * N total" style label. Computed over the same base condition as the result
+   * set but without tag/search/age/gender/mode/rating/lastUpdated filters.
+   */
+  grandTotal?: number;
 }

@@ -2,11 +2,11 @@
  * @overview Pagination Utility Module
  * 
  * Provides consistent pagination utilities across the application.
- * Implements cursor-based pagination for optimal performance.
+ * Implements offset-based pagination for optimal performance.
  * Supports search and filtering capabilities.
  * 
  * Features:
- * - Cursor-based pagination for large datasets
+ * - Offset-based pagination (page + limit)
  * - Search integration with configurable fields
  * - Type-safe pagination parameters
  * - DRY pagination logic across routes
@@ -23,8 +23,6 @@ export interface PaginationParams {
   page?: number;
   /** Number of items per page */
   limit?: number;
-  /** Cursor for cursor-based pagination */
-  cursor?: string;
   /** Search query string */
   search?: string;
   /** Field to sort by */
@@ -88,7 +86,6 @@ export function extractPaginationParams(
     MAX_ITEMS_PER_PAGE,
     Math.max(1, parseInt(first(query.limit) ?? "") || defaultLimit)
   );
-  const cursor = first(query.cursor);
   const search = (first(query.search) || '').trim();
   const sortBy = first(query.sortBy);
   const sortOrder = (first(query.sortOrder) as 'asc' | 'desc') || 'desc';
@@ -105,7 +102,6 @@ export function extractPaginationParams(
   return {
     page,
     limit,
-    cursor,
     search,
     sortBy,
     sortOrder,
@@ -178,26 +174,4 @@ export function createPaginatedResponse<T, K extends ResourceName = 'items'>(
     [key]: items,
     pagination,
   } as PaginatedResponse<T, K>;
-}
-
-/**
- * Applies sorting to a query builder
- * 
- * @param query - Query builder
- * @param sortBy - Field to sort by
- * @param sortOrder - Sort direction
- * @returns Modified query builder
- * 
- * @example
- * ```typescript
- * const sortedQuery = applySorting(query, "createdAt", "desc");
- * // Returns query with ORDER BY createdAt DESC
- * ```
- */
-export function applySorting(
-  query: any,
-  sortBy: string = 'updatedAt',
-  sortOrder: 'asc' | 'desc' = 'desc'
-): any {
-  return query.orderBy(`${sortBy} ${sortOrder.toUpperCase()}`);
 }

@@ -25,7 +25,7 @@ import { requireAuth } from "../middleware/nextauth.js";
 import { requireSuperAdmin, requirePermission, resolveAdminAccess, normalizePermissions, isSuperAdminUserId, ADMIN_PERMISSIONS } from "../middleware/admin-auth.js";
 import { cApiError, cValidationError, cNotFoundError } from "../utils/error.js";
 import { reconstructStoryState } from "../utils/branch-traversal.js";
-import { getBookAnalytics } from "../services/analytics.js";
+import { getBookAnalytics, getCommunityAnalytics } from "../services/analytics.js";
 import { getBookFromDB, getPageFromDB, invalidateEnrichedBookCache } from "../services/book.js";
 import { getStoryState } from "../services/story.js";
 import { dbRead, dbWrite } from "../db/client.js";
@@ -1362,6 +1362,25 @@ router.get("/analytics",
 );
 
 /**
+ * GET /admin/analytics/community
+ *
+ * Platform-wide community analytics (roadmap 3.5). Aggregates from
+ * trigger-maintained `books` columns + `userPageProgress`/`pageReactions`.
+ */
+router.get("/analytics/community",
+  requireAuth,
+  requirePermission("analytics"),
+  async (c) => {
+    try {
+      const data = await getCommunityAnalytics();
+      return c.json(data);
+    } catch (error) {
+      return cApiError(c, "Failed to load community analytics", error);
+    }
+  }
+);
+
+/**
  * GET /admin/analytics/:bookId
  *
  * Per-page drop-off + momentum curve for a single book.
@@ -1372,7 +1391,7 @@ router.get("/analytics/:bookId",
   async (c) => {
     try {
       const { bookId } = c.req.param();
-      const detail = await getBookAnalytics(bookId);
+      const detail = await getBookAnalytics(bookId, true);
       if (!detail) return cNotFoundError(c, "Book not found");
       return c.json(detail);
     } catch (error) {
