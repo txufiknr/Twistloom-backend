@@ -143,12 +143,39 @@ export async function resolveCurrentPageId(
 export async function getReaderPath(
   bookId: string,
   currentPageId: string,
+  userId?: string | null,
 ): Promise<GetTimeTravelPathResponse> {
-  const [stateRow] = await dbRead
+  // Load the reader's actionsHistory from the storyStates snapshot of the
+  // current page. If that snapshot was cleaned up (intermediate rows can be
+  // deleted by the story-state cleanup strategy), fall back to the reader's
+  // session frontier page.
+  let resolvedPageId = currentPageId;
+  let [stateRow] = await dbRead
     .select({ actionsHistory: storyStates.actionsHistory })
     .from(storyStates)
-    .where(and(eq(storyStates.pageId, currentPageId), eq(storyStates.bookId, bookId)))
+    .where(and(eq(storyStates.pageId, resolvedPageId), eq(storyStates.bookId, bookId)))
     .limit(1);
+
+  if (!stateRow && userId) {
+    const frontier = await resolveCurrentPageId(bookId, userId, undefined);
+    console.log("[time-travel] snapshot missing for", resolvedPageId, "— trying session frontier", frontier);
+    if (frontier) {
+      resolvedPageId = frontier;
+      [stateRow] = await dbRead
+        .select({ actionsHistory: storyStates.actionsHistory })
+        .from(storyStates)
+        .where(and(eq(storyStates.pageId, resolvedPageId), eq(storyStates.bookId, bookId)))
+        .limit(1);
+    }
+  }
+
+  console.log("[time-travel] getReaderPath", {
+    bookId,
+    requestedPageId: currentPageId,
+    resolvedPageId,
+    snapshotFound: !!stateRow,
+    historyLen: (stateRow?.actionsHistory ?? []).length,
+  });
 
   if (!stateRow) return { path: [] };
 
@@ -200,6 +227,14 @@ export async function getReaderPath(
         });
       }
     }
+
+    console.log("[time-travel] node", {
+      pageId: node.pageId,
+      chosen: node.text,
+      pageActions: actions.length,
+      isFork,
+      altCount: alternatives.length,
+    });
 
     path.push({
       page: pageRow?.page ?? node.page,

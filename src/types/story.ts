@@ -1501,6 +1501,27 @@ export type NarrativeContext = {
 
 export type ActionSource = 'ai' | 'custom' | 'community';
 
+/**
+ * Per-action atmospheric risk cue, AI-authored during page generation.
+ *
+ * Distinct from the client-side `deriveActionRisk(pageContext)` fallback: that
+ * heuristic is page-level (every choice on a compromised page shares one
+ * category), whereas `risk` is grounded in the *semantics of THIS action*
+ * (confrontation vs retreat) so choices on the same page can carry different
+ * categories. Optional + nullable — absent on calm/legacy pages; clients that
+ * don't read it are unaffected.
+ */
+export type ActionRiskType = 'psychological' | 'physical' | 'reality_slip';
+
+export type ActionRiskMetadata = {
+  /** Whether this specific choice is high-stakes. Omit / false when calm. */
+  isHighRisk?: boolean;
+  /** The single most-salient danger category for THIS action. */
+  riskType?: ActionRiskType;
+  /** Presentation-only intensity — drives badge color/weight on the client. */
+  severity?: 'high' | 'extreme';
+};
+
 export type Action = {
   /** Action text (serves as unique identifier) */
   text: string;
@@ -1529,6 +1550,13 @@ export type Action = {
    * psychological pattern (computed post-generation).
    */
   tendency?: number;
+  /**
+   * AI-authored per-action risk cue (see `ActionRiskMetadata`). Optional —
+   * absent on calm/legacy pages. When present, clients prefer it over the
+   * page-level `deriveActionRisk` fallback so each choice shows its own
+   * category instead of a single shared one.
+   */
+  risk?: ActionRiskMetadata;
 };
 
 export type SelectedAction = Pick<Action, 'text' | 'type' | 'hint' | 'source'> & {

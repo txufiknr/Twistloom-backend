@@ -187,6 +187,7 @@ ${isLastPage ? `  - This is the last page, just provide a single action that con
   - Vary across: reckless / cautious / emotional / avoidant.
   - ${isLatePhase ? `Each action text should be distinct despite similar outcomes` : `Each action text should be distinct and convey unique consequences.`}
   - At least one should feel subtly wrong or inadvisable.
+  - risk: set this object ONLY for high-stakes choices; base riskType on the action's OWN semantics, not the page state. 'physical' = confrontation / attack / entering danger; 'reality_slip' = tampering with the unreal / denying what was seen; 'psychological' = composure / trust / emotional exposure. Use severity 'extreme' for clearly fatal / world-shattering choices. Calm choices omit the field entirely.
 ${isEarlyPhase ? `  - Choices should feel open and curious — stakes are present but not yet dire.` : ''}
 ${isMidPhase ? `  - Choices should reflect the player's established decision patterns. Make the trap feel tailored.` : ''}
 ${isLatePhase ? `  - Every choice should carry visible weight. No option should feel consequence-free.` : ''}

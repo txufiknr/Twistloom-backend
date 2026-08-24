@@ -4438,35 +4438,48 @@ router.get("/:identifier/testimonials", optionalAuth, async (c) => {
  * credits. Guests must pass `?pageId=` (their current page); authed readers
  * resolve their frontier from their session.
  */
-router.get("/:identifier/time-travel/path", optionalAuth, async (c) => {
-  try {
-    const { identifier } = c.req.param();
-    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
-    const bookId = isValidUuid(bookIdentifier)
-      ? bookIdentifier
-      : (await dbRead
-          .select({ id: books.id })
-          .from(books)
-          .where(eq(books.slug, bookIdentifier))
-          .limit(1)
-          .then((rows) => rows[0]?.id ?? null));
-    if (!bookId) return cNotFoundError(c, "Book not found");
+  router.get("/:identifier/time-travel/path", optionalAuth, async (c) => {
+    try {
+      const { identifier } = c.req.param();
+      const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+      const bookId = isValidUuid(bookIdentifier)
+        ? bookIdentifier
+        : (await dbRead
+            .select({ id: books.id })
+            .from(books)
+            .where(eq(books.slug, bookIdentifier))
+            .limit(1)
+            .then((rows) => rows[0]?.id ?? null));
+      if (!bookId) return cNotFoundError(c, "Book not found");
 
-    const userId = c.get("userId");
-    const { pageId } = c.req.query();
-    const currentPageId = await resolveCurrentPageId(
-      bookId,
-      userId,
-      typeof pageId === "string" ? pageId : undefined,
-    );
-    if (!currentPageId) return c.json({ path: [] });
+      const userId = c.get("userId");
+      const { pageId } = c.req.query();
+      const suppliedPageId = typeof pageId === "string" ? pageId : undefined;
+      console.log("[time-travel/path] entry", {
+        identifier: bookIdentifier,
+        bookId,
+        userId: userId ?? null,
+        suppliedPageId: suppliedPageId ?? null,
+      });
 
-    const result = await getReaderPath(bookId, currentPageId);
-    return c.json(result);
-  } catch (error) {
-    return cApiError(c, "Failed to retrieve time travel path", error);
-  }
-});
+      const currentPageId = await resolveCurrentPageId(bookId, userId, suppliedPageId);
+      if (!currentPageId) {
+        console.log("[time-travel/path] no currentPageId resolved -> empty path");
+        return c.json({ path: [] });
+      }
+
+      const result = await getReaderPath(bookId, currentPageId, userId);
+      console.log("[time-travel/path] result", {
+        currentPageId,
+        pathLen: result.path.length,
+        forks: result.path.filter((p) => p.isFork).length,
+      });
+      return c.json(result);
+    } catch (error) {
+      console.error("[time-travel/path] ERROR", error);
+      return cApiError(c, "Failed to retrieve time travel path", error);
+    }
+  });
 
 /**
  * GET /:identifier/:pageId/reconstruct

@@ -1,4 +1,4 @@
-import type { Action, ActionType as ActionTypeStory, ActionHintType } from "../types/story.js";
+import type { Action, ActionRiskMetadata, ActionType as ActionTypeStory, ActionHintType } from "../types/story.js";
 import { ucfirst } from "./formatter.js";
 
 /**
@@ -39,5 +39,24 @@ export function buildCustomActionAction(params: {
     source: 'custom',
     ...(params.customActionId ? { customActionId: params.customActionId } : {}),
     originalText: raw,
+    // Conservative per-action risk heuristic for reader-authored choices (no
+    // extra AI call). Only clearly dangerous action types get flagged; benign
+    // choices omit `risk` and fall back to the client's page-level derivation.
+    ...deriveCustomActionRisk(params.actionType),
   };
+}
+
+/**
+ * Maps a reader-authored action type to a per-action risk cue. Returns `{}`
+ * (no `risk`) for types that aren't clearly high-stakes, so we never spam the
+ * badge on benign custom choices.
+ */
+function deriveCustomActionRisk(actionType: ActionTypeStory): ActionRiskMetadata | Record<string, never> {
+  if (actionType === 'attack' || actionType === 'risk' || actionType === 'escape') {
+    return { isHighRisk: true, riskType: 'physical', severity: 'high' };
+  }
+  if (actionType === 'deceive') {
+    return { isHighRisk: true, riskType: 'reality_slip', severity: 'high' };
+  }
+  return {};
 }
