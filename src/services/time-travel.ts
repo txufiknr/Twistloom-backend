@@ -271,51 +271,64 @@ async function getReaderPathFromProgress(
 /**
  * Build the reader's path as a list of nodes with fork/alternative info,
  * used to render the Fate tab.
+ *
+ * When `injectedHistory` is provided (from the frontend's existing
+ * `page.context.actionsHistory`), the function skips the `getStoryState` call
+ * entirely — this is the optimized path that avoids a redundant snapshot
+ * reconstruction.
  */
 export async function getReaderPath(
   bookId: string,
   currentPageId: string | null,
   userId?: string | null,
   fallbackPageId?: string | null,
+  injectedHistory?: Array<{ pageId: string; page: number; text: string; nextPageId?: string }> | null,
 ): Promise<GetTimeTravelPathResponse> {
-  // The `storyStates` table's full rows can be deleted by the cleanup strategy,
-  // so we read through `getStoryState`, which reconstructs a missing snapshot
-  // from the parent-chain deltas — the same path the reader UI uses. If the
-  // supplied page's state is still missing, fall back to the reader's session
-  // frontier page (resolved once by the caller and passed as `fallbackPageId`).
-  const resolvedPageId = currentPageId ?? fallbackPageId ?? null;
-  let stateRow: StoryState | null = null;
-  // Use a deeper traversal (20 hops) than the default 3 — time-travel needs a
-  // surviving snapshot higher up the chain to reconstruct the full path.
-  if (currentPageId) stateRow = await getStoryState(currentPageId, { maxTraversalDepth: 20 });
+  let history: Array<{ pageId: string; page: number; text: string }>;
 
-  if (!stateRow && userId && fallbackPageId) {
-    console.log("[time-travel] snapshot missing for", currentPageId, "— trying session frontier", fallbackPageId);
-    stateRow = await getStoryState(fallbackPageId, { maxTraversalDepth: 20 });
-  }
+  if (injectedHistory && injectedHistory.length > 0) {
+    // Fast path: the frontend already has the history from the page-read
+    // endpoint — skip the getStoryState call entirely.
+    console.log("[time-travel] getReaderPath using injected actionsHistory", {
+      bookId,
+      historyLen: injectedHistory.length,
+    });
+    history = injectedHistory;
+  } else {
+    // Slow path: reconstruct from storyStates (may need deep parent-chain
+    // traversal when snapshots are cleaned up).
+    const resolvedPageId = currentPageId ?? fallbackPageId ?? null;
+    let stateRow: StoryState | null = null;
+    if (currentPageId) stateRow = await getStoryState(currentPageId, { maxTraversalDepth: 20 });
 
-  console.log("[time-travel] getReaderPath", {
-    bookId,
-    requestedPageId: currentPageId,
-    resolvedPageId,
-    snapshotFound: !!stateRow,
-    historyLen: (stateRow?.actionsHistory ?? []).length,
-  });
-
-  if (!stateRow) {
-    // Fallback: reconstruct path from user_page_progress (not cleaned up).
-    if (userId) {
-      console.log("[time-travel] getReaderPath falling back to user_page_progress for user", userId);
-      return getReaderPathFromProgress(bookId, userId);
+    if (!stateRow && userId && fallbackPageId) {
+      console.log("[time-travel] snapshot missing for", currentPageId, "— trying session frontier", fallbackPageId);
+      stateRow = await getStoryState(fallbackPageId, { maxTraversalDepth: 20 });
     }
-    return { path: [] };
-  }
 
-  const history = (stateRow.actionsHistory ?? []) as Array<{
-    pageId: string;
-    page: number;
-    text: string;
-  }>;
+    console.log("[time-travel] getReaderPath", {
+      bookId,
+      requestedPageId: currentPageId,
+      resolvedPageId,
+      snapshotFound: !!stateRow,
+      historyLen: (stateRow?.actionsHistory ?? []).length,
+    });
+
+    if (!stateRow) {
+      // Fallback: reconstruct path from user_page_progress (not cleaned up).
+      if (userId) {
+        console.log("[time-travel] getReaderPath falling back to user_page_progress for user", userId);
+        return getReaderPathFromProgress(bookId, userId);
+      }
+      return { path: [] };
+    }
+
+    history = (stateRow.actionsHistory ?? []) as Array<{
+      pageId: string;
+      page: number;
+      text: string;
+    }>;
+  }
 
   // ── Batch all per-node / per-alternative lookups (fixes N+1) ──────────────
   const nodePageIds = history.map((n) => n.pageId);

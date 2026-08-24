@@ -4431,15 +4431,18 @@ router.get("/:identifier/testimonials", optionalAuth, async (c) => {
  * @returns Page with actions and book metadata
  */
 /**
- * GET /:identifier/time-travel/path
+ * POST /:identifier/time-travel/path
  *
  * Story Time Travel — Phase 1 (Fate Peek). Returns the reader's path as a list
  * of nodes, marking forks and enumerating each fork's alternatives (with
  * whether a generated continuation already exists). Pure read, no AI, no
- * credits. Guests must pass `?pageId=` (their current page); authed readers
- * resolve their frontier from their session.
+ * credits. Guests must pass `pageId` in body (their current page); authed
+ * readers resolve their frontier from their session.
+ *
+ * The body may include `actionsHistory` (from `page.context.actionsHistory`)
+ * to skip a redundant `getStoryState` reconstruction on the backend.
  */
-  router.get("/:identifier/time-travel/path", optionalAuth, async (c) => {
+  router.post("/:identifier/time-travel/path", optionalAuth, async (c) => {
     try {
       const { identifier } = c.req.param();
       const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
@@ -4454,13 +4457,16 @@ router.get("/:identifier/testimonials", optionalAuth, async (c) => {
       if (!bookId) return cNotFoundError(c, "Book not found");
 
       const userId = c.get("userId");
-      const { pageId } = c.req.query();
-      const suppliedPageId = typeof pageId === "string" ? pageId : undefined;
+      const body = await c.req.json().catch(() => ({})) as Record<string, unknown>;
+      const suppliedPageId = typeof body.pageId === "string" ? body.pageId : undefined;
+      const rawHistory = body.actionsHistory;
+      const actionsHistory = Array.isArray(rawHistory) ? rawHistory as Array<{ pageId: string; page: number; text: string; nextPageId?: string }> : undefined;
       console.log("[time-travel/path] entry", {
         identifier: bookIdentifier,
         bookId,
         userId: userId ?? null,
         suppliedPageId: suppliedPageId ?? null,
+        injectedHistory: actionsHistory?.length ?? 0,
       });
 
       const currentPageId = await resolveCurrentPageId(bookId, userId, suppliedPageId);
@@ -4472,7 +4478,7 @@ router.get("/:identifier/testimonials", optionalAuth, async (c) => {
         return c.json({ path: [] });
       }
 
-      const result = await getReaderPath(bookId, currentPageId, userId, frontier);
+      const result = await getReaderPath(bookId, currentPageId, userId, frontier, actionsHistory);
       console.log("[time-travel/path] result", {
         currentPageId,
         pathLen: result.path.length,
