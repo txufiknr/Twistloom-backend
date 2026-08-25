@@ -1,0 +1,1 @@
+ALTER TABLE "books" ADD COLUMN "ai_contribution_percent" real;
