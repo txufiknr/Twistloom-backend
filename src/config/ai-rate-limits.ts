@@ -215,3 +215,17 @@ export const PEN_FINALIZE_PROPOSE_RATE_LIMIT: AIRateLimitConfig = buildRateLimit
 export const PEN_TRANSFORM_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
   "PEN_TRANSFORM", 20, 60
 );
+
+/**
+ * POST /api/books/:identifier/:pageId/companion/ask — reader companion AI Q&A.
+ *
+ * Charges `COMPANION_ASK` (1 credit) via `executeWithCredits`. A reader can
+ * legitimately ask several follow-up questions per page, so this is moderately
+ * permissive — but it still burns LLM tokens per call and is credit-gated.
+ *
+ * why: grounded AI question-answering over story state — 20/min keeps the
+ * companion usable during active reading while capping abuse.
+ */
+export const COMPANION_ASK_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
+  "COMPANION_ASK", 20, 60
+);

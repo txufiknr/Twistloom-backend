@@ -149,10 +149,11 @@ import { runGate0, runGate1, buildCustomActionValidationPrompt, buildCanonicalAc
 import { loadOwnCustomActions, mapCustomActionRowToAction } from "../services/book.js";
 import { customActions } from "../db/schema.js";
 import { getStoryStateFromPage, getStoryState, computeEndingStats, setActiveSession } from "../services/story.js";
+import { getStoryStateWithBranch } from "../services/story-branch.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 import { notifyForumOfBookChange, notifyForumStoryArchived } from "../services/forum-queue.js";
 import { createAIOptionsWithSchema, aiPrompt } from "../utils/ai-chat.js";
-import { AI_CHAT_MODELS_THEME } from "../config/ai-clients.js";
+import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { BOOK_MIN_PAGES, PEN_AUTHORING_MODES, PEN_DEFAULT_AUTHORING_MODE, PEN_DEFAULT_BOOK_MODE, PEN_DEFAULT_TITLE, PEN_PLACEHOLDER_MC, PEN_SUMMARY_MAX_LENGTH, PEN_TARGET_PAGES_MAX, PEN_TARGET_PAGES_MIN, PEN_TITLE_MAX_LENGTH, PEN_TITLE_MIN_LENGTH } from "../config/story.js";
 import type { CustomActionValidationResult, CustomActionPreviewResponse, CustomActionSubmitResponse } from "../types/custom-action.js";
 import type { AIPromptForJson } from "../types/ai-chat.js";
@@ -168,9 +169,10 @@ import { requireEnv } from "../utils/env.js";
 import type { UserComment } from "../types/user.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
 import { MAX_CONCURRENT_GENERATIONS, AI_VALIDATION_TIMEOUT_MS } from "../config/book-creation.js";
-import { BOOK_CREATION_RATE_LIMIT, BOOK_STREAM_RATE_LIMIT, BOOK_ASYNC_RATE_LIMIT, ACTION_HINT_RATE_LIMIT, CUSTOM_ACTION_PREVIEW_RATE_LIMIT, CUSTOM_ACTION_SUBMIT_RATE_LIMIT } from "../config/ai-rate-limits.js";
+import { BOOK_CREATION_RATE_LIMIT, BOOK_STREAM_RATE_LIMIT, BOOK_ASYNC_RATE_LIMIT, ACTION_HINT_RATE_LIMIT, CUSTOM_ACTION_PREVIEW_RATE_LIMIT, CUSTOM_ACTION_SUBMIT_RATE_LIMIT, COMPANION_ASK_RATE_LIMIT } from "../config/ai-rate-limits.js";
 import { isValidReactionEmoji, REACTION_IDS, reactionIdList } from "../config/reactions.js";
 import { generateRandomCharacter } from "../utils/characters.js";
+import { COMPANION_SYSTEM, COMPANION_RESULT_SCHEMA, COMPANION_RESULT_REQUIRED_FIELDS, buildCompanionUserPrompt, type CompanionPageContext, type CompanionResult } from "../utils/companion-prompt.js";
 
 const router = new Hono<AppEnv>();
 
@@ -5538,6 +5540,151 @@ router.post("/:identifier/:pageId/actions/hint", requireAuth, rateLimit(ACTION_H
     }
 
     return cApiError(c, "Failed to purchase action hint", error);
+  }
+});
+
+/**
+ * POST /api/books/:identifier/:pageId/companion/ask
+ *
+ * Grounded AI Q&A for the reader companion panel. Charges 1 credit
+ * (COMPANION_ASK) and returns a spoiler-safe answer drawn from the current
+ * page's story context (characters, places, threads, plotFlags, actionsHistory,
+ * contextHistory).
+ *
+ * The response also includes 2-4 suggested follow-up questions that the reader
+ * can tap as chips to continue the conversation.
+ *
+ * @route POST /api/books/:identifier/:pageId/companion/ask
+ * @authentication Required
+ * @param identifier - Book slug or UUID v7
+ * @param pageId - Page UUID v7
+ * @body { question: string } - The reader's question (10-500 chars)
+ * @returns { answer: string; sources: string[]; suggestedFollowUps: string[] }
+ */
+router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANION_ASK_RATE_LIMIT), async (c) => {
+  try {
+    const { identifier, pageId: pageIdParam } = c.req.param();
+    const userId = c.get("userId")!;
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+    const pageId = Array.isArray(pageIdParam) ? pageIdParam[0] : pageIdParam;
+
+    // Validate pageId
+    if (!isValidUuid(pageId)) {
+      return cValidationError(c, "Invalid pageId: must be a valid UUID");
+    }
+
+    // Parse and validate body
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+    const rawQuestion = typeof body?.question === "string" ? body.question.trim() : "";
+    if (!rawQuestion) {
+      return cValidationError(c, "question is required");
+    }
+    if (rawQuestion.length < 10) {
+      return cValidationError(c, "question must be at least 10 characters");
+    }
+    if (rawQuestion.length > 500) {
+      return cValidationError(c, "question must be at most 500 characters");
+    }
+
+    // Resolve book and verify page belongs to it
+    const book = await resolveBook(bookIdentifier);
+    if (!book) return cNotFoundError(c, "Book not found");
+    const dbPage = await getPageFromDB(pageId, { bookIdentifier: book.id });
+    if (!dbPage) return cNotFoundError(c, "Page not found");
+
+    // Load story state for this page (branch-aware)
+    const storyState = await getStoryStateWithBranch(book.id, pageId, { persistState: true });
+
+    // Build companion page context from story state
+    // TODO: see `src\services\book.ts` (line 1957-1979), otherwise these would be spoilers
+    // TODO: can these be made DRY shared helper?
+    const characters = storyState?.characters
+      ? Object.values(storyState.characters).map((c) => ({
+          name: c.knownName || c.realName || "Unknown", // TODO: shouldn't we process it based on recognitionLevel?
+          role: c.role,
+          bio: c.bio,
+          status: c.status,
+        }))
+      : [];
+    const places = storyState?.places
+      ? Object.values(storyState.places).map((p) => ({
+          name: p.knownName || p.realName || "Unknown", // TODO: shouldn't we process it based on isRealNameKnown?
+          context: p.context,
+        }))
+      : [];
+    const plotFlags = storyState?.plotFlags ?? [];
+    const actionsHistory = storyState?.actionsHistory ?? [];
+    const threads = storyState?.threads ?? [];
+    const contextHistory = storyState?.contextHistory ?? "";
+    const mcName = book.mc.knownName || book.mc.name || "the protagonist";
+    const language = book.language || "en";
+
+    const companionContext: CompanionPageContext = {
+      contextHistory,
+      characters,
+      places,
+      plotFlags: plotFlags.map((f) => ({ type: f.type, fact: f.fact, page: f.page })),
+      actionsHistory: actionsHistory.map((a) => ({ text: a.text })),
+      threads: threads.map((t) => ({ title: t.title, question: t.question, summary: t.summary })),
+    };
+
+    // Build prompts
+    const userPrompt = buildCompanionUserPrompt(companionContext, rawQuestion, language, mcName);
+
+    const promptConfig: AIPromptForJson<CompanionResult> = {
+      schema: COMPANION_RESULT_SCHEMA,
+      requiredFields: COMPANION_RESULT_REQUIRED_FIELDS,
+      fallbackField: "answer",
+      baseOptions: {
+        modelSelection: AI_CHAT_MODELS_WRITING,
+        context: "companion-ask",
+        systemPrompt: COMPANION_SYSTEM,
+        config: { ...AI_CHAT_CONFIG_DEFAULT, maxOutputToken: 1024 },
+      },
+    };
+
+    // Execute with credit gate
+    const { result } = await executeWithCredits(
+      userId,
+      "COMPANION_ASK",
+      async (tx) => {
+        const aiResponse = await aiPrompt<CompanionResult>(
+          userPrompt,
+          createAIOptionsWithSchema(promptConfig),
+        );
+        return aiResponse.result;
+      },
+      {
+        context: "companion_ask",
+        metadata: { bookId: book.id, pageId, question: rawQuestion.slice(0, 100) },
+      }
+    );
+
+    // Normalize the result — handle both string and structured responses
+    const answer = typeof result === "string" ? result : (result?.answer ?? "I couldn't find an answer based on the current story context.");
+    const sources = typeof result === "string" ? [] : (result?.sources ?? []);
+    const suggestedFollowUps = typeof result === "string" ? [] : (result?.suggestedFollowUps ?? []);
+
+    console.log(`[POST /companion/ask] ✅ User ${userId} asked "${rawQuestion.slice(0, 50)}..." on page ${pageId}`);
+
+    return c.json({
+      answer,
+      sources,
+      suggestedFollowUps,
+    });
+
+  } catch (error) {
+    const errorMessage = getErrorMessage(error);
+
+    // Handle insufficient credits
+    if (errorMessage.includes(CREDIT_ERRORS.INSUFFICIENT_CREDITS)) {
+      return c.json({
+        error: "Insufficient credits",
+        message: `You need at least ${getCreditCostForUser(c.get("userId"), 'COMPANION_ASK')} credit to ask a companion question`,
+      }, 402);
+    }
+
+    return cApiError(c, "Failed to answer companion question", error);
   }
 });
 

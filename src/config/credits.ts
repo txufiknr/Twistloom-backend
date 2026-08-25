@@ -146,6 +146,10 @@ const CREDIT_COSTS_BASE = {
    * on highlighted prose in the draft surface.
    */
   PEN_TRANSFORM: 1,
+
+  /* ── Companion (reader AI Q&A) ─────────────────────────────────────────── */
+  /** One grounded AI question-and-answer call (reader companion panel). */
+  COMPANION_ASK: 1,
 } as const;
 
 /**
