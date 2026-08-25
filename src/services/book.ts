@@ -28,10 +28,10 @@ import { bookVisibilities } from "../types/book.js";
 import { actionTypes, type StoryPage, type PersistedStoryPage, type UserStoryPage, type StoryState, type StoryPageMeta, type EnrichedStoryPage, type StateDelta, type StoryGeneration, type SelectedAction, type Action, type EnrichedStoryPageContext, type TranslatedStoryPage, type EnrichedStoryPagePlace, type EnrichedStoryPageCharacter, type ActionType, type ActionHintType } from "../types/story.js";
 import type { CanonValidationSummary } from "../types/canon-validation.js";
 import { getStoryStateFromPage, insertStoryState } from "./story.js";
-import { formatPlacesForPrompt, resolvePlaceLoreNames } from "../utils/places.js";
+import { formatPlacesForPrompt, resolvePlaceDisplayName, resolvePlaceLoreNames } from "../utils/places.js";
 import { buildCustomActionAction, deriveActionRisk } from "../utils/custom-action.js";
 import { formatBookMetaForPrompt } from "../utils/books.js";
-import { calculateHealthStatus, formatCharactersForPrompt, formatPlannedCharactersForPrompt, resolveCharacterLoreNames } from "../utils/characters.js";
+import { calculateHealthStatus, formatCharactersForPrompt, formatPlannedCharactersForPrompt, resolveCharacterDisplayName, resolveCharacterLoreNames } from "../utils/characters.js";
 import { formatSystemPromptWithDocuments } from "../utils/ai-chat.js";
 import { IS_PRODUCTION } from "../config/env.js";
 import { geminiGenerateImage } from "../utils/ai-image.js";
@@ -1957,7 +1957,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
       // Filter only necessary fields for frontend
       places: Object.entries(places).map(([placeId, place]) => ({
         placeId,
-        name: place.isRealNameKnown ? place.realName : place.knownName,
+        name: resolvePlaceDisplayName(place),
         type: place.type,
         category: place.category,
         context: place.context,
@@ -1967,7 +1967,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
       }) satisfies Record<keyof EnrichedStoryPagePlace, unknown>),
       characters: Object.entries(characters).map(([characterId, character]) => ({
         characterId,
-        name: ['full_name_known', 'first_name_known'].includes(character.recognitionLevel) ? character.realName : character.knownName,
+        name: resolveCharacterDisplayName(character),
         gender: character.gender,
         role: character.role,
         bio: character.bio,

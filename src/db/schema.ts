@@ -2732,4 +2732,110 @@ export const savedPaths = pgTable(
     index("saved_paths_book_idx").on(t.bookId),
     index("saved_paths_created_idx").on(t.createdAt.desc()),
   ]
+);
+
+// ── Credit Voucher Campaigns ─────────────────────────────────────────────────
+
+/**
+ * Voucher campaigns define a batch of credit-granting codes.
+ *
+ * @see docs/roadmap/TWISTLOOM_CREDIT_VOUCHERS_AND_PROMOTIONAL_ENTITLEMENTS_ROADMAP.md §8.1
+ */
+export const creditVoucherCampaigns = pgTable(
+  "credit_voucher_campaigns",
+  {
+    id: id(),
+    slug: text("slug").notNull().unique(),
+    displayName: text("display_name").notNull(),
+    internalPurpose: text("internal_purpose").notNull().default(""),
+    status: text("status").notNull().default("draft"),
+    grantType: text("grant_type").notNull().default("credit_grant"),
+    creditsPerRedemption: integer("credits_per_redemption").notNull(),
+    maxRedemptions: integer("max_redemptions").notNull().default(0),
+    maxRedemptionsPerUser: integer("max_redemptions_per_user").notNull().default(1),
+    startsAt: timestamp("starts_at", { withTimezone: true }),
+    endsAt: timestamp("ends_at", { withTimezone: true }),
+    eligibilityPolicy: text("eligibility_policy").notNull().default("open"),
+    distributionType: text("distribution_type").notNull().default("single_use_batch"),
+    createdByUserId: userId().references(() => users.userId, { onDelete: "set null" }),
+    approvedByUserId: uuid("approved_by_user_id"),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    index("credit_voucher_campaigns_status_idx").on(t.status),
+    index("credit_voucher_campaigns_slug_idx").on(t.slug),
+    index("credit_voucher_campaigns_created_idx").on(t.createdAt.desc()),
+  ]
+);
+
+// ── Credit Voucher Codes ─────────────────────────────────────────────────────
+
+/**
+ * Individual voucher codes stored as HMAC digests. Raw codes are never persisted.
+ *
+ * @see docs/roadmap/TWISTLOOM_CREDIT_VOUCHERS_AND_PROMOTIONAL_ENTITLEMENTS_ROADMAP.md §8.2
+ */
+export const creditVoucherCodes = pgTable(
+  "credit_voucher_codes",
+  {
+    id: id(),
+    campaignId: uuid("campaign_id")
+      .notNull()
+      .references(() => creditVoucherCampaigns.id, { onDelete: "cascade" }),
+    codeHmac: text("code_hmac").notNull(),
+    hmacKeyVersion: integer("hmac_key_version").notNull().default(1),
+    publicPrefix: text("public_prefix").notNull().default(""),
+    lastFour: text("last_four").notNull().default(""),
+    status: text("status").notNull().default("issued"),
+    assignedUserId: uuid("assigned_user_id"),
+    maxRedemptions: integer("max_redemptions").notNull().default(1),
+    redeemedCount: integer("redeemed_count").notNull().default(0),
+    activatedAt: timestamp("activated_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revocationReason: text("revocation_reason"),
+    createdAt,
+  },
+  (t) => [
+    unique("credit_voucher_codes_hmac_unique").on(t.codeHmac),
+    index("credit_voucher_codes_campaign_idx").on(t.campaignId),
+    index("credit_voucher_codes_status_idx").on(t.status),
+    index("credit_voucher_codes_assigned_user_idx").on(t.assignedUserId),
+  ]
+);
+
+// ── Credit Voucher Redemptions ───────────────────────────────────────────────
+
+/**
+ * Redemption audit trail — one row per successful code redemption.
+ *
+ * @see docs/roadmap/TWISTLOOM_CREDIT_VOUCHERS_AND_PROMOTIONAL_ENTITLEMENTS_ROADMAP.md §8.3
+ */
+export const creditVoucherRedemptions = pgTable(
+  "credit_voucher_redemptions",
+  {
+    id: id(),
+    campaignId: uuid("campaign_id")
+      .notNull()
+      .references(() => creditVoucherCampaigns.id, { onDelete: "cascade" }),
+    codeId: uuid("code_id")
+      .notNull()
+      .references(() => creditVoucherCodes.id, { onDelete: "cascade" }),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    creditsGranted: integer("credits_granted").notNull(),
+    transactionId: uuid("transaction_id")
+      .notNull()
+      .references(() => transactions.id, { onDelete: "cascade" }),
+    idempotencyKey: text("idempotency_key").notNull(),
+    redeemedAt: timestamp("redeemed_at", { withTimezone: true }).defaultNow().notNull(),
+    eligibilitySnapshot: jsonb("eligibility_snapshot"),
+  },
+  (t) => [
+    unique("credit_voucher_redemptions_idempotency_unique").on(t.idempotencyKey),
+    unique("credit_voucher_redemptions_transaction_unique").on(t.transactionId),
+    index("credit_voucher_redemptions_campaign_idx").on(t.campaignId),
+    index("credit_voucher_redemptions_code_idx").on(t.codeId),
+    index("credit_voucher_redemptions_user_idx").on(t.userId),
+    index("credit_voucher_redemptions_redeemed_idx").on(t.redeemedAt.desc()),
+  ]
 );

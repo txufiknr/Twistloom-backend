@@ -1,4 +1,4 @@
-import { ACTION_SCORE_CAP, BODY_PART_WEIGHTS, DEFAULT_BODY_PART_IMPACT, FEAR_MENTAL_PENALTY, HEALTH_SCORE_CAP, INJURY_CATEGORY_WEIGHTS, MEMORY_INTEGRITY_MENTAL_PENALTY, MENTAL_SCORE_CAP, MOBILITY_SCORE_CAP, TRAUMA_TAG_MENTAL_WEIGHT } from "../config/characters.js";
+import { ACTION_SCORE_CAP, BODY_PART_WEIGHTS, DEFAULT_BODY_PART_IMPACT, FEAR_MENTAL_PENALTY, HEALTH_SCORE_CAP, INJURY_CATEGORY_WEIGHTS, MEMORY_INTEGRITY_MENTAL_PENALTY, MENTAL_SCORE_CAP, MOBILITY_SCORE_CAP, REAL_NAME_RECOGNITION_LEVELS, TRAUMA_TAG_MENTAL_WEIGHT } from "../config/characters.js";
 import { CHARACTER_NAMES } from "../config/characters.js";
 import { MAX_PAST_INTERACTIONS, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, MAX_CHARACTERS } from "../config/story.js";
 import type { CharacterMemory, CharacterUpdate, RelationshipUpdate, StoryMC, StoryMCCandidate, Injury, InjurySeverity, PastInteraction, HealthCondition, HealthStatus, MentalHealthInputs, BodyPartImpact, CharacterPlan, NewCharacter } from "../types/character.js";
@@ -655,6 +655,27 @@ export function formatPlannedCharactersForPrompt(characterPlans: CharacterPlan[]
       return details.length ? `${mainInfo}\n${details.join('\n')}` : mainInfo;
     })
     .join('\n\n');
+}
+
+/**
+ * Returns the spoiler-safe display name for a character.
+ *
+ * Real name is shown only when `recognitionLevel` is `full_name_known` or
+ * `first_name_known`; otherwise the narrative `knownName` (alias) is used.
+ *
+ * Shared by `buildCompanionPageContext` and `book.ts` `mapToEnrichedPage`
+ * so the spoiler gate lives in one place.
+ *
+ * @param character - Minimal character memory required for name resolution
+ * @returns Display name safe for the current reader's recognition level
+ */
+export function resolveCharacterDisplayName(
+  // character: { knownName: string; realName: string; recognitionLevel: CharacterRecognitionLevel }
+  character: Pick<CharacterMemory, 'knownName' | 'realName' | 'recognitionLevel'>
+): string {
+  return REAL_NAME_RECOGNITION_LEVELS.has(character.recognitionLevel)
+    ? character.realName
+    : character.knownName || character.realName || "Unknown";
 }
 
 /**

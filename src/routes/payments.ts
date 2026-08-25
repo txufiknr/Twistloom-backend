@@ -1627,4 +1627,33 @@ router.get("/subscription/portal", requireAuth, async (c) => {
   }
 });
 
+// ── Voucher Redemption ───────────────────────────────────────────────────────
+
+/**
+ * POST /payments/vouchers/redeem
+ *
+ * Redeem a credit voucher code. Rate-limited, idempotent, single-use.
+ */
+router.post("/vouchers/redeem", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId");
+    if (!userId) return cApiError(c, "Unauthorized", null, 401);
+
+    const body = c.get("body") as { code?: string; idempotencyKey?: string };
+    if (!body?.code || !body?.idempotencyKey) {
+      return cValidationError(c, "code and idempotencyKey are required");
+    }
+
+    const { redeemVoucher } = await import("../services/voucher.js");
+    const result = await redeemVoucher(userId, body.code, body.idempotencyKey);
+    return c.json(result);
+  } catch (error: any) {
+    const code = error?.code as string | undefined;
+    if (code) {
+      return cApiError(c, error.message, { code }, 422);
+    }
+    return cApiError(c, "Failed to redeem voucher", error);
+  }
+});
+
 export default router;

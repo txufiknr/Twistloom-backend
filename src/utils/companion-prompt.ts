@@ -19,8 +19,11 @@
  */
 
 import type { AIJsonProperty } from "../types/ai-chat.js";
+import type { StoryState } from "../types/story.js";
 import { RULES_LANGUAGE_LOCALIZATION } from "./prompt.js";
 import { formatLanguage } from "./translation.js";
+import { resolveCharacterDisplayName } from "./characters.js";
+import { resolvePlaceDisplayName } from "./places.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -200,4 +203,53 @@ export function buildCompanionUserPrompt(
   sections.push(`READER'S QUESTION:\n${question}`);
 
   return sections.join("\n\n");
+}
+
+/**
+ * Builds a {@link CompanionPageContext} from raw story state, applying
+ * spoiler-safe name resolution via {@link resolveCharacterDisplayName}
+ * and {@link resolvePlaceDisplayName}.
+ *
+ * @param storyState - Full story state from `getStoryStateWithBranch`
+ * @returns A `CompanionPageContext` ready for the prompt builder
+ */
+export function buildCompanionPageContext(
+  storyState: Pick<
+    StoryState,
+    "characters" | "places" | "plotFlags" | "actionsHistory" | "contextHistory" | "threads"
+  >
+): CompanionPageContext {
+  const characters = storyState.characters
+    ? Object.values(storyState.characters).map((c) => ({
+        name: resolveCharacterDisplayName(c),
+        role: c.role,
+        bio: c.bio,
+        status: c.status,
+      }))
+    : [];
+
+  const places = storyState.places
+    ? Object.values(storyState.places).map((p) => ({
+        name: resolvePlaceDisplayName(p),
+        context: p.context,
+      }))
+    : [];
+
+  const plotFlags: Array<{ type: string; fact: string; page: number }> =
+    storyState.plotFlags ?? [];
+
+  const actionsHistory: Array<{ text: string }> =
+    storyState.actionsHistory ?? [];
+
+  const threads: Array<{ title: string; question: string; summary?: string }> =
+    storyState.threads ?? [];
+
+  return {
+    contextHistory: storyState.contextHistory ?? "",
+    characters,
+    places,
+    plotFlags,
+    actionsHistory,
+    threads,
+  };
 }

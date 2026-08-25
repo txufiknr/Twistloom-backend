@@ -172,7 +172,7 @@ import { MAX_CONCURRENT_GENERATIONS, AI_VALIDATION_TIMEOUT_MS } from "../config/
 import { BOOK_CREATION_RATE_LIMIT, BOOK_STREAM_RATE_LIMIT, BOOK_ASYNC_RATE_LIMIT, ACTION_HINT_RATE_LIMIT, CUSTOM_ACTION_PREVIEW_RATE_LIMIT, CUSTOM_ACTION_SUBMIT_RATE_LIMIT, COMPANION_ASK_RATE_LIMIT } from "../config/ai-rate-limits.js";
 import { isValidReactionEmoji, REACTION_IDS, reactionIdList } from "../config/reactions.js";
 import { generateRandomCharacter } from "../utils/characters.js";
-import { COMPANION_SYSTEM, COMPANION_RESULT_SCHEMA, COMPANION_RESULT_REQUIRED_FIELDS, buildCompanionUserPrompt, type CompanionPageContext, type CompanionResult } from "../utils/companion-prompt.js";
+import { COMPANION_SYSTEM, COMPANION_RESULT_SCHEMA, COMPANION_RESULT_REQUIRED_FIELDS, buildCompanionUserPrompt, buildCompanionPageContext, type CompanionResult } from "../utils/companion-prompt.js";
 
 const router = new Hono<AppEnv>();
 
@@ -5596,37 +5596,15 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
     const storyState = await getStoryStateWithBranch(book.id, pageId, { persistState: true });
 
     // Build companion page context from story state
-    // TODO: see `src\services\book.ts` (line 1957-1979), otherwise these would be spoilers
-    // TODO: can these be made DRY shared helper?
-    const characters = storyState?.characters
-      ? Object.values(storyState.characters).map((c) => ({
-          name: c.knownName || c.realName || "Unknown", // TODO: shouldn't we process it based on recognitionLevel?
-          role: c.role,
-          bio: c.bio,
-          status: c.status,
-        }))
-      : [];
-    const places = storyState?.places
-      ? Object.values(storyState.places).map((p) => ({
-          name: p.knownName || p.realName || "Unknown", // TODO: shouldn't we process it based on isRealNameKnown?
-          context: p.context,
-        }))
-      : [];
-    const plotFlags = storyState?.plotFlags ?? [];
-    const actionsHistory = storyState?.actionsHistory ?? [];
-    const threads = storyState?.threads ?? [];
-    const contextHistory = storyState?.contextHistory ?? "";
+    // Uses buildCompanionPageContext for spoiler-safe name resolution
+    // (character recognitionLevel, place isRealNameKnown) — shared with book.ts mapToEnrichedPage.
+    if (!storyState) {
+      return cNotFoundError(c, "Story state not available for this page");
+    }
+
+    const companionContext = buildCompanionPageContext(storyState);
     const mcName = book.mc.knownName || book.mc.name || "the protagonist";
     const language = book.language || "en";
-
-    const companionContext: CompanionPageContext = {
-      contextHistory,
-      characters,
-      places,
-      plotFlags: plotFlags.map((f) => ({ type: f.type, fact: f.fact, page: f.page })),
-      actionsHistory: actionsHistory.map((a) => ({ text: a.text })),
-      threads: threads.map((t) => ({ title: t.title, question: t.question, summary: t.summary })),
-    };
 
     // Build prompts
     const userPrompt = buildCompanionUserPrompt(companionContext, rawQuestion, language, mcName);
@@ -5647,7 +5625,7 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
     const { result } = await executeWithCredits(
       userId,
       "COMPANION_ASK",
-      async (tx) => {
+      async () => {
         const aiResponse = await aiPrompt<CompanionResult>(
           userPrompt,
           createAIOptionsWithSchema(promptConfig),

@@ -1,5 +1,11 @@
-import type { InjuryCategory, BodyPartImpact, InjuryCategoryImpact } from "../types/character.js";
+import type { InjuryCategory, BodyPartImpact, InjuryCategoryImpact, CharacterRecognitionLevel } from "../types/character.js";
 import type { FearLevel, MemoryIntegrity } from "../types/story.js";
+
+/**
+ * Recognition levels that permit showing a character's real name.
+ * Matches the logic in `book.ts` `mapToEnrichedPage` (line 1970).
+ */
+export const REAL_NAME_RECOGNITION_LEVELS: Set<CharacterRecognitionLevel> = new Set(["full_name_known", "first_name_known"]);
 
 export const CHARACTER_NAMES = {
   // Random name pools by gender with Gen-Z appropriate names

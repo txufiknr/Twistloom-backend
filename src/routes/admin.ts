@@ -2306,4 +2306,94 @@ router.delete(
   },
 );
 
+// ── Voucher Campaigns (admin) ────────────────────────────────────────────────
+
+router.get("/vouchers", requireAuth, requirePermission("vouchers"), async (c) => {
+  try {
+    const { listCampaigns } = await import("../services/voucher.js");
+    const campaigns = await listCampaigns();
+    return c.json(campaigns);
+  } catch (error) {
+    return cApiError(c, "Failed to list voucher campaigns", error);
+  }
+});
+
+router.get("/vouchers/:id", requireAuth, requirePermission("vouchers"), async (c) => {
+  try {
+    const { id } = c.req.param();
+    const { getCampaign } = await import("../services/voucher.js");
+    const campaign = await getCampaign(id);
+    if (!campaign) return cNotFoundError(c, "Campaign not found");
+    return c.json(campaign);
+  } catch (error) {
+    return cApiError(c, "Failed to get voucher campaign", error);
+  }
+});
+
+router.post("/vouchers", requireAuth, requirePermission("vouchers"), async (c) => {
+  try {
+    const userId = c.get("userId");
+    const body = c.get("body") as Record<string, unknown>;
+    if (!body?.slug || !body?.displayName || !body?.creditsPerRedemption || !body?.maxRedemptions) {
+      return cValidationError(c, "slug, displayName, creditsPerRedemption, and maxRedemptions are required");
+    }
+    const { createCampaign } = await import("../services/voucher.js");
+    const campaign = await createCampaign({
+      slug: body.slug as string,
+      displayName: body.displayName as string,
+      internalPurpose: (body.internalPurpose as string) ?? "",
+      creditsPerRedemption: body.creditsPerRedemption as number,
+      maxRedemptions: body.maxRedemptions as number,
+      maxRedemptionsPerUser: (body.maxRedemptionsPerUser as number) ?? 1,
+      startsAt: body.startsAt ? new Date(body.startsAt as string) : null,
+      endsAt: body.endsAt ? new Date(body.endsAt as string) : null,
+      eligibilityPolicy: (body.eligibilityPolicy as string) ?? "open",
+      distributionType: (body.distributionType as string) ?? "single_use_batch",
+      createdByUserId: userId!,
+    });
+    return c.json(campaign, 201);
+  } catch (error) {
+    return cApiError(c, "Failed to create voucher campaign", error);
+  }
+});
+
+router.patch("/vouchers/:id", requireAuth, requirePermission("vouchers"), async (c) => {
+  try {
+    const { id } = c.req.param();
+    const body = c.get("body") as Record<string, unknown>;
+    const { updateCampaign } = await import("../services/voucher.js");
+    const campaign = await updateCampaign(id, {
+      displayName: body.displayName as string | undefined,
+      internalPurpose: body.internalPurpose as string | undefined,
+      status: body.status as string | undefined,
+      creditsPerRedemption: body.creditsPerRedemption as number | undefined,
+      maxRedemptions: body.maxRedemptions as number | undefined,
+      maxRedemptionsPerUser: body.maxRedemptionsPerUser as number | undefined,
+      startsAt: body.startsAt !== undefined ? (body.startsAt ? new Date(body.startsAt as string) : null) : undefined,
+      endsAt: body.endsAt !== undefined ? (body.endsAt ? new Date(body.endsAt as string) : null) : undefined,
+    });
+    if (!campaign) return cNotFoundError(c, "Campaign not found");
+    return c.json(campaign);
+  } catch (error) {
+    return cApiError(c, "Failed to update voucher campaign", error);
+  }
+});
+
+router.post("/vouchers/generate-codes", requireAuth, requirePermission("vouchers"), async (c) => {
+  try {
+    const body = c.get("body") as { campaignId?: string; count?: number };
+    if (!body?.campaignId || !body?.count) {
+      return cValidationError(c, "campaignId and count are required");
+    }
+    if (body.count < 1 || body.count > 1000) {
+      return cValidationError(c, "count must be between 1 and 1000");
+    }
+    const { generateCodes } = await import("../services/voucher.js");
+    const result = await generateCodes(body.campaignId, body.count);
+    return c.json(result, 201);
+  } catch (error) {
+    return cApiError(c, "Failed to generate voucher codes", error);
+  }
+});
+
 export default router;

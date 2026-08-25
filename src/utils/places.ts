@@ -393,6 +393,27 @@ export function formatPlacesForPrompt(places: Record<string, PlaceMemory>, curre
 }
 
 /**
+ * Returns the spoiler-safe display name for a place.
+ *
+ * Real name is shown only when `isRealNameKnown` is `true`; otherwise the
+ * narrative `knownName` is used.
+ *
+ * Shared by `buildCompanionPageContext` and `book.ts` `mapToEnrichedPage`
+ * so the spoiler gate lives in one place.
+ *
+ * @param place - Minimal place memory required for name resolution
+ * @returns Display name safe for the current reader's knowledge
+ */
+export function resolvePlaceDisplayName(
+  // place: { knownName: string; realName: string; isRealNameKnown?: boolean }
+  place: Pick<PlaceMemory, 'knownName' | 'realName' | 'isRealNameKnown'>
+): string {
+  return place.isRealNameKnown
+    ? place.realName
+    : place.knownName || place.realName || "Unknown";
+}
+
+/**
  * Resolves the reader-gated spellings a place may appear under in prose,
  * used for lore on-hover matching.
  *
