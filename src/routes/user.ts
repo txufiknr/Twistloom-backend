@@ -867,32 +867,9 @@ router.get("/users/:identifier", optionalAuth, async (c: Context<AppEnv>) => {
         } satisfies UserStats,
       };
 
-      // Check if the viewer follows this user
-      let isFollowing = false;
-      let isBlocked = false;
-      if (viewerId && viewerId !== formattedUser.id) {
-        const [followRow] = await dbRead
-          .select({ id: userFollows.followerId })
-          .from(userFollows)
-          .where(and(
-            eq(userFollows.followerId, viewerId),
-            eq(userFollows.followingId, formattedUser.id)
-          ))
-          .limit(1);
-        isFollowing = !!followRow;
-
-        const [blockRow] = await dbRead
-          .select({ id: userBlocks.userId })
-          .from(userBlocks)
-          .where(and(
-            eq(userBlocks.userId, viewerId),
-            eq(userBlocks.blockedUserId, formattedUser.id)
-          ))
-          .limit(1);
-        isBlocked = !!blockRow;
-      }
-      formattedUser.isFollowing = isFollowing;
-      formattedUser.isBlocked = isBlocked;
+      // Note: isFollowing and isBlocked are viewer-specific — they are computed
+      // OUTSIDE the cached fetchUserProfile function to avoid serving stale
+      // cross-viewer data from the cache.
       formattedUser.isBanned = userData.isBanned;
       formattedUser.isBetaTester = userData.isBetaTester;
 
@@ -905,12 +882,41 @@ router.get("/users/:identifier", optionalAuth, async (c: Context<AppEnv>) => {
     // Use cache with fallback to database
     const result = await withCache(cacheKey, fetchUserProfile, CACHE_TTL.USER_PROFILE);
 
+    // ── Viewer-specific fields (isFollowing, isBlocked) ──
+    // These MUST NOT be inside the cached function because different viewers
+    // have different follow/block relationships with the profile user.
+    let isFollowing = false;
+    let isBlocked = false;
+    if (viewerId && viewerId !== result.user.id) {
+      const [followRow] = await dbRead
+        .select({ id: userFollows.followerId })
+        .from(userFollows)
+        .where(and(
+          eq(userFollows.followerId, viewerId),
+          eq(userFollows.followingId, result.user.id)
+        ))
+        .limit(1);
+      isFollowing = !!followRow;
+
+      const [blockRow] = await dbRead
+        .select({ id: userBlocks.userId })
+        .from(userBlocks)
+        .where(and(
+          eq(userBlocks.userId, viewerId),
+          eq(userBlocks.blockedUserId, result.user.id)
+        ))
+        .limit(1);
+      isBlocked = !!blockRow;
+    }
+
     // Streak fields are date-sensitive, so they must never be served from the
     // profile cache. Recompute them live and overlay onto a fresh object (never
     // mutate the cached entry, which may be reused by other viewers).
     const liveStreaks = await getCheckInStreaks(result.user.id);
     const liveUser = {
       ...result.user,
+      isFollowing,
+      isBlocked,
       stats: {
         ...result.user.stats,
         activeCheckinStreak: liveStreaks.activeStreak,
