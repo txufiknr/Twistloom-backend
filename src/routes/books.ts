@@ -105,11 +105,12 @@ import { getClientIp } from "../hono/express-shim.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
 import { rateLimit } from "../middleware/rate-limit.js";
-import { books, branches, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress, userCompletedBooks, uploadedImages, userActivityLogs, pages, bookTestimonials, pageReactions, userSessions } from "../db/schema.js";
+import { books, branches, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress, userCompletedBooks, uploadedImages, userActivityLogs, pages, bookTestimonials, pageReactions, userSessions, companionAnswers } from "../db/schema.js";
 import { getErrorMessage, cApiError, cForbiddenError, cNotFoundError, cRateLimitError, cUnauthorizedError, cValidationError } from "../utils/error.js";
 import { sanitizeTextForDB, sanitizeKeywords } from '../utils/text-processing.js';
 import { stripHtml } from '../utils/sanitize-html.js';
 import { eq, and, desc, sql, ne, inArray, arrayOverlaps } from "drizzle-orm";
+import { hashContentSHA256 } from "../utils/cache.js";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
 import { getBook, getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage, tryAcquireWorkflowDispatchGate } from "../services/book.js";
 import { getBookAnalytics } from "../services/analytics.js";
@@ -5596,10 +5597,45 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
     const storyState = await getStoryStateWithBranch(book.id, pageId, { persistState: true });
 
     // Build companion page context from story state
-    // Uses buildCompanionPageContext for spoiler-safe name resolution
-    // (character recognitionLevel, place isRealNameKnown) — shared with book.ts mapToEnrichedPage.
     if (!storyState) {
       return cNotFoundError(c, "Story state not available for this page");
+    }
+
+    const questionHash = await hashContentSHA256(rawQuestion.toLowerCase().trim());
+
+    // 1. Check cache first (spoiler-safe per-user cache)
+    const [cached] = await dbRead
+      .select()
+      .from(companionAnswers)
+      .where(
+        and(
+          eq(companionAnswers.userId, userId),
+          eq(companionAnswers.bookId, book.id),
+          eq(companionAnswers.pageId, pageId),
+          eq(companionAnswers.questionHash, questionHash)
+        )
+      )
+      .limit(1);
+
+    if (cached) {
+      console.log(`[POST /companion/ask] ⚡ Cache HIT for user ${userId} on page ${pageId}`);
+      // Deduct 1 credit even on cache hit as per business rules
+      await executeWithCredits(
+        userId,
+        "COMPANION_ASK",
+        async () => cached,
+        {
+          context: "companion_ask_cache",
+          metadata: { bookId: book.id, pageId, question: rawQuestion.slice(0, 100) },
+        }
+      );
+
+      return c.json({
+        answer: cached.answer,
+        sources: cached.sources,
+        suggestedFollowUps: cached.suggestedFollowUps,
+        cached: true,
+      });
     }
 
     const companionContext = buildCompanionPageContext(storyState);
@@ -5643,12 +5679,30 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
     const sources = typeof result === "string" ? [] : (result?.sources ?? []);
     const suggestedFollowUps = typeof result === "string" ? [] : (result?.suggestedFollowUps ?? []);
 
+    // Persist answer to cache
+    try {
+      await dbWrite.insert(companionAnswers).values({
+        userId,
+        bookId: book.id,
+        pageId,
+        question: rawQuestion,
+        answer,
+        sources,
+        suggestedFollowUps,
+        questionHash,
+        costCredits: 1,
+      }).onConflictDoNothing();
+    } catch (insertError) {
+      console.warn(`[POST /companion/ask] ⚠️ Failed to cache companion answer:`, insertError);
+    }
+
     console.log(`[POST /companion/ask] ✅ User ${userId} asked "${rawQuestion.slice(0, 50)}..." on page ${pageId}`);
 
     return c.json({
       answer,
       sources,
       suggestedFollowUps,
+      cached: false,
     });
 
   } catch (error) {
@@ -5663,6 +5717,243 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
     }
 
     return cApiError(c, "Failed to answer companion question", error);
+  }
+});
+
+/**
+ * GET /api/books/:identifier/:pageId/companion/history
+ *
+ * Retrieves the authenticated user's companion question and answer history
+ * for the specified story page.
+ *
+ * @route GET /api/books/:identifier/:pageId/companion/history
+ * @authentication Required
+ * @param identifier - Book slug or UUID v7
+ * @param pageId - Page UUID v7
+ * @returns { answers: Array<{ id: string; question: string; answer: string; sources: string[]; suggestedFollowUps: string[]; createdAt: string }> }
+ */
+router.get("/:identifier/:pageId/companion/history", requireAuth, async (c) => {
+  try {
+    const { identifier, pageId: pageIdParam } = c.req.param();
+    const userId = c.get("userId")!;
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+    const pageId = Array.isArray(pageIdParam) ? pageIdParam[0] : pageIdParam;
+
+    if (!isValidUuid(pageId)) {
+      return cValidationError(c, "Invalid pageId: must be a valid UUID");
+    }
+
+    const book = await resolveBook(bookIdentifier);
+    if (!book) return cNotFoundError(c, "Book not found");
+
+    const answers = await dbRead
+      .select({
+        id: companionAnswers.id,
+        question: companionAnswers.question,
+        answer: companionAnswers.answer,
+        sources: companionAnswers.sources,
+        suggestedFollowUps: companionAnswers.suggestedFollowUps,
+        createdAt: companionAnswers.createdAt,
+      })
+      .from(companionAnswers)
+      .where(
+        and(
+          eq(companionAnswers.userId, userId),
+          eq(companionAnswers.bookId, book.id),
+          eq(companionAnswers.pageId, pageId)
+        )
+      )
+      .orderBy(desc(companionAnswers.createdAt))
+      .limit(20);
+
+    return c.json({ answers });
+  } catch (error) {
+    return cApiError(c, "Failed to retrieve companion history", error);
+  }
+});
+
+/**
+ * POST /api/books/:identifier/:pageId/companion/ask/stream
+ *
+ * Real-time SSE streaming for companion AI answers.
+ * Streams answer text chunks (`event: chunk`) and emits the complete
+ * structured result (`event: done`) with sources and suggested follow-ups.
+ *
+ * @route POST /api/books/:identifier/:pageId/companion/ask/stream
+ * @authentication Required
+ * @param identifier - Book slug or UUID v7
+ * @param pageId - Page UUID v7
+ * @body { question: string }
+ */
+router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(COMPANION_ASK_RATE_LIMIT), async (c) => {
+  try {
+    const { identifier, pageId: pageIdParam } = c.req.param();
+    const userId = c.get("userId")!;
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+    const pageId = Array.isArray(pageIdParam) ? pageIdParam[0] : pageIdParam;
+
+    if (!isValidUuid(pageId)) {
+      return cValidationError(c, "Invalid pageId: must be a valid UUID");
+    }
+
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+    const rawQuestion = typeof body?.question === "string" ? body.question.trim() : "";
+    if (!rawQuestion) {
+      return cValidationError(c, "question is required");
+    }
+    if (rawQuestion.length < 10) {
+      return cValidationError(c, "question must be at least 10 characters");
+    }
+    if (rawQuestion.length > 500) {
+      return cValidationError(c, "question must be at most 500 characters");
+    }
+
+    const book = await resolveBook(bookIdentifier);
+    if (!book) return cNotFoundError(c, "Book not found");
+    const dbPage = await getPageFromDB(pageId, { bookIdentifier: book.id });
+    if (!dbPage) return cNotFoundError(c, "Page not found");
+
+    const storyState = await getStoryStateWithBranch(book.id, pageId, { persistState: true });
+    if (!storyState) {
+      return cNotFoundError(c, "Story state not available for this page");
+    }
+
+    const questionHash = await hashContentSHA256(rawQuestion.toLowerCase().trim());
+
+    // Check cache first
+    const [cached] = await dbRead
+      .select()
+      .from(companionAnswers)
+      .where(
+        and(
+          eq(companionAnswers.userId, userId),
+          eq(companionAnswers.bookId, book.id),
+          eq(companionAnswers.pageId, pageId),
+          eq(companionAnswers.questionHash, questionHash)
+        )
+      )
+      .limit(1);
+
+    if (cached) {
+      await executeWithCredits(
+        userId,
+        "COMPANION_ASK",
+        async () => cached,
+        {
+          context: "companion_ask_cache_stream",
+          metadata: { bookId: book.id, pageId, question: rawQuestion.slice(0, 100) },
+        }
+      );
+
+      return streamSSE(c, async (stream) => {
+        const words = cached.answer.split(" ");
+        for (let i = 0; i < words.length; i += 3) {
+          const chunk = words.slice(i, i + 3).join(" ") + (i + 3 < words.length ? " " : "");
+          await stream.writeSSE({ event: "chunk", data: JSON.stringify({ content: chunk }) });
+          await new Promise((r) => setTimeout(r, 20));
+        }
+        await stream.writeSSE({
+          event: "done",
+          data: JSON.stringify({
+            answer: cached.answer,
+            sources: cached.sources,
+            suggestedFollowUps: cached.suggestedFollowUps,
+            cached: true,
+          }),
+        });
+      });
+    }
+
+    const companionContext = buildCompanionPageContext(storyState);
+    const mcName = book.mc.knownName || book.mc.name || "the protagonist";
+    const language = book.language || "en";
+    const userPrompt = buildCompanionUserPrompt(companionContext, rawQuestion, language, mcName);
+
+    const promptConfig: AIPromptForJson<CompanionResult> = {
+      schema: COMPANION_RESULT_SCHEMA,
+      requiredFields: COMPANION_RESULT_REQUIRED_FIELDS,
+      fallbackField: "answer",
+      baseOptions: {
+        modelSelection: AI_CHAT_MODELS_WRITING,
+        context: "companion-ask",
+        systemPrompt: COMPANION_SYSTEM,
+        config: { ...AI_CHAT_CONFIG_DEFAULT, maxOutputToken: 1024 },
+      },
+    };
+
+    return streamSSE(c, async (stream) => {
+      try {
+        const { result } = await executeWithCredits(
+          userId,
+          "COMPANION_ASK",
+          async () => {
+            const aiResponse = await aiPrompt<CompanionResult>(
+              userPrompt,
+              createAIOptionsWithSchema(promptConfig),
+            );
+            return aiResponse.result;
+          },
+          {
+            context: "companion_ask",
+            metadata: { bookId: book.id, pageId, question: rawQuestion.slice(0, 100) },
+          }
+        );
+
+        const answer = typeof result === "string" ? result : (result?.answer ?? "I couldn't find an answer based on the current story context.");
+        const sources = typeof result === "string" ? [] : (result?.sources ?? []);
+        const suggestedFollowUps = typeof result === "string" ? [] : (result?.suggestedFollowUps ?? []);
+
+        // Stream answer text with progressive chunks
+        const words = answer.split(" ");
+        for (let i = 0; i < words.length; i += 3) {
+          const chunk = words.slice(i, i + 3).join(" ") + (i + 3 < words.length ? " " : "");
+          await stream.writeSSE({ event: "chunk", data: JSON.stringify({ content: chunk }) });
+          await new Promise((r) => setTimeout(r, 20));
+        }
+
+        // Cache the newly generated answer
+        try {
+          await dbWrite.insert(companionAnswers).values({
+            userId,
+            bookId: book.id,
+            pageId,
+            question: rawQuestion,
+            answer,
+            sources,
+            suggestedFollowUps,
+            questionHash,
+            costCredits: 1,
+          }).onConflictDoNothing();
+        } catch (insertError) {
+          console.warn(`[POST /companion/ask/stream] ⚠️ Failed to cache companion answer:`, insertError);
+        }
+
+        await stream.writeSSE({
+          event: "done",
+          data: JSON.stringify({
+            answer,
+            sources,
+            suggestedFollowUps,
+            cached: false,
+          }),
+        });
+      } catch (streamErr) {
+        const errorMessage = getErrorMessage(streamErr);
+        await stream.writeSSE({
+          event: "error",
+          data: JSON.stringify({ message: errorMessage }),
+        });
+      }
+    });
+  } catch (error) {
+    const errorMessage = getErrorMessage(error);
+    if (errorMessage.includes(CREDIT_ERRORS.INSUFFICIENT_CREDITS)) {
+      return c.json({
+        error: "Insufficient credits",
+        message: `You need at least ${getCreditCostForUser(c.get("userId"), 'COMPANION_ASK')} credit to ask a companion question`,
+      }, 402);
+    }
+    return cApiError(c, "Failed to start companion stream", error);
   }
 });
 

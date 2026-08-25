@@ -2840,4 +2840,40 @@ export const creditVoucherRedemptions = pgTable(
     index("credit_voucher_redemptions_user_idx").on(t.userId),
     index("credit_voucher_redemptions_redeemed_idx").on(t.redeemedAt.desc()),
   ]
+);
+
+// ── Companion Answers (Cache & History) ──────────────────────────────────────
+
+/**
+ * Reader companion AI answer cache and history.
+ *
+ * Scoped to (user_id, book_id, page_id, question_hash) for spoiler-safe caching.
+ * Same question on the same page returns the cached answer with 0 credit deduction.
+ *
+ * @see docs/roadmap/READER_COMPANION_ENHANCEMENTS_ROADMAP.md §7
+ */
+export const companionAnswers = pgTable(
+  "companion_answers",
+  {
+    id: id(),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    bookId: bookId("cascade"),
+    pageId: pageId("cascade"),
+    question: text("question").notNull(),
+    answer: text("answer").notNull(),
+    sources: text("sources").array().notNull().default(sql`ARRAY[]::text[]`),
+    suggestedFollowUps: text("suggested_follow_ups").array().notNull().default(sql`ARRAY[]::text[]`),
+    questionHash: text("question_hash").notNull(),
+    aiProvider: text("ai_provider"),
+    aiModel: text("ai_model"),
+    tokensUsed: integer("tokens_used"),
+    costCredits: integer("cost_credits").notNull().default(1),
+    createdAt,
+  },
+  (t) => [
+    unique("companion_answers_user_book_page_hash_unique").on(t.userId, t.bookId, t.pageId, t.questionHash),
+    index("companion_answers_user_book_idx").on(t.userId, t.bookId),
+    index("companion_answers_page_idx").on(t.pageId),
+    index("companion_answers_created_idx").on(t.createdAt.desc()),
+  ]
 );

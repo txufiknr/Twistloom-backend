@@ -1,4 +1,4 @@
-import type { users, pages, storyStates, books, userSessions, userLikes, userFavorites, userComments, userPageProgress, userActivityLogs, bookGenerations, pageTranslations, bookTranslations, storyPrompts, userCounters, userFeedbacks, penSessions, penDrafts, penEdits, loreEntries, penNotes, platformTestimonials, userBetaDuties } from "../db/schema.js";
+import type { users, pages, storyStates, books, userSessions, userLikes, userFavorites, userComments, userPageProgress, userActivityLogs, bookGenerations, pageTranslations, bookTranslations, storyPrompts, userCounters, userFeedbacks, penSessions, penDrafts, penEdits, loreEntries, penNotes, platformTestimonials, userBetaDuties, companionAnswers } from "../db/schema.js";
 
 /** Complete user data as stored in database */
 export type DBUser = typeof users.$inferSelect;
@@ -100,3 +100,7 @@ export type DBNewPenNote = typeof penNotes.$inferInsert;
 /** Complete user beta duty data as stored in database */
 export type DBUserBetaDuty = typeof userBetaDuties.$inferSelect;
 export type DBNewUserBetaDuty = typeof userBetaDuties.$inferInsert;
+
+/** Complete companion answer cache/history entry as stored in database */
+export type DBCompanionAnswer = typeof companionAnswers.$inferSelect;
+export type DBNewCompanionAnswer = typeof companionAnswers.$inferInsert;
