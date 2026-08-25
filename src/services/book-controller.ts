@@ -88,6 +88,7 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
     topPick:     books.topPick,
     isOriginal:  books.isOriginal,
     isPenBook:   books.isPenBook,
+    aiContributionPercent: books.aiContributionPercent,
     authoringStatus: books.authoringStatus,
     mode:        books.mode,
     creditsPrice: books.creditsPrice,

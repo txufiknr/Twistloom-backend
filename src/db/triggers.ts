@@ -804,6 +804,67 @@ async function ensureBookCompleteCountTrigger(): Promise<void> {
 }
 
 /**
+ * Creates trigger to maintain the denormalized `books.ai_contribution_percent`
+ * column as the average of `pages.ai_contribution_percent` across all pages
+ * in a book.
+ *
+ * This trigger fires AFTER INSERT OR UPDATE OR DELETE on pages table:
+ * - INSERT/UPDATE: recomputes using NEW.book_id
+ * - DELETE: recomputes using OLD.book_id
+ *
+ * The AVG() naturally ignores NULL pages (pages without Pen authorship),
+ * so the book-level value reflects only pages that have explicit
+ * authorship data. If no pages have ai_contribution_percent set, the
+ * book-level value becomes NULL.
+ *
+ * Idempotency:
+ * - Uses CREATE OR REPLACE FUNCTION
+ * - Safe to run multiple times without errors
+ */
+async function ensureBookAiContributionTrigger(): Promise<void> {
+  try {
+    await dbWrite.execute(`
+      CREATE OR REPLACE FUNCTION update_book_ai_contribution_percent()
+      RETURNS TRIGGER AS $$
+      DECLARE
+        v_book_id UUID;
+      BEGIN
+        v_book_id := COALESCE(NEW.book_id, OLD.book_id);
+
+        UPDATE books
+        SET ai_contribution_percent = (
+          SELECT ROUND(AVG(ai_contribution_percent)::numeric, 1)
+          FROM pages
+          WHERE book_id = v_book_id
+            AND ai_contribution_percent IS NOT NULL
+        ),
+            updated_at = NOW()
+        WHERE id = v_book_id;
+
+        RETURN COALESCE(NEW, OLD);
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+
+    await dbWrite.execute(`
+      DROP TRIGGER IF EXISTS pages_ai_contribution_trigger ON pages;
+    `);
+
+    await dbWrite.execute(`
+      CREATE TRIGGER pages_ai_contribution_trigger
+        AFTER INSERT OR UPDATE OR DELETE ON pages
+        FOR EACH ROW
+        EXECUTE FUNCTION update_book_ai_contribution_percent();
+    `);
+
+    console.log("✅ Book ai_contribution_percent trigger created successfully!");
+  } catch (error) {
+    console.error("❌ Failed to create book ai_contribution_percent trigger:", getErrorMessage(error));
+    throw error;
+  }
+}
+
+/**
  * Creates highly optimized delta triggers to keep the `user_counters`
  * denormalized table in sync with the source tables used by achievement metrics.
  *
@@ -1523,6 +1584,7 @@ export async function ensureTriggers(): Promise<void> {
     await ensureBookCommentsCountTrigger();
     await ensureBookTestimonialsCountTrigger();
     await ensureBookCompleteCountTrigger();
+    await ensureBookAiContributionTrigger();
 
     // Create user_counters synchronization triggers
     await ensureUserCountersTriggers();

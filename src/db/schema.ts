@@ -489,6 +489,8 @@ export const books = pgTable(
     isOriginal: boolean("is_original").notNull().default(false),
     isPenBook: boolean("is_pen_book").notNull().default(false),
     authoringStatus: text("authoring_status").$type<'draft' | 'complete'>().notNull().default('draft'),
+    /** Average aiContributionPercent across all pages (denormalized, maintained by trigger). */
+    aiContributionPercent: real("ai_contribution_percent"),
     keywords: text("keywords").array().notNull().default(sql`ARRAY[]::text[]`), // e.g. ['reality-bending', 'psychological-horror', 'unreliable-narrator', 'time-loop-feel', 'paranormal', 'forgotten-trauma']
     mode: text("mode").$type<BookMode>().notNull().default('interactive'), // Book creation mode (story format)
     status: text("status").$type<BookStatus>().notNull().default('draft'),

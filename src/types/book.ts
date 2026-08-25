@@ -173,6 +173,8 @@ export type Book = {
   isOriginal: boolean;
   /** Whether this book was authored in the Pen (human co-writing, POST /books/pen) */
   isPenBook: boolean;
+  /** Average AI contribution percentage across all pages (denormalized). null = not yet computed. */
+  aiContributionPercent: number | null;
   /** Author-completion state for Pen books ('draft' = still authoring, 'complete' = done). Always 'draft' for non-Pen books. */
   authoringStatus: 'draft' | 'complete';
   /** Book creation mode (story format): 'novel' | 'interactive' | 'multiverse' */
@@ -214,6 +216,7 @@ export type EnrichedBookData = Pick<DBBook,
   | 'topPick'
   | 'isOriginal'
   | 'isPenBook'
+  | 'aiContributionPercent'
   | 'authoringStatus'
   | 'mode'
   | 'creditsPrice'
