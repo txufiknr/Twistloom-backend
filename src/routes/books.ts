@@ -158,7 +158,7 @@ import type { CustomActionValidationResult, CustomActionPreviewResponse, CustomA
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { MAX_BRANCHING_PREGENERATION_DEPTH } from "../config/story.js";
 import { getBookModeCreditCostForUser, getCreditCostForUser } from "../config/credits.js";
-import { getReaderPath, reconstructFork, resolveCurrentPageId, narrateForkAlternative } from "../services/time-travel.js";
+import { getJourneyForks, reconstructFork, resolveCurrentPageId, narrateForkAlternative } from "../services/time-travel.js";
 import { savedPaths } from "../db/schema.js";
 import { CREDIT_ERRORS } from "../config/errors.js";
 import { getRefundForStep, isAtPointOfNoReturn, BOOK_GENERATION_COST } from "../config/generation-refund.js";
@@ -4431,18 +4431,17 @@ router.get("/:identifier/testimonials", optionalAuth, async (c) => {
  * @returns Page with actions and book metadata
  */
 /**
- * POST /:identifier/time-travel/path
+ * POST /:identifier/time-travel/forks
  *
- * Story Time Travel — Phase 1 (Fate Peek). Returns the reader's path as a list
- * of nodes, marking forks and enumerating each fork's alternatives (with
- * whether a generated continuation already exists). Pure read, no AI, no
- * credits. Guests must pass `pageId` in body (their current page); authed
- * readers resolve their frontier from their session.
+ * Returns only forks on the reader's active Journey, including each chosen
+ * destination's page/major-event metadata and compact alternative summaries.
+ * Pure read, no AI, no credits. Guests pass their current `pageId`; signed-in
+ * readers may resolve it from the active session.
  *
  * The body may include `actionsHistory` (from `page.context.actionsHistory`)
  * to skip a redundant `getStoryState` reconstruction on the backend.
  */
-  router.post("/:identifier/time-travel/path", optionalAuth, async (c) => {
+  router.post("/:identifier/time-travel/forks", optionalAuth, async (c) => {
     try {
       const { identifier } = c.req.param();
       const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
@@ -4460,8 +4459,28 @@ router.get("/:identifier/testimonials", optionalAuth, async (c) => {
       const body = await c.req.json().catch(() => ({})) as Record<string, unknown>;
       const suppliedPageId = typeof body.pageId === "string" ? body.pageId : undefined;
       const rawHistory = body.actionsHistory;
-      const actionsHistory = Array.isArray(rawHistory) ? rawHistory as Array<{ pageId: string; page: number; text: string; nextPageId?: string }> : undefined;
-      console.log("[time-travel/path] entry", {
+      const actionsHistory = Array.isArray(rawHistory)
+        ? rawHistory.flatMap((entry) => {
+            if (
+              typeof entry !== "object"
+              || entry === null
+              || typeof (entry as Record<string, unknown>).pageId !== "string"
+              || typeof (entry as Record<string, unknown>).page !== "number"
+              || !Number.isFinite((entry as Record<string, unknown>).page)
+              || typeof (entry as Record<string, unknown>).text !== "string"
+            ) {
+              return [];
+            }
+            const value = entry as Record<string, unknown>;
+            return [{
+              pageId: value.pageId as string,
+              page: value.page as number,
+              text: value.text as string,
+              ...(typeof value.nextPageId === "string" ? { nextPageId: value.nextPageId } : {}),
+            }];
+          })
+        : undefined;
+      console.log("[time-travel/forks] entry", {
         identifier: bookIdentifier,
         bookId,
         userId: userId ?? null,
@@ -4470,31 +4489,29 @@ router.get("/:identifier/testimonials", optionalAuth, async (c) => {
       });
 
       const currentPageId = await resolveCurrentPageId(bookId, userId, suppliedPageId);
-      // Resolve the session frontier once and pass it as the fallback so
-      // getReaderPath doesn't re-resolve it (avoids a second lookup).
+      // Resolve the session frontier once and pass it as the snapshot fallback.
       const frontier = userId ? await resolveCurrentPageId(bookId, userId, undefined) : null;
       if (!currentPageId && !frontier) {
-        console.log("[time-travel/path] no currentPageId resolved -> empty path");
-        return c.json({ path: [] });
+        console.log("[time-travel/forks] no currentPageId resolved -> empty forks");
+        return c.json({ forks: [] });
       }
 
-      const result = await getReaderPath(bookId, currentPageId, userId, frontier, actionsHistory);
-      console.log("[time-travel/path] result", {
+      const result = await getJourneyForks(bookId, currentPageId, userId, frontier, actionsHistory);
+      console.log("[time-travel/forks] result", {
         currentPageId,
-        pathLen: result.path.length,
-        forks: result.path.filter((p) => p.isFork).length,
+        forks: result.forks.length,
       });
       return c.json(result);
     } catch (error) {
-      console.error("[time-travel/path] ERROR", error);
-      return cApiError(c, "Failed to retrieve time travel path", error);
+      console.error("[time-travel/forks] ERROR", error);
+      return cApiError(c, "Failed to retrieve Journey forks", error);
     }
   });
 
 /**
  * GET /:identifier/:pageId/reconstruct
  *
- * Story Time Travel — Phase 1 (Fate Peek). Reconstructs a single fork: the
+ * Reconstructs a single Journey fork: the
  * fork page's own snapshot, the taken action, and every alternative with its
  * generated branch tip + a deterministic state diff vs the reader's current
  * branch. Pure read, no AI, no credits. Optional `?readerPageId=` overrides

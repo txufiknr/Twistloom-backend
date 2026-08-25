@@ -1,6 +1,6 @@
 /**
- * Story Time Travel — read-only branch reconstruction for the reader-facing
- * "Fate Peek" / "Take This Path" feature (roadmap item 1.6).
+ * Story Time Travel — fork discovery and branch reconstruction for the
+ * reader-facing Journey / "Take This Path" feature.
  *
  * The whole feature is a read-and-shape operation over existing data:
  * - `storyStates` carries a **complete `StoryState` snapshot per page** (PK `pageId`),
@@ -9,7 +9,7 @@
  *   already have a generated continuation.
  * - `user_sessions` resolves the reader's current frontier page.
  *
- * Phase 1 (Fate Peek) is pure preview: no writes, no AI, no credits.
+ * Fork discovery is pure preview: no writes, no AI, no credits.
  * Phase 2 (commit) reuses the existing actioning flow and is charged via the
  * `TIME_TRAVEL_COMMIT` credit key.
  */
@@ -78,20 +78,27 @@ export type TimeTravelAlternative = {
   isGenerating: boolean;
 };
 
-export type TimeTravelPathNode = {
-  /** Page number of the fork node. */
-  page: number;
-  /** Page id of the fork node (the page the action was chosen from). */
-  pageId: string;
+/** A fork on the reader's active journey and the outcome of their chosen road. */
+export type JourneyForkSummary = {
+  /** Page number where the reader made the choice. */
+  forkPage: number;
+  /** Page id where the reader made the choice. */
+  forkPageId: string;
   /** The action text the reader actually chose there. */
   chosenActionText: string;
-  /** True when the page offered more than one action. */
-  isFork: boolean;
+  /** Exact first page reached by the chosen action. */
+  chosenNextPageId: string | null;
+  /** Page number reached by the chosen action, when still available. */
+  outcomePage: number | null;
+  /** Whether the chosen destination is a major narrative event. */
+  outcomeIsMajorEvent: boolean;
+  /** Roads that were available but not chosen. */
   alternatives: TimeTravelAlternative[];
 };
 
-export type GetTimeTravelPathResponse = {
-  path: TimeTravelPathNode[];
+/** Fork-focused read model consumed by the Journey timeline. */
+export type GetJourneyForksResponse = {
+  forks: JourneyForkSummary[];
 };
 
 export type ReconstructAlternative = TimeTravelAlternative & {
@@ -109,6 +116,13 @@ export type ReconstructForkResponse = {
 
 type ActionLike = { text: string; destinationPageIds?: string[] };
 
+type JourneyHistoryEntry = {
+  pageId: string;
+  page: number;
+  text: string;
+  nextPageId?: string | null;
+};
+
 /**
  * Set of action texts on a page whose continuation is currently being
  * generated (status `started` in `actionProgress`). Used to surface a
@@ -124,7 +138,7 @@ async function getGeneratingActions(pageId: string): Promise<Set<string>> {
 
 /**
  * Batched variant: returns a map of pageId -> set of in-flight action texts for
- * all supplied fork pages in a single query (avoids N+1 in `getReaderPath`).
+ * all supplied fork pages in a single query (avoids N+1 in `getJourneyForks`).
  */
 async function getGeneratingActionsBatch(
   pageIds: string[],
@@ -162,18 +176,111 @@ export async function resolveCurrentPageId(
 }
 
 /**
- * Fallback path reconstruction from `user_page_progress` when `storyStates`
- * snapshots are unavailable (cleaned up + parent-chain reconstruction failed).
- *
- * Queries the user's page-progress rows (NOT cleaned up) and batch-resolves
- * each page's available actions to identify forks, mirroring the shape
- * produced by the primary `storyStates`-based path.
+ * Shape an authoritative action history into the compact fork-only Journey
+ * read model. All database work is batched by relation type.
  */
-async function getReaderPathFromProgress(
+async function buildJourneyForks(
+  bookId: string,
+  history: JourneyHistoryEntry[],
+): Promise<GetJourneyForksResponse> {
+  if (history.length === 0) return { forks: [] };
+
+  // Source and chosen-destination pages share one lookup. Identity remains
+  // page-id based even when different branches reuse a numeric page position.
+  const pageIds = [...new Set(history.flatMap((entry) => [
+    entry.pageId,
+    ...(entry.nextPageId ? [entry.nextPageId] : []),
+  ]))];
+  const pageRows = await dbRead
+    .select({
+      id: pages.id,
+      page: pages.page,
+      actions: pages.actions,
+      stateDelta: pages.stateDelta,
+    })
+    .from(pages)
+    .where(and(eq(pages.bookId, bookId), inArray(pages.id, pageIds)));
+  const pageMap = new Map(pageRows.map((row) => [row.id, row]));
+
+  const forkHistory = history.filter((entry) => {
+    const actions = (pageMap.get(entry.pageId)?.actions ?? []) as ActionLike[];
+    return actions.length > 1;
+  });
+  if (forkHistory.length === 0) return { forks: [] };
+
+  const alternativeNextPageIds = [...new Set(forkHistory.flatMap((entry) => {
+    const actions = (pageMap.get(entry.pageId)?.actions ?? []) as ActionLike[];
+    return actions.flatMap((action) => (
+      action.text !== entry.text && action.destinationPageIds?.[0]
+        ? [action.destinationPageIds[0]]
+        : []
+    ));
+  }))];
+  const branchRows = alternativeNextPageIds.length > 0
+    ? await dbRead
+        .select({ id: pages.id, branchId: pages.branchId })
+        .from(pages)
+        .where(and(eq(pages.bookId, bookId), inArray(pages.id, alternativeNextPageIds)))
+    : [];
+  const branchMap = new Map(branchRows.map((row) => [row.id, row.branchId] as const));
+  const branchIds = [...new Set(branchRows.map((row) => row.branchId).filter(Boolean))] as string[];
+  const countRows = branchIds.length > 0
+    ? await dbRead
+        .select({ branchId: pages.branchId, count: sql<number>`count(*)::int` })
+        .from(pages)
+        .where(and(eq(pages.bookId, bookId), inArray(pages.branchId, branchIds)))
+        .groupBy(pages.branchId)
+    : [];
+  const countMap = new Map(countRows.map((row) => [row.branchId, row.count] as const));
+  const generatingMap = await getGeneratingActionsBatch(
+    [...new Set(forkHistory.map((entry) => entry.pageId))],
+  );
+
+  const forks = forkHistory.map<JourneyForkSummary>((entry) => {
+    const sourcePage = pageMap.get(entry.pageId);
+    const outcomePage = entry.nextPageId ? pageMap.get(entry.nextPageId) : undefined;
+    const actions = (sourcePage?.actions ?? []) as ActionLike[];
+    const generating = generatingMap.get(entry.pageId) ?? new Set<string>();
+    const alternatives = actions
+      .filter((action) => action.text !== entry.text)
+      .map<TimeTravelAlternative>((action) => {
+        const nextPageId = action.destinationPageIds?.[0] ?? null;
+        const branchId = nextPageId ? (branchMap.get(nextPageId) ?? null) : null;
+        return {
+          text: action.text,
+          nextPageId,
+          hasGeneratedPath: nextPageId !== null,
+          branchId,
+          generatedPageCount: branchId ? (countMap.get(branchId) ?? 0) : 0,
+          isGenerating: nextPageId === null && generating.has(action.text),
+        };
+      });
+    const outcomeHasMajorFlag =
+      outcomePage?.stateDelta.addPlotFlags?.some((flag) => flag.isMajorEvent) ?? false;
+
+    return {
+      forkPage: sourcePage?.page ?? entry.page,
+      forkPageId: entry.pageId,
+      chosenActionText: entry.text,
+      chosenNextPageId: entry.nextPageId ?? null,
+      outcomePage: outcomePage?.page ?? null,
+      outcomeIsMajorEvent:
+        outcomePage?.stateDelta.isMajorEvent === true || outcomeHasMajorFlag,
+      alternatives,
+    };
+  });
+
+  return { forks };
+}
+
+/**
+ * Fallback fork reconstruction from `user_page_progress` when story snapshots
+ * are unavailable. Progress rows retain the exact chosen destination ids.
+ */
+async function getJourneyForksFromProgress(
   bookId: string,
   userId: string,
-): Promise<GetTimeTravelPathResponse> {
-  // 1. Fetch all progress rows for this user+book, ordered chronologically.
+): Promise<GetJourneyForksResponse> {
   const progressRows = await dbRead
     .select({
       actionedPageId: userPageProgress.actionedPageId,
@@ -187,259 +294,78 @@ async function getReaderPathFromProgress(
     ))
     .orderBy(asc(userPageProgress.createdAt));
 
-  if (progressRows.length === 0) return { path: [] };
-
-  // 2. Batch-fetch page rows for every source page.
-  const pageIds = [...new Set(progressRows.map((r) => r.actionedPageId))];
-  const pageRows = pageIds.length
-    ? await dbRead
-        .select({ id: pages.id, page: pages.page, actions: pages.actions })
-        .from(pages)
-        .where(inArray(pages.id, pageIds))
-    : [];
-  const pageMap = new Map(pageRows.map((r) => [r.id, r]));
-
-  // 3. Collect alternative nextPageIds for branch/count lookups.
-  const forkPageIds: string[] = [];
-  const altNextPageIds: string[] = [];
-  for (const row of progressRows) {
-    const pageRow = pageMap.get(row.actionedPageId);
-    const actions = (pageRow?.actions ?? []) as ActionLike[];
-    if (actions.length > 1) {
-      forkPageIds.push(row.actionedPageId);
-      for (const a of actions) {
-        if (a.text === row.action.text) continue;
-        const destIds = a.destinationPageIds ?? [];
-        if (destIds.length > 0 && destIds[0]) altNextPageIds.push(destIds[0]);
-      }
-    }
-  }
-
-  // 4. Batch branch + count lookups (same as primary path).
-  const branchRows = altNextPageIds.length
-    ? await dbRead
-        .select({ id: pages.id, branchId: pages.branchId })
-        .from(pages)
-        .where(inArray(pages.id, altNextPageIds))
-    : [];
-  const branchMap = new Map(branchRows.map((r) => [r.id, r.branchId] as const));
-  const branchIds = [...new Set(branchRows.map((r) => r.branchId).filter(Boolean))] as string[];
-  const countRows = branchIds.length
-    ? await dbRead
-        .select({ branchId: pages.branchId, count: sql<number>`count(*)::int` })
-        .from(pages)
-        .where(and(eq(pages.bookId, bookId), inArray(pages.branchId, branchIds)))
-        .groupBy(pages.branchId)
-    : [];
-  const countMap = new Map(countRows.map((r) => [r.branchId, r.count] as const));
-
-  // 5. In-flight generations.
-  const generatingMap = await getGeneratingActionsBatch(forkPageIds);
-
-  // 6. Build path nodes.
-  const path: TimeTravelPathNode[] = [];
-  for (const row of progressRows) {
-    const pageRow = pageMap.get(row.actionedPageId);
-    const actions = (pageRow?.actions ?? []) as ActionLike[];
-    const isFork = actions.length > 1;
-    const alternatives: TimeTravelAlternative[] = [];
-
-    if (isFork) {
-      const generating = generatingMap.get(row.actionedPageId) ?? new Set<string>();
-      for (const a of actions) {
-        if (a.text === row.action.text) continue;
-        const destIds = a.destinationPageIds ?? [];
-        const hasGenerated = destIds.length > 0;
-        const nextPageId = hasGenerated ? destIds[0] : null;
-        const isGenerating = !hasGenerated && generating.has(a.text);
-        let branchId: string | null = null;
-        let generatedPageCount = 0;
-        if (hasGenerated && nextPageId) {
-          branchId = branchMap.get(nextPageId) ?? null;
-          if (branchId) generatedPageCount = countMap.get(branchId) ?? 0;
-        }
-        alternatives.push({
-          text: a.text,
-          nextPageId,
-          hasGeneratedPath: hasGenerated,
-          branchId,
-          generatedPageCount,
-          isGenerating,
-        });
-      }
-    }
-
-    path.push({
-      page: pageRow?.page ?? 0,
+  return buildJourneyForks(
+    bookId,
+    progressRows.map((row) => ({
       pageId: row.actionedPageId,
-      chosenActionText: row.action.text,
-      isFork,
-      alternatives,
-    });
-  }
-
-  return { path };
+      page: row.action.page,
+      text: row.action.text,
+      nextPageId: row.nextPageId,
+    })),
+  );
 }
 
 /**
- * Build the reader's path as a list of nodes with fork/alternative info,
- * used to render the Fate tab.
+ * Return only the forks on the reader's active journey, including the exact
+ * chosen destination and enough outcome metadata for Journey filtering.
  *
- * When `injectedHistory` is provided (from the frontend's existing
- * `page.context.actionsHistory`), the function skips the `getStoryState` call
- * entirely — this is the optimized path that avoids a redundant snapshot
- * reconstruction.
+ * When `injectedHistory` comes from the already-loaded page context, the
+ * function skips story-state reconstruction.
  */
-export async function getReaderPath(
+export async function getJourneyForks(
   bookId: string,
   currentPageId: string | null,
   userId?: string | null,
   fallbackPageId?: string | null,
-  injectedHistory?: Array<{ pageId: string; page: number; text: string; nextPageId?: string }> | null,
-): Promise<GetTimeTravelPathResponse> {
-  let history: Array<{ pageId: string; page: number; text: string }>;
+  injectedHistory?: JourneyHistoryEntry[] | null,
+): Promise<GetJourneyForksResponse> {
+  let history: JourneyHistoryEntry[];
 
   if (injectedHistory && injectedHistory.length > 0) {
-    // Fast path: the frontend already has the history from the page-read
-    // endpoint — skip the getStoryState call entirely.
-    console.log("[time-travel] getReaderPath using injected actionsHistory", {
+    console.log("[time-travel] getJourneyForks using injected actionsHistory", {
       bookId,
       historyLen: injectedHistory.length,
     });
     history = injectedHistory;
   } else {
-    // Slow path: reconstruct from storyStates (may need deep parent-chain
-    // traversal when snapshots are cleaned up).
-    const resolvedPageId = currentPageId ?? fallbackPageId ?? null;
     let stateRow: StoryState | null = null;
-    if (currentPageId) stateRow = await getStoryState(currentPageId, { maxTraversalDepth: 20 });
+    if (currentPageId) {
+      stateRow = await getStoryState(currentPageId, { maxTraversalDepth: 20 });
+    }
 
     if (!stateRow && userId && fallbackPageId) {
-      console.log("[time-travel] snapshot missing for", currentPageId, "— trying session frontier", fallbackPageId);
+      console.log(
+        "[time-travel] snapshot missing for",
+        currentPageId,
+        "— trying session frontier",
+        fallbackPageId,
+      );
       stateRow = await getStoryState(fallbackPageId, { maxTraversalDepth: 20 });
     }
 
-    console.log("[time-travel] getReaderPath", {
+    console.log("[time-travel] getJourneyForks", {
       bookId,
       requestedPageId: currentPageId,
-      resolvedPageId,
       snapshotFound: !!stateRow,
       historyLen: (stateRow?.actionsHistory ?? []).length,
     });
 
     if (!stateRow) {
-      // Fallback: reconstruct path from user_page_progress (not cleaned up).
       if (userId) {
-        console.log("[time-travel] getReaderPath falling back to user_page_progress for user", userId);
-        return getReaderPathFromProgress(bookId, userId);
+        console.log(
+          "[time-travel] getJourneyForks falling back to user_page_progress for user",
+          userId,
+        );
+        return getJourneyForksFromProgress(bookId, userId);
       }
-      return { path: [] };
+      return { forks: [] };
     }
 
-    history = (stateRow.actionsHistory ?? []) as Array<{
-      pageId: string;
-      page: number;
-      text: string;
-    }>;
+    history = stateRow.actionsHistory;
   }
 
-  // ── Batch all per-node / per-alternative lookups (fixes N+1) ──────────────
-  const nodePageIds = history.map((n) => n.pageId);
-  const pageRows = nodePageIds.length
-    ? await dbRead
-        .select({ id: pages.id, page: pages.page, actions: pages.actions })
-        .from(pages)
-        .where(inArray(pages.id, nodePageIds))
-    : [];
-  const pageMap = new Map(pageRows.map((r) => [r.id, r]));
-
-  // First pass: decide forks and collect every generated alternative's nextPageId.
-  const forkNodeIds: string[] = [];
-  const nextPageIds: string[] = [];
-  for (const node of history) {
-    const actions = (pageMap.get(node.pageId)?.actions ?? []) as ActionLike[];
-    if (actions.length > 1) {
-      forkNodeIds.push(node.pageId);
-      for (const a of actions) {
-        if (a.text === node.text) continue;
-        const destIds = a.destinationPageIds ?? [];
-        if (destIds.length > 0 && destIds[0]) nextPageIds.push(destIds[0]);
-      }
-    }
-  }
-
-  // Branch ids for every alternative (one query) + per-branch page counts (one grouped query).
-  const branchRows = nextPageIds.length
-    ? await dbRead
-        .select({ id: pages.id, branchId: pages.branchId })
-        .from(pages)
-        .where(inArray(pages.id, nextPageIds))
-    : [];
-  const branchMap = new Map(branchRows.map((r) => [r.id, r.branchId] as const));
-  const branchIds = [...new Set(branchRows.map((r) => r.branchId).filter(Boolean))] as string[];
-  const countRows = branchIds.length
-    ? await dbRead
-        .select({ branchId: pages.branchId, count: sql<number>`count(*)::int` })
-        .from(pages)
-        .where(and(eq(pages.bookId, bookId), inArray(pages.branchId, branchIds)))
-        .groupBy(pages.branchId)
-    : [];
-  const countMap = new Map(countRows.map((r) => [r.branchId, r.count] as const));
-
-  // In-flight generations per fork page (one query).
-  const generatingMap = await getGeneratingActionsBatch(forkNodeIds);
-
-  // ── Build path nodes with zero per-node DB round-trips ───────────────────
-  const path: TimeTravelPathNode[] = [];
-
-  for (const node of history) {
-    const pageRow = pageMap.get(node.pageId);
-    const actions = (pageRow?.actions ?? []) as ActionLike[];
-    const isFork = actions.length > 1;
-    const alternatives: TimeTravelAlternative[] = [];
-
-    if (isFork) {
-      const generating = generatingMap.get(node.pageId) ?? new Set<string>();
-      for (const a of actions) {
-        if (a.text === node.text) continue;
-        const destIds = a.destinationPageIds ?? [];
-        const hasGenerated = destIds.length > 0;
-        // Multiverse forks may list several candidate pages in `destinationPageIds`;
-        // we surface the first as the representative next page. A live re-choose
-        // would run candidate selection to pick one, but for the preview/commit
-        // shortcut any valid generated candidate is an acceptable target (the
-        // commit endpoint only verifies it belongs to this fork's action).
-        const nextPageId = hasGenerated ? destIds[0] : null;
-        const isGenerating = !hasGenerated && generating.has(a.text);
-        let branchId: string | null = null;
-        let generatedPageCount = 0;
-        if (hasGenerated && nextPageId) {
-          branchId = branchMap.get(nextPageId) ?? null;
-          if (branchId) generatedPageCount = countMap.get(branchId) ?? 0;
-        }
-        alternatives.push({
-          text: a.text,
-          nextPageId,
-          hasGeneratedPath: hasGenerated,
-          branchId,
-          generatedPageCount,
-          isGenerating,
-        });
-      }
-    }
-
-    path.push({
-      page: pageRow?.page ?? node.page,
-      pageId: node.pageId,
-      chosenActionText: node.text,
-      isFork,
-      alternatives,
-    });
-  }
-
-  return { path };
+  return buildJourneyForks(bookId, history);
 }
-
 /**
  * Reconstruct a fork: return the taken action and every alternative with a
  * deterministic diff vs the reader's branch.
