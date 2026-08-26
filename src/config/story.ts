@@ -620,4 +620,10 @@ export const PEN_PAGE_EDIT_DIFF_TOLERANCE = 0.15;
  * Minimum published page number required before an author can mark a page
  * as a terminal story / branch conclusion ("The End" / 🏁).
  */
-export const PEN_MIN_ENDING_PAGE = 5;
+export const PEN_MIN_ENDING_PAGE = 5;
+
+/**
+ * Story companion AI ask character length bounds.
+ */
+export const COMPANION_ASK_MIN_CHARS = 10;
+export const COMPANION_ASK_MAX_CHARS = 150;

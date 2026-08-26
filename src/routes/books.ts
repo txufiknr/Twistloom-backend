@@ -155,7 +155,7 @@ import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 import { notifyForumOfBookChange, notifyForumStoryArchived } from "../services/forum-queue.js";
 import { createAIOptionsWithSchema, aiPrompt } from "../utils/ai-chat.js";
 import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
-import { BOOK_MIN_PAGES, PEN_AUTHORING_MODES, PEN_DEFAULT_AUTHORING_MODE, PEN_DEFAULT_BOOK_MODE, PEN_DEFAULT_TITLE, PEN_PLACEHOLDER_MC, PEN_SUMMARY_MAX_LENGTH, PEN_TARGET_PAGES_MAX, PEN_TARGET_PAGES_MIN, PEN_TITLE_MAX_LENGTH, PEN_TITLE_MIN_LENGTH } from "../config/story.js";
+import { BOOK_MIN_PAGES, PEN_AUTHORING_MODES, PEN_DEFAULT_AUTHORING_MODE, PEN_DEFAULT_BOOK_MODE, PEN_DEFAULT_TITLE, PEN_PLACEHOLDER_MC, PEN_SUMMARY_MAX_LENGTH, PEN_TARGET_PAGES_MAX, PEN_TARGET_PAGES_MIN, PEN_TITLE_MAX_LENGTH, PEN_TITLE_MIN_LENGTH, COMPANION_ASK_MIN_CHARS, COMPANION_ASK_MAX_CHARS } from "../config/story.js";
 import type { CustomActionValidationResult, CustomActionPreviewResponse, CustomActionSubmitResponse } from "../types/custom-action.js";
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { MAX_BRANCHING_PREGENERATION_DEPTH } from "../config/story.js";
@@ -5591,15 +5591,12 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
 
     // Parse and validate body
     const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
-    const rawQuestion = typeof body?.question === "string" ? body.question.trim() : "";
+    const rawQuestion = (typeof body?.question === "string" ? body.question.trim() : "").slice(0, COMPANION_ASK_MAX_CHARS);
     if (!rawQuestion) {
       return cValidationError(c, "question is required");
     }
-    if (rawQuestion.length < 10) {
-      return cValidationError(c, "question must be at least 10 characters");
-    }
-    if (rawQuestion.length > 500) {
-      return cValidationError(c, "question must be at most 500 characters");
+    if (rawQuestion.length < COMPANION_ASK_MIN_CHARS) {
+      return cValidationError(c, `question must be at least ${COMPANION_ASK_MIN_CHARS} characters`);
     }
 
     // Resolve book and verify page belongs to it
@@ -5815,15 +5812,12 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(
     }
 
     const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
-    const rawQuestion = typeof body?.question === "string" ? body.question.trim() : "";
+    const rawQuestion = (typeof body?.question === "string" ? body.question.trim() : "").slice(0, COMPANION_ASK_MAX_CHARS);
     if (!rawQuestion) {
       return cValidationError(c, "question is required");
     }
-    if (rawQuestion.length < 10) {
-      return cValidationError(c, "question must be at least 10 characters");
-    }
-    if (rawQuestion.length > 500) {
-      return cValidationError(c, "question must be at most 500 characters");
+    if (rawQuestion.length < COMPANION_ASK_MIN_CHARS) {
+      return cValidationError(c, `question must be at least ${COMPANION_ASK_MIN_CHARS} characters`);
     }
 
     const book = await resolveBook(bookIdentifier);
