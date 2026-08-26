@@ -174,6 +174,7 @@ import { BOOK_CREATION_RATE_LIMIT, BOOK_STREAM_RATE_LIMIT, BOOK_ASYNC_RATE_LIMIT
 import { isValidReactionEmoji, REACTION_IDS, reactionIdList } from "../config/reactions.js";
 import { generateRandomCharacter } from "../utils/characters.js";
 import { COMPANION_SYSTEM, COMPANION_RESULT_SCHEMA, COMPANION_RESULT_REQUIRED_FIELDS, buildCompanionUserPrompt, buildCompanionPageContext, type CompanionResult } from "../utils/companion-prompt.js";
+import { validateCompanionQuestion } from "../utils/prompt-security.js";
 
 const router = new Hono<AppEnv>();
 
@@ -5591,13 +5592,11 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
 
     // Parse and validate body
     const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
-    const rawQuestion = (typeof body?.question === "string" ? body.question.trim() : "").slice(0, COMPANION_ASK_MAX_CHARS);
-    if (!rawQuestion) {
-      return cValidationError(c, "question is required");
+    const validation = validateCompanionQuestion(typeof body?.question === "string" ? body.question : "");
+    if (!validation.valid) {
+      return cValidationError(c, validation.reason || "Invalid question");
     }
-    if (rawQuestion.length < COMPANION_ASK_MIN_CHARS) {
-      return cValidationError(c, `question must be at least ${COMPANION_ASK_MIN_CHARS} characters`);
-    }
+    const rawQuestion = validation.sanitized;
 
     // Resolve book and verify page belongs to it
     const book = await resolveBook(bookIdentifier);
@@ -5812,13 +5811,11 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(
     }
 
     const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
-    const rawQuestion = (typeof body?.question === "string" ? body.question.trim() : "").slice(0, COMPANION_ASK_MAX_CHARS);
-    if (!rawQuestion) {
-      return cValidationError(c, "question is required");
+    const validation = validateCompanionQuestion(typeof body?.question === "string" ? body.question : "");
+    if (!validation.valid) {
+      return cValidationError(c, validation.reason || "Invalid question");
     }
-    if (rawQuestion.length < COMPANION_ASK_MIN_CHARS) {
-      return cValidationError(c, `question must be at least ${COMPANION_ASK_MIN_CHARS} characters`);
-    }
+    const rawQuestion = validation.sanitized;
 
     const book = await resolveBook(bookIdentifier);
     if (!book) return cNotFoundError(c, "Book not found");

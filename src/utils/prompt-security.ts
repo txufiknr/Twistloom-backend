@@ -1,5 +1,6 @@
 import { CUSTOM_ACTION_SECURITY_PATTERNS } from "../config/custom-actions.js";
 import { MAX_PROMPT_APPEND_LENGTH } from "../config/book-creation.js";
+import { COMPANION_ASK_MIN_CHARS, COMPANION_ASK_MAX_CHARS } from "../config/story.js";
 import { cleanText, removeControlCharacters } from "./text-processing.js";
 
 // ============================================================================
@@ -130,6 +131,58 @@ export function validatePromptAppend(raw: string | null | undefined): PromptAppe
       sanitized,
       reason: 'Input contains invalid characters',
     };
+  }
+
+  return { valid: true, sanitized };
+}
+
+/**
+ * Sanitizes a raw companion question.
+ * Normalizes Unicode, strips control characters & HTML tags, allows emojis, and caps to COMPANION_ASK_MAX_CHARS.
+ */
+export function sanitizeCompanionQuestion(raw: string | null | undefined): string {
+  if (!raw || typeof raw !== 'string') return '';
+
+  let cleaned = cleanText(raw);
+  cleaned = removeControlCharacters(cleaned);
+  cleaned = cleaned.normalize('NFKC')
+    .replace(/[^\p{L}\p{M}\p{N}\p{P}\p{Sc}\p{Sm}\p{Extended_Pictographic}\p{So}\s]/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (cleaned.length > COMPANION_ASK_MAX_CHARS) {
+    cleaned = cleaned.slice(0, COMPANION_ASK_MAX_CHARS);
+  }
+
+  return cleaned;
+}
+
+/**
+ * Validates a companion question for malicious injection patterns and character bounds.
+ */
+export function validateCompanionQuestion(raw: string | null | undefined): { valid: boolean; sanitized: string; reason?: string } {
+  const sanitized = sanitizeCompanionQuestion(raw);
+
+  if (!sanitized) {
+    return { valid: false, sanitized: '', reason: 'Question is required' };
+  }
+
+  if (sanitized.length < COMPANION_ASK_MIN_CHARS) {
+    return {
+      valid: false,
+      sanitized,
+      reason: `Question must be at least ${COMPANION_ASK_MIN_CHARS} characters`,
+    };
+  }
+
+  for (const pattern of PROMPT_APPEND_SECURITY_PATTERNS) {
+    if (pattern.test(sanitized)) {
+      return {
+        valid: false,
+        sanitized,
+        reason: 'This question contains text that is not allowed',
+      };
+    }
   }
 
   return { valid: true, sanitized };
