@@ -1915,7 +1915,7 @@ export async function proposePenStateUpdates(
     sceneType,
     essentials: inheritSceneEssentials(session.draftSceneEssentials, lastPage),
     draftText: input.draftText?.trim() ?? "",
-    actionText: input.actionText?.trim() ?? "",
+    actionText: (input.actionText?.trim() || (input.draftText?.trim() ? `${input.draftText.trim().slice(0, 30)}...` : "")) ?? "",
     placeOptions: await buildPenPlaceOptions(userId, book.id, state),
   });
 
@@ -2310,13 +2310,10 @@ export async function finalizePenDraft(
   // ── Phase B: publish through the engine ───────────────────────────────────
   const actions = input.isEnding ? [] : buildNewPageActions(book, input.actions);
 
-  // D-4 core: branching books REQUIRE the writer's choice text — the writer
-  // owns the narrative choice; the engine/AI never decides it. Novel stays
-  // linear (its incoming transition is inherited, no reader choice involved).
-  const writerActionText = draft.actionText?.trim();
-  if ((book.mode === "interactive" || book.mode === "multiverse") && !writerActionText && !input.isEnding) {
-    throw new PenFinalizeError("Publishing a branching page requires the reader's choice text — enter it in the editor first");
-  }
+  // Action text is optional and falls back to first 30 chars of page with ellipsis suffix.
+  const rawActionText = draft.actionText?.trim();
+  const fallbackActionText = draftText ? `${draftText.slice(0, 30)}...` : undefined;
+  const writerActionText = rawActionText || fallbackActionText;
 
   // Carries the incoming action's text/type/hint to Phase C's reverse-edge
   // write, which runs after `action` goes out of scope.
