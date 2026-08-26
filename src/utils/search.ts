@@ -249,7 +249,7 @@ export function validateGender(gender: string | undefined): { isValid: boolean; 
   const trimmed = gender.trim().toLowerCase();
   const validGenders: KnownGender[] = ['male', 'female'];
 
-  if (!validGenders.includes(trimmed)) {
+  if (!validGenders.includes(trimmed as KnownGender)) {
     return {
       isValid: false,
       error: 'Invalid gender. Must be male or female'

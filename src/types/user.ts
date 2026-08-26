@@ -8,7 +8,7 @@ import type { AchievementTier } from "./achievements.js";
  */
 export const genders = [ 'male', 'female', 'unknown' ] as const;
 export type Gender = typeof genders[number];
-export type KnownGender = Omit<Gender, 'unknown'>
+export type KnownGender = Exclude<Gender, 'unknown'>;
 
 export const avatarFrames = ['bronze', 'silver', 'gold', 'platinum'] as const;
 export type AvatarFrame = typeof avatarFrames[number];

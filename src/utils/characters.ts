@@ -1,7 +1,9 @@
 import { ACTION_SCORE_CAP, BODY_PART_WEIGHTS, DEFAULT_BODY_PART_IMPACT, FEAR_MENTAL_PENALTY, HEALTH_SCORE_CAP, INJURY_CATEGORY_WEIGHTS, MEMORY_INTEGRITY_MENTAL_PENALTY, MENTAL_SCORE_CAP, MOBILITY_SCORE_CAP, REAL_NAME_RECOGNITION_LEVELS, TRAUMA_TAG_MENTAL_WEIGHT } from "../config/characters.js";
 import { CHARACTER_NAMES } from "../config/characters.js";
 import { MAX_PAST_INTERACTIONS, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, MAX_CHARACTERS } from "../config/story.js";
+import type { CastTemplateRule } from "../types/cast.js";
 import type { CharacterMemory, CharacterUpdate, RelationshipUpdate, StoryMC, StoryMCCandidate, Injury, InjurySeverity, PastInteraction, HealthCondition, HealthStatus, MentalHealthInputs, BodyPartImpact, CharacterPlan, NewCharacter } from "../types/character.js";
+import type { LoreEntryInput } from "../types/pen.js";
 import type { StoryMCState, StoryState } from "../types/story.js";
 import type { KnownGender } from "../types/user.js";
 import { ucfirst } from "./formatter.js";
@@ -1019,4 +1021,107 @@ export function calculateHealthStatus(injuries: Injury[], mentalInputs?: MentalH
 
 export function isMainCharacterValid(mc?: Partial<StoryMC> | null): boolean {
   return !!(mc && mc.name && mc.gender && mc.age);
+}
+
+// ============================================================================
+// ── CAST TEMPLATE ADAPTERS & RUNTIME ENTITY MAPPINGS ───────────────────────
+// ============================================================================
+
+/**
+ * Maps a CastTemplateRule into a LoreEntryInput for Story-Bible (Lore) import.
+ *
+ * Encodes the character's archetype, premise, high-value metrics, speech style,
+ * slang, hobbies, voice directives, and psychological secrets into a structured
+ * Markdown description pinned to the book's canon.
+ *
+ * @param cast - The static CastTemplateRule from config/cast.ts
+ * @returns LoreEntryInput ready for the lore creation service
+ */
+export function mapCastToLoreEntry(cast: CastTemplateRule): LoreEntryInput {
+  const sections: string[] = [
+    `**Archetype:** ${cast.title} (${cast.starTier}★ · ${cast.archetype})`,
+    `**Premise:** ${cast.premise}`,
+    `**Value & Acuity:** ${cast.highValueMetrics.valueSummary}`,
+    `**Speech & Slang:** ${cast.distinctCharacteristics.languageStyle} — Slang: *${cast.distinctCharacteristics.slangAndCatchphrases.join(', ')}*.`,
+    `**Hobbies & Quirks:** ${cast.distinctCharacteristics.hobbiesAndQuirks.join('; ')}`,
+    `**Voice Directives:**\n${cast.voice.styleDirectives.map((d) => `- ${d}`).join('\n')}`,
+    `**Trauma & Secret:** ${cast.psychologicalProfile.trauma} Secret: ${cast.psychologicalProfile.secret}`,
+  ];
+
+  return {
+    entryType: 'character',
+    name: cast.name,
+    description: sections.join('\n\n'),
+    triggerKeywords: cast.triggerKeywords,
+    imageUrl: null,
+  };
+}
+
+/**
+ * Maps a CastTemplateRule into a playable Main Character (StoryMC) for Text Adventure mode.
+ *
+ * Used in Step 2 of the creation wizard when an author selects a collected character
+ * as their active protagonist.
+ *
+ * @param cast - The static CastTemplateRule from config/cast.ts
+ * @returns StoryMC profile ready for book initialization
+ */
+export function mapCastToStoryMC(cast: CastTemplateRule): StoryMC {
+  return {
+    name: cast.name,
+    knownName: cast.knownName,
+    gender: cast.gender,
+    age: cast.age,
+    bio: `${cast.title} (${cast.starTier}★ ${cast.archetype}) — ${cast.premise} Motivation: ${cast.psychologicalProfile.motivation}`,
+  };
+}
+
+/**
+ * Maps a CastTemplateRule into a live Story NPC (NewCharacter).
+ *
+ * Packs the template's speech style, slang, quirks, and high-value status
+ * into compact, token-efficient traits and secrets for formatCharactersForPrompt.
+ *
+ * @param cast - The static CastTemplateRule from config/cast.ts
+ * @param options - Optional placement and initial relationship context
+ * @returns NewCharacter ready for insertion into story state.characters
+ */
+export function mapCastToNewCharacter(
+  cast: CastTemplateRule,
+  options?: { placeId?: string; relationshipContext?: string }
+): NewCharacter {
+  const potentialTwistMap: Record<string, 'identity' | 'betrayal' | 'disappearance' | 'none'> = {
+    'cast_mara_reyes_5s': 'identity',
+    'cast_aurelius_vance_5s': 'betrayal',
+    'cast_seraphina_de_fontaine_5s': 'identity',
+    'cast_kaelen_vexler_5s': 'identity',
+    'cast_ishtar_moradi_5s': 'identity',
+  };
+
+  return {
+    characterId: cast.slug.replace(/-/g, '_'),
+    realName: cast.name,
+    knownName: cast.knownName,
+    gender: cast.gender,
+    role: cast.title,
+    importance: cast.starTier === 5 ? 'major' : 'supporting',
+    status: 'active',
+    recognitionLevel: 'first_name_known',
+    bio: cast.premise,
+    appearance: `${cast.distinctCharacteristics.aestheticMotif}. ${cast.distinctCharacteristics.hobbiesAndQuirks[0] || ''}`,
+    secrets: [cast.psychologicalProfile.secret],
+    potentialTwist: potentialTwistMap[cast.id] ?? 'none',
+    relationshipToMC: {
+      type: 'stranger',
+      status: 'neutral',
+      recognitionLevel: 'first_name_known',
+      context: options?.relationshipContext || cast.narrativeHooks[0] || 'Recently crossed paths',
+    },
+    traits: [
+      `speech: ${cast.distinctCharacteristics.languageStyle}`,
+      `slang: ${cast.distinctCharacteristics.slangAndCatchphrases.slice(0, 3).join(', ')}`,
+      `hobby: ${cast.distinctCharacteristics.hobbiesAndQuirks[0]}`,
+      `high_value: ${cast.highValueMetrics.valueSummary}`,
+    ],
+  };
 }
