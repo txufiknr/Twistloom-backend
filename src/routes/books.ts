@@ -155,7 +155,7 @@ import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 import { notifyForumOfBookChange, notifyForumStoryArchived } from "../services/forum-queue.js";
 import { createAIOptionsWithSchema, aiPrompt } from "../utils/ai-chat.js";
 import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
-import { BOOK_MIN_PAGES, PEN_AUTHORING_MODES, PEN_DEFAULT_AUTHORING_MODE, PEN_DEFAULT_BOOK_MODE, PEN_DEFAULT_TITLE, PEN_PLACEHOLDER_MC, PEN_SUMMARY_MAX_LENGTH, PEN_TARGET_PAGES_MAX, PEN_TARGET_PAGES_MIN, PEN_TITLE_MAX_LENGTH, PEN_TITLE_MIN_LENGTH, COMPANION_ASK_MIN_CHARS, COMPANION_ASK_MAX_CHARS } from "../config/story.js";
+import { BOOK_MIN_PAGES, PEN_AUTHORING_MODES, PEN_DEFAULT_AUTHORING_MODE, PEN_DEFAULT_BOOK_MODE, PEN_DEFAULT_TITLE, PEN_PLACEHOLDER_MC, PEN_SUMMARY_MAX_LENGTH, PEN_TARGET_PAGES_MAX, PEN_TARGET_PAGES_MIN, PEN_TITLE_MAX_LENGTH, PEN_TITLE_MIN_LENGTH } from "../config/story.js";
 import type { CustomActionValidationResult, CustomActionPreviewResponse, CustomActionSubmitResponse } from "../types/custom-action.js";
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { MAX_BRANCHING_PREGENERATION_DEPTH } from "../config/story.js";
@@ -5732,8 +5732,6 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
 });
 
 /**
- * GET /api/books/:identifier/:pageId/companion/history
-/**
  * GET /api/books/:identifier/companion/history
  * GET /api/books/:identifier/:pageId/companion/history
  *
@@ -5744,9 +5742,8 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
  * @route GET /api/books/:identifier/:pageId/companion/history
  * @authentication Required
  * @param identifier - Book slug or UUID v7
- * @returns { answers: Array<{ id: string; pageId: string; pageNumber: number | null; question: string; answer: string; sources: string[]; suggestedFollowUps: string[]; createdAt: string }> }
  */
-const getCompanionHistoryHandler = async (c: import("hono").Context) => {
+const getCompanionHistoryHandler = async (c: Context) => {
   try {
     const { identifier } = c.req.param();
     const userId = c.get("userId")!;
