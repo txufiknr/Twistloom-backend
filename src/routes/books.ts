@@ -313,16 +313,31 @@ router.post("/pen", requireAuth, async (c) => {
 
     const userId = c.get("userId")!;
 
-    // `books.mc` is NOT NULL but the Pen lets the author shape the MC later
-    // (SceneCastPanel registers `"mc"` into state on first use) — seed a
-    // neutral placeholder whose UI label falls back to "MC" (§2.i).
-    const placeholderMc: StoryMC = PEN_PLACEHOLDER_MC;
+    // `books.mc` is NOT NULL. If the client provided an initial `mc` (e.g. from
+    // Text Adventure protagonist onboarding), sanitize and store it. Otherwise,
+    // seed the neutral placeholder whose UI label falls back to "MC" (§2.i).
+    let mc: StoryMC = PEN_PLACEHOLDER_MC;
+    if (body.mc && typeof body.mc === "object" && !Array.isArray(body.mc)) {
+      const rawMc = body.mc as Record<string, unknown>;
+      const mcName = typeof rawMc.name === "string" ? rawMc.name.trim() : "";
+      const mcGender = typeof rawMc.gender === "string" ? rawMc.gender.trim() : "";
+      const mcBio = typeof rawMc.bio === "string" ? rawMc.bio.trim() : "";
+      const mcAge = typeof rawMc.age === "number" && !Number.isNaN(rawMc.age) && rawMc.age > 0 ? rawMc.age : 0;
+      if (mcName || mcGender || mcBio || mcAge > 0) {
+        mc = {
+          name: mcName || PEN_PLACEHOLDER_MC.name,
+          age: mcAge,
+          gender: (mcGender === "female" || mcGender === "male" ? mcGender : PEN_PLACEHOLDER_MC.gender) as StoryMC["gender"],
+          bio: mcBio,
+        };
+      }
+    }
 
     const created = await insertBook({
       userId,
       title: title || PEN_DEFAULT_TITLE,
       summary: summary || null,
-      mc: placeholderMc,
+      mc,
       mode: mode as BookMode,
       language,
       keywords: [],
@@ -5722,26 +5737,24 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
 
 /**
  * GET /api/books/:identifier/:pageId/companion/history
+/**
+ * GET /api/books/:identifier/companion/history
+ * GET /api/books/:identifier/:pageId/companion/history
  *
  * Retrieves the authenticated user's companion question and answer history
- * for the specified story page.
+ * across the entire book, with pageNumber populated for each question.
  *
+ * @route GET /api/books/:identifier/companion/history
  * @route GET /api/books/:identifier/:pageId/companion/history
  * @authentication Required
  * @param identifier - Book slug or UUID v7
- * @param pageId - Page UUID v7
- * @returns { answers: Array<{ id: string; question: string; answer: string; sources: string[]; suggestedFollowUps: string[]; createdAt: string }> }
+ * @returns { answers: Array<{ id: string; pageId: string; pageNumber: number | null; question: string; answer: string; sources: string[]; suggestedFollowUps: string[]; createdAt: string }> }
  */
-router.get("/:identifier/:pageId/companion/history", requireAuth, async (c) => {
+const getCompanionHistoryHandler = async (c: import("hono").Context) => {
   try {
-    const { identifier, pageId: pageIdParam } = c.req.param();
+    const { identifier } = c.req.param();
     const userId = c.get("userId")!;
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
-    const pageId = Array.isArray(pageIdParam) ? pageIdParam[0] : pageIdParam;
-
-    if (!isValidUuid(pageId)) {
-      return cValidationError(c, "Invalid pageId: must be a valid UUID");
-    }
 
     const book = await resolveBook(bookIdentifier);
     if (!book) return cNotFoundError(c, "Book not found");
@@ -5749,6 +5762,8 @@ router.get("/:identifier/:pageId/companion/history", requireAuth, async (c) => {
     const answers = await dbRead
       .select({
         id: companionAnswers.id,
+        pageId: companionAnswers.pageId,
+        pageNumber: pages.page,
         question: companionAnswers.question,
         answer: companionAnswers.answer,
         sources: companionAnswers.sources,
@@ -5756,21 +5771,24 @@ router.get("/:identifier/:pageId/companion/history", requireAuth, async (c) => {
         createdAt: companionAnswers.createdAt,
       })
       .from(companionAnswers)
+      .leftJoin(pages, eq(companionAnswers.pageId, pages.id))
       .where(
         and(
           eq(companionAnswers.userId, userId),
-          eq(companionAnswers.bookId, book.id),
-          eq(companionAnswers.pageId, pageId)
+          eq(companionAnswers.bookId, book.id)
         )
       )
       .orderBy(desc(companionAnswers.createdAt))
-      .limit(20);
+      .limit(50);
 
     return c.json({ answers });
   } catch (error) {
     return cApiError(c, "Failed to retrieve companion history", error);
   }
-});
+};
+
+router.get("/:identifier/companion/history", requireAuth, getCompanionHistoryHandler);
+router.get("/:identifier/:pageId/companion/history", requireAuth, getCompanionHistoryHandler);
 
 /**
  * POST /api/books/:identifier/:pageId/companion/ask/stream

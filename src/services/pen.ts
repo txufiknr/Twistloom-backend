@@ -2287,6 +2287,19 @@ export async function finalizePenDraft(
     throw new PenFinalizeError(`Ending pages must be at or above page ${PEN_MIN_ENDING_PAGE}, got page ${pageNumber}`);
   }
 
+  // MC canon lock guard: page 1 requires a fully completed protagonist profile
+  // (name, gender, age, bio) before the story can be published.
+  if (pageNumber === 1) {
+    const mc = book.mc;
+    const hasName = typeof mc?.name === "string" && mc.name.trim().length > 0;
+    const hasGender = mc?.gender === "male" || mc?.gender === "female";
+    const hasAge = typeof mc?.age === "number" && !Number.isNaN(mc.age) && mc.age > 0;
+    const hasBio = typeof mc?.bio === "string" && mc.bio.trim().length > 0;
+    if (!hasName || !hasGender || !hasAge || !hasBio) {
+      throw new PenFinalizeError("Main character profile (name, gender, age, bio) must be completed before publishing page 1");
+    }
+  }
+
   // ── Phase A: delta gate (advisory, never blocks) ─────────────────────────
   const violations = runFinalizeDeltaGate(session, book.canonVersion);
   const highFindings = violations.filter((v) => v.severity === "high");
