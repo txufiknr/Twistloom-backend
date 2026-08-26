@@ -307,10 +307,10 @@ export async function addCredits(
  */
 export async function refundCredits(
   userId: string,
-  costKey: CreditCostKey,
+  costKey: CreditCostKey | number,
   options: ConsumeCreditsOptions = {}
 ): Promise<number> {
-  const amount = getCreditCostForUser(userId, costKey);
+  const amount = typeof costKey === 'number' ? (isDemoUser(userId) ? 0 : costKey) : getCreditCostForUser(userId, costKey);
   if (amount < 0) throw new Error(`Invalid credit cost: ${costKey} must be greater than or equal to 0`);
 
   // Nothing was charged (free demo / zero-cost) — no refund needed
@@ -364,18 +364,18 @@ export async function refundCredits(
  * awarded when an error handler fires more than once.
  *
  * @param userId         - User to refund
- * @param costKey        - Key into `CREDIT_COSTS`
+ * @param costKey        - Key into `CREDIT_COSTS` (or raw numeric amount)
  * @param correlationId  - Idempotency key (from the original consumption record)
  * @param options        - Context, metadata, and transaction overrides
  * @returns New (or existing) balance after the refund
  */
 export async function refundCreditsIdempotent(
   userId: string,
-  costKey: CreditCostKey,
+  costKey: CreditCostKey | number,
   correlationId: string,
   options: ConsumeCreditsOptions = {}
 ): Promise<number> {
-  const amount = getCreditCostForUser(userId, costKey);
+  const amount = typeof costKey === 'number' ? (isDemoUser(userId) ? 0 : costKey) : getCreditCostForUser(userId, costKey);
   if (amount < 0) throw new Error(`Invalid credit cost: ${costKey} must be greater than or equal to 0`);
 
   // Nothing was charged (free demo / zero-cost) — no refund needed

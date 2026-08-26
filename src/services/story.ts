@@ -13,6 +13,7 @@ import type { BookEndingStats, BookPageVisit, BookStats, EnrichedBookData, PageV
 import { getErrorMessage } from "../utils/error.js";
 import { applyDeltaChain, appendActionsHistory } from "../utils/story.js";
 import { executeWithCredits, refundCredits } from "./credits.js";
+import { calculateBranchSwitchCost } from "../config/credits.js";
 import { ucfirst } from "../utils/formatter.js";
 
 /**
@@ -479,16 +480,39 @@ export async function markPageVisited(params: {
   // Skip credit consumption for internal system user
   const isInternal = userId === process.env.SYSTEM_USER_ID;
   let correlationId: string | undefined;
+  let calculatedCost = 0;
 
   try {
     let result: BookPageVisit;
 
     if (shouldConsumeCredits && !isInternal) {
+      // Resolve session frontier and actioned/fork page to calculate distance-based cost
+      const [session] = await dbRead
+        .select({ frontierPageNumber: userSessions.frontierPageNumber })
+        .from(userSessions)
+        .where(and(eq(userSessions.userId, userId), eq(userSessions.bookId, bookId)))
+        .limit(1);
+
+      let forkPageNumber = pageNumber > 1 ? pageNumber - 1 : 1;
+      if (actionedPageId) {
+        const [actionedPageRow] = await dbRead
+          .select({ page: pages.page })
+          .from(pages)
+          .where(eq(pages.id, actionedPageId))
+          .limit(1);
+        if (actionedPageRow?.page) {
+          forkPageNumber = actionedPageRow.page;
+        }
+      }
+
+      const frontierPageNumber = session?.frontierPageNumber ?? forkPageNumber;
+      calculatedCost = calculateBranchSwitchCost(frontierPageNumber, forkPageNumber, userId);
+
       // User request: consume credits and mark page visited atomically
       // This ensures credits are refunded if marking page visited fails
       const executeCreditsResult = await executeWithCredits<BookPageVisit>(
         userId,
-        "CHOOSE_OTHER_ACTION",
+        calculatedCost,
         async (tx) => {
           return await markPageVisitedWithClient({
             userId,
@@ -508,7 +532,7 @@ export async function markPageVisited(params: {
         },
         {
           context: "choose_other_action",
-          metadata: { bookId, pageId, pageNumber }
+          metadata: { bookId, pageId, pageNumber, actionedPageId, forkPageNumber, frontierPageNumber, cost: calculatedCost }
         }
       );
       
@@ -541,9 +565,9 @@ export async function markPageVisited(params: {
     // This prevents duplicate refunds if the error handler runs multiple times
     if (shouldConsumeCredits && !isInternal && correlationId) {
       try {
-        await refundCredits(userId, "CHOOSE_OTHER_ACTION", {
+        await refundCredits(userId, calculatedCost, {
           context: "choose_other_action_failed",
-          metadata: { bookId, pageId, pageNumber },
+          metadata: { bookId, pageId, pageNumber, cost: calculatedCost },
           correlationId // Use correlation ID from executeWithCredits for idempotency
         });
         console.log('[markPageVisited] ✅ Credits refunded due to page visit failure');

@@ -88,7 +88,7 @@ export function isDemoUser(userId: string | null | undefined): boolean {
  * All base costs should be positive integers. When {@link FEATURE_FREE_DEMO} is
  * true, the exported {@link CREDIT_COSTS} map zeros every entry.
  */
-const CREDIT_COSTS_BASE = {
+export const CREDIT_COSTS_BASE = {
   /** Cost to generate a new story/book */
   STORY_GENERATION: 5,
   /** Cost to generate additional pages in an existing story */
@@ -103,8 +103,6 @@ const CREDIT_COSTS_BASE = {
   CHOOSE_CUSTOM_ACTION: 2, // TODO: use
   /** Cost to add new custom characters (future feature) */
   SUMMON_NEW_CHARACTER: 50, // TODO: use
-  /** Cost to commit to an alternative branch (Phase 2 "Take This Path" time travel) */
-  TIME_TRAVEL_COMMIT: 5,
   /** Cost to generate an AI-narrated "what happens if" summary of an alternative (Q5) */
   TIME_TRAVEL_NARRATE: 2,
   /** Cost to unlock alternate endings (future feature) */
@@ -151,6 +149,12 @@ const CREDIT_COSTS_BASE = {
   /** One grounded AI question-and-answer call (reader companion panel). */
   COMPANION_ASK: 1,
 } as const;
+
+/** Base cost for 1-step branch switching or action re-selection (2 credits). */
+export const BRANCH_SWITCH_BASE_COST = CREDIT_COSTS_BASE.CHOOSE_OTHER_ACTION;
+
+/** Maximum cost cap for deep branch switching (5 credits). */
+export const BRANCH_SWITCH_MAX_COST = CREDIT_COSTS_BASE.STORY_GENERATION;
 
 /**
  * Credit costs for various actions.
@@ -237,6 +241,34 @@ export function getBookModeCreditCostForUser(
 export function getCreditCostForUser(userId: string | null | undefined, costKey: CreditCostKey): number {
   if (isDemoUser(userId)) return 0;
   return CREDIT_COSTS[costKey];
+}
+
+/**
+ * Dynamic credit cost for branch switching ("Take this path" in Journey) and
+ * re-selecting an alternative action at a historical fork ("Choose another action").
+ *
+ * Scales with temporal distance from the reader's active session frontier:
+ * - 1 step back (d = 1): 2 credits (base `CHOOSE_OTHER_ACTION`)
+ * - Deep rewind (d > 1): +1 credit per additional page rewound
+ * - Cap: 5 credits (`STORY_GENERATION` max cost)
+ *
+ * Always returns 0 for demo users or when free demo is active.
+ *
+ * @param frontierPage - The active frontier page number of the reader's current session
+ * @param forkPage - The page number where the choice/fork occurred
+ * @param userId - Current user id
+ * @returns Numeric credit cost (0 for demo, 2 to 5 paid)
+ */
+export function calculateBranchSwitchCost(
+  frontierPage: number,
+  forkPage: number,
+  userId?: string | null
+): number {
+  if (isDemoUser(userId) || FEATURE_FREE_DEMO) return 0;
+  const distance = Math.max(1, frontierPage - forkPage);
+  const baseCost = CREDIT_COSTS_BASE.CHOOSE_OTHER_ACTION; // 2
+  const maxCost = CREDIT_COSTS_BASE.STORY_GENERATION; // 5
+  return Math.min(maxCost, baseCost + (distance - 1));
 }
 
 /** Credits bonus for first-time users */

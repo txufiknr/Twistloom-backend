@@ -159,7 +159,7 @@ import { BOOK_MIN_PAGES, PEN_AUTHORING_MODES, PEN_DEFAULT_AUTHORING_MODE, PEN_DE
 import type { CustomActionValidationResult, CustomActionPreviewResponse, CustomActionSubmitResponse } from "../types/custom-action.js";
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { MAX_BRANCHING_PREGENERATION_DEPTH } from "../config/story.js";
-import { getBookModeCreditCostForUser, getCreditCostForUser } from "../config/credits.js";
+import { getBookModeCreditCostForUser, getCreditCostForUser, calculateBranchSwitchCost } from "../config/credits.js";
 import { getJourneyForks, reconstructFork, resolveCurrentPageId, narrateForkAlternative } from "../services/time-travel.js";
 import { savedPaths } from "../db/schema.js";
 import { CREDIT_ERRORS } from "../config/errors.js";
@@ -4604,7 +4604,7 @@ router.post("/:identifier/:pageId/time-travel/commit", requireAuth, async (c) =>
 
     // Verify the alternative exists and is generated
     const [forkPage] = await dbRead
-      .select({ actions: pages.actions })
+      .select({ actions: pages.actions, page: pages.page })
       .from(pages)
       .where(eq(pages.id, pageId))
       .limit(1);
@@ -4624,12 +4624,23 @@ router.post("/:identifier/:pageId/time-travel/commit", requireAuth, async (c) =>
       }
     }
 
+    // Resolve current session frontier page number for distance calculation
+    const [session] = await dbRead
+      .select({ frontierPageNumber: userSessions.frontierPageNumber })
+      .from(userSessions)
+      .where(and(eq(userSessions.userId, userId), eq(userSessions.bookId, bookId)))
+      .limit(1);
+
+    const forkPageNumber = forkPage?.page ?? 1;
+    const frontierPageNumber = session?.frontierPageNumber ?? forkPageNumber;
+    const commitCost = calculateBranchSwitchCost(frontierPageNumber, forkPageNumber, userId);
+
     try {
       await executeWithCredits(
         userId,
-        "TIME_TRAVEL_COMMIT",
+        commitCost,
         async () => ({ ok: true as const }),
-        { context: "time_travel_commit", metadata: { bookId, forkPageId: pageId, nextPageId } },
+        { context: "time_travel_commit", metadata: { bookId, forkPageId: pageId, nextPageId, cost: commitCost, distance: Math.max(1, frontierPageNumber - forkPageNumber) } },
       );
     } catch {
       return c.json({ error: "Credit charge failed. You may not have enough credits." }, 402);
