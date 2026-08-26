@@ -2856,6 +2856,7 @@ export const companionAnswers = pgTable(
   "companion_answers",
   {
     id: id(),
+    sessionId: uuid("session_id"),
     userId: userId().references(() => users.userId, { onDelete: "cascade" }),
     bookId: bookId("cascade"),
     pageId: pageId("cascade"),
@@ -2873,6 +2874,7 @@ export const companionAnswers = pgTable(
   (t) => [
     unique("companion_answers_user_book_page_hash_unique").on(t.userId, t.bookId, t.pageId, t.questionHash),
     index("companion_answers_user_book_idx").on(t.userId, t.bookId),
+    index("companion_answers_session_idx").on(t.sessionId),
     index("companion_answers_page_idx").on(t.pageId),
     index("companion_answers_created_idx").on(t.createdAt.desc()),
   ]

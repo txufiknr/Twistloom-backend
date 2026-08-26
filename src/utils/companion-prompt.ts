@@ -43,6 +43,12 @@ export interface CompanionPageContext {
   threads: Array<{ title: string; question: string; summary?: string }>;
 }
 
+/** A single prior turn in the active companion chat session. */
+export interface CompanionChatTurn {
+  question: string;
+  answer: string;
+}
+
 /** Result of building a companion Q&A prompt. */
 export type CompanionPrompt = {
   systemPrompt: string;
@@ -137,7 +143,8 @@ export function buildCompanionUserPrompt(
   context: CompanionPageContext,
   question: string,
   language: string,
-  mcName: string
+  mcName: string,
+  history?: CompanionChatTurn[]
 ): string {
   const sections: string[] = [];
 
@@ -199,8 +206,18 @@ export function buildCompanionUserPrompt(
     sections.push(`MAIN CHARACTER: ${mcName}`);
   }
 
+  // Recent conversation history (last 3 turns max, truncated to avoid ballooning context)
+  if (history && history.length > 0) {
+    const recentTurns = history.slice(-3).map((turn) => {
+      const q = turn.question.trim().slice(0, 300);
+      const a = turn.answer.trim().slice(0, 400);
+      return `Reader: ${q}\nCompanion: ${a}`;
+    });
+    sections.push(`RECENT CONVERSATION:\n${recentTurns.join("\n\n")}`);
+  }
+
   // User question (last — changes every turn)
-  sections.push(`READER'S QUESTION:\n${question}`);
+  sections.push(`READER'S CURRENT QUESTION:\n${question}`);
 
   return sections.join("\n\n");
 }

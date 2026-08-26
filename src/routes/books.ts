@@ -109,7 +109,7 @@ import { books, branches, deletedImages, users, userLikes, userFavorites, userCo
 import { getErrorMessage, cApiError, cForbiddenError, cNotFoundError, cRateLimitError, cUnauthorizedError, cValidationError } from "../utils/error.js";
 import { sanitizeTextForDB, sanitizeKeywords } from '../utils/text-processing.js';
 import { stripHtml } from '../utils/sanitize-html.js';
-import { eq, and, desc, sql, ne, inArray, arrayOverlaps } from "drizzle-orm";
+import { eq, and, desc, asc, sql, ne, inArray, arrayOverlaps } from "drizzle-orm";
 import { hashContentSHA256 } from "../utils/cache.js";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
 import { getBook, getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage, tryAcquireWorkflowDispatchGate } from "../services/book.js";
@@ -173,7 +173,7 @@ import { MAX_CONCURRENT_GENERATIONS, AI_VALIDATION_TIMEOUT_MS } from "../config/
 import { BOOK_CREATION_RATE_LIMIT, BOOK_STREAM_RATE_LIMIT, BOOK_ASYNC_RATE_LIMIT, ACTION_HINT_RATE_LIMIT, CUSTOM_ACTION_PREVIEW_RATE_LIMIT, CUSTOM_ACTION_SUBMIT_RATE_LIMIT, COMPANION_ASK_RATE_LIMIT } from "../config/ai-rate-limits.js";
 import { isValidReactionEmoji, REACTION_IDS, reactionIdList } from "../config/reactions.js";
 import { generateRandomCharacter } from "../utils/characters.js";
-import { COMPANION_SYSTEM, COMPANION_RESULT_SCHEMA, COMPANION_RESULT_REQUIRED_FIELDS, buildCompanionUserPrompt, buildCompanionPageContext, type CompanionResult } from "../utils/companion-prompt.js";
+import { COMPANION_SYSTEM, COMPANION_RESULT_SCHEMA, COMPANION_RESULT_REQUIRED_FIELDS, buildCompanionUserPrompt, buildCompanionPageContext, type CompanionResult, type CompanionChatTurn } from "../utils/companion-prompt.js";
 import { validateCompanionQuestion } from "../utils/prompt-security.js";
 
 const router = new Hono<AppEnv>();
@@ -5608,6 +5608,26 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
       return cValidationError(c, validation.reason || "Invalid question");
     }
     const rawQuestion = validation.sanitized;
+    const sessionId = typeof body?.sessionId === 'string' && isValidUuid(body.sessionId)
+      ? body.sessionId
+      : generateId();
+
+    // Parse conversation history if provided (multi-turn follow-ups)
+    let history: CompanionChatTurn[] | undefined = undefined;
+    if (Array.isArray(body?.history)) {
+      history = body.history
+        .filter((item): item is { question: string; answer: string } =>
+          typeof item === 'object' &&
+          item !== null &&
+          typeof (item as Record<string, unknown>).question === 'string' &&
+          typeof (item as Record<string, unknown>).answer === 'string'
+        )
+        .map((item) => ({
+          question: (item.question || '').trim().slice(0, 300),
+          answer: (item.answer || '').trim().slice(0, 400),
+        }))
+        .slice(-3);
+    }
 
     // Resolve book and verify page belongs to it
     const book = await resolveBook(bookIdentifier);
@@ -5625,47 +5645,51 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
 
     const questionHash = await hashContentSHA256(rawQuestion.toLowerCase().trim());
 
-    // 1. Check cache first (spoiler-safe per-user cache)
-    const [cached] = await dbRead
-      .select()
-      .from(companionAnswers)
-      .where(
-        and(
-          eq(companionAnswers.userId, userId),
-          eq(companionAnswers.bookId, book.id),
-          eq(companionAnswers.pageId, pageId),
-          eq(companionAnswers.questionHash, questionHash)
+    // 1. Check cache first (spoiler-safe per-user cache, only for standalone single-turn queries)
+    const hasHistory = history && history.length > 0;
+    if (!hasHistory) {
+      const [cached] = await dbRead
+        .select()
+        .from(companionAnswers)
+        .where(
+          and(
+            eq(companionAnswers.userId, userId),
+            eq(companionAnswers.bookId, book.id),
+            eq(companionAnswers.pageId, pageId),
+            eq(companionAnswers.questionHash, questionHash)
+          )
         )
-      )
-      .limit(1);
+        .limit(1);
 
-    if (cached) {
-      console.log(`[POST /companion/ask] ⚡ Cache HIT for user ${userId} on page ${pageId}`);
-      // Deduct 1 credit even on cache hit as per business rules
-      await executeWithCredits(
-        userId,
-        "COMPANION_ASK",
-        async () => cached,
-        {
-          context: "companion_ask_cache",
-          metadata: { bookId: book.id, pageId, question: rawQuestion.slice(0, 100) },
-        }
-      );
+      if (cached) {
+        console.log(`[POST /companion/ask] ⚡ Cache HIT for user ${userId} on page ${pageId}`);
+        // Deduct 1 credit even on cache hit as per business rules
+        await executeWithCredits(
+          userId,
+          "COMPANION_ASK",
+          async () => cached,
+          {
+            context: "companion_ask_cache",
+            metadata: { bookId: book.id, pageId, question: rawQuestion.slice(0, 100) },
+          }
+        );
 
-      return c.json({
-        answer: cached.answer,
-        sources: cached.sources,
-        suggestedFollowUps: cached.suggestedFollowUps,
-        cached: true,
-      });
+        return c.json({
+          sessionId: cached.sessionId || sessionId,
+          answer: cached.answer,
+          sources: cached.sources,
+          suggestedFollowUps: cached.suggestedFollowUps,
+          cached: true,
+        });
+      }
     }
 
     const companionContext = buildCompanionPageContext(storyState);
     const mcName = book.mc.knownName || book.mc.name || "the protagonist";
     const language = book.language || "en";
 
-    // Build prompts
-    const userPrompt = buildCompanionUserPrompt(companionContext, rawQuestion, language, mcName);
+    // Build prompts with optional multi-turn conversation history
+    const userPrompt = buildCompanionUserPrompt(companionContext, rawQuestion, language, mcName, history);
 
     const promptConfig: AIPromptForJson<CompanionResult> = {
       schema: COMPANION_RESULT_SCHEMA,
@@ -5704,6 +5728,7 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
     // Persist answer to cache
     try {
       await dbWrite.insert(companionAnswers).values({
+        sessionId,
         userId,
         bookId: book.id,
         pageId,
@@ -5718,9 +5743,10 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
       console.warn(`[POST /companion/ask] ⚠️ Failed to cache companion answer:`, insertError);
     }
 
-    console.log(`[POST /companion/ask] ✅ User ${userId} asked "${rawQuestion.slice(0, 50)}..." on page ${pageId}`);
+    console.log(`[POST /companion/ask] ✅ User ${userId} asked "${rawQuestion.slice(0, 50)}..." on page ${pageId} (session: ${sessionId})`);
 
     return c.json({
+      sessionId,
       answer,
       sources,
       suggestedFollowUps,
@@ -5746,8 +5772,8 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
  * GET /api/books/:identifier/companion/history
  * GET /api/books/:identifier/:pageId/companion/history
  *
- * Retrieves the authenticated user's companion question and answer history
- * across the entire book, with pageNumber populated for each question.
+ * Retrieves the authenticated user's companion conversation sessions and
+ * Q&A history across the entire book.
  *
  * @route GET /api/books/:identifier/companion/history
  * @route GET /api/books/:identifier/:pageId/companion/history
@@ -5766,6 +5792,7 @@ const getCompanionHistoryHandler = async (c: Context) => {
     const answers = await dbRead
       .select({
         id: companionAnswers.id,
+        sessionId: companionAnswers.sessionId,
         pageId: companionAnswers.pageId,
         pageNumber: pages.page,
         question: companionAnswers.question,
@@ -5782,10 +5809,62 @@ const getCompanionHistoryHandler = async (c: Context) => {
           eq(companionAnswers.bookId, book.id)
         )
       )
-      .orderBy(desc(companionAnswers.createdAt))
-      .limit(50);
+      .orderBy(asc(companionAnswers.createdAt));
 
-    return c.json({ answers });
+    // Group into sessions by sessionId (or id for legacy rows)
+    const sessionMap = new Map<string, {
+      sessionId: string;
+      firstQuestion: string;
+      pageNumber?: number;
+      messages: Array<{
+        id: string;
+        question: string;
+        answer: string;
+        sources: string[];
+        suggestedFollowUps: string[];
+        pageNumber?: number;
+        createdAt: string;
+      }>;
+      lastAskedAt: string;
+      createdAt: string;
+    }>();
+
+    for (const row of answers) {
+      const sId = row.sessionId || row.id;
+      const existing = sessionMap.get(sId);
+      const msg = {
+        id: row.id,
+        question: row.question,
+        answer: row.answer,
+        sources: row.sources ?? [],
+        suggestedFollowUps: row.suggestedFollowUps ?? [],
+        pageNumber: row.pageNumber ?? undefined,
+        createdAt: row.createdAt.toISOString(),
+      };
+
+      if (!existing) {
+        sessionMap.set(sId, {
+          sessionId: sId,
+          firstQuestion: row.question,
+          pageNumber: row.pageNumber ?? undefined,
+          messages: [msg],
+          lastAskedAt: row.createdAt.toISOString(),
+          createdAt: row.createdAt.toISOString(),
+        });
+      } else {
+        existing.messages.push(msg);
+        existing.lastAskedAt = row.createdAt.toISOString();
+        if (row.pageNumber != null) {
+          existing.pageNumber = row.pageNumber;
+        }
+      }
+    }
+
+    const sessions = Array.from(sessionMap.values()).sort(
+      (a, b) => new Date(b.lastAskedAt).getTime() - new Date(a.lastAskedAt).getTime()
+    );
+
+    return c.json({ sessions, answers });
   } catch (error) {
     return cApiError(c, "Failed to retrieve companion history", error);
   }
@@ -5824,6 +5903,26 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(
       return cValidationError(c, validation.reason || "Invalid question");
     }
     const rawQuestion = validation.sanitized;
+    const sessionId = typeof body?.sessionId === 'string' && isValidUuid(body.sessionId)
+      ? body.sessionId
+      : generateId();
+
+    // Parse conversation history if provided (multi-turn follow-ups)
+    let history: CompanionChatTurn[] | undefined = undefined;
+    if (Array.isArray(body?.history)) {
+      history = body.history
+        .filter((item): item is { question: string; answer: string } =>
+          typeof item === 'object' &&
+          item !== null &&
+          typeof (item as Record<string, unknown>).question === 'string' &&
+          typeof (item as Record<string, unknown>).answer === 'string'
+        )
+        .map((item) => ({
+          question: (item.question || '').trim().slice(0, 300),
+          answer: (item.answer || '').trim().slice(0, 400),
+        }))
+        .slice(-3);
+    }
 
     const book = await resolveBook(bookIdentifier);
     if (!book) return cNotFoundError(c, "Book not found");
@@ -5837,54 +5936,58 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(
 
     const questionHash = await hashContentSHA256(rawQuestion.toLowerCase().trim());
 
-    // Check cache first
-    const [cached] = await dbRead
-      .select()
-      .from(companionAnswers)
-      .where(
-        and(
-          eq(companionAnswers.userId, userId),
-          eq(companionAnswers.bookId, book.id),
-          eq(companionAnswers.pageId, pageId),
-          eq(companionAnswers.questionHash, questionHash)
+    // Check cache first (only for standalone single-turn queries)
+    const hasHistory = history && history.length > 0;
+    if (!hasHistory) {
+      const [cached] = await dbRead
+        .select()
+        .from(companionAnswers)
+        .where(
+          and(
+            eq(companionAnswers.userId, userId),
+            eq(companionAnswers.bookId, book.id),
+            eq(companionAnswers.pageId, pageId),
+            eq(companionAnswers.questionHash, questionHash)
+          )
         )
-      )
-      .limit(1);
+        .limit(1);
 
-    if (cached) {
-      await executeWithCredits(
-        userId,
-        "COMPANION_ASK",
-        async () => cached,
-        {
-          context: "companion_ask_cache_stream",
-          metadata: { bookId: book.id, pageId, question: rawQuestion.slice(0, 100) },
-        }
-      );
+      if (cached) {
+        await executeWithCredits(
+          userId,
+          "COMPANION_ASK",
+          async () => cached,
+          {
+            context: "companion_ask_cache_stream",
+            metadata: { bookId: book.id, pageId, question: rawQuestion.slice(0, 100) },
+          }
+        );
 
-      return streamSSE(c, async (stream) => {
-        const words = cached.answer.split(" ");
-        for (let i = 0; i < words.length; i += 3) {
-          const chunk = words.slice(i, i + 3).join(" ") + (i + 3 < words.length ? " " : "");
-          await stream.writeSSE({ event: "chunk", data: JSON.stringify({ content: chunk }) });
-          await new Promise((r) => setTimeout(r, 20));
-        }
-        await stream.writeSSE({
-          event: "done",
-          data: JSON.stringify({
-            answer: cached.answer,
-            sources: cached.sources,
-            suggestedFollowUps: cached.suggestedFollowUps,
-            cached: true,
-          }),
+        return streamSSE(c, async (stream) => {
+          const words = cached.answer.split(" ");
+          for (let i = 0; i < words.length; i += 3) {
+            const chunk = words.slice(i, i + 3).join(" ") + (i + 3 < words.length ? " " : "");
+            await stream.writeSSE({ event: "chunk", data: JSON.stringify({ content: chunk }) });
+            await new Promise((r) => setTimeout(r, 20));
+          }
+          await stream.writeSSE({
+            event: "done",
+            data: JSON.stringify({
+              sessionId: cached.sessionId || sessionId,
+              answer: cached.answer,
+              sources: cached.sources,
+              suggestedFollowUps: cached.suggestedFollowUps,
+              cached: true,
+            }),
+          });
         });
-      });
+      }
     }
 
     const companionContext = buildCompanionPageContext(storyState);
     const mcName = book.mc.knownName || book.mc.name || "the protagonist";
     const language = book.language || "en";
-    const userPrompt = buildCompanionUserPrompt(companionContext, rawQuestion, language, mcName);
+    const userPrompt = buildCompanionUserPrompt(companionContext, rawQuestion, language, mcName, history);
 
     const promptConfig: AIPromptForJson<CompanionResult> = {
       schema: COMPANION_RESULT_SCHEMA,
@@ -5931,6 +6034,7 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(
         // Cache the newly generated answer
         try {
           await dbWrite.insert(companionAnswers).values({
+            sessionId,
             userId,
             bookId: book.id,
             pageId,
@@ -5948,6 +6052,7 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(
         await stream.writeSSE({
           event: "done",
           data: JSON.stringify({
+            sessionId,
             answer,
             sources,
             suggestedFollowUps,

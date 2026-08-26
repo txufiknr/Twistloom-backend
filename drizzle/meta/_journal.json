@@ -505,6 +505,13 @@
       "when": 1787665988026,
       "tag": "0072_red_blue_marvel",
       "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1787747828769,
+      "tag": "0073_last_ultimo",
+      "breakpoints": true
     }
   ]
 }
