@@ -230,7 +230,10 @@ export async function fetchFeedPage(params: FetchFeedPageParams = {}): Promise<C
 - **Use Drizzle ORM**: All database operations should use Drizzle
 - **Type-safe queries**: Leverage Drizzle's type safety
 - **Connection management**: Use the existing database connection pattern
-- **Migrations**: Always create migrations for schema changes
+- **Schema Updates vs Migrations**:
+  - ⚠️ **DO NOT automatically run `bun db:generate`** on every database schema update.
+  - **Only update `src/db/schema.ts`** and associated application code/types.
+  - The user will review the schema changes and manually execute `db:generate` and `db:migrate` later.
 
 ### API Design
 - **Consistent responses**: Use standard response formats
@@ -353,8 +356,10 @@ bun check         # Run lint, import validation, and typecheck
 ```
 
 ### Database Scripts
+> ⚠️ **Note:** Do NOT run `db:generate` automatically when modifying `src/db/schema.ts`. Schema migrations are generated and applied by the user on demand.
+
 ```bash
-bun db:generate   # Generate database migrations
+bun db:generate   # Generate database migrations (USER ACTION ONLY)
 bun db:migrate    # Run database migrations
 bun db:migrate:prod    # Apply database migrations in production
 bun db:studio      # Open Drizzle Studio GUI
