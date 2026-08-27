@@ -175,6 +175,8 @@ import { isValidReactionEmoji, REACTION_IDS, reactionIdList } from "../config/re
 import { generateRandomCharacter } from "../utils/characters.js";
 import { COMPANION_SYSTEM, COMPANION_RESULT_SCHEMA, COMPANION_RESULT_REQUIRED_FIELDS, buildCompanionUserPrompt, buildCompanionPageContext, type CompanionResult, type CompanionChatTurn } from "../utils/companion-prompt.js";
 import { validateCompanionQuestion } from "../utils/prompt-security.js";
+import { getCachedSuggestions, setCachedSuggestions, invalidateSuggestionsCache } from "../services/companion-cache.js";
+import { streamCompanionAnswerSSE } from "../utils/companion-stream.js";
 
 const router = new Hono<AppEnv>();
 
@@ -1425,19 +1427,29 @@ router.get("/prompt", optionalAuth, async (c) => {
           summary: summaryContext,
         });
         
-        // Collect the full content from the stream
-        const chunks: Uint8Array[] = [];
+        // Collect and stream chunks in real-time while extracting clean prompt text
+        let cleanPromptText = "";
+        const decoder = new TextDecoder();
         for await (const chunk of aiStream) {
-          chunks.push(chunk);
           await stream.write(chunk);
+          const chunkText = decoder.decode(chunk, { stream: true });
+          const lines = chunkText.split("\n");
+          for (const line of lines) {
+            if (line.startsWith("data: ")) {
+              try {
+                const data = JSON.parse(line.substring(6));
+                if (data.type === "chunk" && typeof data.content === "string") {
+                  cleanPromptText += data.content;
+                } else if (typeof data.content === "string") {
+                  cleanPromptText += data.content;
+                }
+              } catch {
+                // Ignore non-JSON SSE lines
+              }
+            }
+          }
         }
-        
-        // Combine chunks to get full content
-        const totalLen = chunks.reduce((s, c) => s + c.length, 0);
-        const combined = new Uint8Array(totalLen);
-        let combinedOffset = 0;
-        for (const c of chunks) { combined.set(c, combinedOffset); combinedOffset += c.length; }
-        promptContent = new TextDecoder().decode(combined);
+        promptContent = cleanPromptText.trim();
         
         // Validate and save to cache if quality is good
         if (!titleContext && !summaryContext && PROMPT_CACHE_CONFIG.enabled && userId) {
@@ -5759,6 +5771,9 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
         questionHash,
         costCredits: getCreditCostForUser(userId, 'COMPANION_ASK'),
       }).onConflictDoNothing();
+
+      // Invalidate suggestions cache for this page
+      await invalidateSuggestionsCache(book.id, pageId);
     } catch (insertError) {
       console.warn(`[POST /companion/ask] ⚠️ Failed to cache companion answer:`, insertError);
     }
@@ -5928,6 +5943,12 @@ router.get("/:identifier/:pageId/companion/suggestions", optionalAuth, async (c)
     const dbPage = await getPageFromDB(pageId, { bookIdentifier: book.id });
     if (!dbPage) return cNotFoundError(c, "Page not found");
 
+    // Check suggestions cache (LRU in-memory + Redis)
+    const cachedQuestions = await getCachedSuggestions(book.id, pageId, query, limit);
+    if (cachedQuestions) {
+      return c.json({ questions: cachedQuestions });
+    }
+
     // Gather allowed page IDs for spoiler safety (current page + all past ancestor pages along the branch)
     const storyState = await getStoryStateWithBranch(book.id, pageId, { persistState: false });
     const allowedPageIds = new Set<string>([pageId]);
@@ -5957,6 +5978,7 @@ router.get("/:identifier/:pageId/companion/suggestions", optionalAuth, async (c)
       .limit(100);
 
     if (candidates.length === 0) {
+      await setCachedSuggestions(book.id, pageId, query, limit, []);
       return c.json({ questions: [] });
     }
 
@@ -5990,6 +6012,7 @@ router.get("/:identifier/:pageId/companion/suggestions", optionalAuth, async (c)
       });
 
       const questions = uniqueItems.slice(0, limit).map((item) => item.original);
+      await setCachedSuggestions(book.id, pageId, query, limit, questions);
       return c.json({ questions });
     }
 
@@ -6026,6 +6049,7 @@ router.get("/:identifier/:pageId/companion/suggestions", optionalAuth, async (c)
     });
 
     const questions = scored.slice(0, limit).map((s) => s.question);
+    await setCachedSuggestions(book.id, pageId, query, limit, questions);
     return c.json({ questions });
   } catch (error) {
     return cApiError(c, "Failed to retrieve companion suggestions", error);
@@ -6168,29 +6192,23 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(
     const language = book.language || "en";
     const userPrompt = buildCompanionUserPrompt(companionContext, rawQuestion, language, mcName, history);
 
-    const promptConfig: AIPromptForJson<CompanionResult> = {
-      schema: COMPANION_RESULT_SCHEMA,
-      requiredFields: COMPANION_RESULT_REQUIRED_FIELDS,
-      fallbackField: "answer",
-      baseOptions: {
-        modelSelection: AI_CHAT_MODELS_WRITING,
-        context: "companion-ask",
-        systemPrompt: COMPANION_SYSTEM,
-        config: { ...AI_CHAT_CONFIG_DEFAULT, maxOutputToken: 1024 },
-      },
-    };
-
     return streamSSE(c, async (stream) => {
       try {
         const { result } = await executeWithCredits(
           userId,
           "COMPANION_ASK",
           async () => {
-            const aiResponse = await aiPrompt<CompanionResult>(
+            const { result: companionResult } = await streamCompanionAnswerSSE({
               userPrompt,
-              createAIOptionsWithSchema(promptConfig),
-            );
-            return aiResponse.result;
+              signal: c.req.raw.signal,
+              onChunk: async (chunk) => {
+                await stream.writeSSE({
+                  event: "chunk",
+                  data: JSON.stringify({ content: chunk }),
+                });
+              },
+            });
+            return companionResult;
           },
           {
             context: "companion_ask",
@@ -6201,14 +6219,6 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(
         const answer = typeof result === "string" ? result : (result?.answer ?? "I couldn't find an answer based on the current story context.");
         const sources = typeof result === "string" ? [] : (result?.sources ?? []);
         const suggestedFollowUps = typeof result === "string" ? [] : (result?.suggestedFollowUps ?? []);
-
-        // Stream answer text with progressive chunks
-        const words = answer.split(" ");
-        for (let i = 0; i < words.length; i += 3) {
-          const chunk = words.slice(i, i + 3).join(" ") + (i + 3 < words.length ? " " : "");
-          await stream.writeSSE({ event: "chunk", data: JSON.stringify({ content: chunk }) });
-          await new Promise((r) => setTimeout(r, 20));
-        }
 
         // Cache the newly generated answer
         try {
@@ -6224,6 +6234,9 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(
             questionHash,
             costCredits: getCreditCostForUser(userId, 'COMPANION_ASK'),
           }).onConflictDoNothing();
+
+          // Invalidate suggestions cache for this page
+          await invalidateSuggestionsCache(book.id, pageId);
         } catch (insertError) {
           console.warn(`[POST /companion/ask/stream] ⚠️ Failed to cache companion answer:`, insertError);
         }

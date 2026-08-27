@@ -64,6 +64,24 @@ import { convertToGeminiSchema } from "./gemini.js";
  *
  * For these providers, the abort signal will still cancel the stream during iteration, but the HTTP request itself cannot be cancelled mid-flight.
  *
+ * @remarks
+ * **Stream Output Format: What `aiStreamSSE` Emits**
+ *
+ * `aiStreamSSE` yields a `ReadableStream<Uint8Array>` where each chunk contains
+ * binary-encoded, wire-formatted Server-Sent Events (SSE) strings:
+ * - `event: start\ndata: {"type":"start","provider":"...","model":"..."}\n\n`
+ * - `event: chunk\ndata: {"type":"chunk","content":"<text delta>","done":false}\n\n`
+ * - `event: end\ndata: {"type":"end","provider":"...","model":"..."}\n\n`
+ * - `event: error\ndata: {"type":"error","message":"..."}\n\n`
+ *
+ * **CRITICAL USAGE NOTE: Piping vs. Text Extraction**
+ * - **Piping to HTTP Client**: Chunks can be written directly to an open SSE response
+ *   (e.g. `await stream.write(chunk)` in Hono's `streamSSE`).
+ * - **Extracting Clean Text for DB/Cache**: NEVER concatenate and decode the raw `Uint8Array`
+ *   chunks via `TextDecoder` (e.g. `new TextDecoder().decode(combined)`). Doing so captures the
+ *   raw protocol envelope (`event: ...\ndata: ...`). Instead, use {@link parseSSEStreamContent}
+ *   or extract `data.content` from the JSON payload while iterating.
+ *
  * @param prompt - The prompt to send to AI
  * @param options - Optional configuration
  * @param signal - Optional AbortSignal for cancellation
@@ -76,14 +94,13 @@ import { convertToGeminiSchema } from "./gemini.js";
  *   modelSelection: AI_CHAT_MODELS_WRITING,
  * }, abortController.signal);
  *
- * // In a Hono route:
- * res.setHeader('Content-Type', 'text/event-stream');
- * for await (const chunk of stream) {
- *   res.write(chunk);
+ * // In a Hono route (direct streaming to client):
+ * for await (const chunk of stream.stream) {
+ *   await res.write(chunk);
  * }
  *
- * // Cancel the stream:
- * abortController.abort();
+ * // If you also need the clean accumulated text:
+ * const cleanText = await parseSSEStreamContent(stream.stream);
  * ```
  */
 export async function aiStreamSSE(
