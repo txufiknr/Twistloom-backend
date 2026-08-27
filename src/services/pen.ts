@@ -29,7 +29,7 @@ import { getBranchPath } from "../utils/branch-traversal.js";
 import { processCharacterUpdates, isMainCharacterValid } from "../utils/characters.js";
 import { getStoryStateWithBranch } from "./story-branch.js";
 import { buildPenContinuePrompt, PEN_CONTINUE_SCHEMA, PEN_CONTINUE_REQUIRED_FIELDS, buildPenEssentialsAutofillPrompt, PEN_ESSENTIALS_SCHEMA, PEN_ESSENTIALS_REQUIRED_FIELDS, PEN_ESSENTIALS_REVIEW_SCHEMA, buildPenStateProposalPrompt, PEN_STATE_PROPOSAL_SCHEMA, PEN_STATE_PROPOSAL_REQUIRED_FIELDS, buildPenTransformPrompt, PEN_TRANSFORM_SCHEMA, PEN_TRANSFORM_REQUIRED_FIELDS, buildPenCastDetectPrompt, PEN_CAST_DETECT_SCHEMA, PEN_CAST_DETECT_REQUIRED_FIELDS, type PenContinueCommonParams } from "../utils/pen-prompt.js";
-import type { PenContinueResult as PenContinueAIOutput, PenEssentialsAutofillResult as PenEssentialsAIOutput, PenStateProposalResult as PenStateProposalAIOutput, PenTransformResult as PenTransformAIOutput, PenCastDetectAIOutput } from "../utils/pen-prompt.js";
+import type { PenContinueResult as PenContinueAIOutput, PenEssentialsAutofillResult as PenEssentialsAIOutput, PenStateProposalResult as PenStateProposalAIOutput, PenStateProposalOutlineBeat, PenTransformResult as PenTransformAIOutput, PenCastDetectAIOutput } from "../utils/pen-prompt.js";
 import { aiPrompt, createAIOptionsWithSchema } from "../utils/ai-chat.js";
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
@@ -2079,7 +2079,20 @@ function coerceStateProposal(
   output: PenStateProposalAIOutput,
   currentState: StoryState | null,
   expectedPageNumber: number,
-): { inventory: InventoryItem[]; injuries: Injury[]; mood?: Mood; weather?: PlaceWeather; calendarDate?: string; timeOfDay?: string; keyEvents: string[]; keyObjects: string[]; actionType?: ActionType; actionHint?: ActionHint } {
+  fallbackOutline?: StoryOutline[],
+): {
+  inventory: InventoryItem[];
+  injuries: Injury[];
+  mood?: Mood;
+  weather?: PlaceWeather;
+  calendarDate?: string;
+  timeOfDay?: string;
+  keyEvents: string[];
+  keyObjects: string[];
+  outline?: PenStateProposalOutlineBeat[];
+  actionType?: ActionType;
+  actionHint?: ActionHint;
+} {
   const inventory: InventoryItem[] = [];
   if (Array.isArray(output.inventory)) {
     for (const raw of output.inventory) {
@@ -2113,10 +2126,30 @@ function coerceStateProposal(
   const keyEvents = coerceEssentialsList(output.keyEvents, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH);
   const keyObjects = coerceEssentialsList(output.keyObjects, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH);
 
+  const activeOutline = currentState?.viableEnding?.outline ?? fallbackOutline;
+  let outline: PenStateProposalOutlineBeat[] | undefined;
+  if (Array.isArray(activeOutline) && activeOutline.length > 0) {
+    outline = activeOutline.map((beat, idx) => {
+      const proposedBeat = Array.isArray(output.outline)
+        ? output.outline[idx] ?? output.outline.find((b) => typeof b?.text === "string" && b.text.toLowerCase().trim() === beat.text.toLowerCase().trim())
+        : undefined;
+      const wasDone = beat.isDone === true;
+      const isNowDone = wasDone || proposedBeat?.isDone === true;
+      const justCompleted = !wasDone && isNowDone;
+      return {
+        text: beat.text,
+        isDone: isNowDone,
+        ...(wasDone && beat.doneAtPage ? { doneAtPage: beat.doneAtPage } : justCompleted ? { doneAtPage: expectedPageNumber } : {}),
+        justCompleted,
+        ...(typeof proposedBeat?.reason === "string" ? { reason: proposedBeat.reason } : {}),
+      };
+    });
+  }
+
   const actionType = coerceActionType(output.actionType);
   const actionHint = coerceProposedActionHint(output.actionHintText, output.actionHintType);
 
-  return { inventory, injuries, mood, weather, calendarDate, timeOfDay, keyEvents, keyObjects, actionType, actionHint };
+  return { inventory, injuries, mood, weather, calendarDate, timeOfDay, keyEvents, keyObjects, outline, actionType, actionHint };
 }
 
 /** Validates a raw AI action-type value against the canonical `actionTypes` keys. */
@@ -2275,7 +2308,7 @@ export async function proposePenStateUpdates(
         throw new PenStateProposalError("AI returned no state proposal");
       }
 
-      const proposal = coerceStateProposal(output, state, expectedPageNumber);
+      const proposal = coerceStateProposal(output, state, expectedPageNumber, book.ending?.outline);
 
       // Audit trail — the `plan` edit type was reserved for author-facing AI
       // suggestions (types/pen.ts). Nothing is persisted to the session; the
@@ -2320,18 +2353,7 @@ export async function proposePenStateUpdates(
     { context: "pen_finalize_propose", metadata: { sessionId, bookId: book.id } }
   );
 
-  return {
-    inventory: result.inventory,
-    injuries: result.injuries,
-    mood: result.mood,
-    weather: result.weather,
-    calendarDate: result.calendarDate,
-    timeOfDay: result.timeOfDay,
-    keyEvents: result.keyEvents,
-    keyObjects: result.keyObjects,
-    actionType: result.actionType,
-    actionHint: result.actionHint,
-  };
+  return result;
 }
 
 /** Errors thrown while running a `/finalize` request. */
@@ -2375,6 +2397,8 @@ export type PenFinalizeInput = {
   adoptKeyEvents?: string[];
   /** Author-adopted page key objects. See {@link adoptKeyEvents}. */
   adoptKeyObjects?: string[];
+  /** Author-adopted story outline beats with completed milestones confirmed in the dialog. */
+  adoptOutline?: StoryOutline[];
   /** Author-adopted page mood (one of the `moods` keys). See {@link adoptKeyEvents}. */
   adoptMood?: string;
   /** Author-adopted page weather (one of the `placeWeathers` keys). See {@link adoptKeyEvents}. */
@@ -2422,6 +2446,8 @@ export type PenStateProposalOutput = {
   keyEvents: string[];
   /** Proposed page key objects (editorial scene metadata). */
   keyObjects: string[];
+  /** Proposed story outline beats with detected completion statuses. */
+  outline?: PenStateProposalOutlineBeat[];
   /** AI-classified action type for the author's choice text (D-4 core — AI never writes the text itself). */
   actionType?: ActionType;
   /** AI-proposed reader-facing hint for the author's choice text (D-4 core — hint is AI-inferred, not author input). */
@@ -2735,6 +2761,13 @@ export async function finalizePenDraft(
         context: "pen-finalize",
       });
 
+      if (Array.isArray(input.adoptOutline)) {
+        newState.viableEnding = {
+          ...(newState.viableEnding ?? currentState.viableEnding ?? {}),
+          outline: input.adoptOutline,
+        };
+      }
+
       // Terminal branch conclusion ("The End") caps maxPage to this page;
       // otherwise, advance maxPage with monotonic growth against target totalPages.
       if (input.isEnding) {
@@ -2904,9 +2937,15 @@ export async function finalizePenDraft(
       const initialMaxPage = input.isEnding ? 1 : (book.totalPages ?? newPage.page);
       const initialState: StoryState = {
         ...createEmptyStoryState(newPage.id, 1, initialMaxPage),
-        viableEnding: book.ending ?? undefined,
+        viableEnding: book.ending ? { ...book.ending } : undefined,
         hiddenState: createInitialHiddenState(),
       };
+      if (Array.isArray(input.adoptOutline)) {
+        initialState.viableEnding = {
+          ...(initialState.viableEnding ?? book.ending ?? {}),
+          outline: input.adoptOutline,
+        };
+      }
       // The page-1 cast has no prior state, so newly-checked characters must be
       // registered into the initial story state directly (no stateDelta to apply).
       if (castNewCharacters.length) {

@@ -623,6 +623,11 @@ export const PEN_PAGE_EDIT_DIFF_TOLERANCE = 0.15;
 export const PEN_MIN_ENDING_PAGE = 5;
 
 /**
+ * Maximum number of milestone outline beats in a story outline.
+ */
+export const PEN_ENDING_OUTLINE_MAX_ITEMS = 20;
+
+/**
  * Story companion AI ask character length bounds.
  */
 export const COMPANION_ASK_MIN_CHARS = 10;

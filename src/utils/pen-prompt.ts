@@ -30,7 +30,7 @@
 import type { StoryState } from "../types/story.js";
 import { moods, actionTypes, actionHintTypes, characterSceneRoles } from "../types/story.js";
 import { placeWeathers } from "../types/places.js";
-import type { AuthoringMode, AuthoringPov, CoWritingPersona, LoreEntry, PenDraftSceneEssentials, PenBlockAction, PenBlockSubAction, PenTransformResult, DetectedCastCharacter } from "../types/pen.js";
+import type { AuthoringMode, AuthoringPov, CoWritingPersona, LoreEntry, PenDraftSceneEssentials, PenBlockAction, PenBlockSubAction, PenTransformResult } from "../types/pen.js";
 import type { AIJsonProperty } from "../types/ai-chat.js";
 import { getStoryStateInfo } from "./story.js";
 import { RULES_STORY_CONSISTENCY, RULES_LANGUAGE_LOCALIZATION } from "./prompt.js";
@@ -729,6 +729,7 @@ CRITICAL RULES:
 - SCENE FIELDS (mood, weather, calendarDate, timeOfDay) are the FULL resulting values the page should carry — carry forward the CURRENT SCENE values unless the draft clearly changes them. MOOD must be exactly one of the MOOD OPTIONS values and nothing else; WEATHER must be exactly one of the WEATHER OPTIONS values and nothing else. CALENDAR DATE continues the story's in-world timeline: advance from the CURRENT SCENE date by the time that passes in the draft (e.g. the next day), and keep it when the draft does not clearly advance time. TIME OF DAY is a coarse mark (e.g. night, dusk, 14:00).
 - INVENTORY is a complete replacement list: keep every item the character should still hold (same name, same amount unless the draft shows use/loss), add items the draft shows them acquiring, drop items the draft shows them losing, and set amount to 0 only when an item is fully consumed (it will be removed server-side).
 - INJURIES is a complete replacement list: keep every active injury (adjust severity only when the draft shows healing or aggravation), add injuries the draft shows the character sustaining, and drop injuries that have fully healed.
+- STORY OUTLINE MILESTONES: Review the STORY OUTLINE MILESTONES in CANONICAL STATE. For each outline beat, determine if the events in the draft indicate that this milestone has occurred or been achieved on this page (or previously). Set isDone: true for any milestone that has happened, and preserve isDone: true for all previously completed milestones.
 - Only derive changes the draft supports. Do not invent loot, wounds, or losses out of nowhere; when nothing changes, echo the current state.
 - For each inventory item include the traits that matter (e.g. material, state, rules) as strings in the engine's 'key: value' format (e.g. 'material: iron'); omit traits when the item has none.
 - INJURY SEVERITY is 0–1 (0.1 minor, 0.3 moderate, 0.6 severe, 0.9 critical). INJURY CATEGORY must be one of the CATEGORY OPTIONS.
@@ -758,6 +759,15 @@ export type PenStateProposalInjury = {
   consequences?: string;
 };
 
+/** One outline beat milestone in a state proposal. */
+export type PenStateProposalOutlineBeat = {
+  text: string;
+  isDone: boolean;
+  doneAtPage?: number;
+  reason?: string;
+  justCompleted?: boolean;
+};
+
 /** Raw structured output shape of the finalize state-proposal call. */
 export type PenStateProposalResult = {
   /** FULL resulting inventory (replacement semantics). */
@@ -776,6 +786,8 @@ export type PenStateProposalResult = {
   keyEvents: string[];
   /** Key objects this page, inferred from the draft + canon (editorial scene metadata). */
   keyObjects: string[];
+  /** Story outline milestone beats with updated completion statuses inferred from the draft. */
+  outline?: PenStateProposalOutlineBeat[];
   /** AI-classified type for the author's choice text (D-4 core — the AI never writes the text itself). */
   actionType?: string;
   /** AI-inferred reader-facing hint TEXT for the author's choice text (D-4 core — hint is AI-authored, never author input). */
@@ -844,6 +856,19 @@ export const PEN_STATE_PROPOSAL_SCHEMA: Record<keyof PenStateProposalResult, AIJ
     type: "array",
     description: "Important objects present or used on this page, inferred from the draft.",
     items: { type: "string" },
+  },
+  outline: {
+    type: "array",
+    description: "The full list of story outline beats with isDone set to true for any milestone that has occurred in the draft or prior pages.",
+    items: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "The outline milestone beat description." },
+        isDone: { type: "boolean", description: "Whether this milestone has been achieved (true if it happened previously or occurred in this page draft)." },
+        reason: { type: "string", description: "Brief rationale when this milestone was completed on this page." },
+      },
+      required: ["text", "isDone"],
+    },
   },
   actionType: {
     type: "string",
@@ -1002,7 +1027,7 @@ export function buildPenStateProposalPrompt(params: {
       `ACTION TYPE OPTIONS: ${Object.keys(actionTypes).join(", ")}`,
       `ACTION HINT TYPE OPTIONS: ${actionHintTypes.join(", ")}`,
       `PLACE OPTIONS: ${placeNames}`,
-      "Compute the FULL resulting scene, inventory, injuries, key events, key objects, and — when a reader's choice text is present — its action type and hint.",
+      "Compute the FULL resulting scene, inventory, injuries, key events, key objects, and story outline milestones (setting isDone: true for any milestone that has occurred in the draft or prior pages), and — when a reader's choice text is present — its action type and hint.",
     ].join("\n\n"),
   };
 }

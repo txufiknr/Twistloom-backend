@@ -15,7 +15,7 @@ import { PEN_CONTINUE_RATE_LIMIT, PEN_ESSENTIALS_RATE_LIMIT, PEN_FINALIZE_PROPOS
 import { cApiError, cNotFoundError, cValidationError } from "../utils/error.js";
 import { dbWrite } from "../db/client.js";
 import { isBase64Upload } from "../services/image.js";
-import { PEN_ASSISTANCE_LEVEL_MAX, PEN_ASSISTANCE_LEVEL_MIN, PEN_AUTHORING_MODES, PEN_AUTHORING_POVS, PEN_DRAFT_BUFFER_MAX_CHARS, PEN_DRAFT_CAST_LIMIT, PEN_DRAFT_HTML_MAX_LENGTH, PEN_DRAFT_IMAGE_MAX_BYTES, PEN_DRAFT_SPAN_MAX_LENGTH, PEN_DRAFT_TEXT_MAX_LENGTH, PEN_DIRECTION_HINT_MAX_LENGTH, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_MAX_ACTIONS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_SCENE_FOCUS_MAX, PEN_SCENE_FOCUS_MIN, PEN_SESSION_STATUSES, PEN_CONTINUE_PROSE_MAX_LENGTH, PEN_DRAFT_LABEL_MAX_LENGTH, PEN_DRAFT_ACTION_TEXT_MAX_LENGTH, PEN_DRAFT_ACTION_HINT_MAX_LENGTH, PEN_TRANSFORM_SELECTION_MAX_LENGTH } from "../config/story.js";
+import { PEN_ASSISTANCE_LEVEL_MAX, PEN_ASSISTANCE_LEVEL_MIN, PEN_AUTHORING_MODES, PEN_AUTHORING_POVS, PEN_DRAFT_BUFFER_MAX_CHARS, PEN_DRAFT_CAST_LIMIT, PEN_DRAFT_HTML_MAX_LENGTH, PEN_DRAFT_IMAGE_MAX_BYTES, PEN_DRAFT_SPAN_MAX_LENGTH, PEN_DRAFT_TEXT_MAX_LENGTH, PEN_DIRECTION_HINT_MAX_LENGTH, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_MAX_ACTIONS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_SCENE_FOCUS_MAX, PEN_SCENE_FOCUS_MIN, PEN_SESSION_STATUSES, PEN_CONTINUE_PROSE_MAX_LENGTH, PEN_DRAFT_LABEL_MAX_LENGTH, PEN_DRAFT_ACTION_TEXT_MAX_LENGTH, PEN_DRAFT_ACTION_HINT_MAX_LENGTH, PEN_TRANSFORM_SELECTION_MAX_LENGTH, PEN_ENDING_OUTLINE_MAX_ITEMS } from "../config/story.js";
 import { moods } from "../types/story.js";
 import { actionTypes, actionHintTypes } from "../types/story.js";
 import type { StoryOutline } from "../types/story.js";
@@ -1078,6 +1078,22 @@ router.post("/sessions/:id/finalize", requireAuth, rateLimit({ maxRequests: 10, 
     }
     if (body.adoptKeyObjects !== undefined && (!Array.isArray(body.adoptKeyObjects) || body.adoptKeyObjects.length > PEN_ESSENTIALS_MAX_LIST_ITEMS)) {
       return cValidationError(c, `adoptKeyObjects must be an array of at most ${PEN_ESSENTIALS_MAX_LIST_ITEMS} items`);
+    }
+    if (body.adoptOutline !== undefined) {
+      if (!Array.isArray(body.adoptOutline) || body.adoptOutline.length > PEN_ENDING_OUTLINE_MAX_ITEMS) {
+        return cValidationError(c, `adoptOutline must be an array of at most ${PEN_ENDING_OUTLINE_MAX_ITEMS} items`);
+      }
+      for (const beat of body.adoptOutline) {
+        if (!beat || typeof beat !== "object" || Array.isArray(beat)) {
+          return cValidationError(c, "each outline beat must be an object");
+        }
+        if (typeof beat.text !== "string" || beat.text.trim().length === 0) {
+          return cValidationError(c, "each outline beat needs a non-empty text");
+        }
+        if (typeof beat.isDone !== "boolean") {
+          return cValidationError(c, "each outline beat isDone must be a boolean");
+        }
+      }
     }
     if (body.adoptMood !== undefined && (typeof body.adoptMood !== "string" || !moods.includes(body.adoptMood as (typeof moods)[number]))) {
       return cValidationError(c, "adoptMood must be a valid mood key");
