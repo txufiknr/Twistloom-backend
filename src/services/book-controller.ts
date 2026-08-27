@@ -31,7 +31,7 @@ import { getClientIp } from "../hono/express-shim.js";
 import { computeVisitStats, mapActionToSelectedAction, markPageVisited } from "./story.js";
 import { FREE_ACTION_SELECTION_UNTIL_PAGE } from "../config/story.js";
 import type { BookAuthor, BookMode, BookPageVisit, BookSortOption, BookStats, BookTranslation, EnrichedBookData, EnrichedBookFirstPage, EnrichedBookGeneration, EnrichedBookSession, VisitBookPageParams, VisitBookPageResult } from "../types/book.js";
-import type { Action, SelectedAction } from "../types/story.js";
+import type { Action, Ending, SelectedAction } from "../types/story.js";
 
 /**
  * Builds an enriched book select object with all required fields
@@ -136,6 +136,9 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
     isRead: currentUserId ? sql<boolean>`EXISTS (SELECT 1 FROM user_sessions WHERE user_id = ${currentUserId} AND book_id = books.id)` : sql<boolean>`false`,
     isCompleted: currentUserId ? sql<boolean>`EXISTS (SELECT 1 FROM user_completed_books WHERE user_id = ${currentUserId} AND book_id = books.id)` : sql<boolean>`false`,
     isPurchased: currentUserId ? sql<boolean>`EXISTS (SELECT 1 FROM user_purchased_books WHERE user_id = ${currentUserId} AND book_id = books.id)` : sql<boolean>`false`,
+    ending: currentUserId
+      ? sql<Ending | null>`CASE WHEN books.user_id = ${currentUserId} THEN books.ending ELSE NULL END`
+      : sql<Ending | null>`null`,
 
     collection: currentUserId ? sql<string | null>`(
       SELECT uf.collection FROM user_favorites uf

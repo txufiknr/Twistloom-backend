@@ -234,6 +234,7 @@ export type EnrichedBookData = Pick<DBBook,
   isRead: boolean;
   isCompleted: boolean;
   isPurchased: boolean;
+  ending: Ending | null;
   firstPage: EnrichedBookFirstPage | null;
   session: EnrichedBookSession | null;
   translation: BookTranslation | null;

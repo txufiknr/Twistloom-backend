@@ -1669,7 +1669,7 @@ router.put("/:id", requireAuth, async (c) => {
     });
 
     return c.json({
-      book: updatedBook,
+      book: mapBookFromDb(updatedBook),
     });
   } catch (error) {
     return cApiError(c, "Failed to update book", error);
