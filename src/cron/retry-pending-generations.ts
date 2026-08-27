@@ -84,6 +84,8 @@ export async function retryPendingGenerations(): Promise<string[]> {
     .innerJoin(books, eq(pages.bookId, books.id))
     .leftJoin(mostRecentSession, eq(books.id, mostRecentSession.bookId))
     .where(and(
+      eq(books.isPenBook, false), // Never auto generate candidate pages for pen books
+      eq(books.visibility, 'public'), // Only retry generations for public books
       gt(pages.pendingGenerationCount, 0),
       lt(pages.page, books.totalPages) // Exclude last page since it doesn't need candidates
     ))
@@ -173,7 +175,14 @@ async function processSpecificPage(bookId: string, pageId: string, triggeredBy?:
     console.log(`[processSpecificPage] 🎯 Processing manual trigger: book=${bookId}, page=${pageId}, user=${triggeredBy}`);
 
     // Lazy imports for better memory usage and startup time
-    const { getPageFromDB, mapToUserStoryPage } = await import("../services/book.js");
+    const { getBookFromDB, getPageFromDB, mapToUserStoryPage } = await import("../services/book.js");
+
+    // Verify book is not a pen book
+    const dbBook = await getBookFromDB(bookId);
+    if (dbBook?.isPenBook) {
+      console.warn(`[processSpecificPage] ⚠️ Book ${bookId} is a pen book (isPenBook: true), skipping candidate generation`);
+      return null;
+    }
 
     // Fetch full page data
     const dbPage = await getPageFromDB(pageId, { bookIdentifier: bookId });

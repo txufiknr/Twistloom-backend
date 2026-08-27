@@ -18,12 +18,14 @@ import { isBase64Upload } from "../services/image.js";
 import { PEN_ASSISTANCE_LEVEL_MAX, PEN_ASSISTANCE_LEVEL_MIN, PEN_AUTHORING_MODES, PEN_AUTHORING_POVS, PEN_DRAFT_BUFFER_MAX_CHARS, PEN_DRAFT_CAST_LIMIT, PEN_DRAFT_HTML_MAX_LENGTH, PEN_DRAFT_IMAGE_MAX_BYTES, PEN_DRAFT_SPAN_MAX_LENGTH, PEN_DRAFT_TEXT_MAX_LENGTH, PEN_DIRECTION_HINT_MAX_LENGTH, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_MAX_ACTIONS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_SCENE_FOCUS_MAX, PEN_SCENE_FOCUS_MIN, PEN_SESSION_STATUSES, PEN_CONTINUE_PROSE_MAX_LENGTH, PEN_DRAFT_LABEL_MAX_LENGTH, PEN_DRAFT_ACTION_TEXT_MAX_LENGTH, PEN_DRAFT_ACTION_HINT_MAX_LENGTH, PEN_TRANSFORM_SELECTION_MAX_LENGTH } from "../config/story.js";
 import { moods } from "../types/story.js";
 import { actionTypes, actionHintTypes } from "../types/story.js";
+import type { StoryOutline } from "../types/story.js";
 import { placeWeathers } from "../types/places.js";
 import {
   createPenSession,
   getPenSessionForBook,
   getPenSessionById,
   updatePenSession,
+  updatePenSessionOutline,
   closePenSession,
   discardPenDraft,
   continuePenDraft,
@@ -385,6 +387,34 @@ router.patch("/sessions/:id", requireAuth, async (c) => {
   } catch (error) {
     if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
     return cApiError(c, "Failed to update pen session", error);
+  }
+});
+
+/**
+ * PATCH /api/pen/sessions/:id/outline
+ * Updates outline beats on the active page's story state (StoryState.viableEnding in PostgreSQL story_states)
+ * and synchronizes the book-level blueprint (books.ending in PostgreSQL books).
+ */
+router.patch("/sessions/:id/outline", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId");
+    if (!userId) return cApiError(c, "Authentication required", undefined, 401);
+    const sessionId = c.req.param("id");
+    const body = await readJsonBody(c);
+
+    if (!body || typeof body !== "object") {
+      return cValidationError(c, "Request body must be a JSON object");
+    }
+    const { outline } = body as { outline?: StoryOutline[] };
+    if (!Array.isArray(outline)) {
+      return cValidationError(c, "outline must be an array of StoryOutline items");
+    }
+
+    const result = await updatePenSessionOutline(userId, sessionId, outline);
+    return c.json(result);
+  } catch (error) {
+    if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
+    return cApiError(c, "Failed to update pen session outline", error);
   }
 });
 

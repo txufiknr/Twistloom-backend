@@ -215,6 +215,18 @@ export async function validateCandidateGeneration(
     };
   }
 
+  // Early exit: skip if pen book (never auto generate candidate pages for pen book)
+  if (currentBook.isPenBook) {
+    return {
+      canGenerate: false,
+      reason: `Skipping pen book ${currentBook.id} (candidate generation disabled for pen books)`,
+      book: currentBook,
+      pendingActions: [],
+      currentDepth,
+      maxDepth
+    };
+  }
+
   // Early exit: skip if this is the last page (no candidates needed)
   if (page.page >= currentBook.totalPages) {
     return {

@@ -11,12 +11,12 @@
 import { eq, and, desc, isNull, sql } from "drizzle-orm";
 import { penSessions, penEdits, penDrafts, penNotes, branches, pages, books, storyStates } from "../db/schema.js";
 import { dbRead, dbWrite, type DBClient } from "../db/client.js";
-import { getBookFromDB, getBookPages, deleteStoryPage } from "./book.js";
+import { getBookFromDB, getBookPages, deleteStoryPage, updateBook } from "./book.js";
 import { getTriggeredLoreEntries, listLoreEntries } from "./lore.js";
 import type { DBBook, DBPenSession, DBPenDraft } from "../types/schema.js";
 import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraft, PenDraftCharacter, PenDraftSceneEssentials, PenDraftSummary, PenDraftUpdates, PenEdit, PenSessionStatus, FinalizeViolation, CanonAmendment, PenEditType, PenOutlineData, PenOutlinePage, PenAuthorPage, AuthorshipOrigin, PenTransformInput, PenTransformResult, PenNote, PenNoteInput, PenNoteUpdate, LoreEntry, PenLatentBranch } from "../types/pen.js";
 import type { BookMode } from "../types/book.js";
-import type { StoryState, Action, StoryGeneration, PersistedStoryPage, SceneCharacter, CharacterSceneRole, Mood, ActionType, ActionHint, ActionHintType } from "../types/story.js";
+import type { StoryState, Action, StoryGeneration, PersistedStoryPage, SceneCharacter, CharacterSceneRole, Mood, ActionType, ActionHint, ActionHintType, Ending, StoryOutline } from "../types/story.js";
 import { moods, actionTypes, actionHintTypes } from "../types/story.js";
 import type { PlaceWeather } from "../types/places.js";
 import { placeWeathers } from "../types/places.js";
@@ -470,6 +470,51 @@ export async function getPenSessionState(userId: string, sessionId: string): Pro
       }
     : null;
   return { state, currentPageId: session.currentPageId, pageNumber: state?.page ?? 0, pageEssentials };
+}
+
+/**
+ * Updates the outline beats on the session's active page state (StoryState.viableEnding in PostgreSQL story_states)
+ * and synchronizes the book-level blueprint (books.ending in PostgreSQL books).
+ *
+ * Domain hierarchy:
+ * - StoryState.viableEnding: The true SSOT for what has occurred as of this active page.
+ * - books.ending: Blueprint & frontier progress fallback for new pages/branches.
+ */
+export async function updatePenSessionOutline(
+  userId: string,
+  sessionId: string,
+  outline: StoryOutline[]
+): Promise<{ state: StoryState | null; ending?: Ending }> {
+  const session = await getPenSessionById(userId, sessionId);
+  const book: DBBook | null = await getBookFromDB(session.bookId);
+  if (!book) throw new PenSessionNotFoundError("Book not found for this session");
+
+  let updatedState: StoryState | null = null;
+
+  // 1) SSOT: If the session has an active published page, update that page's StoryState in story_states
+  if (session.currentPageId) {
+    const currentState = await getStoryStateWithBranch(book.id, session.currentPageId);
+    if (currentState) {
+      currentState.viableEnding = {
+        ...(currentState.viableEnding ?? {}),
+        outline,
+      };
+      await insertStoryState(book.id, session.currentPageId, currentState, "original");
+      updatedState = currentState;
+    }
+  }
+
+  // 2) Blueprint & Frontier: Synchronize book.ending for new branches/pages and frontier tracking
+  const nextBookEnding: Ending = {
+    ...(book.ending ?? {}),
+    outline,
+  };
+  const updatedBook = await updateBook(book.id, { ending: nextBookEnding });
+
+  return {
+    state: updatedState,
+    ending: updatedBook.ending ?? undefined,
+  };
 }
 
 /** Allowed PATCH fields on a pen session (draft fields removed in Phase 4 — autosave goes through `PATCH /drafts/:id`). */
@@ -2578,6 +2623,7 @@ export async function finalizePenDraft(
       const initialMaxPage = input.isEnding ? 1 : (book.totalPages ?? newPage.page);
       const initialState: StoryState = {
         ...createEmptyStoryState(newPage.id, 1, initialMaxPage),
+        viableEnding: book.ending ?? undefined,
         hiddenState: createInitialHiddenState(),
       };
       // The page-1 cast has no prior state, so newly-checked characters must be
