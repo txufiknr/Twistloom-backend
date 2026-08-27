@@ -174,10 +174,11 @@ import { MAX_CONCURRENT_GENERATIONS, AI_VALIDATION_TIMEOUT_MS } from "../config/
 import { BOOK_CREATION_RATE_LIMIT, BOOK_STREAM_RATE_LIMIT, BOOK_ASYNC_RATE_LIMIT, ACTION_HINT_RATE_LIMIT, CUSTOM_ACTION_PREVIEW_RATE_LIMIT, CUSTOM_ACTION_SUBMIT_RATE_LIMIT, COMPANION_ASK_RATE_LIMIT } from "../config/ai-rate-limits.js";
 import { isValidReactionEmoji, REACTION_IDS, reactionIdList } from "../config/reactions.js";
 import { generateRandomCharacter } from "../utils/characters.js";
-import { COMPANION_SYSTEM, COMPANION_RESULT_SCHEMA, COMPANION_RESULT_REQUIRED_FIELDS, buildCompanionUserPrompt, buildCompanionPageContext, type CompanionResult, type CompanionChatTurn } from "../utils/companion-prompt.js";
+import { COMPANION_SYSTEM, COMPANION_RESULT_SCHEMA, COMPANION_RESULT_REQUIRED_FIELDS, buildCompanionUserPrompt, buildCompanionPageContext, type CompanionResult, type CompanionChatTurn, type CompanionSemanticContext } from "../utils/companion-prompt.js";
 import { validateCompanionQuestion } from "../utils/prompt-security.js";
 import { getCachedSuggestions, setCachedSuggestions, invalidateSuggestionsCache } from "../services/companion-cache.js";
 import { streamCompanionAnswerSSE } from "../utils/companion-stream.js";
+import { retrieveSimilarPages, retrieveBookCluesForQuery } from "../services/vector-memory.js";
 
 const router = new Hono<AppEnv>();
 
@@ -5698,7 +5699,31 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
       }
     }
 
-    const companionContext = buildCompanionPageContext(storyState);
+    // Resolve current page number and branch for spoiler safety
+    const currentPageNumber = dbPage.page || 1;
+    const branchId = dbPage.branchId || "main";
+
+    // Retrieve semantic vector memory recall in parallel (clues & past pages)
+    let semanticContext: CompanionSemanticContext | undefined;
+    try {
+      const [pastScenes, clues] = await Promise.all([
+        retrieveSimilarPages(rawQuestion, book.id, branchId, currentPageNumber, 3),
+        retrieveBookCluesForQuery(rawQuestion, book.id, branchId, currentPageNumber, 3),
+      ]);
+      if (pastScenes.length > 0 || clues.length > 0) {
+        semanticContext = {
+          relevantPastScenes: pastScenes,
+          relevantClues: clues,
+        };
+      }
+    } catch (vectorError) {
+      console.warn(`[POST /companion/ask] ⚠️ Vector memory recall skipped:`, getErrorMessage(vectorError));
+    }
+
+    const companionContext = buildCompanionPageContext(storyState, {
+      currentPageNumber,
+      semanticContext,
+    });
     const mcName = book.mc.knownName || book.mc.name || "the protagonist";
     const language = book.language || "en";
 
@@ -6169,7 +6194,31 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(
       }
     }
 
-    const companionContext = buildCompanionPageContext(storyState);
+    // Resolve current page number and branch for spoiler safety
+    const currentPageNumber = dbPage.page || 1;
+    const branchId = dbPage.branchId || "main";
+
+    // Retrieve semantic vector memory recall in parallel (clues & past pages)
+    let semanticContext: CompanionSemanticContext | undefined;
+    try {
+      const [pastScenes, clues] = await Promise.all([
+        retrieveSimilarPages(rawQuestion, book.id, branchId, currentPageNumber, 3),
+        retrieveBookCluesForQuery(rawQuestion, book.id, branchId, currentPageNumber, 3),
+      ]);
+      if (pastScenes.length > 0 || clues.length > 0) {
+        semanticContext = {
+          relevantPastScenes: pastScenes,
+          relevantClues: clues,
+        };
+      }
+    } catch (vectorError) {
+      console.warn(`[POST /companion/ask/stream] ⚠️ Vector memory recall skipped:`, getErrorMessage(vectorError));
+    }
+
+    const companionContext = buildCompanionPageContext(storyState, {
+      currentPageNumber,
+      semanticContext,
+    });
     const mcName = book.mc.knownName || book.mc.name || "the protagonist";
     const language = book.language || "en";
     const userPrompt = buildCompanionUserPrompt(companionContext, rawQuestion, language, mcName, history);

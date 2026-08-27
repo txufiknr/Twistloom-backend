@@ -512,3 +512,44 @@ export async function retrieveClues(
 
   return rows.filter(r => r.similarity >= EMBEDDING_SIMILARITY_THRESHOLD);
 }
+
+export interface BookClueResult extends SimilarInteractionResult {
+  threadId?: string;
+}
+
+/**
+ * Retrieves thread clues across the entire book up to `currentPage` that are
+ * semantically relevant to `query`. Used by the Reader Companion Q&A to answer
+ * reader inquiries regarding historical clues discovered along the story branch.
+ */
+export async function retrieveBookCluesForQuery(
+  query: string,
+  bookId: string,
+  branchId: string,
+  currentPage: number,
+  limit: number = MAX_VECTOR_RESULTS_PER_QUERY
+): Promise<BookClueResult[]> {
+  if (!PGVECTOR_MEMORY_ENABLED) return [];
+
+  const queryEmbedding = await embedText(query, 'retrieval.query');
+  const distance = cosineDistance(clueEmbeddings.embedding, queryEmbedding);
+  const similarity = sql<number>`1 - (${distance})`;
+
+  const rows = await dbRead
+    .select({
+      page: clueEmbeddings.page,
+      threadId: clueEmbeddings.threadId,
+      sourceText: clueEmbeddings.sourceText,
+      similarity,
+    })
+    .from(clueEmbeddings)
+    .where(and(
+      eq(clueEmbeddings.bookId, bookId),
+      eq(clueEmbeddings.branchId, branchId),
+      lt(clueEmbeddings.page, currentPage),
+    ))
+    .orderBy(distance)
+    .limit(limit);
+
+  return rows.filter(r => r.similarity >= EMBEDDING_SIMILARITY_THRESHOLD);
+}
