@@ -11,14 +11,8 @@
 import { aiStreamSSE } from "./ai-chat-stream.js";
 import { AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
-import {
-  COMPANION_SYSTEM,
-  COMPANION_RESULT_SCHEMA,
-  COMPANION_RESULT_REQUIRED_FIELDS,
-  type CompanionResult,
-} from "./companion-prompt.js";
+import { COMPANION_SYSTEM, COMPANION_RESULT_SCHEMA, COMPANION_RESULT_REQUIRED_FIELDS, type CompanionResult } from "./companion-prompt.js";
 import type { AIChatStreamProvider } from "../types/sse.js";
-import { getErrorMessage } from "./error.js";
 
 /**
  * State machine for incrementally extracting the "answer" string value from a streaming JSON payload.

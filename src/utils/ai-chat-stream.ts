@@ -1011,3 +1011,41 @@ export async function parseSSEStreamContent(stream: ReadableStream<Uint8Array>):
   
   return text;
 }
+
+/**
+ * Pipes an SSE ReadableStream to an output writer callback while simultaneously
+ * extracting and accumulating the clean text content from `data.content` in real-time.
+ *
+ * @param stream - ReadableStream of SSE-formatted Uint8Array chunks
+ * @param writeChunk - Callback to write each binary chunk (e.g. `chunk => stream.write(chunk)`)
+ * @returns Promise resolving to the clean accumulated text
+ */
+export async function pipeSSEStreamAndExtractText(
+  stream: ReadableStream<Uint8Array>,
+  writeChunk: (chunk: Uint8Array) => Promise<unknown> | unknown
+): Promise<string> {
+  let text = "";
+  const decoder = new TextDecoder();
+
+  for await (const chunk of stream) {
+    await writeChunk(chunk);
+    const chunkText = decoder.decode(chunk, { stream: true });
+    const lines = chunkText.split("\n");
+    for (const line of lines) {
+      if (line.startsWith("data: ")) {
+        try {
+          const data = JSON.parse(line.substring(6));
+          if (data.type === "chunk" && typeof data.content === "string") {
+            text += data.content;
+          } else if (typeof data.content === "string") {
+            text += data.content;
+          }
+        } catch {
+          // Ignore non-JSON SSE lines
+        }
+      }
+    }
+  }
+
+  return text.trim();
+}

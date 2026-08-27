@@ -119,6 +119,7 @@ import { getPreviewBookPage } from "../services/book-preview.js";
 import { shouldUseCache, getFreshPromptForUser, trackPromptView, savePromptToCache } from "../services/prompt-cache.js";
 import { streamCachedPrompt } from "../utils/prompt-stream.js";
 import { PROMPT_CACHE_CONFIG } from "../config/prompt-cache.js";
+import { pipeSSEStreamAndExtractText } from "../utils/ai-chat-stream.js";
 import { imageUploadMiddleware } from "../middleware/upload.js";
 import { deleteFileFromImageKit, isBase64Upload, persistUploadedImage } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, calculatePaginationMeta, type PaginatedResponse } from "../utils/pagination.js";
@@ -1426,30 +1427,9 @@ router.get("/prompt", optionalAuth, async (c) => {
           title: titleContext,
           summary: summaryContext,
         });
-        
-        // Collect and stream chunks in real-time while extracting clean prompt text
-        let cleanPromptText = "";
-        const decoder = new TextDecoder();
-        for await (const chunk of aiStream) {
-          await stream.write(chunk);
-          const chunkText = decoder.decode(chunk, { stream: true });
-          const lines = chunkText.split("\n");
-          for (const line of lines) {
-            if (line.startsWith("data: ")) {
-              try {
-                const data = JSON.parse(line.substring(6));
-                if (data.type === "chunk" && typeof data.content === "string") {
-                  cleanPromptText += data.content;
-                } else if (typeof data.content === "string") {
-                  cleanPromptText += data.content;
-                }
-              } catch {
-                // Ignore non-JSON SSE lines
-              }
-            }
-          }
-        }
-        promptContent = cleanPromptText.trim();
+
+        // Pipe chunks live to client while extracting clean prompt text
+        promptContent = await pipeSSEStreamAndExtractText(aiStream, (chunk) => stream.write(chunk));
         
         // Validate and save to cache if quality is good
         if (!titleContext && !summaryContext && PROMPT_CACHE_CONFIG.enabled && userId) {
@@ -1494,9 +1474,11 @@ router.get("/prompt", optionalAuth, async (c) => {
       }
     } catch (error) {
       console.error('[GET /api/books/prompt] ❌ Failed to generate story theme:', error);
-      const encoder = new TextEncoder();
       const errorMessage = getErrorMessage(error, 'Failed to generate prompt');
-      await stream.write(encoder.encode(`event: error\ndata: ${errorMessage}\n\n`));
+      await stream.writeSSE({
+        event: 'error',
+        data: JSON.stringify({ message: errorMessage }),
+      });
     }
   });
 });
