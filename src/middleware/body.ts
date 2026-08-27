@@ -34,7 +34,7 @@ export const parseJsonBody = createMiddleware<AppEnv>(async (c, next) => {
     return;
   }
 
-  if (new TextEncoder().encode(raw).length > MAX_JSON_BODY_BYTES) {
+  if (Buffer.byteLength(raw, "utf8") > MAX_JSON_BODY_BYTES) {
     throw new HTTPException(413, { message: "Payload too large" });
   }
 

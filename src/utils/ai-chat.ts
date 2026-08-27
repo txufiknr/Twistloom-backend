@@ -5,7 +5,7 @@ import { AI_CHAT_MODELS_EVALUATION, AI_CHAT_MODELS_WRITING, AI_MAX_PROMPT_LENGTH
 import { canUseAIToday, getRateLimiter, incrementDailyUsageCount } from './ai-limiters.js';
 import { requireEnv } from "./env.js";
 import { PROMPT_SYSTEM } from "./prompt.js";
-import { logAISuccess, logAIFailure } from './ai-logger.js';
+import { logAISuccess, logAIFailure, logAIPrompt } from './ai-logger.js';
 import { classifyGenAIError, isGenAIErrorRetryable } from "./error.js";
 import { retryWithBackoff } from "./retry.js";
 import { AI_CHAT_MODEL_RETRY_COUNT } from "../config/ai-chat.js";
@@ -1472,7 +1472,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
       
       // Only log prompts on the very first iteration
       const shouldLogPrompts = logPrompts && isFirstIteration;
-      logPromptWithSeparators(provider, '💬 Built user prompt', prompt, shouldLogPrompts);
+      logAIPrompt(provider, '💬 Built user prompt', prompt, shouldLogPrompts);
 
       const opts: Partial<PromptWithFallbackOptions> = {
         ...options,
@@ -2004,29 +2004,13 @@ export function formatSystemPromptWithDocuments(provider: AIChatProvider, option
   // Early return when no document or provider is Cohere's V2 API which
   // natively supports RAG via documents field.
   if (!documents?.length || provider === 'cohere') {
-    logPromptWithSeparators(provider, '💬 Built system prompt', systemPrompt, logPrompts);
+    logAIPrompt(provider, '💬 Built system prompt', systemPrompt, logPrompts);
     return systemPrompt;
   }
   
   const formattedDocuments = formatDocumentsToPrompt(documents);
   const systemPromptWithDocs = `${systemPrompt}\n\n---\n${formattedDocuments}`;
   const message = `🧾 Built system prompt with ${documents.length} document${documents.length > 1 ? 's' : ''}`;
-  logPromptWithSeparators(provider, message, systemPromptWithDocs, logPrompts);
+  logAIPrompt(provider, message, systemPromptWithDocs, logPrompts);
   return systemPromptWithDocs;
-}
-
-/**
- * Logs a prompt with clear section boundaries (separators above and below)
- * 
- * @param provider - AI provider name for logging context
- * @param message - Descriptive message with emoji (e.g., "💬 Built user prompt")
- * @param content - The actual prompt content to log
- * @param shouldLog - Whether to log (respects logPrompts flag)
- */
-export function logPromptWithSeparators(provider: AIChatProvider, message: string, content: string, shouldLog: boolean): void {
-  if (!shouldLog) return;
-  
-  edgeGroup.wrap(`[${provider}] ${message} (${content.length} chars):`, async () => {
-    console.log(content);
-  });
 }

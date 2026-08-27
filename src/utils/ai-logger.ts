@@ -3,8 +3,9 @@
  * Eliminates code duplication across Gemini, Groq, Cohere, and HuggingFace providers
  */
 
-import type { AIResponse } from "../types/ai-chat.js";
+import type { AIChatProvider, AIResponse } from "../types/ai-chat.js";
 import { edgeGroup } from './edge-group.js';
+import { IS_VERCEL } from '../config/env.js';
 
 /**
  * Logs successful AI provider response with standardized format
@@ -14,9 +15,17 @@ import { edgeGroup } from './edge-group.js';
 export function logAISuccess(response: AIResponse<unknown>, requestStartAt?: number): void {
   const { provider, model, output, finishReason = 'unknown', usage } = response;
   const elapsedMs = requestStartAt ? Date.now() - requestStartAt : undefined;
+  const title = `[${provider}] ✅ ${model} succeeded (${output.length} chars, finish: ${finishReason}${elapsedMs ? `, duration: ${elapsedMs}ms` : ''})`;
 
-  edgeGroup.wrap(`[${provider}] ✅ ${model} succeeded (${output.length} chars, finish: ${finishReason}${elapsedMs ? `, duration: ${elapsedMs}ms` : ''})`, async () => {
-    // Log success with output
+  // On Vercel serverless functions, dumping massive multi-KB LLM outputs into stdout
+  // burns active CPU cycles and floods serverless logs. On Vercel, emit a clean 1-liner.
+  if (IS_VERCEL) {
+    console.log(title);
+    return;
+  }
+
+  edgeGroup.wrap(title, async () => {
+    // Log success with full output (active in GitHub Actions CI / Local Dev)
     console.log(`"""\n${output}\n"""`);
     
     // Log usage if provided
@@ -73,21 +82,24 @@ export function logAIQuota(
 }
 
 /**
- * Logs AI summarization prompt with standardized format
+ * Logs a prompt with clear section boundaries (separators above and below)
  * 
- * @param provider - The AI provider name
- * @param prompt - The generated prompt content
- * @param maxPromptLength - Maximum allowed prompt length for the provider
- * @param promptSystem - System prompt content (default from summarize.ts)
+ * @param provider - AI provider name for logging context
+ * @param message - Descriptive message with emoji (e.g., "💬 Built user prompt")
+ * @param content - The actual prompt content to log
+ * @param shouldLog - Whether to log (respects logPrompts flag)
  */
-export function logAIPrompt(
-  provider: string,
-  prompt: string,
-  maxPromptLength: number,
-  promptSystem: string = ''
-): void {
-  if (prompt != null) {
-    const totalLength = prompt.length + promptSystem.length;
-    console.log(`[${provider}] 💬 Built complete prompt (${totalLength}/${maxPromptLength} chars):`, prompt);
+export function logAIPrompt(provider: AIChatProvider, message: string, content: string, shouldLog: boolean): void {
+  if (!shouldLog) return;
+
+  const title = `[${provider}] ${message} (${content.length} chars)`;
+  
+  if (IS_VERCEL) {
+    console.log(title);
+    return;
   }
+
+  edgeGroup.wrap(title, async () => {
+    console.log(content);
+  });
 }

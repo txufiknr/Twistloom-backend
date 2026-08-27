@@ -6,6 +6,10 @@ export const IS_DEVELOPMENT = process.env.NODE_ENV === "development";
 export const IS_TEST = (process.env.NODE_ENV ?? "test") === "test";
 export const DEV_USE_SECURE_COOKIES = process.env.DEV_USE_SECURE_COOKIES === 'true';
 
+/** Cloud / Runtime environment detection */
+export const IS_VERCEL = Boolean(process.env.VERCEL || process.env.VERCEL_ENV);
+export const IS_GITHUB_ACTIONS = Boolean(process.env.GITHUB_ACTIONS);
+
 /** Default server port */
 export const PORT: number = Number(process.env.PORT) || 3000;
 

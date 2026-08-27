@@ -44,10 +44,24 @@ import { isEmailVerified } from "../utils/email-verification.js";
 import { dbRead } from "../db/client.js";
 import { users } from "../db/schema.js";
 import { eq } from "drizzle-orm";
+import { LRUCache } from "lru-cache";
 import type { AppEnv } from "../hono/env.js";
 
 // @auth/express is no longer imported; @hono/auth-js (built on @auth/core) is
 // used instead. The `getClientIp` helper remains from the shared shim module.
+
+// ---------------------------------------------------------------------------
+// In-memory cache for user ban status (Fluid Active CPU optimization)
+// Avoids database SELECT queries on the users table on every single request.
+// ---------------------------------------------------------------------------
+const userBanCache = new LRUCache<string, boolean>({
+  max: 5000,
+  ttl: 1000 * 60 * 5, // 5 minutes TTL
+});
+
+export function invalidateUserBanCache(userId: string): void {
+  userBanCache.delete(userId);
+}
 
 // ---------------------------------------------------------------------------
 // In-flight request deduplication
@@ -153,12 +167,19 @@ export async function verifyNextAuthToken(c: Context<AppEnv>): Promise<AuthUser 
       }
 
       // P4: reject banned accounts (banned_at IS NOT NULL)
-      const [banRow] = await dbRead
-        .select({ bannedAt: users.bannedAt })
-        .from(users)
-        .where(eq(users.userId, userId))
-        .limit(1);
-      if (banRow?.bannedAt) {
+      // Check in-memory LRU cache first to prevent database querying on every request
+      let isBanned = userBanCache.get(userId);
+      if (isBanned === undefined) {
+        const [banRow] = await dbRead
+          .select({ bannedAt: users.bannedAt })
+          .from(users)
+          .where(eq(users.userId, userId))
+          .limit(1);
+        isBanned = Boolean(banRow?.bannedAt);
+        userBanCache.set(userId, isBanned);
+      }
+
+      if (isBanned) {
         console.info(`[nextauth] 🚫 Banned user attempted access: ${userId}`);
         throw new HTTPException(403, { message: "account_banned" });
       }

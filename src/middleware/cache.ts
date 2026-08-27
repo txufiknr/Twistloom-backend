@@ -42,17 +42,38 @@ export const cacheControl = createMiddleware<AppEnv>(async (c, next) => {
     return;
   }
 
-  // Authenticated responses = private, short-lived
+  const path = c.req.path;
+
+  // Authenticated responses: allow short private caching with SWR on content reads
+  // to avoid redundant serverless function invocations during back-and-forth reading
   const userId = c.get("userId");
   if (userId) {
-    c.header("Cache-Control", `private, max-age=${CACHE.PRIVATE_USER}, must-revalidate`);
+    // Realtime polling and status endpoints must stay uncached
+    if (
+      path.endsWith("/status") ||
+      path.endsWith("/candidates") ||
+      path.includes("/generations/active") ||
+      path.includes("/notifications") ||
+      path.includes("/checkin/status") ||
+      path.includes("/activity-logs")
+    ) {
+      c.header("Cache-Control", `private, max-age=${CACHE.PRIVATE_USER}, must-revalidate`);
+      return;
+    }
+
+    // Safe content reads (book metadata, pages, branches, testimonials)
+    if (path.startsWith("/api/books/")) {
+      c.header("Cache-Control", "private, max-age=5, stale-while-revalidate=30");
+      return;
+    }
+
+    // Other authenticated GET endpoints (user profile, in-app prefs)
+    c.header("Cache-Control", "private, max-age=5, stale-while-revalidate=15");
     return;
   }
 
   // Public catalogue responses → cache at CDN + browser
   // The path prefix tells us the content type
-  const path = c.req.path;
-
   if (path.startsWith("/api/books/explore") || path.startsWith("/api/books/trending")) {
     c.header("Cache-Control", `public, max-age=${CACHE.PUBLIC_CATALOGUE}, s-maxage=${CACHE.PUBLIC_CATALOGUE * 5}`);
   } else if (path.startsWith("/api/books/")) {

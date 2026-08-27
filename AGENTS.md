@@ -2,419 +2,354 @@
 
 ## 📋 Overview
 
-This document outlines the coding standards, conventions, and best practices for AI agents working on the Muslim Digest backend project. Following these guidelines ensures consistency, maintainability, and high-quality code across the codebase.
+This document outlines the architecture, coding standards, established design patterns, and best practices for AI agents working on the **Twistloom** backend project. Following these guidelines ensures consistency, high performance, strict type safety, data integrity, and adherence to established architectural standards across the codebase.
 
 ---
 
-## 🛠️ Technology Stack
+## 🛠️ Technology Stack & Runtime Architecture
 
 ### Core Technologies
-- **Runtime**: Bun 1.3+
-- **API Framework**: Hono.js
-- **Database**: Neon (PostgreSQL)
-- **ORM**: Drizzle ORM
-- **Language**: TypeScript
-- **Package Manager**: Bun (via `bun install`)
+- **Runtime**: Bun 1.3+ (Local dev via `Bun.serve()`, Vercel Node.js Serverless runtime in production)
+- **API Framework**: Hono.js 4.12+ (runtime-agnostic, typed `AppEnv` bindings, Web API standard)
+- **Database**: Neon (PostgreSQL 18, serverless connection pooling & WebSocket support)
+- **ORM**: Drizzle ORM 0.45+ (type-safe query builder with SQL interval arithmetic)
+- **In-Memory Cache**: `lru-cache` 11.5+ (process-level sub-millisecond cache with TTL)
+- **Distributed Cache & Rate Limiting**: Upstash Redis (`@upstash/redis`, `@upstash/ratelimit` via REST API)
+- **Language**: TypeScript 6.0+ (strict mode, no `any`)
+- **Package Manager**: Bun (`bun install`)
 
-### Development Tools
-- **Build**: Bun (native TypeScript execution)
-- **Linting**: ESLint
-- **Database Management**: Drizzle Kit
-- **Migrations**: Drizzle migrations
-- **Hosting**: Vercel (Bun runtime)
+### AI Multi-Provider Waterfall (8 Providers)
+1. **Mistral**: Primary creative writing prose & natural character voices
+2. **Google Gemini**: Large context (1M+ tokens), rapid generation, world-building lore
+3. **OpenRouter**: Unified gateway for Qwen, Llama-4, DeepSeek, Nemotron
+4. **Cerebras**: Ultra-high-speed inference for GLM-4.7 & reasoning
+5. **Groq**: Low-latency fast validation (Llama-3.3, Qwen)
+6. **NVIDIA**: Cost-effective Llama-3.3 on NIM
+7. **Cloudflare Workers AI**: Edge inference for Mistral-7B / Llama-3.1
+8. **Cohere**: Last-resort fallback (Command-R)
 
 ---
 
-## 📝 Coding Standards
+## ⚡ Established Architectural Patterns & Best Practices
+
+### 1. In-Memory LRU Caching Patterns
+
+The backend employs dedicated in-memory LRU caches (`lru-cache`) for high-frequency, sub-millisecond reads where network trips to Redis or Postgres are unnecessary overhead.
+
+**Primary Implementation**: [`src/services/story-state-cache.ts`](file:///d:/Projects/Twistloom/Twistloom-backend/src/services/story-state-cache.ts) and [`src/utils/branch-traversal.ts`](file:///d:/Projects/Twistloom/Twistloom-backend/src/utils/branch-traversal.ts).
+
+#### Key Principles:
+- **Bounded Memory Size & Explicit TTL**: Always configure `max` entries and explicit `ttl` (e.g., 2 minutes for active branch traversal, 30 minutes for deleted state buffers) to prevent memory leaks during serverless warmup or long-running processes.
+- **Sliding Expiration**: Enable `updateAgeOnGet: true` for frequently accessed reading session nodes.
+- **Telemetry & Logging**: Use the `dispose` callback to monitor evictions and maintain internal hit/miss metrics (`hits`, `misses`, `hitRate`).
+- **Scope & Isolation**: In-memory LRU caches are process-local. Never rely on LRU as the single source of truth for globally coordinated state—always back persistent state with Redis or Postgres.
+
+```typescript
+import { LRUCache } from "lru-cache";
+import type { DBStoryState } from "../types/schema.js";
+
+export const storyStateCache = new LRUCache<string, StoryStateCacheEntry>({
+  max: 500,
+  ttl: 2 * 60 * 1000, // 2 minutes
+  allowStale: false,
+  updateAgeOnGet: true,
+  dispose: (value, key) => {
+    console.log(`[StoryStateCache] 🗑️ Evicted: ${key} (age: ${Date.now() - value.cachedAt}ms)`);
+  }
+});
+```
+
+---
+
+### 2. Redis & Multi-Tier Caching Architecture
+
+Twistloom uses a 3-tier caching hierarchy:
+1. **L1 In-Memory LRU**: Process-local, instant access (branch states, prompt templates).
+2. **L2 Upstash Redis**: Distributed caching, sliding rate limits, and distributed idempotency locks.
+3. **L3 Database Cache (`user_cache` table)**: Persistent, SQL-level TTL-enforced cache for user queries, payloads, and fallback data.
+
+**Primary Implementations**:
+- [`src/utils/redis.ts`](file:///d:/Projects/Twistloom/Twistloom-backend/src/utils/redis.ts) - Redis client, atomic rate limiting, idempotency locks
+- [`src/services/cache.ts`](file:///d:/Projects/Twistloom/Twistloom-backend/src/services/cache.ts) - High-level Redis service, `withCache` wrapper, pattern invalidations
+- [`src/utils/cache.ts`](file:///d:/Projects/Twistloom/Twistloom-backend/src/utils/cache.ts) - Database-backed `user_cache` operations, SQL interval filtering, DJB2/SHA-256 key hashing
+- [`src/config/redis.ts`](file:///d:/Projects/Twistloom/Twistloom-backend/src/config/redis.ts) & [`src/config/cache.ts`](file:///d:/Projects/Twistloom/Twistloom-backend/src/config/cache.ts) - TTLs and key namespaces
+
+#### A. Redis Client & Fail-Open Rate Limiting
+- Upstash Redis uses serverless-friendly REST calls (`@upstash/redis`).
+- `checkRateLimit()` uses atomic `INCR` and sets expiration only when `requestCount === 1` to eliminate race conditions.
+- If Redis is unavailable or unconfigured, methods fail open gracefully without throwing 500 errors.
+
+```typescript
+import { getRedisClient, checkRateLimit } from "../utils/redis.js";
+
+// Atomic rate limiting
+const limit = await checkRateLimit(`auth-attempt:${ip}`, { maxRequests: 5, windowSeconds: 60 });
+if (!limit.allowed) {
+  return cApiError(c, "Too many requests. Please try again later.", 429);
+}
+```
+
+#### B. Distributed Idempotency Locks
+For sensitive operations (e.g. credit consumption, generation jobs), prevent duplicate submissions via `setIdempotencyProcessing()`:
+
+```typescript
+const processing = await setIdempotencyProcessing({
+  key: `generate-${userId}-${bookId}`,
+  prefix: "gen-lock",
+  ttl: 300 // 5 minutes
+});
+
+if (!processing.set) {
+  return cApiError(c, "Generation already in progress for this story", 409);
+}
+
+try {
+  // Execute critical operation
+} finally {
+  await processing.cleanup();
+}
+```
+
+#### C. Redis Key Namespaces & Invalidation Rules
+- **Per-Sort Explore Keys**: Do not use a monolithic `books:explore:page:1` key. Use per-sort keys `books:explore:page:1:${sortBy}` (`EXPLORE_PAGE_1_BY_SORT`) so `top-picks` never collides with `newest`.
+- **SCAN Pattern Deletion**: Upstash restricts the raw `KEYS` command in production. Always use cursor-based `SCAN` iteration (`deleteCachePattern`) to purge wildcards.
+- **Large Key Hashing**: Cache keys exceeding 16 KB (`CACHE_KEY_HASH_THRESHOLD`) must be hashed with SHA-256 (`createCacheKey()`) to keep Redis memory footprint minimal.
+
+---
+
+### 3. Credits Consumption & Financial Integrity
+
+All credit deductions and rewards must maintain strict transactional guarantees, row-level locking, and idempotency.
+
+**Primary Implementations**:
+- [`src/services/credits.ts`](file:///d:/Projects/Twistloom/Twistloom-backend/src/services/credits.ts)
+- [`src/config/credits.ts`](file:///d:/Projects/Twistloom/Twistloom-backend/src/config/credits.ts)
+
+#### A. Atomic Operations with `executeWithCredits`
+When an action consumes credits and creates database records (e.g. story generation, custom actions, hint purchases), wrap the entire flow in `executeWithCredits()`:
+
+```typescript
+import { executeWithCredits } from "../services/credits.js";
+
+const { result, correlationId, transactionId } = await executeWithCredits(
+  userId,
+  "STORY_GENERATION",
+  async (tx) => {
+    // 1. MUST use tx for ALL database writes inside this callback
+    const [book] = await tx.insert(books).values({ ... }).returning();
+    const [page] = await tx.insert(pages).values({ ... }).returning();
+    return { book, page };
+  },
+  {
+    context: "book_creation",
+    metadata: { mode: "multiverse", theme: "lovecraftian" }
+  }
+);
+```
+
+#### Critical Rules for Credit Transactions:
+1. **Single Postgres Transaction**: `executeWithCredits` acquires a row-level lock (`SELECT ... FOR UPDATE`) on `users.credits`. If the callback throws, the database automatically rolls back **both** the credit deduction and all row mutations.
+2. **Transaction Propagating (`tx`)**: You MUST pass the `tx` parameter to all internal database operations. Any query running on `dbWrite` directly will bypass the transaction and fail to roll back!
+3. **External Side-Effects**: Keep external API calls (e.g., AI generation, Stripe calls) or cache invalidations outside the transaction, or execute them after the transaction successfully commits.
+4. **Activity Logging Outside Transaction**: User analytics and audit logging (`logUserActivity`) are intentionally placed outside the transaction boundary so analytics errors never roll back successful user purchases.
+5. **Idempotent Refunds**: If an asynchronous step fails *after* a transaction has committed, call `refundCredits(userId, costKey, { correlationId })`. `refundCreditsIdempotent` verifies against the `transactions` table before issuing refunds to prevent duplicate refund attacks.
+6. **Free Demo & Demo User Support**: Always respect `FEATURE_FREE_DEMO` and `isDemoUser(userId)` via `getCreditCostForUser()`. When demo mode is active, costs resolve to 0 and skip row locks.
+
+---
+
+### 4. Server-Sent Events (SSE) Streaming Architecture
+
+Twistloom delivers real-time AI generation with Time-To-First-Token < 300ms using W3C-compliant SSE over HTTP.
+
+**Primary Reference**: [`docs/architecture/SERVER_SENT_EVENTS_STREAMING_ARCHITECTURE.md`](file:///d:/Projects/Twistloom/Twistloom-backend/docs/architecture/SERVER_SENT_EVENTS_STREAMING_ARCHITECTURE.md)
+
+#### The 4 Streaming Archetypes:
+1. **Pure Prose Text Stream** (e.g. `GET /api/books/prompt`): Unstructured narrative tokens piped via `aiStreamSSE` + `pipeSSEStreamAndExtractText`.
+2. **Structured JSON Delta Extraction** (e.g. `POST .../companion/ask/stream`): Intercepts LLM JSON responses with `StreamingJsonAnswerExtractor` to stream pure prose to chat bubbles while delivering full typed JSON on `done`.
+3. **Adaptive Cached Replay** (e.g. Cached Prompts): Replays database-cached text with 3-stage human typing cadence via `streamCachedPrompt`.
+4. **Long-Running Task Progress** (e.g. `/candidates`, `/stream`): Progress events updating client on multi-step generation milestones.
+
+#### Standard SSE Wire Protocol:
+- Headers: `Content-Type: text/event-stream; charset=utf-8`, `Cache-Control: no-cache, no-transform`, `Connection: keep-alive`, `X-Accel-Buffering: no`
+- Events: `start`, `chunk`, `done`, `end`, `error`
+
+#### ⛔ Critical Streaming Anti-Patterns:
+- ❌ **The Raw Uint8Array Concatenation Trap**: `aiStreamSSE` emits formatted binary SSE protocol lines (`event: chunk\ndata: ...`). Do NOT concatenate raw chunks and decode with `TextDecoder` to save to the database—that pollutes your cache with raw wire envelopes! Use `pipeSSEStreamAndExtractText`.
+- ❌ **Double Protocol Wrapping**: Never feed a string containing `event: chunk` into `streamCachedPrompt()`. DB cache MUST store pure text.
+- ❌ **Raw JSON Leaks**: Never pipe raw structured JSON tokens to the client when using JSON mode. Use `StreamingJsonAnswerExtractor` to strip outer JSON framing.
+- ❌ **Missing AbortSignal**: ALWAYS pass `c.req.raw.signal` into `aiStreamSSE` or provider calls so client disconnections terminate upstream AI GPU workloads immediately.
+- ❌ **Manual String Encoding**: Use Hono's typed helper: `await stream.writeSSE({ event: "chunk", data: JSON.stringify(...) })`.
+
+#### Canonical Implementation Recipe (Structured Companion Stream):
+```typescript
+import { streamSSE } from "hono/streaming";
+import { streamCompanionAnswerSSE } from "../utils/companion-stream.js";
+import { executeWithCredits } from "../services/credits.js";
+import { getErrorMessage } from "../utils/error.js";
+
+router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, async (c) => {
+  const userId = c.get("userId")!;
+  const { question } = await c.req.json();
+
+  return streamSSE(c, async (stream) => {
+    try {
+      const { result } = await executeWithCredits(
+        userId,
+        "COMPANION_ASK",
+        async () => {
+          return streamCompanionAnswerSSE({
+            userPrompt: buildCompanionPrompt(question),
+            signal: c.req.raw.signal, // Propagate abort signal
+            onChunk: async (proseDelta) => {
+              await stream.writeSSE({
+                event: "chunk",
+                data: JSON.stringify({ content: proseDelta })
+              });
+            }
+          });
+        },
+        { context: "companion_ask" }
+      );
+
+      // Emit complete structured payload
+      await stream.writeSSE({
+        event: "done",
+        data: JSON.stringify(result)
+      });
+    } catch (err) {
+      await stream.writeSSE({
+        event: "error",
+        data: JSON.stringify({ message: getErrorMessage(err) })
+      });
+    }
+  });
+});
+```
+
+---
+
+### 5. Database Operations & Drizzle ORM Guidelines
+
+- **Database Client Splitting**: Use `dbRead` for read-only replica queries and `dbWrite` for write operations / transactions (`src/db/client.ts`).
+- **Connection Management**: Neon serverless uses WebSockets (`neonConfig.webSocketConstructor = globalThis.WebSocket`).
+- **Denormalized Counters**: High-traffic counters (`likesCount`, `readCount`, `favoritesCount`) are maintained via PostgreSQL triggers for $O(1)$ reads without `COUNT(*)` subqueries.
+- ⚠️ **Schema Updates & Migration Rules**:
+  - **DO NOT automatically execute `bun db:generate` or `bun db:migrate`** when updating schemas.
+  - Make changes only to `src/db/schema.ts` and related application types.
+  - The human developer will review schema changes and run migrations manually.
+
+---
+
+### 6. Hono Route Handlers & Error Handling
+
+- **Typed Context**: Always type Hono apps and routers with `AppEnv` (`src/hono/env.ts`):
+  ```typescript
+  import { Hono } from "hono";
+  import type { AppEnv } from "../hono/env.js";
+
+  export const booksRouter = new Hono<AppEnv>();
+  ```
+- **Error Response Helpers**: Use the standardized `c*` helpers in [`src/utils/error.ts`](file:///d:/Projects/Twistloom/Twistloom-backend/src/utils/error.ts):
+  ```typescript
+  import { cApiError, cValidationError, cNotFoundError, cUnauthorizedError } from "../utils/error.js";
+
+  if (!book) return cNotFoundError(c, "Book not found");
+  if (!isValid) return cValidationError(c, "Invalid parameters", errors);
+  ```
+- **Relative Imports**: All local imports MUST include explicit `.js` extensions (e.g. `import { db } from '../db/client.js';`) to adhere to ESM module resolution.
+
+---
+
+## 📝 Coding Standards & Conventions
 
 ### Naming Conventions
 
 | Element | Style | Examples |
 |---------|-------|----------|
-| **Files** | `kebab-case` | `feed-service.ts`, `user-preferences.ts`, `rss-ingester.ts` |
-| **Constants** | `UPPER_SNAKE_CASE` | `FEED_DAILY_LIMIT`, `DEFAULT_PAGE_SIZE`, `CACHE_TTL` |
-| **Variables** | `camelCase` | `userId`, `feedItems`, `cursorPosition` |
-| **Functions** | `camelCase` | `fetchPersonalizedFeed`, `calculateBreakingScore` |
-| **Classes** | `PascalCase` | `FeedService`, `ArticleCluster`, `UserPreferences` |
-| **Interfaces** | `PascalCase` | `FeedCursor`, `FormattedFeedRow`, `FetchFeedPageParams` |
-
-### Variable & Constant Naming
-- **Be descriptive**: Use clear, self-explanatory names
-- **Avoid abbreviations**: `articleCount` instead of `artCnt`
-- **Be consistent**: Use the same terminology throughout the codebase
-- **Include units**: When relevant, include units in names (`timeoutMs`, `retryCount`)
-
-```typescript
-// ✅ Good
-const MAX_RETRY_ATTEMPTS = 3;
-const articleProcessingTimeoutMs = 5000;
-const userFeedPreferences = await getUserPreferences(userId);
-
-// ❌ Bad
-const max_rt = 3;
-const to = 5000;
-const prefs = await getUserPrefs(uid);
-```
-
----
-
-## 📚 Documentation Standards
+| **Files** | `kebab-case` | `story-state-cache.ts`, `companion-stream.ts`, `credits.ts` |
+| **Constants** | `UPPER_SNAKE_CASE` | `BRANCH_CACHE_TTL`, `MAX_STATE_CACHE_SIZE`, `CREDIT_COSTS` |
+| **Variables & Functions** | `camelCase` | `executeWithCredits`, `calculateBranchSwitchCost`, `userId` |
+| **Classes & Interfaces** | `PascalCase` | `StreamingJsonAnswerExtractor`, `DBStoryState`, `AppEnv` |
 
 ### TSDoc/JSDoc Requirements
-**Always write comprehensive TSDoc/JSDoc comments** for:
-- All exported functions
-- All interfaces and types
-- All classes
-- Complex internal functions
+Write clear TSDoc comments for all exported utilities, functions, and interfaces, detailing behavior, parameters, return types, error cases, and examples.
 
-#### Function Documentation Template
 ```typescript
 /**
- * Brief description of what the function does
- * 
- * Detailed explanation of the function's purpose, behavior, and any important details.
- * Include edge cases, performance considerations, or usage patterns.
- * 
- * @param paramName - Description of the parameter and its expected type/behavior
- * @param optionalParam - Optional parameter description (default: defaultValue)
- * @returns Description of what the function returns and its structure
- * 
- * @example
- * ```typescript
- * // Basic usage example
- * const result = await functionName(param1, param2);
- * 
- * // Advanced usage with options
- * const advanced = await functionName({
- *   option1: true,
- *   option2: 'custom-value'
- * });
- * ```
+ * Deducts credits and executes an operation within an atomic Postgres transaction.
+ *
+ * @param userId - ID of the user spending credits
+ * @param costKey - Key in CREDIT_COSTS configuration or numeric value
+ * @param operation - Async callback containing DB operations using the provided tx
+ * @param options - Correlation ID, analytics context, and metadata
+ * @returns Result of the operation and transaction identifiers
+ * @throws Error with CREDIT_ERRORS.INSUFFICIENT_CREDITS if balance is too low
  */
-```
-
-#### Interface Documentation Template
-```typescript
-/**
- * Description of what this interface represents
- * 
- * @example
- * ```typescript
- * const example: InterfaceName = {
- *   property1: 'value',
- *   property2: 123
- * };
- * ```
- */
-interface InterfaceName {
-  /** Description of property1 */
-  property1: string;
-  /** Description of property2 with optional details */
-  property2: number;
-}
-```
-
-### Inline Comments
-**Use inline comments sparingly** to explain:
-- Complex business logic
-- Non-obvious algorithms
-- Important decisions or workarounds
-- Performance-critical sections
-
-#### Comment Style Guidelines
-- **Be concise**: Keep comments short and to the point
-- **Explain why, not what**: Focus on the reasoning behind the code
-- **Keep them updated**: Remove outdated comments immediately
-- **Use numbered steps for complex flows**: When explaining multi-step processes
-
-```typescript
-// ✅ Good - Explains complex logic
-// Process query results: check pagination, slice to correct size, format data, and prepare next cursor
-const hasNext = rows.length > itemsPerPage;
-const sliced = rows.slice(0, itemsPerPage);
-const items = formatFeedRows(sliced);
-
-// ✅ Good - Explains business reasoning
-// Skip items with negative scores (user doesn't want to see these)
-if (score < 0) continue;
-
-// ❌ Bad - Obvious code
-// Increment counter
-counter++;
-```
-
----
-
-## 🏗️ Code Quality Standards
-
-### Type Safety
-- **Avoid `any` type**: Always use proper TypeScript types
-- **Use interfaces**: Define clear interfaces for complex objects
-- **Leverage generics**: Use generics for reusable components
-- **Type assertions**: Prefer type guards over type assertions
-
-```typescript
-// ✅ Good
-interface FeedItem {
-  id: string;
-  title: string;
-  publishedAt: Date;
-}
-
-function processFeedItem(item: FeedItem): FormattedFeedItem {
-  return {
-    ...item,
-    formattedTitle: item.title.toUpperCase()
-  };
-}
-
-// ❌ Bad
-function processItem(item: any): any {
-  return {
-    ...item,
-    formattedTitle: (item as any).title.toUpperCase()
-  };
-}
-```
-
-### DRY Principle (Don't Repeat Yourself)
-- **Extract common logic**: Create helper functions for repeated code
-- **Use composition**: Combine small functions to create complex behavior
-- **Share types**: Define common interfaces and types
-- **Consolidate similar operations**: Group related functionality
-
-```typescript
-// ✅ Good - Extracted common logic
-const createBaseItem = (row: FeedRow) => ({
-  ...row,
-  isBreaking: isBreaking({
-    firstPublishedAt: row.publishedAt,
-    articleCount: row.cluster.articleCount || 1,
-  }),
-});
-
-// ❌ Bad - Repeated code
-processed.push({
-  ...row,
-  isBreaking: isBreaking({
-    firstPublishedAt: row.publishedAt,
-    articleCount: row.cluster.articleCount || 1,
-  }),
-});
-```
-
-### Error Handling
-- **Use consistent error patterns**: Follow existing error handling patterns
-- **Provide context**: Include relevant information in error messages
-- **Handle async errors**: Always handle promise rejections
-- **Log appropriately**: Use structured logging for debugging
-
-```typescript
-// ✅ Good
-export async function fetchFeedPage(params: FetchFeedPageParams = {}): Promise<CursorPage<FormattedFeedRow>> {
-  try {
-    const query = buildFeedBaseQuery(params.cursor);
-    const rows = await query.limit(params.itemsPerPage || FEED_PER_PAGE).execute();
-    return formatFeedResults(rows);
-  } catch (error) {
-    throw new Error(`Failed to fetch feed page: ${error.message}`);
-  }
-}
-```
-
----
-
-## 🎯 Project-Specific Conventions
-
-### Database Operations
-- **Use Drizzle ORM**: All database operations should use Drizzle
-- **Type-safe queries**: Leverage Drizzle's type safety
-- **Connection management**: Use the existing database connection pattern
-- **Schema Updates vs Migrations**:
-  - ⚠️ **DO NOT automatically run `bun db:generate`** on every database schema update.
-  - **Only update `src/db/schema.ts`** and associated application code/types.
-  - The user will review the schema changes and manually execute `db:generate` and `db:migrate` later.
-
-### API Design
-- **Consistent responses**: Use standard response formats
-- **Error responses**: Follow existing error response patterns
-- **Validation**: Validate inputs at route level
-- **Caching**: Implement caching for expensive operations
-
-### Performance Considerations
-- **Database queries**: Optimize for serverless execution
-- **Caching strategy**: Use multi-level caching (database + in-memory)
-- **Bundle size**: Keep dependencies minimal
-- **Cold starts**: Optimize for fast initialization
-
----
-
-## 📋 Code Review Checklist
-
-### Before Submitting Code
-- [ ] All functions have proper TSDoc/JSDoc comments
-- [ ] Naming conventions are followed consistently
-- [ ] No `any` types are used (unless absolutely necessary)
-- [ ] Code is DRY - no duplication detected
-- [ ] Error handling is implemented
-- [ ] Types are properly defined and used
-- [ ] Inline comments explain complex logic
-- [ ] Database operations use Drizzle ORM
-- [ ] Performance considerations are addressed
-
-### Common Issues to Watch For
-- Missing type annotations
-- Inconsistent naming
-- Duplicate code patterns
-- Unhandled promise rejections
-- Missing error handling
-- Over-commenting obvious code
-- Under-commenting complex logic
-
----
-
-## 🔧 Development Workflow
-
-### File Organization
-```
-src/
-├── cron/            # Cron jobs
-├── routes/          # API route handlers
-├── services/        # Business logic services
-├── db/              # Database models and schemas
-├── utils/           # Utility functions
-├── types/           # TypeScript type definitions
-├── middleware/      # Express middleware
-└── config/          # Configuration files
-```
-
-### Import Organization
-```typescript
-// 1. Node.js built-ins
-import { createHash } from 'crypto';
-
-// 2. External dependencies
-import express from 'express';
-import { eq, desc } from 'drizzle-orm';
-
-// 3. Internal modules (relative imports with `.js` extension)
-import { db } from '../config/database.js';
-import { FeedRow } from '../types/feed.js';
-import { formatFeedRows } from '../services/feed.js';
 ```
 
 ---
 
 ## 💻 Development Commands
 
-> **🔧 PowerShell Command Separator**
-> 
-> **Use `;` as command separator in PowerShell** to chain multiple commands:
-> 
+> **🔧 PowerShell Command Separator**  
+> Use `;` as command separator in PowerShell to chain commands:
 > ```powershell
-> # Example: Navigate to project and run test script
-> cd "e:\Flutter\Twistloom\twistloom-backend"; bun test-hero-image.ts
-> 
-> # Example: Test API request
-> (Invoke-WebRequest -Uri "https://twistloom-backend.vercel.app/api/endpoint?limit=15" -Method GET -Headers @{"Content-Type"="application/json"; "X-App-Version"="1.0.0"; "X-Platform"="web"} -UseBasicParsing).Content
-> 
-> # Example: Test SSE request
-> Invoke-WebRequest -Uri "http://192.168.1.6:3000/api/books/prompt" -Method GET -Headers @{"Content-Type"="text/event-stream"} -UseBasicParsing
-> 
-> # Example: Clean up test files and run type checking
-> Remove-Item test-*.ts; bun run typecheck
+> cd "d:\Projects\Twistloom\Twistloom-backend"; bun run check
 > ```
 
 ### Development Scripts
 ```bash
-bun dev          # Start development server with hot reload
-bun dev:api       # Start API server only
-bun dev:cron:trending    # Run trending scores cron job locally
-bun dev:cron:generate    # Run originals generation cron job locally
-bun dev:cron:candidate      # Run actions candidate generations cron job locally
+bun dev                         # Start dev server with hot reload
+bun dev:api                     # Start API server only
+bun dev:cron:trending           # Run trending score calculation locally
+bun dev:cron:candidate          # Run candidate generation cron locally
+bun dev:cron:translate          # Run translation cron locally
 ```
 
-### Production Scripts
+### Quality & Type Checking
 ```bash
-bun build         # Build TypeScript to JavaScript
-bun start          # Start production server
-bun start:api    # Start production API server
-bun start:cron:trending     # Run trending scores cron job in production
-bun start:cron:generate     # Run originals generation cron job in production
-bun start:cron:candidate       # Run actions candidate generations cron job in production
+bun typecheck                   # Run TypeScript compiler check
+bun lint                        # Run ESLint
+bun lint:fix                    # Auto-fix linting issues
+bun lint:imports                # Verify all imports have .js extensions
+bun check                       # Run lint + lint:imports + typecheck in sequence
 ```
 
-### Build & Quality Scripts
+### Database Scripts (Manual Developer Execution Only)
 ```bash
-bun build         # Build TypeScript to JavaScript
-bun typecheck      # Run TypeScript type checking
-bun lint          # Run ESLint on all files
-bun lint:fix       # Auto-fix ESLint issues
-bun lint:fast      # Run ESLint without promise checks
-bun lint:imports  # Validate import extensions
-bun check         # Run lint, import validation, and typecheck
+bun db:test                     # Test Neon connection
+bun db:studio                   # Open Drizzle Studio UI
+bun db:migrate                  # Apply pending migrations (Dev)
+bun db:triggers                 # Apply Postgres triggers
 ```
-
-### Database Scripts
-> ⚠️ **Note:** Do NOT run `db:generate` automatically when modifying `src/db/schema.ts`. Schema migrations are generated and applied by the user on demand.
-
-```bash
-bun db:generate   # Generate database migrations (USER ACTION ONLY)
-bun db:migrate    # Run database migrations
-bun db:migrate:prod    # Apply database migrations in production
-bun db:studio      # Open Drizzle Studio GUI
-bun db:test       # Test database connection
-bun db:extensions    # Install database extensions
-bun db:extensions:prod    # Install database extensions in production
-bun db:triggers    # Create database triggers
-bun db:triggers:prod    # Create database triggers in production
-bun db:clear      # Clear all database data
-bun db:clear:prod      # Clear all database data in production
-bun db:reset      # Reset database (clear + migrate + seed)
-bun db:reset:prod      # Reset database in production
-```
-
-## 🧪 Testing Guidelines
-
-### Test File Format
-Use Node.js testing approach with TypeScript and ES modules.
-
-**Only create and run tests when explicitly requested** by the user (on-demand testing).
-
-### Test Execution Format
-```bash
-# Windows PowerShell (use semicolon separator)
-cd "e:\Flutter\Twistloom\twistloom-backend"; bun test-something.ts
-cd "e:\Flutter\Twistloom\twistloom-backend"; Remove-Item test-*.ts
-# Or use bun for package scripts
-bun dev:cron
-```
-
-### Test Best Practices
-- **Create isolated test files** for specific debugging
-- **Use descriptive names** like `test-aljazeera-feed.js`
-- **Clean up test files** after debugging is complete
-- **Document test purpose** and expected outcomes
-- **Test without database dependencies** when possible
-- **Create simple tests that don't require the database or full app dependencies**
-- **Delete all temporary test files afterwards**
 
 ---
 
-## 📖 Additional Resources
+## 📋 Code Review Checklist for AI Agents
 
-### Documentation References
-- [TypeScript Handbook](https://www.typescriptlang.org/docs/)
-- [Drizzle ORM Documentation](https://orm.drizzle.team/)
-- [Express.js Guide](https://expressjs.com/en/guide/)
-- [Node.js Best Practices](https://github.com/goldbergyoni/nodebestpractices)
-
-### Project References
-- README.md for project overview and setup
-- Database schema files for data models
-- Route files for API patterns
-- Service files for business logic examples
+Before providing code modifications:
+- [ ] Multi-tier cache rules observed (LRU for process-local reads, Upstash Redis for distributed cache/locks, Postgres `user_cache` for persistent query cache).
+- [ ] Credit deductions use `executeWithCredits` with `tx` passed to all internal database operations.
+- [ ] Out-of-transaction activity logging for analytics so logging never breaks financial commits.
+- [ ] SSE streams pass `c.req.raw.signal` and use `pipeSSEStreamAndExtractText` or `StreamingJsonAnswerExtractor`.
+- [ ] All imports use explicit `.js` extensions.
+- [ ] No `any` types introduced; all types strictly defined.
+- [ ] Schema changes made **only** in `src/db/schema.ts` without triggering auto-migrations.
+- [ ] TSDoc comments provided for newly introduced functions and interfaces.
 
 ---
 
-*This document should be updated as the project evolves and new patterns emerge. All contributors should follow these guidelines to maintain code quality and consistency.*
+## 📚 Architecture Documentation Sitemap
+
+Before modifying or adding core backend subsystems, read the respective architectural specification:
+
+| Subsystem | Architectural Specification Document | Key Modules / Implementation |
+|---|---|---|
+| **Server-Sent Events (SSE)** | [`SERVER_SENT_EVENTS_STREAMING_ARCHITECTURE.md`](file:///d:/Projects/Twistloom/Twistloom-backend/docs/architecture/SERVER_SENT_EVENTS_STREAMING_ARCHITECTURE.md) | `src/utils/ai-chat-stream.ts`, `src/utils/companion-stream.ts` |
+| **AI Chat & Streaming** | [`AI_CHAT_STREAM_ARCHITECTURE.md`](file:///d:/Projects/Twistloom/Twistloom-backend/docs/architecture/AI_CHAT_STREAM_ARCHITECTURE.md) | `src/utils/ai-chat.ts`, `src/utils/prompt-stream.ts` |
+| **Branch Traversal & Cache** | [`BRANCH_TRAVERSAL_ARCHITECTURE.md`](file:///d:/Projects/Twistloom/Twistloom-backend/docs/architecture/BRANCH_TRAVERSAL_ARCHITECTURE.md) | `src/utils/branch-traversal.ts`, `src/services/story-state-cache.ts` |
+| **Payments & Credits** | [`PAYMENTS_ARCHITECTURE_BACKEND.md`](file:///d:/Projects/Twistloom/Twistloom-backend/docs/architecture/PAYMENTS_ARCHITECTURE_BACKEND.md) | `src/services/credits.ts`, `src/config/credits.ts` |
+| **Stripe Webhooks & Billing** | [`STRIPE_PAYMENT_ARCHITECTURE.md`](file:///d:/Projects/Twistloom/Twistloom-backend/docs/architecture/STRIPE_PAYMENT_ARCHITECTURE.md) | `src/routes/payments.ts`, `src/services/stripe.ts` |
+| **AI LLM Orchestration** | [`AI_LLM_ARCHITECTURE.md`](file:///d:/Projects/Twistloom/Twistloom-backend/docs/architecture/AI_LLM_ARCHITECTURE.md) | `src/utils/ai-clients.ts`, `src/utils/ai-parser.ts` |
+| **Explore, Filter & Cache** | [`BOOK_EXPLORE_FILTER_SORTING_ARCHITECTURE.md`](file:///d:/Projects/Twistloom/Twistloom-backend/docs/architecture/BOOK_EXPLORE_FILTER_SORTING_ARCHITECTURE.md) | `src/routes/books.ts`, `src/services/cache.ts` |
+| **Dual Authentication** | [`DUAL_AUTH_ARCHITECTURE.md`](file:///d:/Projects/Twistloom/Twistloom-backend/docs/architecture/DUAL_AUTH_ARCHITECTURE.md) | `src/routes/auth.ts`, `src/middleware/auth.ts` |

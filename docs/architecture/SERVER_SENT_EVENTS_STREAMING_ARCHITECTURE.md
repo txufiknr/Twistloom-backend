@@ -186,6 +186,9 @@ const { stream, provider } = await aiStreamSSE(
 
 Pipes binary SSE chunks from `aiStreamSSE` to the open client HTTP response in real time while simultaneously extracting, decoding, and accumulating the clean prose text from `data.content`.
 
+**Chunk Boundary Resilience (Line Buffering):**
+TCP / streaming chunks are not guaranteed to align with complete SSE lines (e.g. `data: {"ty` in chunk $N$ and `pe":"chunk","content":"..."}\n\n` in chunk $N+1$). `pipeSSEStreamAndExtractText` maintains an internal `lineBuffer` across reads, preserving partial trailing lines until the closing newline arrives.
+
 ```typescript
 // Twistloom-backend/src/routes/books.ts (GET /prompt)
 promptContent = await pipeSSEStreamAndExtractText(
@@ -202,7 +205,7 @@ await savePromptToCache({ content: promptContent, userId, language });
 ### 4.3 `parseSSEStreamContent` — SSE Stream Decoder
 **Location:** [`Twistloom-backend/src/utils/ai-chat-stream.ts`](file:///d:/Projects/Twistloom/Twistloom-backend/src/utils/ai-chat-stream.ts)
 
-Consumes an SSE stream and decodes all `data.content` fields into a single concatenated text string when live client piping is not required.
+Consumes an SSE stream and decodes all `data.content` fields into a single concatenated text string when live client piping is not required. Utilizes chunk-boundary line buffering to ensure 100% parse safety against fragmented stream packets.
 
 ```typescript
 const fullText = await parseSSEStreamContent(stream);
@@ -214,6 +217,9 @@ const fullText = await parseSSEStreamContent(stream);
 **Location:** [`Twistloom-backend/src/utils/companion-stream.ts`](file:///d:/Projects/Twistloom/Twistloom-backend/src/utils/companion-stream.ts)
 
 When models are instructed to output structured JSON (`outputJsonStructure`), the model streams raw JSON syntax (e.g. `{"answer": "He escaped...`). The `StreamingJsonAnswerExtractor` state machine intercepts the JSON tokens in flight, cleanly unwraps and decodes the `"answer"` string, and emits clean prose tokens to `onChunk(delta)` without ever leaking `{`, `"`, or JSON syntax to the reader.
+
+**$O(N)$ Single-Pass Cursor Processing:**
+To prevent CPU-intensive $O(N^2)$ buffer re-scanning during real-time streaming, `StreamingJsonAnswerExtractor` maintains an incremental character `cursor`. As each new delta chunk arrives, only new characters between `cursor` and `buffer.length` are scanned and decoded—visiting each character in the stream exactly once.
 
 ```typescript
 const { result, aiUsed } = await streamCompanionAnswerSSE({
@@ -252,27 +258,15 @@ for await (const chunk of cacheStream) {
 
 ## 5. Critical Anti-Patterns & Past Pitfalls (DO NOT REPEAT)
 
-```
-                                  COMMON STREAMING PITFALLS MATRIX
-┌───────────────────────────────────────────────┬───────────────────────────────────────────────┐
-│ ❌ ANTI-PATTERN                                │ ✅ CORRECT IMPLEMENTATION                     │
-├───────────────────────────────────────────────┼───────────────────────────────────────────────┤
-│ Concatenating raw Uint8Array and TextDecoding │ Use pipeSSEStreamAndExtractText to extract    │
-│ the buffer for DB caching (captures SSE lines)│ pure data.content text in real-time.          │
-├───────────────────────────────────────────────┼───────────────────────────────────────────────┤
-│ Double-wrapping cached prompts with SSE lines │ Ensure DB cache stores plain prose; replay via│
-│ because DB contained raw wire envelopes.      │ streamCachedPrompt cleanly.                   │
-├───────────────────────────────────────────────┼───────────────────────────────────────────────┤
-│ Streaming raw structured JSON tokens directly │ Use StreamingJsonAnswerExtractor to unwrap    │
-│ to user chat bubbles (shows raw JSON brackets)│ the "answer" property in flight.              │
-├───────────────────────────────────────────────┼───────────────────────────────────────────────┤
-│ Forgetting to pass c.req.raw.signal to AI     │ Always propagate signal so client aborts stop │
-│ streaming calls (orphans expensive AI compute)│ upstream AI provider streams immediately.     │
-├───────────────────────────────────────────────┼───────────────────────────────────────────────┤
-│ Manual stream.write(encoder.encode("event.."))│ Use Hono's typed helper:                      │
-│ for errors, risking malformed line breaks.    │ await stream.writeSSE({ event, data })        │
-└───────────────────────────────────────────────┴───────────────────────────────────────────────┘
-```
+| ❌ Anti-Pattern | ✅ Correct Implementation |
+| :--- | :--- |
+| **Concatenating raw `Uint8Array` and `TextDecoding`** the buffer for DB caching (captures raw SSE wire protocol lines). | Use [`pipeSSEStreamAndExtractText`](file:///d:/Projects/Twistloom/Twistloom-backend/src/utils/ai-chat-stream.ts) to extract pure `data.content` text in real-time. |
+| **Double-wrapping cached prompts with SSE lines** because DB stored raw wire envelopes. | Ensure DB cache stores plain prose; replay via [`streamCachedPrompt`](file:///d:/Projects/Twistloom/Twistloom-backend/src/utils/prompt-stream.ts) cleanly. |
+| **Streaming raw structured JSON tokens directly** to user chat bubbles (shows raw JSON brackets `{`, `"`). | Use [`StreamingJsonAnswerExtractor`](file:///d:/Projects/Twistloom/Twistloom-backend/src/utils/companion-stream.ts) to unwrap the `"answer"` property in flight. |
+| **Forgetting to pass `c.req.raw.signal` to AI** streaming calls (orphans expensive upstream AI compute on client abort). | Always propagate `signal` so client aborts stop upstream AI provider streams immediately. |
+| **Manual `stream.write(encoder.encode("event.."))`** for errors, risking malformed line breaks. | Use Hono's typed helper: `await stream.writeSSE({ event, data })`. |
+| **Quadratic $\mathcal{O}(N^2)$ buffer re-scanning** in incremental streaming extractors. | Maintain an incremental `cursor` pointer in [`StreamingJsonAnswerExtractor`](file:///d:/Projects/Twistloom/Twistloom-backend/src/utils/companion-stream.ts) to achieve strict $\mathcal{O}(N)$ single-pass extraction. |
+| **Parsing unbuffered SSE chunks without trailing line retention** on TCP packet boundaries. | Buffer incomplete lines across chunks in [`parseSSEStreamContent`](file:///d:/Projects/Twistloom/Twistloom-backend/src/utils/ai-chat-stream.ts) to prevent JSON parse exceptions on split lines. |
 
 ### Pitfall 1: The Raw Uint8Array TextDecoder Concatenation Trap
 - **The Bug**: `aiStreamSSE` yields `Uint8Array` bytes containing `event: chunk\ndata: {"type":"chunk","content":"..."}\n\n`. If you concatenate these chunks into a single `Uint8Array` and decode with `TextDecoder`, you store the **entire raw wire protocol text** in your database cache.
@@ -293,6 +287,14 @@ for await (const chunk of cacheStream) {
 ### Pitfall 5: Manual Wire Formatting Instead of `stream.writeSSE`
 - **The Bug**: Hand-crafting string templates (`stream.write(new TextEncoder().encode(...))`) easily leads to missing `\n\n` delimiters or improper JSON escaping on special characters.
 - **The Fix**: Use `await stream.writeSSE({ event, data })` from Hono's `streamSSE`.
+
+### Pitfall 6: Quadratic Buffer Re-scanning in Streaming Extractors
+- **The Bug**: Re-slicing and re-parsing the entire accumulated string buffer from character 0 on every incoming token delta causes CPU complexity to explode to $O(N^2)$, exhausting serverless CPU quotas during live streaming.
+- **The Fix**: Use incremental cursor tracking (`this.cursor`) in [`StreamingJsonAnswerExtractor`](file:///d:/Projects/Twistloom/Twistloom-backend/src/utils/companion-stream.ts) to guarantee $O(N)$ single-pass processing.
+
+### Pitfall 7: Parsing Unbuffered SSE Chunks across Packet Boundaries
+- **The Bug**: Doing bare `chunkText.split('\n')` assumes TCP packets always break on newline boundaries. When a JSON line is sliced across two chunks, parsing immediately fails with a syntax error.
+- **The Fix**: Maintain an internal `lineBuffer` across reads in [`parseSSEStreamContent`](file:///d:/Projects/Twistloom/Twistloom-backend/src/utils/ai-chat-stream.ts) and [`pipeSSEStreamAndExtractText`](file:///d:/Projects/Twistloom/Twistloom-backend/src/utils/ai-chat-stream.ts), only evaluating complete lines.
 
 ---
 

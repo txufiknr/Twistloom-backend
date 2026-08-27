@@ -16,14 +16,15 @@ import type { AIChatStreamProvider } from "../types/sse.js";
 
 /**
  * State machine for incrementally extracting the "answer" string value from a streaming JSON payload.
+ * Optimized for O(N) single-pass cursor processing with zero redundant buffer rescans.
  */
 export class StreamingJsonAnswerExtractor {
   private buffer = "";
   private answerText = "";
-  private emittedLength = 0;
   private inAnswer = false;
   private isDoneAnswer = false;
   private inEscape = false;
+  private cursor = 0;
 
   /**
    * Processes a new delta text chunk from the LLM stream.
@@ -42,47 +43,34 @@ export class StreamingJsonAnswerExtractor {
       const match = this.buffer.match(/"answer"\s*:\s*"/);
       if (match && match.index !== undefined) {
         this.inAnswer = true;
-        const startIndex = match.index + match[0].length;
-        // Slice the buffer to start exactly inside the answer string
-        const remaining = this.buffer.slice(startIndex);
-        return this.processAnswerString(remaining);
+        this.cursor = match.index + match[0].length;
+      } else {
+        return "";
       }
-      return "";
     }
 
-    // Step 2: We are already inside the answer string
-    return this.processAnswerString(this.buffer.slice(this.getAnswerStartIndex()));
-  }
-
-  private getAnswerStartIndex(): number {
-    const match = this.buffer.match(/"answer"\s*:\s*"/);
-    return match && match.index !== undefined ? match.index + match[0].length : 0;
-  }
-
-  private processAnswerString(contentFromStart: string): string {
-    let decoded = "";
-    let i = 0;
-
-    while (i < contentFromStart.length) {
-      const char = contentFromStart[i];
+    // Step 2: Incrementally process characters from this.cursor onward (O(N) linear time)
+    let newlyDecoded = "";
+    while (this.cursor < this.buffer.length) {
+      const char = this.buffer[this.cursor];
 
       if (this.inEscape) {
-        if (char === "n") decoded += "\n";
-        else if (char === "t") decoded += "\t";
-        else if (char === "r") decoded += "\r";
-        else if (char === '"') decoded += '"';
-        else if (char === "\\") decoded += "\\";
-        else if (char === "/") decoded += "/";
-        else if (char === "u" && i + 4 < contentFromStart.length) {
-          const hex = contentFromStart.slice(i + 1, i + 5);
+        if (char === "n") newlyDecoded += "\n";
+        else if (char === "t") newlyDecoded += "\t";
+        else if (char === "r") newlyDecoded += "\r";
+        else if (char === '"') newlyDecoded += '"';
+        else if (char === "\\") newlyDecoded += "\\";
+        else if (char === "/") newlyDecoded += "/";
+        else if (char === "u" && this.cursor + 4 < this.buffer.length) {
+          const hex = this.buffer.slice(this.cursor + 1, this.cursor + 5);
           try {
-            decoded += String.fromCharCode(parseInt(hex, 16));
-            i += 4;
+            newlyDecoded += String.fromCharCode(parseInt(hex, 16));
+            this.cursor += 4;
           } catch {
-            decoded += char;
+            newlyDecoded += char;
           }
         } else {
-          decoded += char;
+          newlyDecoded += char;
         }
         this.inEscape = false;
       } else if (char === "\\") {
@@ -90,19 +78,17 @@ export class StreamingJsonAnswerExtractor {
       } else if (char === '"') {
         // Unescaped closing quote — end of answer string
         this.isDoneAnswer = true;
+        this.cursor++;
         break;
       } else {
-        decoded += char;
+        newlyDecoded += char;
       }
 
-      i++;
+      this.cursor++;
     }
 
-    // Only emit the newly decoded portion that hasn't been emitted yet
-    const newChars = decoded.slice(this.emittedLength);
-    this.emittedLength = decoded.length;
-    this.answerText = decoded;
-    return newChars;
+    this.answerText += newlyDecoded;
+    return newlyDecoded;
   }
 
   /**

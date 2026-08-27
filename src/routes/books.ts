@@ -150,7 +150,7 @@ import { getLockedPaths } from "../services/locked-paths.js";
 import { runGate0, runGate1, buildCustomActionValidationPrompt, buildCanonicalAction, getRejectionMessage, CUSTOM_ACTION_VALIDATION_SCHEMA_DEFINITION, CUSTOM_ACTION_VALIDATION_REQUIRED_FIELDS, generatePageForCustomAction, CUSTOM_ACTION_GENERATION_STALE_MS } from "../services/custom-actions.js";
 import { loadOwnCustomActions, mapCustomActionRowToAction } from "../services/book.js";
 import { customActions } from "../db/schema.js";
-import { getStoryStateFromPage, getStoryState, computeEndingStats, setActiveSession } from "../services/story.js";
+import { getStoryStateFromPage, getStoryState, computeEndingStats, setActiveSession, touchReadingSession } from "../services/story.js";
 import { getStoryStateWithBranch } from "../services/story-branch.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 import { notifyForumOfBookChange, notifyForumStoryArchived } from "../services/forum-queue.js";
@@ -5246,32 +5246,34 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
     const { dbBook, dbPage, userPage, isGenerating, isDone } = validationResult;
     const { actions, updatedAt } = userPage;
 
+    const shouldTrigger = c.req.query("trigger") === "true";
+
     // ── Own custom actions ────────────────────────────────────────────────────
     // Only the owner's own custom submissions participate in this page's
     // generation status, so their poll streams the custom action alongside canon
     // progress. Other readers / unauthenticated requests see the canon-only
     // picture and halt at canon-done exactly as before.
     const ownCustomRows = userId ? await loadOwnCustomActions(dbBook.id, pageIdStr, userId) : [];
-    let customActionsForStatus = ownCustomRows.map((row) => mapCustomActionRowToAction(row));
+    const customActionsForStatus = ownCustomRows.map((row) => mapCustomActionRowToAction(row));
 
-    // Drive stale pending custom generations to completion. Awaiting keeps the
-    // request (and therefore the serverless function) alive while the single
-    // AI page is generated — mirroring how the SSE candidate path runs
-    // generation in-process. The driver's per-(page,user) lock plus its
-    // nextPageId / generationStartedAt idempotency guards make repeated status
-    // polls safe: active generations are skipped, completed ones short-circuit.
+    // Stale custom actions: When explicitly requested via `?trigger=true`, dispatch
+    // a background workflow instead of burning Vercel Fluid CPU with in-process generation.
     const staleCustomRows = ownCustomRows.filter((row) => !row.nextPageId && (
       row.generationStartedAt
         ? Date.now() - row.generationStartedAt.getTime() >= CUSTOM_ACTION_GENERATION_STALE_MS
         : true
     ));
-    if (staleCustomRows.length > 0) {
-      for (const row of staleCustomRows) {
-        await generatePageForCustomAction({ userId: userId!, bookId: dbBook.id, pageId: pageIdStr, customActionId: row.id });
-      }
-      // Re-read rows so a just-completed custom action flushes out immediately.
-      const refreshedRows = await loadOwnCustomActions(dbBook.id, pageIdStr, userId!);
-      customActionsForStatus = refreshedRows.map((row) => mapCustomActionRowToAction(row));
+    if (staleCustomRows.length > 0 && shouldTrigger) {
+      triggerCandidateGenerationWorkflow({
+        bookTitle: dbBook.title,
+        bookId: dbPage.bookId,
+        pageId: pageIdStr,
+        userId: userId ?? requireEnv("SYSTEM_USER_ID"),
+        maxDepth: MAX_BRANCHING_PREGENERATION_DEPTH,
+        context: 'GET /candidates/status?trigger=true',
+      }).catch((err) => {
+        console.error(`[GET /candidates/status] ❌ Failed to trigger workflow for stale custom action:`, err);
+      });
     }
 
     // Merged view: canon actions + the owner's custom actions (SSOT for totals).
@@ -5379,28 +5381,29 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
       } satisfies CandidateGenerationStatus);
     }
     
-    // Actions incomplete, trigger background generation via GitHub workflow
-    console.log(`[GET /candidates/status] ⏳ Generation incomplete for page ${pageIdStr}: ${completedActions}/${actions.length} actions completed`);
-    
-    // Trigger workflow and wait for result to ensure it actually starts
-    const workflowResult = await triggerCandidateGenerationWorkflow({
-      bookTitle: dbBook.title,
-      bookId: dbPage.bookId,
-      pageId: pageIdStr,
-      userId: userId ?? requireEnv("SYSTEM_USER_ID"), // Use system user ID for unauthenticated requests
-      maxDepth: MAX_BRANCHING_PREGENERATION_DEPTH, // Also pre-generate next-level depths
-      context: 'GET /candidates/status',
-    });
+    // Actions incomplete: only dispatch workflow if client explicitly passed `trigger=true`
+    if (shouldTrigger) {
+      console.log(`[GET /candidates/status] ⏳ Generation incomplete for page ${pageIdStr}: triggering background workflow (trigger=true)`);
+      const workflowResult = await triggerCandidateGenerationWorkflow({
+        bookTitle: dbBook.title,
+        bookId: dbPage.bookId,
+        pageId: pageIdStr,
+        userId: userId ?? requireEnv("SYSTEM_USER_ID"), // Use system user ID for unauthenticated requests
+        maxDepth: MAX_BRANCHING_PREGENERATION_DEPTH, // Also pre-generate next-level depths
+        context: 'GET /candidates/status?trigger=true',
+      });
 
-    // If workflow trigger failed, log error and inform client
-    if (!workflowResult.success && !workflowResult.alreadyInProgress) {
-      console.error(`[GET /candidates/status] ❌ Failed to trigger GitHub workflow for page ${pageIdStr}:`, workflowResult.error);
-      // Return error response to client so they can retry
-      return c.json({
-        error: 'Failed to trigger generation workflow',
-        details: workflowResult.error,
-        isGenerating: false,
-      }, 503);
+      // If workflow trigger failed, log error and inform client
+      if (!workflowResult.success && !workflowResult.alreadyInProgress) {
+        console.error(`[GET /candidates/status] ❌ Failed to trigger GitHub workflow for page ${pageIdStr}:`, workflowResult.error);
+        return c.json({
+          error: 'Failed to trigger generation workflow',
+          details: workflowResult.error,
+          isGenerating: false,
+        }, 503);
+      }
+    } else {
+      console.log(`[GET /candidates/status] ⏳ Generation incomplete for page ${pageIdStr} (read-only poll, trigger=false)`);
     }
 
     return c.json({
@@ -6343,13 +6346,10 @@ router.post("/:identifier/:pageId/touch", requireAuth, async (c) => {
   const dbPage = await getPageFromDB(pageIdStr, { bookIdentifier: book.id });
   if (!dbPage) return cNotFoundError(c, "Page not found");
 
-  // Upsert the active session row via setActiveSession, which applies the
-  // branch-aware frontier rule (active-tip, preserved on back-navigation) and
-  // bumps updated_at. This is the same row the `reads` sort and
-  // `getEnrichedBook` session subquery read from, so the dashboard reorders
-  // immediately — without any visit/progress/credit side effects.
+  // Upsert/touch the active session row via touchReadingSession (Fluid CPU optimized:
+  // bumps updated_at without loading full story state JSON or recalculating branch frontiers).
   const now = new Date();
-  const session = await setActiveSession({
+  const session = await touchReadingSession({
     userId,
     bookId: book.id,
     pageId: pageIdStr,

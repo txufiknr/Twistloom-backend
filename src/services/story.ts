@@ -240,6 +240,58 @@ export async function setActiveSession(params: SetActiveSessionParams, options?:
 }
 
 /**
+ * Lightweight reading session heartbeat updater (Fluid CPU optimized).
+ *
+ * Updates only `updatedAt` and current `pageId` on the user's reading session
+ * without incurring the heavy CPU cost of loading/parsing `story_states` JSON,
+ * frontier re-calculation, cache invalidation, or activity logging.
+ *
+ * Designed specifically for high-frequency reader heartbeats (`POST .../touch`).
+ *
+ * @param params - User, book, and current page identifiers
+ * @param options - Optional database client override
+ * @returns Updated session timestamp or null on failure
+ */
+export async function touchReadingSession(
+  params: {
+    userId: string;
+    bookId: string;
+    pageId: string;
+    pageNumber?: number;
+    previousPageId?: string;
+  },
+  options?: { client?: DBClient }
+): Promise<{ updatedAt: Date } | null> {
+  const { userId, bookId, pageId, pageNumber = 1, previousPageId } = params;
+  const client = options?.client ?? dbWrite;
+
+  const [result] = await client
+    .insert(userSessions)
+    .values({
+      userId,
+      bookId,
+      pageId,
+      previousPageId,
+      frontierPageId: pageId,
+      frontierPageNumber: pageNumber,
+      frontierAncestorIds: [pageId],
+      status: 'active',
+    })
+    .onConflictDoUpdate({
+      target: [userSessions.userId, userSessions.bookId],
+      set: {
+        pageId,
+        status: 'active',
+        updatedAt: new Date(),
+      },
+    })
+    .returning({ updatedAt: userSessions.updatedAt });
+
+  return result ?? null;
+}
+
+
+/**
  * Builds the ancestor id list for a touched page's branch-aware frontier.
  *
  * The frontier is the active tip of the reader's path. Its ancestor ids are the

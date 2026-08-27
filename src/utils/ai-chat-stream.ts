@@ -9,7 +9,7 @@ import { getErrorMessage } from "./error.js";
 import { retryWithBackoff } from "./retry.js";
 import { createTextChunkEvent, createErrorEvent, createStartEvent, createEndEvent, handleBackpressure } from "./sse.js";
 import {
-  formatSystemPromptWithDocuments, getMaxOutputToken, isSchemaTooComplex, logPromptWithSeparators,
+  formatSystemPromptWithDocuments, getMaxOutputToken, isSchemaTooComplex, logAIPrompt,
   buildChatMessages, buildJsonSchemaObject, buildOpenAIResponseFormat, buildMistralResponseFormat, buildCohereResponseFormat,
   buildGeminiResponseJsonSchema, buildSamplingParams, resolveGeminiCachedContent, buildGeminiConfig, buildMistralPromptCacheKey,
   resolveStreamDefaultModel, sumDocumentChars, assertPromptAllowed, buildModelRetryConfig, extractDeltaText, nvidiaChatRequest,
@@ -187,7 +187,7 @@ export async function aiStreamSSE(
           console.log(`[${provider}] 🧠 Starting SSE streaming task (${models.length} models)...`);
           
           const shouldLogPrompts = logPrompts;
-          logPromptWithSeparators(provider, '💬 Built user prompt', prompt, shouldLogPrompts);
+          logAIPrompt(provider, '💬 Built user prompt', prompt, shouldLogPrompts);
 
           // Apply rate limiting before streaming
           await getRateLimiter(provider).throttle();
@@ -987,24 +987,44 @@ async function* nvidiaStreamGenerator(
  */
 export async function parseSSEStreamContent(stream: ReadableStream<Uint8Array>): Promise<string> {
   let text = "";
+  let lineBuffer = "";
   const decoder = new TextDecoder();
   
   for await (const chunk of stream) {
-    const chunkText = decoder.decode(chunk, { stream: true });
+    lineBuffer += decoder.decode(chunk, { stream: true });
     
-    // Parse SSE format to extract JSON data
-    // Format: "event: chunk\ndata: {\"type\":\"chunk\",\"content\":\"...\",\"done\":...}\n\n"
-    const lines = chunkText.split('\n');
+    // Split by newlines while preserving incomplete trailing line in lineBuffer
+    const lines = lineBuffer.split('\n');
+    lineBuffer = lines.pop() || '';
+    
     for (const line of lines) {
-      if (line.startsWith('data: ')) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('data: ')) {
+        const rawJson = trimmed.slice(6);
+        if (rawJson === '[DONE]') continue;
         try {
-          const data = JSON.parse(line.substring(6));
-          if (data.type === 'chunk' && data.content) {
+          const data = JSON.parse(rawJson);
+          if (data.type === 'chunk' && typeof data.content === 'string') {
+            text += data.content;
+          } else if (typeof data.content === 'string') {
             text += data.content;
           }
         } catch {
-          // Skip lines that can't be parsed as JSON
+          // Skip partial or non-JSON SSE lines
         }
+      }
+    }
+  }
+
+  // Process any remaining buffered text
+  if (lineBuffer.trim().startsWith('data: ')) {
+    const rawJson = lineBuffer.trim().slice(6);
+    if (rawJson !== '[DONE]') {
+      try {
+        const data = JSON.parse(rawJson);
+        if (typeof data.content === 'string') text += data.content;
+      } catch {
+        // Ignore trailing partial chunk
       }
     }
   }
@@ -1025,16 +1045,23 @@ export async function pipeSSEStreamAndExtractText(
   writeChunk: (chunk: Uint8Array) => Promise<unknown> | unknown
 ): Promise<string> {
   let text = "";
+  let lineBuffer = "";
   const decoder = new TextDecoder();
 
   for await (const chunk of stream) {
     await writeChunk(chunk);
-    const chunkText = decoder.decode(chunk, { stream: true });
-    const lines = chunkText.split("\n");
+    lineBuffer += decoder.decode(chunk, { stream: true });
+    
+    const lines = lineBuffer.split("\n");
+    lineBuffer = lines.pop() || "";
+
     for (const line of lines) {
-      if (line.startsWith("data: ")) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith("data: ")) {
+        const rawJson = trimmed.slice(6);
+        if (rawJson === "[DONE]") continue;
         try {
-          const data = JSON.parse(line.substring(6));
+          const data = JSON.parse(rawJson);
           if (data.type === "chunk" && typeof data.content === "string") {
             text += data.content;
           } else if (typeof data.content === "string") {
@@ -1043,6 +1070,18 @@ export async function pipeSSEStreamAndExtractText(
         } catch {
           // Ignore non-JSON SSE lines
         }
+      }
+    }
+  }
+
+  if (lineBuffer.trim().startsWith("data: ")) {
+    const rawJson = lineBuffer.trim().slice(6);
+    if (rawJson !== "[DONE]") {
+      try {
+        const data = JSON.parse(rawJson);
+        if (typeof data.content === "string") text += data.content;
+      } catch {
+        // Ignore trailing partial chunk
       }
     }
   }
