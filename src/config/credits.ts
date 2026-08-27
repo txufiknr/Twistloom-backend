@@ -144,6 +144,11 @@ export const CREDIT_COSTS_BASE = {
    * on highlighted prose in the draft surface.
    */
   PEN_TRANSFORM: 1,
+  /**
+   * Scene cast AI detection — scans story prose to infer present characters,
+   * roles, focus weights, and propose new lore entities.
+   */
+  PEN_DETECT_CAST: 1,
 
   /* ── Companion (reader AI Q&A) ─────────────────────────────────────────── */
   /** One grounded AI question-and-answer call (reader companion panel). */

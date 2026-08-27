@@ -530,4 +530,24 @@ export type PenNoteUpdate = {
   annotation?: string | null;
 };
 
+// ── Scene Cast AI Detection ───────────────────────────────────────────────
+
+export type DetectedCastCharacter = {
+  name: string;
+  characterId?: string;
+  role: CharacterSceneRole;
+  focus: number;
+  description?: string;
+  triggerKeywords?: string[];
+  isNew?: boolean;
+};
+
+export type PenCastDetectInput = {
+  draftText: string;
+};
+
+export type PenCastDetectResult = {
+  characters: DetectedCastCharacter[];
+};
+
 

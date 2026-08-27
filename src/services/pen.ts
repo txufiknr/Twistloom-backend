@@ -14,10 +14,10 @@ import { dbRead, dbWrite, type DBClient } from "../db/client.js";
 import { getBookFromDB, getBookPages, deleteStoryPage, updateBook } from "./book.js";
 import { getTriggeredLoreEntries, listLoreEntries } from "./lore.js";
 import type { DBBook, DBPenSession, DBPenDraft } from "../types/schema.js";
-import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraft, PenDraftCharacter, PenDraftSceneEssentials, PenDraftSummary, PenDraftUpdates, PenEdit, PenSessionStatus, FinalizeViolation, CanonAmendment, PenEditType, PenOutlineData, PenOutlinePage, PenAuthorPage, AuthorshipOrigin, PenTransformInput, PenTransformResult, PenNote, PenNoteInput, PenNoteUpdate, LoreEntry, PenLatentBranch } from "../types/pen.js";
+import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraft, PenDraftCharacter, PenDraftSceneEssentials, PenDraftSummary, PenDraftUpdates, PenEdit, PenSessionStatus, FinalizeViolation, CanonAmendment, PenEditType, PenOutlineData, PenOutlinePage, PenAuthorPage, AuthorshipOrigin, PenTransformInput, PenTransformResult, PenNote, PenNoteInput, PenNoteUpdate, LoreEntry, PenLatentBranch, DetectedCastCharacter, PenCastDetectInput, PenCastDetectResult } from "../types/pen.js";
 import type { BookMode } from "../types/book.js";
 import type { StoryState, Action, StoryGeneration, PersistedStoryPage, SceneCharacter, CharacterSceneRole, Mood, ActionType, ActionHint, ActionHintType, Ending, StoryOutline, EndingType } from "../types/story.js";
-import { moods, actionTypes, actionHintTypes } from "../types/story.js";
+import { moods, actionTypes, actionHintTypes, characterSceneRoles } from "../types/story.js";
 import type { PlaceWeather } from "../types/places.js";
 import { placeWeathers } from "../types/places.js";
 import type { CandidateGenerationPage } from "../types/candidate-generation.js";
@@ -28,8 +28,8 @@ import type { Gender } from "../types/user.js";
 import { getBranchPath } from "../utils/branch-traversal.js";
 import { processCharacterUpdates, isMainCharacterValid } from "../utils/characters.js";
 import { getStoryStateWithBranch } from "./story-branch.js";
-import { buildPenContinuePrompt, PEN_CONTINUE_SCHEMA, PEN_CONTINUE_REQUIRED_FIELDS, buildPenEssentialsAutofillPrompt, PEN_ESSENTIALS_SCHEMA, PEN_ESSENTIALS_REQUIRED_FIELDS, PEN_ESSENTIALS_REVIEW_SCHEMA, buildPenStateProposalPrompt, PEN_STATE_PROPOSAL_SCHEMA, PEN_STATE_PROPOSAL_REQUIRED_FIELDS, buildPenTransformPrompt, PEN_TRANSFORM_SCHEMA, PEN_TRANSFORM_REQUIRED_FIELDS, type PenContinueCommonParams } from "../utils/pen-prompt.js";
-import type { PenContinueResult as PenContinueAIOutput, PenEssentialsAutofillResult as PenEssentialsAIOutput, PenStateProposalResult as PenStateProposalAIOutput, PenTransformResult as PenTransformAIOutput } from "../utils/pen-prompt.js";
+import { buildPenContinuePrompt, PEN_CONTINUE_SCHEMA, PEN_CONTINUE_REQUIRED_FIELDS, buildPenEssentialsAutofillPrompt, PEN_ESSENTIALS_SCHEMA, PEN_ESSENTIALS_REQUIRED_FIELDS, PEN_ESSENTIALS_REVIEW_SCHEMA, buildPenStateProposalPrompt, PEN_STATE_PROPOSAL_SCHEMA, PEN_STATE_PROPOSAL_REQUIRED_FIELDS, buildPenTransformPrompt, PEN_TRANSFORM_SCHEMA, PEN_TRANSFORM_REQUIRED_FIELDS, buildPenCastDetectPrompt, PEN_CAST_DETECT_SCHEMA, PEN_CAST_DETECT_REQUIRED_FIELDS, type PenContinueCommonParams } from "../utils/pen-prompt.js";
+import type { PenContinueResult as PenContinueAIOutput, PenEssentialsAutofillResult as PenEssentialsAIOutput, PenStateProposalResult as PenStateProposalAIOutput, PenTransformResult as PenTransformAIOutput, PenCastDetectAIOutput } from "../utils/pen-prompt.js";
 import { aiPrompt, createAIOptionsWithSchema } from "../utils/ai-chat.js";
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
@@ -1733,6 +1733,231 @@ export async function autofillSceneEssentials(
   );
 
   return { essentials: result };
+}
+
+/** Errors thrown while running a `/cast/detect` request. */
+export class PenCastDetectError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PenCastDetectError";
+  }
+}
+
+/**
+ * Scans story text from the draft to infer all characters present on the scene,
+ * their roles, focus weights, and propose new lore entities.
+ *
+ * Runs inside executeWithCredits('PEN_DETECT_CAST') (1 credit).
+ * Writes an audit row to `pen_edits` with `editType: 'plan'`.
+ */
+export async function detectSceneCast(
+  userId: string,
+  sessionId: string,
+  input: PenCastDetectInput
+): Promise<PenCastDetectResult> {
+  const session = await getPenSessionById(userId, sessionId);
+  const book: DBBook | null = await getBookFromDB(session.bookId);
+  if (!book) throw new PenCastDetectError("Book not found for this session");
+
+  if (session.status !== "active") {
+    throw new PenCastDetectError("Session is not active; reopen it before detecting cast");
+  }
+
+  const draftText = stripHtmlTags(input.draftText ?? "").trim();
+  if (!draftText) {
+    throw new PenCastDetectError("Draft prose is empty");
+  }
+
+  // Story state + recent prose from the last published page, when one exists
+  let state: StoryState | null = null;
+  let pageTexts: string[] = [];
+  let momentum: string | null = null;
+  let sceneType: string | null = null;
+  let lastPage: PersistedStoryPage | undefined;
+
+  if (session.currentPageId) {
+    state = await getStoryStateWithBranch(book.id, session.currentPageId);
+    const branch = await getBranchPath(session.currentPageId);
+    pageTexts = branch.pages.map((p) => p.text).filter(Boolean);
+    lastPage = branch.pages[branch.pages.length - 1];
+    momentum = lastPage?.momentum ?? null;
+    sceneType = lastPage?.sceneType ?? null;
+  } else if (book.ending) {
+    state = {
+      ...createEmptyStoryState("", 1, book.totalPages ?? 1),
+      viableEnding: book.ending,
+      hiddenState: createInitialHiddenState(),
+    };
+  }
+
+  const mcName = book.mc?.knownName || book.mc?.name || "";
+  const language = book.language || "en";
+
+  // Fetch lore entries to know existing character universe
+  const allLoreEntries = await listLoreEntries(userId, book.id);
+  const charLore = allLoreEntries.filter((e) => e.entryType === "character");
+
+  // Collect known characters from story state + lore
+  const knownCharacters: Array<{ id: string; name: string; role?: string; bio?: string }> = [];
+  const knownNameMap = new Map<string, string>(); // lower(name) -> id
+
+  if (book.mc) {
+    const mcLabel = book.mc.knownName || book.mc.name;
+    if (mcLabel) knownNameMap.set(mcLabel.toLowerCase(), "mc");
+  }
+
+  if (state?.characters) {
+    for (const [id, c] of Object.entries(state.characters)) {
+      const name = c.knownName || c.realName || id;
+      knownCharacters.push({ id, name, role: c.role, bio: c.bio });
+      knownNameMap.set(name.toLowerCase(), id);
+      if (c.realName) knownNameMap.set(c.realName.toLowerCase(), id);
+    }
+  }
+
+  for (const entry of charLore) {
+    const name = entry.name;
+    const charId = entry.linkedCharacterId || entry.id;
+    if (!knownCharacters.some((c) => c.id === charId)) {
+      knownCharacters.push({ id: charId, name, bio: entry.description });
+    }
+    knownNameMap.set(name.toLowerCase(), charId);
+    for (const kw of entry.triggerKeywords ?? []) {
+      if (kw.trim().length >= 2) {
+        knownNameMap.set(kw.trim().toLowerCase(), charId);
+      }
+    }
+  }
+
+  const loreHaystack = [state?.contextHistory ?? "", ...pageTexts, draftText].join("\n");
+  const triggeredLore = await getTriggeredLoreEntries(book.id, loreHaystack);
+
+  const { systemPrompt, userPrompt } = buildPenCastDetectPrompt({
+    state,
+    lore: triggeredLore,
+    pageTexts,
+    mcName,
+    language,
+    bookSummary: book.summary ?? null,
+    storyStartDate: book.storyStartDate ?? null,
+    momentum,
+    sceneType,
+    essentials: inheritSceneEssentials(session.draftSceneEssentials, lastPage),
+    draftText,
+    knownCharacters,
+  });
+
+  const promptConfig: AIPromptForJson<PenCastDetectAIOutput> = {
+    schema: PEN_CAST_DETECT_SCHEMA,
+    requiredFields: PEN_CAST_DETECT_REQUIRED_FIELDS,
+    fallbackField: "characters",
+    baseOptions: {
+      modelSelection: AI_CHAT_MODELS_WRITING,
+      context: "pen-cast-detect",
+      systemPrompt,
+      config: { ...AI_CHAT_CONFIG_DEFAULT, maxOutputToken: 1200 },
+    },
+  };
+
+  const { result } = await executeWithCredits(
+    userId,
+    "PEN_DETECT_CAST",
+    async (tx) => {
+      const [current] = await tx
+        .select()
+        .from(penSessions)
+        .where(and(eq(penSessions.id, sessionId), eq(penSessions.userId, userId)))
+        .limit(1);
+      if (!current) throw new PenSessionNotFoundError();
+
+      const aiResponse = await aiPrompt<PenCastDetectAIOutput>(userPrompt, createAIOptionsWithSchema(promptConfig));
+      const output = aiResponse.result;
+
+      if (!output || !Array.isArray(output.characters)) {
+        throw new PenCastDetectError("AI returned no cast detections");
+      }
+
+      // Defensive coercion and deduplication
+      const detected: DetectedCastCharacter[] = [];
+      const seenNames = new Set<string>();
+
+      for (const item of output.characters) {
+        if (!item || typeof item !== "object") continue;
+        const name = (item.name ?? "").trim();
+        if (name.length < 2) continue;
+        const lowerName = name.toLowerCase();
+        if (seenNames.has(lowerName)) continue;
+        seenNames.add(lowerName);
+
+        // Role verification
+        const role: CharacterSceneRole =
+          (characterSceneRoles as readonly string[]).includes(item.role as CharacterSceneRole)
+            ? (item.role as CharacterSceneRole)
+            : "supporting";
+
+        // Focus clamping (0.1 - 1.0)
+        let focus = typeof item.focus === "number" && Number.isFinite(item.focus) ? item.focus : 0.5;
+        focus = Math.min(1, Math.max(0.1, Number(focus.toFixed(2))));
+
+        // Check if character is known / MC / in lore
+        const isMc = mcName && (lowerName === mcName.toLowerCase() || item.characterId === "mc");
+        const knownId = isMc ? "mc" : (item.characterId || knownNameMap.get(lowerName));
+
+        const isNew = !isMc && !knownId && (item.isNew !== false);
+
+        detected.push({
+          name: isMc ? mcName : name,
+          characterId: knownId || undefined,
+          role,
+          focus,
+          description: item.description?.trim() || undefined,
+          triggerKeywords: Array.isArray(item.triggerKeywords)
+            ? item.triggerKeywords.map((k) => String(k).trim()).filter(Boolean)
+            : undefined,
+          isNew,
+        });
+      }
+
+      const edit: PenEdit = {
+        id: generateId(),
+        sessionId,
+        userId,
+        bookId: book.id,
+        pageId: null,
+        editType: "plan",
+        authorInput: draftText.slice(0, 500),
+        aiOutput: JSON.stringify(detected),
+        finalText: null,
+        contextPageId: session.currentPageId,
+        charOffsetStart: null,
+        charOffsetEnd: null,
+        authoringMode: session.authoringMode,
+        authoringPov: null,
+        createdAt: new Date(),
+      };
+
+      await tx.insert(penEdits).values({
+        id: edit.id,
+        sessionId: edit.sessionId,
+        userId: edit.userId,
+        bookId: edit.bookId,
+        pageId: null,
+        editType: edit.editType,
+        authorInput: edit.authorInput,
+        aiOutput: edit.aiOutput,
+        finalText: null,
+        contextPageId: edit.contextPageId,
+        authoringMode: edit.authoringMode,
+        authoringPov: null,
+        createdAt: edit.createdAt,
+      });
+
+      return detected;
+    },
+    { context: "pen_cast_detect", metadata: { sessionId, bookId: book.id } }
+  );
+
+  return { characters: result };
 }
 
 /**

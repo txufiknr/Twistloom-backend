@@ -28,9 +28,9 @@
  */
 
 import type { StoryState } from "../types/story.js";
-import { moods, actionTypes, actionHintTypes } from "../types/story.js";
+import { moods, actionTypes, actionHintTypes, characterSceneRoles } from "../types/story.js";
 import { placeWeathers } from "../types/places.js";
-import type { AuthoringMode, AuthoringPov, CoWritingPersona, LoreEntry, PenDraftSceneEssentials, PenBlockAction, PenBlockSubAction, PenTransformResult } from "../types/pen.js";
+import type { AuthoringMode, AuthoringPov, CoWritingPersona, LoreEntry, PenDraftSceneEssentials, PenBlockAction, PenBlockSubAction, PenTransformResult, DetectedCastCharacter } from "../types/pen.js";
 import type { AIJsonProperty } from "../types/ai-chat.js";
 import { getStoryStateInfo } from "./story.js";
 import { RULES_STORY_CONSISTENCY, RULES_LANGUAGE_LOCALIZATION } from "./prompt.js";
@@ -1246,4 +1246,158 @@ export function buildPenTransformPrompt(params: {
       .join("\n\n"),
   };
 }
+
+// ── Scene Cast AI Detection prompt builder (POST /api/pen/sessions/:id/cast/detect) ──
+
+/**
+ * Static, cache-friendly system prompt for Scene Cast AI Detection.
+ * Stable prefix for provider-side caching. Volatile sections in user prompt.
+ */
+export const PEN_CAST_DETECT_SYSTEM = `You are an expert literary scene analyst and cast director for a story author.
+Your task is to analyze the author's CURRENT DRAFT PROSE and determine all characters actively present on the scene, their dynamic role in this scene, their relative narrative focus weight, and whether they are an existing known entity or a newly introduced character.
+
+MANDATORY: the USER message contains labeled sections you MUST read and obey: STORY SUMMARY, CANONICAL LORE, NARRATIVE STYLE, WRITE IN LANGUAGE, CANONICAL STATE, KNOWN CHARACTERS, and CURRENT DRAFT PROSE.
+
+CRITICAL RULES:
+1. ONLY characters who physically appear or actively participate in the CURRENT DRAFT PROSE should be included. Do not include characters who are merely fleetingly remembered unless they have active dialogue/presence in the scene.
+2. For each character on scene:
+   - 'name': The character's clear display name (in the story's language/spelling).
+   - 'characterId': If the character matches an existing character from KNOWN CHARACTERS or CANONICAL LORE, set characterId to their established ID (e.g. 'mc' for the main character, or their lore ID / characterId). Otherwise omit or leave empty.
+   - 'role': Must be exactly one of the SCENE ROLE OPTIONS: 'supporting', 'opposition', 'neutral', 'threat'.
+   - 'focus': A number between 0.1 and 1.0 indicating narrative prominence/importance in this specific scene (e.g., 0.8–1.0 for scene leads, 0.4–0.7 for active participants, 0.1–0.3 for background/minor presence).
+   - 'description': For NEW characters, write a concise 1-2 sentence description summarizing who they are, their visual appearance, and their relevance based on the draft. For known characters, leave empty or concise.
+   - 'triggerKeywords': For NEW characters, provide 2-4 distinctive trigger keywords (names, titles, aliases) that can be used in the story bible to identify mentions of this character.
+   - 'isNew': Set to true ONLY if this character is NOT in KNOWN CHARACTERS, NOT in CANONICAL LORE, and NOT the main character.
+3. Return ONLY the structured JSON matching the schema.
+
+${RULES_STORY_CONSISTENCY}
+
+${RULES_LANGUAGE_LOCALIZATION}`;
+
+export type PenCastDetectAIOutput = {
+  characters: Array<{
+    name: string;
+    characterId?: string;
+    role: string;
+    focus: number;
+    description?: string;
+    triggerKeywords?: string[];
+    isNew?: boolean;
+  }>;
+};
+
+export const PEN_CAST_DETECT_SCHEMA: Record<keyof PenCastDetectAIOutput, AIJsonProperty> = {
+  characters: {
+    type: "array",
+    description: "All characters physically present and active in the current scene draft.",
+    items: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Character name." },
+        characterId: { type: "string", description: "Existing character ID if known, or empty if new." },
+        role: {
+          type: "string",
+          enum: [...characterSceneRoles],
+          description: "Role in this scene: supporting, opposition, neutral, threat.",
+        },
+        focus: {
+          type: "number",
+          description: "Scene focus prominence (0.1 to 1.0).",
+        },
+        description: {
+          type: "string",
+          description: "Brief character description / bio (especially for new characters).",
+        },
+        triggerKeywords: {
+          type: "array",
+          items: { type: "string" },
+          description: "2-4 trigger keywords or aliases for lore identification (for new characters).",
+        },
+        isNew: {
+          type: "boolean",
+          description: "True if this character is newly introduced and not in established lore/canon.",
+        },
+      },
+      required: ["name", "role", "focus"],
+    },
+  },
+};
+
+export const PEN_CAST_DETECT_REQUIRED_FIELDS: (keyof PenCastDetectAIOutput)[] = ["characters"];
+
+export type PenCastDetectPrompt = {
+  systemPrompt: string;
+  userPrompt: string;
+};
+
+export function buildPenCastDetectPrompt(params: {
+  state?: StoryState | null;
+  persona?: CoWritingPersona;
+  lore?: LoreEntry[];
+  pageTexts: string[];
+  mcName: string;
+  language: string;
+  bookSummary?: string | null;
+  storyStartDate?: string | null;
+  momentum?: string | null;
+  sceneType?: string | null;
+  essentials?: PenDraftSceneEssentials | null;
+  draftText: string;
+  knownCharacters?: Array<{ id: string; name: string; role?: string; bio?: string }>;
+}): PenCastDetectPrompt {
+  const {
+    state,
+    persona,
+    lore,
+    pageTexts,
+    mcName,
+    language,
+    bookSummary,
+    storyStartDate,
+    momentum,
+    sceneType,
+    essentials,
+    draftText,
+    knownCharacters = [],
+  } = params;
+
+  const canon = buildCanonicalBlock(state ?? null, mcName, {
+    storyStartDate,
+    momentum,
+    sceneType,
+    essentials,
+  });
+  const prose = buildProseContext(pageTexts);
+  const narrativeStyleInstructions = state ? createNarrativeStyle(state).instructions : undefined;
+
+  const stableSections = buildStablePenSections({
+    persona,
+    bookSummary,
+    lore,
+    narrativeStyle: narrativeStyleInstructions,
+    language,
+  });
+
+  const knownCharsList = [
+    mcName ? `- [Main Character] ID: 'mc', Name: "${mcName}"` : "",
+    ...knownCharacters.map(
+      (c) => `- ID: '${c.id}', Name: "${c.name}"${c.role ? ` (${c.role})` : ""}${c.bio ? `: ${c.bio}` : ""}`
+    ),
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return {
+    systemPrompt: PEN_CAST_DETECT_SYSTEM,
+    userPrompt: [
+      ...stableSections,
+      ...buildPenContextSections(canon, prose),
+      `KNOWN CHARACTERS IN STORY / LORE:\n${knownCharsList || "(No known secondary characters yet)"}`,
+      `SCENE ROLE OPTIONS: ${characterSceneRoles.join(", ")}`,
+      `CURRENT DRAFT PROSE TO ANALYZE:\n${draftText.trim()}`,
+      "Analyze the CURRENT DRAFT PROSE and identify all characters present in the scene with their role, focus weight, and entity status.",
+    ].join("\n\n"),
+  };
+}
+
 

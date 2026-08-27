@@ -217,6 +217,16 @@ export const PEN_TRANSFORM_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
 );
 
 /**
+ * POST /api/pen/sessions/:id/cast/detect — AI scene cast character detection.
+ *
+ * Charges `PEN_DETECT_CAST` (1 credit) via `executeWithCredits`. Rate limit bounds burst
+ * and retry churn.
+ */
+export const PEN_CAST_DETECT_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
+  "PEN_CAST_DETECT", 20, 60
+);
+
+/**
  * POST /api/books/:identifier/:pageId/companion/ask — reader companion AI Q&A.
  *
  * Charges `COMPANION_ASK` (1 credit) via `executeWithCredits`. A reader can

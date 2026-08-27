@@ -11,7 +11,7 @@ import type { Context } from "hono";
 import type { AppEnv } from "../hono/env.js";
 import { requireAuth } from "../middleware/nextauth.js";
 import { rateLimit } from "../middleware/rate-limit.js";
-import { PEN_CONTINUE_RATE_LIMIT, PEN_ESSENTIALS_RATE_LIMIT, PEN_FINALIZE_PROPOSE_RATE_LIMIT, PEN_TRANSFORM_RATE_LIMIT } from "../config/ai-rate-limits.js";
+import { PEN_CONTINUE_RATE_LIMIT, PEN_ESSENTIALS_RATE_LIMIT, PEN_FINALIZE_PROPOSE_RATE_LIMIT, PEN_TRANSFORM_RATE_LIMIT, PEN_CAST_DETECT_RATE_LIMIT } from "../config/ai-rate-limits.js";
 import { cApiError, cNotFoundError, cValidationError } from "../utils/error.js";
 import { dbWrite } from "../db/client.js";
 import { isBase64Upload } from "../services/image.js";
@@ -33,6 +33,7 @@ import {
   transformPenSelection,
   finalizePenDraft,
   autofillSceneEssentials,
+  detectSceneCast,
   proposePenStateUpdates,
   getPenSessionState,
   getPenOutline,
@@ -55,6 +56,7 @@ import {
   PenTransformError,
   PenFinalizeError,
   PenEssentialsAutofillError,
+  PenCastDetectError,
   PenStateProposalError,
   PenDraftLimitError,
   PenDraftNotActiveError,
@@ -63,7 +65,7 @@ import {
   PenImageUploadError,
 } from "../services/pen.js";
 import type { PenContinueInput, PenFinalizeInput, PenEssentialsAutofillInput, PenStateProposalInput } from "../services/pen.js";
-import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraftCharacter, PenDraftSceneEssentials, PenSessionStatus, PenBlockAction } from "../types/pen.js";
+import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraftCharacter, PenDraftSceneEssentials, PenSessionStatus, PenBlockAction, PenCastDetectInput } from "../types/pen.js";
 import { penBlockActions } from "../types/pen.js";
 import { characterSceneRoles } from "../types/story.js";
 import type { CharacterSceneRole } from "../types/story.js";
@@ -915,6 +917,40 @@ router.post("/sessions/:id/essentials/autofill", requireAuth, rateLimit(PEN_ESSE
     if (error instanceof PenBookOwnershipError) return cApiError(c, error.message, undefined, 403);
     if (error instanceof PenEssentialsAutofillError) return cApiError(c, error.message, undefined, 422);
     return cApiError(c, "Failed to autofill scene essentials", error);
+  }
+});
+
+/**
+ * POST /api/pen/sessions/:id/cast/detect
+ * Scans story text from the draft to infer all characters present on the scene,
+ * their roles, focus weights, and propose new lore entities.
+ *
+ * Body: `{ draftText }` — the current draft prose (plain text).
+ * Charges `PEN_DETECT_CAST` (1 credit) and writes a `plan` audit row.
+ */
+router.post("/sessions/:id/cast/detect", requireAuth, rateLimit(PEN_CAST_DETECT_RATE_LIMIT), async (c) => {
+  try {
+    const userId = c.get("userId");
+    if (!userId) return cApiError(c, "Authentication required", undefined, 401);
+    const sessionId = c.req.param("id");
+    const body = await readJsonBody(c);
+
+    const raw = body as { draftText?: unknown } | null | undefined;
+    if (!raw || typeof raw.draftText !== "string" || !raw.draftText.trim()) {
+      return cValidationError(c, "draftText with non-empty text is required");
+    }
+    if (raw.draftText.length > PEN_DRAFT_TEXT_MAX_LENGTH) {
+      return cValidationError(c, `draftText must be at most ${PEN_DRAFT_TEXT_MAX_LENGTH} characters`);
+    }
+
+    const input: PenCastDetectInput = { draftText: raw.draftText };
+    const result = await detectSceneCast(userId, sessionId, input);
+    return c.json(result);
+  } catch (error) {
+    if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
+    if (error instanceof PenBookOwnershipError) return cApiError(c, error.message, undefined, 403);
+    if (error instanceof PenCastDetectError) return cApiError(c, error.message, undefined, 422);
+    return cApiError(c, "Failed to detect scene cast characters", error);
   }
 });
 
