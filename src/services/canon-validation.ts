@@ -92,15 +92,25 @@ function formatFactsForCanon(
   return entries.sort().join('\n');
 }
 
-/** Summarise major/recent plot flags — prefers major events, falls back to last 12, caps at 16 entries */
+/** Summarise major plot flags (all retained) and recent minor developments */
 function formatPlotFlagsForCanon(plotFlags: PlotFlag[]): string {
   if (!plotFlags.length) return '  None yet.';
   const major = plotFlags.filter((f) => f.isMajorEvent);
-  const source = major.length ? major : plotFlags.slice(-12);
-  return source
-    .slice(-16)
-    .map((f) => `  · [p.${f.page}${f.isMajorEvent ? ', major' : ''}] ${f.fact}`)
-    .join('\n');
+  const recent = plotFlags.filter((f) => !f.isMajorEvent).slice(-8);
+  const lines: string[] = [];
+  if (major.length) {
+    lines.push('  Major Milestones (Crucial Canon):');
+    for (const f of major) {
+      lines.push(`  - [p.${f.page}] [${f.type.toUpperCase()}] ${f.fact} (MAJOR)`);
+    }
+  }
+  if (recent.length) {
+    lines.push('  Recent Developments:');
+    for (const f of recent) {
+      lines.push(`  - [p.${f.page}] [${f.type}] ${f.fact}`);
+    }
+  }
+  return lines.join('\n');
 }
 
 /** Render up to 24 known characters with role, status, and up to 2 secrets each */

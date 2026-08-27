@@ -14,10 +14,10 @@ import { dbRead, dbWrite, type DBClient } from "../db/client.js";
 import { getBookFromDB, getBookPages, deleteStoryPage, updateBook } from "./book.js";
 import { getTriggeredLoreEntries, listLoreEntries } from "./lore.js";
 import type { DBBook, DBPenSession, DBPenDraft } from "../types/schema.js";
-import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraft, PenDraftCharacter, PenDraftSceneEssentials, PenDraftSummary, PenDraftUpdates, PenEdit, PenSessionStatus, FinalizeViolation, CanonAmendment, PenEditType, PenOutlineData, PenOutlinePage, PenAuthorPage, AuthorshipOrigin, PenTransformInput, PenTransformResult, PenNote, PenNoteInput, PenNoteUpdate, LoreEntry, PenLatentBranch, DetectedCastCharacter, PenCastDetectInput, PenCastDetectResult } from "../types/pen.js";
+import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraft, PenDraftCharacter, PenDraftSceneEssentials, PenDraftSummary, PenDraftUpdates, PenEdit, PenSessionStatus, FinalizeViolation, CanonAmendment, PenEditType, PenOutlineData, PenOutlinePage, PenAuthorPage, AuthorshipOrigin, PenTransformInput, PenTransformResult, PenNote, PenNoteInput, PenNoteUpdate, LoreEntry, PenLatentBranch, DetectedCastCharacter, PenCastDetectInput, PenCastDetectResult, PenStateProposalPlotFlag, PenStateProposalFact } from "../types/pen.js";
 import type { BookMode } from "../types/book.js";
-import type { StoryState, Action, StoryGeneration, PersistedStoryPage, SceneCharacter, CharacterSceneRole, Mood, ActionType, ActionHint, ActionHintType, Ending, StoryOutline, EndingType } from "../types/story.js";
-import { moods, actionTypes, actionHintTypes, characterSceneRoles } from "../types/story.js";
+import type { StoryState, Action, StoryGeneration, PersistedStoryPage, SceneCharacter, CharacterSceneRole, Mood, ActionType, ActionHint, ActionHintType, Ending, StoryOutline, EndingType, PlotFlagType, FactType } from "../types/story.js";
+import { moods, actionTypes, actionHintTypes, characterSceneRoles, plotFlagTypes, factTypes } from "../types/story.js";
 import type { PlaceWeather } from "../types/places.js";
 import { placeWeathers } from "../types/places.js";
 import type { CandidateGenerationPage } from "../types/candidate-generation.js";
@@ -28,7 +28,7 @@ import type { Gender } from "../types/user.js";
 import { getBranchPath } from "../utils/branch-traversal.js";
 import { processCharacterUpdates, isMainCharacterValid } from "../utils/characters.js";
 import { getStoryStateWithBranch } from "./story-branch.js";
-import { buildPenContinuePrompt, PEN_CONTINUE_SCHEMA, PEN_CONTINUE_REQUIRED_FIELDS, buildPenEssentialsAutofillPrompt, PEN_ESSENTIALS_SCHEMA, PEN_ESSENTIALS_REQUIRED_FIELDS, PEN_ESSENTIALS_REVIEW_SCHEMA, buildPenStateProposalPrompt, PEN_STATE_PROPOSAL_SCHEMA, PEN_STATE_PROPOSAL_REQUIRED_FIELDS, buildPenTransformPrompt, PEN_TRANSFORM_SCHEMA, PEN_TRANSFORM_REQUIRED_FIELDS, buildPenCastDetectPrompt, PEN_CAST_DETECT_SCHEMA, PEN_CAST_DETECT_REQUIRED_FIELDS, type PenContinueCommonParams } from "../utils/pen-prompt.js";
+import { buildPenContinuePrompt, PEN_CONTINUE_SCHEMA, PEN_CONTINUE_REQUIRED_FIELDS, buildPenEssentialsAutofillPrompt, PEN_ESSENTIALS_SCHEMA, PEN_ESSENTIALS_REQUIRED_FIELDS, PEN_ESSENTIALS_REVIEW_SCHEMA, buildPenStateProposalPrompt, PEN_STATE_PROPOSAL_SCHEMA, PEN_STATE_PROPOSAL_REQUIRED_FIELDS, buildPenTransformPrompt, PEN_TRANSFORM_SCHEMA, PEN_TRANSFORM_REQUIRED_FIELDS, buildPenCastDetectPrompt, PEN_CAST_DETECT_SCHEMA, PEN_CAST_DETECT_REQUIRED_FIELDS, PEN_CONTEXT_PAGES, type PenContinueCommonParams } from "../utils/pen-prompt.js";
 import type { PenContinueResult as PenContinueAIOutput, PenEssentialsAutofillResult as PenEssentialsAIOutput, PenStateProposalResult as PenStateProposalAIOutput, PenStateProposalOutlineBeat, PenTransformResult as PenTransformAIOutput, PenCastDetectAIOutput } from "../utils/pen-prompt.js";
 import { aiPrompt, createAIOptionsWithSchema } from "../utils/ai-chat.js";
 import type { AIPromptForJson } from "../types/ai-chat.js";
@@ -40,7 +40,7 @@ import { generateId } from "../utils/uuid.js";
 import { executeWithCredits } from "./credits.js";
 import { persistPageWithState, insertStoryPage, getPageFromDB, mapToPersistedStoryPage } from "./book.js";
 import { insertStoryState } from "./story.js";
-import { advanceStoryState, createEmptyStoryState, createInitialHiddenState } from "../utils/story.js";
+import { advanceStoryState, createEmptyStoryState, createInitialHiddenState, processPlotFlagUpdates, processFactUpdates } from "../utils/story.js";
 import { resolvePageDelta, determineBranchIdForPage } from "../utils/prompt.js";
 import { sanitizeActionsForMode, validatePageActionsForMode, maxDestinationsPerActionForMode, maxActionsForMode } from "../utils/book-mode.js";
 import { validateGeneratedPage } from "../utils/page-validation.js";
@@ -49,6 +49,7 @@ import { calculateHealthStatus } from "../utils/characters.js";
 import { uploadPenDraftImage as uploadPenDraftImageToKit, persistUploadedImage, deleteFileFromImageKit } from "./image.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { htmlToPlainText } from "../utils/text-processing.js";
+import { embedPersistedPage, embedStateDeltaEntities, retrieveSimilarPages } from "./vector-memory.js";
 
 /**
  * The API-facing session payload. Extends the stored session with the book's
@@ -1073,6 +1074,37 @@ export async function continuePenDraft(
   ].join("\n");
   const lore = await getTriggeredLoreEntries(book.id, loreHaystack);
 
+  // Semantic Vector Memory recall (§4): retrieve historical passages semantically
+  // relevant to the author's input/last page, prioritizing major story events.
+  let recalledContext: string | undefined;
+  if (session.currentPageId && pageTexts.length >= 3) {
+    const query = authorInput || (lastPage?.text ? lastPage.text.slice(0, 200) : "");
+    if (query.trim().length > 10) {
+      try {
+        const currentPageNum = lastPage?.page ?? 1;
+        const matches = await retrieveSimilarPages(
+          query,
+          book.id,
+          lastPage?.branchId ?? "main",
+          currentPageNum + 1,
+          2,
+          { prioritizeMajorEvents: true }
+        );
+        const recentPageNums = new Set(
+          pageTexts.slice(-PEN_CONTEXT_PAGES).map((_, i) => pageTexts.length - PEN_CONTEXT_PAGES + i + 1)
+        );
+        const distantMatches = matches.filter((m) => !recentPageNums.has(m.page));
+        if (distantMatches.length > 0) {
+          recalledContext = distantMatches
+            .map((m) => `- Page ${m.page}: ${m.sourceText?.trim() || ""}`)
+            .join("\n");
+        }
+      } catch (err) {
+        console.warn("[continuePenDraft] Vector retrieval skipped:", err);
+      }
+    }
+  }
+
   // §10 E: per-interaction authoringPov overrides the session default.
   const authoringPov = input.authoringPov ?? session.authoringPov ?? undefined;
 
@@ -1095,6 +1127,7 @@ export async function continuePenDraft(
     mcName,
     language,
     lore,
+    recalledContext,
     storyStartDate: book.storyStartDate ?? null,
     momentum,
     sceneType,
@@ -1346,11 +1379,43 @@ export async function transformPenSelection(
 
   const authoringPov = input.authoringPov ?? session.authoringPov ?? undefined;
 
+  // Semantic Vector Memory recall (§4): retrieve historical passages semantically
+  // relevant to the selected text / surrounding prose.
+  let recalledContext: string | undefined;
+  if (session.currentPageId && pageTexts.length >= 3) {
+    const query = selectionText || surroundingProse || (lastPage?.text ? lastPage.text.slice(0, 200) : "");
+    if (query.trim().length > 10) {
+      try {
+        const currentPageNum = lastPage?.page ?? 1;
+        const matches = await retrieveSimilarPages(
+          query,
+          book.id,
+          lastPage?.branchId ?? "main",
+          currentPageNum + 1,
+          2,
+          { prioritizeMajorEvents: true }
+        );
+        const recentPageNums = new Set(
+          pageTexts.slice(-PEN_CONTEXT_PAGES).map((_, i) => pageTexts.length - PEN_CONTEXT_PAGES + i + 1)
+        );
+        const distantMatches = matches.filter((m) => !recentPageNums.has(m.page));
+        if (distantMatches.length > 0) {
+          recalledContext = distantMatches
+            .map((m) => `- Page ${m.page}: ${m.sourceText?.trim() || ""}`)
+            .join("\n");
+        }
+      } catch (err) {
+        console.warn("[transformPenSelection] Vector retrieval skipped:", err);
+      }
+    }
+  }
+
   const { systemPrompt, userPrompt } = buildPenTransformPrompt({
     state,
     authoringMode: session.authoringMode,
     authoringPov,
     lore,
+    recalledContext,
     pageTexts,
     mcName,
     language,
@@ -2090,6 +2155,8 @@ function coerceStateProposal(
   keyEvents: string[];
   keyObjects: string[];
   outline?: PenStateProposalOutlineBeat[];
+  plotFlags?: PenStateProposalPlotFlag[];
+  facts?: PenStateProposalFact[];
   actionType?: ActionType;
   actionHint?: ActionHint;
 } {
@@ -2146,10 +2213,40 @@ function coerceStateProposal(
     });
   }
 
+  const plotFlags: PenStateProposalPlotFlag[] = [];
+  if (Array.isArray(output.plotFlags)) {
+    for (const raw of output.plotFlags) {
+      if (typeof raw?.fact === "string" && raw.fact.trim()) {
+        const validType = (plotFlagTypes as readonly string[]).includes(raw.type) ? (raw.type as PlotFlagType) : "discovery";
+        plotFlags.push({
+          fact: raw.fact.trim().slice(0, PEN_ESSENTIALS_MAX_ITEM_LENGTH * 2),
+          type: validType,
+          isMajorEvent: Boolean(raw.isMajorEvent),
+        });
+      }
+    }
+  }
+
+  const facts: PenStateProposalFact[] = [];
+  if (Array.isArray(output.facts)) {
+    for (const raw of output.facts) {
+      if (typeof raw?.key === "string" && raw.key.trim() && typeof raw?.value === "string" && raw.value.trim()) {
+        const key = raw.key.trim().toLowerCase().replace(/[^a-z0-9_]/g, "_").slice(0, 60);
+        const validFactType = raw.type && (Object.keys(factTypes) as string[]).includes(raw.type) ? (raw.type as FactType) : undefined;
+        facts.push({
+          key,
+          value: raw.value.trim().slice(0, 200),
+          ...(validFactType ? { type: validFactType } : {}),
+          ...(typeof raw.reason === "string" && raw.reason.trim() ? { reason: raw.reason.trim().slice(0, 200) } : {}),
+        });
+      }
+    }
+  }
+
   const actionType = coerceActionType(output.actionType);
   const actionHint = coerceProposedActionHint(output.actionHintText, output.actionHintType);
 
-  return { inventory, injuries, mood, weather, calendarDate, timeOfDay, keyEvents, keyObjects, outline, actionType, actionHint };
+  return { inventory, injuries, mood, weather, calendarDate, timeOfDay, keyEvents, keyObjects, outline, plotFlags, facts, actionType, actionHint };
 }
 
 /** Validates a raw AI action-type value against the canonical `actionTypes` keys. */
@@ -2399,6 +2496,10 @@ export type PenFinalizeInput = {
   adoptKeyObjects?: string[];
   /** Author-adopted story outline beats with completed milestones confirmed in the dialog. */
   adoptOutline?: StoryOutline[];
+  /** Author-adopted plot flags (with isMajorEvent) confirmed from state proposal. */
+  adoptPlotFlags?: PenStateProposalPlotFlag[];
+  /** Author-adopted permanent world facts confirmed from state proposal. */
+  adoptFacts?: PenStateProposalFact[];
   /** Author-adopted page mood (one of the `moods` keys). See {@link adoptKeyEvents}. */
   adoptMood?: string;
   /** Author-adopted page weather (one of the `placeWeathers` keys). See {@link adoptKeyEvents}. */
@@ -2448,6 +2549,10 @@ export type PenStateProposalOutput = {
   keyObjects: string[];
   /** Proposed story outline beats with detected completion statuses. */
   outline?: PenStateProposalOutlineBeat[];
+  /** Proposed plot developments / milestones (with isMajorEvent flags). */
+  plotFlags?: PenStateProposalPlotFlag[];
+  /** Proposed permanent world facts. */
+  facts?: PenStateProposalFact[];
   /** AI-classified action type for the author's choice text (D-4 core — AI never writes the text itself). */
   actionType?: ActionType;
   /** AI-proposed reader-facing hint for the author's choice text (D-4 core — hint is AI-inferred, not author input). */
@@ -2734,6 +2839,8 @@ export async function finalizePenDraft(
           injuries: Array.isArray(input.adoptInjuries) ? input.adoptInjuries : [],
           keyEvents: Array.isArray(input.adoptKeyEvents) ? input.adoptKeyEvents : [],
           keyObjects: Array.isArray(input.adoptKeyObjects) ? input.adoptKeyObjects : [],
+          plotFlags: Array.isArray(input.adoptPlotFlags) ? input.adoptPlotFlags : [],
+          facts: Array.isArray(input.adoptFacts) ? input.adoptFacts : [],
           mood: typeof input.adoptMood === "string" ? input.adoptMood : undefined,
           weather: typeof input.adoptWeather === "string" ? input.adoptWeather : undefined,
           calendarDate: typeof input.adoptCalendarDate === "string" ? input.adoptCalendarDate : undefined,
@@ -2750,6 +2857,22 @@ export async function finalizePenDraft(
       if (adopted.weather) generatedStoryPage.weather = adopted.weather;
       if (adopted.calendarDate) generatedStoryPage.calendarDate = adopted.calendarDate;
       if (adopted.timeOfDay) generatedStoryPage.timeOfDay = adopted.timeOfDay;
+      if (adopted.plotFlags && adopted.plotFlags.length > 0) {
+        generatedStoryPage.addPlotFlags = adopted.plotFlags.map((f) => ({
+          fact: f.fact,
+          type: f.type,
+          isMajorEvent: f.isMajorEvent,
+        }));
+      }
+      if (adopted.facts && adopted.facts.length > 0) {
+        generatedStoryPage.factUpdates = adopted.facts.map((f) => ({
+          key: f.key,
+          value: f.value,
+          page: pageNumber,
+          type: f.type,
+          reason: f.reason,
+        }));
+      }
 
       const advancedState = await advanceStoryState(currentState, actionedPage);
 
@@ -2819,6 +2942,10 @@ export async function finalizePenDraft(
         allowEmptyActions: input.isEnding === true,
       });
 
+      // Semantic Vector Memory Embedding (pgvector ingestion for pages, characters, places, and clues):
+      void embedPersistedPage(newPage);
+      void embedStateDeltaEntities(newPage);
+
         // B6 (finalize promotion): for a Text Adventure continuation in a
         // MULTIVERSE book, promote the draft's latent sibling branches into real
         // book branches — parallel timelines reachable from the SAME command.
@@ -2872,6 +2999,8 @@ export async function finalizePenDraft(
                   book: { id: book.id, storyStartDate: book.storyStartDate ?? undefined, mode: book.mode, visibility: book.visibility, status: book.status },
                   allowEmptyActions: false,
                 });
+                void embedPersistedPage(siblingPage);
+                void embedStateDeltaEntities(siblingPage);
                 promotedSiblingRows.push({ id: siblingPage.id, text: sibling.text });
               } catch (sibErr) {
                 console.warn(`[finalizePenDraft] latent sibling promotion failed:`, sibErr);
@@ -2896,6 +3025,8 @@ export async function finalizePenDraft(
           injuries: Array.isArray(input.adoptInjuries) ? input.adoptInjuries : [],
           keyEvents: Array.isArray(input.adoptKeyEvents) ? input.adoptKeyEvents : [],
           keyObjects: Array.isArray(input.adoptKeyObjects) ? input.adoptKeyObjects : [],
+          plotFlags: Array.isArray(input.adoptPlotFlags) ? input.adoptPlotFlags : [],
+          facts: Array.isArray(input.adoptFacts) ? input.adoptFacts : [],
           mood: typeof input.adoptMood === "string" ? input.adoptMood : undefined,
           weather: typeof input.adoptWeather === "string" ? input.adoptWeather : undefined,
           calendarDate: typeof input.adoptCalendarDate === "string" ? input.adoptCalendarDate : undefined,
@@ -2960,7 +3091,24 @@ export async function finalizePenDraft(
           fearLevel: initialState.flags.fear,
         });
       }
+      if (pageOneAdopted.plotFlags && pageOneAdopted.plotFlags.length > 0) {
+        processPlotFlagUpdates(
+          initialState,
+          pageOneAdopted.plotFlags.map((f) => ({ fact: f.fact, type: f.type, isMajorEvent: f.isMajorEvent })),
+          pageToInsert
+        );
+      }
+      if (pageOneAdopted.facts && pageOneAdopted.facts.length > 0) {
+        processFactUpdates(
+          initialState,
+          pageOneAdopted.facts.map((f) => ({ key: f.key, value: f.value, page: 1, type: f.type, reason: f.reason }))
+        );
+      }
       await insertStoryState(book.id, newPage.id, initialState, "original");
+
+      // Semantic Vector Memory Embedding for page 1:
+      void embedPersistedPage(newPage);
+      void embedStateDeltaEntities(newPage);
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown engine error during publish";

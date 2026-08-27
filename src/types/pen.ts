@@ -8,7 +8,7 @@
  * @see docs/roadmap/AI_CO_WRITING_PEN_ROADMAP.md
  */
 
-import type { CharacterSceneRole, SceneCharacter, Action } from "./story.js";
+import type { CharacterSceneRole, SceneCharacter, Action, PlotFlagType, FactType } from "./story.js";
 
 /** How the author works with the AI inside a Pen session. Independent of BookMode. */
 export type AuthoringMode = "storyteller" | "text_adventure"; // TODO: shouldn't it infer from `PEN_AUTHORING_MODES`?
@@ -549,5 +549,23 @@ export type PenCastDetectInput = {
 export type PenCastDetectResult = {
   characters: DetectedCastCharacter[];
 };
+
+// ── State Proposal Plot Flags & Facts ─────────────────────────────────────
+
+/** A single plot flag inferred during state proposal. */
+export type PenStateProposalPlotFlag = {
+  fact: string;
+  type: PlotFlagType;
+  isMajorEvent: boolean;
+};
+
+/** A single permanent world fact inferred during state proposal. */
+export type PenStateProposalFact = {
+  key: string;
+  value: string;
+  type?: FactType;
+  reason?: string;
+};
+
 
 

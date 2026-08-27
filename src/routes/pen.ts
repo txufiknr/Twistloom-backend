@@ -1095,6 +1095,38 @@ router.post("/sessions/:id/finalize", requireAuth, rateLimit({ maxRequests: 10, 
         }
       }
     }
+    if (body.adoptPlotFlags !== undefined) {
+      if (!Array.isArray(body.adoptPlotFlags)) {
+        return cValidationError(c, "adoptPlotFlags must be an array");
+      }
+      for (const flag of body.adoptPlotFlags) {
+        if (!flag || typeof flag !== "object" || Array.isArray(flag)) {
+          return cValidationError(c, "each plot flag must be an object");
+        }
+        if (typeof flag.fact !== "string" || flag.fact.trim().length === 0) {
+          return cValidationError(c, "each plot flag needs a non-empty fact");
+        }
+        if (typeof flag.isMajorEvent !== "boolean") {
+          return cValidationError(c, "each plot flag isMajorEvent must be a boolean");
+        }
+      }
+    }
+    if (body.adoptFacts !== undefined) {
+      if (!Array.isArray(body.adoptFacts)) {
+        return cValidationError(c, "adoptFacts must be an array");
+      }
+      for (const fact of body.adoptFacts) {
+        if (!fact || typeof fact !== "object" || Array.isArray(fact)) {
+          return cValidationError(c, "each fact must be an object");
+        }
+        if (typeof fact.key !== "string" || fact.key.trim().length === 0) {
+          return cValidationError(c, "each fact needs a non-empty key");
+        }
+        if (typeof fact.value !== "string" || fact.value.trim().length === 0) {
+          return cValidationError(c, "each fact needs a non-empty value");
+        }
+      }
+    }
     if (body.adoptMood !== undefined && (typeof body.adoptMood !== "string" || !moods.includes(body.adoptMood as (typeof moods)[number]))) {
       return cValidationError(c, "adoptMood must be a valid mood key");
     }

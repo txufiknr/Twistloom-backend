@@ -28,9 +28,20 @@
  */
 
 import type { StoryState } from "../types/story.js";
-import { moods, actionTypes, actionHintTypes, characterSceneRoles } from "../types/story.js";
+import { moods, actionTypes, actionHintTypes, characterSceneRoles, plotFlagTypes, factTypes } from "../types/story.js";
 import { placeWeathers } from "../types/places.js";
-import type { AuthoringMode, AuthoringPov, CoWritingPersona, LoreEntry, PenDraftSceneEssentials, PenBlockAction, PenBlockSubAction, PenTransformResult } from "../types/pen.js";
+import type {
+  AuthoringMode,
+  AuthoringPov,
+  CoWritingPersona,
+  LoreEntry,
+  PenDraftSceneEssentials,
+  PenBlockAction,
+  PenBlockSubAction,
+  PenTransformResult,
+  PenStateProposalPlotFlag,
+  PenStateProposalFact,
+} from "../types/pen.js";
 import type { AIJsonProperty } from "../types/ai-chat.js";
 import { getStoryStateInfo } from "./story.js";
 import { RULES_STORY_CONSISTENCY, RULES_LANGUAGE_LOCALIZATION } from "./prompt.js";
@@ -41,7 +52,7 @@ import type { PenContinueLength } from "../config/story.js";
 import { injuryCategories } from "../types/character.js";
 
 /** Number of prior pages of context included in a `/continue` prompt. */
-const PEN_CONTEXT_PAGES = 2;
+export const PEN_CONTEXT_PAGES = 2;
 
 /**
  * POV directive for the Pen system prompt (§1.1 #4, §10 E).
@@ -111,10 +122,13 @@ function buildStablePenSections(params: {
   ].filter(Boolean);
 }
 
-/** Shared per-page context sections (canonical state + recent story) — identical across all Pen builders (BD1). */
-function buildPenContextSections(canon: string, prose: string): string[] {
+/** Shared per-page context sections (canonical state + semantic memory + recent story) — identical across all Pen builders (BD1). */
+function buildPenContextSections(canon: string, prose: string, recalledContext?: string): string[] {
   return [
     `CANONICAL STATE (do not contradict):\n${canon}`,
+    ...(recalledContext?.trim()
+      ? [`RECALLED HISTORICAL CONTEXT (semantic memory from earlier pages):\n${recalledContext.trim()}`]
+      : []),
     `RECENT STORY:\n${prose}`,
   ];
 }
@@ -195,7 +209,7 @@ ${RULES_LANGUAGE_LOCALIZATION}`;
  *   4. [PENDING] Final confrontation at the clock mechanism
  * ```
  */
-function buildCanonicalBlock(state: StoryState | null, mcName: string, canon?: {
+export function buildCanonicalBlock(state: StoryState | null, mcName: string, canon?: {
   storyStartDate?: string | null;
   momentum?: string | null;
   sceneType?: string | null;
@@ -249,20 +263,48 @@ function buildCanonicalBlock(state: StoryState | null, mcName: string, canon?: {
   if (state?.factsHistory && Object.keys(state.factsHistory).length > 0) {
     const factLines: string[] = [];
     for (const [key, entries] of Object.entries(state.factsHistory)) {
-      if (!Array.isArray(entries)) continue;
-      for (const entry of entries) {
-        const suffix = entry.reason ? ` (${entry.reason})` : "";
-        factLines.push(entry.value ? `${key}: ${entry.value}${suffix}` : `${key}${suffix}`);
+      if (!Array.isArray(entries) || entries.length === 0) continue;
+      const last = entries[entries.length - 1];
+      if (last && last.value) {
+        const pageInfo = last.page !== undefined ? ` [p.${last.page}]` : "";
+        const suffix = last.reason ? ` (${last.reason})` : "";
+        factLines.push(`- ${key}: ${last.value}${pageInfo}${suffix}`);
       }
     }
     if (factLines.length > 0) lines.push(`ESTABLISHED FACTS:\n${factLines.join("\n")}`);
   }
 
   if (state?.plotFlags && state.plotFlags.length > 0) {
-    // PlotFlag is an object { type, fact, page, ... }; render type + fact so the
-    // canonical block never leaks "[object Object]".
-    const flags = state.plotFlags.map((f) => `${f.type}: ${f.fact}`);
-    lines.push(`PLOT FLAGS: ${flags.join(" | ")}`);
+    const majorFlags = state.plotFlags.filter((f) => f.isMajorEvent);
+    const recentMinorFlags = state.plotFlags.filter((f) => !f.isMajorEvent).slice(-6);
+
+    if (majorFlags.length > 0) {
+      const majorLines = majorFlags.map((f) => {
+        const pagePrefix = f.page !== undefined ? `[p.${f.page}] ` : "";
+        const placeSuffix = f.placeId ? ` (at ${f.placeId})` : "";
+        return `  - ${pagePrefix}[${f.type.toUpperCase()}] ${f.fact}${placeSuffix} (MAJOR)`;
+      });
+      lines.push(`MAJOR STORY MILESTONES (Do not contradict or forget):\n${majorLines.join("\n")}`);
+    }
+
+    if (recentMinorFlags.length > 0) {
+      const minorLines = recentMinorFlags.map((f) => {
+        const pagePrefix = f.page !== undefined ? `[p.${f.page}] ` : "";
+        return `  - ${pagePrefix}[${f.type}] ${f.fact}`;
+      });
+      lines.push(`RECENT PLOT DEVELOPMENTS:\n${minorLines.join("\n")}`);
+    }
+  }
+
+  if (state?.threads && state.threads.length > 0) {
+    const active = state.threads.filter((t) => t.status !== "closed");
+    if (active.length > 0) {
+      const threadLines = active.map((t) => {
+        const clueSnippet = t.clues?.length ? ` — Clues: ${t.clues.slice(-2).map((c) => c.clue).join(" | ")}` : "";
+        return `  - [${t.priority || "normal"}] ${t.title}: "${t.question}" (${t.status || "developing"})${clueSnippet}`;
+      });
+      lines.push(`ACTIVE STORY THREADS:\n${threadLines.join("\n")}`);
+    }
   }
 
   if (state?.viableEnding) {
@@ -339,6 +381,8 @@ export type PenContinueCommonParams = {
   momentum?: string | null;
   sceneType?: string | null;
   essentials?: PenDraftSceneEssentials | null;
+  /** Semantic memory retrieved from earlier distant pages (pgvector). */
+  recalledContext?: string;
   /** Continuation-length tier — added as a tail directive (§8 short/medium/long). */
   length?: PenContinueLength;
   /**
@@ -356,7 +400,7 @@ export function buildPenContinuePrompt(
     | { command: string }
   )
 ): PenContinuePrompt {
-  const { state, authoringMode, authoringPov, persona, lore, pageTexts, mcName, language, bookSummary, length } = params;
+  const { state, authoringMode, authoringPov, persona, lore, pageTexts, mcName, language, bookSummary, length, recalledContext } = params;
 
   const canon = buildCanonicalBlock(state ?? null, mcName, {
     storyStartDate: "storyStartDate" in params ? params.storyStartDate : undefined,
@@ -380,7 +424,7 @@ export function buildPenContinuePrompt(
     ...buildStablePenSections({ persona, bookSummary, lore, narrativeStyle: narrativeStyleInstructions, language }),
   ];
 
-  const contextSections = buildPenContextSections(canon, prose);
+  const contextSections = buildPenContextSections(canon, prose, recalledContext);
 
   if (authoringMode === "text_adventure") {
     const command = "command" in params ? params.command : "";
@@ -720,7 +764,7 @@ export function buildPenEssentialsAutofillPrompt(params: {
  * that should be removed. This is a constrained structured-output task, capped
  * by `PEN_FINALIZE_PROPOSE_MAX_TOKENS`.
  */
-export const PEN_STATE_PROPOSAL_SYSTEM = `You are a story-state accountant for an author. Given the author's CURRENT DRAFT for the NEXT page, compute what the story state should become once that page is published: the page's scene pin (mood, weather, in-world date, time of day), the character's full inventory, any injuries they carry, and the page's key events and key objects.
+export const PEN_STATE_PROPOSAL_SYSTEM = `You are a story-state accountant for an author. Given the author's CURRENT DRAFT for the NEXT page, compute what the story state should become once that page is published: the page's scene pin (mood, weather, in-world date, time of day), the character's full inventory, any injuries they carry, the page's key events and key objects, meaningful plot developments / plot flags, and permanent world facts established.
 
 MANDATORY: the USER message contains labeled sections you MUST read and obey before generating: AUTHOR'S PERSONA, STORY SUMMARY, CANONICAL LORE, NARRATIVE STYLE, WRITE IN LANGUAGE, CANONICAL STATE (do not contradict), RECENT STORY, CURRENT DRAFT, CURRENT SCENE, and CURRENT INVENTORY & INJURIES. The CANONICAL STATE and CANONICAL LORE are authoritative — do not contradict them.
 
@@ -730,6 +774,8 @@ CRITICAL RULES:
 - INVENTORY is a complete replacement list: keep every item the character should still hold (same name, same amount unless the draft shows use/loss), add items the draft shows them acquiring, drop items the draft shows them losing, and set amount to 0 only when an item is fully consumed (it will be removed server-side).
 - INJURIES is a complete replacement list: keep every active injury (adjust severity only when the draft shows healing or aggravation), add injuries the draft shows the character sustaining, and drop injuries that have fully healed.
 - STORY OUTLINE MILESTONES: Review the STORY OUTLINE MILESTONES in CANONICAL STATE. For each outline beat, determine if the events in the draft indicate that this milestone has occurred or been achieved on this page (or previously). Set isDone: true for any milestone that has happened, and preserve isDone: true for all previously completed milestones.
+- PLOT FLAGS: Extract 1–3 meaningful plot developments or milestones inferred from this page draft. Classify each using PLOT FLAG TYPE OPTIONS. Set isMajorEvent: true ONLY for critical revelations, major deaths, permanent world shifts, or foundational clues that the story must never forget.
+- FACTS: Extract permanent discrete world facts established or revealed on this page (e.g. key: 'vault_passcode', value: '4092'). Use snake_case for keys.
 - Only derive changes the draft supports. Do not invent loot, wounds, or losses out of nowhere; when nothing changes, echo the current state.
 - For each inventory item include the traits that matter (e.g. material, state, rules) as strings in the engine's 'key: value' format (e.g. 'material: iron'); omit traits when the item has none.
 - INJURY SEVERITY is 0–1 (0.1 minor, 0.3 moderate, 0.6 severe, 0.9 critical). INJURY CATEGORY must be one of the CATEGORY OPTIONS.
@@ -788,6 +834,10 @@ export type PenStateProposalResult = {
   keyObjects: string[];
   /** Story outline milestone beats with updated completion statuses inferred from the draft. */
   outline?: PenStateProposalOutlineBeat[];
+  /** Meaningful plot developments or milestones inferred from this page draft. */
+  plotFlags?: PenStateProposalPlotFlag[];
+  /** Permanent discrete world facts established or revealed on this page. */
+  facts?: PenStateProposalFact[];
   /** AI-classified type for the author's choice text (D-4 core — the AI never writes the text itself). */
   actionType?: string;
   /** AI-inferred reader-facing hint TEXT for the author's choice text (D-4 core — hint is AI-authored, never author input). */
@@ -868,6 +918,44 @@ export const PEN_STATE_PROPOSAL_SCHEMA: Record<keyof PenStateProposalResult, AIJ
         reason: { type: "string", description: "Brief rationale when this milestone was completed on this page." },
       },
       required: ["text", "isDone"],
+    },
+  },
+  plotFlags: {
+    type: "array",
+    description: "Meaningful plot developments or milestones inferred from this page draft (1-3 items). Set isMajorEvent to true ONLY for pivotal revelations, deaths, or major turns.",
+    items: {
+      type: "object",
+      properties: {
+        fact: { type: "string", description: "Concise summary of the plot development." },
+        type: {
+          type: "string",
+          enum: [...plotFlagTypes],
+          description: "Classification of this plot development — one of the PLOT FLAG TYPE OPTIONS.",
+        },
+        isMajorEvent: {
+          type: "boolean",
+          description: "True if this is a pivotal story milestone, major reveal, or irreversible turning point.",
+        },
+      },
+      required: ["fact", "type", "isMajorEvent"],
+    },
+  },
+  facts: {
+    type: "array",
+    description: "Permanent discrete facts established or revealed on this page.",
+    items: {
+      type: "object",
+      properties: {
+        key: { type: "string", description: "Fact key in snake_case format (e.g. 'vault_passcode', 'silas_secret')." },
+        value: { type: "string", description: "Fact value." },
+        type: {
+          type: "string",
+          enum: [...Object.keys(factTypes)],
+          description: "Fact domain type.",
+        },
+        reason: { type: "string", description: "Context or source of discovery." },
+      },
+      required: ["key", "value"],
     },
   },
   actionType: {
@@ -1026,8 +1114,10 @@ export function buildPenStateProposalPrompt(params: {
       `WEATHER OPTIONS: ${placeWeathers.join(", ")}`,
       `ACTION TYPE OPTIONS: ${Object.keys(actionTypes).join(", ")}`,
       `ACTION HINT TYPE OPTIONS: ${actionHintTypes.join(", ")}`,
+      `PLOT FLAG TYPE OPTIONS: ${plotFlagTypes.join(", ")}`,
+      `FACT TYPE OPTIONS: ${Object.keys(factTypes).join(", ")}`,
       `PLACE OPTIONS: ${placeNames}`,
-      "Compute the FULL resulting scene, inventory, injuries, key events, key objects, and story outline milestones (setting isDone: true for any milestone that has occurred in the draft or prior pages), and — when a reader's choice text is present — its action type and hint.",
+      "Compute the FULL resulting scene, inventory, injuries, key events, key objects, plot flags (setting isMajorEvent: true ONLY for pivotal milestones), permanent facts, and story outline milestones (setting isDone: true for any milestone that has occurred in the draft or prior pages), and — when a reader's choice text is present — its action type and hint.",
     ].join("\n\n"),
   };
 }
@@ -1213,6 +1303,7 @@ export function buildPenTransformPrompt(params: {
   momentum?: string | null;
   sceneType?: string | null;
   essentials?: PenDraftSceneEssentials | null;
+  recalledContext?: string;
   selectionText: string;
   surroundingProse?: string;
   action: PenBlockAction;
@@ -1233,6 +1324,7 @@ export function buildPenTransformPrompt(params: {
     momentum,
     sceneType,
     essentials,
+    recalledContext,
     selectionText,
     surroundingProse = "",
     action,
@@ -1254,7 +1346,7 @@ export function buildPenTransformPrompt(params: {
     ...buildStablePenSections({ persona, bookSummary, lore, narrativeStyle: narrativeStyleInstructions, language }),
   ];
 
-  const contextSections = buildPenContextSections(canon, prose);
+  const contextSections = buildPenContextSections(canon, prose, recalledContext);
   const directive = getActionDirective(action, subAction, customInstruction);
 
   return {
