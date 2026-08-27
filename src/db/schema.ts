@@ -2873,6 +2873,8 @@ export const companionAnswers = pgTable(
   },
   (t) => [
     unique("companion_answers_user_book_page_hash_unique").on(t.userId, t.bookId, t.pageId, t.questionHash),
+    index("companion_answers_book_page_hash_idx").on(t.bookId, t.pageId, t.questionHash),
+    index("companion_answers_book_page_created_idx").on(t.bookId, t.pageId, t.createdAt.desc()),
     index("companion_answers_user_book_idx").on(t.userId, t.bookId),
     index("companion_answers_session_idx").on(t.sessionId),
     index("companion_answers_page_idx").on(t.pageId),

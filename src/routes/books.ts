@@ -123,7 +123,7 @@ import { imageUploadMiddleware } from "../middleware/upload.js";
 import { deleteFileFromImageKit, isBase64Upload, persistUploadedImage } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, calculatePaginationMeta, type PaginatedResponse } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
-import { validateSearchQuery, validateLanguageCode, isValidLanguageCode, validateAgeRange, validateGender, validateRatingFilter, validateRatingCountFilter, createRelevanceExpression, buildTokenizedSearchCondition } from "../utils/search.js";
+import { validateSearchQuery, validateLanguageCode, isValidLanguageCode, validateAgeRange, validateGender, validateRatingFilter, validateRatingCountFilter, createRelevanceExpression, buildTokenizedSearchCondition, wordJaccardSimilarity, trigramSimilarity, jaccardSimilarity } from "../utils/search.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { updateBook, updateBookVisibility, insertBook, uploadBookCoverImage, uploadBookCharacterAvatarImage, sanitizeBookTextField, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage, mapBookFromDb, invalidatePopularTagsCache, invalidateBookCache, invalidateEnrichedBookCache, invalidatePageOneCache, loadParagraphCommentCounts, loadCommunityActions } from "../services/book.js";
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
@@ -5645,7 +5645,7 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
 
     const questionHash = await hashContentSHA256(rawQuestion.toLowerCase().trim());
 
-    // 1. Check cache first (spoiler-safe per-user cache, only for standalone single-turn queries)
+    // 1. Check cache first (exact question on exact book & page, only for standalone single-turn queries)
     const hasHistory = history && history.length > 0;
     if (!hasHistory) {
       const [cached] = await dbRead
@@ -5653,16 +5653,16 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
         .from(companionAnswers)
         .where(
           and(
-            eq(companionAnswers.userId, userId),
             eq(companionAnswers.bookId, book.id),
             eq(companionAnswers.pageId, pageId),
             eq(companionAnswers.questionHash, questionHash)
           )
         )
+        .orderBy(desc(companionAnswers.createdAt))
         .limit(1);
 
       if (cached) {
-        console.log(`[POST /companion/ask] ⚡ Cache HIT for user ${userId} on page ${pageId}`);
+        console.log(`[POST /companion/ask] ⚡ Cache HIT for book ${book.id} on page ${pageId}`);
         // Deduct 1 credit even on cache hit as per business rules
         await executeWithCredits(
           userId,
@@ -5674,8 +5674,28 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
           }
         );
 
+        // Ensure a session record exists for the current user's history
+        if (cached.userId !== userId || cached.sessionId !== sessionId) {
+          try {
+            await dbWrite.insert(companionAnswers).values({
+              sessionId,
+              userId,
+              bookId: book.id,
+              pageId,
+              question: rawQuestion,
+              answer: cached.answer,
+              sources: cached.sources,
+              suggestedFollowUps: cached.suggestedFollowUps,
+              questionHash,
+              costCredits: getCreditCostForUser(userId, 'COMPANION_ASK'),
+            }).onConflictDoNothing();
+          } catch {
+            // Ignore conflict
+          }
+        }
+
         return c.json({
-          sessionId: cached.sessionId || sessionId,
+          sessionId: sessionId || cached.sessionId,
           answer: cached.answer,
           sources: cached.sources,
           suggestedFollowUps: cached.suggestedFollowUps,
@@ -5737,7 +5757,7 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
         sources,
         suggestedFollowUps,
         questionHash,
-        costCredits: 1,
+        costCredits: getCreditCostForUser(userId, 'COMPANION_ASK'),
       }).onConflictDoNothing();
     } catch (insertError) {
       console.warn(`[POST /companion/ask] ⚠️ Failed to cache companion answer:`, insertError);
@@ -5874,6 +5894,145 @@ router.get("/:identifier/companion/history", requireAuth, getCompanionHistoryHan
 router.get("/:identifier/:pageId/companion/history", requireAuth, getCompanionHistoryHandler);
 
 /**
+ * GET /api/books/:identifier/:pageId/companion/suggestions
+ *
+ * Retrieves recommended / similar questions for the reader companion.
+ * - When `q` is empty/omitted: Returns top frequently asked and recent questions
+ *   for this book up to the current page (spoiler-safe).
+ * - When `q` is provided: Runs word-level Jaccard similarity and trigram/fuzzy
+ *   matching against historical questions in the book up to the current page.
+ *
+ * @route GET /api/books/:identifier/:pageId/companion/suggestions
+ * @authentication Optional (guest or authenticated reader)
+ * @param identifier - Book slug or UUID v7
+ * @param pageId - Current page UUID v7
+ * @query q - Optional search/ask input query
+ * @query limit - Max questions to return (default 5)
+ */
+router.get("/:identifier/:pageId/companion/suggestions", optionalAuth, async (c) => {
+  try {
+    const { identifier, pageId: pageIdParam } = c.req.param();
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+    const pageId = Array.isArray(pageIdParam) ? pageIdParam[0] : pageIdParam;
+    const query = typeof c.req.query("q") === "string" ? c.req.query("q")!.trim() : "";
+    const limitParam = parseInt(c.req.query("limit") || "5", 10);
+    const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 10) : 5;
+
+    if (!isValidUuid(pageId)) {
+      return cValidationError(c, "Invalid pageId: must be a valid UUID");
+    }
+
+    const book = await resolveBook(bookIdentifier);
+    if (!book) return cNotFoundError(c, "Book not found");
+
+    const dbPage = await getPageFromDB(pageId, { bookIdentifier: book.id });
+    if (!dbPage) return cNotFoundError(c, "Page not found");
+
+    // Gather allowed page IDs for spoiler safety (current page + all past ancestor pages along the branch)
+    const storyState = await getStoryStateWithBranch(book.id, pageId, { persistState: false });
+    const allowedPageIds = new Set<string>([pageId]);
+    if (storyState?.actionsHistory) {
+      for (const action of storyState.actionsHistory) {
+        if (action.pageId && isValidUuid(action.pageId)) {
+          allowedPageIds.add(action.pageId);
+        }
+      }
+    }
+
+    // Fetch candidate historical questions asked on this book up to the current page
+    const candidates = await dbRead
+      .select({
+        question: companionAnswers.question,
+        pageId: companionAnswers.pageId,
+        createdAt: companionAnswers.createdAt,
+      })
+      .from(companionAnswers)
+      .where(
+        and(
+          eq(companionAnswers.bookId, book.id),
+          inArray(companionAnswers.pageId, Array.from(allowedPageIds))
+        )
+      )
+      .orderBy(desc(companionAnswers.createdAt))
+      .limit(100);
+
+    if (candidates.length === 0) {
+      return c.json({ questions: [] });
+    }
+
+    // Group & normalize distinct questions
+    const questionStats = new Map<string, { original: string; count: number; lastAsked: number }>();
+    for (const row of candidates) {
+      const trimmed = (row.question || "").trim();
+      if (!trimmed || trimmed.length < 5) continue;
+      const lower = trimmed.toLowerCase();
+      const existing = questionStats.get(lower);
+      const rowTime = row.createdAt ? new Date(row.createdAt).getTime() : 0;
+
+      if (!existing) {
+        questionStats.set(lower, { original: trimmed, count: 1, lastAsked: rowTime });
+      } else {
+        existing.count += 1;
+        if (rowTime > existing.lastAsked) {
+          existing.lastAsked = rowTime;
+          existing.original = trimmed;
+        }
+      }
+    }
+
+    const uniqueItems = Array.from(questionStats.values());
+
+    // 1. If query is empty: Rank by frequency (popularity) then recency
+    if (!query) {
+      uniqueItems.sort((a, b) => {
+        if (b.count !== a.count) return b.count - a.count;
+        return b.lastAsked - a.lastAsked;
+      });
+
+      const questions = uniqueItems.slice(0, limit).map((item) => item.original);
+      return c.json({ questions });
+    }
+
+    // 2. If query is provided: Score each candidate with word-level Jaccard similarity & fuzzy matching
+    const queryLower = query.toLowerCase();
+    const scored: Array<{ question: string; score: number; count: number }> = [];
+
+    for (const item of uniqueItems) {
+      const qText = item.original;
+      const qTextLower = qText.toLowerCase();
+
+      const wordSim = wordJaccardSimilarity(query, qText);
+      const trigramSim = trigramSimilarity(query, qText);
+      const charSim = jaccardSimilarity(query, qText);
+      const isSub = qTextLower.includes(queryLower) || queryLower.includes(qTextLower);
+
+      const baseScore = Math.max(wordSim, trigramSim, charSim, isSub ? 0.75 : 0);
+
+      // Only consider if baseScore >= 0.25 or substring match
+      if (baseScore >= 0.25 || isSub) {
+        // Boost score slightly with frequency
+        const score = baseScore + Math.min(item.count * 0.05, 0.2);
+        scored.push({
+          question: item.original,
+          score,
+          count: item.count,
+        });
+      }
+    }
+
+    scored.sort((a, b) => {
+      if (Math.abs(b.score - a.score) > 0.05) return b.score - a.score;
+      return b.count - a.count;
+    });
+
+    const questions = scored.slice(0, limit).map((s) => s.question);
+    return c.json({ questions });
+  } catch (error) {
+    return cApiError(c, "Failed to retrieve companion suggestions", error);
+  }
+});
+
+/**
  * POST /api/books/:identifier/:pageId/companion/ask/stream
  *
  * Real-time SSE streaming for companion AI answers.
@@ -5936,7 +6095,7 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(
 
     const questionHash = await hashContentSHA256(rawQuestion.toLowerCase().trim());
 
-    // Check cache first (only for standalone single-turn queries)
+    // Check cache first (exact question on exact book & page, only for standalone single-turn queries)
     const hasHistory = history && history.length > 0;
     if (!hasHistory) {
       const [cached] = await dbRead
@@ -5944,12 +6103,12 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(
         .from(companionAnswers)
         .where(
           and(
-            eq(companionAnswers.userId, userId),
             eq(companionAnswers.bookId, book.id),
             eq(companionAnswers.pageId, pageId),
             eq(companionAnswers.questionHash, questionHash)
           )
         )
+        .orderBy(desc(companionAnswers.createdAt))
         .limit(1);
 
       if (cached) {
@@ -5963,6 +6122,26 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(
           }
         );
 
+        // Ensure a session record exists for the current user's history
+        if (cached.userId !== userId || cached.sessionId !== sessionId) {
+          try {
+            await dbWrite.insert(companionAnswers).values({
+              sessionId,
+              userId,
+              bookId: book.id,
+              pageId,
+              question: rawQuestion,
+              answer: cached.answer,
+              sources: cached.sources,
+              suggestedFollowUps: cached.suggestedFollowUps,
+              questionHash,
+              costCredits: getCreditCostForUser(userId, 'COMPANION_ASK'),
+            }).onConflictDoNothing();
+          } catch {
+            // Ignore conflict
+          }
+        }
+
         return streamSSE(c, async (stream) => {
           const words = cached.answer.split(" ");
           for (let i = 0; i < words.length; i += 3) {
@@ -5973,7 +6152,7 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(
           await stream.writeSSE({
             event: "done",
             data: JSON.stringify({
-              sessionId: cached.sessionId || sessionId,
+              sessionId: sessionId || cached.sessionId,
               answer: cached.answer,
               sources: cached.sources,
               suggestedFollowUps: cached.suggestedFollowUps,
@@ -6043,7 +6222,7 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(
             sources,
             suggestedFollowUps,
             questionHash,
-            costCredits: 1,
+            costCredits: getCreditCostForUser(userId, 'COMPANION_ASK'),
           }).onConflictDoNothing();
         } catch (insertError) {
           console.warn(`[POST /companion/ask/stream] ⚠️ Failed to cache companion answer:`, insertError);
