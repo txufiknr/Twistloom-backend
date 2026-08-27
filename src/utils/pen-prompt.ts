@@ -163,8 +163,37 @@ ${RULES_LANGUAGE_LOCALIZATION}`;
 
 /**
  * Renders a compact canonical block from story state: established facts,
- * main character overview, memory integrity, and the current page number.
+ * main character overview, memory integrity, current page number, scene pin,
+ * and the active branch's StoryState.viableEnding ("North Star" & outline milestones).
  * This is the "do not contradict" canon the generation must respect.
+ *
+ * @example
+ * ```
+ * CURRENT PAGE: 3 of 8 — RISING ACTION PHASE, 5 page(s) remaining
+ * STORY DATE: 1888-10-14
+ * MOMENTUM: tension
+ * SCENE TYPE: confrontation
+ * SCENE: place: abandoned_clocktower, weather: heavy_rain, time: midnight, date: 1888-10-14
+ * SCENE MOOD: foreboding
+ * KEY EVENTS THIS PAGE: Discovered the shattered pendulum | Heard footsteps on the spiral staircase
+ * KEY OBJECTS THIS PAGE: Brass pocket watch | Bloodstained ledger
+ * MEMORY INTEGRITY: high (unreliable narration level)
+ * MAIN CHARACTER: Detective Jonathan Vance
+ * KNOWN CHARACTERS:
+ * Silas Thorne — gender:male — role:antagonist — Corrupt magistrate pulling strings — appearance:tall with silver cane — status:alive
+ * Eliza Crane — gender:female — role:ally — Cryptographer who deciphered the ledger — appearance:ink-stained fingers — status:alive
+ * ESTABLISHED FACTS:
+ * The vault code was changed after midnight (discovered in ledger)
+ * Silas was seen near the docks at 3 AM
+ * PLOT FLAGS: clue: The brass key fits the archive lock | danger: The assassin is trailing Vance
+ * ENDING DIRECTION (NORTH STAR): "Vance confronts Silas at the summit of the clocktower, choosing between exposing the conspiracy or burning the evidence to save Eliza."
+ * ENDING ARCHETYPE: identity_twist
+ * STORY OUTLINE MILESTONES:
+ *   1. [DONE at page 1] Find the dead courier in the alleyway
+ *   2. [DONE at page 2] Decipher the ciphered ledger with Eliza
+ *   3. [PENDING] Track Silas to the abandoned clocktower
+ *   4. [PENDING] Final confrontation at the clock mechanism
+ * ```
  */
 function buildCanonicalBlock(state: StoryState | null, mcName: string, canon?: {
   storyStartDate?: string | null;
@@ -234,6 +263,28 @@ function buildCanonicalBlock(state: StoryState | null, mcName: string, canon?: {
     // canonical block never leaks "[object Object]".
     const flags = state.plotFlags.map((f) => `${f.type}: ${f.fact}`);
     lines.push(`PLOT FLAGS: ${flags.join(" | ")}`);
+  }
+
+  if (state?.viableEnding) {
+    const endingParts: string[] = [];
+    if (state.viableEnding.text) {
+      endingParts.push(`ENDING DIRECTION (NORTH STAR): "${state.viableEnding.text}"`);
+    }
+    if (state.viableEnding.type) {
+      endingParts.push(`ENDING ARCHETYPE: ${state.viableEnding.type}`);
+    }
+    if (state.viableEnding.outline && state.viableEnding.outline.length > 0) {
+      const beats = state.viableEnding.outline.map((beat, idx) => {
+        const status = beat.isDone
+          ? `[DONE${beat.doneAtPage ? ` at page ${beat.doneAtPage}` : ""}]`
+          : "[PENDING]";
+        return `  ${idx + 1}. ${status} ${beat.text}`;
+      });
+      endingParts.push(`STORY OUTLINE MILESTONES:\n${beats.join("\n")}`);
+    }
+    if (endingParts.length > 0) {
+      lines.push(endingParts.join("\n"));
+    }
   }
 
   return lines.join("\n");

@@ -26,6 +26,7 @@ import {
   getPenSessionById,
   updatePenSession,
   updatePenSessionOutline,
+  updatePenSessionEnding,
   closePenSession,
   discardPenDraft,
   continuePenDraft,
@@ -415,6 +416,51 @@ router.patch("/sessions/:id/outline", requireAuth, async (c) => {
   } catch (error) {
     if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
     return cApiError(c, "Failed to update pen session outline", error);
+  }
+});
+
+/**
+ * PATCH /api/pen/sessions/:id/ending
+ * Updates the ending direction ("North Star") and outline beats for the active branch/page
+ * (StoryState.viableEnding in PostgreSQL story_states), or resets it to the main book blueprint.
+ */
+router.patch("/sessions/:id/ending", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId");
+    if (!userId) return cApiError(c, "Authentication required", undefined, 401);
+    const sessionId = c.req.param("id");
+    const body = await readJsonBody(c);
+
+    if (!body || typeof body !== "object") {
+      return cValidationError(c, "Request body must be a JSON object");
+    }
+    const { text, type, outline, resetToMain } = body as {
+      text?: string;
+      type?: unknown;
+      outline?: StoryOutline[];
+      resetToMain?: boolean;
+    };
+
+    if (text !== undefined && typeof text !== "string") {
+      return cValidationError(c, "text must be a string");
+    }
+    if (outline !== undefined && !Array.isArray(outline)) {
+      return cValidationError(c, "outline must be an array of StoryOutline items");
+    }
+    if (resetToMain !== undefined && typeof resetToMain !== "boolean") {
+      return cValidationError(c, "resetToMain must be a boolean");
+    }
+
+    const result = await updatePenSessionEnding(userId, sessionId, {
+      text: typeof text === "string" ? text : undefined,
+      type: typeof type === "string" ? (type as any) : undefined,
+      outline: Array.isArray(outline) ? outline : undefined,
+      resetToMain: Boolean(resetToMain),
+    });
+    return c.json(result);
+  } catch (error) {
+    if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
+    return cApiError(c, "Failed to update pen session ending", error);
   }
 });
 

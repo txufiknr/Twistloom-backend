@@ -16,7 +16,7 @@ import { getTriggeredLoreEntries, listLoreEntries } from "./lore.js";
 import type { DBBook, DBPenSession, DBPenDraft } from "../types/schema.js";
 import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraft, PenDraftCharacter, PenDraftSceneEssentials, PenDraftSummary, PenDraftUpdates, PenEdit, PenSessionStatus, FinalizeViolation, CanonAmendment, PenEditType, PenOutlineData, PenOutlinePage, PenAuthorPage, AuthorshipOrigin, PenTransformInput, PenTransformResult, PenNote, PenNoteInput, PenNoteUpdate, LoreEntry, PenLatentBranch } from "../types/pen.js";
 import type { BookMode } from "../types/book.js";
-import type { StoryState, Action, StoryGeneration, PersistedStoryPage, SceneCharacter, CharacterSceneRole, Mood, ActionType, ActionHint, ActionHintType, Ending, StoryOutline } from "../types/story.js";
+import type { StoryState, Action, StoryGeneration, PersistedStoryPage, SceneCharacter, CharacterSceneRole, Mood, ActionType, ActionHint, ActionHintType, Ending, StoryOutline, EndingType } from "../types/story.js";
 import { moods, actionTypes, actionHintTypes } from "../types/story.js";
 import type { PlaceWeather } from "../types/places.js";
 import { placeWeathers } from "../types/places.js";
@@ -472,18 +472,27 @@ export async function getPenSessionState(userId: string, sessionId: string): Pro
   return { state, currentPageId: session.currentPageId, pageNumber: state?.page ?? 0, pageEssentials };
 }
 
+export type PenEndingUpdateInput = {
+  text?: string;
+  type?: EndingType;
+  outline?: StoryOutline[];
+  resetToMain?: boolean;
+};
+
 /**
- * Updates the outline beats on the session's active page state (StoryState.viableEnding in PostgreSQL story_states)
- * and synchronizes the book-level blueprint (books.ending in PostgreSQL books).
+ * Updates the ending direction ("North Star") and outline beats on the session's active page state
+ * (StoryState.viableEnding in PostgreSQL story_states).
  *
- * Domain hierarchy:
- * - StoryState.viableEnding: The true SSOT for what has occurred as of this active page.
- * - books.ending: Blueprint & frontier progress fallback for new pages/branches.
+ * Domain hierarchy & branch steering:
+ * - When text/type/outline is updated on an active branch, it updates StoryState.viableEnding for session.currentPageId.
+ *   This steers all future AI generations and choices on this branch toward its unique climax.
+ * - When resetToMain is true, resets this branch's viableEnding to match the book.ending blueprint.
+ * - If before Page 1 publish (no currentPageId), updates book.ending directly.
  */
-export async function updatePenSessionOutline(
+export async function updatePenSessionEnding(
   userId: string,
   sessionId: string,
-  outline: StoryOutline[]
+  input: PenEndingUpdateInput
 ): Promise<{ state: StoryState | null; ending?: Ending }> {
   const session = await getPenSessionById(userId, sessionId);
   const book: DBBook | null = await getBookFromDB(session.bookId);
@@ -491,30 +500,52 @@ export async function updatePenSessionOutline(
 
   let updatedState: StoryState | null = null;
 
-  // 1) SSOT: If the session has an active published page, update that page's StoryState in story_states
   if (session.currentPageId) {
     const currentState = await getStoryStateWithBranch(book.id, session.currentPageId);
     if (currentState) {
-      currentState.viableEnding = {
-        ...(currentState.viableEnding ?? {}),
-        outline,
-      };
+      if (input.resetToMain) {
+        // Reset this branch's viable ending to mirror the main book blueprint
+        currentState.viableEnding = book.ending ? { ...book.ending } : undefined;
+      } else {
+        currentState.viableEnding = {
+          ...(currentState.viableEnding ?? book.ending ?? {}),
+          ...(input.text !== undefined ? { text: input.text } : {}),
+          ...(input.type !== undefined ? { type: input.type } : {}),
+          ...(input.outline !== undefined ? { outline: input.outline } : {}),
+        };
+      }
       await insertStoryState(book.id, session.currentPageId, currentState, "original");
       updatedState = currentState;
     }
+  } else {
+    // Before Page 1 publish: update the book blueprint directly
+    if (!input.resetToMain) {
+      const nextBookEnding: Ending = {
+        ...(book.ending ?? {}),
+        ...(input.text !== undefined ? { text: input.text } : {}),
+        ...(input.type !== undefined ? { type: input.type } : {}),
+        ...(input.outline !== undefined ? { outline: input.outline } : {}),
+      };
+      const updatedBook = await updateBook(book.id, { ending: nextBookEnding });
+      return {
+        state: null,
+        ending: updatedBook.ending ?? undefined,
+      };
+    }
   }
-
-  // 2) Blueprint & Frontier: Synchronize book.ending for new branches/pages and frontier tracking
-  const nextBookEnding: Ending = {
-    ...(book.ending ?? {}),
-    outline,
-  };
-  const updatedBook = await updateBook(book.id, { ending: nextBookEnding });
 
   return {
     state: updatedState,
-    ending: updatedBook.ending ?? undefined,
+    ending: book.ending ?? undefined,
   };
+}
+
+export async function updatePenSessionOutline(
+  userId: string,
+  sessionId: string,
+  outline: StoryOutline[]
+): Promise<{ state: StoryState | null; ending?: Ending }> {
+  return updatePenSessionEnding(userId, sessionId, { outline });
 }
 
 /** Allowed PATCH fields on a pen session (draft fields removed in Phase 4 — autosave goes through `PATCH /drafts/:id`). */
@@ -1018,6 +1049,13 @@ export async function continuePenDraft(
     lastPage = branch.pages[branch.pages.length - 1];
     momentum = lastPage?.momentum ?? null;
     sceneType = lastPage?.sceneType ?? null;
+  } else if (book.ending) {
+    // Before page 1 finalizes: seed minimal initial state with book's ending blueprint
+    state = {
+      ...createEmptyStoryState("", 1, book.totalPages ?? 1),
+      viableEnding: book.ending,
+      hiddenState: createInitialHiddenState(),
+    };
   }
 
   const mcName = book.mc?.knownName || book.mc?.name || "";
@@ -1283,6 +1321,12 @@ export async function transformPenSelection(
     lastPage = branch.pages[branch.pages.length - 1];
     momentum = lastPage?.momentum ?? null;
     sceneType = lastPage?.sceneType ?? null;
+  } else if (book.ending) {
+    state = {
+      ...createEmptyStoryState("", 1, book.totalPages ?? 1),
+      viableEnding: book.ending,
+      hiddenState: createInitialHiddenState(),
+    };
   }
 
   const mcName = book.mc?.knownName || book.mc?.name || "";
@@ -1578,6 +1622,12 @@ export async function autofillSceneEssentials(
     lastPage = branch.pages[branch.pages.length - 1];
     momentum = lastPage?.momentum ?? null;
     sceneType = lastPage?.sceneType ?? null;
+  } else if (book.ending) {
+    state = {
+      ...createEmptyStoryState("", 1, book.totalPages ?? 1),
+      viableEnding: book.ending,
+      hiddenState: createInitialHiddenState(),
+    };
   }
 
   const mcName = book.mc?.knownName || book.mc?.name || "";
@@ -1940,6 +1990,12 @@ export async function proposePenStateUpdates(
     sceneType = lastPage?.sceneType ?? null;
     const currentPage = await getPageFromDB(session.currentPageId);
     expectedPageNumber = (currentPage?.page ?? 0) + 1;
+  } else if (book.ending) {
+    state = {
+      ...createEmptyStoryState("", 1, book.totalPages ?? 1),
+      viableEnding: book.ending,
+      hiddenState: createInitialHiddenState(),
+    };
   }
 
   const mcName = book.mc?.knownName || book.mc?.name || "";
