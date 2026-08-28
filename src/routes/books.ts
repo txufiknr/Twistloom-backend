@@ -112,7 +112,7 @@ import { stripHtml } from '../utils/sanitize-html.js';
 import { coalescePoll, getCoalesced, setCoalesced, POLL_RETRY_AFTER_SECONDS } from "../utils/poll-coalesce.js";
 import { eq, and, desc, asc, sql, ne, inArray, arrayOverlaps } from "drizzle-orm";
 import { hashSHA256 } from "../utils/hash.js";
-import { generateBookCreationPromptStream } from "../utils/prompt.js";
+import { generateBookCreationPromptStream, BOOK_CREATION_PROMPT_MIN_CHARS } from "../utils/prompt.js";
 import { getBook, getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage, tryAcquireWorkflowDispatchGate } from "../services/book.js";
 import { getBookAnalytics } from "../services/analytics.js";
 import { hasActiveVipSubscription } from "../services/subscription.js";
@@ -1425,8 +1425,12 @@ router.get("/prompt", optionalAuth, async (c) => {
         // Pipe chunks live to client while extracting clean prompt text
         promptContent = await pipeSSEStreamAndExtractText(aiStream, (chunk) => stream.write(chunk));
         
-        // Validate and save to cache if quality is good
-        if (!titleContext && !summaryContext && PROMPT_CACHE_CONFIG.enabled && userId) {
+        // Validate and save to cache if quality is good. Never cache a truncated
+        // or suspiciously short prompt — a partial generation that slipped past
+        // the aiStreamSSE minOutputLength guard (or a transport-level cut) must
+        // not be persisted and re-served to other users as a "good" prompt.
+        if (!titleContext && !summaryContext && PROMPT_CACHE_CONFIG.enabled && userId
+            && promptContent && promptContent.trim().length >= BOOK_CREATION_PROMPT_MIN_CHARS) {
           // Attempt to read provider/model used from the stream's metadata promise
           let aiProvider: AIChatProvider | 'none' = 'none';
           let aiModel: string | undefined = undefined;

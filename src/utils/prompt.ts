@@ -5878,6 +5878,17 @@ Draft: "${summary.trim()}"`
  * Elements: Atmospheric dread, unreliable narrators, hidden agendas, psychological manipulation, isolation, and the blurring line between reality and delusion
  * ```
  */
+/**
+ * Minimum characters a generated book-creation prompt must contain to be
+ * considered complete. Below this we assume the provider stream was truncated
+ * (silent reset / dropped connection) and let `aiStreamSSE` fall through to the
+ * next model/provider instead of shipping a partial "surprise me" prompt.
+ * A complete prompt (Title / Protagonist / Setting / Premise / Tone / Elements)
+ * is normally several hundred characters, so this is a conservative floor that
+ * still catches mid-word cutoffs like "...\nPrem".
+ */
+export const BOOK_CREATION_PROMPT_MIN_CHARS = 120;
+
 export async function generateBookCreationPromptStream(params: GenerateBookCreationPromptParams = {}): Promise<AIChatStreamResult> {
   const { logPrompts = false, signal, language = 'en', title, summary } = params;
   const { systemPrompt, userPrompt } = getBookCreationPrompts(language, title, summary);
@@ -5887,7 +5898,8 @@ export async function generateBookCreationPromptStream(params: GenerateBookCreat
     systemPrompt,
     context: 'book-creation-prompt',
     logPrompts: logPrompts,
-    config: {...AI_CHAT_CONFIG_DEFAULT, maxOutputToken: 1500}
+    config: {...AI_CHAT_CONFIG_DEFAULT, maxOutputToken: 1500},
+    minOutputLength: BOOK_CREATION_PROMPT_MIN_CHARS,
   }, signal);
 }
 

@@ -197,6 +197,19 @@ export async function streamCompanionAnswerSSE(
       outputJsonStructure: COMPANION_RESULT_SCHEMA,
       outputJsonRequired: COMPANION_RESULT_REQUIRED_FIELDS,
       config: { ...AI_CHAT_CONFIG_DEFAULT, maxOutputToken: 1024 },
+      // Completeness guard: a truncated JSON stream would otherwise be accepted
+      // as success and `StreamingJsonAnswerExtractor.finalize()` would happily
+      // return a partial `answer`. Reject anything that doesn't parse to a
+      // CompanionResult with a non-empty `answer` so aiStreamSSE falls through
+      // to the next model/provider instead of serving a cut-off response.
+      validateOutput: (fullText) => {
+        try {
+          const parsed = JSON.parse(fullText.trim());
+          return typeof parsed?.answer === "string" && parsed.answer.trim().length > 0;
+        } catch {
+          return false;
+        }
+      },
     },
     signal
   );

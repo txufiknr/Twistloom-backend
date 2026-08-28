@@ -151,6 +151,24 @@ export type AIPromptOptions = Partial<AIPromptDocuments> & {
   logEvaluationResult?: boolean;
   /** Maximum number of model failures across all providers before giving up (undefined = no limit) */
   fallbackLimit?: number;
+  /**
+   * Minimum number of characters the streamed output must contain for the
+   * result to be considered complete. If a provider's stream ends (cleanly
+   * surfaced `done`) with fewer characters, the orchestrator treats it as a
+   * failure and falls through to the next model/provider instead of shipping
+   * truncated content. Defaults to 0 (no minimum check).
+   */
+  minOutputLength?: number;
+  /**
+   * Pluggable completeness validator applied to the full accumulated output
+   * text once a provider's stream ends. Return `false` to reject the result
+   * (e.g. truncated JSON that no longer parses, or a missing required field)
+   * and force fallback to the next model/provider. This is the structured
+   * counterpart to `minOutputLength` — use it for JSON streams where a length
+   * floor is insufficient. When both are provided, the result must satisfy
+   * BOTH to be accepted.
+   */
+  validateOutput?: (fullText: string) => boolean;
   /** Additional metadata */
   meta?: {
     bookId?: string;

@@ -114,6 +114,8 @@ export async function aiStreamSSE(
     systemPrompt = PROMPT_SYSTEM,
     context,
     logPrompts = false,
+    minOutputLength = 0,
+    validateOutput,
   } = options;
 
   const providers = Object.keys(modelSelection) as AIChatProvider[];
@@ -267,6 +269,7 @@ export async function aiStreamSSE(
               const promptChars = (options.systemPrompt?.length ?? 0) + prompt.length + sumDocumentChars(options.documents);
               let firstTokenAt: number | null = null;
               let usage: StreamUsage | undefined;
+              let fullText = '';
 
               // Process the first result (if the generator finished immediately,
               // firstResult.done is true and its value holds the usage)
@@ -289,6 +292,7 @@ export async function aiStreamSSE(
                 // Handle backpressure
                 await handleBackpressure(controller);
 
+                fullText += chunk;
                 controller.enqueue(encoder.encode(createTextChunkEvent(chunk)));
               }
 
@@ -319,6 +323,7 @@ export async function aiStreamSSE(
                     // Handle backpressure
                     await handleBackpressure(controller);
 
+                    fullText += chunk;
                     controller.enqueue(encoder.encode(createTextChunkEvent(chunk)));
                   }
                 } catch (streamError) {
@@ -327,6 +332,33 @@ export async function aiStreamSSE(
                   // Mid-stream errors are not retried — continue to next model
                   continue;
                 }
+              }
+
+              // Completeness validation: a provider stream that ends (cleanly surfaced
+              // `done`) is NOT automatically success. A truncated response, a silent
+              // connection reset, or a mid-stream drop can all surface as a normal
+              // `done`, in which case shipping the partial output would corrupt the
+              // client UI (and, for /prompt, get cached as a "good" prompt). We reject
+              // the result when EITHER guard fails and fall through to the next
+              // model/provider:
+              //   - `minOutputLength`: raw length floor (prose streams).
+              //   - `validateOutput`: caller-supplied semantic check (JSON streams).
+              const trimmedLength = fullText.trim().length;
+              const tooShort = minOutputLength > 0 && trimmedLength < minOutputLength;
+              let invalid = false;
+              try {
+                invalid = !!(validateOutput && !validateOutput(fullText));
+              } catch (validationError) {
+                console.warn(`[${provider}] ⚠️ Model ${model} validateOutput threw — treating as failure:`, getErrorMessage(validationError));
+                invalid = true;
+              }
+              if (tooShort || invalid) {
+                const reason = tooShort
+                  ? `output too short (${trimmedLength} < ${minOutputLength} chars)`
+                  : `validateOutput rejected result`;
+                console.warn(`[${provider}] ⚠️ Model ${model} stream ended but ${reason} — treating as failure, trying next`);
+                controller.enqueue(encoder.encode(createErrorEvent(`Model ${model} returned truncated output`)));
+                continue;
               }
 
               // Send end event
