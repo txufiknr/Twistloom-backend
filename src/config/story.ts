@@ -631,4 +631,17 @@ export const PEN_ENDING_OUTLINE_MAX_ITEMS = 20;
  * Story companion AI ask character length bounds.
  */
 export const COMPANION_ASK_MIN_CHARS = 10;
-export const COMPANION_ASK_MAX_CHARS = 150;
+export const COMPANION_ASK_MAX_CHARS = 150;
+
+/**
+ * Companion answer cache: minimum Jaccard word-similarity (0–1) required for a
+ * near-identical rephrasing to be treated as a cache hit. Below this, the
+ * question is considered distinct and triggers a fresh AI generation.
+ */
+export const COMPANION_CACHE_JACCARD_THRESHOLD = 0.8;
+
+/**
+ * Companion answer cache: how many recent answers per (bookId, pageId) are
+ * scanned for the Jaccard-similarity fallback when no exact hash match exists.
+ */
+export const COMPANION_CACHE_CANDIDATE_SCAN_LIMIT = 50;

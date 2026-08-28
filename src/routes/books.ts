@@ -160,7 +160,7 @@ import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clien
 import { BOOK_MIN_PAGES, PEN_AUTHORING_MODES, PEN_DEFAULT_AUTHORING_MODE, PEN_DEFAULT_BOOK_MODE, PEN_DEFAULT_TITLE, PEN_PLACEHOLDER_MC, PEN_SUMMARY_MAX_LENGTH, PEN_TARGET_PAGES_MAX, PEN_TARGET_PAGES_MIN, PEN_TITLE_MAX_LENGTH, PEN_TITLE_MIN_LENGTH } from "../config/story.js";
 import type { CustomActionValidationResult, CustomActionPreviewResponse, CustomActionSubmitResponse } from "../types/custom-action.js";
 import type { AIPromptForJson } from "../types/ai-chat.js";
-import { MAX_BRANCHING_PREGENERATION_DEPTH } from "../config/story.js";
+import { MAX_BRANCHING_PREGENERATION_DEPTH, COMPANION_CACHE_JACCARD_THRESHOLD, COMPANION_CACHE_CANDIDATE_SCAN_LIMIT } from "../config/story.js";
 import { getBookModeCreditCostForUser, getCreditCostForUser, calculateBranchSwitchCost } from "../config/credits.js";
 import { getJourneyForks, reconstructFork, resolveCurrentPageId, narrateForkAlternative } from "../services/time-travel.js";
 import { savedPaths } from "../db/schema.js";
@@ -5616,6 +5616,68 @@ router.post("/:identifier/:pageId/actions/hint", requireAuth, rateLimit(ACTION_H
  *   and shares the same `aiStreamSSE` completeness guard (finish-reason + `validateOutput`). This
  *   non-streaming route is retained only for backward compatibility.
  */
+
+/**
+ * Resolves a cached companion answer for a `(bookId, pageId, question)`.
+ *
+ * The exact normalized-question hash match is preferred (cheap, indexed). When
+ * no exact hit exists, it falls back to a Jaccard word-similarity scan over the
+ * most recent answers on the same page and returns the closest match only if
+ * its similarity exceeds {@link COMPANION_CACHE_JACCARD_THRESHOLD} (0.9). This
+ * lets near-identical rephrasings (e.g. "Why did Marcus take the key?" vs
+ * "Why did Marcus take the iron key?") reuse a prior answer instead of
+ * re-generating one, while still treating loosely-related questions as distinct.
+ *
+ * @param rawQuestion - The reader's raw question (normalized internally).
+ * @param bookId - Book the question belongs to.
+ * @param pageId - Current page (spoiler-safe scope).
+ * @returns The best cached row, or `undefined` if no qualifying match exists.
+ */
+async function findCompanionCacheHit(
+  rawQuestion: string,
+  bookId: string,
+  pageId: string,
+): Promise<(typeof companionAnswers.$inferSelect) | undefined> {
+  const normalized = rawQuestion.toLowerCase().trim();
+  const questionHash = await hashSHA256(normalized);
+
+  // Fast path: exact normalized-question match (indexed unique constraint).
+  const [exact] = await dbRead
+    .select()
+    .from(companionAnswers)
+    .where(
+      and(
+        eq(companionAnswers.bookId, bookId),
+        eq(companionAnswers.pageId, pageId),
+        eq(companionAnswers.questionHash, questionHash),
+      ),
+    )
+    .orderBy(desc(companionAnswers.createdAt))
+    .limit(1);
+  if (exact) return exact;
+
+  // Fallback: nearest Jaccard-similar question on the same page (> 0.9).
+  const candidates = await dbRead
+    .select()
+    .from(companionAnswers)
+    .where(and(eq(companionAnswers.bookId, bookId), eq(companionAnswers.pageId, pageId)))
+    .orderBy(desc(companionAnswers.createdAt))
+    .limit(COMPANION_CACHE_CANDIDATE_SCAN_LIMIT);
+
+  // Strip punctuation so trailing "?" / "." don't block near-identical matches.
+  const normQuery = normalized.replace(/[^\p{L}\p{N}\s]/gu, " ");
+  let best: (typeof companionAnswers.$inferSelect) | undefined;
+  let bestSim = 0;
+  for (const c of candidates) {
+    const sim = wordJaccardSimilarity(normQuery, c.question.toLowerCase().trim().replace(/[^\p{L}\p{N}\s]/gu, " "));
+    if (sim > bestSim) {
+      bestSim = sim;
+      best = c;
+    }
+  }
+  return bestSim > COMPANION_CACHE_JACCARD_THRESHOLD ? best : undefined;
+}
+
 router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANION_ASK_RATE_LIMIT), async (c) => {
   try {
     const { identifier, pageId: pageIdParam } = c.req.param();
@@ -5672,21 +5734,10 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
 
     const questionHash = await hashSHA256(rawQuestion.toLowerCase().trim());
 
-    // 1. Check cache first (exact question on exact book & page, only for standalone single-turn queries)
+    // 1. Check cache first (exact question, or near-identical via Jaccard > 0.9, on exact book & page — standalone single-turn queries only)
     const hasHistory = history && history.length > 0;
     if (!hasHistory) {
-      const [cached] = await dbRead
-        .select()
-        .from(companionAnswers)
-        .where(
-          and(
-            eq(companionAnswers.bookId, book.id),
-            eq(companionAnswers.pageId, pageId),
-            eq(companionAnswers.questionHash, questionHash)
-          )
-        )
-        .orderBy(desc(companionAnswers.createdAt))
-        .limit(1);
+      const cached = await findCompanionCacheHit(rawQuestion, book.id, pageId);
 
       if (cached) {
         console.log(`[POST /companion/ask] ⚡ Cache HIT for book ${book.id} on page ${pageId}`);
@@ -6167,21 +6218,10 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(
 
     const questionHash = await hashSHA256(rawQuestion.toLowerCase().trim());
 
-    // Check cache first (exact question on exact book & page, only for standalone single-turn queries)
+    // Check cache first (exact question, or near-identical via Jaccard > 0.9, on exact book & page — standalone single-turn queries only)
     const hasHistory = history && history.length > 0;
     if (!hasHistory) {
-      const [cached] = await dbRead
-        .select()
-        .from(companionAnswers)
-        .where(
-          and(
-            eq(companionAnswers.bookId, book.id),
-            eq(companionAnswers.pageId, pageId),
-            eq(companionAnswers.questionHash, questionHash)
-          )
-        )
-        .orderBy(desc(companionAnswers.createdAt))
-        .limit(1);
+      const cached = await findCompanionCacheHit(rawQuestion, book.id, pageId);
 
       if (cached) {
         await executeWithCredits(
@@ -6219,13 +6259,11 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(
         const [creditRow] = await dbRead.select({ credits: users.credits }).from(users).where(eq(users.userId, userId)).limit(1);
         const creditsRemaining = creditRow?.credits ?? 0;
 
+        // Cache hit: return the full answer in a single `event: done` with
+        // `simulateTyping: true`. The client reveals it progressively via a local
+        // typing simulation (mirrors the prior server-paced chunk replay, but the
+        // cadence now lives on the client and is abort/supersede-aware).
         return streamSSE(c, async (stream) => {
-          const words = cached.answer.split(" ");
-          for (let i = 0; i < words.length; i += 3) {
-            const chunk = words.slice(i, i + 3).join(" ") + (i + 3 < words.length ? " " : "");
-            await stream.writeSSE({ event: "chunk", data: JSON.stringify({ content: chunk }) });
-            await new Promise((r) => setTimeout(r, 20));
-          }
           await stream.writeSSE({
             event: "done",
             data: JSON.stringify({
@@ -6234,6 +6272,7 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(
               sources: cached.sources,
               suggestedFollowUps: cached.suggestedFollowUps,
               cached: true,
+              simulateTyping: true,
               creditsRemaining,
             }),
           });

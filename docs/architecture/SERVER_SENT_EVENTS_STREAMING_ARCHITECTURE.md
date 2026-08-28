@@ -339,6 +339,9 @@ Token `onChunk` callbacks fire far faster than React can paint. Both clients buf
 #### Return authoritative state in the completion event
 The companion `event: done` carries `creditsRemaining` (the post-deduction balance). The client sets its local credit balance directly from this field and skips the extra `invalidateUser()` refetch — one fewer round-trip per ask. Fall back to an optimistic estimate + refetch only when the field is absent.
 
+#### Cache-hit typing simulation (`simulateTyping`)
+On a companion cache hit the backend returns the full answer in a single `event: done` carrying `simulateTyping: true` (no `event: chunk` frames). The client then reveals `answer` word-by-word via a local typing player, so the cadence lives on the client and stays in lockstep with the rest of the stream's abort/supersede handling. The player is bound to the **same `AbortController.signal`** as the network, so one `controller.abort()` cancels both — no separate timer/cancel path to keep in sync. On abort the in-flight simulation rejects and the half-typed placeholder is removed, exactly like a live stream.
+
 #### Abort / supersede safety
 When a newer request supersedes an in-flight one (or the component unmounts), the older controller is aborted. The client must:
 - treat the abort as a no-op for the UI (remove the orphaned placeholder, surface **no** error), and
