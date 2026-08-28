@@ -48,10 +48,26 @@ export const cacheControl = createMiddleware<AppEnv>(async (c, next) => {
   // to avoid redundant serverless function invocations during back-and-forth reading
   const userId = c.get("userId");
   if (userId) {
-    // Realtime polling and status endpoints must stay uncached
+    // Realtime status polling endpoints (book creation + candidate generation):
+    // allow a SHORT private edge/browser cache so bursts of identical polls from
+    // the same client are coalesced by Vercel Edge / the browser without invoking
+    // the serverless function on every 1–2s tick. This is the P1.2/P1.4 invocation
+    // reducer — the per-instance LRU in poll-coalesce.ts already collapses
+    // same-instance bursts; this adds client-side + edge collapse. 1–2s staleness
+    // is imperceptible for generation progress. `private` (not `public`) keeps the
+    // per-user payload from leaking across users at the CDN. Truly realtime
+    // endpoints (checkin/status, notifications, activity-logs, generations/active)
+    // stay fully uncached below.
+    const isStatusPoll =
+      (path.endsWith("/status") && !path.includes("/checkin/status")) ||
+      path.endsWith("/candidates/status");
+    if (isStatusPoll) {
+      c.header("Cache-Control", "private, max-age=1, s-maxage=1, stale-while-revalidate=2");
+      return;
+    }
+
+    // Truly realtime endpoints must stay uncached
     if (
-      path.endsWith("/status") ||
-      path.endsWith("/candidates") ||
       path.includes("/generations/active") ||
       path.includes("/notifications") ||
       path.includes("/checkin/status") ||

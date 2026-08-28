@@ -22,6 +22,7 @@ import type { AIJsonProperty } from "../types/ai-chat.js";
 import type { StoryState } from "../types/story.js";
 import { RULES_LANGUAGE_LOCALIZATION } from "./prompt.js";
 import { formatLanguage } from "./translation.js";
+import { cachedRender } from "../services/prompt-render-cache.js";
 import { resolveCharacterDisplayName } from "./characters.js";
 import { resolvePlaceDisplayName } from "./places.js";
 
@@ -147,6 +148,12 @@ ${RULES_LANGUAGE_LOCALIZATION}`;
  * @param question - The reader's question
  * @param language - Story language code (e.g. "en", "id")
  * @param mcName - Main character name (for labeling context)
+ * @param history - Optional multi-turn conversation history
+ * @param cacheKey - Optional page-scoped cache key (e.g. `comp:${bookId}:${pageId}`).
+ *   When provided, the page-stable body (everything except the per-turn
+ *   `semanticContext`, `history`, and `question`) is memoized, skipping repeated
+ *   serialization of large character/place/plot arrays across chat turns on the
+ *   same page. Omit to disable caching.
  * @returns The user prompt string
  */
 export function buildCompanionUserPrompt(
@@ -154,7 +161,69 @@ export function buildCompanionUserPrompt(
   question: string,
   language: string,
   mcName: string,
-  history?: CompanionChatTurn[]
+  history?: CompanionChatTurn[],
+  cacheKey?: string,
+): string {
+  // Stable, page-scoped body — identical for every turn on the same page.
+  const stableBody = cachedRender(cacheKey, () => renderCompanionStableBody(context, language, mcName));
+
+  const sections: string[] = [stableBody];
+
+  // Semantically recalled clues & past scene moments (pgvector memory)
+  if (context.semanticContext) {
+    const memoryItems: string[] = [];
+    const seenTexts = new Set<string>();
+
+    if (context.semanticContext.relevantClues && context.semanticContext.relevantClues.length > 0) {
+      for (const clue of context.semanticContext.relevantClues) {
+        const text = (clue.sourceText || "").trim();
+        if (text && !seenTexts.has(text.toLowerCase())) {
+          seenTexts.add(text.toLowerCase());
+          memoryItems.push(`- [Page ${clue.page}] Clue: ${text}`);
+        }
+      }
+    }
+    if (context.semanticContext.relevantPastScenes && context.semanticContext.relevantPastScenes.length > 0) {
+      for (const scene of context.semanticContext.relevantPastScenes) {
+        const text = (scene.sourceText || "").trim();
+        if (text && !seenTexts.has(text.toLowerCase())) {
+          seenTexts.add(text.toLowerCase());
+          memoryItems.push(`- [Page ${scene.page}] Past Scene: ${text}`);
+        }
+      }
+    }
+    if (memoryItems.length > 0) {
+      sections.push(`RELEVANT HISTORICAL CLUES & PAST MOMENTS (SEMANTIC RECALL):\n${memoryItems.join("\n")}`);
+    }
+  }
+
+  // Recent conversation history (last 3 turns max, truncated to avoid ballooning context)
+  if (history && history.length > 0) {
+    const recentTurns = history.slice(-3).map((turn) => {
+      const q = turn.question.trim().slice(0, 300);
+      const a = turn.answer.trim().slice(0, 400);
+      return `Reader: ${q}\nCompanion: ${a}`;
+    });
+    sections.push(`RECENT CONVERSATION:\n${recentTurns.join("\n\n")}`);
+  }
+
+  // User question (last — changes every turn)
+  sections.push(`READER'S CURRENT QUESTION:\n${question}`);
+
+  return sections.join("\n\n");
+}
+
+/**
+ * Renders the page-stable portion of the companion user prompt: language
+ * directive, story summary, characters, places, plot flags, actions taken, story
+ * threads, and the main-character label. These depend only on the page's
+ * canonical state, so the result is safe to memoize per page (see
+ * {@link buildCompanionUserPrompt}'s `cacheKey`).
+ */
+function renderCompanionStableBody(
+  context: CompanionPageContext,
+  language: string,
+  mcName: string,
 ): string {
   const sections: string[] = [];
 
@@ -215,47 +284,6 @@ export function buildCompanionUserPrompt(
   if (mcName) {
     sections.push(`MAIN CHARACTER: ${mcName}`);
   }
-
-  // Semantically recalled clues & past scene moments (pgvector memory)
-  if (context.semanticContext) {
-    const memoryItems: string[] = [];
-    const seenTexts = new Set<string>();
-
-    if (context.semanticContext.relevantClues && context.semanticContext.relevantClues.length > 0) {
-      for (const clue of context.semanticContext.relevantClues) {
-        const text = (clue.sourceText || "").trim();
-        if (text && !seenTexts.has(text.toLowerCase())) {
-          seenTexts.add(text.toLowerCase());
-          memoryItems.push(`- [Page ${clue.page}] Clue: ${text}`);
-        }
-      }
-    }
-    if (context.semanticContext.relevantPastScenes && context.semanticContext.relevantPastScenes.length > 0) {
-      for (const scene of context.semanticContext.relevantPastScenes) {
-        const text = (scene.sourceText || "").trim();
-        if (text && !seenTexts.has(text.toLowerCase())) {
-          seenTexts.add(text.toLowerCase());
-          memoryItems.push(`- [Page ${scene.page}] Past Scene: ${text}`);
-        }
-      }
-    }
-    if (memoryItems.length > 0) {
-      sections.push(`RELEVANT HISTORICAL CLUES & PAST MOMENTS (SEMANTIC RECALL):\n${memoryItems.join("\n")}`);
-    }
-  }
-
-  // Recent conversation history (last 3 turns max, truncated to avoid ballooning context)
-  if (history && history.length > 0) {
-    const recentTurns = history.slice(-3).map((turn) => {
-      const q = turn.question.trim().slice(0, 300);
-      const a = turn.answer.trim().slice(0, 400);
-      return `Reader: ${q}\nCompanion: ${a}`;
-    });
-    sections.push(`RECENT CONVERSATION:\n${recentTurns.join("\n\n")}`);
-  }
-
-  // User question (last — changes every turn)
-  sections.push(`READER'S CURRENT QUESTION:\n${question}`);
 
   return sections.join("\n\n");
 }

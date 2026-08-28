@@ -28,6 +28,7 @@
  */
 
 import type { StoryState } from "../types/story.js";
+import { cachedRender } from "../services/prompt-render-cache.js";
 import { moods, actionTypes, actionHintTypes, characterSceneRoles, plotFlagTypes, factTypes } from "../types/story.js";
 import { placeWeathers } from "../types/places.js";
 import type {
@@ -214,7 +215,11 @@ export function buildCanonicalBlock(state: StoryState | null, mcName: string, ca
   momentum?: string | null;
   sceneType?: string | null;
   essentials?: PenDraftSceneEssentials | null;
-}): string {
+}, cacheKey?: string): string {
+  // Memoize the rendered canon per page (the inputs are stable until the page is
+  // published, which rotates the cache key). Cuts repeated serialization of the
+  // full story state across bursty /continue calls on the same page.
+  return cachedRender(cacheKey, () => {
   const lines: string[] = [];
 
   if (state) {
@@ -330,6 +335,7 @@ export function buildCanonicalBlock(state: StoryState | null, mcName: string, ca
   }
 
   return lines.join("\n");
+  });
 }
 
 /**
@@ -392,6 +398,12 @@ export type PenContinueCommonParams = {
    * siblings, used only for labeling/seed variety, not semantics.
    */
   latentBranchIndex?: number;
+  /**
+   * Optional page-scoped cache key (e.g. the session's `currentPageId`). When
+   * provided, the canonical block render is memoized across bursty `/continue`
+   * calls on the same page (see `buildCanonicalBlock`). Omit to disable.
+   */
+  cacheKey?: string;
 };
 
 export function buildPenContinuePrompt(
@@ -407,7 +419,7 @@ export function buildPenContinuePrompt(
     momentum: "momentum" in params ? params.momentum : undefined,
     sceneType: "sceneType" in params ? params.sceneType : undefined,
     essentials: "essentials" in params ? params.essentials : undefined,
-  });
+  }, params.cacheKey);
   const prose = buildProseContext(pageTexts);
   const narrativeStyleInstructions = state ? createNarrativeStyle(state).instructions : undefined;
 

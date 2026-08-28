@@ -782,6 +782,18 @@ export async function updateSessionDraft(
     if (updates.draftHtml !== undefined) values.draftHtml = updates.draftHtml;
   }
 
+  // Skip fields whose value is identical to what is already stored, so an autosave
+  // that re-sends unchanged content triggers no redundant DB write (P5.1). This
+  // is the dominant cost on high-frequency pen autosave bursts.
+  for (const key of Object.keys(values) as (keyof typeof values)[]) {
+    const next = (values as Record<string, unknown>)[key];
+    const prev = (existing as unknown as Record<string, unknown>)[key];
+    const unchanged =
+      next === prev ||
+      (next !== undefined && prev !== undefined && JSON.stringify(next) === JSON.stringify(prev));
+    if (unchanged) delete (values as Record<string, unknown>)[key];
+  }
+
   if (Object.keys(values).length === 0) return existing;
 
   const [updated] = await dbWrite
@@ -1133,6 +1145,9 @@ export async function continuePenDraft(
     sceneType,
     bookSummary: book.summary ?? null,
     essentials: inheritSceneEssentials(draft.draftSceneEssentials, lastPage),
+    // Page-scoped key memoizes the canonical block render across bursty
+    // /continue calls on the same page (rotates on publish).
+    cacheKey: session.currentPageId ?? undefined,
   };
 
   const { systemPrompt, userPrompt } =

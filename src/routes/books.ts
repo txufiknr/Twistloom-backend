@@ -5236,6 +5236,23 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
       return cValidationError(c, "Invalid pageId: must be valid uuid");
     }
 
+    const shouldTrigger = c.req.query("trigger") === "true";
+
+    // ── Coalesced poll (Fluid Active CPU optimization) ───────────────────────
+    // Short-circuit BEFORE the DB-heavy page validation so identical read-only
+    // polls within the coalescing window are served the cached payload with ZERO
+    // DB work. The previous ordering ran validateAndRetrievePageForGeneration
+    // first, which defeated the cache for the most expensive read on every poll.
+    // Explicit ?trigger=true always computes (so workflow dispatch still happens)
+    // and is never served from cache.
+    if (!shouldTrigger) {
+      const cached = getCoalesced<CandidateGenerationStatus>(`cand:${userId ?? "anon"}:${pageIdStr}`);
+      if (cached) {
+        c.header("Retry-After", String(POLL_RETRY_AFTER_SECONDS));
+        return c.json(cached);
+      }
+    }
+
     // Use common validation and page retrieval
     const validationResult = await validateAndRetrievePageForGeneration(bookIdentifier, pageIdStr, userId);
     if (!validationResult) {
@@ -5244,20 +5261,6 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
 
     const { dbBook, dbPage, userPage, isGenerating, isDone } = validationResult;
     const { actions, updatedAt } = userPage;
-
-    const shouldTrigger = c.req.query("trigger") === "true";
-
-    // ── Coalesced poll (Fluid Active CPU optimization) ───────────────────────
-    // Skip the DB-heavy path for repeated read-only polls within the coalescing
-    // window. Explicit ?trigger=true always computes (so workflow dispatch still
-    // happens) and is never served from cache.
-    if (!shouldTrigger) {
-      const cached = getCoalesced<CandidateGenerationStatus>(`cand:${userId ?? "anon"}:${pageIdStr}`);
-      if (cached) {
-        c.header("Retry-After", String(POLL_RETRY_AFTER_SECONDS));
-        return c.json(cached);
-      }
-    }
 
     // ── Own custom actions ────────────────────────────────────────────────────
     // Only the owner's own custom submissions participate in this page's
@@ -5748,8 +5751,9 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
     const mcName = book.mc.knownName || book.mc.name || "the protagonist";
     const language = book.language || "en";
 
-    // Build prompts with optional multi-turn conversation history
-    const userPrompt = buildCompanionUserPrompt(companionContext, rawQuestion, language, mcName, history);
+    // Build prompts with optional multi-turn conversation history.
+    // cacheKey memoizes the page-stable body across chat turns on the same page.
+    const userPrompt = buildCompanionUserPrompt(companionContext, rawQuestion, language, mcName, history, `comp:${book.id}:${pageIdParam}`);
 
     const promptConfig: AIPromptForJson<CompanionResult> = {
       schema: COMPANION_RESULT_SCHEMA,
@@ -6242,7 +6246,7 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(
     });
     const mcName = book.mc.knownName || book.mc.name || "the protagonist";
     const language = book.language || "en";
-    const userPrompt = buildCompanionUserPrompt(companionContext, rawQuestion, language, mcName, history);
+    const userPrompt = buildCompanionUserPrompt(companionContext, rawQuestion, language, mcName, history, `comp:${book.id}:${pageIdParam}`);
 
     return streamSSE(c, async (stream) => {
       try {
@@ -6358,21 +6362,39 @@ router.post("/:identifier/:pageId/touch", requireAuth, async (c) => {
     return cValidationError(c, "Invalid pageId: must be valid uuid");
   }
 
-  // Resolve book id (slug or uuid) and confirm the page belongs to it.
-  const book = await resolveBook(bookIdentifierStr);
-  if (!book) return cNotFoundError(c, "Book not found");
-  const dbPage = await getPageFromDB(pageIdStr, { bookIdentifier: book.id });
-  if (!dbPage) return cNotFoundError(c, "Page not found");
+  // Fluid CPU optimized heartbeat: resolve the book (slug or uuid) and confirm
+  // the page belongs to it in a SINGLE indexed round-trip (replaces the prior
+  // resolveBook() + getPageFromDB() pair of reads). No story-state load, no
+  // page-progress write, no activity log — just bump the session's updated_at so
+  // the "continue reading" / reads dashboard sort (keys on user_sessions.updated_at)
+  // re-orders with the most-recently-opened book on top.
+  const [row] = await dbRead
+    .select({
+      bookId: books.id,
+      pageNumber: pages.page,
+      parentId: pages.parentId,
+    })
+    .from(pages)
+    .innerJoin(books, eq(books.id, pages.bookId))
+    .where(
+      and(
+        eq(pages.id, pageIdStr),
+        isValidUuid(bookIdentifierStr)
+          ? eq(books.id, bookIdentifierStr)
+          : eq(books.slug, bookIdentifierStr),
+      ),
+    )
+    .limit(1);
 
-  // Upsert/touch the active session row via touchReadingSession (Fluid CPU optimized:
-  // bumps updated_at without loading full story state JSON or recalculating branch frontiers).
+  if (!row) return cNotFoundError(c, "Book or page not found");
+
   const now = new Date();
   const session = await touchReadingSession({
     userId,
-    bookId: book.id,
+    bookId: row.bookId,
     pageId: pageIdStr,
-    pageNumber: dbPage.page,
-    previousPageId: dbPage.parentId ?? undefined,
+    pageNumber: row.pageNumber,
+    previousPageId: row.parentId ?? undefined,
   });
 
   return c.json({ success: true, lastReadAt: session?.updatedAt ?? now });

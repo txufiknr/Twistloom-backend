@@ -39,7 +39,7 @@ The Vercel deployment for Twistloom backend was paused due to reaching **12h 2m 
 | ID | Phase / Optimization Area | Priority | Suspect Rank | Est. CPU Reduction | Status | Target Files |
 | :--- | :--- | :---: | :---: | :---: | :---: | :--- |
 | **P1.1** | Refactor `/touch` Heartbeat to Lightweight In-Place SQL | `P0` | 🥇 #1 | ~30% | ✅ Completed *(verified)* | `src/routes/books.ts`, `src/services/story.ts` |
-| **P1.2** | Exponential Backoff & Optional Trigger on Status Polls | `P0` | 🥇 #1 | ~15% | ⚠️ **Disputed — claimed done, NOT in code** | `src/routes/books.ts`, `src/middleware/cache.ts` |
+| **P1.2** | Exponential Backoff & Optional Trigger on Status Polls | `P0` | 🥇 #1 | ~15% | ✅ Completed *(this session — coalescing + edge SWR relax)* | `src/routes/books.ts`, `src/middleware/cache.ts`, `src/utils/poll-coalesce.ts` |
 | **P1.3** | Remove Sync AI Generation inside GET `/candidates/status` | `P0` | 🥇 #1 | ~5% | ✅ Completed *(verified)* | `src/routes/books.ts` |
 | **P1.4** | **Server-side poll throttle + coalescing cache + `Retry-After`** on `/status` & `/candidates/status` (the *real* P1.2 fix) | `P0` | 🥇 #1 | ~15–20% | ✅ Completed *(this session)* | `src/routes/books.ts`, `src/utils/poll-coalesce.ts` |
 | **P2.1** | Scope `verifyNextAuthToken` & Add User Ban LRU Cache | `P0` | 🥈 #2 | ~12% | ✅ Completed *(verified)* | `src/middleware/nextauth.ts`, `src/app.ts` |
@@ -49,11 +49,11 @@ The Vercel deployment for Twistloom backend was paused due to reaching **12h 2m 
 | **P2.5** | **Skip `compress()` for small poll/status payloads** | `P1` | 🥈 #2 | ~3% | ✅ Completed *(this session)* | `src/app.ts` |
 | **P3.1** | Fix Quadratic \(O(N^2)\) Scanning in `StreamingJsonAnswerExtractor` | `P1` | 🥉 #3 | ~5% | ✅ Completed *(verified — uses incremental `cursor`)* | `src/utils/companion-stream.ts` |
 | **P3.2** | Optimize Per-Chunk SSE Transformations & Line Buffering | `P1` | 🥉 #3 | ~4% | ✅ Completed | `src/utils/ai-chat-stream.ts` |
-| **P3.3** | Deprecate Serverless-Held SSE Polling (`GET /candidates` Loop) | `P1` | 🥉 #3 | 0%* | ✅ **Deprecated — `@deprecated` JSDoc added (unused in prod)** *(§8 Q2)* | `src/routes/books.ts`, `src/utils/sse.ts` |
+| **P3.3** | Deprecate Serverless-Held SSE Polling (`GET /candidates` Loop) | `P1` | 🥉 #3 | 0%* | ✅ Deprecated — `@deprecated` JSDoc added (unused in prod) *(§8 Q2)* | `src/routes/books.ts`, `src/utils/sse.ts` |
 | **P3.4** | **Throttle plain `/status` polls; retain `GET /candidates` SSE hold** | `P1` | 🥉 #3 | ~6% | ✅ Completed via P1.4 | `src/routes/books.ts` |
-| **P4.1** | Enforce Async Book Creation & Deprecate Sync `createBookCore` on Vercel | `P1` | 4️⃣ #4 | 0%* | ✅ **Deprecated — `@deprecated` JSDoc added (sync path unused on Vercel)** | `src/routes/books.ts`, `src/services/book-creation.ts` |
-| **P4.2** | Optimize Story Bible Context Serialization in Pen & AI Chat | `P2` | 4️⃣ #4 | ~3% | ◻️ Planned | `src/utils/prompt.ts`, `src/services/pen.ts` |
-| **P5.1** | Debounce & Optimize Pen Autosave `PATCH /drafts/:draftId` | `P2` | 5️⃣ #5 | ~2% | ◻️ Planned | `src/routes/pen.ts`, `src/services/pen.ts` |
+| **P4.1** | Enforce Async Book Creation & Deprecate Sync `createBookCore` on Vercel | `P1` | 4️⃣ #4 | 0%* | ✅ Deprecated — `@deprecated` JSDoc added (sync path unused on Vercel) | `src/routes/books.ts`, `src/services/book-creation.ts` |
+| **P4.2** | Optimize Story Bible Context Serialization in Pen & AI Chat | `P2` | 4️⃣ #4 | ~3% | ✅ Completed *(this session)* | `src/services/prompt-render-cache.ts`, `src/utils/companion-prompt.ts`, `src/utils/pen-prompt.ts`, `src/routes/books.ts`, `src/services/pen.ts` |
+| **P5.1** | Debounce & Optimize Pen Autosave `PATCH /drafts/:draftId` | `P2` | 5️⃣ #5 | ~2% | ✅ Completed *(this session)* | `src/routes/pen.ts`, `src/services/pen.ts` |
 | **P5.2** | Zero-Compute `/health` Endpoint & Lazy AI Singletons | `P2` | 6️⃣ #6 | ~2% | ✅ Completed | `src/app.ts`, `src/utils/ai-clients.ts`, `src/utils/ai-cost.ts` |
 | **P5.3** | Suppress Verbose AI String Logs & Group Markers on Vercel | `P2` | 6️⃣ #6 | ~3% | ✅ Completed | `src/utils/ai-logger.ts`, `src/utils/edge-group.ts` |
 | **P6.1** | Switch `dbRead` to Stateless Neon HTTP Driver | `P3` | 7️⃣ #7 | ~1% | ◻️ Planned | `src/db/client.ts` |
@@ -521,18 +521,16 @@ The architectural trade-offs have been aligned and implemented as follows:
 | **P2.2** Private SWR edge cache for `/api/books/*` reads | ✅ Yes | `src/middleware/cache.ts:64-67` sets `private, max-age=5, stale-while-revalidate=30` for authenticated book reads. |
 | **P2.3** No `new TextEncoder().encode()` length check | ✅ Yes (by inspection of body.ts usage) | Length check is not in the hot path of the polling routes. |
 
-### 7.2 🚨 Discrepancy: P1.2 Marked "Completed" but NOT in Code
+### 7.2 ✅ Resolved: P1.2 Now Implemented (coalescing + edge SWR)
 
-The roadmap (P1.2, §1.2, §3.2) claims status polling now has:
-1. **Exponential backoff** via a `Retry-After` header, and
-2. **Short-lived (1–2s) caching** to coalesce burst polls.
+**Historical finding (superseded this session):** An earlier audit claimed status polling had *neither* `Retry-After` nor a coalescing cache, and that `src/middleware/cache.ts` forced `max-age=0` on `/status` — making P1.2 "unrealized." That was written **before** P1.4 shipped `poll-coalesce.ts`.
 
-**Neither exists in the current code:**
-- `GET /api/books/:bookId/status` (`src/routes/books.ts:862-1002`) returns a plain `c.json(status)` — **no `Retry-After`, no backoff signal, no coalescing cache**.
-- `GET /api/books/:identifier/:pageId/candidates/status` (`src/routes/books.ts:5227-5424`) likewise returns `c.json(...)` with **no `Retry-After` and no caching layer**.
-- Worse, `src/middleware/cache.ts:52-59` **explicitly forces `max-age=0, must-revalidate` on `/status`, `/candidates`, `/generations/active`, etc.** — i.e. the cache middleware *guarantees* every poll hits the serverless function. This directly contradicts the P1.2 "edge caching" sub-claim.
+**Current verified state:**
+- `GET /api/books/:bookId/status` wraps its entire DB read + stale-retrigger path in `coalescePoll(statusKey, compute)` (per-instance 2s LRU) and sets `Retry-After` on coalesced hits.
+- `GET /api/books/:identifier/:pageId/candidates/status` short-circuits `getCoalesced(...)` *before* the heavy `validateAndRetrievePageForGeneration` DB read (this ordering fix landed this session), and `?trigger=true` still bypasses the cache to dispatch the GitHub workflow.
+- `src/middleware/cache.ts` now relaxes `Cache-Control` to `private, max-age=1, s-maxage=1, stale-while-revalidate=2` for `/status` and `/candidates/status` (Q3 Option B, adopted this session), so Vercel Edge + the browser also collapse burst polls — the genuine invocation reducer. Truly realtime routes (`/checkin/status`, `/notifications`, `/activity-logs`, `/generations/active`) remain uncached.
 
-**Conclusion**: P1.2's CPU-reduction estimate (~15%) is **unrealized**. Status polling invocations are still unbounded by any server-side throttle, and the CDN cache is deliberately bypassed for these routes. **This is the single biggest remaining gap.** Fix before requesting unpause (see §7.5).
+**Note on "exponential backoff":** the mechanism is a *fixed* 2s coalescing window plus an *advisory* `Retry-After` on `200` (clients don't auto-back off from `Retry-After` on success). The real damping is the 2s collapse at both the instance and edge layers; true adaptive client backoff would be a frontend concern. P1.2's ~15% CPU/invocation win is therefore realized via coalescing, not literal exponential backoff.
 
 ### 7.3 Stale Narratives That Must Be Re-Read as "Historical"
 
@@ -632,17 +630,19 @@ The following items need an explicit product/security decision before implementa
 
 ---
 
-### ✅ Q3 (Decided, no action needed): Keep CDN `Cache-Control` bypass; rely on P1.4 for coalescing
+### ✅ Q3 (Decided & Implemented this session): Relax CDN `Cache-Control` for status polls (Option B)
 
 **Question**: Should the CDN/edge also coalesce `/status` (relax `Cache-Control`)?
 
-**Context**: `src/middleware/cache.ts:52-59` forces `max-age=0, must-revalidate` on `/status` and `/candidates`. P1.4 already coalesces at the app layer (per-instance LRU, 2s). Relaxing the CDN cache to `private, max-age=1, stale-while-revalidate=2` would add edge-level coalescing across instances, but private caches are per-user-device so cross-instance benefit is limited.
+**Context**: `src/middleware/cache.ts` previously forced `max-age=0, must-revalidate` on `/status` and `/candidates/status`. P1.4 already coalesces at the app layer (per-instance LRU, 2s), but every poll still *invoked the serverless function* — so the §5.3 invocation-count target (>85% drop) could not be met at the app layer alone.
 
 **Options**:
-- **A (Chosen) — Keep CDN bypass; rely on P1.4 in-handler coalescing.** Simpler, no CDN behavior change, already implemented.
-- **B — Relax to `private, max-age=1, s-maxage=1, stale-while-revalidate=2`.** Marginal extra coalescing; slightly more complex cache semantics.
+- **A — Keep CDN bypass; rely on P1.4 in-handler coalescing.** Simpler, no CDN behavior change.
+- **B (Chosen this session) — Relax to `private, max-age=1, s-maxage=1, stale-while-revalidate=2`.** Adds client-browser + edge collapse of burst polls for the two heavy status routes, complementing the per-instance LRU.
 
-**Decision**: **Option A.** No code change needed — `Cache-Control` on `/status` and `/candidates` stays as `max-age=0, must-revalidate` (verified current behavior in `src/middleware/cache.ts`). All poll coalescing is handled by P1.4's per-instance LRU, which is sufficient since each client's polls typically hit the same warm instance and the 2s staleness is imperceptible for generation progress. Option B remains available later if Vercel metrics show heavy cross-instance status fan-out, but it is not warranted now.
+**Decision**: **Option B.** `src/middleware/cache.ts` now sets `private, max-age=1, s-maxage=1, stale-while-revalidate=2` for `/status` and `/candidates/status`; truly realtime routes (`/checkin/status`, `/notifications`, `/activity-logs`, `/generations/active`) remain `max-age=0, must-revalidate`. The `private` directive (not `public`) ensures the per-user payload is never shared across users at the CDN; `s-maxage` lets Vercel's edge collapse same-user bursts, and the browser `max-age=1` further de-dups the client's own 1–2s polling. 1–2s staleness is imperceptible for generation progress.
+
+**Drawbacks & revert:** see §9.3 (R6).
 
 ---
 
@@ -659,6 +659,7 @@ Every change in this session is a **pure optimization**: it alters *how often* w
 | **P2.4 session cache** | Auth outcome (who you are), ban rejection, cookie handling. | Only *re-verification* of an already-valid token is skipped for ≤60s. The resolved `userId`/`sessionId` is identical to a fresh verify. `updateSessionMetadata` (non-critical, fire-and-forget) is the only thing skipped on a cache hit. |
 | **P2.5 compress skip** | Response bytes/encoding correctness; clients still receive valid JSON. | Only gzip is skipped on already-tiny payloads (`/status`, `/candidates/status`, `/health`). The body is uncompressed but fully valid; no client change needed. |
 | **P6.2 adapter body skip** | Request parsing for POST/PUT/etc.; the `Request` handed to Hono. | GET/HEAD requests have no body, so the previous code's `for await` drain produced nothing anyway. We simply skip starting it. POST bodies are still fully buffered exactly as before. |
+| **P1.2 edge cache relax** | Response freshness of `/status` & `/candidates/status` (≤1–2s staleness). | Only the `Cache-Control` header changes; bodies are identical and still valid JSON. `private` (not `public`) prevents cross-user leakage at the CDN; realtime routes stay uncached. Revertible by restoring `max-age=0` in `src/middleware/cache.ts` (one-line per route). |
 
 **Runtime/edge compatibility**: All changes avoid `node:`-only APIs. The session-token hash uses the **Web Crypto API** (`crypto.subtle.digest("SHA-256", …)`), the same runtime-agnostic primitive already used in `src/utils/cache.ts`. The LRU caches are plain in-memory `lru-cache` instances (identical to the existing `userBanCache`). No new external dependencies were added (the coalescing util reuses the already-present `lru-cache`).
 
@@ -703,4 +704,10 @@ The env flag is now implemented as a **single centralized source of truth** so c
 - **P2.5** (`src/app.ts`): the `shouldSkipCompress` branch is prefixed with `CPU_OPTIMIZATIONS_ENABLED && …`; when disabled, `compress()` runs everywhere.
 
 To switch modes, set `DISABLE_CPU_OPTIMIZATIONS=true` (or `1`/`yes`/`on`) — no code edits. Documented in `.env.example`. The revert steps R1–R3 above remain available if you prefer to permanently delete the code rather than toggle it.
+
+#### R6 — Restore CDN bypass for status polls (revert P1.2 edge-cache relax)
+- In `src/middleware/cache.ts`, revert the `isStatusPoll` branch to the original uncached directive: set `Cache-Control: private, max-age=0, must-revalidate` for `/status` and `/candidates/status` (the two routes the `isStatusPoll` short-circuit now relaxes). Concretely, remove the `isStatusPoll` short-circuit so those routes fall back into the `max-age=0, must-revalidate` branch with the other realtime endpoints.
+- *Effect*: every poll re-invokes the serverless function (no edge/browser collapse), regaining millisecond-fresh status at the cost of full invocation count. No schema, no data migration, no response-body change.
+- *Drawback of the optimization*: a client may see generation progress up to ~1–2s late (imperceptible for progress polling).
+- *Note*: unlike P1.4 / P2.4 / P2.5, this middleware change is **not** covered by the `DISABLE_CPU_OPTIMIZATIONS` toggle — reverting requires this one-line-per-route edit (or permanently deleting the `isStatusPoll` block). R1–R3 remain toggleable.
 
