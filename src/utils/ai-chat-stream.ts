@@ -103,6 +103,66 @@ import { convertToGeminiSchema } from "./gemini.js";
  * const cleanText = await parseSSEStreamContent(stream.stream);
  * ```
  */
+/**
+ * Finish reasons that mean the provider cleanly completed generation.
+ * Anything else (including `unknown`, `length`, `content_filter`, `error`,
+ * `timeout`, `cancelled`, `tool_calls`) is treated by {@link aiStreamSSE} as a
+ * non-completion and triggers fallback to the next model/provider.
+ *
+ * Note: `unknown` is deliberately NOT in this set. Providers surface `unknown`
+ * when the stream was cut off (connection reset, mid-stream drop) and the SDK
+ * could not determine a real reason — exactly the silent-truncation symptom
+ * observed in production. We fail those rather than ship a partial result.
+ *
+ * `finishReason` is only consulted when the provider actually reports it (it is
+ * `null`/`undefined` for generators that don't surface one). When absent, the
+ * `minOutputLength` / `validateOutput` guards provide the fallback safety net,
+ * so providers that omit the field see no behavior change.
+ */
+const FINISH_REASONS_COMPLETE = new Set<string>([
+  'stop',
+  'complete',
+  'completed',
+  'stop_sequence',
+  'end_turn',
+  'finished',
+  'final',
+]);
+
+/**
+ * Accumulates streaming `usage` + `finishReason` for a single generation and
+ * serializes it back into the `StreamUsage | undefined` value a generator
+ * returns when exhausted.
+ *
+ * Every streaming generator used to hand-roll `let usage` / `let finishReason`
+ * plus an ad-hoc `return { ...(usage ?? {}), ...(finishReason ? { finishReason } : {}) }`
+ * merge — duplicated across 6 generators, so any change to how finish reasons
+ * are surfaced meant editing each one. This builder is the single place that
+ * owns that shape. Returns `undefined` when nothing was captured (so the
+ * orchestrator's `usage = value || undefined` stays correct) rather than an
+ * empty `{}`, which also avoids a previously-hidden truthy-`{}` edge case.
+ */
+function createStreamUsageBuilder() {
+  let usage: StreamUsage | undefined;
+  let finishReason: string | undefined;
+
+  return {
+    /** Merge a partial usage payload (e.g. prompt/cached token counts). */
+    setUsage(u: StreamUsage | undefined): void {
+      if (u) usage = { ...usage, ...u };
+    },
+    /** Record the provider's stop reason; later/non-empty values win. */
+    setFinishReason(fr: string | null | undefined): void {
+      if (fr) finishReason = fr;
+    },
+    /** Serialize to the generator's `StreamUsage | undefined` return value. */
+    build(): StreamUsage | undefined {
+      if (!usage && !finishReason) return undefined;
+      return { ...(usage ?? {}), ...(finishReason ? { finishReason } : {}) };
+    },
+  };
+}
+
 export async function aiStreamSSE(
   prompt: string, 
   options: AIPromptOptions = {},
@@ -339,8 +399,14 @@ export async function aiStreamSSE(
               // connection reset, or a mid-stream drop can all surface as a normal
               // `done`, in which case shipping the partial output would corrupt the
               // client UI (and, for /prompt, get cached as a "good" prompt). We reject
-              // the result when EITHER guard fails and fall through to the next
+              // the result when ANY guard fails and fall through to the next
               // model/provider:
+              //   - `finishReason`: the provider's own stop signal. A value other than
+              //     an explicit completion reason (e.g. `unknown`, `length`,
+              //     `content_filter`) means the stream did NOT finish cleanly — this is
+              //     the strongest, provider-attested completeness signal and the
+              //     definitive fix for silently-truncated streams (Vercel logs showed
+              //     `finishReason: "unknown"` on the broken `/prompt` responses).
               //   - `minOutputLength`: raw length floor (prose streams).
               //   - `validateOutput`: caller-supplied semantic check (JSON streams).
               const trimmedLength = fullText.trim().length;
@@ -352,10 +418,16 @@ export async function aiStreamSSE(
                 console.warn(`[${provider}] ⚠️ Model ${model} validateOutput threw — treating as failure:`, getErrorMessage(validationError));
                 invalid = true;
               }
-              if (tooShort || invalid) {
-                const reason = tooShort
-                  ? `output too short (${trimmedLength} < ${minOutputLength} chars)`
-                  : `validateOutput rejected result`;
+              const finishReason = usage?.finishReason ?? null;
+              // Providers are inconsistent about casing (OpenAI uses `stop`,
+              // Gemini uses `STOP`), so normalize before the whitelist check.
+              const incompleteFinish = finishReason != null && !FINISH_REASONS_COMPLETE.has(finishReason.toLowerCase());
+              if (tooShort || invalid || incompleteFinish) {
+                const reason = incompleteFinish
+                  ? `finishReason "${finishReason}" is not a clean completion`
+                  : tooShort
+                    ? `output too short (${trimmedLength} < ${minOutputLength} chars)`
+                    : `validateOutput rejected result`;
                 console.warn(`[${provider}] ⚠️ Model ${model} stream ended but ${reason} — treating as failure, trying next`);
                 controller.enqueue(encoder.encode(createErrorEvent(`Model ${model} returned truncated output`)));
                 continue;
@@ -475,24 +547,30 @@ function createOpenAICompatibleStreamGenerator(
       response_format: buildOpenAIResponseFormat(context, outputAsJson, outputJsonStructure, outputJsonRequired),
     } satisfies OpenAI.ChatCompletionCreateParamsStreaming, { signal });
 
-    let usage: StreamUsage | undefined;
+    const usageBuilder = createStreamUsageBuilder();
 
     for await (const chunk of stream) {
-      if (signal?.aborted) return usage;
+      if (signal?.aborted) return usageBuilder.build();
 
       // Final chunk (stream_options.include_usage) has usage + empty choices
       if (chunk.usage) {
-        usage = {
+        usageBuilder.setUsage({
           promptTokens: chunk.usage.prompt_tokens,
           cachedTokens: chunk.usage.prompt_tokens_details?.cached_tokens ?? 0,
-        };
+        });
       }
+
+      // Capture the provider's stop signal for completeness validation.
+      const fr = (chunk as { choices?: Array<{ finish_reason?: string }> | null })?.choices?.[0]?.finish_reason;
+      usageBuilder.setFinishReason(fr);
 
       const delta = extractDeltaText(chunk);
       if (delta) yield delta;
     }
 
-    return usage;
+    // Always surface finishReason to the orchestrator; when no usage chunk
+    // arrived we still want the stop reason so truncation can be detected.
+    return usageBuilder.build();
   };
 }
 
@@ -556,7 +634,7 @@ async function* geminiStreamGeneratorViaGenerateContent(
     } satisfies GenerateContentConfig,
   } satisfies GenerateContentParameters);
   
-  let usage: StreamUsage | undefined;
+  const usageBuilder = createStreamUsageBuilder();
 
   for await (const chunk of response) {
     if (signal?.aborted) break;
@@ -564,11 +642,13 @@ async function* geminiStreamGeneratorViaGenerateContent(
     // Gemini sends cumulative usageMetadata on each chunk; the last one
     // received before the stream ends holds the final totals.
     if (chunk.usageMetadata) {
-      usage = {
+      usageBuilder.setUsage({
         promptTokens: chunk.usageMetadata.promptTokenCount,
         cachedTokens: chunk.usageMetadata.cachedContentTokenCount,
-      };
+      });
     }
+
+    usageBuilder.setFinishReason(chunk.candidates?.[0]?.finishReason);
 
     if (chunk.candidates?.[0]?.content?.parts) {
       const text = chunk.candidates[0].content.parts
@@ -579,7 +659,7 @@ async function* geminiStreamGeneratorViaGenerateContent(
     }
   }
 
-  return usage;
+  return usageBuilder.build();
 }
 
 /**
@@ -655,7 +735,7 @@ export async function* geminiStreamGeneratorViaInteractions(
     },
   }) as AsyncIterable<GeminiInteractionStreamEvent>;
 
-  let usage: StreamUsage | undefined;
+  const usageBuilder = createStreamUsageBuilder();
 
   for await (const event of stream) {
     if (signal?.aborted) break;
@@ -665,17 +745,17 @@ export async function* geminiStreamGeneratorViaInteractions(
     } else if (event.event_type === 'interaction.completed') {
       const finalUsage = event.interaction?.usage;
       if (finalUsage) {
-        usage = {
+        usageBuilder.setUsage({
           promptTokens: finalUsage.total_input_tokens,
           cachedTokens: finalUsage.total_cached_tokens,
-        };
+        });
       }
     } else if (event.event_type === 'error') {
       throw new Error(`[gemini/interactions] ${event.error?.code}: ${event.error?.message}`);
     }
   }
 
-  return usage;
+  return usageBuilder.build();
 }
 
 /**
@@ -735,10 +815,10 @@ async function* groqStreamGenerator(
   // } satisfies Groq.ChatCompletionCreateParamsStreaming, { signal });
   } as Groq.ChatCompletionCreateParamsStreaming & { stream_options?: { include_usage: boolean } }, { signal });
 
-  let usage: StreamUsage | undefined;
+  const usageBuilder = createStreamUsageBuilder();
 
   for await (const chunk of stream) {
-    if (signal?.aborted) return usage;
+    if (signal?.aborted) return usageBuilder.build();
 
     // 2. Cast chunk to `any` to bypass the missing `usage` type on ChatCompletionChunk.
     // 3. Add a fallback to `x_groq?.usage` to catch Groq's custom metadata wrapper.
@@ -747,17 +827,19 @@ async function* groqStreamGenerator(
 
     // if (chunk.usage) {
     if (chunkUsage) {
-      usage = {
+      usageBuilder.setUsage({
         promptTokens: chunkUsage.prompt_tokens,
         cachedTokens: chunkUsage.prompt_tokens_details?.cached_tokens ?? 0,
-      };
+      });
     }
+
+    usageBuilder.setFinishReason(rawChunk?.choices?.[0]?.finish_reason);
 
     const delta = extractDeltaText(chunk);
     if (delta) yield delta;
   }
 
-  return usage;
+  return usageBuilder.build();
 }
 
 /**
@@ -797,10 +879,10 @@ async function* cohereStreamGenerator(
     responseFormat: buildCohereResponseFormat({ context, outputAsJson, outputJsonStructure, outputJsonRequired }) as Cohere.ResponseFormatV2 | undefined,
   } satisfies Cohere.V2ChatStreamRequest);
 
-  let usage: StreamUsage | undefined;
+  const usageBuilder = createStreamUsageBuilder();
 
   for await (const chunk of stream) {
-    if (signal?.aborted) return usage;
+    if (signal?.aborted) return usageBuilder.build();
     if (chunk.type === 'content-delta') {
       const text = chunk.delta?.message?.content?.text || '';
       if (text) yield text;
@@ -813,15 +895,16 @@ async function* cohereStreamGenerator(
       // feel free to swap this for it.
       const chunkUsage = (chunk as { delta?: { usage?: { tokens?: { inputTokens?: number }; cachedTokens?: number } } }).delta?.usage;
       if (chunkUsage) {
-        usage = {
+        usageBuilder.setUsage({
           promptTokens: chunkUsage.tokens?.inputTokens,
           cachedTokens: chunkUsage.cachedTokens,
-        };
+        });
       }
+      usageBuilder.setFinishReason((chunk as { delta?: { finishReason?: string } }).delta?.finishReason);
     }
   }
 
-  return usage;
+  return usageBuilder.build();
 }
 
 /**
@@ -855,19 +938,20 @@ async function* cerebrasStreamGenerator(
     response_format: buildOpenAIResponseFormat(context, outputAsJson, outputJsonStructure, outputJsonRequired),
   } satisfies Cerebras.ChatCompletionCreateParamsStreaming, { signal });
 
-  let usage: StreamUsage | undefined;
+  const usageBuilder = createStreamUsageBuilder();
 
   for await (const chunk of stream) {
-    if (signal?.aborted) return usage;
+    if (signal?.aborted) return usageBuilder.build();
     const chunkTyped = chunk as Cerebras.ChatCompletion.ChatChunkResponse | Cerebras.ChatCompletion.ErrorChunkResponse;
     if ('usage' in chunkTyped && chunkTyped.usage) {
       // Same camelCase-normalization fix as cerebrasPrompt's non-streaming
       // extractUsage (ai-chat.ts) — Cerebras's wire fields are snake_case.
       const rawUsage = chunkTyped.usage as { prompt_tokens?: number };
-      usage = { promptTokens: rawUsage.prompt_tokens };
+      usageBuilder.setUsage({ promptTokens: rawUsage.prompt_tokens });
     }
     if ('choices' in chunkTyped) {
       const choices = chunkTyped.choices as Array<Cerebras.ChatCompletion.ChatChunkResponse.Choice> | null;
+      usageBuilder.setFinishReason(choices?.[0]?.finish_reason);
       const delta = choices?.[0]?.delta?.content || '';
       if (delta) yield delta;
     } else if ('error' in chunkTyped) {
@@ -882,7 +966,7 @@ async function* cerebrasStreamGenerator(
     }
   }
 
-  return usage;
+  return usageBuilder.build();
 }
 
 /**
@@ -920,10 +1004,10 @@ async function* mistralStreamGenerator(
     responseFormat: buildMistralResponseFormat({ context, outputAsJson, outputJsonStructure, outputJsonRequired }) as Mistral.ChatCompletionStreamRequest['responseFormat'],
   } satisfies Mistral.ChatCompletionStreamRequest, { signal });
 
-  let usage: StreamUsage | undefined;
+  const usageBuilder = createStreamUsageBuilder();
 
   for await (const chunk of stream) {
-    if (signal?.aborted) return usage;
+    if (signal?.aborted) return usageBuilder.build();
 
     const rawDelta = chunk.data.choices[0]?.delta?.content;
     if (Array.isArray(rawDelta)) {
@@ -935,13 +1019,15 @@ async function* mistralStreamGenerator(
     const text = extractDeltaText(chunk.data);
     if (text) yield text;
 
+    usageBuilder.setFinishReason(chunk.data.choices?.[0]?.finishReason);
+
     const chunkUsage = (chunk.data as { usage?: { promptTokens?: number } }).usage;
     if (chunkUsage) {
-      usage = { promptTokens: chunkUsage.promptTokens };
+      usageBuilder.setUsage({ promptTokens: chunkUsage.promptTokens });
     }
   }
 
-  return usage;
+  return usageBuilder.build();
 }
 
 /**

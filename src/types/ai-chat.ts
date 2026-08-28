@@ -509,6 +509,18 @@ export interface StreamUsage {
   promptTokens?: number;
   /** Of `promptTokens`, how many were served from a provider-side cache. */
   cachedTokens?: number;
+  /**
+   * Why the generation stopped, as reported by the provider
+   * (e.g. `stop`, `length`, `content_filter`, `unknown`).
+   *
+   * `aiStreamSSE` treats any value other than an explicit completion reason
+   * as a failure (silent truncation, connection reset, content filter, etc.)
+   * and falls through to the next model/provider instead of shipping a
+   * partial result. This is the single most reliable completeness signal for
+   * a stream — far stronger than guessing from output length — because it is
+   * the provider's own assertion that it actually finished producing text.
+   */
+  finishReason?: string | null;
 }
 
 /**
