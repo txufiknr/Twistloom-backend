@@ -5747,6 +5747,7 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
     const companionContext = buildCompanionPageContext(storyState, {
       currentPageNumber,
       semanticContext,
+      cacheKey: `comp:${book.id}:${pageIdParam}`,
     });
     const mcName = book.mc.knownName || book.mc.name || "the protagonist";
     const language = book.language || "en";
@@ -6243,6 +6244,7 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(
     const companionContext = buildCompanionPageContext(storyState, {
       currentPageNumber,
       semanticContext,
+      cacheKey: `comp:${book.id}:${pageIdParam}`,
     });
     const mcName = book.mc.knownName || book.mc.name || "the protagonist";
     const language = book.language || "en";

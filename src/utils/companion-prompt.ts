@@ -18,6 +18,7 @@
  * @see docs/roadmap/AI_NATIVE_FICTION_PLATFORM_ROADMAP.md §1.4
  */
 
+import { LRUCache } from "lru-cache";
 import type { AIJsonProperty } from "../types/ai-chat.js";
 import type { StoryState } from "../types/story.js";
 import { RULES_LANGUAGE_LOCALIZATION } from "./prompt.js";
@@ -294,6 +295,13 @@ export interface BuildCompanionPageContextOptions {
   currentPageNumber?: number;
   /** Optional pgvector semantic retrieval augmentation. */
   semanticContext?: CompanionSemanticContext;
+  /**
+   * Optional page-scoped cache key (e.g. `comp:${bookId}:${pageId}`). When
+   * provided, the resolved character/place/flag/thread arrays are memoized per
+   * page, skipping repeated name resolution across chat turns on the same page.
+   * `semanticContext` is excluded from the memo (it varies per call).
+   */
+  cacheKey?: string;
 }
 
 /**
@@ -310,6 +318,19 @@ export interface BuildCompanionPageContextOptions {
  * @param options - Context pruning and semantic memory options
  * @returns A `CompanionPageContext` ready for the prompt builder
  */
+/**
+ * Page-scoped memo for the resolved companion context. Name resolution and
+ * plot-flag pruning below are pure functions of the story state for a given page,
+ * so the result is safe to reuse across chat turns on the same page (same
+ * page-scoped invariant as `cachedRender`). `semanticContext` is excluded — it
+ * varies per call and is attached after the memo lookup.
+ */
+const companionContextCache = new LRUCache<string, Omit<CompanionPageContext, "semanticContext">>({
+  max: 300,
+  ttl: 2 * 60 * 1000,
+  updateAgeOnGet: true,
+});
+
 export function buildCompanionPageContext(
   storyState: Pick<
     StoryState,
@@ -317,60 +338,75 @@ export function buildCompanionPageContext(
   >,
   options?: BuildCompanionPageContextOptions
 ): CompanionPageContext {
-  const characters = storyState.characters
-    ? Object.values(storyState.characters).map((c) => ({
-        name: resolveCharacterDisplayName(c),
-        role: c.role,
-        bio: c.bio,
-        status: c.status,
-      }))
-    : [];
+  const computeCore = (): Omit<CompanionPageContext, "semanticContext"> => {
+    const characters = storyState.characters
+      ? Object.values(storyState.characters).map((c) => ({
+          name: resolveCharacterDisplayName(c),
+          role: c.role,
+          bio: c.bio,
+          status: c.status,
+        }))
+      : [];
 
-  const places = storyState.places
-    ? Object.values(storyState.places).map((p) => ({
-        name: resolvePlaceDisplayName(p),
-        context: p.context,
-      }))
-    : [];
+    const places = storyState.places
+      ? Object.values(storyState.places).map((p) => ({
+          name: resolvePlaceDisplayName(p),
+          context: p.context,
+        }))
+      : [];
 
-  const rawFlags = storyState.plotFlags ?? [];
-  const currentPage = options?.currentPageNumber;
+    const rawFlags = storyState.plotFlags ?? [];
+    const currentPage = options?.currentPageNumber;
 
-  // Hybrid plot flag pruning:
-  // 1. ALWAYS preserve all major events / discoveries across the whole story history
-  // 2. For minor ambient flags, keep only those from the last 5 pages
-  const plotFlags = rawFlags.filter((f) => {
-    if (f.isMajorEvent) return true;
-    const typeLower = (f.type || "").toLowerCase();
-    if (
-      typeLower.includes("discovery") ||
-      typeLower.includes("milestone") ||
-      typeLower.includes("revelation") ||
-      typeLower.includes("clue") ||
-      typeLower.includes("death") ||
-      typeLower.includes("betrayal")
-    ) {
+    // Hybrid plot flag pruning:
+    // 1. ALWAYS preserve all major events / discoveries across the whole story history
+    // 2. For minor ambient flags, keep only those from the last 5 pages
+    const plotFlags = rawFlags.filter((f) => {
+      if (f.isMajorEvent) return true;
+      const typeLower = (f.type || "").toLowerCase();
+      if (
+        typeLower.includes("discovery") ||
+        typeLower.includes("milestone") ||
+        typeLower.includes("revelation") ||
+        typeLower.includes("clue") ||
+        typeLower.includes("death") ||
+        typeLower.includes("betrayal")
+      ) {
+        return true;
+      }
+      if (currentPage && currentPage > 5) {
+        return f.page >= currentPage - 5;
+      }
       return true;
-    }
-    if (currentPage && currentPage > 5) {
-      return f.page >= currentPage - 5;
-    }
-    return true;
-  });
+    });
 
-  const actionsHistory: Array<{ text: string }> =
-    storyState.actionsHistory ?? [];
+    const actionsHistory: Array<{ text: string }> =
+      storyState.actionsHistory ?? [];
 
-  const threads: Array<{ title: string; question: string; summary?: string }> =
-    storyState.threads ?? [];
+    const threads: Array<{ title: string; question: string; summary?: string }> =
+      storyState.threads ?? [];
+
+    return {
+      contextHistory: storyState.contextHistory ?? "",
+      characters,
+      places,
+      plotFlags,
+      actionsHistory,
+      threads,
+    };
+  };
+
+  const core = options?.cacheKey
+    ? companionContextCache.get(options.cacheKey) ??
+      (() => {
+        const c = computeCore();
+        companionContextCache.set(options.cacheKey!, c);
+        return c;
+      })()
+    : computeCore();
 
   return {
-    contextHistory: storyState.contextHistory ?? "",
-    characters,
-    places,
-    plotFlags,
-    actionsHistory,
-    threads,
+    ...core,
     semanticContext: options?.semanticContext,
   };
 }

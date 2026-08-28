@@ -42,195 +42,29 @@ The Vercel deployment for Twistloom backend was paused due to reaching **12h 2m 
 | **P1.2** | Exponential Backoff & Optional Trigger on Status Polls | `P0` | 🥇 #1 | ~15% | ✅ Completed *(this session — coalescing + edge SWR relax)* | `src/routes/books.ts`, `src/middleware/cache.ts`, `src/utils/poll-coalesce.ts` |
 | **P1.3** | Remove Sync AI Generation inside GET `/candidates/status` | `P0` | 🥇 #1 | ~5% | ✅ Completed *(verified)* | `src/routes/books.ts` |
 | **P1.4** | **Server-side poll throttle + coalescing cache + `Retry-After`** on `/status` & `/candidates/status` (the *real* P1.2 fix) | `P0` | 🥇 #1 | ~15–20% | ✅ Completed *(this session)* | `src/routes/books.ts`, `src/utils/poll-coalesce.ts` |
-| **P2.1** | Scope `verifyNextAuthToken` & Add User Ban LRU Cache | `P0` | 🥈 #2 | ~12% | ✅ Completed *(verified)* | `src/middleware/nextauth.ts`, `src/app.ts` |
-| **P2.2** | Fix Authenticated Edge Cache Bypass with Private SWR | `P0` | 🥈 #2 | ~8% | ✅ Completed *(verified)* | `src/middleware/cache.ts` |
-| **P2.3** | Eliminate Memory Allocations in `parseJsonBody` | `P1` | 🥈 #2 | ~2% | ✅ Completed | `src/middleware/body.ts` |
-| **P2.4** | **Cache verified session `userId` to skip per-poll JWE decrypt** | `P0` | 🥈 #2 | ~10% | ✅ Completed *(this session, Option A)* | `src/middleware/nextauth.ts`, `src/routes/auth.ts` |
-| **P2.5** | **Skip `compress()` for small poll/status payloads** | `P1` | 🥈 #2 | ~3% | ✅ Completed *(this session)* | `src/app.ts` |
-| **P3.1** | Fix Quadratic \(O(N^2)\) Scanning in `StreamingJsonAnswerExtractor` | `P1` | 🥉 #3 | ~5% | ✅ Completed *(verified — uses incremental `cursor`)* | `src/utils/companion-stream.ts` |
-| **P3.2** | Optimize Per-Chunk SSE Transformations & Line Buffering | `P1` | 🥉 #3 | ~4% | ✅ Completed | `src/utils/ai-chat-stream.ts` |
-| **P3.3** | Deprecate Serverless-Held SSE Polling (`GET /candidates` Loop) | `P1` | 🥉 #3 | 0%* | ✅ Deprecated — `@deprecated` JSDoc added (unused in prod) *(§8 Q2)* | `src/routes/books.ts`, `src/utils/sse.ts` |
-| **P3.4** | **Throttle plain `/status` polls; retain `GET /candidates` SSE hold** | `P1` | 🥉 #3 | ~6% | ✅ Completed via P1.4 | `src/routes/books.ts` |
-| **P4.1** | Enforce Async Book Creation & Deprecate Sync `createBookCore` on Vercel | `P1` | 4️⃣ #4 | 0%* | ✅ Deprecated — `@deprecated` JSDoc added (sync path unused on Vercel) | `src/routes/books.ts`, `src/services/book-creation.ts` |
-| **P4.2** | Optimize Story Bible Context Serialization in Pen & AI Chat | `P2` | 4️⃣ #4 | ~3% | ✅ Completed *(this session)* | `src/services/prompt-render-cache.ts`, `src/utils/companion-prompt.ts`, `src/utils/pen-prompt.ts`, `src/routes/books.ts`, `src/services/pen.ts` |
-| **P5.1** | Debounce & Optimize Pen Autosave `PATCH /drafts/:draftId` | `P2` | 5️⃣ #5 | ~2% | ✅ Completed *(this session)* | `src/routes/pen.ts`, `src/services/pen.ts` |
-| **P5.2** | Zero-Compute `/health` Endpoint & Lazy AI Singletons | `P2` | 6️⃣ #6 | ~2% | ✅ Completed | `src/app.ts`, `src/utils/ai-clients.ts`, `src/utils/ai-cost.ts` |
-| **P5.3** | Suppress Verbose AI String Logs & Group Markers on Vercel | `P2` | 6️⃣ #6 | ~3% | ✅ Completed | `src/utils/ai-logger.ts`, `src/utils/edge-group.ts` |
-| **P6.1** | Switch `dbRead` to Stateless Neon HTTP Driver | `P3` | 7️⃣ #7 | ~1% | ◻️ Planned | `src/db/client.ts` |
-| **P6.2** | **Custom Vercel Adapter per-request overhead** (skip body buffering on GET; avoid redundant `Request` rebuild) | `P2` | #6 | ~3% | ✅ Completed *(this session, partial)* | `src/app.ts` |
-| **P7.1** | Verify P3.1 linearization & audit companion/chat SSE CPU | `P1` | 🥉 #3 | n/a | ⏳ Pending verification *(§8 Q2)* | `src/utils/companion-stream.ts` |
+| **P2.1** | Scope `verifyNextAuthToken` & Add User Ban LRU Cache | `P0` | 🥇 #1 | ~12% | ✅ Completed *(verified)* | `src/middleware/nextauth.ts`, `src/app.ts` |
+| **P2.2** | Fix Authenticated Edge Cache Bypass with Private SWR | `P0` | 🥇 #1 | ~8% | ✅ Completed *(verified)* | `src/middleware/cache.ts` |
+| **P2.3** | Eliminate Memory Allocations in `parseJsonBody` | `P1` | 🥇 #1 | ~2% | ✅ Completed | `src/middleware/body.ts` |
+| **P2.4** | **Cache verified session `userId` to skip per-poll JWE decrypt** | `P0` | 🥇 #1 | ~10% | ✅ Completed *(this session, Option A)* | `src/middleware/nextauth.ts`, `src/routes/auth.ts` |
+| **P2.5** | **Skip `compress()` for small poll/status payloads** | `P1` | 🥇 #1 | ~3% | ✅ Completed *(this session)* | `src/app.ts` |
+| **P3.1** | Fix Quadratic \(O(N^2)\) Scanning in `StreamingJsonAnswerExtractor` | `P1` | 🥈 #2 | ~5% | ✅ Completed *(verified — uses incremental `cursor`)* | `src/utils/companion-stream.ts` |
+| **P3.2** | Optimize Per-Chunk SSE Transformations & Line Buffering | `P1` | 🥈 #2 | ~4% | ✅ Completed | `src/utils/ai-chat-stream.ts` |
+| **P3.3** | Deprecate Serverless-Held SSE Polling (`GET /candidates` Loop) | `P1` | 🥈 #2 | 0%* | ✅ Deprecated — `@deprecated` JSDoc added (unused in prod) *(§8 Q2)* | `src/routes/books.ts`, `src/utils/sse.ts` |
+| **P3.4** | **Throttle plain `/status` polls; retain `GET /candidates` SSE hold** | `P1` | 🥈 #2 | ~6% | ✅ Completed via P1.4 | `src/routes/books.ts` |
+| **P4.1** | Enforce Async Book Creation & Deprecate Sync `createBookCore` on Vercel | `P1` | 🥈 #2 | 0%* | ✅ Deprecated — `@deprecated` JSDoc added (sync path unused on Vercel) | `src/routes/books.ts`, `src/services/book-creation.ts` |
+| **P4.2** | Optimize Story Bible Context Serialization in Pen & AI Chat | `P2` | 🥉 #3 | ~3% | ✅ Completed *(this session — `cachedRender` for canon/companion bodies + page-scoped memo for companion context name-resolution/pruning)* | `src/services/prompt-render-cache.ts`, `src/utils/companion-prompt.ts`, `src/utils/pen-prompt.ts`, `src/routes/books.ts`, `src/services/pen.ts` |
+| **P5.1** | Debounce & Optimize Pen Autosave `PATCH /drafts/:draftId` | `P2` | 4️⃣ #4 | ~2% | ✅ Completed *(this session)* | `src/routes/pen.ts`, `src/services/pen.ts` |
+| **P5.2** | Zero-Compute `/health` Endpoint & Lazy AI Singletons | `P2` | 4️⃣ #4 | ~2% | ✅ Completed | `src/app.ts`, `src/utils/ai-clients.ts`, `src/utils/ai-cost.ts` |
+| **P5.3** | Suppress Verbose AI String Logs & Group Markers on Vercel | `P2` | 4️⃣ #4 | ~3% | ✅ Completed | `src/utils/ai-logger.ts`, `src/utils/edge-group.ts` |
+| **P6.1** | Switch `dbRead` to Stateless Neon HTTP Driver | `P3` | 5️⃣ #5 | ~1% | ⏩ **Deferred** — lowest ROI (~1%); HTTP driver risks breaking `dbRead` transaction usage; revisit only if quota still exceeded | `src/db/client.ts` |
+| **P6.2** | **Custom Vercel Adapter per-request overhead** (skip body buffering on GET; avoid redundant `Request` rebuild) | `P2` | 🥇 #1 | ~3% | ✅ Completed *(this session, partial)* | `src/app.ts` |
+| **P7.1** | Verify P3.1 linearization & audit companion/chat SSE CPU | `P1` | 🥈 #2 | n/a | ✅ **Verified** — P3.1 confirmed linear (`cursor`-based `StreamingJsonAnswerExtractor`); companion/chat SSE CPU addressed by P4.2 memoization | `src/utils/companion-stream.ts`, `src/utils/companion-prompt.ts` |
 
 *Status Legend: ◻️ Planned | ⏳ In Progress / Pending | ✅ Completed | ⚠️ Disputed/Verify | ⏩ Skipped / Reconsidered*
 
 *\* Est. CPU reduction shown as `0%` where the path is confirmed unused in production, so no optimization is possible or required.*
 
----
-
-## 3. High Usage Suspects Ranked from Highest to Lowest
-
-Based on deep source-code inspection of Twistloom backend, here is the ranked hierarchy of CPU consumption drivers:
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                     TWISTLOOM ACTIVE CPU SUSPECT HIERARCHY                  │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  🥇 #1 Polling & Heartbeat Multipliers (/touch, /candidates/status)  [~45%] │
-│  🥈 #2 Global Middleware Chain & 100% Authenticated CDN Cache Bypass [~20%] │
-│  🥉 #3 SSE Stream Token Processing & Quadratic String Extraction      [~15%] │
-│  4️⃣ #4 Synchronous AI Generation / Complex Story Bible Repair on Vercel[~10%]│
-│  5️⃣ #5 Pen Interactive Autosave & Reader Dwell Pings                   [~5%] │
-│  6️⃣ #6 Eager AI Warming & DB Queries in /health Endpoint              [~3%] │
-│  7️⃣ #7 Neon WebSocket Pool Persistent Connection Overhead            [~2%] │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-### 🥇 Rank 1: High-Frequency Polling & Heartbeat Loops (`/touch`, `/candidates/status`, `/status`)
-**Severity**: 🔴 Critical (`~45%` of total Fluid CPU consumption)  
-**Location**: `src/routes/books.ts` (L6330, L5227, L862), `src/services/story.ts` (L166)
-
-#### Concrete Codebase Finding:
-1. **`POST /api/books/:identifier/:pageId/touch`**:
-   - Intended as a reader heartbeat to update "last read" timestamps.
-   - However, each `/touch` invocation executes:
-     - Full auth (`verifyNextAuthToken`) with JWE token decryption and database ban checks.
-     - Upstash Redis rate-limit sliding window check.
-     - Database lookup for book and page entities.
-     - `setActiveSession` (`src/services/story.ts` L177): calls `getStoryStateFromDB(pageId)`, which loads and parses **massive Story State JSON** (characters, items, flags, threads).
-     - Database `SELECT` from `userSessions`.
-     - Database `INSERT ... ON CONFLICT DO UPDATE` write to `userSessions`.
-     - `invalidateEnrichedBookCache(bookId)` call to Redis.
-     - `logUserActivity(...)` causing another database query and insert.
-   - **The Impact**: If a reader client or multiple browser tabs trigger `/touch` every 5–10s, a 20-minute reading session creates **120–240 heavy serverless invocations** doing full DB and JSON deserialization work.
-2. **`GET /api/books/:identifier/:pageId/candidates/status`**:
-   - Polled every 1–2 seconds by the frontend during generation.
-   - On every tick, it queries the database for book, page, and custom action rows.
-   - **Severe Hazard in L5268-L5275**: If a custom action is deemed stale, the status endpoint **synchronously triggers `generatePageForCustomAction(...)` in-process on Vercel**, running full LLM generation within the GET polling handler!
-   - Calls `triggerCandidateGenerationWorkflow` on GitHub API if actions are incomplete.
-3. **`GET /api/books/:bookId/status`**:
-   - Polled continuously for async book creation. Performs multi-table joins and workflow gate checks.
-
-#### Solution Proposal:
-* **Decouple `/touch`**: Transform `/touch` into a ultra-lightweight ping. Remove `getStoryStateFromDB` and `logUserActivity` from simple heartbeat pings; execute a single lightweight SQL query (`UPDATE user_sessions SET updated_at = NOW() WHERE user_id = $1 AND book_id = $2`).
-* **Frontend Throttling**: Fire `/touch` only on page transition and document visibility change, or throttled to at most once every 60 seconds.
-* **Remove In-Process Generation from GET `/status`**: Move custom action generation triggers to explicit asynchronous jobs or workflow dispatches, ensuring GET endpoints are strictly idempotent reads.
-* **Coalescing Cache**: Cache candidate status in-memory/Redis with a 1-second TTL to collapse burst client polls.
-
----
-
-### 🥈 Rank 2: Global Middleware Overhead & 100% Cache Bypass for Logged-In Users
-**Severity**: 🔴 Critical (`~20%` of total Fluid CPU consumption)  
-**Location**: `src/app.ts` (L35-L131), `src/middleware/nextauth.ts`, `src/middleware/cache.ts` (L46-L50), `src/middleware/body.ts` (L37)
-
-#### Concrete Codebase Finding:
-1. **Global Auth Middleware on `/api/*`**:
-   - `app.use("/api/*", async (c, next) => { const user = await verifyNextAuthToken(c); ... })` runs before every API route.
-   - `verifyNextAuthToken` calls `@hono/auth-js` `getAuthUser(c)`, decodes JWE cookies, queries the `users` table in Neon Postgres to check `bannedAt`, and calls `updateSessionMetadata`.
-   - Every single read endpoint, polling tick, and public check by a logged-in user pays this full cryptographic and DB cost.
-2. **100% Edge Cache Bypass in `cacheControl`**:
-   - In `src/middleware/cache.ts` L46-L50:
-     ```ts
-     const userId = c.get("userId");
-     if (userId) {
-       c.header("Cache-Control", `private, max-age=0, must-revalidate`);
-       return;
-     }
-     ```
-   - Because `verifyNextAuthToken` runs globally, *every* request from an authenticated reader gets stamped `max-age=0`. Vercel Edge CDN is completely disabled for authenticated users, forcing 100% of book reads, chapter views, and catalogue browses to invoke serverless functions.
-3. **Redundant Memory Allocation in `parseJsonBody`**:
-   - `src/middleware/body.ts` L37: `if (new TextEncoder().encode(raw).length > MAX_JSON_BODY_BYTES)` creates a brand new UTF-8 `Uint8Array` buffer for the entire body on every request just to check length.
-
-#### Solution Proposal:
-* **LRU Cache for User Ban Checks**: Cache user status in an LRU memory cache (`5 min TTL`) in `verifyNextAuthToken` to avoid querying the `users` table on every single request.
-* **Enable Private Edge Caching**: Update `cacheControl` so that static read endpoints (e.g. `GET /api/books/:slug`, `GET /api/books/:id/pages/:pageId`) allow short private caching (`private, max-age=5, stale-while-revalidate=30`).
-* **Zero-Allocation Byte Length Check**: Replace `new TextEncoder().encode(raw).length` with `Buffer.byteLength(raw, 'utf8')`.
-
----
-
-### 🥉 Rank 3: SSE Streaming & Quadratic String Processing
-**Severity**: 🟠 High (`~15%` of total Fluid CPU consumption)  
-**Location**: `src/utils/companion-stream.ts` (L62-L106), `src/utils/ai-chat-stream.ts` (L988-L1050), `src/utils/sse.ts` (L558-L650)
-
-#### Concrete Codebase Finding:
-1. **Quadratic \(O(N^2)\) Loop in `StreamingJsonAnswerExtractor`**:
-   - In `src/utils/companion-stream.ts` L54 & L62: On *every* delta chunk received from the LLM, `processAnswerString` slices and re-scans the **entire accumulated string from character 0**:
-     ```ts
-     return this.processAnswerString(this.buffer.slice(this.getAnswerStartIndex()));
-     ```
-   - If an LLM response has 500 chunks totaling 2,000 characters, character scanning operations grow quadratically (\(500 \times 1,000 \approx 500,000\) iterations per stream).
-2. **Per-Token `JSON.parse` and Array Allocations in SSE Pipes**:
-   - `pipeSSEStreamAndExtractText` and `parseSSEStreamContent` split by `\n` and execute `JSON.parse` on every single emitted chunk.
-3. **Long-Lived In-Process SSE Polling Loop**:
-   - `GET /api/books/:identifier/:pageId/candidates` calls `pollForCandidateGeneration` (`src/utils/sse.ts`), which holds an open SSE connection on Vercel for up to 300 seconds, running a `while (attempts < maxAttempts)` loop polling Neon DB every 2–10 seconds.
-   - Holding serverless functions open while polling active databases consumes container memory and event-loop cycles.
-
-#### Solution Proposal:
-* **Linearize `StreamingJsonAnswerExtractor`**: Maintain a `cursor` pointer indicating the last processed character position and process only incoming chunk characters (\(O(N)\) linear time).
-* **Deprecate Server-Held SSE Polling (`pollForCandidateGeneration`)**: Replace the 5-minute serverless SSE holding pattern with client-side polling using exponential backoff or WebSockets/Push.
-
----
-
-### 4️⃣ Rank 4: Synchronous AI Execution on Vercel Functions
-**Severity**: 🟠 Medium-High (`~10%` of total Fluid CPU consumption)  
-**Location**: `src/routes/books.ts` (L250, L462), `src/routes/pen.ts` (L721, L816), `src/services/book-creation.ts`
-
-#### Concrete Codebase Finding:
-- While `POST /api/books/async` exists to offload book generation to GitHub Actions, synchronous endpoints (`POST /api/books` and `POST /api/books/stream`) still remain active and execute `createBookCore` on Vercel.
-- `createBookCore` runs the 7-stage `parseAISafely` pipeline (sanitization, `jsonrepair`, schema validation, token estimation), builds full Story Bible contexts, and runs complex multi-step prompt workflows directly in Node.js.
-- Pen editing actions (`POST /api/pen/sessions/:id/continue` and `transform`) also run LLM prompt generation and response parsing directly on Vercel.
-
-#### Solution Proposal:
-* **Enforce Async Default**: Point all frontend book creation flows exclusively to `POST /api/books/async`.
-* **Deprecate / Guard Synchronous `POST /api/books`**: Restrict `POST /api/books` and `POST /api/books/stream` in production or enforce low timeout limits.
-* **Optimize `parseAISafely`**: Fast-path native `JSON.parse` before invoking heavyweight regex sanitizers or `jsonrepair`.
-
----
-
-### 5️⃣ Rank 5: Pen Editor Autosave & Reader Dwell Pings
-**Severity**: 🟡 Medium (`~5%` of total Fluid CPU consumption)  
-**Location**: `src/routes/pen.ts` (L608-L687), `src/services/pen.ts` (L742), `src/routes/books.ts` (L821)
-
-#### Concrete Codebase Finding:
-- In `PATCH /api/pen/sessions/:id/drafts/:draftId`, as an author types in the Pen co-writing editor, keystroke events send autosave requests to the backend.
-- Each patch validates arrays of `DraftSpan`, `draftCharactersPresent`, and `draftSceneEssentials`, resolves session ownership, and updates Neon DB.
-- If not debounced properly on the frontend, fast typing generates dozens of DB writes per minute.
-
-#### Solution Proposal:
-* **Client-Side Debouncing**: Enforce a strict 5–10 second debounce on Pen draft autosaves.
-* **Lightweight Patch Queries**: Avoid full entity reloading; execute targeted updates only on dirty fields.
-
----
-
-### 6️⃣ Rank 6: Eager AI Warming & Health Monitor Overhead
-**Severity**: 🟡 Low-Medium (`~3%` of total Fluid CPU consumption)  
-**Location**: `src/app.ts` (L157-L168), `src/utils/ai-clients.ts` (L237), `src/utils/ai-cost.ts` (L273, L317)
-
-#### Concrete Codebase Finding:
-- `app.get("/health")` is pinged every 5 minutes by Vercel monitor / external uptime checkers.
-- On *every* ping, it executes:
-  - `warmAIProviders()`: Instantiates 16 AI SDK client instances synchronously (parsing API keys, configuring headers).
-  - `checkDailyCostSpike()`: Queries the `usage` table in Neon Postgres and calculates aggregated token costs.
-- It also runs through global middleware (`initAuthConfig`, `compress`, etc.).
-
-#### Solution Proposal:
-* **Zero-Compute Health Check**: Make `GET /health` return instant static JSON `{ ok: true, uptime }` without DB queries or SDK instantiations.
-* **Lazy AI Client Initialization**: Initialize AI SDK singletons on-demand when an AI route is actually invoked.
-
----
-
-### 7️⃣ Rank 7: Database Connection Driver Overhead
-**Severity**: 🟢 Low (`~2%` of total Fluid CPU consumption)  
-**Location**: `src/db/client.ts` (L29, L53, L69)
-
-#### Concrete Codebase Finding:
-- `dbRead` and `dbWrite` use `Pool` from `@neondatabase/serverless` with WebSocket support.
-- In serverless functions, maintaining WebSocket framing and connection handshakes incurs minor continuous overhead compared to stateless HTTP queries for read operations.
-
-#### Solution Proposal:
-* **Stateless HTTP Driver for Reads**: Utilize `@neondatabase/serverless` HTTP driver (`neon()`) for `dbRead`, reserving WebSocket `Pool` strictly for interactive transactions in `dbWrite`.
-
----
+> **Suspect Rank (canonical):** the `Suspect Rank` column above is the single source of truth for CPU-driver ranking, now rebased on the post-fix re-audit — 🥇 #1 request amplification × middleware cost (polling + auth crypto + compress + rate-limit + adapter), 🥈 #2 in-Vercel SSE AI generation + per-chunk transforms, 🥉 #3 story-bible build/parse, then pen autosave / DB driver. The former standalone “High Usage Suspects Ranked” (§3) and “Refined Suspect Hierarchy” (§7.5) lists have both been merged here to remove duplication.
 
 ## 4. Comprehensive Optimization Roadmap
 
@@ -462,16 +296,6 @@ Twistloom Team
 
 ---
 
-### 5.3 Observability & Verification Checklist
-Once resumed, monitor the following in **Vercel Observability → Functions**:
-
-- ◻️ **Invocation Count by Route**: Verify `POST /touch` and `GET /candidates/status` drop by **>85%**.
-- ◻️ **Average Active CPU per Invocation**: Target **< 15ms** for read/status routes and **< 35ms** for auth mutations.
-- ◻️ **Edge Cache Hit Ratio**: Verify public and semi-static GET requests achieve **> 70% CDN Hit Rate**.
-- ◻️ **Total Fluid CPU Duration**: Verify daily consumption remains **< 5 CPU-minutes per day** (well within the ~8 CPU-minutes/day Hobby budget).
-
----
-
 ## 6. Open Questions & Architectural Decisions
 
 The architectural trade-offs have been aligned and implemented as follows:
@@ -557,43 +381,31 @@ So a handler that *should* be ~3 ms of real work becomes **~15–25 ms of billed
 - Fluid path also rebuilds `new Request(...)` per call.
 - This is fixed per-request JS overhead on top of the middleware above. SSE responses in the legacy path are read byte-by-byte through `response.body.getReader()` (`src/app.ts:316-323`), adding cost to streamed routes.
 
-### 7.5 Refined Suspect Hierarchy (post-fix reality)
+### 7.5 Refined Suspect Hierarchy — merged into §2
 
-```
-🥇 #1  Request amplification × middleware cost on /touch, /candidates/status, /status
-        (auth JWE crypto + compress() + Redis rate-limit per poll; CDN cache
-         deliberately bypassed for these routes)                      [~50-60%]
-🥈 #2  No server-side backoff/throttle on status polling (P1.2 unimplemented) [~15-20%]
-🥉 #3  In-Vercel SSE AI generation + per-chunk JSON transform
-        (POST /api/books/stream, GET /api/books/prompt)              [~10-15%]
- 4️⃣  #4  Large Story-Bible JSON build/parse/jsonrepair in generation        [~5-8%]
- 5️⃣  #5  Pen autosave & reader dwell pings (bounded by author count)         [~3-5%]
- 6️⃣  #6  Custom Vercel adapter rebuild-per-request overhead                  [~3-5%]
- 7️⃣  #7  Branch traversal / L1 LRU miss on ephemeral instances (low)         [~2%]
- 8️⃣  #8  Explore/search/aggregate (Postgres-side)                            [~1%]
- 9️⃣  #9  Redis SCAN invalidation (rare)                                      [<1%]
- 🔟 #10 AI/Neon/GitHub network waits (0 Active CPU)                       [~0%]
-```
-
-> Note: items P3.1 (linear `StreamingJsonAnswerExtractor`) and P3.2 (per-chunk SSE transforms) were verified completed. **P3.3** (SSE polling deprecation) was initially flagged as risking a CPU *increase* if the long-lived `GET /candidates` SSE hold were actively used — but it is now confirmed **unused in production**, so deprecating it carries no CPU penalty. It is therefore marked 🗑️ Deprecated/Done. Plain `/status` throttling (P3.4) is handled by P1.4.
+The post-fix refined ranking is now encoded directly in the **`Suspect Rank` column of the §2 Master Summary table**, which is the single source of truth. Recap (driver → rank): request amplification × middleware cost (~50-60%) → 🥇 #1; in-Vercel SSE AI generation + per-chunk JSON transforms → 🥈 #2; story-bible build/parse/jsonrepair → 🥉 #3; then pen autosave & reader dwell, DB driver, etc. The earlier “P1.2 unimplemented” sub-rank is now resolved — P1.2 coalescing + edge SWR relax landed this session and is folded into 🥇 #1. Retained for history: P3.1/P3.2 verified linearized; P3.3 (`GET /candidates` SSE hold) confirmed unused in prod → deprecated, no CPU penalty.
 
 ### 7.6 Recommended追加 (Additional) Fixes Before Unpause
 
-1. **Implement P1.2 for real** — add a server-side minimum-poll-interval guard:
+1. **✅ P1.2 implemented this session** — server-side minimum-poll-interval guard (both sub-items below shipped):
    - In `/status` and `/candidates/status`, return `Retry-After` and short-circuit with a cached/304 response if the same `(userId, bookId/pageId)` polled < N seconds ago (in-memory LRU or Upstash). This collapses burst client polls at the source.
    - Alternatively, relax `src/middleware/cache.ts:52-59` to allow a 1–2s `private, max-age=1, stale-while-revalidate=2` on `/status` so the CDN/edge can coalesce.
-2. **Throttle auth crypto on hot routes**: cache the *verified* session (`userId`) in the existing `userBanCache`-style LRU keyed by session-token hash for ~30–60s so `getAuthUser` JWE decryption doesn't run on every poll. (Security: only cache the resolved `userId`, re-verify on miss/expiry.)
-3. **Make `/touch` event-driven, not a heartbeat** (frontend): fire only on page-open / visibility-change / page-close, not every 5–10s. Backend cannot enforce client interval; the residual 3-DB-op cost still multiplies with client frequency.
-4. **Skip `compress()` for small status payloads** or rely on Vercel Edge compression to avoid per-response gzip CPU on poll traffic.
-5. **Verify P3.1 actually linearized** (`src/utils/companion-stream.ts`) before claiming it in the unpause appeal — if still O(N²), it is a real per-stream CPU cost on companion/chat SSE.
+2. **✅ Throttle auth crypto on hot routes** (shipped as **P2.4** — `sessionVerifyCache`, 60s TTL, keyed by token-hash, invalidated on logout): `getAuthUser` JWE verify no longer runs on every poll tick.
+3. **◻️ Make `/touch` event-driven, not a heartbeat** (frontend): fire only on page-open / visibility-change / page-close, not every 5–10s. Backend cannot enforce client interval; the residual 3-DB-op cost still multiplies with client frequency.
+4. **✅ Skip `compress()` for small status payloads** (shipped as **P2.5** — `shouldSkipCompress` skips gzip for small poll/status bodies): avoids per-response gzip CPU on poll traffic.
+5. **✅ Verify P3.1 actually linearized** (confirmed in **P7.1** — `StreamingJsonAnswerExtractor` is `cursor`-based, no O(N²) rescan): no per-stream quadratic CPU on companion/chat SSE.
 
-### 7.7 Updated Verification Checklist (supersedes §5.3)
+### 7.7 Verification & Observability Checklist (supersedes former §5.3 — single source of truth)
 
-- ✅ **P1.2 actually implemented**: `Retry-After` + coalescing cache present in `/status` (`coalescePoll`, books.ts) and `/candidates/status` (`getCoalesced`/`setCoalesced` guard). Verified in code.
+**Implementation status (verified in code):**
+- ✅ **P1.2 actually implemented**: `Retry-After` + coalescing cache present in `/status` (`coalescePoll`, books.ts) and `/candidates/status` (`getCoalesced`/`setCoalesced` guard).
 - ✅ **Auth crypto per poll**: session `userId` is now cached (`sessionVerifyCache`, 60s) so `getAuthUser` JWE verify does not run on every `/touch`/`/status` tick (P2.4 implemented).
-- ◻️ **Invocation Count**: `POST /touch` and `GET /candidates/status` should drop >85% after client throttle + server guard.
-- ◻️ **Active CPU/invocation**: target < 10ms for status/touch routes (currently ~15–25ms from middleware).
-- ◻️ **Daily Fluid CPU**: keep < 5 CPU-min/day.
+
+**Post-unpause observability targets (monitor in Vercel Observability → Functions):**
+- ◻️ **Invocation Count by Route**: `POST /touch` and `GET /candidates/status` should drop **>85%** after client throttle + server guard.
+- ◻️ **Average Active CPU per Invocation**: target **< 10ms** for status/touch routes (currently ~15–25ms from middleware); **< 35ms** for auth mutations.
+- ◻️ **Edge Cache Hit Ratio**: public and semi-static GET requests achieve **> 70%** CDN Hit Rate.
+- ◻️ **Total Fluid CPU Duration**: daily consumption **< 5 CPU-minutes/day** (within the ~8 CPU-min/day Hobby budget).
 
 ---
 
@@ -634,7 +446,7 @@ The following items need an explicit product/security decision before implementa
 
 **Question**: Should the CDN/edge also coalesce `/status` (relax `Cache-Control`)?
 
-**Context**: `src/middleware/cache.ts` previously forced `max-age=0, must-revalidate` on `/status` and `/candidates/status`. P1.4 already coalesces at the app layer (per-instance LRU, 2s), but every poll still *invoked the serverless function* — so the §5.3 invocation-count target (>85% drop) could not be met at the app layer alone.
+**Context**: `src/middleware/cache.ts` previously forced `max-age=0, must-revalidate` on `/status` and `/candidates/status`. P1.4 already coalesces at the app layer (per-instance LRU, 2s), but every poll still *invoked the serverless function* — so the §7.7 invocation-count target (>85% drop) could not be met at the app layer alone.
 
 **Options**:
 - **A — Keep CDN bypass; rely on P1.4 in-handler coalescing.** Simpler, no CDN behavior change.
