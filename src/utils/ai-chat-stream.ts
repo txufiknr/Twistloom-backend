@@ -4,12 +4,12 @@ import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_WRITING, AI_STREAM_DEFAULT_MODEL } from "../config/ai-clients.js";
 import { getRateLimiter, incrementDailyUsageCount } from './ai-limiters.js';
 import { PROMPT_SYSTEM } from "./prompt.js";
-import { logAISuccess } from './ai-logger.js';
+import { logAIPrompt, logAISuccess } from './ai-logger.js';
 import { getErrorMessage } from "./error.js";
 import { retryWithBackoff } from "./retry.js";
 import { createTextChunkEvent, createErrorEvent, createStartEvent, createEndEvent, handleBackpressure } from "./sse.js";
 import {
-  formatSystemPromptWithDocuments, getMaxOutputToken, isSchemaTooComplex, logAIPrompt,
+  formatSystemPromptWithDocuments, getMaxOutputToken, isSchemaTooComplex,
   buildChatMessages, buildJsonSchemaObject, buildOpenAIResponseFormat, buildMistralResponseFormat, buildCohereResponseFormat,
   buildGeminiResponseJsonSchema, buildSamplingParams, resolveGeminiCachedContent, buildGeminiConfig, buildMistralPromptCacheKey,
   resolveStreamDefaultModel, sumDocumentChars, assertPromptAllowed, buildModelRetryConfig, extractDeltaText, nvidiaChatRequest,

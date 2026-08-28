@@ -52,7 +52,7 @@ import { generateId } from '../utils/uuid.js';
 import { createOrUpdateOAuthUser, setReferrerForNewUser, tryAwardReferralBonus } from '../services/user-controller.js';
 import { validateUsername } from '../utils/username.js';
 import { isTemp as isTemporaryEmail } from 'tempmail-checker';
-import { requireAuth } from '../middleware/nextauth.js';
+import { requireAuth, invalidateCurrentSessionVerifyCache } from '../middleware/nextauth.js';
 import { createSession, getUserSessions, logoutFromSpecificDevice, logoutFromAllOtherDevices, logoutFromAllDevices, deleteSessionById } from '../services/session-manager.js';
 import { sanitizeUserData, getUserForAuth, getUserIdByEmail } from '../services/user.js';
 import type { AppEnv } from '../hono/env.js';
@@ -661,6 +661,8 @@ router.post('/resend-verification', async (c) => {
  */
 router.post('/logout', async (c) => {
   try {
+    // Drop any cached session-verification so the next request re-verifies (P2.4).
+    await invalidateCurrentSessionVerifyCache(c);
     // Add backend cleanup if needed (invalidate refresh tokens, analytics, etc.)
     return c.json({ message: 'Logged out successfully' });
   } catch (error) {
@@ -884,6 +886,7 @@ router.get('/sessions', requireAuth, async (c) => {
  */
 router.post('/logout-all', requireAuth, async (c) => {
   try {
+    await invalidateCurrentSessionVerifyCache(c);
     const userId = c.get("userId")!;
     const currentSessionId = c.get("user")?.sessionId;
 
@@ -935,6 +938,7 @@ router.post('/logout-all', requireAuth, async (c) => {
  */
 router.post('/logout-all-devices', requireAuth, async (c) => {
   try {
+    await invalidateCurrentSessionVerifyCache(c);
     const userId = c.get("userId")!;
     const deletedCount = await logoutFromAllDevices(userId);
 

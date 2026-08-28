@@ -46,6 +46,8 @@ import { users } from "../db/schema.js";
 import { eq } from "drizzle-orm";
 import { LRUCache } from "lru-cache";
 import type { AppEnv } from "../hono/env.js";
+import { hashSHA256 } from "../utils/hash.js";
+import { CPU_OPTIMIZATIONS_ENABLED } from "../config/cpu-optimizations.js";
 
 // @auth/express is no longer imported; @hono/auth-js (built on @auth/core) is
 // used instead. The `getClientIp` helper remains from the shared shim module.
@@ -61,6 +63,42 @@ const userBanCache = new LRUCache<string, boolean>({
 
 export function invalidateUserBanCache(userId: string): void {
   userBanCache.delete(userId);
+}
+
+// ---------------------------------------------------------------------------
+// Session verification cache (Fluid Active CPU optimization, P2.4)
+//
+// `getAuthUser` performs Auth.js JWE session-cookie decryption/verification on
+// EVERY request. On high-frequency poll/heartbeat routes (/touch, /status,
+// /candidates/status) this crypto is the single largest per-request CPU cost.
+// We cache the resolved AuthUser for a short window keyed by a SHA-256 hash of
+// the raw session cookie (never the plaintext token), so repeated polls from
+// the same session skip the decryption entirely.
+//
+// Trust window: a revoked/expired session may still be accepted for up to
+// SESSION_VERIFY_TTL_MS after logout. This is consistent with the existing
+// 5-minute ban-cache window and NextAuth's own short-lived tokens.
+// ---------------------------------------------------------------------------
+const SESSION_VERIFY_TTL_MS = 60 * 1000; // 60 seconds
+
+const sessionVerifyCache = new LRUCache<string, AuthUser>({
+  max: 5000,
+  ttl: SESSION_VERIFY_TTL_MS,
+});
+
+/** Extracts the raw Auth.js session-token cookie value (either secure or plain). */
+function extractAuthjsToken(c: Context<AppEnv>): string | null {
+  const cookieHeader = c.req.header("cookie") ?? "";
+  const match = cookieHeader.match(/(?:^|;\s*)(?:__Secure-)?authjs\.session-token=([^;]+)/);
+  return match ? match[1] : null;
+}
+
+/** Invalidates the cached verification for the session carried by this request. */
+export async function invalidateCurrentSessionVerifyCache(c: Context<AppEnv>): Promise<void> {
+  const token = extractAuthjsToken(c);
+  if (!token) return;
+  const tokenHash = await hashSHA256(token);
+  sessionVerifyCache.delete(tokenHash);
 }
 
 // ---------------------------------------------------------------------------
@@ -103,6 +141,14 @@ export async function verifyNextAuthToken(c: Context<AppEnv>): Promise<AuthUser 
   if (!secret) {
     console.error("[nextauth] 💀 AUTH_SECRET is not configured");
     return null;
+  }
+
+  // P2.4 — short-circuit JWE verification for recently-seen session tokens.
+  const token = extractAuthjsToken(c);
+  const tokenHash = token ? await hashSHA256(token) : null;
+  if (CPU_OPTIMIZATIONS_ENABLED && tokenHash) {
+    const cached = sessionVerifyCache.get(tokenHash);
+    if (cached) return cached;
   }
 
   let authUser: AuthJsUser | null;
@@ -194,7 +240,9 @@ export async function verifyNextAuthToken(c: Context<AppEnv>): Promise<AuthUser 
         });
       }
 
-      return { id: userId, email, name, sessionId };
+      const resolvedUser: AuthUser = { id: userId, email, name, sessionId };
+      if (CPU_OPTIMIZATIONS_ENABLED && tokenHash) sessionVerifyCache.set(tokenHash, resolvedUser);
+      return resolvedUser;
     } finally {
       inFlightRequests.delete(email);
     }

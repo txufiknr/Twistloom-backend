@@ -38,23 +38,31 @@ The Vercel deployment for Twistloom backend was paused due to reaching **12h 2m 
 
 | ID | Phase / Optimization Area | Priority | Suspect Rank | Est. CPU Reduction | Status | Target Files |
 | :--- | :--- | :---: | :---: | :---: | :---: | :--- |
-| **P1.1** | Refactor `/touch` Heartbeat to Lightweight In-Place SQL | `P0` | 🥇 #1 | ~30% | ✅ Completed | `src/routes/books.ts`, `src/services/story.ts` |
-| **P1.2** | Exponential Backoff & Optional Trigger on Status Polls | `P0` | 🥇 #1 | ~15% | ⚠️ **Disputed — NOT in code** | `src/routes/books.ts`, `src/middleware/cache.ts` |
-| **P1.3** | Remove Sync AI Generation inside GET `/candidates/status` | `P0` | 🥇 #1 | ~5% | ✅ Completed | `src/routes/books.ts` |
-| **P2.1** | Scope `verifyNextAuthToken` & Add User Ban LRU Cache | `P0` | 🥈 #2 | ~12% | ✅ Completed | `src/middleware/nextauth.ts`, `src/app.ts` |
-| **P2.2** | Fix Authenticated Edge Cache Bypass with Private SWR | `P0` | 🥈 #2 | ~8% | ✅ Completed | `src/middleware/cache.ts` |
+| **P1.1** | Refactor `/touch` Heartbeat to Lightweight In-Place SQL | `P0` | 🥇 #1 | ~30% | ✅ Completed *(verified)* | `src/routes/books.ts`, `src/services/story.ts` |
+| **P1.2** | Exponential Backoff & Optional Trigger on Status Polls | `P0` | 🥇 #1 | ~15% | ⚠️ **Disputed — claimed done, NOT in code** | `src/routes/books.ts`, `src/middleware/cache.ts` |
+| **P1.3** | Remove Sync AI Generation inside GET `/candidates/status` | `P0` | 🥇 #1 | ~5% | ✅ Completed *(verified)* | `src/routes/books.ts` |
+| **P1.4** | **Server-side poll throttle + coalescing cache + `Retry-After`** on `/status` & `/candidates/status` (the *real* P1.2 fix) | `P0` | 🥇 #1 | ~15–20% | ✅ Completed *(this session)* | `src/routes/books.ts`, `src/utils/poll-coalesce.ts` |
+| **P2.1** | Scope `verifyNextAuthToken` & Add User Ban LRU Cache | `P0` | 🥈 #2 | ~12% | ✅ Completed *(verified)* | `src/middleware/nextauth.ts`, `src/app.ts` |
+| **P2.2** | Fix Authenticated Edge Cache Bypass with Private SWR | `P0` | 🥈 #2 | ~8% | ✅ Completed *(verified)* | `src/middleware/cache.ts` |
 | **P2.3** | Eliminate Memory Allocations in `parseJsonBody` | `P1` | 🥈 #2 | ~2% | ✅ Completed | `src/middleware/body.ts` |
-| **P3.1** | Fix Quadratic \(O(N^2)\) Scanning in `StreamingJsonAnswerExtractor` | `P1` | 🥉 #3 | ~5% | ✅ Completed | `src/utils/companion-stream.ts` |
+| **P2.4** | **Cache verified session `userId` to skip per-poll JWE decrypt** | `P0` | 🥈 #2 | ~10% | ✅ Completed *(this session, Option A)* | `src/middleware/nextauth.ts`, `src/routes/auth.ts` |
+| **P2.5** | **Skip `compress()` for small poll/status payloads** | `P1` | 🥈 #2 | ~3% | ✅ Completed *(this session)* | `src/app.ts` |
+| **P3.1** | Fix Quadratic \(O(N^2)\) Scanning in `StreamingJsonAnswerExtractor` | `P1` | 🥉 #3 | ~5% | ✅ Completed *(verified — uses incremental `cursor`)* | `src/utils/companion-stream.ts` |
 | **P3.2** | Optimize Per-Chunk SSE Transformations & Line Buffering | `P1` | 🥉 #3 | ~4% | ✅ Completed | `src/utils/ai-chat-stream.ts` |
-| **P3.3** | Deprecate Serverless-Held SSE Polling (`GET /candidates` Loop) | `P1` | 🥉 #3 | ~6% | ◻️ Planned | `src/routes/books.ts`, `src/utils/sse.ts` |
-| **P4.1** | Enforce Async Book Creation & Deprecate Sync `createBookCore` on Vercel | `P1` | 4️⃣ #4 | ~5% | ◻️ Planned | `src/routes/books.ts`, `src/services/book-creation.ts` |
+| **P3.3** | Deprecate Serverless-Held SSE Polling (`GET /candidates` Loop) | `P1` | 🥉 #3 | 0%* | ✅ **Deprecated — `@deprecated` JSDoc added (unused in prod)** *(§8 Q2)* | `src/routes/books.ts`, `src/utils/sse.ts` |
+| **P3.4** | **Throttle plain `/status` polls; retain `GET /candidates` SSE hold** | `P1` | 🥉 #3 | ~6% | ✅ Completed via P1.4 | `src/routes/books.ts` |
+| **P4.1** | Enforce Async Book Creation & Deprecate Sync `createBookCore` on Vercel | `P1` | 4️⃣ #4 | 0%* | ✅ **Deprecated — `@deprecated` JSDoc added (sync path unused on Vercel)** | `src/routes/books.ts`, `src/services/book-creation.ts` |
 | **P4.2** | Optimize Story Bible Context Serialization in Pen & AI Chat | `P2` | 4️⃣ #4 | ~3% | ◻️ Planned | `src/utils/prompt.ts`, `src/services/pen.ts` |
 | **P5.1** | Debounce & Optimize Pen Autosave `PATCH /drafts/:draftId` | `P2` | 5️⃣ #5 | ~2% | ◻️ Planned | `src/routes/pen.ts`, `src/services/pen.ts` |
 | **P5.2** | Zero-Compute `/health` Endpoint & Lazy AI Singletons | `P2` | 6️⃣ #6 | ~2% | ✅ Completed | `src/app.ts`, `src/utils/ai-clients.ts`, `src/utils/ai-cost.ts` |
 | **P5.3** | Suppress Verbose AI String Logs & Group Markers on Vercel | `P2` | 6️⃣ #6 | ~3% | ✅ Completed | `src/utils/ai-logger.ts`, `src/utils/edge-group.ts` |
 | **P6.1** | Switch `dbRead` to Stateless Neon HTTP Driver | `P3` | 7️⃣ #7 | ~1% | ◻️ Planned | `src/db/client.ts` |
+| **P6.2** | **Custom Vercel Adapter per-request overhead** (skip body buffering on GET; avoid redundant `Request` rebuild) | `P2` | #6 | ~3% | ✅ Completed *(this session, partial)* | `src/app.ts` |
+| **P7.1** | Verify P3.1 linearization & audit companion/chat SSE CPU | `P1` | 🥉 #3 | n/a | ⏳ Pending verification *(§8 Q2)* | `src/utils/companion-stream.ts` |
 
-*Status Legend: ◻️ Planned | ⏳ In Progress | ✅ Completed | ⏩ Skipped / Deferred*
+*Status Legend: ◻️ Planned | ⏳ In Progress / Pending | ✅ Completed | ⚠️ Disputed/Verify | ⏩ Skipped / Reconsidered*
+
+*\* Est. CPU reduction shown as `0%` where the path is confirmed unused in production, so no optimization is possible or required.*
 
 ---
 
@@ -569,7 +577,7 @@ So a handler that *should* be ~3 ms of real work becomes **~15–25 ms of billed
  🔟 #10 AI/Neon/GitHub network waits (0 Active CPU)                       [~0%]
 ```
 
-> Note: items P3.1 (linear `StreamingJsonAnswerExtractor`) and P3.2/P3.3 (SSE polling deprecation) are claimed "Completed"/"Planned" but **not verified in this audit** — and **deprecating `GET /candidates` (the long-lived SSE hold) in favor of `GET /candidates/status` polling would likely *increase* CPU** (one held connection vs. hundreds of separate polls). Recommend keeping the SSE hold and instead throttling the plain `/status` polls (see §7.6).
+> Note: items P3.1 (linear `StreamingJsonAnswerExtractor`) and P3.2 (per-chunk SSE transforms) were verified completed. **P3.3** (SSE polling deprecation) was initially flagged as risking a CPU *increase* if the long-lived `GET /candidates` SSE hold were actively used — but it is now confirmed **unused in production**, so deprecating it carries no CPU penalty. It is therefore marked 🗑️ Deprecated/Done. Plain `/status` throttling (P3.4) is handled by P1.4.
 
 ### 7.6 Recommended追加 (Additional) Fixes Before Unpause
 
@@ -583,10 +591,116 @@ So a handler that *should* be ~3 ms of real work becomes **~15–25 ms of billed
 
 ### 7.7 Updated Verification Checklist (supersedes §5.3)
 
-- ◻️ **P1.2 actually implemented**: confirm `Retry-After` / coalescing cache present in `/status` and `/candidates/status` handlers (currently ABSENT).
-- ◻️ **Auth crypto per poll**: confirm session `userId` is cached so `getAuthUser` JWE verify does not run on every `/touch`/`/status` tick.
+- ✅ **P1.2 actually implemented**: `Retry-After` + coalescing cache present in `/status` (`coalescePoll`, books.ts) and `/candidates/status` (`getCoalesced`/`setCoalesced` guard). Verified in code.
+- ✅ **Auth crypto per poll**: session `userId` is now cached (`sessionVerifyCache`, 60s) so `getAuthUser` JWE verify does not run on every `/touch`/`/status` tick (P2.4 implemented).
 - ◻️ **Invocation Count**: `POST /touch` and `GET /candidates/status` should drop >85% after client throttle + server guard.
 - ◻️ **Active CPU/invocation**: target < 10ms for status/touch routes (currently ~15–25ms from middleware).
 - ◻️ **Daily Fluid CPU**: keep < 5 CPU-min/day.
 
+---
+
+## 8. Open Questions Requiring Decision (2026-08-28)
+
+The following items need an explicit product/security decision before implementation. Each lists concrete options and my recommended default.
+
+### ✅ Q1 (Decided & Implemented): Cache verified session `userId` to skip per-poll JWE decryption (P2.4)
+
+**Decision (2026-08-28)**: User selected **Option A — Cache 60s, keyed by token hash**. Implemented in `src/middleware/nextauth.ts`:
+- Added `sessionVerifyCache` (LRU, 60s TTL) keyed by SHA-256 of the raw `authjs.session-token` cookie (never plaintext).
+- `verifyNextAuthToken` returns the cached `AuthUser` on hit, skipping `getAuthUser` JWE decryption entirely for repeat polls.
+- Added `invalidateCurrentSessionVerifyCache(c)` and wired it into `POST /api/auth/logout`, `/logout-all`, `/logout-all-devices` so explicit logout drops the cache entry immediately.
+- Trust window is 60s (consistent with the existing 5-min ban-cache window).
+
+**Context**: Every `/api/*` request runs `verifyNextAuthToken` → `getAuthUser`, which performs **Auth.js JWE session-cookie decryption/verification** (`crypto.subtle` AES-GCM + base64) on *every* call. For the high-frequency poll/heartbeat routes (`/touch`, `/status`, `/candidates/status`), this crypto is the single largest per-request CPU cost after the DB work. The ban-status LRU (P2.1) already removes the *DB* lookup, but the cryptographic verify still ran on every tick prior to this fix.
+
+**Options**:
+- **A (Recommended) — Short-TTL LRU keyed by session-token hash**: Cache the resolved `{ userId, sessionId }` for **30–60s**, keyed by a SHA-256 hash of the raw session cookie (never the plaintext token). On miss/expiry, run full `getAuthUser`. Invalidate immediately on logout (reuse `invalidateUserBanCache`-style hook). Net effect: 95%+ of polls skip crypto. Risk: ~30–60s window where a revoked session is still accepted — acceptable given the existing 5-min ban-cache window and the fact that tokens are short-lived by NextAuth anyway.
+- **B — Keep full verify every request (no caching)**: Maximum security, zero trust-window extension. CPU cost on poll routes remains ~15–25ms/invocation. Only choose if the security team rejects any caching.
+- **C — Cache only for explicitly "hot" routes** (`/touch`, `/status`, `/candidates/status`) via a route allow-list, leaving all other routes fully verified. Smaller blast radius than A, same mechanism.
+
+**My recommendation**: **Option A** (60s TTL, keyed by token hash, invalidated on logout). It is the highest-CPU-win / lowest-risk balance and is consistent with the ban-cache trust model already shipped.
+
+---
+
+### ✅ Q2 (Decided, 2026-08-28): Deprecate P3.3 — `GET /candidates` SSE hold is unused in production
+
+**Original concern (now reversed)**: The earlier audit recommended *keeping* the long-lived SSE connection in `GET /api/books/:identifier/:pageId/candidates` because replacing it with `/candidates/status` polling would *increase* CPU (hundreds of separate polls vs. one held connection).
+
+**New information**: The operator confirms this SSE hold is **not actually used by the production frontend/flow** — clients poll `/candidates/status` instead. The held-connection path is therefore **dead code in production**, so its CPU cost is ~0% and the "would increase CPU" risk no longer applies.
+
+**Decision**: Mark **P3.3 as 🗑️ Deprecated / Done**. No optimization is required because the path is never invoked in production. The dead code may be removed in a future cleanup PR, but that is optional and out of scope for the CPU work. P3.4 (throttle plain `/status` polls) remains the relevant fix and is already completed via P1.4.
+
+---
+
+### ✅ Q3 (Decided, no action needed): Keep CDN `Cache-Control` bypass; rely on P1.4 for coalescing
+
+**Question**: Should the CDN/edge also coalesce `/status` (relax `Cache-Control`)?
+
+**Context**: `src/middleware/cache.ts:52-59` forces `max-age=0, must-revalidate` on `/status` and `/candidates`. P1.4 already coalesces at the app layer (per-instance LRU, 2s). Relaxing the CDN cache to `private, max-age=1, stale-while-revalidate=2` would add edge-level coalescing across instances, but private caches are per-user-device so cross-instance benefit is limited.
+
+**Options**:
+- **A (Chosen) — Keep CDN bypass; rely on P1.4 in-handler coalescing.** Simpler, no CDN behavior change, already implemented.
+- **B — Relax to `private, max-age=1, s-maxage=1, stale-while-revalidate=2`.** Marginal extra coalescing; slightly more complex cache semantics.
+
+**Decision**: **Option A.** No code change needed — `Cache-Control` on `/status` and `/candidates` stays as `max-age=0, must-revalidate` (verified current behavior in `src/middleware/cache.ts`). All poll coalescing is handled by P1.4's per-instance LRU, which is sufficient since each client's polls typically hit the same warm instance and the 2s staleness is imperceptible for generation progress. Option B remains available later if Vercel metrics show heavy cross-instance status fan-out, but it is not warranted now.
+
+---
+
+## 9. Safety Assurance, Drawbacks & Revert Guide (2026-08-28)
+
+### 9.1 Are these refactors safe & non-breaking? (Elaboration)
+
+Every change in this session is a **pure optimization**: it alters *how often* work runs or *how much CPU* each request burns, **never the business logic or response contract**. Specifically:
+
+| Change | What it does NOT change (non-breaking) | Why it is safe |
+| :--- | :--- | :--- |
+| **P1.4 coalescing (`/status`)** | Response shape (`BookCreationStatus`), ownership/404/403 errors, stale re-trigger *semantics*. | The DB read + stale-check + status build are moved verbatim into a `coalescePoll` closure. The *first* poll in each 2s window still runs the exact same code path; only repeat identical polls are served a cached copy. `Retry-After` is advisory only. |
+| **P1.4 coalescing (`/candidates/status`)** | Response shape (`CandidateGenerationStatus`), 404/503 errors, `?trigger=true` dispatch. | Read-only polls (`trigger=false`) are collapsed; explicit `?trigger=true` always computes (so workflow dispatch still happens) and is **never** served from cache. The four success branches are unchanged except they now also `setCoalesced(...)`. |
+| **P2.4 session cache** | Auth outcome (who you are), ban rejection, cookie handling. | Only *re-verification* of an already-valid token is skipped for ≤60s. The resolved `userId`/`sessionId` is identical to a fresh verify. `updateSessionMetadata` (non-critical, fire-and-forget) is the only thing skipped on a cache hit. |
+| **P2.5 compress skip** | Response bytes/encoding correctness; clients still receive valid JSON. | Only gzip is skipped on already-tiny payloads (`/status`, `/candidates/status`, `/health`). The body is uncompressed but fully valid; no client change needed. |
+| **P6.2 adapter body skip** | Request parsing for POST/PUT/etc.; the `Request` handed to Hono. | GET/HEAD requests have no body, so the previous code's `for await` drain produced nothing anyway. We simply skip starting it. POST bodies are still fully buffered exactly as before. |
+
+**Runtime/edge compatibility**: All changes avoid `node:`-only APIs. The session-token hash uses the **Web Crypto API** (`crypto.subtle.digest("SHA-256", …)`), the same runtime-agnostic primitive already used in `src/utils/cache.ts`. The LRU caches are plain in-memory `lru-cache` instances (identical to the existing `userBanCache`). No new external dependencies were added (the coalescing util reuses the already-present `lru-cache`).
+
+### 9.2 Drawbacks & Compatibility Caveats (must read)
+
+1. **Status data can be up to `POLL_COALESCE_TTL_MS` (2s) stale.** A poll served from cache may lag the database by ≤2s. For async-generation progress this is imperceptible, but if you later add sub-second-sensitive logic to these endpoints, raise/lower `POLL_COALESCE_TTL_MS` in `src/utils/poll-coalesce.ts`.
+2. **Coalescing is per-serverless-instance.** The LRU lives in process memory. Vercel may route a client's successive polls to *different* warm instances, in which case each instance coalesces independently (still a win, but not global). This is expected and harmless.
+3. **Session cache introduces a ≤60s trust window.** A token that is revoked/expired (logout, ban, password change) can still be trusted for up to 60s after the event, because the cached `AuthUser` is reused. This is bounded and **consistent with the existing 5-minute `userBanCache` window** and NextAuth's own short-lived tokens; explicit logout now calls `invalidateCurrentSessionVerifyCache` to clear it immediately. If your security policy forbids *any* post-revocation trust window, see §9.3 (disable P2.4).
+4. **`Retry-After` is advisory.** Clients that ignore it and poll every 1s will still be coalesced server-side (good for CPU) but will not "back off" — the header is a hint, not enforcement. The real throttle is the cache, not the header.
+5. **`/health` is no longer compressed.** It is a few bytes; irrelevant in practice.
+6. **No behavior change for writes/mutations.** Only the three poll/read endpoints plus the adapter's GET path are touched. Book creation, payments, pen editing, etc. are unaffected.
+
+### 9.3 Revert Guide — "Non-Conservative / Fully-Fresh" mode (Vercel Pro / Pay-As-You-Go)
+
+When you upgrade to **Vercel Pro (or any pay-as-you-go / CPU-unmetered) tier** and no longer care about Fluid Active CPU, you can revert each optimization to regain maximum data freshness and remove the trust-window tradeoff. Do **only** what you want to revert; each is independent.
+
+#### R1 — Disable poll coalescing (regain 100% fresh status)
+- Delete `src/utils/poll-coalesce.ts`.
+- In `src/routes/books.ts` `GET /:bookId/status`: remove the `coalescePoll(...)` wrapper and restore the direct DB-read → stale-check → `c.json(status)` flow (the code still exists inside the closure; just inline it). Remove the `Retry-After` header line.
+- In `GET /:identifier/:pageId/candidates/status`: remove the early `getCoalesced(...)` short-circuit and the `setCoalesced(...)` calls before each success `return`; restore the original direct returns.
+- *Effect*: every poll re-reads the DB (fresh to the millisecond) at the cost of full CPU.
+
+#### R2 — Disable session-verify cache (remove trust window)
+- In `src/middleware/nextauth.ts`, set `SESSION_VERIFY_TTL_MS = 0`, **or** delete the `if (tokenHash) { const cached = sessionVerifyCache.get(tokenHash); if (cached) return cached; }` block at the top of `verifyNextAuthToken`, and the `if (tokenHash) sessionVerifyCache.set(...)` line.
+- Optionally keep `invalidateCurrentSessionVerifyCache` (now a no-op) or remove its calls in `src/routes/auth.ts`.
+- *Effect*: full JWE re-verification on every request; zero post-revocation trust window; maximum CPU.
+
+#### R3 — Re-enable compression on poll routes
+- In `src/app.ts`, replace the `shouldSkipCompress` conditional with the original `app.use("*", compress());`.
+- *Effect*: gzip on every poll response (negligible CPU concern on Pro).
+
+#### R4 — Restore adapter body buffering (optional, NOT recommended)
+- P6.2 is a **strict improvement with no freshness/security tradeoff** (GET requests have no body). There is no reason to revert it even on Pro. Leave as-is.
+
+#### R5 — One-step "full revert" toggle (✅ IMPLEMENTED)
+
+The env flag is now implemented as a **single centralized source of truth** so callers don't repeat toggle checks:
+
+- **`src/config/cpu-optimizations.ts`** exports `CPU_OPTIMIZATIONS_ENABLED` (computed once at module load from `DISABLE_CPU_OPTIMIZATIONS`; truthy `1/true/yes/on` disables optimizations).
+- **P1.4** (`src/utils/poll-coalesce.ts`): `coalescePoll` / `getCoalesced` / `setCoalesced` each honor the flag internally — when disabled they compute fresh and never read/write the cache. `books.ts` call sites are unchanged (no boilerplate).
+- **P2.4** (`src/middleware/nextauth.ts`): the session cache get/set are guarded by `CPU_OPTIMIZATIONS_ENABLED`.
+- **P2.5** (`src/app.ts`): the `shouldSkipCompress` branch is prefixed with `CPU_OPTIMIZATIONS_ENABLED && …`; when disabled, `compress()` runs everywhere.
+
+To switch modes, set `DISABLE_CPU_OPTIMIZATIONS=true` (or `1`/`yes`/`on`) — no code edits. Documented in `.env.example`. The revert steps R1–R3 above remain available if you prefer to permanently delete the code rather than toggle it.
 

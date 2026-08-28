@@ -265,6 +265,12 @@ export class BookCreationError extends Error {
 // ---------------------------------------------------------------------------
 
 /**
+ * @deprecated Sync/Vercel book creation is unused in production — the frontend
+ * uses the async GitHub Actions flow (`POST /api/books/async`) instead, so this
+ * synchronous path is dead in the live workflow. Retained for backward
+ * compatibility and the internal/cron `isOriginal` path. CPU optimization P4.1
+ * (closed as deprecated — see VERCEL_FLUID_ACTIVE_CPU_OPTIMIZATION_ROADMAP.md).
+ *
  * Core book creation logic shared by the synchronous POST and SSE endpoints.
  *
  * **Credit handling:**

@@ -109,8 +109,9 @@ import { books, branches, deletedImages, users, userLikes, userFavorites, userCo
 import { getErrorMessage, cApiError, cForbiddenError, cNotFoundError, cRateLimitError, cUnauthorizedError, cValidationError } from "../utils/error.js";
 import { sanitizeTextForDB, sanitizeKeywords } from '../utils/text-processing.js';
 import { stripHtml } from '../utils/sanitize-html.js';
+import { coalescePoll, getCoalesced, setCoalesced, POLL_RETRY_AFTER_SECONDS } from "../utils/poll-coalesce.js";
 import { eq, and, desc, asc, sql, ne, inArray, arrayOverlaps } from "drizzle-orm";
-import { hashContentSHA256 } from "../utils/cache.js";
+import { hashSHA256 } from "../utils/hash.js";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
 import { getBook, getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage, tryAcquireWorkflowDispatchGate } from "../services/book.js";
 import { getBookAnalytics } from "../services/analytics.js";
@@ -147,10 +148,10 @@ import { triggerCandidateGenerationWorkflow, validateAndRetrievePageForGeneratio
 import { SSE_POLLING_CONFIG } from "../config/candidate-generation.js";
 import { getPsychologicalProfileResult } from "../services/psychological-profile.js";
 import { getLockedPaths } from "../services/locked-paths.js";
-import { runGate0, runGate1, buildCustomActionValidationPrompt, buildCanonicalAction, getRejectionMessage, CUSTOM_ACTION_VALIDATION_SCHEMA_DEFINITION, CUSTOM_ACTION_VALIDATION_REQUIRED_FIELDS, generatePageForCustomAction, CUSTOM_ACTION_GENERATION_STALE_MS } from "../services/custom-actions.js";
+import { runGate0, runGate1, buildCustomActionValidationPrompt, buildCanonicalAction, getRejectionMessage, CUSTOM_ACTION_VALIDATION_SCHEMA_DEFINITION, CUSTOM_ACTION_VALIDATION_REQUIRED_FIELDS, CUSTOM_ACTION_GENERATION_STALE_MS } from "../services/custom-actions.js";
 import { loadOwnCustomActions, mapCustomActionRowToAction } from "../services/book.js";
 import { customActions } from "../db/schema.js";
-import { getStoryStateFromPage, getStoryState, computeEndingStats, setActiveSession, touchReadingSession } from "../services/story.js";
+import { getStoryStateFromPage, getStoryState, computeEndingStats, touchReadingSession } from "../services/story.js";
 import { getStoryStateWithBranch } from "../services/story-branch.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 import { notifyForumOfBookChange, notifyForumStoryArchived } from "../services/forum-queue.js";
@@ -869,132 +870,124 @@ router.get('/:bookId/status', requireAuth, async (c) => {
       return cValidationError(c, 'Invalid book ID format');
     }
 
-    // Join `books` (LEFT JOIN `bookGenerations`) so that books created via the
-    // sync/SSE routes (which have no bookGenerations row) still return a result.
-    const [data] = await dbRead
-      .select({
-        // books table
-        bookId:        books.id,
-        bookUserId:    books.userId,
-        bookStatus:    books.status,
-        bookCreatedAt: books.createdAt,
-        bookUpdatedAt: books.updatedAt,
-        // bookGenerations table (nullable — leftJoin)
-        generationStatus:       bookGenerations.generationStatus,
-        generationStep:         bookGenerations.generationStep,
-        generationError:        bookGenerations.generationError,
-        generationStartedAt:    bookGenerations.generationStartedAt,
-        generationCompletedAt:  bookGenerations.generationCompletedAt,
-        isGeneratingStartedAt:  bookGenerations.isGeneratingStartedAt,
-        isRefunded:             bookGenerations.isRefunded,
-        aiComment:              bookGenerations.aiComment,
-        aiFinalComment:         bookGenerations.aiFinalComment,
-        createdAt:              bookGenerations.createdAt, // used for stale-detection fallback
-      })
-      .from(books)
-      .leftJoin(bookGenerations, eq(books.id, bookGenerations.bookId))
-      .where(eq(books.id, bookId))
-      .limit(1);
+    // ── Coalesced poll (Fluid Active CPU optimization) ───────────────────────
+    // Collapse burst client polls (and stale re-triggers) to at most one DB read
+    // + at most one workflow dispatch per POLL_COALESCE_TTL_MS window per book.
+    const statusKey = `book-status:${userId}:${bookId}`;
+    const { value: built, coalesced } = await coalescePoll(statusKey, async () => {
+      // Join `books` (LEFT JOIN `bookGenerations`) so that books created via the
+      // sync/SSE routes (which have no bookGenerations row) still return a result.
+      const [data] = await dbRead
+        .select({
+          // books table
+          bookId:        books.id,
+          bookUserId:    books.userId,
+          bookStatus:    books.status,
+          bookCreatedAt: books.createdAt,
+          bookUpdatedAt: books.updatedAt,
+          // bookGenerations table (nullable — leftJoin)
+          generationStatus:       bookGenerations.generationStatus,
+          generationStep:         bookGenerations.generationStep,
+          generationError:        bookGenerations.generationError,
+          generationStartedAt:    bookGenerations.generationStartedAt,
+          generationCompletedAt:  bookGenerations.generationCompletedAt,
+          isGeneratingStartedAt:  bookGenerations.isGeneratingStartedAt,
+          isRefunded:             bookGenerations.isRefunded,
+          aiComment:              bookGenerations.aiComment,
+          aiFinalComment:         bookGenerations.aiFinalComment,
+          createdAt:              bookGenerations.createdAt, // used for stale-detection fallback
+        })
+        .from(books)
+        .leftJoin(bookGenerations, eq(books.id, bookGenerations.bookId))
+        .where(eq(books.id, bookId))
+        .limit(1);
 
-    if (!data) {
-      return cNotFoundError(c, 'Book not found');
-    }
+      if (!data) return { kind: "not_found" as const };
 
-    // Verify user owns the book
-    if (data.bookUserId !== userId) {
-      return cForbiddenError(c, 'You can only view status for your own books');
-    }
+      // Verify user owns the book
+      if (data.bookUserId !== userId) return { kind: "forbidden" as const };
 
-    // Check if generation is stale and try to dispatch a fresh workflow.
-    // The gate protects against double-dispatch: pre-flight rejects terminal /
-    // alive-runner states, and the atomic lock ensures only one caller wins.
-    const isStale = isGenerationStale(data);
-    if (isStale && !data.isRefunded && GITHUB_REPO_CONFIG.token) {
-      const gate = await tryAcquireWorkflowDispatchGate(bookId);
-      if (gate.shouldDispatch) {
-        console.log(`[GET /api/books/:bookId/status] 🔄 Stale generation detected for book ${bookId}, re-triggering workflow`);
-        triggerBookGenerationWorkflow(bookId, 'GET /api/books/:bookId/status');
-      } else {
-        console.log(`[GET /api/books/:bookId/status] ⏸️ Stale but gate blocked: ${gate.reason}`);
-      }
-    }
-
-    // Map generation status to current step description
-    // ── Build user-facing step description ────────────────────────────────────
-    //
-    // Bug fix: previously exposed raw enum values (e.g. 'ai_generation') directly
-    // to the frontend. Now maps through STEP_DESCRIPTIONS for friendly labels.
-    // TODO: shouldn't we just need to handle translation in frontend? so I think exposing raw enum values is intended
-    let generationStepDescription: string | undefined;
-
-    switch (data.generationStatus) {
-      case 'pending':
-        generationStepDescription = 'Waiting for the generation worker to start';
-        break;
-
-      case 'in_progress': {
-        const stepLabel = data.generationStep
-          ? (storyGenerationSteps[data.generationStep] ?? data.generationStep)
-          : 'Initialising';
-        generationStepDescription = `In progress: ${stepLabel}`;
-        break;
+      // Check if generation is stale and try to dispatch a fresh workflow.
+      // The gate protects against double-dispatch: pre-flight rejects terminal /
+      // alive-runner states, and the atomic lock ensures only one caller wins.
+      // NOTE: runs only on cache miss (≤ once per coalescing window).
+      const isStale = isGenerationStale(data);
+      if (isStale && !data.isRefunded && GITHUB_REPO_CONFIG.token) {
+        const gate = await tryAcquireWorkflowDispatchGate(bookId);
+        if (gate.shouldDispatch) {
+          console.log(`[GET /api/books/:bookId/status] 🔄 Stale generation detected for book ${bookId}, re-triggering workflow`);
+          triggerBookGenerationWorkflow(bookId, 'GET /api/books/:bookId/status');
+        } else {
+          console.log(`[GET /api/books/:bookId/status] ⏸️ Stale but gate blocked: ${gate.reason}`);
+        }
       }
 
-      case 'completed':
-        generationStepDescription = 'Book generation complete';
-        break;
+      // Map generation status to current step description
+      let generationStepDescription: string | undefined;
 
-      case 'failed':
-        generationStepDescription = 'Book generation failed';
-        break;
+      switch (data.generationStatus) {
+        case 'pending':
+          generationStepDescription = 'Waiting for the generation worker to start';
+          break;
 
-      case 'cancelled':
-        generationStepDescription = 'Book generation was cancelled';
-        break;
+        case 'in_progress': {
+          const stepLabel = data.generationStep
+            ? (storyGenerationSteps[data.generationStep] ?? data.generationStep)
+            : 'Initialising';
+          generationStepDescription = `In progress: ${stepLabel}`;
+          break;
+        }
 
-      default:
-        generationStepDescription = undefined;
-    }
+        case 'completed':
+          generationStepDescription = 'Book generation complete';
+          break;
 
-    // ── Terminal payload: include full enriched book ───────────────────────────
-    //
-    // When generation completes, fetch the enriched book (with firstPage, author
-    // info, stats, user-specific flags) so the frontend can render immediately
-    // without an extra GET /api/books/:bookId round-trip. This eliminates the
-    // cross-request race window entirely — the book data travels in the same
-    // response that signals completion.
-    //
-    // The enriched book is only fetched on the terminal 'completed' state to keep
-    // in-progress polls lightweight (no joins on users, pages, subqueries, etc.).
-    let enrichedBook: EnrichedBookData | null = null;
-    if (data.generationStatus === 'completed') {
-      try {
-        enrichedBook = await getEnrichedBook(bookId, userId, undefined);
-      } catch {
-        // Non-fatal: the frontend can fall back to GET /api/books/:bookId.
-        // The generation status is already persisted — a stale-book fallback
-        // is better than failing the poll response entirely.
+        case 'failed':
+          generationStepDescription = 'Book generation failed';
+          break;
+
+        case 'cancelled':
+          generationStepDescription = 'Book generation was cancelled';
+          break;
+
+        default:
+          generationStepDescription = undefined;
       }
-    }
 
-    const status: BookCreationStatus = {
-      bookId:                   data.bookId,
-      status:                   data.bookStatus ?? 'draft',
-      generationStatus:         data.generationStatus ?? 'pending',
-      generationStep:           data.generationStep  ?? 'theme_validation',
-      generationStepDescription,
-      generationStartedAt:      data.generationStartedAt,
-      generationCompletedAt:    data.generationCompletedAt,
-      aiComment:                data.aiComment,
-      aiFinalComment:           data.aiFinalComment,
-      error:                    data.generationError,
-      createdAt:                data.bookCreatedAt,
-      updatedAt:                data.bookUpdatedAt,
-      isRefunded:               data.isRefunded,
-      book: enrichedBook,
-    };
+      // Enriched book is only fetched on the terminal 'completed' state.
+      let enrichedBook: EnrichedBookData | null = null;
+      if (data.generationStatus === 'completed') {
+        try {
+          enrichedBook = await getEnrichedBook(bookId, userId, undefined);
+        } catch {
+          // Non-fatal fallback — see reasoning above.
+        }
+      }
 
-    return c.json(status);
+      const status: BookCreationStatus = {
+        bookId:                   data.bookId,
+        status:                   data.bookStatus ?? 'draft',
+        generationStatus:         data.generationStatus ?? 'pending',
+        generationStep:           data.generationStep  ?? 'theme_validation',
+        generationStepDescription,
+        generationStartedAt:      data.generationStartedAt,
+        generationCompletedAt:    data.generationCompletedAt,
+        aiComment:                data.aiComment,
+        aiFinalComment:           data.aiFinalComment,
+        error:                    data.generationError,
+        createdAt:                data.bookCreatedAt,
+        updatedAt:                data.bookUpdatedAt,
+        isRefunded:               data.isRefunded,
+        book: enrichedBook,
+      };
+
+      return { kind: "ok" as const, status };
+    });
+
+    if (built.kind === "not_found") return cNotFoundError(c, 'Book not found');
+    if (built.kind === "forbidden") return cForbiddenError(c, 'You can only view status for your own books');
+    if (coalesced) c.header("Retry-After", String(POLL_RETRY_AFTER_SECONDS));
+    return c.json(built.status);
   } catch (error) {
     console.error('[GET /api/books/:bookId/status] ❌ Error:', error);
     return cApiError(c, 'Failed to get book status', error);
@@ -5050,7 +5043,13 @@ router.post('/:identifier/:pageId/confirm-visit', requireAuth, async (c) => {
 
 /**
  * GET /api/books/:identifier/:pageId/candidates
- * 
+ *
+ * @deprecated Unused in production — the frontend polls `GET /candidates/status`
+ * instead, so this long-lived SSE hold is dead code in the live workflow.
+ * Retained for backward compatibility; safe to remove after confirming no client
+ * references it. CPU optimization P3.3 (closed as deprecated — see
+ * VERCEL_FLUID_ACTIVE_CPU_OPTIMIZATION_ROADMAP.md).
+ *
  * Pre-generates candidate pages for all actions on a story page.
  * This ensures that when users select actions, the corresponding destination pages
  * are immediately available without waiting for AI generation.
@@ -5248,6 +5247,18 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
 
     const shouldTrigger = c.req.query("trigger") === "true";
 
+    // ── Coalesced poll (Fluid Active CPU optimization) ───────────────────────
+    // Skip the DB-heavy path for repeated read-only polls within the coalescing
+    // window. Explicit ?trigger=true always computes (so workflow dispatch still
+    // happens) and is never served from cache.
+    if (!shouldTrigger) {
+      const cached = getCoalesced<CandidateGenerationStatus>(`cand:${userId ?? "anon"}:${pageIdStr}`);
+      if (cached) {
+        c.header("Retry-After", String(POLL_RETRY_AFTER_SECONDS));
+        return c.json(cached);
+      }
+    }
+
     // ── Own custom actions ────────────────────────────────────────────────────
     // Only the owner's own custom submissions participate in this page's
     // generation status, so their poll streams the custom action alongside canon
@@ -5344,6 +5355,7 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
       };
 
       console.log(`[GET /candidates/status] ⏰ Generation in progress for page ${pageIdStr}: ${completedActions}/${totalActions} actions completed`);
+      setCoalesced(`cand:${userId ?? "anon"}:${pageIdStr}`, response);
       return c.json(response);
     }
 
@@ -5351,7 +5363,7 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
     // keep poll streaming until their custom page is ready.
     if (hasPendingCustom) {
       console.log(`[GET /candidates/status] ⏳ Custom page generation pending for page ${pageIdStr}: ${completedActions}/${totalActions} actions completed`);
-      return c.json({
+      const pendingResponse: CandidateGenerationStatus = {
         isGenerating: true,
         completedActions,
         totalActions,
@@ -5361,7 +5373,9 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
         actionProgress: progressEventFallback,
         startedAt: new Date().toISOString(),
         lastUpdated: new Date().toISOString(),
-      } satisfies CandidateGenerationStatus);
+      };
+      setCoalesced(`cand:${userId ?? "anon"}:${pageIdStr}`, pendingResponse);
+      return c.json(pendingResponse);
     }
 
     // Generation not in progress - check if actions are complete
@@ -5370,7 +5384,7 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
       console.log(`[GET /candidates/status] ✅ Generation complete for page ${pageIdStr} - all actions completed`);
       void clearActionProgressEvents(pageIdStr);
 
-      return c.json({
+      const doneResponse: CandidateGenerationStatus = {
         isGenerating: false,
         completedActions: mergedActions.length,
         totalActions: mergedActions.length,
@@ -5378,7 +5392,9 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
         actionProgress: progressEventFallback,
         startedAt: undefined,
         lastUpdated: updatedAt.toISOString(),
-      } satisfies CandidateGenerationStatus);
+      };
+      setCoalesced(`cand:${userId ?? "anon"}:${pageIdStr}`, doneResponse);
+      return c.json(doneResponse);
     }
     
     // Actions incomplete: only dispatch workflow if client explicitly passed `trigger=true`
@@ -5406,7 +5422,7 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
       console.log(`[GET /candidates/status] ⏳ Generation incomplete for page ${pageIdStr} (read-only poll, trigger=false)`);
     }
 
-    return c.json({
+    const fallbackResponse: CandidateGenerationStatus = {
       isGenerating: true,
       completedActions,
       totalActions,
@@ -5416,7 +5432,9 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
       actionProgress: progressEventFallback,
       startedAt: new Date().toISOString(),
       lastUpdated: new Date().toISOString(),
-    } satisfies CandidateGenerationStatus);
+    };
+    setCoalesced(`cand:${userId ?? "anon"}:${pageIdStr}`, fallbackResponse);
+    return c.json(fallbackResponse);
 
   } catch (error) {
     return cApiError(c, "Failed to get candidate status", error);
@@ -5641,7 +5659,7 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
       return cNotFoundError(c, "Story state not available for this page");
     }
 
-    const questionHash = await hashContentSHA256(rawQuestion.toLowerCase().trim());
+    const questionHash = await hashSHA256(rawQuestion.toLowerCase().trim());
 
     // 1. Check cache first (exact question on exact book & page, only for standalone single-turn queries)
     const hasHistory = history && history.length > 0;
@@ -6127,7 +6145,7 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(
       return cNotFoundError(c, "Story state not available for this page");
     }
 
-    const questionHash = await hashContentSHA256(rawQuestion.toLowerCase().trim());
+    const questionHash = await hashSHA256(rawQuestion.toLowerCase().trim());
 
     // Check cache first (exact question on exact book & page, only for standalone single-turn queries)
     const hasHistory = history && history.length > 0;

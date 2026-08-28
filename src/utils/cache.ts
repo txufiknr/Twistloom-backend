@@ -24,6 +24,7 @@ import { userCache } from "../db/schema.js";
 import { CACHE_KEY_HASH_THRESHOLD, CACHE_TTL_MINUTES } from "../config/cache.js";
 import { getErrorMessage } from "./error.js";
 import { stableStringify } from "./parser.js";
+import { hashSHA256 } from "./hash.js";
 
 
 /**
@@ -479,36 +480,6 @@ export function invalidateCachesForBook(bookId: string) {
 }
 
 /**
- * Returns a stable DJB2-style hash (32-bit output) of the content that will be cached.
- * Fast, deterministic, tiny implementation, good enough for cache key comparison.
- * If the hash changes (e.g. story summary updated), we invalidate.
- * 
- * Use {@link hashContentSHA256} if you want collision safety.
- */
-export function hashContentDJB2(content: string): string {
-  let h = 5381;
-  for (let i = 0; i < content.length; i++) {
-    // h = (h * 33) ^ content.charCodeAt(i); // uses floating-point arithmetic internally
-    h = ((h << 5) + h) ^ content.charCodeAt(i); // force 32-bit arithmetic every iteration
-  }
-  return (h >>> 0).toString(16);
-}
-
-/**
- * Hashes content using SHA-256 via Web Crypto API (Edge-compatible)
- * 
- * @param content - UTF-8 string content to hash
- * @returns Hex-encoded SHA-256 hash string
- */
-export async function hashContentSHA256(content: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(content);
-  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-/**
  * Creates a deterministic cache key from a value. Short keys are used as-is;
  * long keys are SHA-256 hashed to keep cache keys a reasonable length.
  * 
@@ -518,5 +489,5 @@ export async function hashContentSHA256(content: string): Promise<string> {
 export async function createCacheKey(value: unknown): Promise<string> {
   const key = stableStringify(value);
   if (key.length <= CACHE_KEY_HASH_THRESHOLD) return key;
-  return `sha256:${key.length}:${await hashContentSHA256(key)}`;
+  return `sha256:${key.length}:${await hashSHA256(key)}`;
 }

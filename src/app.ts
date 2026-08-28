@@ -43,7 +43,28 @@ app.use("*", async (c, next) => {
 // Compresses JSON payloads (book data, page content) by 60-80%.
 // Vercel Edge may already compress, but this ensures compression
 // for direct function invocations and self-hosted scenarios.
-app.use("*", compress());
+//
+// Fluid Active CPU optimization: skip gzip for tiny realtime poll/status
+// payloads. Repeated per-response compression on high-frequency endpoints
+// (every /touch, /status, /candidates/status tick) is pure CPU with no
+// meaningful bandwidth benefit on small bodies.
+//
+// Gated by CPU_OPTIMIZATIONS_ENABLED: on Vercel Pro / pay-as-you-go
+// (DISABLE_CPU_OPTIMIZATIONS=true) the original compress() runs everywhere.
+import { CPU_OPTIMIZATIONS_ENABLED } from "./config/cpu-optimizations.js";
+
+const shouldSkipCompress = (path: string): boolean =>
+  path.endsWith("/status") ||
+  path.endsWith("/candidates/status") ||
+  path.includes("/candidates/status") ||
+  path === "/health";
+app.use("*", async (c, next) => {
+  if (CPU_OPTIMIZATIONS_ENABLED && shouldSkipCompress(c.req.path)) {
+    await next();
+    return;
+  }
+  await compress()(c, next);
+});
 
 // Cache-Control headers for CDN + browser caching.
 // Public catalogue endpoints get multi-minute cache, authenticated
@@ -243,15 +264,20 @@ export default async function vercelHandler(
       const url = `${protocol}://${host}${incoming.url ?? "/"}`;
 
       // Buffer the body. Acceptable on Vercel because the platform enforces a
-      // 4.5 MB payload limit.
-      const chunks: Buffer[] = [];
-      for await (const chunk of incoming) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      // 4.5 MB payload limit. GET/HEAD requests have no body, so skip the async
+      // drain entirely (Fluid Active CPU + latency optimization for poll routes).
+      //
+      // Typed as `Uint8Array | null`. The runtime value is a `Buffer` (a `Uint8Array`
+      // subclass), which is a valid request body at runtime; the cast to `BodyInit`
+      // happens at the `new Request(...)` call site to satisfy the DOM lib typing.
+      let body: Uint8Array | null = null;
+      if (incoming.method !== "GET" && incoming.method !== "HEAD") {
+        const chunks: Buffer[] = [];
+        for await (const chunk of incoming) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        }
+        if (chunks.length > 0) body = Buffer.concat(chunks);
       }
-      const body =
-        incoming.method !== "GET" && incoming.method !== "HEAD" && chunks.length > 0
-          ? Buffer.concat(chunks)
-          : null;
 
       // Extract headers from rawHeaders, skipping HTTP/2 pseudo-headers
       // (`:method`, `:path`, … — they start with char code 58).
@@ -264,7 +290,10 @@ export default async function vercelHandler(
 
       // Building a new `Request` normalises the plain-object headers into a
       // spec-compliant `Headers` instance with a `.get()` method.
-      honoRequest = new Request(url, { method: incoming.method, headers, body });
+      // `body` is a `Buffer`/`Uint8Array`, which is valid `BodyInit` at runtime but
+      // not directly assignable under @types/node's generic `Buffer`/`Uint8Array`
+      // typing vs the DOM `BodyInit` union — hence the targeted cast.
+      honoRequest = new Request(url, { method: incoming.method, headers, body: body as BodyInit | null });
     } else {
       // ------------------------------------------------------------------
       // STEP 2b — Fluid Compute path (Request → Request)

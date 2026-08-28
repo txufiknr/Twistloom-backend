@@ -37,7 +37,7 @@
 
 import { getGeminiClient } from './ai-clients.js';
 import { getFromCache, setCache, deleteCache } from '../services/cache.js';
-import { hashContentDJB2 } from './cache.js';
+import { hashDJB2 } from './hash.js';
 import { Type } from "@google/genai";
 import type { Schema } from "@google/genai";
 import { classifyGenAIError } from './error.js';
@@ -233,7 +233,7 @@ export async function getOrCreateGeminiCache(
   bookId?: string,
 ): Promise<string | null> {
   const prefixContent = systemInstruction + semiStaticContext;
-  const prefixHash = hashContentDJB2(prefixContent);
+  const prefixHash = hashDJB2(prefixContent);
   const now = Date.now();
 
   // ── 1. Check existing cache (L1 → L2) ─────────────────────────────────────
