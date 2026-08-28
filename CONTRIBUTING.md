@@ -18,7 +18,8 @@ This document serves as a comprehensive guide for human developers and contribut
    - [6.2 Multi-Tier Caching (LRU + Redis + Database)](#62-multi-tier-caching-lru--redis--database)
    - [6.3 Credits & Transactional Financial Integrity](#63-credits--transactional-financial-integrity)
    - [6.4 Server-Sent Events (SSE) Streaming](#64-server-sent-events-sse-streaming)
-   - [6.5 AI Provider Orchestration & Fallback](#65-ai-provider-orchestration--fallback)
+    - [6.5 AI Provider Orchestration & Fallback](#65-ai-provider-orchestration--fallback)
+    - [6.6 Hot-Path & Serialization Performance](#66-hot-path--serialization-performance)
 7. [Code Quality & Standards](#-code-quality--standards)
 8. [Testing & Debugging](#-testing--debugging)
 9. [Pull Request & Contribution Process](#-pull-request--contribution-process)
@@ -244,6 +245,17 @@ AI generation is orchestrated through a ranked waterfall (`src/utils/ai-chat.ts`
 
 ---
 
+### 6.6 Hot-Path & Serialization Performance
+
+A few general performance patterns improve latency and reduce load at **any** scale—not just under serverless CPU quotas. Prefer them on high-frequency or AI-generation paths:
+
+- **Memoize page-stable serialization**: Re-serializing large story state on every request is wasteful. Use `cachedRender()` from [`src/services/prompt-render-cache.ts`](file:///d:/Projects/Twistloom/Twistloom-backend/src/services/prompt-render-cache.ts) (or a small page-scoped LRU) keyed by a page identifier so repeated chat turns / generation calls skip redundant work. The key must rotate when the page is published to avoid stale renders.
+- **Keep heartbeats cheap**: Last-seen / touch endpoints (`POST /touch`) should be a single atomic `UPDATE`, never a full entity load + recompute.
+- **Cache verified sessions**: A short-TTL cache of the resolved user/session (keyed by a hash of the token, invalidated on logout) avoids re-running JWE crypto on every request.
+- **Coalesce polls + safe edge caching**: Collapse burst polls with `Retry-After` / coalesced responses, and for semi-static authed reads use `private` (never `public`) `Cache-Control` with short `s-maxage` + `stale-while-revalidate`.
+
+---
+
 ## 📐 Code Quality & Standards
 
 ### 1. TypeScript Strictness
@@ -328,6 +340,9 @@ Before opening a pull request, ensure:
 - [ ] Credit-gated mutations use `executeWithCredits` with `tx`.
 - [ ] SSE endpoints propagate `c.req.raw.signal` and use established stream helpers.
 - [ ] Database schema changes are documented in `src/db/schema.ts` without committed auto-generated migrations.
+- [ ] Expensive page-stable serialization is memoized with a page-scoped key rather than recomputed per request.
+- [ ] Heartbeat / last-seen endpoints use lightweight atomic updates.
+- [ ] Verified session results are cached on hot paths (short TTL, token-hash keyed, invalidated on logout).
 - [ ] Temporary test/scratch files have been removed.
 
 ---

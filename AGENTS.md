@@ -260,6 +260,28 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, async (c) 
 
 ---
 
+### 7. Hot-Path & Serialization Performance Best Practices
+
+These patterns reduce latency and DB/CPU load at **any** scale—not only under serverless CPU quotas. Apply them whenever you touch a high-frequency endpoint or an AI-generation path.
+
+#### A. Page-Scoped Memoization of Expensive Serialization
+Prompt/context builders (`buildCanonicalBlock`, `buildCompanionPageContext`, `createNarrativeStyle`, etc.) re-serialize large, page-stable story state on every request. Within a single page's session that state is immutable until the page is published, so memoize the rendered output:
+- Use `cachedRender(key, compute)` from [`src/services/prompt-render-cache.ts`](file:///d:/Projects/Twistloom/Twistloom-backend/src/services/prompt-render-cache.ts) for expensive **string** serialization, keyed by a **page-scoped** identifier (e.g. `canon:${pageId}`, `comp:${bookId}:${pageId}`). The key rotates when the page is published, preventing stale renders.
+- For **object**-shaped context (e.g. `buildCompanionPageContext` in [`src/utils/companion-prompt.ts`](file:///d:/Projects/Twistloom/Twistloom-backend/src/utils/companion-prompt.ts)), memoize the resolved arrays in a small page-scoped LRU and attach per-call-only fields (`semanticContext`, `history`, `question`) *after* the lookup.
+- This is a pure win: identical output, lower latency, zero behavior change.
+
+#### B. Lightweight Heartbeats / "Last-Seen" Endpoints
+Presence endpoints (`POST /touch`, session heartbeats) must be O(1) atomic upserts (e.g. `UPDATE user_sessions SET updatedAt = now(), pageId = $1`, via `touchReadingSession` in [`src/services/story.ts`](file:///d:/Projects/Twistloom/Twistloom-backend/src/services/story.ts)). Never load and re-parse full entity JSON, recompute derived graphs, or fire analytics on every tick.
+
+#### C. Cache Verified Auth Sessions (Short TTL, Invalidated on Logout)
+`verifyNextAuthToken` performs JWE decryption + lookups on every request. Cache the resolved `{ userId, sessionId }` in a short-TTL LRU (≤60s) keyed by a **SHA-256 hash of the raw token** (never the plaintext token), and invalidate immediately on logout (`sessionVerifyCache` in [`src/middleware/nextauth.ts`](file:///d:/Projects/Twistloom/Twistloom-backend/src/middleware/nextauth.ts)). Net effect: most repeat requests skip crypto, with only a small, bounded trust window consistent with the existing ban-cache model.
+
+#### D. Coalesce High-Frequency Polls & Allow Edge/Browser SWR for Semi-Static Auth'd Reads
+- For status/poll endpoints, collapse burst client calls at the source: return `Retry-After` and serve a coalesced/cached response when the same `(user, resource)` polled within N seconds (see `coalescePoll` / `getCoalesced` in [`src/utils/poll-coalesce.ts`](file:///d:/Projects/Twistloom/Twistloom-backend/src/utils/poll-coalesce.ts)).
+- Auth'd reads that don't need per-request freshness may relax `Cache-Control` to `private, max-age=1, s-maxage=1, stale-while-revalidate=2` ([`src/middleware/cache.ts`](file:///d:/Projects/Twistloom/Twistloom-backend/src/middleware/cache.ts)). **Always use `private`** (never `public`) so per-user payloads are never shared across users at the CDN; `s-maxage` lets the edge collapse same-user bursts.
+
+---
+
 ## 📝 Coding Standards & Conventions
 
 ### Naming Conventions
@@ -336,6 +358,10 @@ Before providing code modifications:
 - [ ] No `any` types introduced; all types strictly defined.
 - [ ] Schema changes made **only** in `src/db/schema.ts` without triggering auto-migrations.
 - [ ] TSDoc comments provided for newly introduced functions and interfaces.
+- [ ] Expensive page-stable serialization is memoized with a page-scoped key (not recomputed per request).
+- [ ] Heartbeat / last-seen endpoints are lightweight atomic upserts (no full entity load/recompute).
+- [ ] Verified auth sessions are cached on hot paths (short TTL, token-hash keyed, invalidated on logout).
+- [ ] High-frequency poll endpoints coalesce bursts and use appropriate `private` `Cache-Control`.
 
 ---
 
