@@ -184,6 +184,31 @@ export function createErrorEvent(error: string): string {
 }
 
 /**
+ * Create a **non-terminal** SSE error event emitted when a provider/model fails
+ * and the orchestrator falls back to the next candidate. Clients MUST treat this
+ * as a *recoverable* signal: discard any partial text streamed so far and keep
+ * reading — the next provider re-streams the full output from scratch.
+ *
+ * This is deliberately distinct from {@link createErrorEvent} (`event: error`),
+ * which is reserved for terminal failures where no further output will follow.
+ * Separating the two prevents clients from aborting the stream mid-fallback
+ * (the exact anti-pattern flagged in AGENTS.md, where a naive `event: error`
+ * handler would cancel on every provider retry and surface a false failure).
+ *
+ * @param message - Human-readable description of the failed attempt
+ * @returns Formatted SSE event string with `provider_error` type
+ */
+export function createProviderErrorEvent(message: string): string {
+  return formatSSEEvent({
+    event: 'provider_error',
+    data: JSON.stringify({
+      type: 'provider_error',
+      message,
+    }),
+  });
+}
+
+/**
  * Create an SSE event for the start of a stream
  * 
  * Signals to the client that the stream is starting and provides metadata

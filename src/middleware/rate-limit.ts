@@ -31,6 +31,7 @@ import { getErrorMessage } from '../utils/error.js';
 import type { RateLimitConfig } from '../types/redis.js';
 import { getRedisClient } from '../utils/redis.js';
 import type { AppEnv } from '../hono/env.js';
+import { getClientIp } from '../hono/express-shim.js';
 
 /**
  * Default rate limit: 100 requests per minute
@@ -40,6 +41,19 @@ const DEFAULT_RATE_LIMIT: RateLimitConfig = {
   windowSeconds: 60,
   message: 'Rate limit exceeded. Please try again later.',
 };
+
+/** Options for {@link rateLimit}. */
+export interface RateLimitOptions {
+  /**
+   * When `true`, unauthenticated requests are keyed by **client IP** instead of
+   * being skipped. The standard `rateLimit()` middleware returns early for any
+   * request without a `userId`, which is correct for most public endpoints but
+   * leaves `optionalAuth` endpoints that still perform expensive work (e.g. AI
+   * generation on `GET /api/books/prompt`) wide open to anonymous abuse. Set
+   * this only for those endpoints so anonymous traffic is throttled by IP.
+   */
+  ipFallback?: boolean;
+}
 
 /**
  * Creates rate limiting middleware with configurable limits using Upstash Redis.
@@ -51,6 +65,7 @@ const DEFAULT_RATE_LIMIT: RateLimitConfig = {
  * - Ultra-fast (<1ms latency vs 10-50ms for database)
  * 
  * @param config - Rate limit configuration (defaults to 100 req/min)
+ * @param opts - Optional behavior flags (see {@link RateLimitOptions})
  * @returns Hono middleware function
  * 
  * @example
@@ -61,17 +76,18 @@ const DEFAULT_RATE_LIMIT: RateLimitConfig = {
  * // Custom limit (50 req/30sec)
  * router.post('/endpoint', rateLimit({ maxRequests: 50, windowSeconds: 30 }), handler);
  * 
- * // With custom error message
- * router.post('/sensitive', rateLimit({ maxRequests: 10, windowSeconds: 60, message: 'Too many requests. Please slow down.' }), handler);
+ * // Throttle anonymous traffic by IP on an optionalAuth AI endpoint
+ * router.get('/prompt', optionalAuth, rateLimit(BOOK_PROMPT_RATE_LIMIT, { ipFallback: true }), handler);
  * ```
  * 
  * @note
- * - Requires userId to be set on request (via NextAuth requireAuth or optionalAuth middleware)
- * - Automatically expires old entries via TTL (no cleanup needed)
+ * - Keyed by `userId` when authenticated; with `ipFallback` also keys anonymous
+ *   requests by client IP. Without `ipFallback`, requests without a `userId` are
+ *   not rate limited (public endpoints).
  * - Falls back gracefully if Redis is unavailable
  * - Serverless-safe (Upstash REST API, no persistent connections)
  */
-export function rateLimit(config: RateLimitConfig = DEFAULT_RATE_LIMIT) {
+export function rateLimit(config: RateLimitConfig = DEFAULT_RATE_LIMIT, opts?: RateLimitOptions) {
   const { maxRequests, windowSeconds, message } = config;
 
   // Create rate limiter instance if Redis is available
@@ -85,9 +101,12 @@ export function rateLimit(config: RateLimitConfig = DEFAULT_RATE_LIMIT) {
     : null;
 
   return createMiddleware<AppEnv>(async (c, next) => {
-    // Skip rate limiting if no user ID (public endpoints)
+    // Identify the caller. Authenticated requests key on userId; when `ipFallback`
+    // is set (optionalAuth, expensive endpoints), anonymous requests key on client
+    // IP so they are still throttled. Without an identifier we cannot limit.
     const userId = c.get('userId');
-    if (!userId) {
+    const identifier = userId ?? (opts?.ipFallback ? getClientIp(c) : undefined);
+    if (!identifier || identifier === 'unknown') {
       await next();
       return;
     }
@@ -101,7 +120,7 @@ export function rateLimit(config: RateLimitConfig = DEFAULT_RATE_LIMIT) {
 
     try {
       // Check rate limit (atomic operation in Redis)
-      const result = await ratelimit.limit(userId);
+      const result = await ratelimit.limit(identifier);
 
       // Check if limit exceeded
       if (!result.success) {

@@ -8,6 +8,7 @@ import { PROMPT_SYSTEM } from "./prompt.js";
 import { logAISuccess, logAIFailure, logAIPrompt } from './ai-logger.js';
 import { classifyGenAIError, isGenAIErrorRetryable } from "./error.js";
 import { retryWithBackoff } from "./retry.js";
+import { isCompleteFinishReason } from "./ai-chat-stream.js";
 import { AI_CHAT_MODEL_RETRY_COUNT } from "../config/ai-chat.js";
 import { parseAISafely } from "./ai-parser.js";
 import { buildEvaluationSchemaDefinition, EVALUATION_REQUIRED_FIELDS } from "../schema/story.js";
@@ -1421,7 +1422,9 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
     documents = [],
     context = 'ai',
     logPrompts = false,
-    meta
+    meta,
+    validateOutput,
+    minOutputLength,
   } = options;
 
   // Early exit: Define provider order from modelSelection or use empty array
@@ -1564,6 +1567,29 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
     await onProgress?.({ type: 'ai_generation_complete' });
 
     if (result?.output) {
+      // Completeness guard (opt-in, mirrors aiStreamSSE's validateOutput /
+      // minOutputLength / finishReason checks). A truncated or empty result must
+      // be rejected so aiPrompt falls through to the next provider in the
+      // fallback chain instead of returning cut-off content. Throwing here routes
+      // into the `catch` below, which logs and continues to the next provider.
+      if (validateOutput || minOutputLength != null) {
+        const fullText = result.output;
+        const trimmedLength = fullText.trim().length;
+        const tooShort = minOutputLength != null && minOutputLength > 0 && trimmedLength < minOutputLength;
+        let invalid = false;
+        if (validateOutput) {
+          try {
+            invalid = !validateOutput(fullText);
+          } catch {
+            invalid = true;
+          }
+        }
+        const incompleteFinish = !isCompleteFinishReason((result as { finishReason?: string }).finishReason);
+        if (tooShort || invalid || incompleteFinish) {
+          console.warn(`[${provider}] ⚠️ Completeness guard rejected result (tooShort=${tooShort}, invalid=${invalid}, incompleteFinish=${incompleteFinish}) — trying next provider`);
+          throw new Error("Completeness guard rejected result");
+        }
+      }
       try {
         // Run evaluation phase if provided
         if (evaluatorPrompt) {

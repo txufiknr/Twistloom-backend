@@ -104,6 +104,25 @@ export const BOOK_STREAM_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
 );
 
 /**
+ * GET /api/books/prompt — "Surprise me" / Pen-wizard AI theme generation.
+ *
+ * Unlike every other entry in this file, this route is `optionalAuth`:
+ * anonymous visitors (the common first touch for "Surprise me") can hit it, and
+ * each call still spins the full provider waterfall (real $). The route therefore
+ * applies this limit **with `ipFallback: true`** (see `src/middleware/rate-limit.ts`)
+ * so BOTH authenticated users (keyed by userId) and anonymous clients (keyed by
+ * client IP) are throttled. Without that IP fallback the standard `rateLimit()`
+ * middleware skips unauthenticated requests entirely — leaving the costliest
+ * anonymous path completely unthrottled.
+ *
+ * why: single-shot creative prompt, but a full LLM generation per click; 10/min
+ * is comfortable for genuine use while bounding scripted / anonymous abuse.
+ */
+export const BOOK_PROMPT_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
+  "BOOK_PROMPT", 10, 60
+);
+
+/**
  * POST /api/books/async — fire-and-forget creation via GitHub Actions.
  *
  * Cheapest on the backend itself (the heavy work happens in the GitHub Action runner),

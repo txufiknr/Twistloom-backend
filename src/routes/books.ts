@@ -172,13 +172,13 @@ import { requireEnv } from "../utils/env.js";
 import type { UserComment } from "../types/user.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
 import { MAX_CONCURRENT_GENERATIONS, AI_VALIDATION_TIMEOUT_MS } from "../config/book-creation.js";
-import { BOOK_CREATION_RATE_LIMIT, BOOK_STREAM_RATE_LIMIT, BOOK_ASYNC_RATE_LIMIT, ACTION_HINT_RATE_LIMIT, CUSTOM_ACTION_PREVIEW_RATE_LIMIT, CUSTOM_ACTION_SUBMIT_RATE_LIMIT, COMPANION_ASK_RATE_LIMIT } from "../config/ai-rate-limits.js";
+import { BOOK_CREATION_RATE_LIMIT, BOOK_STREAM_RATE_LIMIT, BOOK_ASYNC_RATE_LIMIT, BOOK_PROMPT_RATE_LIMIT, ACTION_HINT_RATE_LIMIT, CUSTOM_ACTION_PREVIEW_RATE_LIMIT, CUSTOM_ACTION_SUBMIT_RATE_LIMIT, COMPANION_ASK_RATE_LIMIT } from "../config/ai-rate-limits.js";
 import { isValidReactionEmoji, REACTION_IDS, reactionIdList } from "../config/reactions.js";
 import { generateRandomCharacter } from "../utils/characters.js";
 import { COMPANION_SYSTEM, COMPANION_RESULT_SCHEMA, COMPANION_RESULT_REQUIRED_FIELDS, buildCompanionUserPrompt, buildCompanionPageContext, type CompanionResult, type CompanionChatTurn, type CompanionSemanticContext } from "../utils/companion-prompt.js";
 import { validateCompanionQuestion } from "../utils/prompt-security.js";
 import { getCachedSuggestions, setCachedSuggestions, invalidateSuggestionsCache } from "../services/companion-cache.js";
-import { streamCompanionAnswerSSE } from "../utils/companion-stream.js";
+import { streamCompanionAnswerSSE, companionAnswerIsComplete } from "../utils/companion-stream.js";
 import { retrieveSimilarPages, retrieveBookCluesForQuery } from "../services/vector-memory.js";
 
 const router = new Hono<AppEnv>();
@@ -1372,7 +1372,7 @@ router.post('/:bookId/retry', requireAuth, async (c) => {
  * event: end
  * data: {"type":"end","provider":"gemini","model":"gemini-2.5-flash"}
  */
-router.get("/prompt", optionalAuth, async (c) => {
+router.get("/prompt", optionalAuth, rateLimit(BOOK_PROMPT_RATE_LIMIT, { ipFallback: true }), async (c) => {
   return streamSSE(c, async (stream) => {
     try {
       const userId = c.get("userId") || null;
@@ -5611,6 +5611,10 @@ router.post("/:identifier/:pageId/actions/hint", requireAuth, rateLimit(ACTION_H
  * @param pageId - Page UUID v7
  * @body { question: string } - The reader's question (10-500 chars)
  * @returns { answer: string; sources: string[]; suggestedFollowUps: string[] }
+ * @deprecated Use the true-SSE streaming endpoint
+ *   `POST /api/books/:identifier/:pageId/companion/ask/stream` instead — it streams tokens live
+ *   and shares the same `aiStreamSSE` completeness guard (finish-reason + `validateOutput`). This
+ *   non-streaming route is retained only for backward compatibility.
  */
 router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANION_ASK_RATE_LIMIT), async (c) => {
   try {
@@ -5779,7 +5783,14 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
       async () => {
         const aiResponse = await aiPrompt<CompanionResult>(
           userPrompt,
-          createAIOptionsWithSchema(promptConfig),
+          {
+            ...createAIOptionsWithSchema(promptConfig),
+            // Completeness guard (mirrors the SSE path): reject truncated / empty
+            // companion answers so aiPrompt falls through to the next provider
+            // instead of serving a cut-off response. The finish-reason check is
+            // enabled alongside this opt-in validator.
+            validateOutput: companionAnswerIsComplete,
+          },
         );
         return aiResponse.result;
       },
@@ -6203,6 +6214,11 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(
           }
         }
 
+        // Read the post-deduction balance so the client can update its local
+        // credit display authoritatively (no extra user refetch needed).
+        const [creditRow] = await dbRead.select({ credits: users.credits }).from(users).where(eq(users.userId, userId)).limit(1);
+        const creditsRemaining = creditRow?.credits ?? 0;
+
         return streamSSE(c, async (stream) => {
           const words = cached.answer.split(" ");
           for (let i = 0; i < words.length; i += 3) {
@@ -6218,6 +6234,7 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(
               sources: cached.sources,
               suggestedFollowUps: cached.suggestedFollowUps,
               cached: true,
+              creditsRemaining,
             }),
           });
         });
@@ -6269,6 +6286,12 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(
                   data: JSON.stringify({ content: chunk }),
                 });
               },
+              onProviderError: async (message) => {
+                await stream.writeSSE({
+                  event: "provider_error",
+                  data: JSON.stringify({ message: message ?? "Falling back to another provider" }),
+                });
+              },
             });
             return companionResult;
           },
@@ -6277,6 +6300,11 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(
             metadata: { bookId: book.id, pageId, question: rawQuestion.slice(0, 100) },
           }
         );
+
+        // Read the post-deduction balance so the client can update its local
+        // credit display authoritatively (no extra user refetch needed).
+        const [creditRow] = await dbRead.select({ credits: users.credits }).from(users).where(eq(users.userId, userId)).limit(1);
+        const creditsRemaining = creditRow?.credits ?? 0;
 
         const answer = typeof result === "string" ? result : (result?.answer ?? "I couldn't find an answer based on the current story context.");
         const sources = typeof result === "string" ? [] : (result?.sources ?? []);
@@ -6311,6 +6339,7 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(
             sources,
             suggestedFollowUps,
             cached: false,
+            creditsRemaining,
           }),
         });
       } catch (streamErr) {

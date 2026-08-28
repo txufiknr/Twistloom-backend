@@ -15,6 +15,22 @@ import { COMPANION_SYSTEM, COMPANION_RESULT_SCHEMA, COMPANION_RESULT_REQUIRED_FI
 import type { AIChatStreamProvider } from "../types/sse.js";
 
 /**
+ * Completeness validator for a companion answer. Shared by the streaming
+ * (`streamCompanionAnswerSSE`) and non-streaming (`aiPrompt`) companion paths so
+ * both reject truncated / empty JSON with the identical rule: the parsed payload
+ * must contain a non-empty `answer`. Mirrors `aiStreamSSE`'s `validateOutput`
+ * contract (`(fullText: string) => boolean`).
+ */
+export function companionAnswerIsComplete(fullText: string): boolean {
+  try {
+    const parsed = JSON.parse(fullText.trim());
+    return typeof parsed?.answer === "string" && parsed.answer.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * State machine for incrementally extracting the "answer" string value from a streaming JSON payload.
  * Optimized for O(N) single-pass cursor processing with zero redundant buffer rescans.
  */
@@ -170,6 +186,14 @@ export interface StreamCompanionAnswerParams {
   userPrompt: string;
   signal?: AbortSignal;
   onChunk: (contentChunk: string) => Promise<void> | void;
+  /**
+   * Called when the orchestrator falls back to the next provider after a
+   * non-terminal failure. The caller should forward this to the client (as an
+   * `event: provider_error`) so the UI can clear any partially-streamed text
+   * before the next provider begins — otherwise the failed provider's ghost
+   * text lingers and then concatenates with the fallback's full output.
+   */
+  onProviderError?: (message?: string) => void | Promise<void>;
 }
 
 export interface StreamCompanionAnswerResult {
@@ -185,7 +209,7 @@ export interface StreamCompanionAnswerResult {
 export async function streamCompanionAnswerSSE(
   params: StreamCompanionAnswerParams
 ): Promise<StreamCompanionAnswerResult> {
-  const { userPrompt, signal, onChunk } = params;
+  const { userPrompt, signal, onChunk, onProviderError } = params;
 
   const streamResult = await aiStreamSSE(
     userPrompt,
@@ -202,22 +226,22 @@ export async function streamCompanionAnswerSSE(
       // return a partial `answer`. Reject anything that doesn't parse to a
       // CompanionResult with a non-empty `answer` so aiStreamSSE falls through
       // to the next model/provider instead of serving a cut-off response.
-      validateOutput: (fullText) => {
-        try {
-          const parsed = JSON.parse(fullText.trim());
-          return typeof parsed?.answer === "string" && parsed.answer.trim().length > 0;
-        } catch {
-          return false;
-        }
-      },
+      validateOutput: companionAnswerIsComplete,
     },
     signal
   );
 
-  const extractor = new StreamingJsonAnswerExtractor();
+  let extractor = new StreamingJsonAnswerExtractor();
   const decoder = new TextDecoder();
+  let currentEventType = '';
 
-  // Iterate over raw SSE stream chunks from aiStreamSSE
+  // Iterate over raw SSE stream chunks from aiStreamSSE. aiStreamSSE emits
+  // `event: provider_error` frames when it falls back to the next provider, and
+  // a terminal `event: error` ("All providers failed") when every attempt is
+  // exhausted. We must (a) reset the extractor on a fallback so the next
+  // provider's full re-stream isn't concatenated onto the failed one's partial
+  // output, and (b) forward `provider_error` to the client (onProviderError) so
+  // its UI can clear its own ghost text before the fallback begins.
   for await (const rawChunk of streamResult.stream) {
     if (signal?.aborted) break;
 
@@ -225,27 +249,62 @@ export async function streamCompanionAnswerSSE(
     const lines = chunkText.split("\n");
 
     for (const line of lines) {
-      if (line.startsWith("data: ")) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith("event: ")) {
+        currentEventType = trimmed.slice(7).trim();
+        continue;
+      }
+      if (!line.startsWith("data: ")) continue;
+
+      const payload = line.substring(6);
+
+      // Non-terminal fallback: discard the failed provider's partial text and
+      // tell the client to clear its display before the next attempt.
+      if (currentEventType === "provider_error") {
+        extractor = new StreamingJsonAnswerExtractor();
+        let msg: string | undefined;
         try {
-          const data = JSON.parse(line.substring(6));
-          // Extract text from data.content (emitted by createTextChunkEvent)
-          const delta = data.type === "chunk" ? data.content : data.content || "";
-          if (delta) {
-            const emittedText = extractor.push(delta);
-            if (emittedText) {
-              await onChunk(emittedText);
-            }
-          }
+          const d = JSON.parse(payload);
+          if (typeof d?.message === "string") msg = d.message;
         } catch {
-          // If not standard JSON SSE chunk, push raw text
-          if (line.substring(6).trim()) {
-            const emittedText = extractor.push(line.substring(6));
-            if (emittedText) {
-              await onChunk(emittedText);
-            }
-          }
+          // Ignore malformed payload — message is optional.
+        }
+        await onProviderError?.(msg);
+        currentEventType = "";
+        continue;
+      }
+
+      // Terminal failure — surface it to the caller (route emits `event: error`).
+      // No extractor reset needed: we throw before finalize() runs, so any
+      // partial text buffered so far is discarded.
+      if (currentEventType === "error") {
+        let msg = "All providers failed";
+        try {
+          const d = JSON.parse(payload);
+          if (typeof d?.message === "string") msg = d.message;
+        } catch {
+          // Ignore malformed payload.
+        }
+        throw new Error(msg);
+      }
+
+      // Prose frame (event: chunk, or default "message" with no event type).
+      try {
+        const data = JSON.parse(payload);
+        const isProse = currentEventType === "chunk" || currentEventType === "";
+        const delta = isProse ? (data.content ?? "") : "";
+        if (delta) {
+          const emittedText = extractor.push(delta);
+          if (emittedText) await onChunk(emittedText);
+        }
+      } catch {
+        // Malformed JSON — treat as raw prose only for prose frames.
+        if (currentEventType === "chunk" || currentEventType === "") {
+          const emittedText = extractor.push(payload);
+          if (emittedText) await onChunk(emittedText);
         }
       }
+      currentEventType = "";
     }
   }
 

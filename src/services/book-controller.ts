@@ -1003,7 +1003,9 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
     case 'creations': {
       // User's own created books (any status) — baseCondition already scopes
       // to the owner; here we only apply a deterministic sort (no filtering).
-      return query.orderBy(desc(books.createdAt), desc(books.id));
+      // Sort by most-recently-edited so the dashboard "Recent Creations"
+      // carousel (and Library) surface the books the user last touched first.
+      return query.orderBy(desc(books.updatedAt), desc(books.id));
     }
 
     case 'pen-drafts': {

@@ -7,7 +7,7 @@ import { PROMPT_SYSTEM } from "./prompt.js";
 import { logAIPrompt, logAISuccess } from './ai-logger.js';
 import { getErrorMessage } from "./error.js";
 import { retryWithBackoff } from "./retry.js";
-import { createTextChunkEvent, createErrorEvent, createStartEvent, createEndEvent, handleBackpressure } from "./sse.js";
+import { createTextChunkEvent, createErrorEvent, createProviderErrorEvent, createStartEvent, createEndEvent, handleBackpressure } from "./sse.js";
 import {
   formatSystemPromptWithDocuments, getMaxOutputToken, isSchemaTooComplex,
   buildChatMessages, buildJsonSchemaObject, buildOpenAIResponseFormat, buildMistralResponseFormat, buildCohereResponseFormat,
@@ -128,6 +128,19 @@ const FINISH_REASONS_COMPLETE = new Set<string>([
   'finished',
   'final',
 ]);
+
+/**
+ * Whether a provider's `finishReason` indicates a clean completion.
+ *
+ * `null`/`undefined` is treated as complete (providers that omit the field see
+ * no behavior change); any other value must be in the allow-list. This is the
+ * same whitelist `aiStreamSSE` uses for its streaming completeness guard, lifted
+ * here so the non-streaming `aiPrompt` engine can apply the identical check.
+ */
+export function isCompleteFinishReason(reason: string | null | undefined): boolean {
+  if (reason == null) return true;
+  return FINISH_REASONS_COMPLETE.has(reason.toLowerCase());
+}
 
 /**
  * Accumulates streaming `usage` + `finishReason` for a single generation and
@@ -388,7 +401,7 @@ export async function aiStreamSSE(
                   }
                 } catch (streamError) {
                   console.log(`[${provider}] ⚠️ Model ${model} streaming error after first chunk:`, getErrorMessage(streamError));
-                  controller.enqueue(encoder.encode(createErrorEvent(`Model ${model} streaming failed: ${getErrorMessage(streamError)}`)));
+                  controller.enqueue(encoder.encode(createProviderErrorEvent(`Model ${model} streaming failed: ${getErrorMessage(streamError)}`)));
                   // Mid-stream errors are not retried — continue to next model
                   continue;
                 }
@@ -429,7 +442,7 @@ export async function aiStreamSSE(
                     ? `output too short (${trimmedLength} < ${minOutputLength} chars)`
                     : `validateOutput rejected result`;
                 console.warn(`[${provider}] ⚠️ Model ${model} stream ended but ${reason} — treating as failure, trying next`);
-                controller.enqueue(encoder.encode(createErrorEvent(`Model ${model} returned truncated output`)));
+                controller.enqueue(encoder.encode(createProviderErrorEvent(`Model ${model} returned truncated output`)));
                 continue;
               }
 
@@ -479,7 +492,7 @@ export async function aiStreamSSE(
               break; // Success - break out of model loop
             } catch (error) {
               console.log(`[${provider}] ⚠️ Model ${model} failed:`, getErrorMessage(error));
-              controller.enqueue(encoder.encode(createErrorEvent(`Model ${model} failed: ${getErrorMessage(error)}`)));
+              controller.enqueue(encoder.encode(createProviderErrorEvent(`Model ${model} failed: ${getErrorMessage(error)}`)));
               // Continue to next model in the array
             }
           }
@@ -1094,39 +1107,73 @@ async function* nvidiaStreamGenerator(
 }
 
 /**
- * Parses SSE-formatted chunks and extracts text content
- * 
- * This function consumes an SSE stream and extracts the actual text content
- * from the JSON-formatted chunks. It handles the SSE format where each chunk
- * contains a JSON payload with type, content, and done fields.
- * 
- * @param stream - ReadableStream of SSE-formatted Uint8Array chunks
- * @returns Promise resolving to the concatenated text content
+ * Shared SSE line-buffering + `data:` JSON text-extraction core.
+ *
+ * SSE frames are newline-delimited, but a TCP/HTTP chunk can split a frame
+ * mid-line, so we keep the incomplete trailing line in `lineBuffer` across
+ * reads and only evaluate complete lines. For each complete `data: ` line we
+ * JSON-parse the payload and, when it carries a string `content`, append it to
+ * the accumulated text — silently skipping the `[DONE]` sentinel and any
+ * unparseable/partial line.
+ *
+ * This is the single source of truth for turning our wire format
+ * (`event: chunk\ndata: {"type":"chunk","content":"..."}`) into clean text,
+ * used by both {@link parseSSEStreamContent} (accumulate only) and
+ * {@link pipeSSEStreamAndExtractText} (accumulate + forward bytes live).
+ * Keeping it in one place means frame-boundary / decoding fixes apply everywhere.
+ *
+ * Note: this parser is protocol-specific to Twistloom's SSE format, which
+ * terminates with `event: end` / `event: done` (see `sse.ts`), NOT the OpenAI
+ * `data: [DONE]` sentinel. The OpenAI `[DONE]` convention is handled where it
+ * actually occurs — the NVIDIA generator, which proxies OpenAI-style streams —
+ * and is intentionally not recognized here. Any malformed/partial `data:` line
+ * is simply skipped via the `JSON.parse` try/catch below.
+ *
+ * @param stream - SSE byte stream
+ * @param onChunk - optional callback invoked once per raw byte chunk *before*
+ *   extraction (the piping variant uses it to forward bytes to the client);
+ *   may be async. Omit for accumulate-only parsing.
+ * @returns the accumulated clean text (untrimmed)
  */
-export async function parseSSEStreamContent(stream: ReadableStream<Uint8Array>): Promise<string> {
+async function extractSseText(
+  stream: ReadableStream<Uint8Array>,
+  onChunk?: (chunk: Uint8Array) => Promise<unknown> | unknown,
+): Promise<string> {
   let text = "";
   let lineBuffer = "";
+  let currentEventType: string | null;
   const decoder = new TextDecoder();
-  
+
   for await (const chunk of stream) {
+    if (onChunk) await onChunk(chunk);
     lineBuffer += decoder.decode(chunk, { stream: true });
-    
+
     // Split by newlines while preserving incomplete trailing line in lineBuffer
     const lines = lineBuffer.split('\n');
     lineBuffer = lines.pop() || '';
-    
+
     for (const line of lines) {
       const trimmed = line.trim();
-      if (trimmed.startsWith('data: ')) {
+      if (trimmed.startsWith('event: ')) {
+        currentEventType = trimmed.slice(7).trim();
+        // A `start` (new provider attempt), `provider_error` (non-terminal
+        // fallback), or `error` (terminal failure) marks a boundary: any text
+        // streamed so far came from a provider that will NOT contribute the
+        // final output. Discard it so the extracted text is never a
+        // partial+full concatenation (which would corrupt cached prompts). The
+        // next provider re-streams the full output from scratch.
+        if (
+          currentEventType === 'start' ||
+          currentEventType === 'error' ||
+          currentEventType === 'provider_error'
+        ) {
+          text = '';
+        }
+      } else if (trimmed.startsWith('data: ')) {
         const rawJson = trimmed.slice(6);
-        if (rawJson === '[DONE]') continue;
         try {
           const data = JSON.parse(rawJson);
-          if (data.type === 'chunk' && typeof data.content === 'string') {
-            text += data.content;
-          } else if (typeof data.content === 'string') {
-            text += data.content;
-          }
+          if (typeof data.content === 'string') text += data.content;
         } catch {
           // Skip partial or non-JSON SSE lines
         }
@@ -1137,17 +1184,29 @@ export async function parseSSEStreamContent(stream: ReadableStream<Uint8Array>):
   // Process any remaining buffered text
   if (lineBuffer.trim().startsWith('data: ')) {
     const rawJson = lineBuffer.trim().slice(6);
-    if (rawJson !== '[DONE]') {
-      try {
-        const data = JSON.parse(rawJson);
-        if (typeof data.content === 'string') text += data.content;
-      } catch {
-        // Ignore trailing partial chunk
-      }
+    try {
+      const data = JSON.parse(rawJson);
+      if (typeof data.content === 'string') text += data.content;
+    } catch {
+      // Ignore trailing partial chunk
     }
   }
-  
+
   return text;
+}
+
+/**
+ * Parses SSE-formatted chunks and extracts text content
+ * 
+ * This function consumes an SSE stream and extracts the actual text content
+ * from the JSON-formatted chunks. It handles the SSE format where each chunk
+ * contains a JSON payload with type, content, and done fields.
+ * 
+ * @param stream - ReadableStream of SSE-formatted Uint8Array chunks
+ * @returns Promise resolving to the concatenated text content
+ */
+export async function parseSSEStreamContent(stream: ReadableStream<Uint8Array>): Promise<string> {
+  return extractSseText(stream);
 }
 
 /**
@@ -1156,53 +1215,14 @@ export async function parseSSEStreamContent(stream: ReadableStream<Uint8Array>):
  *
  * @param stream - ReadableStream of SSE-formatted Uint8Array chunks
  * @param writeChunk - Callback to write each binary chunk (e.g. `chunk => stream.write(chunk)`)
- * @returns Promise resolving to the clean accumulated text
+ * @returns Promise resolving to the clean accumulated text (trimmed)
  */
 export async function pipeSSEStreamAndExtractText(
   stream: ReadableStream<Uint8Array>,
   writeChunk: (chunk: Uint8Array) => Promise<unknown> | unknown
 ): Promise<string> {
-  let text = "";
-  let lineBuffer = "";
-  const decoder = new TextDecoder();
-
-  for await (const chunk of stream) {
-    await writeChunk(chunk);
-    lineBuffer += decoder.decode(chunk, { stream: true });
-    
-    const lines = lineBuffer.split("\n");
-    lineBuffer = lines.pop() || "";
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (trimmed.startsWith("data: ")) {
-        const rawJson = trimmed.slice(6);
-        if (rawJson === "[DONE]") continue;
-        try {
-          const data = JSON.parse(rawJson);
-          if (data.type === "chunk" && typeof data.content === "string") {
-            text += data.content;
-          } else if (typeof data.content === "string") {
-            text += data.content;
-          }
-        } catch {
-          // Ignore non-JSON SSE lines
-        }
-      }
-    }
-  }
-
-  if (lineBuffer.trim().startsWith("data: ")) {
-    const rawJson = lineBuffer.trim().slice(6);
-    if (rawJson !== "[DONE]") {
-      try {
-        const data = JSON.parse(rawJson);
-        if (typeof data.content === "string") text += data.content;
-      } catch {
-        // Ignore trailing partial chunk
-      }
-    }
-  }
-
-  return text.trim();
+  // Forward each raw byte chunk live to the client, then extract the same
+  // clean text that parseSSEStreamContent would. Trimmed on return to match
+  // the historical contract (callers cache/compare the trimmed value).
+  return (await extractSseText(stream, writeChunk)).trim();
 }
