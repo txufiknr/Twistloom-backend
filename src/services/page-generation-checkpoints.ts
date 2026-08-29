@@ -25,7 +25,7 @@
 
 import { dbRead, dbWrite } from "../db/client.js";
 import { pageGenerationCheckpoints } from "../db/schema.js";
-import { and, eq } from "drizzle-orm";
+import { and, eq, lt } from "drizzle-orm";
 import type { AIChatProvider } from "../types/ai-chat.js";
 import type { StoryPageGeneration } from "../types/story.js";
 
@@ -135,5 +135,31 @@ export async function deletePageGenerationCheckpoint(
       ));
   } catch (error) {
     console.warn(`[deletePageGenerationCheckpoint] ⚠️ Delete failed (non-fatal — leaves a harmless orphaned row):`, error);
+  }
+}
+
+/**
+ * Audit Q6 (Step 6.4): periodically reclaims orphaned checkpoint rows that
+ * were never deleted on successful persist — e.g. a surviving Turn A
+ * checkpoint for a fate slot whose page was later replaced, or the narrow
+ * top-up fate-slot edge. These rows are harmless (the cache lookup is keyed
+ * and the table is tiny) but accumulate over time, so a lightweight sweep
+ * keeps them bounded without a TTL column or schema change.
+ *
+ * Best-effort and non-throwing: a sweep failure must never break the cron
+ * that calls it. Uses `createdAt` (no extra index needed beyond the one
+ * already present for observability).
+ *
+ * @param olderThanDays - Remove checkpoints created more than this many days ago (default 7).
+ */
+export async function deleteOldPageGenerationCheckpoints(olderThanDays: number = 7): Promise<void> {
+  try {
+    const cutoff = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000);
+    await dbWrite
+      .delete(pageGenerationCheckpoints)
+      .where(lt(pageGenerationCheckpoints.createdAt, cutoff));
+    console.log(`[deleteOldPageGenerationCheckpoints] 🧹 Swept checkpoints older than ${olderThanDays}d`);
+  } catch (error) {
+    console.warn(`[deleteOldPageGenerationCheckpoints] ⚠️ Sweep failed (non-fatal):`, error);
   }
 }

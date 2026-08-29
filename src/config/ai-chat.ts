@@ -51,13 +51,11 @@ export const STATE_DELTA_MAX_OUTPUT_TOKEN: number = 1800;
  * `true`: routes through the 2-turn (single page) / parallel-multi-turn
  * (multiverse) pipeline in prompt.ts.
  *
- * Reads directly from `process.env` rather than through a shared env-config
- * helper (unlike `IS_PRODUCTION` in config/env.ts) because that module
- * wasn't in hand when this flag was added — consider moving this constant
- * there if/when config/env.ts is next touched, for consistency with
- * IS_PRODUCTION's pattern.
+ * Centralized in `config/env.ts` (alongside `IS_PRODUCTION`) for consistency;
+ * `isMultiTurnGenerationEnabled()` there also supports dynamic per-request
+ * toggling without a process restart.
  */
-export const USE_MULTI_TURN_GENERATION: boolean = process.env.USE_MULTI_TURN_GENERATION === 'true';
+export { USE_MULTI_TURN_GENERATION, isMultiTurnGenerationEnabled } from "./env.js";
 
 /**
  * NVIDIA API request timeout in milliseconds

@@ -41,7 +41,7 @@ import { DEFAULT_CANDIDATE_PAGE_PER_ACTION, MAX_CANDIDATE_PAGE_PER_ACTION } from
 import type { PlaceMemory } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
 import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, FutureNoteSchedule, FutureNoteStateTrigger, MemoryIntegrity, PastEvent, PlotFlag, SanityState, StateDelta, StateDeltaGenerationWithBranch, StoryGeneration, StoryOutline, StoryPage, StoryPageGeneration, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
-import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPromptForJsonParams, AIResponse, AIResponseProvider } from "../types/ai-chat.js";
+import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPromptForJsonParams, AIResponse, AIResponseProvider, AIChatProvider } from "../types/ai-chat.js";
 import type { CharacterMemory, CharacterRelationship, Injury, InventoryItem, PastInteraction, HealthStatus, StoryMCCandidate } from "../types/character.js";
 import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, CreateBookResponse, BookStatus, BookMode } from "../types/book.js";
 import type { BuildNextPageParams, GenerateBookCreationPromptParams, BuildNextPagePromptParams, GenerationStageDefinition } from "../types/prompt.js";
@@ -1878,7 +1878,23 @@ async function evaluateMergedStoryGeneration(
     onGenerationProgress,
   );
 
-  return evaluated ?? { ...baseResult, result: merged };
+  // Audit F3/Q8: defensive merge backstop. `evaluated.result` may be a
+  // PARTIAL object when a smaller/fallback evaluator model only re-serializes
+  // the fields it corrected (string-mode). Spreading `merged` first guarantees
+  // every Turn B state-delta key (newCharacters, factUpdates, contextHistory,
+  // inventory, …) survives even if the evaluator omitted it, while the
+  // evaluator's corrections still win where present.
+  if (evaluated?.result) {
+    return {
+      ...evaluated,
+      result: {
+        ...merged,
+        ...evaluated.result,
+        calendarDate: evaluated.result.calendarDate ?? merged.calendarDate,
+      },
+    };
+  }
+  return { ...baseResult, result: merged };
 }
 
 /**
@@ -3466,7 +3482,17 @@ async function buildClueRecallBlocks(
   return blocks;
 }
 
+const storyContextPromptCache = new WeakMap<BuildNextPagePromptParams, string>();
+const narrativePromptCache = new WeakMap<BuildNextPagePromptParams, Map<boolean, string>>();
+
 function formatNextPageStoryContextPrompt(params: BuildNextPagePromptParams): string {
+  // Audit F5: page-scoped memoization. `params` is the SAME object reference
+  // across all parallel fates of one generateNextPages call, so caching by
+  // identity computes this expensive context block once per request instead of
+  // once per fate (3× for multiverse). Bounded & per-request: a fresh params
+  // object is created for every generation.
+  const cached = storyContextPromptCache.get(params);
+  if (cached !== undefined) return cached;
   const { advancedState: state, actionedPage, previousPages, book, relevantPastEventsBlock } = params;
   const { actions, page: currentPage, calendarDate, elapsedDays } = actionedPage;
   const { mc, storyStartDate } = book;
@@ -3497,7 +3523,7 @@ function formatNextPageStoryContextPrompt(params: BuildNextPagePromptParams): st
     return storySummary;
   })();
 
-  return `CURRENT PHASE:
+  const result = `CURRENT PHASE:
 ${phase} ${phaseGoal}
 
 MAIN CHARACTER (POV):
@@ -3531,6 +3557,9 @@ ${formatSelectedAction(actionedPage)}
 
 The next page opening should answer: "What happened immediately after the MC chose this action?"
 Write that moment before advancing the scene.`;
+
+  storyContextPromptCache.set(params, result);
+  return result;
 }
 
 /**
@@ -3549,13 +3578,19 @@ Write that moment before advancing the scene.`;
  * other non-split caller.
  */
 function formatNextPageNarrativePrompt(params: BuildNextPagePromptParams, includeProseStyle: boolean = true): string {
+  // Audit F5: page-scoped memoization (keyed by params identity + the
+  // includeProseStyle flag). Cached once per request across all fates.
+  let perBool = narrativePromptCache.get(params);
+  if (!perBool) { perBool = new Map<boolean, string>(); narrativePromptCache.set(params, perBool); }
+  const cached = perBool.get(includeProseStyle);
+  if (cached !== undefined) return cached;
   const { advancedState: state, actionedPage, relevantFutureNoteKeys, book, clueRecallBlocks } = params;
   const { flags, psychologicalProfile, hiddenState, threads, memoryIntegrity, futureNotes, healthStatus, sanityState } = state;
   const stateInfo = getStoryStateInfo(state);
   const { currentPage, phase } = stateInfo;
   const { calendarDate, elapsedDays } = actionedPage;
 
-  return `${includeProseStyle ? `NARRATIVE STYLE & PROSE ATMOSPHERE:
+  const result = `${includeProseStyle ? `NARRATIVE STYLE & PROSE ATMOSPHERE:
 ${createNarrativeStyle(state).instructions}
 
 ` : ''}PSYCHOLOGICAL FLAGS (Accumulated):
@@ -3591,6 +3626,9 @@ ${formatThreadsPrompt(threads, stateInfo, clueRecallBlocks)}
 
 ---
 ${formatEndingPrompt(state, book)}`;
+
+  perBool.set(includeProseStyle, result);
+  return result;
 }
 
 /**
@@ -5107,6 +5145,19 @@ async function runGenerationStage<T extends Record<string, unknown>>(
 ): Promise<AIResponse<T>> {
   const { stage, prompt, systemPrompt, fieldInstructions, reviewChecklist, jsonStructure, schema, requiredFields, fallbackField, config, maxOutputToken, documents, cachedContentId, context, bookId } = definition;
 
+  // Audit F9: tag generation/evaluation progress events with the stage so
+  // parallel multiverse clients can distinguish Turn A (story_page) from
+  // Turn B (state_delta) on the SSE stream.
+  const stageProgress: ProgressCallback | undefined = onProgress
+    ? (e) => {
+        if (e.type === 'ai_generation_start' || e.type === 'ai_generation_complete' || e.type === 'ai_evaluation_start' || e.type === 'ai_evaluation_complete') {
+          onProgress({ ...e, stage });
+        } else {
+          onProgress(e);
+        }
+      }
+    : undefined;
+
   return executePromptForJSON<T>({
     prompt,
     configs: {
@@ -5127,7 +5178,7 @@ async function runGenerationStage<T extends Record<string, unknown>>(
     jsonStructure,
     fieldInstructions,
     reviewChecklist,
-  }, onProgress, onGenerationProgress);
+  }, stageProgress, onGenerationProgress);
 }
 
 /**
@@ -5156,6 +5207,11 @@ async function generateStoryGenerationMultiTurn(options: {
   onGenerationProgress?: (step: StoryGenerationStep) => Promise<void>;
 }): Promise<AIResponse<StoryGeneration>> {
   const { setup, book, actionedPage, baseContext, fateContext, onProgress, onGenerationProgress } = options;
+  // Audit F9: tag every progress event with the fate index so parallel
+  // multiverse alternatives don't collapse into a single indistinct stream.
+  const fateProgress: ProgressCallback | undefined = onProgress
+    ? (e) => onProgress({ ...e, fateIndex } as Parameters<typeof onProgress>[0])
+    : undefined;
   const { promptParams, advancedState, action, config, documents, cachedContentId, systemPrompt, nextPreset } = setup;
   const { sceneType } = actionedPage;
 
@@ -5171,8 +5227,12 @@ async function generateStoryGenerationMultiTurn(options: {
   const existingCheckpoint = await getPageGenerationCheckpoint(actionedPage.id, action.text, fateIndex);
 
   let storyPage: StoryPageGeneration;
+  let turnAProvider: AIChatProvider | "none" | undefined;
+  let turnAModel: string | undefined;
   if (existingCheckpoint) {
     storyPage = existingCheckpoint.storyPageJson;
+    turnAProvider = existingCheckpoint.storyPageProvider ?? undefined;
+    turnAModel = existingCheckpoint.storyPageModel ?? undefined;
     console.log(`[${baseContext}] ♻️ Checkpoint hit — reusing cached StoryPage, skipping Turn A`);
   } else {
     // ── Turn A: StoryPage ────────────────────────────────────────────────
@@ -5192,26 +5252,39 @@ async function generateStoryGenerationMultiTurn(options: {
       cachedContentId,
       context: baseContext,
       bookId: book.id,
-    }, onProgress, onGenerationProgress);
+    }, fateProgress, onGenerationProgress);
 
-    if (!storyPageResponse.result) {
-      throw new Error('Failed to generate page: no result (story_page turn)');
-    }
+  if (!storyPageResponse.result) {
+    throw new Error('Failed to generate page: no result (story_page turn)');
+  }
     storyPage = storyPageResponse.result;
+    turnAProvider = storyPageResponse.provider;
+    turnAModel = storyPageResponse.model;
 
-    // Best-effort — never blocks or fails Turn B if this write fails
-    // (upsertPageGenerationCheckpoint catches internally and only logs).
-    // Awaited (not fire-and-forget) so the checkpoint is reliably in place
-    // before Turn B runs, in case Turn B fails immediately.
-    await upsertPageGenerationCheckpoint({
-      bookId: book.id,
-      actionedPageId: actionedPage.id,
-      actionText: action.text,
-      fateIndex,
-      storyPageJson: storyPage,
-      storyPageProvider: storyPageResponse.provider,
-      storyPageModel: storyPageResponse.model,
-    });
+    // Phase 6 safeguard (audit F1/Q1): only cache Turn A if it passes a
+    // lightweight sanity check. A schema-valid but semantically weak page
+    // (empty/garbled text, malformed actions) would otherwise be frozen by
+    // the cache and replayed on every retry, defeating self-healing. Skipping
+    // the upsert lets a later retry regenerate Turn A fresh; the current
+    // attempt still proceeds to Turn B and may persist normally.
+    const turnAHealthy = checkGeneratedPage(storyPage, undefined, `${baseContext}:turnA`);
+    if (!turnAHealthy) {
+      console.warn(`[${baseContext}] ⚠️ Turn A output failed sanity check — skipping checkpoint cache so it can self-heal on retry`);
+    } else {
+      // Best-effort — never blocks or fails Turn B if this write fails
+      // (upsertPageGenerationCheckpoint catches internally and only logs).
+      // Awaited (not fire-and-forget) so the checkpoint is reliably in place
+      // before Turn B runs, in case Turn B fails immediately.
+      await upsertPageGenerationCheckpoint({
+        bookId: book.id,
+        actionedPageId: actionedPage.id,
+        actionText: action.text,
+        fateIndex,
+        storyPageJson: storyPage,
+        storyPageProvider: storyPageResponse.provider,
+        storyPageModel: storyPageResponse.model,
+      });
+    }
   }
 
   // ── Turn B: StateDelta (sees Turn A's output via buildStateDeltaPrompt's
@@ -5232,7 +5305,7 @@ async function generateStoryGenerationMultiTurn(options: {
     cachedContentId,
     context: baseContext,
     bookId: book.id,
-  }, onProgress, onGenerationProgress);
+    }, fateProgress, onGenerationProgress);
 
   if (!stateDeltaResponse.result) {
     throw new Error('Failed to generate page: no result (state_delta turn)');
@@ -5261,7 +5334,14 @@ async function generateStoryGenerationMultiTurn(options: {
   };
 
   // ── Single post-merge evaluation pass (Part 5.5 Q2) ─────────────────────
-  return evaluateMergedStoryGeneration(merged, stateDeltaResponse, promptParams, systemPrompt, documents, config, book.id, baseContext, onProgress, onGenerationProgress);
+  // Audit F7: carry Turn A's provider/model into the merged response metadata
+  // so the persisted page (whose prose was written by Turn A) isn't attributed
+  // solely to Turn B's StateDelta response. On a cache hit this is the
+  // checkpoint row's provider; otherwise the live Turn A response's.
+  const evaluationCarrier = turnAProvider
+    ? { ...stateDeltaResponse, provider: turnAProvider, model: turnAModel ?? stateDeltaResponse.model }
+    : stateDeltaResponse;
+  return evaluateMergedStoryGeneration(merged, evaluationCarrier, promptParams, systemPrompt, documents, config, book.id, baseContext, fateProgress, onGenerationProgress);
 }
 
 /**
@@ -5567,17 +5647,23 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
     );
 
     generatedAlternatives = [];
+    const settlementErrors: unknown[] = [];
     settled.forEach((outcome, index) => {
       if (outcome.status === 'fulfilled' && outcome.value.result) {
         generatedAlternatives.push({ result: outcome.value.result, response: outcome.value, fateIndex: index });
       } else {
         const reason = outcome.status === 'rejected' ? outcome.reason : new Error('No result');
+        settlementErrors.push(reason);
         console.error(`[${context}] ❌ Alternative fate ${index + 1}/${candidateCount} generation failed:`, getErrorMessage(reason));
       }
     });
 
     if (generatedAlternatives.length === 0) {
-      throw new Error(`All ${candidateCount} alternatives failed to generate for ${generationContext}`);
+      // Audit F6: preserve the first failure's cause so the outer caller
+      // (candidate-generation.ts) can make smart retry/error decisions instead
+      // of receiving a generic message with no error code.
+      const firstError = settlementErrors[0];
+      throw new Error(`All ${candidateCount} alternatives failed to generate for ${generationContext}`, { cause: firstError });
     }
   } else {
     // 3. Send prompt to AI with dynamic parameters (multi-page batch schema)

@@ -7,7 +7,7 @@
 
 import type { ThemeValidationResult } from './theme-validation.js';
 import type { CreateBookResponse } from './book.js';
-import type { AIChatProvider } from './ai-chat.js';
+import type { AIChatProvider, GenerationStage } from './ai-chat.js';
 
 /**
  * Progress event types for book creation
@@ -46,10 +46,10 @@ export type BookCreationProgressEvent =
   | { type: 'theme_validation_start' }
   | { type: 'theme_validation_complete'; data: ThemeValidationResult }
   | { type: 'book_initialization_start' }
-  | { type: 'ai_generation_start' }
-  | { type: 'ai_generation_complete' }
-  | { type: 'ai_evaluation_start' }
-  | { type: 'ai_evaluation_complete' }
+  | { type: 'ai_generation_start'; stage?: GenerationStage; fateIndex?: number }
+  | { type: 'ai_generation_complete'; stage?: GenerationStage; fateIndex?: number }
+  | { type: 'ai_evaluation_start'; stage?: GenerationStage; fateIndex?: number }
+  | { type: 'ai_evaluation_complete'; stage?: GenerationStage; fateIndex?: number }
   | { type: 'finalizing_start' }
   | { type: 'complete'; data: CreateBookResponse }
   | { type: 'error'; error: string };

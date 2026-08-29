@@ -56,6 +56,16 @@ export async function retryPendingGenerations(): Promise<string[]> {
   const { getPageFromDB, mapToUserStoryPage } = await import("../services/book.js");
   const systemUserId = requireEnv('SYSTEM_USER_ID');
 
+  // Audit Q6 (Step 6.4): reclaim orphaned checkpoint rows (Turn-A caches that
+  // were never deleted on successful persist) before processing pending
+  // generations, so stale entries don't linger indefinitely. Best-effort.
+  try {
+    const { deleteOldPageGenerationCheckpoints } = await import("../services/page-generation-checkpoints.js");
+    await deleteOldPageGenerationCheckpoints(7);
+  } catch (sweepError) {
+    console.warn("[retryPendingGenerations] ⚠️ Checkpoint sweep failed (non-fatal):", getErrorMessage(sweepError));
+  }
+
   // Subquery to get the most recent active session for each book
   const mostRecentSession = dbRead
     .select({

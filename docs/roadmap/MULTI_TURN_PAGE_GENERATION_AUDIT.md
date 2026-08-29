@@ -29,7 +29,7 @@
 
 ## 2. Detailed Findings
 
-### ◻️ F1 — HIGH: Checkpoint cache can freeze a weak/defective Turn A and cause infinite retry poisoning
+### ✅ F1 — HIGH: Checkpoint cache can freeze a weak/defective Turn A and cause infinite retry poisoning
 
 **Location:** `generateStoryGenerationMultiTurn` upsert at `prompt.ts:5206` (no validation gate); lookup at `prompt.ts:5171`.
 
@@ -67,7 +67,7 @@ This is a cost/efficiency edge only — `determineBranchIdForPage` caps destinat
 
 ---
 
-### ◻️ F3 — MEDIUM: Evaluator partial JSON re-encoding risk on merged state
+### ✅ F3 — MEDIUM: Evaluator partial JSON re-encoding risk on merged state
 
 **Location:** `prompt.ts:1881` in `evaluateMergedStoryGeneration`.
 
@@ -110,7 +110,7 @@ return { ...baseResult, result: merged };
 
 ---
 
-### ◻️ F5 — MEDIUM: Redundant prompt recomputation per turn × per fate
+### ✅ F5 — MEDIUM: Redundant prompt recomputation per turn × per fate
 
 **Location:** `buildStoryPagePrompt` (`prompt.ts:1174`) and `buildStateDeltaPrompt` (`prompt.ts:1218`).
 
@@ -122,7 +122,7 @@ return { ...baseResult, result: merged };
 
 ---
 
-### ◻️ F6 — LOW: Error context & code loss in `Promise.allSettled` batch failures
+### ✅ F6 — LOW: Error context & code loss in `Promise.allSettled` batch failures
 
 **Location:** `prompt.ts:5570-5581` in `generateNextPages`.
 
@@ -138,7 +138,7 @@ The specific error causes (e.g. rate limits, authentication failures, `PAGE_DELE
 
 ---
 
-### ◻️ F7 — LOW: Page provider/model attribution lost on checkpoint hit
+### ✅ F7 — LOW: Page provider/model attribution lost on checkpoint hit
 
 **Location:** `prompt.ts:5174-5215`.
 
@@ -158,7 +158,7 @@ The specific error causes (e.g. rate limits, authentication failures, `PAGE_DELE
 
 ---
 
-### ◻️ F9 — LOW: SSE event multiplexing in parallel multiverse generation
+### ✅ F9 — LOW: SSE event multiplexing in parallel multiverse generation
 
 **Location:** `prompt.ts:5195`, `prompt.ts:5235`, `ai-chat.ts:1439`.
 
@@ -168,7 +168,7 @@ The specific error causes (e.g. rate limits, authentication failures, `PAGE_DELE
 
 ---
 
-### ◻️ F10 — HYGIENE: Stale `.bak.ts` files inside `src/`
+### ✅ F10 — HYGIENE: Stale `.bak.ts` files inside `src/`
 
 **Location:** `src/schema/story.bak.ts`, `src/types/ai-chat.bak.ts`, `src/types/story.bak.ts`, `src/utils/ai-chat-stream.bak.ts`, `src/utils/ai-chat.bak.ts`, `src/utils/prompt.bak.ts`.
 
@@ -178,7 +178,7 @@ The specific error causes (e.g. rate limits, authentication failures, `PAGE_DELE
 
 ---
 
-### ◻️ F11 — INFO: Feature flag evaluation & rollout state
+### ✅ F11 — INFO: Feature flag evaluation & rollout state
 
 **Location:** `src/config/ai-chat.ts:60` (`USE_MULTI_TURN_GENERATION = process.env.USE_MULTI_TURN_GENERATION === 'true'`).
 
@@ -214,19 +214,19 @@ The specific error causes (e.g. rate limits, authentication failures, `PAGE_DELE
 
 ## 4. Improvement Suggestions
 
-1. ◻️ **Gate Checkpoint Upsert (Immediate):** Gate `upsertPageGenerationCheckpoint` on `checkGeneratedPage` (F1).
-2. ◻️ **Defensive Merge on Evaluation (Immediate):** Merge `{ ...merged, ...evaluated.result }` in `evaluateMergedStoryGeneration` (F3).
+1. ✅ **Gate Checkpoint Upsert (Immediate):** Gate `upsertPageGenerationCheckpoint` on `checkGeneratedPage` (F1).
+2. ✅ **Defensive Merge on Evaluation (Immediate):** Merge `{ ...merged, ...evaluated.result }` in `evaluateMergedStoryGeneration` (F3).
 3. ✅ **Top-Up Checkpoint Alignment (Optional):** Investigate stable fate-slot identity if top-up cache reuse matters; otherwise rely on the orphan sweep (F2/Q6).
-4. ◻️ **Context Memoization (Near-term):** Memoize shared story context string generation per setup instance (F5).
-5. ◻️ **Delete `.bak.ts` Files (Immediate Hygiene):** Clean up dead backup files from `src/` (F10).
-6. ◻️ **Periodic Orphan Sweeper (Phase 6.4):** Sweep checkpoints older than 7 days during routine DB cron maintenance.
-7. ◻️ **Phase 10 Context Pruning (Future Optimization):** Trim legacy page history blocks from Turn B prompt.
+4. ✅ **Context Memoization (Near-term):** Memoize shared story context string generation per setup instance (F5).
+5. ✅ **Delete `.bak.ts` Files (Immediate Hygiene):** Clean up dead backup files from `src/` (F10).
+6. ✅ **Periodic Orphan Sweeper (Phase 6.4):** Sweep checkpoints older than 7 days during routine DB cron maintenance.
+7. ⏩ **Phase 10 Context Pruning (Future Optimization):** Trim legacy page history blocks from Turn B prompt — deferred to Phase 10 per Q5.
 
 ---
 
 ## 5. Open questions needing your decision
 
-### ◻️ Q1 — Should the checkpoint upsert be gated on a page-turn validation?
+### ✅ Q1 — Should the checkpoint upsert be gated on a page-turn validation?
 The cache can pin a weak-but-schema-valid Turn A (F1), turning a transient weak output into a persistent retry loop for that action.
 
 - **Option A (Recommended):** Gate the upsert on `checkGeneratedPage(storyPage, undefined, ctx)` (or assert non-empty `text` and well-formed `actions`). If it fails, skip the upsert and let the retry regenerate Turn A fresh.  
@@ -262,7 +262,7 @@ Currently `false` (F11). The pipeline is code-complete.
 
 ---
 
-### ◻️ Q4 — Delete the stale `src/**/*.bak.ts` files?
+### ✅ Q4 — Delete the stale `src/**/*.bak.ts` files?
 (F10.) These can confuse developers and bloat type-checking.
 
 - **Option A (Recommended):** Delete all six `.bak.ts` files now.  
@@ -282,7 +282,7 @@ Turn B currently receives the full story context prompt even though prose rules 
 
 ---
 
-### ◻️ Q6 — Checkpoint cleanup & retention strategy
+### ✅ Q6 — Checkpoint cleanup & retention strategy
 Beyond F1's validation gate, how should stale/orphaned checkpoints be cleaned?
 
 - **Option A (Recommended):** Keep CASCADE deletion on `pages`/`books` and add a lightweight sweep of checkpoints older than 7 days inside `retryPendingGenerations`. No TTL index needed.  
@@ -304,7 +304,7 @@ F2 shows `fateIndex` is per-call order, so a surviving checkpoint from the origi
 
 ---
 
-### ◻️ Q8 — Evaluator defensive merge backstop
+### ✅ Q8 — Evaluator defensive merge backstop
 To prevent fallback evaluators from dropping Turn B delta keys if they only output corrected text fields (F3).
 
 - **Option A (Recommended):** Apply defensive merge `{ ...merged, ...evaluated.result, calendarDate: evaluated.result.calendarDate ?? merged.calendarDate }` in `evaluateMergedStoryGeneration`.  
@@ -323,3 +323,30 @@ Addressing the two immediate safeguards:
 2. **F3 (Defensive merge on evaluation — Q8/Option A)**
 
 along with deleting the stale `.bak.ts` files (Q4/Option A), makes the pipeline fully ready for staging enablement and production rollout.
+
+---
+
+## 7. Implementation Log (2026-08-29)
+
+All remaining planned items were implemented and verified with `bun run check` (lint + import-lint + `tsc --noEmit`, all clean).
+
+| Finding | Change | Location |
+|---|---|---|
+| **F1 / Q1** | Gate `upsertPageGenerationCheckpoint` on `checkGeneratedPage(storyPage)` — weak Turn A is no longer frozen; it self-heals on retry. | `src/utils/prompt.ts` (`generateStoryGenerationMultiTurn`) |
+| **F3 / Q8** | Defensive merge `{ ...merged, ...evaluated.result, calendarDate: ... }` so a partial evaluator output can never drop Turn B delta keys. | `src/utils/prompt.ts` (`evaluateMergedStoryGeneration`) |
+| **F7** | Track Turn A `storyPageProvider`/`storyPageModel` (live or from checkpoint) and carry it into the merged response so the persisted page is attributed to the prose author, not solely Turn B. | `src/utils/prompt.ts` (`generateStoryGenerationMultiTurn`) |
+| **F6** | Collect settlement failures in `generateNextPages` and throw with `{ cause: firstError }` so the outer caller keeps the real error code. | `src/utils/prompt.ts` (`generateNextPages`) |
+| **F5** | Page-scoped memoization (WeakMap keyed by `params` identity + `includeProseStyle`) of the fate-independent context/narrative builders — computed once per request across all parallel fates. | `src/utils/prompt.ts` (`formatNextPageStoryContextPrompt`, `formatNextPageNarrativePrompt`) |
+| **F9** | Added optional `stage`/`fateIndex` to the generation/evaluation SSE events; `runGenerationStage` tags `stage`, `generateStoryGenerationMultiTurn` tags `fateIndex`. | `src/types/sse.ts`, `src/utils/prompt.ts` |
+| **F10 / Q4** | Deleted the 6 dead `.bak.ts` files (no live imports — only commented references remain). | `src/schema/story.bak.ts`, `src/types/{story,ai-chat}.bak.ts`, `src/utils/{prompt,ai-chat,ai-chat-stream}.bak.ts` |
+| **Q6** | Added `deleteOldPageGenerationCheckpoints(olderThanDays = 7)` sweep (uses existing `createdAt`, no schema change) and wired it into the retry cron. | `src/services/page-generation-checkpoints.ts`, `src/cron/retry-pending-generations.ts` |
+| **F11** | Centralized the flag in `config/env.ts` (`USE_MULTI_TURN_GENERATION` + live `isMultiTurnGenerationEnabled()`) and re-exported from `config/ai-chat.ts`. | `src/config/env.ts`, `src/config/ai-chat.ts` |
+
+**Deferred (documented decisions, no code change):**
+- **F4** — semantic-recall drift accepted as benign advisory (Q2/Option A).
+- **F8** — redundant `calendarDate` fallback is idempotent/harmless.
+- **F12** — `outputJsonStructure` behavior confirmed correct.
+- **Q5 / item 7** — Turn B context pruning deferred to Phase 10.
+- **Q2, Q3** — still open human decisions (cache-key recall signature; flag rollout timing).
+
+**Open before production rollout:** Q3 (flip `USE_MULTI_TURN_GENERATION` default to `true` in staging, then prod) and Q2 (optional cache-key recall hash).
