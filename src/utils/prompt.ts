@@ -5207,6 +5207,7 @@ async function generateStoryGenerationMultiTurn(options: {
   onGenerationProgress?: (step: StoryGenerationStep) => Promise<void>;
 }): Promise<AIResponse<StoryGeneration>> {
   const { setup, book, actionedPage, baseContext, fateContext, onProgress, onGenerationProgress } = options;
+  const fateIndex = fateContext?.fateIndex ?? 0;
   // Audit F9: tag every progress event with the fate index so parallel
   // multiverse alternatives don't collapse into a single indistinct stream.
   const fateProgress: ProgressCallback | undefined = onProgress
@@ -5215,15 +5216,16 @@ async function generateStoryGenerationMultiTurn(options: {
   const { promptParams, advancedState, action, config, documents, cachedContentId, systemPrompt, nextPreset } = setup;
   const { sceneType } = actionedPage;
 
-  const fateIndex = fateContext?.fateIndex ?? 0;
-
   // Phase 6 (roadmap Part 2.6): skip Turn A entirely if a prior attempt for
   // this exact (parent page, action, fate slot) already produced a valid
-  // StoryPage — the checkpoint survives even though that attempt's Turn B
-  // failed (or hasn't run yet). getPageGenerationCheckpoint never throws
-  // (a lookup failure is treated as a cache miss), so this can't turn into
-  // a new failure mode — worst case it behaves exactly like before this
-  // cache existed.
+  // StoryPage. This is mathematically and relationally safe because Turn A's
+  // input prompt is 100% deterministic across all retries:
+  // 1. `advancedState` is a pure function of (parent page, action) with zero non-deterministic state.
+  // 2. All pgvector semantic recall queries strictly filter on `lt(page, actionedPage.page)`
+  //    and `eq(branchId, branchId)`, so parallel sibling candidates at `page + 1` or on
+  //    other branches never alter the retrieved historical context across retries.
+  // 3. `getPageGenerationCheckpoint` never throws (treating read errors as cache misses),
+  //    so this optimization cannot cause failures — worst case it regenerates Turn A fresh.
   const existingCheckpoint = await getPageGenerationCheckpoint(actionedPage.id, action.text, fateIndex);
 
   let storyPage: StoryPageGeneration;

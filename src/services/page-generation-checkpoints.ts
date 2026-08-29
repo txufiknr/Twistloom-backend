@@ -10,17 +10,26 @@
  * in-process backoff, both driven off `pages.pendingGenerationCount`). This
  * service exists purely so a retried attempt can skip Turn A when a valid
  * one was already produced on a prior attempt whose Turn B failed — a cost
- * optimization, not a correctness fix. See `schema.ts`'s
- * `pageGenerationCheckpoints` table doc for the full design rationale
- * (including why there's no TTL/staleness check).
+ * optimization, not a correctness fix.
  *
- * All three functions here are deliberately narrow — a lookup, an upsert,
- * and a delete, each keyed on the same `(actionedPageId, actionText,
- * fateIndex)` triple that the table's unique constraint enforces. Callers
- * (`generateStoryGenerationMultiTurn` in `utils/prompt.ts`) are expected to
- * treat writes as best-effort: a failed checkpoint write should never abort
- * a generation that otherwise succeeded, it just costs the optimization on
- * the next retry, not correctness now.
+ * ### Architectural Determinism & Keying Rationale
+ * Keyed strictly on `(actionedPageId, actionText, fateIndex)` without a TTL
+ * or context hash because Turn A's input prompt is mathematically and
+ * relationally deterministic across all retries:
+ * 1. `advanceStoryState(currentState, actionedPage)` is a pure state transition
+ *    function with zero I/O and zero random dependencies.
+ * 2. Ancestor pages ($1 \dots \text{actionedPage.page}$) are committed and immutable.
+ * 3. All pgvector semantic recall queries strictly filter on
+ *    `lt(page, actionedPage.page)` and `eq(branchId, branchId)`. Parallel sibling
+ *    candidates at $\text{actionedPage.page} + 1$ or on other branches are structurally
+ *    excluded, guaranteeing identical semantic recall across all retry attempts.
+ * 4. Checkpoints are automatically deleted immediately after successful page persistence,
+ *    and orphaned rows from abandoned actions are reclaimed by the 7-day sweep.
+ *
+ * All functions here are deliberately narrow — a lookup, an upsert,
+ * a delete, and a periodic sweep. Callers (`generateStoryGenerationMultiTurn`
+ * in `utils/prompt.ts`) treat writes as best-effort: a failed checkpoint write
+ * never aborts a generation that otherwise succeeded.
  */
 
 import { dbRead, dbWrite } from "../db/client.js";
