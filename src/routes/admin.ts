@@ -37,6 +37,7 @@ import { extractAndResolveTwistloomLink, parseTwistloomProductUrl, resolveBookBy
 import { sanitizeBlogHtml } from "../utils/sanitize-html.js";
 import { notifyForumUserBanned, notifyForumUserUnbanned } from "../services/forum-queue.js";
 import { invalidateUserProfileCache } from "../services/cache.js";
+import { getNeonProjectUsage, NeonApiError } from "../services/neon-usage.js";
 
 const router = new Hono<AppEnv>();
 
@@ -1248,6 +1249,37 @@ router.get("/usage",
       });
     } catch (error) {
       return cApiError(c, "Failed to list usage", error);
+    }
+  }
+);
+
+// ============================================================================
+// NEON PROJECT CONSUMPTION (control-plane usage telemetry)
+// ============================================================================
+
+/**
+ * GET /admin/usage/neon
+ *
+ * Returns Neon project consumption metrics (compute time, active time, storage,
+ * data transfer) and the start of the current consumption period, pulled from
+ * the Neon console control-plane API. Cached for 5 minutes to respect Neon API
+ * rate limits. Requires the `usage` admin permission.
+ *
+ * Note: this is billing/usage telemetry — NOT a DB connectivity probe. Keep
+ * `/health/db` for liveness/uptime checks.
+ */
+router.get("/usage/neon",
+  requireAuth,
+  requirePermission("usage"),
+  async (c) => {
+    try {
+      const usage = await getNeonProjectUsage();
+      return c.json(usage);
+    } catch (error) {
+      if (error instanceof NeonApiError) {
+        return cApiError(c, error.message, undefined, error.status ?? 502);
+      }
+      return cApiError(c, "Failed to fetch Neon usage", error);
     }
   }
 );

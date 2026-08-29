@@ -57,7 +57,8 @@ const shouldSkipCompress = (path: string): boolean =>
   path.endsWith("/status") ||
   path.endsWith("/candidates/status") ||
   path.includes("/candidates/status") ||
-  path === "/health";
+  path === "/health" ||
+  path === "/health/db";
 app.use("*", async (c, next) => {
   if (CPU_OPTIMIZATIONS_ENABLED && shouldSkipCompress(c.req.path)) {
     await next();
@@ -177,6 +178,36 @@ app.get("/health", (c) => {
     uptime: (Date.now() - startedAt) / 1000,
     timestamp: new Date().toISOString(),
   });
+});
+
+// Readiness probe — verifies database connectivity. Deliberately separate from
+// the cheap /health liveness endpoint so orchestrators can require Postgres to
+// be reachable before routing traffic, without inflating Neon active_time on
+// every lightweight liveness ping. The DB client is imported lazily inside the
+// handler to keep the /health path truly zero-compute.
+app.get("/health/db", async (c) => {
+  const start = Date.now();
+  try {
+    const { dbRead } = await import("./db/client.js");
+    const { sql } = await import("drizzle-orm");
+    await dbRead.execute(sql`select 1`);
+    return c.json({
+      ok: true,
+      db: "up",
+      latencyMs: Date.now() - start,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    return c.json(
+      {
+        ok: false,
+        db: "down",
+        error: getErrorMessageSafe(err),
+        timestamp: new Date().toISOString(),
+      },
+      503,
+    );
+  }
 });
 
 // Backward-compatible redirects

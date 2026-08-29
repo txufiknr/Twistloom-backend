@@ -89,5 +89,5 @@ models/lid.176.bin
 
 # Backup and custom files
 *.bak.*
-notes
+notes.txt
 TODO*
