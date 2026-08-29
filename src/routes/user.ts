@@ -60,8 +60,10 @@ import type { FeedbackCategory, LikeTargetType, Source, User, UserAchievement, U
 import { feedbackCategories, sources } from "../types/user.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { requireAuth, optionalAuth } from "../middleware/nextauth.js";
-import { users, books, userAuth, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, userSessions, userCompletedBooks, userComments, transactions, userProviders, userFeedbacks, bookTestimonials, uploadedImages, userReports, moderationReports, userBlocks, platformTestimonials, pages } from "../db/schema.js";
+import { requireNotSuspended, requireNotMuted } from "../middleware/trust-safety.js";
+import { users, books, userAuth, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, userSessions, userCompletedBooks, userComments, transactions, userProviders, userFeedbacks, bookTestimonials, uploadedImages, userReports, moderationReports, moderationAppeals, userEnforcementActions, userBlocks, platformTestimonials, pages } from "../db/schema.js";
 import type { ReportTargetType, ReportType } from "../types/trust-safety.js";
+import { getOrFetchUserEnforcementStatus, getOrCreateUserTrustProfile } from "../services/trust-safety.js";
 import { getErrorMessage, cApiError, cNotFoundError, cConflictError, cValidationError, cUnauthorizedError, cForbiddenError } from "../utils/error.js";
 import { eq, and, desc, sql, gte } from "drizzle-orm";
 import { calculatePaginationMeta, extractPaginationParams } from "../utils/pagination.js";
@@ -1614,7 +1616,7 @@ router.get("/collections", optionalAuth, async (c: Context<AppEnv>) => {
  *   }
  * }
  */
-router.post("/users/:id/follow", requireAuth, async (c: Context<AppEnv>) => {
+router.post("/users/:id/follow", requireAuth, requireNotSuspended, requireNotMuted, async (c: Context<AppEnv>) => {
   try {
     const userId = c.get("userId")!;
     const { id: followingId } = c.req.param();
@@ -3807,7 +3809,7 @@ async function isBetaTesterUser(userId: string): Promise<boolean> {
  *   "error": "You already have an active platform testimonial"
  * }
  */
-router.post('/platform-testimonials', requireAuth, async (c: Context<AppEnv>) => {
+router.post('/platform-testimonials', requireAuth, requireNotSuspended, requireNotMuted, async (c: Context<AppEnv>) => {
   try {
     const userId = c.get('userId')!;
 
@@ -4225,6 +4227,117 @@ router.get('/user/mind-matrix', requireAuth, async (c: Context<AppEnv>) => {
   } catch (error) {
     console.error('[GET /user/mind-matrix] ❌', error);
     return cApiError(c, 'Failed to get user mind matrix', error);
+  }
+});
+
+/**
+ * GET /api/user/enforcement-status
+ *
+ * Returns the authenticated user's current Trust & Safety profile, risk tier,
+ * and capability restriction flags (Progressive Discipline status).
+ *
+ * Safe-Haven Endpoint: Always accessible even when suspended.
+ */
+router.get('/user/enforcement-status', requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get('userId')!;
+    const [profile, capabilities] = await Promise.all([
+      getOrCreateUserTrustProfile(userId),
+      getOrFetchUserEnforcementStatus(userId),
+    ]);
+
+    return c.json({
+      success: true,
+      userId,
+      trustScore: profile.trustScore,
+      riskTier: profile.riskTier,
+      strikeCount: profile.strikeCount,
+      capabilities: {
+        isBanned: capabilities.isBanned,
+        isSuspended: capabilities.isSuspended,
+        isThrottled: capabilities.isThrottled,
+        isMuted: capabilities.isMuted,
+        dailyGenerationLimit: capabilities.dailyGenerationLimit,
+      },
+      activeActions: capabilities.activeActions,
+    });
+  } catch (error) {
+    console.error('[GET /user/enforcement-status] ❌', error);
+    return cApiError(c, 'Failed to fetch enforcement status', error);
+  }
+});
+
+/**
+ * POST /api/user/appeals
+ *
+ * Submits an appeal ticket for an active disciplinary or enforcement action.
+ *
+ * Safe-Haven Endpoint: Always accessible even when suspended.
+ */
+router.post('/user/appeals', requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get('userId')!;
+    const { actionId, reason } = c.get('body') as { actionId?: unknown; reason?: unknown };
+
+    if (!actionId || typeof actionId !== 'string' || !isValidUuid(actionId)) {
+      return cValidationError(c, 'Valid UUID actionId is required');
+    }
+
+    const cleanReason = typeof reason === 'string' ? cleanMultilineText(reason, 2000) : '';
+    if (!cleanReason || cleanReason.length < 10) {
+      return cValidationError(c, 'Reason must be at least 10 characters explaining your appeal');
+    }
+
+    // 1. Verify that the action exists, belongs to this user, and is active (not revoked)
+    const [action] = await dbRead
+      .select({ id: userEnforcementActions.id, isRevoked: userEnforcementActions.isRevoked })
+      .from(userEnforcementActions)
+      .where(and(eq(userEnforcementActions.id, actionId), eq(userEnforcementActions.userId, userId)))
+      .limit(1);
+
+    if (!action) {
+      return cNotFoundError(c, 'Enforcement action not found');
+    }
+
+    if (action.isRevoked) {
+      return cConflictError(c, 'This enforcement action has already been revoked or resolved');
+    }
+
+    // 2. Prevent duplicate pending appeals for the same action
+    const [existingAppeal] = await dbRead
+      .select({ id: moderationAppeals.id })
+      .from(moderationAppeals)
+      .where(and(eq(moderationAppeals.enforcementActionId, actionId), eq(moderationAppeals.status, 'pending')))
+      .limit(1);
+
+    if (existingAppeal) {
+      return cConflictError(c, 'An appeal is already pending review for this action');
+    }
+
+    // 3. Create appeal ticket
+    const [appeal] = await dbWrite
+      .insert(moderationAppeals)
+      .values({
+        enforcementActionId: actionId,
+        userId,
+        appealReason: cleanReason,
+        status: 'pending',
+      })
+      .returning();
+
+    c.status(201);
+    return c.json({
+      success: true,
+      appeal: {
+        id: appeal.id,
+        enforcementActionId: appeal.enforcementActionId,
+        status: appeal.status,
+        createdAt: appeal.createdAt,
+      },
+    });
+  } catch (error) {
+    console.error('[POST /user/appeals] ❌', error);
+    return cApiError(c, 'Failed to submit appeal', error);
   }
 });
 

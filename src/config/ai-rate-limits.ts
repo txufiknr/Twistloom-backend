@@ -258,3 +258,45 @@ export const PEN_CAST_DETECT_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
 export const COMPANION_ASK_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
   "COMPANION_ASK", 20, 60
 );
+
+/**
+ * POST /api/broadcasts/preview — validate + AI-moderate a broadcast WITHOUT
+ * spending a Megaphone.
+ *
+ * Free (no credit charge), pure-validation call — the classic free-cost
+ * amplification vector. A rejected-preview loop could grind moderation tokens
+ * at zero cost, so it gets the same strict ceiling as custom-action previews.
+ *
+ * why: free AI moderation call — 20/min bounds abuse while keeping the
+ * composer responsive.
+ */
+export const BROADCAST_PREVIEW_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
+  "BROADCAST_PREVIEW", 20, 60
+);
+
+/**
+ * POST /api/broadcasts — submit a broadcast (consumes a Megaphone + AI moderation).
+ *
+ * Each submit spends a Megaphone (already credit-paid) and one moderation call.
+ * The Megaphone cost already gates spend, but the rate limit bounds burst +
+ * retry churn and repeat moderation amplification.
+ *
+ * why: charged consumable + per-call moderation — 10/min mirrors the
+ * custom-action submit strictness.
+ */
+export const BROADCAST_SUBMIT_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
+  "BROADCAST_SUBMIT", 10, 60
+);
+
+/**
+ * POST /api/broadcasts/purchase — buy a 📣 Megaphone with credits.
+ *
+ * Credit-gated purchase (100 credits via `executeWithCredits`); this ceiling
+ * bounds a client hammering the purchase endpoint (e.g. to farm inventory or
+ * churn the credit check before the balance catches up).
+ *
+ * why: 10/min is comfortable for genuine purchase while bounding abuse.
+ */
+export const BROADCAST_PURCHASE_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
+  "BROADCAST_PURCHASE", 10, 60
+);

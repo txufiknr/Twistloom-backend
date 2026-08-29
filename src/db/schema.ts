@@ -13,6 +13,7 @@ import type { PlaceMemory, PlaceMemoryTranslation, PlaceWeather } from "../types
 import type { ActionProgressStatus } from "../types/candidate-generation.js";
 import type { StoryThread, StoryThreadTranslation } from "../types/story-thread.js";
 import type { CustomActionOutcome, CustomActionRejectionCategory } from "../types/custom-action.js";
+import type { InventoryItemType, BroadcastSource, BroadcastType, BroadcastStatus, BroadcastRejectReason, BroadcastModerationResult } from "../types/broadcast.js";
 import type { QuestStatus } from "../types/quests.js";
 import type { BetaDutyStatus } from "../types/beta-duties.js";
 import type { CanonValidationOutcome, CanonViolation, CanonViolationType } from "../types/canon-validation.js";
@@ -1907,6 +1908,114 @@ export const customActions = pgTable(
     index("custom_actions_book_idx").on(t.bookId),
     index("custom_actions_user_idx").on(t.userId),
     index("custom_actions_outcome_idx").on(t.outcome),
+  ]
+);
+
+/**
+ * Generic user inventory table (consumable items).
+ * @summary Tracks owned consumable items such as the 📣 Megaphone. Designed to
+ *   grow with future consumables without a dedicated per-item table.
+ * @example
+ * {
+ *   "id": "ui123",
+ *   "user_id": "user456",
+ *   "item_type": "megaphone",
+ *   "quantity": 3,
+ *   "created_at": "2026-08-29T00:00:00.000Z",
+ *   "updated_at": "2026-08-29T00:00:00.000Z"
+ * }
+ */
+export const userInventory = pgTable(
+  "user_inventory",
+  {
+    id: id(),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    itemType: text("item_type").$type<InventoryItemType>().notNull(),
+    quantity: integer("quantity").notNull().default(0),
+    /** When this row's quantity was last incremented via purchase. */
+    lastPurchasedAt: timestamp("last_purchased_at", { withTimezone: true }),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    unique("user_inventory_user_type_unique").on(t.userId, t.itemType),
+    index("user_inventory_user_idx").on(t.userId),
+  ]
+);
+
+/**
+ * Global broadcast messages (📣 Megaphone).
+ * @summary User- and system-generated banner messages displayed across the
+ *   Twistloom client. Scheduling is computed at insert time: each approved
+ *   broadcast receives a `startsAt`/`expiresAt` window, and the client polls
+ *   `GET /api/broadcasts/current` for the single live message. A broadcast is
+ *   "live" when `status = 'queued'` and `startsAt <= now < expiresAt`.
+ * @example
+ * {
+ *   "id": "bc123",
+ *   "user_id": "user456",
+ *   "source": "user",
+ *   "type": "message",
+ *   "message": "Just published my first Multiverse story!",
+ *   "status": "queued",
+ *   "moderation_result": { "outcome": "approve", "reasons": [] },
+ *   "contains_spoiler": false,
+ *   "starts_at": "2026-08-29T12:00:00.000Z",
+ *   "expires_at": "2026-08-29T12:00:08.000Z",
+ *   "created_at": "2026-08-29T00:00:00.000Z"
+ * }
+ */
+export const broadcasts = pgTable(
+  "broadcasts",
+  {
+    id: id(),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    source: text("source").$type<BroadcastSource>().notNull().default("user"),
+    type: text("type").$type<BroadcastType>().notNull().default("message"),
+    message: text("message").notNull(),
+    status: text("status").$type<BroadcastStatus>().notNull().default("queued"),
+    moderationResult: jsonb("moderation_result").$type<BroadcastModerationResult>(),
+    rejectionReason: text("rejection_reason").$type<BroadcastRejectReason>(),
+    containsSpoiler: boolean("contains_spoiler").notNull().default(false),
+    /** When this broadcast becomes visible. */
+    startsAt: timestamp("starts_at", { withTimezone: true }).notNull(),
+    /** When this broadcast stops being visible. */
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    index("broadcasts_status_starts_idx").on(t.status, t.startsAt),
+    index("broadcasts_starts_idx").on(t.startsAt),
+    index("broadcasts_user_idx").on(t.userId),
+  ]
+);
+
+/**
+ * Broadcast abuse reports.
+ * @summary One report per (broadcast, reporter) — prevents duplicate-report
+ *   spam while still allowing distinct users to flag the same message.
+ * @example
+ * {
+ *   "id": "br123",
+ *   "broadcast_id": "bc123",
+ *   "reporter_user_id": "user789",
+ *   "reason": "harassment",
+ *   "created_at": "2026-08-29T00:00:00.000Z"
+ * }
+ */
+export const broadcastReports = pgTable(
+  "broadcast_reports",
+  {
+    id: id(),
+    broadcastId: uuid("broadcast_id").notNull().references(() => broadcasts.id, { onDelete: "cascade" }),
+    reporterUserId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    reason: text("reason").notNull(),
+    createdAt,
+  },
+  (t) => [
+    unique("broadcast_reports_unique").on(t.broadcastId, t.reporterUserId),
+    index("broadcast_reports_broadcast_idx").on(t.broadcastId),
   ]
 );
 

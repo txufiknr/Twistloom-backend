@@ -153,6 +153,7 @@ export const CREDIT_COSTS_BASE = {
   /* ── Companion (reader AI Q&A) ─────────────────────────────────────────── */
   /** One grounded AI question-and-answer call (reader companion panel). */
   COMPANION_ASK: 1,
+
 } as const;
 
 /** Base cost for 1-step branch switching or action re-selection (2 credits). */

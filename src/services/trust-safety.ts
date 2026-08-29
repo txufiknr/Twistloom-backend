@@ -10,9 +10,11 @@ import {
   userTrustProfiles,
   userEnforcementActions,
   userViolationEvents,
+  bookGenerations,
   users,
 } from "../db/schema.js";
-import { eq, and, desc, sql, isNull, or, gt } from "drizzle-orm";
+import { eq, and, desc, sql, isNull, or, gt, gte } from "drizzle-orm";
+import { LRUCache } from "lru-cache";
 import type {
   EnforcementAction,
   ViolationType,
@@ -24,6 +26,21 @@ import type {
 } from "../types/trust-safety.js";
 import { invalidateUserBanCache } from "../middleware/nextauth.js";
 import { invalidateUserProfileCache } from "./cache.js";
+
+// ---------------------------------------------------------------------------
+// In-Memory Capabilities Cache (LRU)
+// ---------------------------------------------------------------------------
+const userCapabilitiesCache = new LRUCache<string, UserEnforcementStatus>({
+  max: 5000,
+  ttl: 1000 * 60 * 2, // 2 minutes TTL
+});
+
+/**
+ * Invalidates the cached enforcement status for a specific user.
+ */
+export function invalidateUserEnforcementCache(userId: string): void {
+  userCapabilitiesCache.delete(userId);
+}
 
 /**
  * Retrieves the user's trust profile or initializes a default profile if not present.
@@ -173,6 +190,7 @@ export async function applyEnforcementAction(params: ApplyEnforcementActionParam
 
   // 4. Invalidate caches
   invalidateUserBanCache(userId);
+  invalidateUserEnforcementCache(userId);
   await invalidateUserProfileCache(userId);
 
   return actionRow;
@@ -244,6 +262,7 @@ export async function revokeEnforcementAction(
 
   // 3. Invalidate caches
   invalidateUserBanCache(updatedAction.userId);
+  invalidateUserEnforcementCache(updatedAction.userId);
   await invalidateUserProfileCache(updatedAction.userId);
 
   return updatedAction;
@@ -314,6 +333,38 @@ export async function getUserEnforcementStatus(userId: string): Promise<UserEnfo
     dailyGenerationLimit,
     activeActions,
   };
+}
+
+/**
+ * Retrieves enforcement status from in-memory cache or queries the database.
+ */
+export async function getOrFetchUserEnforcementStatus(userId: string): Promise<UserEnforcementStatus> {
+  const cached = userCapabilitiesCache.get(userId);
+  if (cached) return cached;
+
+  const fresh = await getUserEnforcementStatus(userId);
+  userCapabilitiesCache.set(userId, fresh);
+  return fresh;
+}
+
+/**
+ * Returns the count of AI book generations started by a user today (UTC).
+ */
+export async function getTodayGenerationCount(userId: string): Promise<number> {
+  const startOfDay = new Date();
+  startOfDay.setUTCHours(0, 0, 0, 0);
+
+  const [genCount] = await dbRead
+    .select({ count: sql<number>`count(*)::int` })
+    .from(bookGenerations)
+    .where(
+      and(
+        eq(bookGenerations.userId, userId),
+        gte(bookGenerations.createdAt, startOfDay)
+      )
+    );
+
+  return genCount?.count ?? 0;
 }
 
 export interface RecordViolationEventParams {

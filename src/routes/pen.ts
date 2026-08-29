@@ -10,6 +10,7 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import type { AppEnv } from "../hono/env.js";
 import { requireAuth } from "../middleware/nextauth.js";
+import { requireNotSuspended, requireGenerationQuota } from "../middleware/trust-safety.js";
 import { rateLimit } from "../middleware/rate-limit.js";
 import { PEN_CONTINUE_RATE_LIMIT, PEN_ESSENTIALS_RATE_LIMIT, PEN_FINALIZE_PROPOSE_RATE_LIMIT, PEN_TRANSFORM_RATE_LIMIT, PEN_CAST_DETECT_RATE_LIMIT } from "../config/ai-rate-limits.js";
 import { cApiError, cNotFoundError, cValidationError } from "../utils/error.js";
@@ -718,7 +719,7 @@ router.delete("/sessions/:id/drafts/:draftId", requireAuth, async (c) => {
  * is persisted onto the session so the default stays convergent with what the
  * author last used. Returns { span, edit, draft } where span is validated/dirty.
  */
-router.post("/sessions/:id/continue", requireAuth, rateLimit(PEN_CONTINUE_RATE_LIMIT), async (c) => {
+router.post("/sessions/:id/continue", requireAuth, rateLimit(PEN_CONTINUE_RATE_LIMIT), requireNotSuspended, requireGenerationQuota, async (c) => {
   try {
     const userId = c.get("userId");
     if (!userId) return cApiError(c, "Authentication required", undefined, 401);
@@ -813,7 +814,7 @@ router.post("/sessions/:id/continue", requireAuth, rateLimit(PEN_CONTINUE_RATE_L
  *   authoringPov?: AuthoringPov
  * }
  */
-router.post("/sessions/:id/transform", requireAuth, rateLimit(PEN_TRANSFORM_RATE_LIMIT), async (c) => {
+router.post("/sessions/:id/transform", requireAuth, rateLimit(PEN_TRANSFORM_RATE_LIMIT), requireNotSuspended, requireGenerationQuota, async (c) => {
   try {
     const userId = c.get("userId");
     if (!userId) return cApiError(c, "Authentication required", undefined, 401);
@@ -891,7 +892,7 @@ router.post("/sessions/:id/transform", requireAuth, rateLimit(PEN_TRANSFORM_RATE
  * mood/weather, bible-place resolution, length caps). Charges
  * `PEN_ESSENTIALS_AUTOFILL` (1 credit) and writes a `plan` audit row.
  */
-router.post("/sessions/:id/essentials/autofill", requireAuth, rateLimit(PEN_ESSENTIALS_RATE_LIMIT), async (c) => {
+router.post("/sessions/:id/essentials/autofill", requireAuth, rateLimit(PEN_ESSENTIALS_RATE_LIMIT), requireNotSuspended, requireGenerationQuota, async (c) => {
   try {
     const userId = c.get("userId");
     if (!userId) return cApiError(c, "Authentication required", undefined, 401);
@@ -928,7 +929,7 @@ router.post("/sessions/:id/essentials/autofill", requireAuth, rateLimit(PEN_ESSE
  * Body: `{ draftText }` — the current draft prose (plain text).
  * Charges `PEN_DETECT_CAST` (1 credit) and writes a `plan` audit row.
  */
-router.post("/sessions/:id/cast/detect", requireAuth, rateLimit(PEN_CAST_DETECT_RATE_LIMIT), async (c) => {
+router.post("/sessions/:id/cast/detect", requireAuth, rateLimit(PEN_CAST_DETECT_RATE_LIMIT), requireNotSuspended, requireGenerationQuota, async (c) => {
   try {
     const userId = c.get("userId");
     if (!userId) return cApiError(c, "Authentication required", undefined, 401);
@@ -1017,7 +1018,7 @@ router.post("/sessions/:id/finalize/propose", requireAuth, rateLimit(PEN_FINALIZ
  * novel always uses the single default. `adoptInventory`/`adoptInjuries` are
  * the confirmed "adopt as canon" state proposal from `/finalize/propose`.
  */
-router.post("/sessions/:id/finalize", requireAuth, rateLimit({ maxRequests: 10, windowSeconds: 60 }), async (c) => {
+router.post("/sessions/:id/finalize", requireAuth, rateLimit({ maxRequests: 10, windowSeconds: 60 }), requireNotSuspended, async (c) => {
   try {
     const userId = c.get("userId");
     if (!userId) return cApiError(c, "Authentication required", undefined, 401);

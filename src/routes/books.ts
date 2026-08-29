@@ -104,6 +104,7 @@ import { streamSSE } from "hono/streaming";
 import { getClientIp } from "../hono/express-shim.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
+import { requireNotSuspended, requireNotMuted, requireGenerationQuota } from "../middleware/trust-safety.js";
 import { rateLimit } from "../middleware/rate-limit.js";
 import { books, branches, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress, userCompletedBooks, uploadedImages, userActivityLogs, pages, bookTestimonials, pageReactions, userSessions, companionAnswers } from "../db/schema.js";
 import { getErrorMessage, cApiError, cForbiddenError, cNotFoundError, cRateLimitError, cUnauthorizedError, cValidationError } from "../utils/error.js";
@@ -297,7 +298,7 @@ router.post("/", requireAuth, rateLimit(BOOK_CREATION_RATE_LIMIT), async (c) => 
  * @returns {Object} 201 { book } - mapped book row (see `mapBookFromDb`); navigate
  *   the client to `/books/{slug}/pen` where the existing start-session flow takes over.
  */
-router.post("/pen", requireAuth, async (c) => {
+router.post("/pen", requireAuth, requireNotSuspended, async (c) => {
   try {
     const body = (c.get("body") as Record<string, unknown>) ?? {};
     const title = typeof body.title === "string" ? body.title.trim() : "";
@@ -538,7 +539,7 @@ router.post("/stream", requireAuth, rateLimit(BOOK_STREAM_RATE_LIMIT), async (c)
  * // Response 202
  * { "bookId": "01912345-6789-1234-5678-123456789012", "message": "Book creation started..." }
  */
-router.post('/async', requireAuth, rateLimit(BOOK_ASYNC_RATE_LIMIT), async (c) => {
+router.post('/async', requireAuth, rateLimit(BOOK_ASYNC_RATE_LIMIT), requireNotSuspended, requireGenerationQuota, async (c) => {
   try {
     const { theme, mcCandidate: initialMCCandidate, generateCoverImage, advancedOptions, mode: requestedMode } = c.get("body");
     const userId = c.get("userId")!;
@@ -3497,7 +3498,7 @@ router.get("/:id/comments", optionalAuth, async (c) => {
  *   }
  * }
  */
-router.post("/:id/comments", requireAuth, async (c) => {
+router.post("/:id/comments", requireAuth, requireNotSuspended, requireNotMuted, async (c) => {
   try {
     const { id } = c.req.param();
     const { content, parentCommentId, pageId, paragraphNumber } = c.get("body");
@@ -3925,7 +3926,7 @@ router.get("/:id/pages/:pageId/community-actions", optionalAuth, async (c) => {
  * POST /api/books/book123/pages/page456/comments
  * Body: { "content": "This paragraph was intense", "paragraphNumber": 3 }
  */
-router.post("/:id/pages/:pageId/comments", requireAuth, async (c) => {
+router.post("/:id/pages/:pageId/comments", requireAuth, requireNotSuspended, requireNotMuted, async (c) => {
   try {
     const { id, pageId } = c.req.param();
     const { content, parentCommentId, paragraphNumber } = c.get("body");
@@ -4050,7 +4051,7 @@ router.get("/:id/pages/:pageId/paragraphs/:paragraphNumber/comments", optionalAu
  * POST /api/books/book123/pages/page456/paragraphs/3/comments
  * Body: { "content": "This paragraph was intense" }
  */
-router.post("/:id/pages/:pageId/paragraphs/:paragraphNumber/comments", requireAuth, async (c) => {
+router.post("/:id/pages/:pageId/paragraphs/:paragraphNumber/comments", requireAuth, requireNotSuspended, requireNotMuted, async (c) => {
   try {
     const { id, pageId, paragraphNumber } = c.req.param();
     const { content, parentCommentId } = c.get("body");
@@ -4183,7 +4184,7 @@ router.delete("/comments/:id", requireAuth, async (c) => {
  *   }
  * }
  */
-router.put("/comments/:id", requireAuth, async (c) => {
+router.put("/comments/:id", requireAuth, requireNotSuspended, requireNotMuted, async (c) => {
   try {
     const { id } = c.req.param();
     const { content } = c.get("body");
@@ -7141,7 +7142,7 @@ router.get("/:identifier/locked-paths", requireAuth, async (c) => {
  *   "message": "That doesn't match what's true in this story so far."
  * }
  */
-router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, rateLimit(CUSTOM_ACTION_PREVIEW_RATE_LIMIT), async (c) => {
+router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, rateLimit(CUSTOM_ACTION_PREVIEW_RATE_LIMIT), requireNotSuspended, requireGenerationQuota, async (c) => {
   try {
     const { identifier, pageId: pageIdParam } = c.req.param();
     const { text: rawText } = c.get("body");
@@ -7308,7 +7309,7 @@ router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, rateLimi
  *   }
  * }
  */
-router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit(CUSTOM_ACTION_SUBMIT_RATE_LIMIT), async (c) => {
+router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit(CUSTOM_ACTION_SUBMIT_RATE_LIMIT), requireNotSuspended, requireGenerationQuota, async (c) => {
   let creditsCost: number = getCreditCostForUser(c.get("userId") || null, 'CUSTOM_ACTION');
   try {
     const { identifier, pageId: pageIdParam } = c.req.param();
@@ -7627,7 +7628,7 @@ router.get("/testimonials", requireAuth, async (c) => {
  * @returns {Error} 401 - Unauthorized
  * @returns {Error} 404 - Book not found
  */
-router.post("/:identifier/testimonials", requireAuth, async (c) => {
+router.post("/:identifier/testimonials", requireAuth, requireNotSuspended, requireNotMuted, async (c) => {
   const identifier = c.req.param().identifier as string;
   const userId = c.get("userId")!;
   const { rating, content } = c.get("body") as { rating?: number; content?: string };
