@@ -6,14 +6,14 @@ The Broadcast API powers Twistloom's global, all-ages-visible **📣 Megaphone**
 
 Key design properties:
 
-- **Credits buy items, items send broadcasts.** A broadcast never costs credits directly — it spends one 📣 Megaphone from `user_inventory`. Purchasing a Megaphone costs credits (registry-defined, 100).
+- **Credits buy items, items send broadcasts.** A broadcast never costs credits directly — it spends one 📣 Megaphone from `user_inventory`. Purchasing a Megaphone costs credits (registry-defined, 100) via `POST /api/consumables/purchase` (see the [Consumables API](../api/CONSUMABLES_API_DOCUMENTATION.md)).
 - **Scarce & rate-limited.** Per-user cooldown, a global spacing interval, a short max length (140), and a bounded pending queue keep the banner usable.
 - **Fail-closed moderation.** Rejected messages never consume the item (no refund logic needed — nothing was spent).
 - **Public read, authenticated write.** Anyone can poll the live banner; only owners can preview/purchase/submit.
 
 **Base URL:** `/api/broadcasts`
 
-**Authentication:** Read endpoints (`/current`, `/stream`) are public. Write endpoints (`/me`, `/purchase`, `/preview`, `/`, `/:id/report`) require the `requireAuth` JWT middleware.
+**Authentication:** Read endpoints (`/current`, `/stream`) are public. Write endpoints (`/me`, `/preview`, `/`, `/:id/report`) require the `requireAuth` JWT middleware. (Purchasing consumables lives under the [Consumables API](../api/CONSUMABLES_API_DOCUMENTATION.md).)
 
 **Architecture Docs:**
 - [Broadcast Architecture](../architecture/BROADCAST_ARCHITECTURE.md)
@@ -28,15 +28,13 @@ Key design properties:
    - [Stream Current Broadcast (SSE)](#get-apibroadcastsstream)
 2. [Owner State](#owner-state)
    - [Get My Broadcast State](#get-apibroadcastsme)
-3. [Purchasing](#purchasing)
-   - [Purchase Megaphone](#post-apibroadcastspurchase)
-4. [Composing](#composing)
+3. [Composing](#composing)
    - [Preview Broadcast](#post-apibroadcastspreview)
    - [Submit Broadcast](#post-apibroadcasts)
-5. [Reporting](#reporting)
+4. [Reporting](#reporting)
    - [Report Broadcast](#post-apibroadcastsidreport)
-6. [Rate Limits](#rate-limits)
-7. [Error Codes](#error-codes)
+5. [Rate Limits](#rate-limits)
+6. [Error Codes](#error-codes)
 
 ---
 
@@ -125,33 +123,6 @@ Composer-gating state for the authenticated user: remaining Megaphones, seconds 
 | `megaphones` | number | 📣 Megaphones owned in `user_inventory` |
 | `cooldownRemainingSeconds` | number | Seconds until this user may broadcast again (`0` = ready) |
 | `queueFull` | boolean | `true` when the global pending queue is at `BROADCAST_MAX_PENDING` |
-
----
-
-## Purchasing
-
-### POST /api/broadcasts/purchase
-
-Buys **one 📣 Megaphone** consumable. Charges the registry-defined credit price (`src/config/consumables.ts`, 100 credits) atomically via `executeWithCredits` and increments the user's `user_inventory` inside the same transaction. Broadcasting later only spends the item — never credits.
-
-**Authentication:** Required (`requireAuth`)
-
-**Rate Limiting:** `BROADCAST_PURCHASE_RATE_LIMIT` — 10 requests / 60s (IP + user).
-
-**Request Body:** None required. (The endpoint always buys the 📣 Megaphone; the item type is fixed for this route.)
-
-**Response:** `200 OK`
-
-```json
-{ "megaphones": 4 }
-```
-
-`megaphones` is the new owned balance after purchase.
-
-**Errors:**
-- `403` if the user is banned (`users.bannedAt` set).
-- Standard credit errors (`402`/`insufficient_credits`) if the balance is too low — returned by `executeWithCredits`.
-- In free-demo mode the credit charge resolves to `0` (no balance deducted).
 
 ---
 
@@ -294,11 +265,10 @@ One-tap abuse report for a broadcast. Idempotent per `(broadcast, reporter)` —
 
 | Endpoint | Config | Limit | Rationale |
 |----------|--------|-------|-----------|
-| `POST /api/broadcasts/purchase` | `BROADCAST_PURCHASE_RATE_LIMIT` | 10 / 60s | Credit-gated; bounds purchase hammering |
 | `POST /api/broadcasts/preview` | `BROADCAST_PREVIEW_RATE_LIMIT` | 20 / 60s | Free AI-moderation call; bounded abuse |
 | `POST /api/broadcasts` | `BROADCAST_SUBMIT_RATE_LIMIT` | 10 / 60s | Charged consumable + per-call moderation |
 
-All three are Upstash Redis sliding-window limits and **fail open** (allow on Redis outage). Limits are defined in `src/config/ai-rate-limits.ts`.
+Both are Upstash Redis sliding-window limits and **fail open** (allow on Redis outage). Limits are defined in `src/config/ai-rate-limits.ts`. Purchase limits live under the Consumables API (`CONSUMABLE_PURCHASE_RATE_LIMIT`).
 
 ---
 

@@ -16,6 +16,7 @@
  * 
  * Endpoints:
  * - GET /user - Get authenticated user profile
+ * - GET /user/inventory - Get current user's consumable inventory (requires auth)
  * - GET /users/:identifier - Get user profile by UUID or username (public)
  * - POST /user - Complete onboarding
  * - PUT /user - Partially update user profile
@@ -61,7 +62,7 @@ import { feedbackCategories, sources } from "../types/user.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { requireAuth, optionalAuth } from "../middleware/nextauth.js";
 import { requireNotSuspended, requireNotMuted } from "../middleware/trust-safety.js";
-import { users, books, userAuth, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, userSessions, userCompletedBooks, userComments, transactions, userProviders, userFeedbacks, bookTestimonials, uploadedImages, userReports, moderationReports, moderationAppeals, userEnforcementActions, userBlocks, platformTestimonials, pages } from "../db/schema.js";
+import { users, books, userAuth, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, userSessions, userCompletedBooks, userComments, transactions, userProviders, userFeedbacks, bookTestimonials, uploadedImages, userReports, moderationReports, moderationAppeals, userEnforcementActions, userBlocks, platformTestimonials, pages, userInventory } from "../db/schema.js";
 import type { ReportTargetType, ReportType } from "../types/trust-safety.js";
 import { getOrFetchUserEnforcementStatus, getOrCreateUserTrustProfile } from "../services/trust-safety.js";
 import { getErrorMessage, cApiError, cNotFoundError, cConflictError, cValidationError, cUnauthorizedError, cForbiddenError } from "../utils/error.js";
@@ -82,6 +83,7 @@ import { sanitizeText, cleanMultilineText } from "../utils/text-processing.js";
 import { verifyPassword } from "../utils/password.js";
 import { USER_REPORT_MESSAGE_MAX_LENGTH } from "../config/user.js";
 import { FEEDBACK_MESSAGE_MAX_LENGTH } from "../config/feedback.js";
+import { CONSUMABLES_REGISTRY } from "../config/consumables.js";
 import { OAuth2Client } from "google-auth-library";
 import type { PaginationMeta } from '../types/api.js';
 import { ACHIEVEMENT_REGISTRY } from '../config/achievements.js';
@@ -239,8 +241,81 @@ router.get('/', requireAuth, async (c: Context<AppEnv>) => {
       }
     });
   } catch (error) {
-    console.error('[GET /api/user] ❌', error);
-    return cApiError(c, 'Failed to fetch user profile', error);
+    console.error("[GET /api/user] ❌", error);
+    return cApiError(c, "Failed to fetch user", error);
+  }
+});
+
+/**
+ * GET /api/user/inventory
+ *
+ * Returns the authenticated user's consumable inventory: every registered
+ * purchasable item with the user's currently-owned quantity (0 when unowned).
+ * Quantities come from `user_inventory`; metadata (name, price, availability)
+ * from the consumables registry (SSOT). Powers the in-app shop and the 📣
+ * Megaphone composer.
+ *
+ * @route GET /api/user/inventory
+ * @auth Required
+ *
+ * @returns {Object} inventory
+ * @returns {Array} inventory.items - One entry per registered consumable
+ * @returns {string} inventory.items[].type - Inventory item key
+ * @returns {string} inventory.items[].name - Display name
+ * @returns {string} inventory.items[].description - User-facing description
+ * @returns {string|undefined} inventory.items[].icon - Glyph
+ * @returns {number} inventory.items[].creditsPrice - Credit cost to buy one
+ * @returns {boolean} inventory.items[].available - Currently purchasable?
+ * @returns {number} inventory.items[].quantity - Owned count
+ * @returns {number} inventory.megaphones - Convenience: owned 📣 Megaphone count
+ *
+ * @example
+ * GET /api/user/inventory
+ * // Response
+ * {
+ *   "items": [{
+ *     "type": "megaphone",
+ *     "name": "📣 Megaphone",
+ *     "description": "Broadcast a short global message to all online readers.",
+ *     "icon": "📣",
+ *     "creditsPrice": 100,
+ *     "available": true,
+ *     "quantity": 3
+ *   }],
+ *   "megaphones": 3
+ * }
+ */
+router.get("/inventory", requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get("userId")!;
+
+    const owned = await dbRead
+      .select({
+        itemType: userInventory.itemType,
+        quantity: userInventory.quantity
+      })
+      .from(userInventory)
+      .where(eq(userInventory.userId, userId));
+
+    const ownedMap = new Map(owned.map((o) => [o.itemType, o.quantity]));
+
+    const items = CONSUMABLES_REGISTRY.map((def) => ({
+      type: def.type,
+      name: def.name,
+      description: def.description,
+      icon: def.icon,
+      creditsPrice: def.creditsPrice,
+      available: def.available,
+      quantity: ownedMap.get(def.type) ?? 0
+    }));
+
+    return c.json({
+      items,
+      megaphones: ownedMap.get("megaphone") ?? 0
+    });
+  } catch (error) {
+    console.error("[GET /api/user/inventory] ❌", error);
+    return cApiError(c, "Failed to fetch inventory", error);
   }
 });
 

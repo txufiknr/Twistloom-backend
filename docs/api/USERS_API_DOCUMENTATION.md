@@ -70,20 +70,22 @@ The Users API provides endpoints for managing user profiles, social interactions
       - [Claim Quest Reward](#post-userquestsquestidclaim)
  14. [User Feedback](#user-feedback)
       - [Submit Feedback](#post-userfeedbacks)
- 15. [Beta Tester Program](#beta-tester-program)
+  15. [Beta Tester Program](#beta-tester-program)
       - [Join Beta Tester Program](#post-userbeta-tester)
- 16. [Platform Testimonials](#platform-testimonials)
+  16. [Inventory](#inventory)
+      - [Get User Inventory](#get-userinventory)
+  17. [Platform Testimonials](#platform-testimonials)
       - [Submit Platform Testimonial](#post-userplatform-testimonials)
       - [Get Own Platform Testimonials](#get-userplatform-testimonials)
       - [Update Own Platform Testimonial](#patch-userplatform-testimonialsid)
       - [Delete Own Platform Testimonial](#delete-userplatform-testimonialsid)
- 17. [Error Handling](#error-handling)
- 18. [HTTP Headers](#http-headers)
- 19. [Caching Strategy](#caching-strategy)
- 20. [Authentication](#authentication)
- 21. [Database Schema](#database-schema)
- 22. [Testing](#testing)
- 23. [Changelog](#changelog)
+  18. [Error Handling](#error-handling)
+  19. [HTTP Headers](#http-headers)
+  20. [Caching Strategy](#caching-strategy)
+  21. [Authentication](#authentication)
+  22. [Database Schema](#database-schema)
+  23. [Testing](#testing)
+  24. [Changelog](#changelog)
 
 ---
 
@@ -965,6 +967,51 @@ Get all distinct collection names for the authenticated user's favorite books, s
 - Returns distinct collection names with book counts from `user_favorites` table
 - Filters out null collection values
 - Sorted alphabetically by collection name
+
+---
+
+## Inventory
+
+### GET /user/inventory
+
+Returns the authenticated user's consumable inventory: every registered purchasable item with the user's currently-owned quantity (0 when unowned). Quantities come from `user_inventory`; metadata (name, price, availability) from the consumables registry (SSOT). Powers the in-app shop and the 📣 Megaphone composer.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Response (200 OK):**
+```json
+{
+  "items": [
+    {
+      "type": "megaphone",
+      "name": "📣 Megaphone",
+      "description": "Broadcast a short global message to all online readers.",
+      "icon": "📣",
+      "creditsPrice": 100,
+      "available": true,
+      "quantity": 3
+    }
+  ],
+  "megaphones": 3
+}
+```
+
+**Response Fields:**
+- `items` (array): One entry per registered consumable, in registry order
+  - `type` (string): Inventory item key (e.g. `"megaphone"`)
+  - `name` (string): Display name
+  - `description` (string): User-facing description
+  - `icon` (string|null): Glyph shown in the UI
+  - `creditsPrice` (number): Credit cost to purchase one unit
+  - `available` (boolean): Whether the item is currently purchasable
+  - `quantity` (number): Units the user currently owns
+- `megaphones` (number): Convenience alias for the 📣 Megaphone owned count
+
+**Behavior:**
+- Reads the `user_inventory` table for the authenticated user and joins it against the consumables registry
+- Items the user has never purchased return `quantity: 0` (the registry is the source of truth for what exists)
+- Banned users still receive their inventory (buying and broadcasting are gated elsewhere)
+- Credit price and availability are controlled by `CONSUMABLES_REGISTRY` in `src/config/consumables.ts`
 
 ---
 

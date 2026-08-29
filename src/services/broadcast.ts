@@ -46,6 +46,7 @@ import {
   BROADCAST_CURRENT_CACHE_TTL_SECONDS,
   BROADCAST_VALID_TEXT_PATTERN,
   BROADCAST_SECURITY_PATTERNS,
+  BROADCAST_HEURISTIC_PATTERNS,
 } from "../config/broadcast.js";
 import { getConsumable } from "../config/consumables.js";
 import { executeWithCredits } from "./credits.js";
@@ -144,6 +145,28 @@ export function validateBroadcastInput(raw: unknown): BroadcastValidationResult 
 /** Pure sanitizer used by {@link validateBroadcastInput}. */
 function sanitizedText(input: string): string {
   return sanitizeText(input, { preserveNewlines: false });
+}
+
+// ---------------------------------------------------------------------------
+// Gate 1b — Heuristic engine (cheap, runs BEFORE the AI call)
+// ---------------------------------------------------------------------------
+
+/**
+ * Runs the cheap, high-signal heuristic engine over an already-sanitized
+ * message. This is the **last deterministic check before AI moderation** and
+ * exists so unambiguous policy violations (self-harm encouragement, obvious
+ * scam/phishing framing) are rejected without spending an AI token.
+ *
+ * It is deliberately narrow — anything nuanced is left to the AI pass. Returns
+ * the matching reject reason, or `null` when no heuristic fired.
+ */
+export function runBroadcastHeuristics(message: string): BroadcastRejectReason | null {
+  for (const { pattern, reason } of BROADCAST_HEURISTIC_PATTERNS) {
+    if (pattern.test(message)) {
+      return reason;
+    }
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -449,12 +472,23 @@ export interface SubmitBroadcastResult {
 }
 
 /**
- * Submits a broadcast: validates → checks ownership/cooldown/queue → AI
- * moderates → (on approve) atomically spends a Megaphone and schedules it.
+ * Submits a broadcast. Ordering is optimized so the expensive AI moderation is
+ * ALWAYS the last resort, invoked only after every cheap check has passed:
  *
- * On rejection the Megaphone is NOT consumed and the moderation verdict is
- * recorded for audit/telemetry. Throws a tagged `BroadcastSubmitError` with a
- * `code` the route maps to an HTTP status.
+ *   1. Gate 1  — deterministic validation (length, chars, injection patterns)
+ *   2. banned? — `users.bannedAt` (DB read)
+ *   3. cooldown — per-user Redis TTL
+ *   4. queue-full — pending capacity (DB read)
+ *   5. owns item? — `user_inventory` Megaphone count (DB read)
+ *   6. Gate 1b — heuristic engine (regex, free) ← early-fail on high-signal abuse
+ *   7. Gate 2  — AI moderation (JSON-mode, the ONLY place we spend a token)
+ *   8. on approve → tx: spend Megaphone + insert broadcast (FOR UPDATE)
+ *
+ * Steps 1–6 never call the AI; a rejected message at any of them costs nothing
+ * (no Megaphone spent, no refund path needed). On AI rejection the item is also
+ * NOT consumed.
+ *
+ * @throws Tagged `BroadcastSubmitError` (mapped to HTTP by the route).
  */
 export async function submitBroadcast(
   userId: string,
@@ -499,7 +533,22 @@ export async function submitBroadcast(
     throw new BroadcastSubmitError("no_megaphone", "You have no 📣 Megaphones. Purchase one to broadcast.");
   }
 
-  // Gate 2 — AI moderation (fail-closed)
+  // Gate 1b — heuristic engine: reject unambiguous policy violations for FREE,
+  // before the (expensive) AI moderation call. AI is only ever the last resort.
+  const heuristicReason = runBroadcastHeuristics(message);
+  if (heuristicReason) {
+    await recordBroadcastRejection(userId, message, { outcome: "reject", rejectionReason: heuristicReason, reasons: ["heuristic_engine"] }, meta);
+    throw new BroadcastSubmitError(
+      "rejected",
+      userFacingRejectMessage(heuristicReason),
+      heuristicReason,
+    );
+  }
+
+  // Gate 2 — AI moderation (fail-closed). Runs ONLY after every cheap check
+  // above has passed, so we never spend an AI token on a message that a
+  // deterministic gate, an eligibility check, or the heuristic engine already
+  // rejected.
   const moderation = await moderateBroadcast(message, userId);
 
   if (moderation.outcome === "reject") {
@@ -634,6 +683,17 @@ export async function previewBroadcast(
     .limit(1);
   if (user?.bannedAt) {
     throw new BroadcastSubmitError("forbidden", "Your account is not allowed to broadcast.");
+  }
+
+  // Heuristic engine: cheap early-fail before the AI call (same gate as submit).
+  const heuristicReason = runBroadcastHeuristics(message);
+  if (heuristicReason) {
+    await recordBroadcastRejection(userId, message, { outcome: "reject", rejectionReason: heuristicReason, reasons: ["heuristic_engine"] }, meta);
+    return {
+      outcome: "reject",
+      rejectionReason: heuristicReason,
+      message: userFacingRejectMessage(heuristicReason),
+    };
   }
 
   const moderation = await moderateBroadcast(message, userId);

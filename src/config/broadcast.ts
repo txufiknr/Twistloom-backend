@@ -10,6 +10,7 @@
  */
 
 import { CUSTOM_ACTION_SECURITY_PATTERNS } from "./custom-actions.js";
+import type { BroadcastRejectReason } from "../types/broadcast.js";
 
 // ── Length bounds (mirrors COMMENT/content max-length pattern) ──────────────
 
@@ -96,4 +97,26 @@ export const BROADCAST_SECURITY_PATTERNS: RegExp[] = [
   /@everyone\b/i,
   /@all\b/i,
   /(?:mass\s*mention|mention\s*all)/i,
+];
+
+/**
+ * High-signal heuristic rejection patterns — the cheap "engine" that runs
+ * BEFORE the (expensive) AI moderation call. Each entry maps directly to a
+ * `BroadcastRejectReason` so the early-fail can surface a specific reason
+ * without spending an AI token.
+ *
+ * These are intentionally narrow and unambiguous (clear self-harm
+ * encouragement, obvious scam/phishing framing). Anything nuanced — hate
+ * dogwhistles, contextual harassment, sexual implication — is deliberately
+ * LEFT to the AI pass, which is the last-resort semantic judge. Keep this list
+ * conservative: false positives here block legitimate broadcasts for free.
+ */
+export const BROADCAST_HEURISTIC_PATTERNS: { pattern: RegExp; reason: BroadcastRejectReason }[] = [
+  // Unambiguous self-harm encouragement (high-signal directives)
+  { pattern: /\b(kys|kms|kill\s+yourself|kill\s+yrself|end\s+it\s+all\s+now)\b/i, reason: "self_harm" },
+
+  // Obvious scam / phishing framing
+  { pattern: /\b(free\s*(?:crypto|btc|eth)\s*(?:giveaway|airdrop))\b/i, reason: "scam" },
+  { pattern: /\b(?:dm|message)\s+(?:me|us)\s+(?:to|for)\s+(?:earn|win|get\s+cash|free\s+money)\b/i, reason: "scam" },
+  { pattern: /\b(claim\s+your\s+(?:reward|prize|gift)\s+(?:now|today))\b/i, reason: "scam" },
 ];

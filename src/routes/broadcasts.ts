@@ -6,8 +6,7 @@
  * Endpoints:
  * - GET  /api/broadcasts/current  — the single live broadcast (public, polled by clients)
  * - GET  /api/broadcasts/stream   — SSE stream of live-broadcast changes (public)
- * - GET  /api/broadcasts/me       — composer state: Megaphone count + cooldown (auth)
- * - POST /api/broadcasts/purchase — buy one 📣 Megaphone with credits (auth)
+ * - GET /api/broadcasts/me       — composer state: Megaphone count + cooldown (auth)
  * - POST /api/broadcasts/preview  — validate + AI-moderate without spending (auth)
  * - POST /api/broadcasts          — submit a broadcast (consumes a Megaphone) (auth)
  * - POST /api/broadcasts/:id/report — one-tap abuse report (auth)
@@ -37,14 +36,12 @@ import {
 import {
   getCurrentBroadcast,
   getOwnerBroadcastState,
-  purchaseMegaphone,
   previewBroadcast,
   submitBroadcast,
   reportBroadcast,
   BroadcastSubmitError,
 } from "../services/broadcast.js";
 import {
-  BROADCAST_PURCHASE_RATE_LIMIT,
   BROADCAST_PREVIEW_RATE_LIMIT,
   BROADCAST_SUBMIT_RATE_LIMIT,
 } from "../config/ai-rate-limits.js";
@@ -120,30 +117,6 @@ router.get("/me", requireAuth, async (c) => {
   } catch (error) {
     console.error("[GET /api/broadcasts/me] ❌ Error:", error);
     return cApiError(c, "Failed to load broadcast state", error);
-  }
-});
-
-/**
- * POST /api/broadcasts/purchase
- *
- * Buys one 📣 Megaphone consumable. Charges the registry-defined credit price
- * (`src/config/consumables.ts`, 100) via `executeWithCredits` and adds it to the
- * user's `user_inventory`. Credits are refunded automatically by
- * `executeWithCredits` if the inventory write fails. Broadcasting later only
- * spends the item — never credits.
- *
- * @route POST /api/broadcasts/purchase
- * @auth Required
- * @returns `{ megaphones }` — the new Megaphone balance
- */
-router.post("/purchase", requireAuth, rateLimit(BROADCAST_PURCHASE_RATE_LIMIT), async (c) => {
-  try {
-    const userId = c.get("userId")!;
-    const megaphones = await purchaseMegaphone(userId);
-    return c.json({ megaphones });
-  } catch (error) {
-    console.error("[POST /api/broadcasts/purchase] ❌ Error:", error);
-    return cApiError(c, "Failed to purchase Megaphone", error);
   }
 });
 

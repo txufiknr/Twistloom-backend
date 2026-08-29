@@ -42,7 +42,8 @@ flowchart TD
         BAN["Banned check (users.bannedAt)"]
         CD["Cooldown + queue-full check (Redis)"]
         OWN["Ownership check (user_inventory)"]
-        G2["Gate 2: moderateBroadcast<br/>(AI JSON-mode)"]
+        H1["Gate 1b: runBroadcastHeuristics<br/>(free regex, early-fail)"]
+        G2["Gate 2: moderateBroadcast<br/>(AI JSON-mode — LAST RESORT)"]
         TX["tx: spend Megaphone + insert broadcast<br/>(FOR UPDATE)"]
         SCHED["computeSchedule (FIFO window)"]
     end
@@ -56,7 +57,7 @@ flowchart TD
 
     C4 -->|credits| INV
     C2 --> G1 --> BAN --> G2
-    C3 --> G1 --> BAN --> CD --> OWN --> G2
+    C3 --> G1 --> BAN --> CD --> OWN --> H1 --> G2
     G2 -->|approve| SCHED --> TX
     TX --> INV
     TX --> BC
@@ -129,6 +130,10 @@ On pass it returns the **sanitized** text, which is the exact string stored and 
 
 `users.bannedAt` set → `403` immediately (before any AI spend).
 
+### 3.3 Gate 1b — Heuristic engine (free, before AI)
+
+A narrow, high-signal regex layer (`runBroadcastHeuristics` over `BROADCAST_HEURISTIC_PATTERNS`) runs **immediately before** the AI call and rejects unambiguous policy violations — self-harm encouragement, obvious scam/phishing framing — without spending an AI token. It is deliberately conservative; nuanced hate/harassment/sexual content is left to the AI. This is the "early fail on heuristic detection" guarantee: the AI is invoked **only** after Gate 1, the ban/cooldown/queue/ownership checks, *and* this heuristic engine have all passed.
+
 ### 3.3 Gate 2 — AI moderation (`moderateBroadcast`)
 
 A single JSON-mode classification call (`aiPrompt` + `createAIOptionsWithSchema`) with `AI_CHAT_MODELS_THEME`:
@@ -199,7 +204,7 @@ The public `GET /current` reads `WHERE status='queued' AND starts_at <= now < ex
 | Moderation timeout | 15s | Fail-closed race |
 | Preview limit | 20 / 60s | `BROADCAST_PREVIEW_RATE_LIMIT` |
 | Submit limit | 10 / 60s | `BROADCAST_SUBMIT_RATE_LIMIT` |
-| Purchase limit | 10 / 60s | `BROADCAST_PURCHASE_RATE_LIMIT` |
+| Purchase limit | 10 / 60s | `CONSUMABLE_PURCHASE_RATE_LIMIT` (Consumables API) |
 
 VIP users are **not** exempt — same limits apply (the scarcity is the point). All AI-rate-limit configs are Upstash Redis sliding windows that **fail open**.
 

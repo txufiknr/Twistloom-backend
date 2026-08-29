@@ -289,14 +289,14 @@ export const BROADCAST_SUBMIT_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
 );
 
 /**
- * POST /api/broadcasts/purchase — buy a 📣 Megaphone with credits.
+ * POST /api/consumables/purchase — buy a consumable item with credits.
  *
- * Credit-gated purchase (100 credits via `executeWithCredits`); this ceiling
- * bounds a client hammering the purchase endpoint (e.g. to farm inventory or
- * churn the credit check before the balance catches up).
+ * Credit-gated purchase (registry-defined price via `executeWithCredits`); this
+ * ceiling bounds a client hammering the purchase endpoint (e.g. to farm
+ * inventory or churn the credit check before the balance catches up).
  *
  * why: 10/min is comfortable for genuine purchase while bounding abuse.
  */
-export const BROADCAST_PURCHASE_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
-  "BROADCAST_PURCHASE", 10, 60
+export const CONSUMABLE_PURCHASE_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
+  "CONSUMABLE_PURCHASE", 10, 60
 );
