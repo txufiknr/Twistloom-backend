@@ -1,1 +1,3 @@
+export const MAX_USER_NAME_LENGTH = 100;
 export const MAX_USER_BIO_LENGTH = 500;
+export const USER_REPORT_MESSAGE_MAX_LENGTH = 2000;

@@ -500,8 +500,26 @@ export const PEN_DRAFT_ACTION_HINT_MAX_LENGTH = 300;
 export const PEN_FINALIZE_MAX_ACTIONS = 6;
 /** Maximum number of trigger keywords accepted on a lore entry. */
 export const PEN_LORE_MAX_TRIGGERS = 20;
+/** Maximum length of a lore entry's name. */
+export const PEN_LORE_NAME_MAX_LENGTH = 120;
+/** Maximum length of a single lore trigger keyword. */
+export const PEN_LORE_TRIGGER_MAX_LENGTH = 50;
 /** Maximum length of a lore entry's description. */
 export const PEN_LORE_DESCRIPTION_MAX_LENGTH = 5000;
+
+/** Main character (MC) profile limits in Pen authoring.
+ * Pen supports multi-genre fiction (fantasy elves, ancient vampires, cosmic deities, androids),
+ * so age allows 0 (ageless/newborn/construct) up to 1,000,000,000 (immortals/cosmic entities).
+ */
+export const PEN_MC_NAME_MAX_LENGTH = 120;
+export const PEN_MC_BIO_MAX_LENGTH = 1000;
+export const PEN_MC_AGE_MIN = 0;
+export const PEN_MC_AGE_MAX = 1_000_000_000;
+
+/** Reader comments & collection limits. */
+export const COMMENT_CONTENT_MAX_LENGTH = 2000;
+export const COLLECTION_NAME_MAX_LENGTH = 50;
+
 /** Placeholder MC seed for Pen-created books (schema NOT NULL); author shapes the real MC later. */
 export const PEN_PLACEHOLDER_MC: StoryMC = { name: "MC", age: 0, gender: "male", bio: "" };
 

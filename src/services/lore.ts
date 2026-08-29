@@ -20,6 +20,8 @@ import {
   deleteFileFromImageKit,
   isBase64Upload,
 } from "./image.js";
+import { cleanSingleLineText, cleanMultilineText, cleanKeywords } from "../utils/text-processing.js";
+import { PEN_LORE_NAME_MAX_LENGTH, PEN_LORE_DESCRIPTION_MAX_LENGTH, PEN_LORE_TRIGGER_MAX_LENGTH, PEN_LORE_MAX_TRIGGERS } from "../config/story.js";
 import type { DBLoreEntry, DBNewLoreEntry, DBBook } from "../types/schema.js";
 import type { LoreEntry, LoreEntryInput, LoreEntryUpdate, LoreEntryType } from "../types/pen.js";
 
@@ -142,12 +144,16 @@ export async function createLoreEntry(
     newImageId = input.imageId ?? null;
   }
 
+  const cleanName = cleanSingleLineText(input.name, PEN_LORE_NAME_MAX_LENGTH);
+  const cleanDescription = cleanMultilineText(input.description, PEN_LORE_DESCRIPTION_MAX_LENGTH);
+  const cleanKeywordsList = cleanKeywords(input.triggerKeywords, PEN_LORE_TRIGGER_MAX_LENGTH, PEN_LORE_MAX_TRIGGERS);
+
   const values: DBNewLoreEntry = {
     bookId,
     entryType: input.entryType,
-    name: input.name,
-    description: input.description,
-    triggerKeywords: input.triggerKeywords ?? [],
+    name: cleanName,
+    description: cleanDescription,
+    triggerKeywords: cleanKeywordsList,
     linkedCharacterId: input.linkedCharacterId ?? null,
     linkedPlaceId: input.linkedPlaceId ?? null,
     imageId: newImageId,
@@ -208,9 +214,9 @@ export async function updateLoreEntry(
 
   const patch: Partial<DBNewLoreEntry> = {};
   if (update.entryType !== undefined) patch.entryType = update.entryType;
-  if (update.name !== undefined) patch.name = update.name;
-  if (update.description !== undefined) patch.description = update.description;
-  if (update.triggerKeywords !== undefined) patch.triggerKeywords = update.triggerKeywords;
+  if (update.name !== undefined) patch.name = cleanSingleLineText(update.name, PEN_LORE_NAME_MAX_LENGTH);
+  if (update.description !== undefined) patch.description = cleanMultilineText(update.description, PEN_LORE_DESCRIPTION_MAX_LENGTH);
+  if (update.triggerKeywords !== undefined) patch.triggerKeywords = cleanKeywords(update.triggerKeywords, PEN_LORE_TRIGGER_MAX_LENGTH, PEN_LORE_MAX_TRIGGERS);
   if (update.linkedCharacterId !== undefined) patch.linkedCharacterId = update.linkedCharacterId ?? null;
   if (update.linkedPlaceId !== undefined) patch.linkedPlaceId = update.linkedPlaceId ?? null;
 

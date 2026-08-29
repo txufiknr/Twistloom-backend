@@ -18,7 +18,7 @@ import { type DBClient, dbRead, dbWrite } from "../db/client.js";
 import { users, books, userComments, userAuth, userCheckins, userActivityLogs } from "../db/schema.js";
 import { eq, and, gt, ne, sql, desc, or, inArray } from "drizzle-orm";
 import { debounceAsync } from "../utils/debounce.js";
-import { sanitizeTextForDB } from '../utils/text-processing.js';
+import { sanitizeTextForDB, cleanSingleLineText, cleanMultilineText } from '../utils/text-processing.js';
 import { getErrorMessage, cConflictError, cValidationError } from "../utils/error.js";
 import { DAILY_CHECKIN_BONUS, DAILY_CHECKIN_DAYS, DAILY_CHECKIN_BIG_BONUS } from "../config/credits.js";
 import { getCurrentUTCDay } from "../utils/time.js";
@@ -27,7 +27,7 @@ import { VIP_BENEFITS } from "../config/subscription.js";
 import { LRUCache } from 'lru-cache';
 import { convertEmailToName, convertNameOrEmailToUsername, sanitizeUsername, validateUsername } from "../utils/username.js";
 import { normalizeGender } from "../utils/parser.js";
-import { MAX_USER_BIO_LENGTH } from "../config/user.js";
+import { MAX_USER_NAME_LENGTH, MAX_USER_BIO_LENGTH } from "../config/user.js";
 
 /**
  * LRU cache for email -> userId mappings
@@ -1025,7 +1025,7 @@ export async function sanitizeUserData(
 }
 
 export function sanitizeUserBio(bio: string): string {
-  return sanitizeTextForDB(String(bio).trim()).slice(0, MAX_USER_BIO_LENGTH);
+  return cleanMultilineText(bio, MAX_USER_BIO_LENGTH);
 }
 
 /**
@@ -1038,8 +1038,8 @@ export function sanitizeUserBio(bio: string): string {
  * `undefined` cleanly signals "don't touch this field").
  *
  * Field-specific rules:
- * - `name`     → sanitizeTextForDB, trimmed
- * - `bio`      → sanitizeTextForDB, trimmed, capped at MAX_USER_BIO_LENGTH
+ * - `name`     → cleanSingleLineText capped at MAX_USER_NAME_LENGTH
+ * - `bio`      → cleanMultilineText capped at MAX_USER_BIO_LENGTH
  * - `imageUrl` → trimmed; skips sanitizeTextForDB for `data:` URLs because the
  *                repetition check (`/(.)\1{10,}/g`) falsely flags base64-encoded
  *                binary data as corruption. Non-data URLs still go through
@@ -1067,7 +1067,7 @@ function sanitizeFieldValue(
 
   switch (field) {
     case 'name':
-      return sanitizeTextForDB(value.trim());
+      return cleanSingleLineText(value, MAX_USER_NAME_LENGTH);
     case 'bio':
       return sanitizeUserBio(value);
     case 'imageUrl':

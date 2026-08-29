@@ -1,4 +1,3 @@
-import { dedupe } from "./parser.js";
 import { correctDoubleQuotes } from "./quote.js";
 
 /**
@@ -284,15 +283,22 @@ export function normalizeTextForCompare(text: string): string {
     .replace(/\p{M}/gu, "");
 }
 
+export interface SanitizeTextOptions {
+  preserveNewlines?: boolean;
+}
+
 /**
  * Sanitizes text to remove binary/null bytes and invalid characters
  * Ensures text is safe for database insertion and XML parsing, includes html entity decoding and tag removal
  * @param text - The text to sanitize
+ * @param options - Options controlling newline preservation
  * @returns Sanitized text safe for database storage
  */
-export function sanitizeTextForDB(text: string): string {
+export function sanitizeTextForDB(text: string, options?: SanitizeTextOptions): string {
   if (!text || typeof text !== 'string') return '';
   
+  const preserveNewlines = options?.preserveNewlines ?? false;
+
   // Step 1: Decode HTML entities
   let cleaned = decodeHTMLEntities(text);
   
@@ -307,19 +313,33 @@ export function sanitizeTextForDB(text: string): string {
     // Remove any remaining tag fragments
     .replace(/<[^>]*\s*$/g, '')
     // Remove CDATA sections that might contain problematic content
-    .replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, ' ')
+    .replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, ' ');
+
+  if (preserveNewlines) {
+    cleaned = cleaned
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      .replace(/[^\S\r\n]+/g, ' ')
+      .replace(/\n{3,}/g, '\n\n');
+  } else {
     // Normalize whitespace
-    .replace(/\s+/g, ' ');
+    cleaned = cleaned.replace(/\s+/g, ' ');
+  }
   
   // Step 3: Enhanced control character and corruption filtering
   cleaned = removeControlCharacters(cleaned);
   
   // Step 4: Final cleanup and validation
-  cleaned = cleaned
-    // Normalize whitespace again after character removal
-    .replace(/\s+/g, ' ')
-    // Remove leading/trailing whitespace
-    .trim();
+  if (preserveNewlines) {
+    cleaned = cleaned
+      .replace(/[^\S\r\n]+/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  } else {
+    cleaned = cleaned
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
   
   // Step 5: Additional safety checks
   // If the text is extremely short after cleaning, it might have been corrupted
@@ -517,12 +537,73 @@ export function truncateToLastCompleteSentence(text: string, maxLength: number):
   return candidate;
 }
 
-export function sanitizeText(text: string): string {
-  return correctDoubleQuotes(sanitizeTextForDB(text.trim()));
+export function sanitizeText(text: string, options?: SanitizeTextOptions): string {
+  return correctDoubleQuotes(sanitizeTextForDB(text.trim(), options));
+}
+
+/**
+ * Sanitizes and bounds a single-line input string, preserving Unicode letters,
+ * numbers, punctuation, currency/math symbols, and modern emojis.
+ */
+export function cleanSingleLineText(
+  val: unknown,
+  maxLength?: number,
+  options: { trim?: boolean } = {}
+): string {
+  if (typeof val !== 'string' || !val) return '';
+  const sanitized = sanitizeText(val, { preserveNewlines: false });
+  const processed = options.trim !== false ? sanitized.trim() : sanitized;
+  return maxLength && maxLength > 0 ? processed.slice(0, maxLength) : processed;
+}
+
+/**
+ * Sanitizes and bounds a multiline input/textarea string, preserving newline
+ * breaks (\n) and modern emojis while collapsing excessive blank lines (\n{3,} -> \n\n).
+ */
+export function cleanMultilineText(
+  val: unknown,
+  maxLength?: number,
+  options: { trim?: boolean } = {}
+): string {
+  if (typeof val !== 'string' || !val) return '';
+  const sanitized = sanitizeText(val, { preserveNewlines: true });
+  const processed = options.trim !== false ? sanitized.trim() : sanitized;
+  return maxLength && maxLength > 0 ? processed.slice(0, maxLength) : processed;
+}
+
+/**
+ * Sanitizes and lowercases a single keyword/tag chip with emoji support.
+ */
+export function cleanKeyword(val: unknown, maxLength = 50): string {
+  return cleanSingleLineText(val, maxLength, { trim: true }).toLowerCase();
+}
+
+/**
+ * Sanitizes, lowercases, deduplicates, and bounds an array of keywords/tags.
+ */
+export function cleanKeywords(
+  keywords: unknown,
+  maxLength = 50,
+  maxCount = 20
+): string[] {
+  if (!Array.isArray(keywords)) return [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+
+  for (const kw of keywords) {
+    const cleaned = cleanKeyword(kw, maxLength);
+    if (cleaned && !seen.has(cleaned)) {
+      seen.add(cleaned);
+      result.push(cleaned);
+      if (result.length >= maxCount) break;
+    }
+  }
+
+  return result;
 }
 
 export function sanitizeKeywords(keywords: string[]): string[] {
-  return dedupe(keywords?.map(k => k.trim().toLowerCase()).filter(Boolean) ?? []);
+  return cleanKeywords(keywords);
 }
 
 /**

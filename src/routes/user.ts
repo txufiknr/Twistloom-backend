@@ -60,7 +60,8 @@ import type { FeedbackCategory, LikeTargetType, Source, User, UserAchievement, U
 import { feedbackCategories, sources } from "../types/user.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { requireAuth, optionalAuth } from "../middleware/nextauth.js";
-import { users, books, userAuth, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, userSessions, userCompletedBooks, userComments, transactions, userProviders, userFeedbacks, bookTestimonials, uploadedImages, userReports, userBlocks, platformTestimonials } from "../db/schema.js";
+import { users, books, userAuth, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, userSessions, userCompletedBooks, userComments, transactions, userProviders, userFeedbacks, bookTestimonials, uploadedImages, userReports, moderationReports, userBlocks, platformTestimonials, pages } from "../db/schema.js";
+import type { ReportTargetType, ReportType } from "../types/trust-safety.js";
 import { getErrorMessage, cApiError, cNotFoundError, cConflictError, cValidationError, cUnauthorizedError, cForbiddenError } from "../utils/error.js";
 import { eq, and, desc, sql, gte } from "drizzle-orm";
 import { calculatePaginationMeta, extractPaginationParams } from "../utils/pagination.js";
@@ -75,7 +76,10 @@ import { getStoryProgressWithBranch } from '../services/story-branch.js';
 import { checkAndAwardAchievements, getUserAchievements, getUserMetrics } from '../services/achievements.js';
 import { getUserQuests, summarizeQuests, recheckQuests, claimQuestRewardAndInvalidate, claimAllQuestRewardsAndInvalidate } from '../services/quests.js';
 import { getUserBetaDuties, summarizeBetaDuties, recheckBetaDuties, claimBetaDutyRewardAndInvalidate, claimAllBetaDutyRewardsAndInvalidate } from '../services/beta-duties.js';
+import { sanitizeText, cleanMultilineText } from "../utils/text-processing.js";
 import { verifyPassword } from "../utils/password.js";
+import { USER_REPORT_MESSAGE_MAX_LENGTH } from "../config/user.js";
+import { FEEDBACK_MESSAGE_MAX_LENGTH } from "../config/feedback.js";
 import { OAuth2Client } from "google-auth-library";
 import type { PaginationMeta } from '../types/api.js';
 import { ACHIEVEMENT_REGISTRY } from '../config/achievements.js';
@@ -2876,11 +2880,13 @@ router.get('/users/:identifier/testimonials/given', optionalAuth, async (c: Cont
 
 /**
  * POST /api/users/:identifier/report
- * Report a user profile to the moderation queue.
+ * Report a user profile or target entity to the moderation queue.
  *
  * @access Private (requires auth)
  * @param {string} c.req.param().identifier - UUID or username of the reported user
- * @param {string} c.get("body").reportType - spam | harassment | impersonation | inappropriate | other
+ * @param {string} [c.get("body").targetType] - user | book | page | comment | testimonial | custom_action (default: 'user')
+ * @param {string} [c.get("body").targetId] - UUID of the target entity (default: resolved.userId)
+ * @param {string} c.get("body").reportType - spam | harassment | impersonation | copyright | inappropriate | ai_safety | other
  * @param {string} [c.get("body").message] - Optional detail message (≤ 2000 chars)
  * @returns {Object} 201 - Created report
  * @returns {Error} 400 - Validation error
@@ -2895,29 +2901,140 @@ router.post('/users/:identifier/report', requireAuth, async (c: Context<AppEnv>)
       return cValidationError(c, 'You cannot report yourself');
     }
 
-    const { reportType, message } = c.get('body') as { reportType?: string; message?: string };
-    const validTypes = ['spam', 'harassment', 'impersonation', 'inappropriate', 'other'];
-    if (!reportType || !validTypes.includes(reportType)) {
+    const { reportType, message, targetType = 'user', targetId } = c.get('body') as {
+      reportType?: string;
+      message?: string;
+      targetType?: ReportTargetType;
+      targetId?: string;
+    };
+
+    const validTypes: ReportType[] = ['spam', 'harassment', 'impersonation', 'copyright', 'inappropriate', 'ai_safety', 'other'];
+    if (!reportType || !validTypes.includes(reportType as ReportType)) {
       return cValidationError(c, `reportType must be one of: ${validTypes.join(', ')}`);
     }
-    const cleanMessage = typeof message === 'string' ? message.trim() : '';
-    if (cleanMessage.length > 2000) {
-      return cValidationError(c, 'Message must be at most 2000 characters');
+
+    const validTargetTypes: ReportTargetType[] = ['user', 'book', 'page', 'comment', 'testimonial', 'custom_action'];
+    if (targetType && !validTargetTypes.includes(targetType)) {
+      return cValidationError(c, `targetType must be one of: ${validTargetTypes.join(', ')}`);
     }
 
-    const [report] = await dbWrite
-      .insert(userReports)
+    const cleanMessage = typeof message === 'string' ? cleanMultilineText(message, USER_REPORT_MESSAGE_MAX_LENGTH) : '';
+    if (cleanMessage.length > USER_REPORT_MESSAGE_MAX_LENGTH) {
+      return cValidationError(c, `Message must be at most ${USER_REPORT_MESSAGE_MAX_LENGTH} characters`);
+    }
+
+    const effectiveTargetId = (typeof targetId === 'string' && isValidUuid(targetId)) ? targetId : resolved.userId;
+
+    // 1. Insert into polymorphic moderation_reports
+    const [modReport] = await dbWrite
+      .insert(moderationReports)
       .values({
         reporterId,
+        targetType,
+        targetId: effectiveTargetId,
         reportedUserId: resolved.userId,
-        reportType: reportType as 'spam' | 'harassment' | 'impersonation' | 'inappropriate' | 'other',
+        reportType: reportType as ReportType,
         message: cleanMessage || null,
         status: 'open',
       })
-      .returning({ id: userReports.id });
+      .returning({ id: moderationReports.id });
+
+    // 2. Dual-write to userReports for legacy user profile reports
+    if (targetType === 'user') {
+      try {
+        await dbWrite.insert(userReports).values({
+          id: modReport.id,
+          reporterId,
+          reportedUserId: resolved.userId,
+          reportType: (['spam', 'harassment', 'impersonation', 'inappropriate', 'other'].includes(reportType) ? reportType : 'other') as any,
+          message: cleanMessage || null,
+          status: 'open',
+        }).onConflictDoNothing();
+      } catch (err) {
+        console.warn('[report] ⚠️ Failed dual-write to legacy userReports:', err);
+      }
+    }
 
     c.status(201);
-    return c.json({ success: true, report: { id: report.id } });
+    return c.json({ success: true, report: { id: modReport.id } });
+  } catch (error) {
+    return cApiError(c, 'Failed to submit report', error);
+  }
+});
+
+/**
+ * POST /api/user/reports
+ * Unified polymorphic reporting endpoint for any entity on Twistloom.
+ *
+ * @access Private (requires auth)
+ * @param {string} c.get("body").targetType - user | book | page | comment | testimonial | custom_action
+ * @param {string} c.get("body").targetId - UUID of the target entity
+ * @param {string} c.get("body").reportType - spam | harassment | impersonation | copyright | inappropriate | ai_safety | other
+ * @param {string} [c.get("body").message] - Detail description (≤ 2000 chars)
+ * @returns {Object} 201 - Created report
+ */
+router.post('/reports', requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const reporterId = c.get('userId')!;
+    const { targetType, targetId, reportType, message } = c.get('body') as {
+      targetType?: ReportTargetType;
+      targetId?: string;
+      reportType?: string;
+      message?: string;
+    };
+
+    if (!targetType || !['user', 'book', 'page', 'comment', 'testimonial', 'custom_action'].includes(targetType)) {
+      return cValidationError(c, "Valid targetType is required ('user', 'book', 'page', 'comment', 'testimonial', 'custom_action')");
+    }
+    if (!targetId || !isValidUuid(targetId)) {
+      return cValidationError(c, 'Valid UUID targetId is required');
+    }
+
+    const validTypes: ReportType[] = ['spam', 'harassment', 'impersonation', 'copyright', 'inappropriate', 'ai_safety', 'other'];
+    if (!reportType || !validTypes.includes(reportType as ReportType)) {
+      return cValidationError(c, `reportType must be one of: ${validTypes.join(', ')}`);
+    }
+
+    let reportedUserId: string | null = null;
+
+    // Resolve subject user based on target entity
+    if (targetType === 'user') {
+      reportedUserId = targetId;
+    } else if (targetType === 'book') {
+      const [bookRow] = await dbRead.select({ userId: books.userId }).from(books).where(eq(books.id, targetId)).limit(1);
+      reportedUserId = bookRow?.userId ?? null;
+    } else if (targetType === 'page') {
+      const [pageRow] = await dbRead.select({ bookId: pages.bookId }).from(pages).where(eq(pages.id, targetId)).limit(1);
+      if (pageRow) {
+        const [bookRow] = await dbRead.select({ userId: books.userId }).from(books).where(eq(books.id, pageRow.bookId)).limit(1);
+        reportedUserId = bookRow?.userId ?? null;
+      }
+    } else if (targetType === 'comment') {
+      const [commentRow] = await dbRead.select({ userId: userComments.userId }).from(userComments).where(eq(userComments.id, targetId)).limit(1);
+      reportedUserId = commentRow?.userId ?? null;
+    }
+
+    if (reportedUserId && reportedUserId === reporterId) {
+      return cValidationError(c, 'You cannot report your own content');
+    }
+
+    const cleanMessage = typeof message === 'string' ? sanitizeText(message.trim(), { preserveNewlines: true }).slice(0, 2000) : '';
+
+    const [modReport] = await dbWrite
+      .insert(moderationReports)
+      .values({
+        reporterId,
+        targetType,
+        targetId,
+        reportedUserId,
+        reportType: reportType as ReportType,
+        message: cleanMessage || null,
+        status: 'open',
+      })
+      .returning({ id: moderationReports.id });
+
+    c.status(201);
+    return c.json({ success: true, report: { id: modReport.id } });
   } catch (error) {
     return cApiError(c, 'Failed to submit report', error);
   }
@@ -3185,7 +3302,7 @@ router.post("/feedbacks", requireAuth, async (c: Context<AppEnv>) => {
     const feedbackData: DBNewUserFeedback = {
       userId,
       category: category as FeedbackCategory,
-      message: message.trim(),
+      message: cleanMultilineText(message, FEEDBACK_MESSAGE_MAX_LENGTH),
       imageId: imageId ?? null,
       imageUrl: imageUrlResult ?? null,
       status: 'success',

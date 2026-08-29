@@ -1,4 +1,4 @@
-﻿/**
+/**
  * @overview Admin Routes Module
  * 
  * Provides administrative endpoints for debugging and system management.
@@ -38,6 +38,7 @@ import { sanitizeBlogHtml } from "../utils/sanitize-html.js";
 import { notifyForumUserBanned, notifyForumUserUnbanned } from "../services/forum-queue.js";
 import { invalidateUserProfileCache } from "../services/cache.js";
 import { getNeonProjectUsage, NeonApiError } from "../services/neon-usage.js";
+import { applyEnforcementAction, revokeEnforcementAction, getActiveEnforcementsForUser } from "../services/trust-safety.js";
 
 const router = new Hono<AppEnv>();
 
@@ -1976,19 +1977,29 @@ router.patch(
         });
       }
 
-      const now = new Date();
-      const [updated] = await dbWrite
-        .update(users)
-        .set({
-          bannedAt: now,
-          tokenVersion: sql`${users.tokenVersion} + 1`,
-          updatedAt: now,
-        })
-        .where(eq(users.userId, userId))
-        .returning({
-          userId: users.userId,
-          bannedAt: users.bannedAt,
-        });
+      const adminId = c.get("userId");
+      const body = c.get("body") as {
+        reason?: string;
+        violationType?: string;
+        severity?: string;
+        internalNotes?: string;
+      } | undefined;
+
+      const reason = body?.reason?.trim() || "Account banned by system administrator";
+      const violationType = (body?.violationType as any) || "other";
+      const severity = (body?.severity as any) || "critical";
+      const internalNotes = body?.internalNotes?.trim() || null;
+
+      // Apply enforcement action into disciplinary ledger (SSOT & dual-writes users.bannedAt)
+      const actionRow = await applyEnforcementAction({
+        userId,
+        action: "permanent_ban",
+        violationType,
+        severity,
+        reason,
+        internalNotes,
+        createdBy: adminId,
+      });
 
       // Best-effort session wipe (tokenVersion already invalidates JWTs)
       try {
@@ -1998,11 +2009,11 @@ router.patch(
         console.error(`[admin] ⚠️ Ban session wipe failed for ${userId}:`, err);
       }
 
-      console.log(`[admin] 🚫 User banned: ${userId} by ${c.get("userId")}`);
+      console.log(`[admin] 🚫 User banned: ${userId} by ${adminId}`);
       notifyForumUserBanned(userId, "admin_ban");
       await invalidateUserProfileCache(userId);
 
-      return c.json({ userId: updated.userId, bannedAt: updated.bannedAt, alreadyBanned: false });
+      return c.json({ userId, bannedAt: actionRow.createdAt, alreadyBanned: false });
     } catch (error) {
       return cApiError(c, "Failed to ban user", error);
     }
@@ -2012,7 +2023,8 @@ router.patch(
 /**
  * PATCH /admin/users/:userId/unban
  *
- * Clears banned_at. Does not restore old sessions (user must sign in again).
+ * Clears banned_at and revokes active ban actions in enforcement ledger.
+ * Does not restore old sessions (user must sign in again).
  */
 router.patch(
   "/users/:userId/unban",
@@ -2038,6 +2050,19 @@ router.patch(
         return c.json({ userId, bannedAt: null, alreadyUnbanned: true });
       }
 
+      const adminId = c.get("userId");
+      const body = c.get("body") as { notes?: string } | undefined;
+      const reviewNotes = body?.notes?.trim() || "Unbanned by system administrator";
+
+      // Revoke any active ban/suspension enforcement actions in ledger
+      const activeActions = await getActiveEnforcementsForUser(userId);
+      for (const act of activeActions) {
+        if (act.action === "permanent_ban" || act.action === "suspend") {
+          await revokeEnforcementAction(act.id, adminId, reviewNotes);
+        }
+      }
+
+      // Ensure users.bannedAt is cleared (dual-write bridge)
       const [updated] = await dbWrite
         .update(users)
         .set({
@@ -2050,7 +2075,7 @@ router.patch(
           bannedAt: users.bannedAt,
         });
 
-      console.log(`[admin] ✅ User unbanned: ${userId} by ${c.get("userId")}`);
+      console.log(`[admin] ✅ User unbanned: ${userId} by ${adminId}`);
       notifyForumUserUnbanned(userId);
       await invalidateUserProfileCache(userId);
 

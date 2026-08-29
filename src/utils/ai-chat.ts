@@ -25,6 +25,7 @@ import type { StoryGenerationStep } from "../types/book.js";
 import type { ChatCompletionRequest, ChatCompletionResponse } from "@mistralai/mistralai/models/components";
 import type * as GroqCompletion from "groq-sdk/resources/chat/completions.mjs";
 import { isObjectLike } from "./parser.js";
+import { recordViolationEvent } from "../services/trust-safety.js";
 
 /**
  * Base function for AI provider prompt handling with common patterns
@@ -131,6 +132,20 @@ async function promptWithFallback<T>(
       // Error handling: Classify error and decide on retry strategy.
       // Retryable errors were already retried by retryWithBackoff within the try block.
       const code = classifyGenAIError(provider, model, error);
+
+      // Log safety block events in shadow mode for forensic visibility
+      if (code === 'SAFETY_BLOCKED') {
+        const userId = (options as any)?.userId;
+        if (userId) {
+          recordViolationEvent({
+            userId,
+            violationType: 'ai_policy',
+            source: 'ai_moderator',
+            rawInput: prompt.slice(0, 500),
+            detectionDetails: { provider, model, code: 'SAFETY_BLOCKED' },
+          }).catch((err) => console.error(`[${provider}] ⚠️ Failed to log safety violation event:`, err));
+        }
+      }
 
       // SCHEMA_TOO_COMPLEX is a permanent failure — the schema itself is too large for
       // this provider's constrained decoder. No other model in the same provider will

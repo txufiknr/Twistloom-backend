@@ -108,7 +108,7 @@ LEVELING SYSTEM:
 [ ] xendit api keys: https://dashboard.xendit.co/settings/developers#api-keys
 [ ] migrate to QUERY: https://dev.to/hamidrazadev/the-new-http-query-method-why-get-and-post-werent-enough-1lc5
 [ ] pastInteractions -> interactions
-[ ] learn about Interactions API (https://ai.google.dev/gemini-api/docs/migrate-to-interactions)
+[ ] migrate to Interactions API? (https://ai.google.dev/gemini-api/docs/migrate-to-interactions)
 [ ] ensure `PUT /api/user/editor-prefs` API route optimal en-to-end based on `AI_CO_WRITING_PEN_ROADMAP.md` and frontend's `src\lib\services\users-api.ts`, shouldn't we only send dirty (only changed) fields instead of all fields?
 [ ] can you also add ai-cost for these gemini models: `gemini-3.6-flash`?
 [ ] book-creation.ts still not language-agnostic

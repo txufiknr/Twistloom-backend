@@ -25,7 +25,7 @@ import { getEnrichedBookSelect } from "./book-controller.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage, DBUpdateBook } from "../types/schema.js";
 import type { Book, BookSlugGenerationResult, BookStatus, BookVisibility, EnrichedBookData, EnrichedPageOptions, PublicStats } from "../types/book.js";
 import { bookVisibilities } from "../types/book.js";
-import { actionTypes, type StoryPage, type PersistedStoryPage, type UserStoryPage, type StoryState, type StoryPageMeta, type EnrichedStoryPage, type StateDelta, type StoryGeneration, type SelectedAction, type Action, type EnrichedStoryPageContext, type TranslatedStoryPage, type EnrichedStoryPagePlace, type EnrichedStoryPageCharacter, type ActionType, type ActionHintType } from "../types/story.js";
+import { actionTypes, endingTypes, type StoryPage, type PersistedStoryPage, type UserStoryPage, type StoryState, type StoryPageMeta, type EnrichedStoryPage, type StateDelta, type StoryGeneration, type SelectedAction, type Action, type EnrichedStoryPageContext, type TranslatedStoryPage, type EnrichedStoryPagePlace, type EnrichedStoryPageCharacter, type ActionType, type ActionHintType, type Ending, type EndingType, type StoryOutline } from "../types/story.js";
 import type { CanonValidationSummary } from "../types/canon-validation.js";
 import { getStoryStateFromPage, insertStoryState } from "./story.js";
 import { formatPlacesForPrompt, resolvePlaceDisplayName, resolvePlaceLoreNames } from "../utils/places.js";
@@ -35,10 +35,10 @@ import { calculateHealthStatus, formatCharactersForPrompt, formatPlannedCharacte
 import { formatSystemPromptWithDocuments } from "../utils/ai-chat.js";
 import { IS_PRODUCTION } from "../config/env.js";
 import { geminiGenerateImage } from "../utils/ai-image.js";
+import { uploadBookCover, uploadBookCharacterImage, persistUploadedImage, deleteFileFromImageKit } from "./image.js";
 import { retryWithBranchConflict, isUniqueConstraintError } from "../utils/retry.js";
 import { generateBranchId, getStoryStateWithBranch } from "./story-branch.js";
-import { deleteFileFromImageKit, persistUploadedImage, uploadBookCover, uploadBookCharacterImage } from "./image.js";
-import { sanitizeText, generateSlug, sanitizeKeywords, parseTrait } from "../utils/text-processing.js";
+import { sanitizeText, generateSlug, sanitizeKeywords, parseTrait, cleanSingleLineText, cleanMultilineText } from "../utils/text-processing.js";
 import { generateId, isValidUuid } from "../utils/uuid.js";
 import { calculateActionTendency, calculateStoryMomentum, getStoryStateInfo } from "../utils/story.js";
 import { applyPageTranslation, getPageToTranslate, getPageTranslation, shouldTranslate } from "./translation.js";
@@ -51,7 +51,7 @@ import type { CandidateGenerationPage } from "../types/candidate-generation.js";
 import type { AIDocument, AIPromptDocuments, AIResponseProvider } from "../types/ai-chat.js";
 import type { StoryMC } from "../types/character.js";
 import type { ImageUploadSource } from "../types/image.js";
-import { MAX_ACTION_CHOICES_COMMUNITY } from "../config/story.js";
+import { MAX_ACTION_CHOICES_COMMUNITY, PEN_MC_NAME_MAX_LENGTH, PEN_MC_BIO_MAX_LENGTH, PEN_MC_AGE_MIN, PEN_MC_AGE_MAX } from "../config/story.js";
 
 /**
  * LRU cache for enriched book data
@@ -2145,14 +2145,98 @@ export async function getUserActionHints(userId: string, pageId: string): Promis
  * sanitizeBookTextField('hook', '<script>...</script>') // '' (XSS stripped)
  * sanitizeBookTextField('title', '')                     // undefined
  */
+/**
+ * Sanitizes book text fields (title, hook, summary, endingText, mcName, mcBio)
+ * - Returns sanitized text string, or undefined if the input is missing/empty/invalid
+ * - Strips XSS and dangerous markup
+ * - Preserves emojis and formatting (newlines for multiline fields)
+ *
+ * @param field - The book field to sanitize
+ * @param value - Raw value from the request body
+ * @returns Sanitized text, or undefined to skip
+ */
 export function sanitizeBookTextField(
-  field: 'title' | 'hook' | 'summary',
+  field: 'title' | 'hook' | 'summary' | 'endingText' | 'mcName' | 'mcBio',
   value: unknown,
 ): string | undefined {
   if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim();
-  if (!trimmed) return undefined;
-  return sanitizeText(trimmed);
+  const isMultiline = field === 'hook' || field === 'summary' || field === 'endingText' || field === 'mcBio';
+  const cleaned = isMultiline ? cleanMultilineText(value) : cleanSingleLineText(value);
+  return cleaned || undefined;
+}
+
+/**
+ * Sanitizes an ending object (ending.text and ending.outline beats)
+ */
+export function sanitizeBookEnding(ending: unknown): Ending | undefined {
+  if (!ending || typeof ending !== 'object') return undefined;
+  const e = ending as Partial<Ending>;
+
+  const sanitizedText = e.text ? sanitizeBookTextField('endingText', e.text) : undefined;
+  const sanitizedType = typeof e.type === 'string' && e.type in endingTypes ? (e.type as EndingType) : undefined;
+
+  let sanitizedOutline: StoryOutline[] | undefined;
+  if (Array.isArray(e.outline)) {
+    sanitizedOutline = e.outline
+      .filter((beat): beat is StoryOutline => beat !== null && typeof beat === 'object' && typeof beat.text === 'string')
+      .map((beat) => ({
+        text: cleanMultilineText(beat.text, 250),
+        isDone: Boolean(beat.isDone),
+        ...(typeof beat.doneAtPage === 'number' ? { doneAtPage: beat.doneAtPage } : {}),
+      }));
+  }
+
+  return {
+    ...(sanitizedType ? { type: sanitizedType } : {}),
+    ...(sanitizedText ? { text: sanitizedText } : {}),
+    ...(sanitizedOutline ? { outline: sanitizedOutline } : {}),
+  };
+}
+
+/**
+ * Sanitizes main character profile input (name, bio, gender, age).
+ * Supports partial updates when `existingMc` is provided, preventing silent field drops on PATCH/PUT.
+ * Clamps age between PEN_MC_AGE_MIN and PEN_MC_AGE_MAX.
+ *
+ * @param mc - The raw MC input object
+ * @param existingMc - Optional existing MC record to merge partial updates into
+ * @returns Fully sanitized StoryMC, or undefined if input is invalid/missing name
+ */
+export function sanitizeMainCharacter(mc: unknown, existingMc?: StoryMC): StoryMC | undefined {
+  if (!mc || typeof mc !== 'object') return undefined;
+  const raw = mc as Partial<StoryMC>;
+
+  const name = typeof raw.name === 'string'
+    ? cleanSingleLineText(raw.name, PEN_MC_NAME_MAX_LENGTH)
+    : existingMc?.name;
+
+  const bio = typeof raw.bio === 'string'
+    ? cleanMultilineText(raw.bio, PEN_MC_BIO_MAX_LENGTH)
+    : (existingMc?.bio ?? '');
+
+  const gender = (raw.gender === 'male' || raw.gender === 'female')
+    ? raw.gender
+    : (existingMc?.gender ?? 'male');
+
+  let age = existingMc?.age ?? 0;
+  if (typeof raw.age === 'number' && !Number.isNaN(raw.age) && raw.age >= 0) {
+    age = Math.max(PEN_MC_AGE_MIN, Math.min(Math.floor(raw.age), PEN_MC_AGE_MAX));
+  } else if (typeof raw.age === 'string') {
+    const parsed = parseInt(raw.age, 10);
+    if (!Number.isNaN(parsed) && parsed >= 0) {
+      age = Math.max(PEN_MC_AGE_MIN, Math.min(parsed, PEN_MC_AGE_MAX));
+    }
+  }
+
+  const finalName = name || existingMc?.name;
+  if (!finalName) return undefined;
+
+  return {
+    name: finalName,
+    gender,
+    age,
+    bio,
+  };
 }
 
 /**
@@ -2446,7 +2530,7 @@ export async function uploadBookCoverImage(
  * 
  * @example
  * ```typescript
- * await generateAndUpdateBookCoverImage(book, storyState);
+ * await generateAndUpdateBookCoverImage(book);
  * ```
  */
 export async function generateAndUpdateBookCoverImage(book: Book, state?: StoryState): Promise<void> {

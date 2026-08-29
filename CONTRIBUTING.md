@@ -251,8 +251,25 @@ A few general performance patterns improve latency and reduce load at **any** sc
 
 - **Memoize page-stable serialization**: Re-serializing large story state on every request is wasteful. Use `cachedRender()` from [`src/services/prompt-render-cache.ts`](file:///d:/Projects/Twistloom/Twistloom-backend/src/services/prompt-render-cache.ts) (or a small page-scoped LRU) keyed by a page identifier so repeated chat turns / generation calls skip redundant work. The key must rotate when the page is published to avoid stale renders.
 - **Keep heartbeats cheap**: Last-seen / touch endpoints (`POST /touch`) should be a single atomic `UPDATE`, never a full entity load + recompute.
-- **Cache verified sessions**: A short-TTL cache of the resolved user/session (keyed by a hash of the token, invalidated on logout) avoids re-running JWE crypto on every request.
-- **Coalesce polls + safe edge caching**: Collapse burst polls with `Retry-After` / coalesced responses, and for semi-static authed reads use `private` (never `public`) `Cache-Control` with short `s-maxage` + `stale-while-revalidate`.
+- **Verified auth sessions on hot paths**: Where an endpoint requires both authentication and high throughput, cache the verified auth session token hash for a short TTL (e.g. 5 minutes) and invalidate on logout/profile changes.
+- **Coalesce burst requests on poll endpoints**: Deduplicate concurrent requests for the same resource into a single backend read, and set appropriate `private` `Cache-Control` headers.
+
+---
+
+### 6.7 Input Sanitization & Security Best Practices
+
+To protect against XSS attacks, null-byte injection, and corrupt unicode sequences while preserving international text and emojis:
+
+1. **`sanitizeTextForDB(text, options)` (`src/utils/text-processing.ts`)**:
+   - Decodes HTML entities and strips HTML tags (`<[^>]*>`) and CDATA sections.
+   - Cleans binary null bytes (`\0`) and invalid control characters while preserving zero-width joiners (`\u200D`), variation selectors (`\uFE0E`/`\uFE0F`), skin-tone modifiers (`\p{Sk}`), and Unicode emojis.
+   - Pass `{ preserveNewlines: true }` for multiline text fields (hooks, summaries, notes, endings) to preserve user paragraphs while collapsing excessive blank lines.
+2. **`sanitizeBookTextField(field, value)` (`src/services/book.ts`)**:
+   - Centralized sanitizer for book metadata updates with automatic multiline detection.
+3. **`sanitizeBookEnding` & `sanitizeMainCharacter` (`src/services/book.ts`)**:
+   - Sanitizes structured ending beats, validates ending type against `endingTypes`, and sanitizes MC profile fields.
+4. **Parameter bounds (`src/config/story.ts`)**:
+   - Enforce standard character and numeric boundaries on route handlers (`PEN_TITLE_MAX_LENGTH`, `PEN_SUMMARY_MAX_LENGTH`, `PEN_TARGET_PAGES_MIN/MAX`).
 
 ---
 

@@ -21,6 +21,7 @@ import type { TransactionType } from "../types/credits.js";
 import { PAYMENT_GATEWAY, type PaymentGateway } from "../types/payment.js";
 import type { SubscriptionStatus, SubscriptionTransactionType } from "../types/subscription.js";
 import type { ResourceAIProvider, ResourceAIScore, ResourceTimestamp, ResourceTranslatorType } from "../types/api.js";
+import type { EnforcementAction, ViolationType, ViolationSeverity, RiskTier, ReportTargetType, ReportType, ReportStatus, AppealStatus, ViolationEventSource } from "../types/trust-safety.js";
 import { BOOK_MIN_PAGES } from "../config/story.js";
 import { FIRST_TIME_CREDITS } from "../config/credits.js";
 
@@ -2451,6 +2452,138 @@ export const userReports = pgTable(
     index("user_reports_target_idx").on(t.reportedUserId),
     index("user_reports_reporter_idx").on(t.reporterId),
     index("user_reports_created_idx").on(t.createdAt.desc()),
+  ]
+);
+
+// ── Trust & Safety Enforcement System (Roadmap TS.1) ──────────────────────────
+
+/**
+ * User Trust & Reputation Profile
+ * @summary Tracks dynamic reliability score (0-100), strike count, and risk tier
+ */
+export const userTrustProfiles = pgTable(
+  "user_trust_profiles",
+  {
+    userId: uuid("user_id").primaryKey().references(() => users.userId, { onDelete: "cascade" }),
+    trustScore: integer("trust_score").notNull().default(100), // 0 to 100
+    strikeCount: integer("strike_count").notNull().default(0),
+    riskTier: text("risk_tier").$type<RiskTier>().notNull().default("low"),
+    probationUntil: timestamp("probation_until", { withTimezone: true }),
+    lastEvaluatedAt: timestamp("last_evaluated_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt,
+  },
+  (t) => [
+    index("trust_profiles_score_idx").on(t.trustScore),
+    index("trust_profiles_tier_idx").on(t.riskTier),
+  ]
+);
+
+/**
+ * User Enforcement Actions (Disciplinary Ledger)
+ * @summary Immutable audit trail for all warnings, throttles, suspensions, and bans
+ */
+export const userEnforcementActions = pgTable(
+  "user_enforcement_actions",
+  {
+    id: id(),
+    userId: uuid("user_id").notNull().references(() => users.userId, { onDelete: "cascade" }),
+    action: text("action").$type<EnforcementAction>().notNull(),
+    violationType: text("violation_type").$type<ViolationType>().notNull(),
+    severity: text("severity").$type<ViolationSeverity>().notNull().default("low"),
+    reason: text("reason").notNull(), // User-facing reason
+    internalNotes: text("internal_notes"), // Admin-only confidential notes
+    createdBy: uuid("created_by").references(() => users.userId, { onDelete: "set null" }), // Staff ID or NULL for system
+    expiresAt: timestamp("expires_at", { withTimezone: true }), // NULL for permanent actions
+    isRevoked: boolean("is_revoked").notNull().default(false), // Overturned on appeal
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    index("enforcement_user_active_idx").on(t.userId, t.expiresAt).where(sql`is_revoked = false`),
+    index("enforcement_action_idx").on(t.action),
+    index("enforcement_created_at_idx").on(t.createdAt.desc()),
+  ]
+);
+
+/**
+ * User Violation Events (Forensic Evidence Log)
+ * @summary Immutable log of raw detection events, safety errors, and abuse telemetry
+ */
+export const userViolationEvents = pgTable(
+  "user_violation_events",
+  {
+    id: id(),
+    userId: uuid("user_id").references(() => users.userId, { onDelete: "cascade" }),
+    violationType: text("violation_type").$type<ViolationType>().notNull(),
+    confidenceScore: real("confidence_score").notNull().default(1.0),
+    source: text("source").$type<ViolationEventSource>().notNull(),
+    rawInput: text("raw_input"), // Redacted / sanitized input snippet
+    detectionDetails: jsonb("detection_details").notNull().default(sql`'{}'::jsonb`),
+    ipAddress: text("ip_address"),
+    userAgent: text("user_agent"),
+    createdAt,
+  },
+  (t) => [
+    index("violation_events_user_idx").on(t.userId, t.createdAt.desc()),
+    index("violation_events_type_idx").on(t.violationType),
+    index("violation_events_created_idx").on(t.createdAt.desc()),
+  ]
+);
+
+/**
+ * Polymorphic Moderation Reports Table
+ * @summary Reports across Users, Books, Pages, Comments, Testimonials, and Custom Actions
+ */
+export const moderationReports = pgTable(
+  "moderation_reports",
+  {
+    id: id(),
+    reporterId: uuid("reporter_id").references(() => users.userId, { onDelete: "set null" }),
+    targetType: text("target_type").$type<ReportTargetType>().notNull().default("user"),
+    targetId: uuid("target_id").notNull(),
+    reportedUserId: uuid("reported_user_id").references(() => users.userId, { onDelete: "cascade" }),
+    reportType: text("report_type").$type<ReportType>().notNull(),
+    message: text("message"),
+    status: text("status").$type<ReportStatus>().notNull().default("open"),
+    resolvedBy: uuid("resolved_by").references(() => users.userId, { onDelete: "set null" }),
+    resolutionNotes: text("resolution_notes"),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    index("mod_reports_status_idx").on(t.status),
+    index("mod_reports_target_idx").on(t.targetType, t.targetId),
+    index("mod_reports_reported_user_idx").on(t.reportedUserId),
+    index("mod_reports_created_idx").on(t.createdAt.desc()),
+  ]
+);
+
+/**
+ * Moderation Appeals Table
+ * @summary Self-service user appeals for active enforcement actions
+ */
+export const moderationAppeals = pgTable(
+  "moderation_appeals",
+  {
+    id: id(),
+    enforcementActionId: uuid("enforcement_action_id").notNull().references(() => userEnforcementActions.id, { onDelete: "cascade" }),
+    userId: uuid("user_id").notNull().references(() => users.userId, { onDelete: "cascade" }),
+    appealReason: text("appeal_reason").notNull(),
+    userEvidence: text("user_evidence"),
+    status: text("status").$type<AppealStatus>().notNull().default("pending"),
+    adminNotes: text("admin_notes"),
+    reviewedBy: uuid("reviewed_by").references(() => users.userId, { onDelete: "set null" }),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    index("mod_appeals_status_idx").on(t.status),
+    index("mod_appeals_user_idx").on(t.userId),
+    unique("mod_appeals_action_unique").on(t.enforcementActionId),
   ]
 );
 

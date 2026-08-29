@@ -107,7 +107,7 @@ import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
 import { rateLimit } from "../middleware/rate-limit.js";
 import { books, branches, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress, userCompletedBooks, uploadedImages, userActivityLogs, pages, bookTestimonials, pageReactions, userSessions, companionAnswers } from "../db/schema.js";
 import { getErrorMessage, cApiError, cForbiddenError, cNotFoundError, cRateLimitError, cUnauthorizedError, cValidationError } from "../utils/error.js";
-import { sanitizeTextForDB, sanitizeKeywords } from '../utils/text-processing.js';
+import { sanitizeKeywords, cleanMultilineText } from '../utils/text-processing.js';
 import { stripHtml } from '../utils/sanitize-html.js';
 import { coalescePoll, getCoalesced, setCoalesced, POLL_RETRY_AFTER_SECONDS } from "../utils/poll-coalesce.js";
 import { eq, and, desc, asc, sql, ne, inArray, arrayOverlaps } from "drizzle-orm";
@@ -127,7 +127,7 @@ import { extractPaginationParams, createPaginatedResponse, calculatePaginationMe
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import { validateSearchQuery, validateLanguageCode, isValidLanguageCode, validateAgeRange, validateGender, validateRatingFilter, validateRatingCountFilter, createRelevanceExpression, buildTokenizedSearchCondition, wordJaccardSimilarity, trigramSimilarity, jaccardSimilarity } from "../utils/search.js";
 import type { ImageUploadSource } from "../types/image.js";
-import { updateBook, updateBookVisibility, insertBook, uploadBookCoverImage, uploadBookCharacterAvatarImage, sanitizeBookTextField, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage, mapBookFromDb, invalidatePopularTagsCache, invalidateBookCache, invalidateEnrichedBookCache, invalidatePageOneCache, loadParagraphCommentCounts, loadCommunityActions } from "../services/book.js";
+import { updateBook, updateBookVisibility, insertBook, uploadBookCoverImage, uploadBookCharacterAvatarImage, sanitizeBookTextField, sanitizeBookEnding, sanitizeMainCharacter, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage, mapBookFromDb, invalidatePopularTagsCache, invalidateBookCache, invalidateEnrichedBookCache, invalidatePageOneCache, loadParagraphCommentCounts, loadCommunityActions } from "../services/book.js";
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
 import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookPage, enrichBooksWithUserData } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache } from "../services/cache.js";
@@ -149,6 +149,7 @@ import { SSE_POLLING_CONFIG } from "../config/candidate-generation.js";
 import { getPsychologicalProfileResult } from "../services/psychological-profile.js";
 import { getLockedPaths } from "../services/locked-paths.js";
 import { runGate0, runGate1, buildCustomActionValidationPrompt, buildCanonicalAction, getRejectionMessage, CUSTOM_ACTION_VALIDATION_SCHEMA_DEFINITION, CUSTOM_ACTION_VALIDATION_REQUIRED_FIELDS, CUSTOM_ACTION_GENERATION_STALE_MS } from "../services/custom-actions.js";
+import { recordViolationEvent } from "../services/trust-safety.js";
 import { loadOwnCustomActions, mapCustomActionRowToAction } from "../services/book.js";
 import { customActions } from "../db/schema.js";
 import { getStoryStateFromPage, getStoryState, computeEndingStats, touchReadingSession } from "../services/story.js";
@@ -157,7 +158,7 @@ import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 import { notifyForumOfBookChange, notifyForumStoryArchived } from "../services/forum-queue.js";
 import { createAIOptionsWithSchema, aiPrompt } from "../utils/ai-chat.js";
 import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
-import { BOOK_MIN_PAGES, PEN_AUTHORING_MODES, PEN_DEFAULT_AUTHORING_MODE, PEN_DEFAULT_BOOK_MODE, PEN_DEFAULT_TITLE, PEN_PLACEHOLDER_MC, PEN_SUMMARY_MAX_LENGTH, PEN_TARGET_PAGES_MAX, PEN_TARGET_PAGES_MIN, PEN_TITLE_MAX_LENGTH, PEN_TITLE_MIN_LENGTH } from "../config/story.js";
+import { BOOK_MIN_PAGES, PEN_AUTHORING_MODES, PEN_DEFAULT_AUTHORING_MODE, PEN_DEFAULT_BOOK_MODE, PEN_DEFAULT_TITLE, PEN_PLACEHOLDER_MC, PEN_SUMMARY_MAX_LENGTH, PEN_TARGET_PAGES_MAX, PEN_TARGET_PAGES_MIN, PEN_TITLE_MAX_LENGTH, PEN_TITLE_MIN_LENGTH, COMMENT_CONTENT_MAX_LENGTH } from "../config/story.js";
 import type { CustomActionValidationResult, CustomActionPreviewResponse, CustomActionSubmitResponse } from "../types/custom-action.js";
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { MAX_BRANCHING_PREGENERATION_DEPTH, COMPANION_CACHE_JACCARD_THRESHOLD, COMPANION_CACHE_CANDIDATE_SCAN_LIMIT } from "../config/story.js";
@@ -319,30 +320,25 @@ router.post("/pen", requireAuth, async (c) => {
 
     const userId = c.get("userId")!;
 
+    // Sanitize title and summary with emoji & multiline support
+    const sanitizedTitle = sanitizeBookTextField("title", title);
+    const sanitizedSummary = sanitizeBookTextField("summary", summary);
+
     // `books.mc` is NOT NULL. If the client provided an initial `mc` (e.g. from
     // Text Adventure protagonist onboarding), sanitize and store it. Otherwise,
     // seed the neutral placeholder whose UI label falls back to "MC" (§2.i).
     let mc: StoryMC = PEN_PLACEHOLDER_MC;
     if (body.mc && typeof body.mc === "object" && !Array.isArray(body.mc)) {
-      const rawMc = body.mc as Record<string, unknown>;
-      const mcName = typeof rawMc.name === "string" ? rawMc.name.trim() : "";
-      const mcGender = typeof rawMc.gender === "string" ? rawMc.gender.trim() : "";
-      const mcBio = typeof rawMc.bio === "string" ? rawMc.bio.trim() : "";
-      const mcAge = typeof rawMc.age === "number" && !Number.isNaN(rawMc.age) && rawMc.age > 0 ? rawMc.age : 0;
-      if (mcName || mcGender || mcBio || mcAge > 0) {
-        mc = {
-          name: mcName || PEN_PLACEHOLDER_MC.name,
-          age: mcAge,
-          gender: (mcGender === "female" || mcGender === "male" ? mcGender : PEN_PLACEHOLDER_MC.gender) as StoryMC["gender"],
-          bio: mcBio,
-        };
+      const sanitizedMc = sanitizeMainCharacter(body.mc);
+      if (sanitizedMc) {
+        mc = sanitizedMc;
       }
     }
 
     const created = await insertBook({
       userId,
-      title: title || PEN_DEFAULT_TITLE,
-      summary: summary || null,
+      title: sanitizedTitle || PEN_DEFAULT_TITLE,
+      summary: sanitizedSummary || null,
       mc,
       mode: mode as BookMode,
       language,
@@ -1604,9 +1600,14 @@ router.put("/:id", requireAuth, async (c) => {
     if (mc !== undefined) {
       // Strip image fields from mc — use character-image route for avatar uploads
       const { imageUrl: _imgUrl, imageId: _imgId, ...mcTextFields } = mc;
-      updateData.mc = mcTextFields;
+      const sanitizedMc = sanitizeMainCharacter(mcTextFields, book.mc);
+      if (sanitizedMc) {
+        updateData.mc = sanitizedMc;
+      }
     }
-    if (ending !== undefined) updateData.ending = ending;
+    if (ending !== undefined) {
+      updateData.ending = sanitizeBookEnding(ending);
+    }
 
     // Decision R (§10): the editable "target length" is Pen-only — accepted only
     // when the book is a Pen book, and ignored entirely for non-Pen
@@ -3578,7 +3579,7 @@ router.post("/:id/comments", requireAuth, async (c) => {
     }
 
     // Sanitize content for DB and safety
-    const cleanContent = sanitizeTextForDB(String(content).trim());
+    const cleanContent = cleanMultilineText(content, COMMENT_CONTENT_MAX_LENGTH);
     if (!cleanContent || cleanContent.length === 0) {
       return cValidationError(c, 'Content is required and cannot be empty after sanitization');
     }
@@ -3962,7 +3963,7 @@ router.post("/:id/pages/:pageId/comments", requireAuth, async (c) => {
       if ((parentComment.paragraphNumber ?? null) !== normalizedParagraphNumber) return cValidationError(c, "Parent comment does not belong to this paragraph");
     }
 
-    const cleanContent = sanitizeTextForDB(String(content).trim());
+    const cleanContent = cleanMultilineText(content, COMMENT_CONTENT_MAX_LENGTH);
     if (!cleanContent || cleanContent.length === 0) {
       return cValidationError(c, "Content is required and cannot be empty after sanitization");
     }
@@ -4082,7 +4083,7 @@ router.post("/:id/pages/:pageId/paragraphs/:paragraphNumber/comments", requireAu
       if ((parentComment.paragraphNumber ?? null) !== parsedParagraph) return cValidationError(c, "Parent comment does not belong to this paragraph");
     }
 
-    const cleanContent = sanitizeTextForDB(String(content).trim());
+    const cleanContent = cleanMultilineText(content, COMMENT_CONTENT_MAX_LENGTH);
     if (!cleanContent || cleanContent.length === 0) {
       return cValidationError(c, "Content is required and cannot be empty after sanitization");
     }
@@ -4192,7 +4193,7 @@ router.put("/comments/:id", requireAuth, async (c) => {
     if (contentError) return c.json({ error: contentError }, 400);
 
     // Sanitize content before storing
-    const cleanContent = sanitizeTextForDB(String(content).trim());
+    const cleanContent = cleanMultilineText(content, COMMENT_CONTENT_MAX_LENGTH);
     if (!cleanContent || cleanContent.length === 0) {
       return cValidationError(c, "Comment content is empty after sanitization");
     }
@@ -7194,6 +7195,17 @@ router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, rateLimi
     // Gate 1 — Security filter
     const gate1Result = runGate1(text);
     if (!gate1Result.passed) {
+      if (gate1Result.category === 'injection_attempt' || gate1Result.category === 'denylist') {
+        recordViolationEvent({
+          userId,
+          violationType: gate1Result.category === 'injection_attempt' ? 'prompt_abuse' : 'community_abuse',
+          source: 'client_gate',
+          rawInput: text,
+          detectionDetails: { category: gate1Result.category, endpoint: 'custom_actions_preview' },
+          ipAddress: getClientIp(c),
+          userAgent: c.req.header('user-agent'),
+        }).catch((err) => console.error('[custom-actions] ⚠️ Failed to log violation:', err));
+      }
       return c.json({
         outcome: 'reject',
         message: getRejectionMessage(gate1Result.category),
@@ -7372,6 +7384,17 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit
     // Gate 1 — Security filter
     const gate1Result = runGate1(text);
     if (!gate1Result.passed) {
+      if (gate1Result.category === 'injection_attempt' || gate1Result.category === 'denylist') {
+        recordViolationEvent({
+          userId,
+          violationType: gate1Result.category === 'injection_attempt' ? 'prompt_abuse' : 'community_abuse',
+          source: 'client_gate',
+          rawInput: text,
+          detectionDetails: { category: gate1Result.category, endpoint: 'custom_actions_submit' },
+          ipAddress: getClientIp(c),
+          userAgent: c.req.header('user-agent'),
+        }).catch((err) => console.error('[custom-actions] ⚠️ Failed to log violation:', err));
+      }
       return c.json({
         message: getRejectionMessage(gate1Result.category),
       }, 400);

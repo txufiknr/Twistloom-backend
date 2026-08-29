@@ -347,9 +347,30 @@ bun db:triggers                 # Apply Postgres triggers
 
 ---
 
+### 7. Data Sanitization & Input Security Guidelines
+
+All user-supplied strings and metadata entering backend routes and mutations must be sanitized to protect against XSS, control-character injection, and corrupt character sequences while strictly preserving emojis and valid formatting.
+
+#### A. Sanitization Utilities (`src/utils/text-processing.ts`)
+- **`sanitizeTextForDB(text, options)`**:
+  - Decodes HTML entities and strips HTML tags (`<[^>]*>`) and CDATA sections.
+  - Strips binary null bytes (`\0`) and invalid control characters while preserving zero-width joiners (`\u200D`), variation selectors (`\uFE0E`/`\uFE0F`), skin-tone modifiers (`\p{Sk}`), and Unicode emojis.
+  - When `preserveNewlines: true`, preserves newline breaks (`\n`) and collapses excessive blank lines (`\n{3,}` $\to$ `\n\n`) for multiline fields (summaries, hooks, ending text, notes).
+- **`sanitizeText(text, options)`**: Strips XSS and corrects quotation marks.
+- **`sanitizeKeywords(keywords)`**: Deduplicates, sanitizes each tag via `sanitizeText`, and converts to lowercase.
+
+#### B. Service & Route Handlers (`src/services/book.ts` & `src/routes/books.ts`)
+- **`sanitizeBookTextField(field, value)`**: Sanitizes individual string fields with newline preservation automatically enabled for multiline fields (`hook`, `summary`, `endingText`, `mcBio`).
+- **`sanitizeBookEnding(ending)`**: Sanitizes ending `text`, validates `type` against `endingTypes`, and outline beat text.
+- **`sanitizeMainCharacter(mc)`**: Validates and sanitizes MC profile fields (`name`, `bio`, `gender`, `age`).
+- **Field Length Limits (`src/config/story.ts`)**: Enforce standard length constraints on route parameters (`PEN_TITLE_MAX_LENGTH`, `PEN_SUMMARY_MAX_LENGTH`, `PEN_TARGET_PAGES_MIN/MAX`, etc.).
+
+---
+
 ## 📋 Code Review Checklist for AI Agents
 
 Before providing code modifications:
+- [ ] User-supplied text and metadata fields are sanitized via `sanitizeText` / `sanitizeBookTextField` / `sanitizeBookEnding` / `sanitizeMainCharacter` with appropriate newline preservation and emoji support.
 - [ ] Multi-tier cache rules observed (LRU for process-local reads, Upstash Redis for distributed cache/locks, Postgres `user_cache` for persistent query cache).
 - [ ] Credit deductions use `executeWithCredits` with `tx` passed to all internal database operations.
 - [ ] Out-of-transaction activity logging for analytics so logging never breaks financial commits.
