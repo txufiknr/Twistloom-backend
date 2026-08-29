@@ -18,6 +18,7 @@ import { getErrorMessage } from "./error.js";
 import { sanitizeActionsForMode, validatePageActionsForMode } from "./book-mode.js";
 import { validateGeneratedPage, checkGeneratedPage } from "./page-validation.js";
 import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, insertBook, insertStoryPage, mapBookFromDb, getPageFromDB, getBookFromDB, persistPageWithState, mapToPersistedStoryPage, updateBook, invalidatePopularTagsCache } from "../services/book.js";
+import { getPageGenerationCheckpoint, upsertPageGenerationCheckpoint, deletePageGenerationCheckpoint } from "../services/page-generation-checkpoints.js";
 import { runCanonValidationPass, insertCanonValidationAudit } from "../services/canon-validation.js";
 import { dbWrite, dbRead } from "../db/client.js";
 import { bookGenerations } from "../db/schema.js";
@@ -48,7 +49,7 @@ import type { AIChatStreamResult, ProgressCallback } from "../types/sse.js";
 import type { CandidateGenerationPage, CandidatePagesGeneration } from "../types/candidate-generation.js";
 import { ucfirst } from "./formatter.js";
 import { daysBetween, formatMinutes, toUtcMidnight } from "./time.js";
-import { HINT_GUIDANCE_MAP, MAX_FINAL_COMMENT_LENGTH, PROMPT_SYSTEM_WRITING_STYLE, RULES_PAGE_TEXT_BY_PRESET } from "../config/book-creation.js";
+import { BOOK_CREATION_PROMPT_MIN_CHARS, HINT_GUIDANCE_MAP, MAX_FINAL_COMMENT_LENGTH, PROMPT_SYSTEM_WRITING_STYLE, RULES_PAGE_TEXT_BY_PRESET } from "../config/book-creation.js";
 import type { WritingPreset } from "../types/book-creation.js";
 import { formatOneOf } from "./text-processing.js";
 import { sanitizePromptAppend } from "./prompt-security.js";
@@ -5158,39 +5159,60 @@ async function generateStoryGenerationMultiTurn(options: {
   const { promptParams, advancedState, action, config, documents, cachedContentId, systemPrompt, nextPreset } = setup;
   const { sceneType } = actionedPage;
 
-  // TODO(Phase 6, roadmap Part 2.6): check pageGenerationCheckpoints for a
-  // cached StoryPage for this (actionedPageId, action, fateIndex) before
-  // running Turn A, and skip straight to Turn B if found. Not yet
-  // implemented — Turn A always runs fresh for now. This is never worse
-  // than today's behavior (a Turn-B failure still gets retried to success
-  // by the existing retry layers, just without the cost optimization yet).
+  const fateIndex = fateContext?.fateIndex ?? 0;
 
-  // ── Turn A: StoryPage ────────────────────────────────────────────────
-  const storyPageResponse = await runGenerationStage<StoryPageGeneration>({
-    stage: 'story_page',
-    prompt: buildStoryPagePrompt(promptParams, fateContext),
-    systemPrompt, // buildPresetSystemPrompt('next', nextPreset) — already computed by prepareNextPageGenerationSetup, identical for Turn A
-    fieldInstructions: buildStoryPageFieldInstructions(advancedState, action, sceneType),
-    reviewChecklist: buildStoryPageReviewChecklist(advancedState, book.language),
-    jsonStructure: storyPageOutputFormat,
-    schema: STORY_PAGE_SCHEMA_DEFINITION,
-    requiredFields: STORY_PAGE_REQUIRED_FIELDS,
-    fallbackField: 'text',
-    config,
-    maxOutputToken: STORY_PAGE_MAX_OUTPUT_TOKEN,
-    documents,
-    cachedContentId,
-    context: baseContext,
-    bookId: book.id,
-  }, onProgress, onGenerationProgress);
+  // Phase 6 (roadmap Part 2.6): skip Turn A entirely if a prior attempt for
+  // this exact (parent page, action, fate slot) already produced a valid
+  // StoryPage — the checkpoint survives even though that attempt's Turn B
+  // failed (or hasn't run yet). getPageGenerationCheckpoint never throws
+  // (a lookup failure is treated as a cache miss), so this can't turn into
+  // a new failure mode — worst case it behaves exactly like before this
+  // cache existed.
+  const existingCheckpoint = await getPageGenerationCheckpoint(actionedPage.id, action.text, fateIndex);
 
-  if (!storyPageResponse.result) {
-    throw new Error('Failed to generate page: no result (story_page turn)');
+  let storyPage: StoryPageGeneration;
+  if (existingCheckpoint) {
+    storyPage = existingCheckpoint.storyPageJson;
+    console.log(`[${baseContext}] ♻️ Checkpoint hit — reusing cached StoryPage, skipping Turn A`);
+  } else {
+    // ── Turn A: StoryPage ────────────────────────────────────────────────
+    const storyPageResponse = await runGenerationStage<StoryPageGeneration>({
+      stage: 'story_page',
+      prompt: buildStoryPagePrompt(promptParams, fateContext),
+      systemPrompt, // buildPresetSystemPrompt('next', nextPreset) — already computed by prepareNextPageGenerationSetup, identical for Turn A
+      fieldInstructions: buildStoryPageFieldInstructions(advancedState, action, sceneType),
+      reviewChecklist: buildStoryPageReviewChecklist(advancedState, book.language),
+      jsonStructure: storyPageOutputFormat,
+      schema: STORY_PAGE_SCHEMA_DEFINITION,
+      requiredFields: STORY_PAGE_REQUIRED_FIELDS,
+      fallbackField: 'text',
+      config,
+      maxOutputToken: STORY_PAGE_MAX_OUTPUT_TOKEN,
+      documents,
+      cachedContentId,
+      context: baseContext,
+      bookId: book.id,
+    }, onProgress, onGenerationProgress);
+
+    if (!storyPageResponse.result) {
+      throw new Error('Failed to generate page: no result (story_page turn)');
+    }
+    storyPage = storyPageResponse.result;
+
+    // Best-effort — never blocks or fails Turn B if this write fails
+    // (upsertPageGenerationCheckpoint catches internally and only logs).
+    // Awaited (not fire-and-forget) so the checkpoint is reliably in place
+    // before Turn B runs, in case Turn B fails immediately.
+    await upsertPageGenerationCheckpoint({
+      bookId: book.id,
+      actionedPageId: actionedPage.id,
+      actionText: action.text,
+      fateIndex,
+      storyPageJson: storyPage,
+      storyPageProvider: storyPageResponse.provider,
+      storyPageModel: storyPageResponse.model,
+    });
   }
-  const storyPage = storyPageResponse.result;
-
-  // TODO(Phase 6): upsert pageGenerationCheckpoints row with `storyPage`
-  // here (best-effort — log and continue on failure, never block Turn B).
 
   // ── Turn B: StateDelta (sees Turn A's output via buildStateDeltaPrompt's
   //    "GENERATED PAGE" section) ──────────────────────────────────────────
@@ -5420,6 +5442,20 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
     book,
   });
 
+  // Phase 6 (roadmap Part 2.6): the checkpoint (if one exists — only the
+  // multi-turn path ever creates one) is no longer needed once the merged
+  // page has persisted successfully. Gated on the flag purely to skip a
+  // wasted round-trip on the legacy path, which never creates a checkpoint
+  // in the first place; deletePageGenerationCheckpoint is itself always
+  // safe to call unconditionally (a no-op on a missing row) if that gate
+  // is ever removed. Awaited, not fire-and-forget: it's cheap, and
+  // ordering it before the truly-fire-and-forget audit/embed calls below
+  // keeps this step visibly tied to "persistence just succeeded" rather
+  // than racing with them.
+  if (USE_MULTI_TURN_GENERATION) {
+    await deletePageGenerationCheckpoint(actionedPage.id, action.text, 0);
+  }
+
   // Fire-and-forget canon audit (needs pageId)
   if (canonPass.audit) {
     void insertCanonValidationAudit({
@@ -5513,7 +5549,7 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
   // structurally satisfy AIResponse<StoryGeneration>, but both satisfy
   // AIResponseProvider trivially, since neither of AIResponseProvider's
   // picked fields depends on the generic parameter at all).
-  let generatedAlternatives: { result: StoryGeneration; response: AIResponseProvider }[];
+  let generatedAlternatives: { result: StoryGeneration; response: AIResponseProvider; fateIndex?: number }[];
 
   if (USE_MULTI_TURN_GENERATION) {
     const settled = await Promise.allSettled(
@@ -5533,7 +5569,7 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
     generatedAlternatives = [];
     settled.forEach((outcome, index) => {
       if (outcome.status === 'fulfilled' && outcome.value.result) {
-        generatedAlternatives.push({ result: outcome.value.result, response: outcome.value });
+        generatedAlternatives.push({ result: outcome.value.result, response: outcome.value, fateIndex: index });
       } else {
         const reason = outcome.status === 'rejected' ? outcome.reason : new Error('No result');
         console.error(`[${context}] ❌ Alternative fate ${index + 1}/${candidateCount} generation failed:`, getErrorMessage(reason));
@@ -5590,13 +5626,19 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
   let lastError: unknown = null;
 
   // 5. Per-page state processing and persistence
-  for (const [index, { result: generatedStoryPageResult, response: alternativeResponse }] of generatedAlternatives.entries()) {
+  for (const [index, { result: generatedStoryPageResult, response: alternativeResponse, fateIndex }] of generatedAlternatives.entries()) {
+    // Real 0-based fateIndex the checkpoint (if any) was stored under in
+    // generateStoryGenerationMultiTurn. `index` here is only the array
+    // position and diverges from it whenever an earlier alternative was
+    // skipped (generation failure at settle time, or validation failure
+    // below), so always prefer the carried fateIndex when present.
+    const realFateIndex = fateIndex ?? index;
     const isFirstAlternative = index === 0;
-    const fateLogContext = `${context}:fate-${index + 1}`;
+    const fateLogContext = `${context}:fate-${realFateIndex + 1}`;
 
     // Skip invalid alternatives; outer retry covers full-batch failure when none remain
     if (!checkGeneratedPage(generatedStoryPageResult, undefined, fateLogContext)) {
-      lastError = new Error(`Alternative fate ${index + 1} failed validation`);
+      lastError = new Error(`Alternative fate ${realFateIndex + 1} failed validation`);
       continue;
     }
 
@@ -5616,14 +5658,14 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
     generatedStoryPage = canonPass.page;
 
     // Resolve state updates using the helper
-    const { newState, fullStateDelta } = resolvePageDelta({
-      generatedStoryPage,
-      advancedState,
-      currentState,
-      expectedPageNumber,
-      context,
-      fateIndex: index + 1
-    });
+      const { newState, fullStateDelta } = resolvePageDelta({
+        generatedStoryPage,
+        advancedState,
+        currentState,
+        expectedPageNumber,
+        context,
+        fateIndex: realFateIndex + 1
+      });
 
     // Determine branchId
     let branchId: string;
@@ -5638,11 +5680,11 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
       });
     } catch (error) {
       // Non-retryable signals abort the entire loop
-      console.error(`[${context}] ❌ Cannot determine branchId for alternative fate ${index + 1}/${generatedAlternatives.length}:`, getErrorMessage(error));
-      throw error; 
+      console.error(`[${context}] ❌ Cannot determine branchId for alternative fate ${realFateIndex + 1}/${generatedAlternatives.length}:`, getErrorMessage(error));
+      throw error;
     }
-    
-    console.log(`[${context}] 🌳 Alternative fate ${index + 1}/${generatedAlternatives.length} — branchId: ${branchId} (${branchId === parentBranchId ? "inherited from parent" : "new branch"})`);
+
+    console.log(`[${context}] 🌳 Alternative fate ${realFateIndex + 1}/${generatedAlternatives.length} — branchId: ${branchId} (${branchId === parentBranchId ? "inherited from parent" : "new branch"})`);
     usedBranchIds.add(branchId);
 
     // Persist page and its state atomically
@@ -5663,7 +5705,19 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
       });
 
       newPages.push(newPage);
-      console.log(`[${context}] 🌌 Persisted alternative fate ${index + 1}/${generatedAlternatives.length} — page ${newPage.id}`);
+      console.log(`[${context}] 🌌 Persisted alternative fate ${realFateIndex + 1}/${generatedAlternatives.length} — page ${newPage.id}`);
+
+      // Phase 6 (roadmap Part 2.6): same rationale as generateNextPage's
+      // equivalent call — the checkpoint for this specific fateIndex is no
+      // longer needed once its page has persisted. `realFateIndex` is the
+      // 0-based fateIndex the checkpoint (if any) for this alternative was
+      // stored/looked-up under in generateStoryGenerationMultiTurn. It is
+      // carried explicitly through generatedAlternatives because the array
+      // position (`index`) diverges from it whenever an earlier alternative
+      // was skipped (generation or validation failure).
+      if (USE_MULTI_TURN_GENERATION) {
+        await deletePageGenerationCheckpoint(actionedPage.id, action.text, realFateIndex);
+      }
 
       if (canonPass.audit) {
         void insertCanonValidationAudit({
@@ -5681,7 +5735,7 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
     } catch (error) {
       // One alternative failing should not abort the others
       lastError = error;
-      console.error(`[${context}] ❌ Failed to persist alternative fate ${index + 1}/${generatedAlternatives.length} (branchId: ${branchId}):`, getErrorMessage(error));
+      console.error(`[${context}] ❌ Failed to persist alternative fate ${realFateIndex + 1}/${generatedAlternatives.length} (branchId: ${branchId}):`, getErrorMessage(error));
     }
   }
 
@@ -5878,17 +5932,6 @@ Draft: "${summary.trim()}"`
  * Elements: Atmospheric dread, unreliable narrators, hidden agendas, psychological manipulation, isolation, and the blurring line between reality and delusion
  * ```
  */
-/**
- * Minimum characters a generated book-creation prompt must contain to be
- * considered complete. Below this we assume the provider stream was truncated
- * (silent reset / dropped connection) and let `aiStreamSSE` fall through to the
- * next model/provider instead of shipping a partial "surprise me" prompt.
- * A complete prompt (Title / Protagonist / Setting / Premise / Tone / Elements)
- * is normally several hundred characters, so this is a conservative floor that
- * still catches mid-word cutoffs like "...\nPrem".
- */
-export const BOOK_CREATION_PROMPT_MIN_CHARS = 120;
-
 export async function generateBookCreationPromptStream(params: GenerateBookCreationPromptParams = {}): Promise<AIChatStreamResult> {
   const { logPrompts = false, signal, language = 'en', title, summary } = params;
   const { systemPrompt, userPrompt } = getBookCreationPrompts(language, title, summary);

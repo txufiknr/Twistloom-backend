@@ -25,6 +25,17 @@ export const HOURLY_RETRY_BATCH_SIZE = 5;
 export const PENDING_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes for pending status
 
 /**
+ * Minimum characters a generated book-creation prompt must contain to be
+ * considered complete. Below this we assume the provider stream was truncated
+ * (silent reset / dropped connection) and let `aiStreamSSE` fall through to the
+ * next model/provider instead of shipping a partial "surprise me" prompt.
+ * A complete prompt (Title / Protagonist / Setting / Premise / Tone / Elements)
+ * is normally several hundred characters, so this is a conservative floor that
+ * still catches mid-word cutoffs like "...\nPrem".
+ */
+export const BOOK_CREATION_PROMPT_MIN_CHARS = 120;
+
+/**
  * Maximum time to wait for AI theme validation in the async route.
  *
  * The async route races `validateThemeWithAI` against this timeout. If the AI

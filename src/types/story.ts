@@ -743,7 +743,12 @@ export const archetypes = {
   "the_fatalist": "Punish their resignation. Slowly constrict their agency and force claustrophobic, unavoidable existential confrontations.",
 } as const;
 
-/** Union type of all 6 canonical psychological archetypes */
+/**
+ * Union type of all 6 canonical psychological archetypes
+ * 
+ * Generated from the archetypes object to ensure type safety
+ * when specifying MC behavioral patterns.
+ */
 export type Archetype = keyof typeof archetypes;
 
 /**

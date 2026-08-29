@@ -7,7 +7,7 @@ import type { BookGenerationStatus, StoryGenerationStep, BookStatus, BookVisibil
 import type { AdvancedOptionsConfig } from "../types/book-creation.js";
 import type { SessionStatus } from "../types/session.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
-import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryIntegrity, Difficulty, Action, StateDelta, Ending, PlotFlag, ActionTranslation, StoryStateSource, FutureNote, FactHistory, SelectedAction, StoryState, StoryPage, SceneType, Mood, StoryMomentum, SceneCharacter, SanityState } from "../types/story.js";
+import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryIntegrity, Difficulty, Action, StateDelta, Ending, PlotFlag, ActionTranslation, StoryStateSource, FutureNote, FactHistory, SelectedAction, StoryState, StoryPage, StoryPageGeneration, SceneType, Mood, StoryMomentum, SceneCharacter, SanityState } from "../types/story.js";
 import type { CharacterMemory, Injury } from "../types/character.js";
 import type { PlaceMemory, PlaceMemoryTranslation, PlaceWeather } from "../types/places.js";
 import type { ActionProgressStatus } from "../types/candidate-generation.js";
@@ -137,6 +137,70 @@ export const pages = pgTable(
     index("pages_is_generating_started_active_idx")
       .on(t.isGeneratingStartedAt)
       .where(sql`${t.isGeneratingStartedAt} IS NOT NULL`),
+  ]
+);
+
+/**
+ * Turn-A result checkpoint cache for multi-turn (stage-split) page
+ * generation — MULTI_TURN_PAGE_GENERATION_ROADMAP.md Part 2.6, Phase 6.
+ *
+ * NOT a task/retry ledger. The existing retry machinery
+ * (`pages.pendingGenerationCount` + the `retry-pending-generations` cron +
+ * `ensureCandidatesForPageWithStrategy`'s in-process backoff) already
+ * guarantees eventual success on any `generateNextPage(s)` failure —
+ * discovered during this project's own review, not assumed. This table
+ * exists purely so a retried attempt can SKIP Turn A (StoryPage) when a
+ * valid one was already produced on a prior attempt whose Turn B
+ * (StateDelta) failed — a cost optimization on top of that existing
+ * guarantee, not a correctness fix for a gap that doesn't exist. Rows are
+ * deleted the moment the merged page persists successfully; a surviving
+ * row means "Turn A succeeded, this candidate hasn't persisted yet" and
+ * nothing more.
+ *
+ * Validity has no TTL: `advancedState` is reconstructed deterministically
+ * from the immutable parent page + action, not from live state that could
+ * drift, so a cached StoryPage never goes stale regardless of how long it
+ * sits here — it can only become orphaned (e.g. the action it belongs to
+ * gets replaced by a fallback "continue" action), which is a storage-
+ * hygiene concern, not a correctness one (Part 2.6, Phase 6 Step 6.4 —
+ * optional, deferred cleanup sweep).
+ *
+ * @example
+ * {
+ *   "id": "chk123",
+ *   "book_id": "book456",
+ *   "actioned_page_id": "page789",
+ *   "action_text": "Open the door",
+ *   "fate_index": 0,
+ *   "story_page_json": { "text": "...", "actions": [...], ... }
+ * }
+ */
+export const pageGenerationCheckpoints = pgTable(
+  "page_generation_checkpoints",
+  {
+    id: id(),
+    bookId: bookId("cascade"),
+    // Parent page this action belongs to — the page the reader acted on to
+    // trigger this generation, not the page being generated.
+    actionedPageId: uuid("actioned_page_id").notNull().references(() => pages.id, { onDelete: "cascade" }),
+    // Identifies which of the parent page's actions this checkpoint is for
+    // — a single parent page can have multiple actions, each independently
+    // generating (and potentially retrying) its own next page.
+    actionText: text("action_text").notNull(),
+    // Alternative slot (0-based) within a generateNextPages batch; always 0
+    // for generateNextPage's single-page path.
+    fateIndex: integer("fate_index").notNull().default(0),
+    storyPageJson: jsonb("story_page_json").$type<StoryPageGeneration>().notNull(),
+    storyPageProvider: text("story_page_provider").$type<AIChatProvider | "none">(),
+    storyPageModel: text("story_page_model"),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    // The core lookup + idempotency key: one checkpoint per (parent page, action, fate slot).
+    unique("page_generation_checkpoints_action_fate_unique").on(t.actionedPageId, t.actionText, t.fateIndex),
+    // For the optional orphan-cleanup sweep (Step 6.4, deferred) and general observability.
+    index("page_generation_checkpoints_book_idx").on(t.bookId),
   ]
 );
 
@@ -2880,4 +2944,4 @@ export const companionAnswers = pgTable(
     index("companion_answers_page_idx").on(t.pageId),
     index("companion_answers_created_idx").on(t.createdAt.desc()),
   ]
-);
+);
