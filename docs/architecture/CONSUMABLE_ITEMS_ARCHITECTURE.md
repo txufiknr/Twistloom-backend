@@ -1,9 +1,9 @@
 # Twistloom Consumable Items Architecture
 
-**Document version:** 1.0.0  
-**Status:** 💡 Implemented (SSOT Registry + Inventory Table)  
+**Document version:** 1.1.0  
+**Status:** 💡 Implemented (SSOT Registry + Inventory Table + Dedicated Consumables Service)  
 **Parent System:** [Broadcast (📣 Megaphone) Architecture](./BROADCAST_ARCHITECTURE.md) · [Payments & Credits Architecture](../architecture/PAYMENTS_ARCHITECTURE_BACKEND.md)  
-**Implementation Source Code:** [`src/config/consumables.ts`](../../src/config/consumables.ts) · [`src/types/broadcast.ts`](../../src/types/broadcast.ts) · [`src/db/schema.ts`](../../src/db/schema.ts) · [`src/services/broadcast.ts`](../../src/services/broadcast.ts)
+**Implementation Source Code:** [`src/config/consumables.ts`](../../src/config/consumables.ts) · [`src/types/consumable.ts`](../../src/types/consumable.ts) · [`src/db/schema.ts`](../../src/db/schema.ts) · [`src/services/consumables.ts`](../../src/services/consumables.ts) · [`src/routes/consumables.ts`](../../src/routes/consumables.ts)
 
 ---
 
@@ -26,14 +26,14 @@ flowchart LR
     end
 
     subgraph Purchase ["Purchase (credits → inventory)"]
-        P1["POST /broadcasts/purchase"]
+        P1["POST /api/consumables/purchase"]
         P2["executeWithCredits(def.creditsPrice)"]
         P3["tx: user_inventory.quantity + 1"]
     end
 
     subgraph Spend ["Spend (inventory only)"]
-        S1["POST /broadcasts (submit)"]
-        S2["tx: FOR UPDATE, quantity - 1"]
+        S1["POST /api/broadcasts (submit)"]
+        S2["tx: deductUserItem(tx, userId, itemType, 1)"]
         S3["feature executes (broadcast scheduled)"]
     end
 

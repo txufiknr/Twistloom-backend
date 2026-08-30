@@ -13,7 +13,8 @@ import type { PlaceMemory, PlaceMemoryTranslation, PlaceWeather } from "../types
 import type { ActionProgressStatus } from "../types/candidate-generation.js";
 import type { StoryThread, StoryThreadTranslation } from "../types/story-thread.js";
 import type { CustomActionOutcome, CustomActionRejectionCategory } from "../types/custom-action.js";
-import type { InventoryItemType, BroadcastSource, BroadcastType, BroadcastStatus, BroadcastRejectReason, BroadcastModerationResult } from "../types/broadcast.js";
+import type { InventoryItemType } from "../types/consumable.js";
+import type { BroadcastSource, BroadcastType, BroadcastStatus, BroadcastRejectReason, BroadcastModerationResult } from "../types/broadcast.js";
 import type { QuestStatus } from "../types/quests.js";
 import type { BetaDutyStatus } from "../types/beta-duties.js";
 import type { CanonValidationOutcome, CanonViolation, CanonViolationType } from "../types/canon-validation.js";

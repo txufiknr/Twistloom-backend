@@ -171,9 +171,9 @@ All endpoints return the standard envelope `{ "error": "Human-readable message" 
 ## Implementation Reference
 
 - Route handler: [`src/routes/consumables.ts`](../../src/routes/consumables.ts)
-- Service: [`src/services/broadcast.ts`](../../src/services/broadcast.ts) — `purchaseConsumable`, `getUserItemCount`
+- Service: [`src/services/consumables.ts`](../../src/services/consumables.ts) — `purchaseConsumable`, `getUserItemCount`, `deductUserItem`
 - Registry (SSOT): [`src/config/consumables.ts`](../../src/config/consumables.ts) — `CONSUMABLES_REGISTRY`, `getConsumable`
 - Rate limits: [`src/config/ai-rate-limits.ts`](../../src/config/ai-rate-limits.ts) — `CONSUMABLE_PURCHASE_RATE_LIMIT`
 - Credits: [`src/services/credits.ts`](../../src/services/credits.ts) — `executeWithCredits`
 - Schema: [`src/db/schema.ts`](../../src/db/schema.ts) — `user_inventory`
-- Types: [`src/types/broadcast.ts`](../../src/types/broadcast.ts) — `InventoryItemType`
+- Types: [`src/types/consumable.ts`](../../src/types/consumable.ts) — `InventoryItemType`, `ConsumableItemDefinition`

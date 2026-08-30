@@ -105,18 +105,30 @@ export const BROADCAST_SECURITY_PATTERNS: RegExp[] = [
  * `BroadcastRejectReason` so the early-fail can surface a specific reason
  * without spending an AI token.
  *
- * These are intentionally narrow and unambiguous (clear self-harm
- * encouragement, obvious scam/phishing framing). Anything nuanced — hate
- * dogwhistles, contextual harassment, sexual implication — is deliberately
- * LEFT to the AI pass, which is the last-resort semantic judge. Keep this list
- * conservative: false positives here block legitimate broadcasts for free.
+ * This is the deterministic first line of defense against spam, scam, and abuse:
+ * link-spam / injection / mass-mention are already handled earlier in Gate 1
+ * (`BROADCAST_SECURITY_PATTERNS`); this layer adds unambiguous self-harm,
+ * financial-scam, and self-promotion/spam phrasing so those never even reach
+ * the AI model.
+ *
+ * Anything nuanced — hate dogwhistles, contextual harassment, sexual
+ * implication, borderline promo — is deliberately LEFT to the AI pass, which is
+ * the last-resort semantic judge. Keep every pattern here HIGH SIGNAL: each one
+ * must be unambiguous enough that a false positive (blocking a legitimate
+ * broadcast) is essentially impossible, because this layer blocks for free.
  */
 export const BROADCAST_HEURISTIC_PATTERNS: { pattern: RegExp; reason: BroadcastRejectReason }[] = [
   // Unambiguous self-harm encouragement (high-signal directives)
   { pattern: /\b(kys|kms|kill\s+yourself|kill\s+yrself|end\s+it\s+all\s+now)\b/i, reason: "self_harm" },
 
-  // Obvious scam / phishing framing
-  { pattern: /\b(free\s*(?:crypto|btc|eth)\s*(?:giveaway|airdrop))\b/i, reason: "scam" },
-  { pattern: /\b(?:dm|message)\s+(?:me|us)\s+(?:to|for)\s+(?:earn|win|get\s+cash|free\s+money)\b/i, reason: "scam" },
+  // Financial solicitation / money scams (cash apps, classic free-money lures)
+  { pattern: /\b(cash\s?app|cashapp|venmo|paypal\s?\.?\s?me|zelle)\b/i, reason: "scam" },
+  { pattern: /\b(free\s+(?:robux|v-?bucks|nitro|followers|gift\s+cards?|crypto|btc|eth))\b/i, reason: "scam" },
+  { pattern: /\b(?:dm|message|text)\s+(?:me|us)\s+(?:to|for)\s+(?:earn|win|get\s+cash|free\s+money)\b/i, reason: "scam" },
   { pattern: /\b(claim\s+your\s+(?:reward|prize|gift)\s+(?:now|today))\b/i, reason: "scam" },
+
+  // Obvious self-promotion / spam (platform-specific plugs only — high signal)
+  { pattern: /\b(follow\s+me\s+(?:on|@)\s+(?:insta|instagram|tiktok|yt|youtube|twitch|snap|snapchat|twitter|x|discord))\b/i, reason: "spam" },
+  { pattern: /\b(sub\s*(?:to|on)\s+(?:my\s+)?(?:youtube|channel|twitch|tiktok))\b/i, reason: "spam" },
+  { pattern: /\b(check\s+(?:out\s+)?my\s+(?:channel|profile|page|store|link|bio))\b/i, reason: "spam" },
 ];

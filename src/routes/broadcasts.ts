@@ -225,7 +225,7 @@ function mapSubmitError(c: Context<AppEnv>, error: BroadcastSubmitError) {
     case "no_megaphone":
       return cValidationError(c, error.message);
     case "cooldown": {
-      const seconds = parseInt(error.message.replace(/\D/g, ""), 10) || BROADCAST_DISPLAY_SECONDS;
+      const seconds = error.retryAfterSeconds ?? BROADCAST_DISPLAY_SECONDS;
       c.header("Retry-After", String(seconds));
       return c.json({ error: error.message }, 429);
     }

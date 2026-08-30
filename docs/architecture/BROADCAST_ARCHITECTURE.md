@@ -31,34 +31,33 @@ This yields a calm, single-live-slot banner where the only "cost" to the user is
 ```mermaid
 flowchart TD
     subgraph Client ["Client (composer / banner)"]
-        C1["GET /current (poll)"]
+        C1["GET /current (poll / SSE)"]
         C2["POST /preview"]
         C3["POST / (submit)"]
-        C4["POST /purchase"]
+        C4["POST /api/consumables/purchase"]
     end
 
-    subgraph Service ["src/services/broadcast.ts"]
+    subgraph Service ["src/services/broadcast.ts & src/services/consumables.ts"]
         G1["Gate 1: validateBroadcastInput<br/>(length, chars, injection)"]
         BAN["Banned check (users.bannedAt)"]
         CD["Cooldown + queue-full check (Redis)"]
         OWN["Ownership check (user_inventory)"]
         H1["Gate 1b: runBroadcastHeuristics<br/>(free regex, early-fail)"]
         G2["Gate 2: moderateBroadcast<br/>(AI JSON-mode — LAST RESORT)"]
-        TX["tx: spend Megaphone + insert broadcast<br/>(FOR UPDATE)"]
-        SCHED["computeSchedule (FIFO window)"]
+        TX["tx: deductUserItem + computeSchedule + insert broadcast<br/>(Atomic with FOR UPDATE)"]
     end
 
     subgraph Data ["Postgres + Redis"]
         INV["user_inventory (megaphone qty)"]
         BC["broadcasts (queued)"]
         RPT["broadcast_reports"]
-        RD["Redis: cooldown TTL + current cache"]
+        RD["Redis: cooldown TTL + current cache (null-cached)"]
     end
 
     C4 -->|credits| INV
     C2 --> G1 --> BAN --> G2
     C3 --> G1 --> BAN --> CD --> OWN --> H1 --> G2
-    G2 -->|approve| SCHED --> TX
+    G2 -->|approve| TX
     TX --> INV
     TX --> BC
     C3 -->|reject| INV

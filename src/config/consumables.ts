@@ -13,27 +13,8 @@
  * @see src/services/broadcast.ts for the Megaphone purchase / spend flow
  */
 
-import type { InventoryItemType } from "../types/broadcast.js";
-
-/**
- * A purchasable consumable definition.
- */
-export interface ConsumableItemDefinition {
-  /** Stable inventory key; must match {@link InventoryItemType}. */
-  type: InventoryItemType;
-  /** Human-readable name shown in the purchase UI (emoji-friendly). */
-  name: string;
-  /** Short, user-facing description of what the item does. */
-  description: string;
-  /** Credit cost to buy ONE unit. SSOT for the price. */
-  creditsPrice: number;
-  /** When `false`, the item cannot be purchased (hidden/disabled in UI). */
-  available: boolean;
-  /** Optional glyph shown next to the name. */
-  icon?: string;
-  /** Optional purchase cap per user (undefined = unlimited). */
-  maxPerUser?: number;
-}
+import type { InventoryItemType, ConsumableItemDefinition } from "../types/consumable.js";
+export type { ConsumableItemDefinition };
 
 /**
  * The registry of all purchasable consumables. Keep entries ordered by

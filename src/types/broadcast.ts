@@ -7,13 +7,8 @@
  * into a FIFO queue with a single live slot.
  */
 
-/**
- * Kinds of consumable items a user can own in `user_inventory`.
- * Mirrors the `type` field of {@link ConsumableItemDefinition} in the
- * consumables registry (`src/config/consumables.ts`). Adding a new purchasable
- * item means adding it here AND in the registry.
- */
-export type InventoryItemType = "megaphone";
+import type { InventoryItemType } from "./consumable.js";
+export type { InventoryItemType };
 
 /** Origin of a broadcast — users pay; the system can emit events for free. */
 export type BroadcastSource = "user" | "system";

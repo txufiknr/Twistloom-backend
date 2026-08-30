@@ -23,12 +23,12 @@ import type { AppEnv } from "../hono/env.js";
 import { requireAuth } from "../middleware/nextauth.js";
 import { rateLimit } from "../middleware/rate-limit.js";
 import { cApiError, cValidationError } from "../utils/error.js";
-import { purchaseConsumable, getUserItemCount } from "../services/broadcast.js";
+import { purchaseConsumable, getUserItemCount } from "../services/consumables.js";
 import {
   CONSUMABLES_REGISTRY,
   CONSUMABLES_BY_TYPE,
 } from "../config/consumables.js";
-import type { InventoryItemType } from "../types/broadcast.js";
+import type { InventoryItemType } from "../types/consumable.js";
 import { CONSUMABLE_PURCHASE_RATE_LIMIT } from "../config/ai-rate-limits.js";
 
 const router = new Hono<AppEnv>();
@@ -90,7 +90,10 @@ router.post(
       const userId = c.get("userId")!;
       const { itemType } = c.get("body") as { itemType?: unknown };
 
-      if (typeof itemType !== "string" || !(itemType in CONSUMABLES_BY_TYPE)) {
+      if (
+        typeof itemType !== "string" ||
+        !Object.prototype.hasOwnProperty.call(CONSUMABLES_BY_TYPE, itemType)
+      ) {
         return cValidationError(c, "itemType is required and must be a valid consumable");
       }
 

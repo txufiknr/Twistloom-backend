@@ -20,13 +20,8 @@
  */
 
 import { and, desc, eq, gt, lte, sql } from "drizzle-orm";
-import { dbRead, dbWrite } from "../db/client.js";
-import {
-  broadcasts,
-  userInventory,
-  broadcastReports,
-  users,
-} from "../db/schema.js";
+import { type DBClient, dbRead, dbWrite } from "../db/client.js";
+import { broadcasts, broadcastReports, users } from "../db/schema.js";
 import { generateId } from "../utils/uuid.js";
 import { getErrorMessage } from "../utils/error.js";
 import { getRedisClient } from "../utils/redis.js";
@@ -48,16 +43,21 @@ import {
   BROADCAST_SECURITY_PATTERNS,
   BROADCAST_HEURISTIC_PATTERNS,
 } from "../config/broadcast.js";
-import { getConsumable } from "../config/consumables.js";
-import { executeWithCredits } from "./credits.js";
 import { recordViolationEvent } from "./trust-safety.js";
+import {
+  getUserItemCount,
+  deductUserItem,
+} from "./consumables.js";
+export {
+  getUserItemCount,
+};
 import type { AIJsonProperty } from "../types/ai-chat.js";
+import type { InventoryItemType } from "../types/consumable.js";
 import type {
   BroadcastModerationResult,
   BroadcastRejectReason,
   BroadcastSource,
   BroadcastStatus,
-  InventoryItemType,
   PublicBroadcast,
 } from "../types/broadcast.js";
 
@@ -154,11 +154,14 @@ function sanitizedText(input: string): string {
 /**
  * Runs the cheap, high-signal heuristic engine over an already-sanitized
  * message. This is the **last deterministic check before AI moderation** and
- * exists so unambiguous policy violations (self-harm encouragement, obvious
- * scam/phishing framing) are rejected without spending an AI token.
+ * exists so unambiguous policy violations (self-harm encouragement, financial
+ * scams, and obvious self-promotion/spam) are rejected WITHOUT spending an AI
+ * token — the deterministic first line of defense against spam and abuse.
  *
- * It is deliberately narrow — anything nuanced is left to the AI pass. Returns
- * the matching reject reason, or `null` when no heuristic fired.
+ * It is deliberately conservative: every pattern must be high-signal enough that
+ * a false positive is essentially impossible. Anything nuanced (hate dogwhistles,
+ * contextual harassment, sexual implication) is LEFT to the AI pass. Returns the
+ * matching reject reason, or `null` when no heuristic fired.
  */
 export function runBroadcastHeuristics(message: string): BroadcastRejectReason | null {
   for (const { pattern, reason } of BROADCAST_HEURISTIC_PATTERNS) {
@@ -290,80 +293,6 @@ export async function moderateBroadcast(
 }
 
 // ---------------------------------------------------------------------------
-// Inventory (📣 Megaphone) helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Returns the user's owned quantity of a consumable item (0 when they own none).
- */
-export async function getUserItemCount(
-  userId: string,
-  itemType: InventoryItemType,
-): Promise<number> {
-  const [row] = await dbRead
-    .select({ quantity: userInventory.quantity })
-    .from(userInventory)
-    .where(and(eq(userInventory.userId, userId), eq(userInventory.itemType, itemType)))
-    .limit(1);
-  return row?.quantity ?? 0;
-}
-
-/** Convenience wrapper for the Megaphone count. */
-export async function getUserMegaphoneCount(userId: string): Promise<number> {
-  return getUserItemCount(userId, MEGAPHONE);
-}
-
-/**
- * Purchases one unit of a consumable item. Charges the registry-defined credit
- * price via `executeWithCredits` (atomic) and increments the user's
- * `user_inventory` inside the same transaction. Spending the item later (e.g.
- * broadcasting) only decrements inventory — credits are never charged again.
- *
- * @param userId - Buyer
- * @param itemType - Registry item to buy (defaults to the 📣 Megaphone)
- * @returns The new owned quantity of that item
- */
-export async function purchaseConsumable(
-  userId: string,
-  itemType: InventoryItemType = MEGAPHONE,
-): Promise<number> {
-  const def = getConsumable(itemType);
-  if (!def.available) {
-    throw new Error(`${def.name} is not available for purchase`);
-  }
-  const { result } = await executeWithCredits(
-    userId,
-    def.creditsPrice,
-    async (tx) => {
-      await tx
-        .insert(userInventory)
-        .values({ userId, itemType, quantity: 1, lastPurchasedAt: new Date() })
-        .onConflictDoUpdate({
-          target: [userInventory.userId, userInventory.itemType],
-          set: {
-            quantity: sql`${userInventory.quantity} + 1`,
-            lastPurchasedAt: new Date(),
-            updatedAt: new Date(),
-          },
-        });
-      const [row] = await tx
-        .select({ quantity: userInventory.quantity })
-        .from(userInventory)
-        .where(and(eq(userInventory.userId, userId), eq(userInventory.itemType, itemType)))
-        .limit(1);
-      return row?.quantity ?? 0;
-    },
-    { context: "consumable_purchase", metadata: { itemType } },
-  );
-  return result;
-}
-
-/** Convenience wrapper: purchase one 📣 Megaphone. */
-export async function purchaseMegaphone(userId: string): Promise<number> {
-  return purchaseConsumable(userId, MEGAPHONE);
-}
-
-// ---------------------------------------------------------------------------
 // Cooldown + queue capacity (Redis-backed, fail-open)
 // ---------------------------------------------------------------------------
 
@@ -428,9 +357,10 @@ interface BroadcastSchedule {
  * the future, the new message is scheduled to start `GLOBAL_INTERVAL` after the
  * latest `expiresAt`; otherwise it goes live immediately.
  */
-async function computeSchedule(): Promise<BroadcastSchedule> {
+async function computeSchedule(tx?: DBClient): Promise<BroadcastSchedule> {
+  const client = tx || dbRead;
   const now = new Date();
-  const [last] = await dbRead
+  const [last] = await client
     .select({ expiresAt: broadcasts.expiresAt })
     .from(broadcasts)
     .where(and(eq(broadcasts.status, "queued"), gt(broadcasts.expiresAt, now)))
@@ -443,7 +373,7 @@ async function computeSchedule(): Promise<BroadcastSchedule> {
   const expiresAt = new Date(startsAt.getTime() + BROADCAST_DISPLAY_SECONDS * 1000);
 
   // Position = number of queued broadcasts starting strictly after `now` + 1.
-  const [ahead] = await dbRead
+  const [ahead] = await client
     .select({ count: sql<number>`COUNT(*)::int` })
     .from(broadcasts)
     .where(and(eq(broadcasts.status, "queued"), gt(broadcasts.startsAt, now)));
@@ -468,6 +398,8 @@ export interface SubmitBroadcastResult {
   queuePosition: number;
   startsAt: string;
   expiresAt: string;
+  consumedItemType: InventoryItemType;
+  remaining: number;
   megaphonesRemaining: number;
 }
 
@@ -519,6 +451,8 @@ export async function submitBroadcast(
     throw new BroadcastSubmitError(
       "cooldown",
       `You can broadcast again in ${cooldownRemaining} second${cooldownRemaining === 1 ? "" : "s"}.`,
+      undefined,
+      cooldownRemaining,
     );
   }
 
@@ -528,7 +462,7 @@ export async function submitBroadcast(
   }
 
   // Ownership check (read) before spending AI moderation
-  const owned = await getUserMegaphoneCount(userId);
+  const owned = await getUserItemCount(userId, MEGAPHONE);
   if (owned < 1) {
     throw new BroadcastSubmitError("no_megaphone", "You have no 📣 Megaphones. Purchase one to broadcast.");
   }
@@ -562,28 +496,28 @@ export async function submitBroadcast(
   }
 
   // Approved → consume Megaphone + schedule in one transaction.
-  const schedule = await computeSchedule();
   let broadcastId: string;
   let remaining: number;
+  let schedule: BroadcastSchedule;
 
   await dbWrite.transaction(async (tx) => {
-    // Re-check + lock the inventory row so concurrent submits can't double-spend.
-    const [item] = await tx
-      .select({ id: userInventory.id, quantity: userInventory.quantity })
-      .from(userInventory)
-      .where(and(eq(userInventory.userId, userId), eq(userInventory.itemType, MEGAPHONE)))
-      .for("update")
-      .limit(1);
+    // 1. Lazily reap any stale queued rows whose display window has elapsed
+    await tx
+      .update(broadcasts)
+      .set({ status: "expired", updatedAt: new Date() })
+      .where(and(eq(broadcasts.status, "queued"), lte(broadcasts.expiresAt, new Date())));
 
-    if (!item || item.quantity < 1) {
+    // 2. Re-check + lock the inventory row and deduct 1 Megaphone atomically
+    try {
+      remaining = await deductUserItem(tx, userId, MEGAPHONE, 1);
+    } catch {
       throw new BroadcastSubmitError("no_megaphone", "You have no 📣 Megaphones. Purchase one to broadcast.");
     }
 
-    await tx
-      .update(userInventory)
-      .set({ quantity: item.quantity - 1, updatedAt: new Date() })
-      .where(eq(userInventory.id, item.id));
+    // 3. Compute FIFO schedule inside the same transaction
+    schedule = await computeSchedule(tx);
 
+    // 4. Insert broadcast row
     broadcastId = generateId();
     await tx.insert(broadcasts).values({
       id: broadcastId,
@@ -599,13 +533,6 @@ export async function submitBroadcast(
       createdAt: new Date(),
       updatedAt: new Date(),
     });
-
-    const [after] = await tx
-      .select({ quantity: userInventory.quantity })
-      .from(userInventory)
-      .where(eq(userInventory.id, item.id))
-      .limit(1);
-    remaining = after?.quantity ?? 0;
   });
 
   // Arm cooldown + invalidate the public "current" cache.
@@ -616,9 +543,11 @@ export async function submitBroadcast(
     id: broadcastId!,
     message,
     containsSpoiler: Boolean(containsSpoiler),
-    queuePosition: schedule.queuePosition,
-    startsAt: schedule.startsAt.toISOString(),
-    expiresAt: schedule.expiresAt.toISOString(),
+    queuePosition: schedule!.queuePosition,
+    startsAt: schedule!.startsAt.toISOString(),
+    expiresAt: schedule!.expiresAt.toISOString(),
+    consumedItemType: MEGAPHONE,
+    remaining: remaining!,
     megaphonesRemaining: remaining!,
   };
 }
@@ -656,14 +585,12 @@ async function recordBroadcastRejection(
  * spending a Megaphone. Returns the moderation verdict (and a sanitized preview)
  * so the client composer can show the user what would happen on submit.
  *
- * Mirrors the early stages of {@link submitBroadcast} exactly, but never reads
- * inventory or writes a row — a rejected preview costs nothing but the
- * moderation call.
+ * Previews are non-punitive and do NOT record Trust & Safety violation strikes.
  */
 export async function previewBroadcast(
   userId: string,
   rawMessage: unknown,
-  meta: SubmitBroadcastMeta = {},
+  _meta: SubmitBroadcastMeta = {},
 ): Promise<{
   outcome: "approve" | "reject";
   rejectionReason?: BroadcastRejectReason;
@@ -688,7 +615,6 @@ export async function previewBroadcast(
   // Heuristic engine: cheap early-fail before the AI call (same gate as submit).
   const heuristicReason = runBroadcastHeuristics(message);
   if (heuristicReason) {
-    await recordBroadcastRejection(userId, message, { outcome: "reject", rejectionReason: heuristicReason, reasons: ["heuristic_engine"] }, meta);
     return {
       outcome: "reject",
       rejectionReason: heuristicReason,
@@ -699,7 +625,6 @@ export async function previewBroadcast(
   const moderation = await moderateBroadcast(message, userId);
 
   if (moderation.outcome === "reject") {
-    await recordBroadcastRejection(userId, message, moderation, meta);
     return {
       outcome: "reject",
       rejectionReason: moderation.rejectionReason,
@@ -723,6 +648,7 @@ export class BroadcastSubmitError extends Error {
       | "not_found",
     message: string,
     public readonly rejectionReason?: BroadcastRejectReason,
+    public readonly retryAfterSeconds?: number,
   ) {
     super(message);
     this.name = "BroadcastSubmitError";
@@ -766,6 +692,23 @@ async function invalidateCurrentBroadcastCache(): Promise<void> {
 }
 
 /**
+ * Lazily flips expired `queued` broadcasts to `expired` so the table doesn't
+ * accumulate dead rows forever (the documented lazy-expiry behavior). Runs on
+ * each public "current" read (cache miss) and is idempotent; failures are
+ * logged and ignored so they never break the banner read.
+ */
+async function expireStaleBroadcasts(): Promise<void> {
+  try {
+    await dbWrite
+      .update(broadcasts)
+      .set({ status: "expired", updatedAt: new Date() })
+      .where(and(eq(broadcasts.status, "queued"), lte(broadcasts.expiresAt, new Date())));
+  } catch (error) {
+    console.error("[broadcast] ⚠️ Failed to expire stale broadcasts:", getErrorMessage(error));
+  }
+}
+
+/**
  * Returns the single live broadcast (or `null` when none is showing).
  *
  * Lazily expires stale `queued` rows and serves the most recently-started live
@@ -777,23 +720,20 @@ export async function getCurrentBroadcast(): Promise<PublicBroadcast | null> {
   if (redis) {
     try {
       const cached = await redis.get(CURRENT_CACHE_KEY);
-      if (cached) {
+      if (cached !== null && cached !== undefined) {
+        if (cached === "null") return null;
         const parsed = JSON.parse(cached as string) as PublicBroadcast | null;
-        if (parsed) return parsed;
+        return parsed;
       }
     } catch {
       /* fall through to DB */
     }
   }
 
-  const now = new Date();
+  // Reap stale queued rows (documented lazy-expiry behavior) before reading live.
+  await expireStaleBroadcasts();
 
-  // Lazily expire any queued broadcasts whose window has elapsed.
-  await dbWrite
-    .update(broadcasts)
-    .set({ status: "expired", updatedAt: now })
-    .where(and(eq(broadcasts.status, "queued"), lte(broadcasts.expiresAt, now)))
-    .catch((error) => console.error("[broadcast] ⚠️ Lazy expire failed:", getErrorMessage(error)));
+  const now = new Date();
 
   const [live] = await dbRead
     .select({
@@ -831,9 +771,13 @@ export async function getCurrentBroadcast(): Promise<PublicBroadcast | null> {
       }
     : null;
 
-  if (redis && result) {
+  if (redis) {
     try {
-      await redis.set(CURRENT_CACHE_KEY, JSON.stringify(result), { ex: BROADCAST_CURRENT_CACHE_TTL_SECONDS });
+      await redis.set(
+        CURRENT_CACHE_KEY,
+        result ? JSON.stringify(result) : "null",
+        { ex: BROADCAST_CURRENT_CACHE_TTL_SECONDS },
+      );
     } catch {
       /* non-fatal */
     }
@@ -855,7 +799,7 @@ export async function getOwnerBroadcastState(userId: string): Promise<{
   queueFull: boolean;
 }> {
   const [megaphones, cooldownRemainingSeconds, queueFull] = await Promise.all([
-    getUserMegaphoneCount(userId),
+    getUserItemCount(userId, MEGAPHONE),
     getBroadcastCooldownRemaining(userId),
     isBroadcastQueueFull(),
   ]);
