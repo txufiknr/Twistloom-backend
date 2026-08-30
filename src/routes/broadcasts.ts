@@ -31,7 +31,6 @@ import {
   cApiError,
   cValidationError,
   cNotFoundError,
-  cForbiddenError,
 } from "../utils/error.js";
 import {
   getCurrentBroadcast,
@@ -205,7 +204,7 @@ router.post("/:id/report", requireAuth, async (c) => {
     const reported = await reportBroadcast(broadcastId, userId, reason);
     return c.json({ reported });
   } catch (error) {
-    if (error instanceof BroadcastSubmitError && error.code === "not_found") {
+    if (error instanceof BroadcastSubmitError && error.code === "notFound") {
       return cNotFoundError(c, "Broadcast not found");
     }
     console.error("[POST /api/broadcasts/:id/report] ❌ Error:", error);
@@ -215,27 +214,34 @@ router.post("/:id/report", requireAuth, async (c) => {
 
 /**
  * Maps a {@link BroadcastSubmitError} to the appropriate HTTP response.
+ *
+ * The body is code-driven: the client translates `code`/`rejectionReason` via
+ * next-intl and echoes `matches` (the offending token(s)) so the user can
+ * correct their message. The English `error` field is a non-authoritative
+ * fallback only.
  */
 function mapSubmitError(c: Context<AppEnv>, error: BroadcastSubmitError) {
-  switch (error.code) {
-    case "validation":
-      return cValidationError(c, error.message);
-    case "forbidden":
-      return cForbiddenError(c, error.message);
-    case "no_megaphone":
-      return cValidationError(c, error.message);
-    case "cooldown": {
-      const seconds = error.retryAfterSeconds ?? BROADCAST_DISPLAY_SECONDS;
-      c.header("Retry-After", String(seconds));
-      return c.json({ error: error.message }, 429);
-    }
-    case "queue_full":
-      return c.json({ error: error.message }, 429);
-    case "rejected":
-      return c.json({ error: error.message, rejectionReason: error.rejectionReason }, 400);
-    default:
-      return cValidationError(c, error.message);
+  // The error `code` is exactly the i18n key suffix the client resolves under
+  // `broadcast.errors`, so `code` alone is sufficient to render. The structured
+  // `rejectionReason` is kept for telemetry/audit and the English `error` field
+  // is a dev-facing / last-resort fallback only.
+  const body: Record<string, unknown> = {
+    error: error.message,
+    code: error.code,
+    matches: error.matches ?? [],
+  };
+  if (error.rejectionReason) {
+    body.rejectionReason = error.rejectionReason;
   }
+  let status: 400 | 403 | 404 | 429 = 400;
+  if (error.code === "forbidden") status = 403;
+  else if (error.code === "cooldown") {
+    const seconds = error.retryAfterSeconds ?? BROADCAST_DISPLAY_SECONDS;
+    c.header("Retry-After", String(seconds));
+    status = 429;
+  } else if (error.code === "queueFull") status = 429;
+  else if (error.code === "notFound") status = 404;
+  return c.json(body, status);
 }
 
 export default router;

@@ -132,3 +132,26 @@ export const BROADCAST_HEURISTIC_PATTERNS: { pattern: RegExp; reason: BroadcastR
   { pattern: /\b(sub\s*(?:to|on)\s+(?:my\s+)?(?:youtube|channel|twitch|tiktok))\b/i, reason: "spam" },
   { pattern: /\b(check\s+(?:out\s+)?my\s+(?:channel|profile|page|store|link|bio))\b/i, reason: "spam" },
 ];
+
+// ── Error codes (single source of truth for the wire contract) ───────────────
+//
+// Every broadcast error returned to the client carries a `code` that is exactly
+// the i18n key suffix the frontend resolves under `broadcast.errors`. The client
+// translates `code` locally (next-intl); the English `error` string in the
+// envelope is dev-facing / last-resort fallback only. Keeping the vocabulary as
+// a const-derived union guarantees the constructor can only ever emit a known
+// code, so the server and the i18n catalog cannot silently drift.
+export const BROADCAST_ERROR_CODES = [
+  "validation",
+  "security",
+  "forbidden",
+  "cooldown",
+  "queueFull",
+  "noMegaphone",
+  "notFound",
+] as const;
+
+/** Wire error code for a broadcast failure. `rejected.<reason>` is templated. */
+export type BroadcastErrorCode =
+  | (typeof BROADCAST_ERROR_CODES)[number]
+  | `rejected.${BroadcastRejectReason}`;

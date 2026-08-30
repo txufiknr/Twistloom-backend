@@ -42,6 +42,7 @@ import {
   BROADCAST_VALID_TEXT_PATTERN,
   BROADCAST_SECURITY_PATTERNS,
   BROADCAST_HEURISTIC_PATTERNS,
+  type BroadcastErrorCode,
 } from "../config/broadcast.js";
 import { recordViolationEvent } from "./trust-safety.js";
 import {
@@ -78,6 +79,17 @@ interface BroadcastValidationResult {
   category?: BroadcastGateCategory;
   /** User-safe rejection message. */
   message?: string;
+  /** The exact disallowed token that triggered `injection_attempt` (if any). */
+  match?: string;
+}
+
+/**
+ * The deterministic heuristic engine hit — the matched reason plus the exact
+ * matched span so the client can echo the offending word(s) back to the user.
+ */
+interface BroadcastHeuristicHit {
+  reason: BroadcastRejectReason;
+  match: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,11 +142,13 @@ export function validateBroadcastInput(raw: unknown): BroadcastValidationResult 
   }
 
   for (const pattern of BROADCAST_SECURITY_PATTERNS) {
-    if (pattern.test(sanitized)) {
+    const m = pattern.exec(sanitized)?.[0];
+    if (m) {
       return {
         passed: false,
         category: "injection_attempt",
         message: "That message couldn't be broadcast.",
+        match: m,
       };
     }
   }
@@ -163,10 +177,11 @@ function sanitizedText(input: string): string {
  * contextual harassment, sexual implication) is LEFT to the AI pass. Returns the
  * matching reject reason, or `null` when no heuristic fired.
  */
-export function runBroadcastHeuristics(message: string): BroadcastRejectReason | null {
+export function runBroadcastHeuristics(message: string): BroadcastHeuristicHit | null {
   for (const { pattern, reason } of BROADCAST_HEURISTIC_PATTERNS) {
-    if (pattern.test(message)) {
-      return reason;
+    const m = pattern.exec(message)?.[0];
+    if (m) {
+      return { reason, match: m };
     }
   }
   return null;
@@ -431,7 +446,13 @@ export async function submitBroadcast(
   // Gate 1 — deterministic
   const gate = validateBroadcastInput(rawMessage);
   if (!gate.passed || !gate.sanitized) {
-    throw new BroadcastSubmitError("validation", gate.message ?? "Message rejected.");
+    throw new BroadcastSubmitError(
+      gate.category === "injection_attempt" ? "security" : "validation",
+      gate.message ?? "Message rejected.",
+      undefined,
+      undefined,
+      gate.match ? [gate.match] : undefined,
+    );
   }
   const message = gate.sanitized;
 
@@ -458,24 +479,26 @@ export async function submitBroadcast(
 
   // Queue capacity
   if (await isBroadcastQueueFull()) {
-    throw new BroadcastSubmitError("queue_full", "The broadcast queue is full. Please try again later.");
+    throw new BroadcastSubmitError("queueFull", "The broadcast queue is full. Please try again later.");
   }
 
   // Ownership check (read) before spending AI moderation
   const owned = await getUserItemCount(userId, MEGAPHONE);
   if (owned < 1) {
-    throw new BroadcastSubmitError("no_megaphone", "You have no 📣 Megaphones. Purchase one to broadcast.");
+    throw new BroadcastSubmitError("noMegaphone", "You have no 📣 Megaphones. Purchase one to broadcast.");
   }
 
   // Gate 1b — heuristic engine: reject unambiguous policy violations for FREE,
   // before the (expensive) AI moderation call. AI is only ever the last resort.
-  const heuristicReason = runBroadcastHeuristics(message);
-  if (heuristicReason) {
-    await recordBroadcastRejection(userId, message, { outcome: "reject", rejectionReason: heuristicReason, reasons: ["heuristic_engine"] }, meta);
+  const heuristicHit = runBroadcastHeuristics(message);
+  if (heuristicHit) {
+    await recordBroadcastRejection(userId, message, { outcome: "reject", rejectionReason: heuristicHit.reason, reasons: ["heuristic_engine"] }, meta);
     throw new BroadcastSubmitError(
-      "rejected",
-      userFacingRejectMessage(heuristicReason),
-      heuristicReason,
+      `rejected.${heuristicHit.reason}`,
+      userFacingRejectMessage(heuristicHit.reason),
+      heuristicHit.reason,
+      undefined,
+      [heuristicHit.match],
     );
   }
 
@@ -488,10 +511,11 @@ export async function submitBroadcast(
   if (moderation.outcome === "reject") {
     // Record rejection for audit; do NOT consume the Megaphone.
     await recordBroadcastRejection(userId, message, moderation, meta);
+    const reason = moderation.rejectionReason ?? "other";
     throw new BroadcastSubmitError(
-      "rejected",
-      userFacingRejectMessage(moderation.rejectionReason),
-      moderation.rejectionReason,
+      `rejected.${reason}`,
+      userFacingRejectMessage(reason),
+      reason,
     );
   }
 
@@ -511,7 +535,7 @@ export async function submitBroadcast(
     try {
       remaining = await deductUserItem(tx, userId, MEGAPHONE, 1);
     } catch {
-      throw new BroadcastSubmitError("no_megaphone", "You have no 📣 Megaphones. Purchase one to broadcast.");
+      throw new BroadcastSubmitError("noMegaphone", "You have no 📣 Megaphones. Purchase one to broadcast.");
     }
 
     // 3. Compute FIFO schedule inside the same transaction
@@ -594,12 +618,20 @@ export async function previewBroadcast(
 ): Promise<{
   outcome: "approve" | "reject";
   rejectionReason?: BroadcastRejectReason;
+  /** The exact disallowed token(s) that triggered the rejection, if any. */
+  matches?: string[];
   message?: string;
   preview?: { message: string };
 }> {
   const gate = validateBroadcastInput(rawMessage);
   if (!gate.passed || !gate.sanitized) {
-    throw new BroadcastSubmitError("validation", gate.message ?? "Message rejected.");
+    throw new BroadcastSubmitError(
+      gate.category === "injection_attempt" ? "security" : "validation",
+      gate.message ?? "Message rejected.",
+      undefined,
+      undefined,
+      gate.match ? [gate.match] : undefined,
+    );
   }
   const message = gate.sanitized;
 
@@ -613,12 +645,13 @@ export async function previewBroadcast(
   }
 
   // Heuristic engine: cheap early-fail before the AI call (same gate as submit).
-  const heuristicReason = runBroadcastHeuristics(message);
-  if (heuristicReason) {
+  const heuristicHit = runBroadcastHeuristics(message);
+  if (heuristicHit) {
     return {
       outcome: "reject",
-      rejectionReason: heuristicReason,
-      message: userFacingRejectMessage(heuristicReason),
+      rejectionReason: heuristicHit.reason,
+      matches: [heuristicHit.match],
+      message: userFacingRejectMessage(heuristicHit.reason),
     };
   }
 
@@ -638,17 +671,11 @@ export async function previewBroadcast(
 /** Tagged error so routes can map to HTTP status without string matching. */
 export class BroadcastSubmitError extends Error {
   constructor(
-    public readonly code:
-      | "validation"
-      | "forbidden"
-      | "cooldown"
-      | "queue_full"
-      | "no_megaphone"
-      | "rejected"
-      | "not_found",
+    public readonly code: BroadcastErrorCode,
     message: string,
     public readonly rejectionReason?: BroadcastRejectReason,
     public readonly retryAfterSeconds?: number,
+    public readonly matches?: string[],
   ) {
     super(message);
     this.name = "BroadcastSubmitError";
@@ -839,7 +866,7 @@ export async function reportBroadcast(
     }
     // Re-throw unexpected failures so the route can surface a 500.
     if (msg.includes("foreign key") || msg.toLowerCase().includes("violates foreign key")) {
-      throw new BroadcastSubmitError("not_found", "Broadcast not found.");
+      throw new BroadcastSubmitError("notFound", "Broadcast not found.");
     }
     throw error;
   }

@@ -70,6 +70,8 @@ export interface PublicBroadcast {
 export interface BroadcastModerationResponse {
   outcome: "approve" | "reject";
   rejectionReason?: BroadcastRejectReason;
+  /** Exact disallowed token(s) that triggered the rejection, if any. */
+  matches?: string[];
   /** User-safe message shown when rejected. */
   message?: string;
   /** Disposable preview of the sanitized text (preview only). */
