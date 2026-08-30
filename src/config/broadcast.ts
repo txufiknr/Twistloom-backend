@@ -142,16 +142,21 @@ export const BROADCAST_HEURISTIC_PATTERNS: { pattern: RegExp; reason: BroadcastR
 // a const-derived union guarantees the constructor can only ever emit a known
 // code, so the server and the i18n catalog cannot silently drift.
 export const BROADCAST_ERROR_CODES = [
-  "validation",
-  "security",
-  "forbidden",
-  "cooldown",
-  "queueFull",
-  "noMegaphone",
-  "notFound",
+  "broadcast.validation",
+  "broadcast.security",
+  "broadcast.forbidden",
+  "broadcast.cooldown",
+  "broadcast.queueFull",
+  "broadcast.noMegaphone",
+  "broadcast.notFound",
 ] as const;
 
-/** Wire error code for a broadcast failure. `rejected.<reason>` is templated. */
+/**
+ * Wire error code for a broadcast failure. The code is self-describing: it
+ * carries its own namespace (`broadcast.<key>`), so a single generic client
+ * resolver can translate it without a per-feature wrapper. `rejected.<reason>`
+ * is templated.
+ */
 export type BroadcastErrorCode =
   | (typeof BROADCAST_ERROR_CODES)[number]
-  | `rejected.${BroadcastRejectReason}`;
+  | `broadcast.rejected.${BroadcastRejectReason}`;

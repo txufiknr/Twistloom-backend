@@ -447,7 +447,7 @@ export async function submitBroadcast(
   const gate = validateBroadcastInput(rawMessage);
   if (!gate.passed || !gate.sanitized) {
     throw new BroadcastSubmitError(
-      gate.category === "injection_attempt" ? "security" : "validation",
+      gate.category === "injection_attempt" ? "broadcast.security" : "broadcast.validation",
       gate.message ?? "Message rejected.",
       undefined,
       undefined,
@@ -463,14 +463,14 @@ export async function submitBroadcast(
     .where(eq(users.userId, userId))
     .limit(1);
   if (user?.bannedAt) {
-    throw new BroadcastSubmitError("forbidden", "Your account is not allowed to broadcast.");
+    throw new BroadcastSubmitError("broadcast.forbidden", "Your account is not allowed to broadcast.");
   }
 
   // Per-user cooldown
   const cooldownRemaining = await getBroadcastCooldownRemaining(userId);
   if (cooldownRemaining > 0) {
     throw new BroadcastSubmitError(
-      "cooldown",
+      "broadcast.cooldown",
       `You can broadcast again in ${cooldownRemaining} second${cooldownRemaining === 1 ? "" : "s"}.`,
       undefined,
       cooldownRemaining,
@@ -479,13 +479,13 @@ export async function submitBroadcast(
 
   // Queue capacity
   if (await isBroadcastQueueFull()) {
-    throw new BroadcastSubmitError("queueFull", "The broadcast queue is full. Please try again later.");
+    throw new BroadcastSubmitError("broadcast.queueFull", "The broadcast queue is full. Please try again later.");
   }
 
   // Ownership check (read) before spending AI moderation
   const owned = await getUserItemCount(userId, MEGAPHONE);
   if (owned < 1) {
-    throw new BroadcastSubmitError("noMegaphone", "You have no 📣 Megaphones. Purchase one to broadcast.");
+    throw new BroadcastSubmitError("broadcast.noMegaphone", "You have no 📣 Megaphones. Purchase one to broadcast.");
   }
 
   // Gate 1b — heuristic engine: reject unambiguous policy violations for FREE,
@@ -494,7 +494,7 @@ export async function submitBroadcast(
   if (heuristicHit) {
     await recordBroadcastRejection(userId, message, { outcome: "reject", rejectionReason: heuristicHit.reason, reasons: ["heuristic_engine"] }, meta);
     throw new BroadcastSubmitError(
-      `rejected.${heuristicHit.reason}`,
+      `broadcast.rejected.${heuristicHit.reason}`,
       userFacingRejectMessage(heuristicHit.reason),
       heuristicHit.reason,
       undefined,
@@ -513,7 +513,7 @@ export async function submitBroadcast(
     await recordBroadcastRejection(userId, message, moderation, meta);
     const reason = moderation.rejectionReason ?? "other";
     throw new BroadcastSubmitError(
-      `rejected.${reason}`,
+      `broadcast.rejected.${reason}`,
       userFacingRejectMessage(reason),
       reason,
     );
@@ -535,7 +535,7 @@ export async function submitBroadcast(
     try {
       remaining = await deductUserItem(tx, userId, MEGAPHONE, 1);
     } catch {
-      throw new BroadcastSubmitError("noMegaphone", "You have no 📣 Megaphones. Purchase one to broadcast.");
+      throw new BroadcastSubmitError("broadcast.noMegaphone", "You have no 📣 Megaphones. Purchase one to broadcast.");
     }
 
     // 3. Compute FIFO schedule inside the same transaction
@@ -626,7 +626,7 @@ export async function previewBroadcast(
   const gate = validateBroadcastInput(rawMessage);
   if (!gate.passed || !gate.sanitized) {
     throw new BroadcastSubmitError(
-      gate.category === "injection_attempt" ? "security" : "validation",
+      gate.category === "injection_attempt" ? "broadcast.security" : "broadcast.validation",
       gate.message ?? "Message rejected.",
       undefined,
       undefined,
@@ -641,7 +641,7 @@ export async function previewBroadcast(
     .where(eq(users.userId, userId))
     .limit(1);
   if (user?.bannedAt) {
-    throw new BroadcastSubmitError("forbidden", "Your account is not allowed to broadcast.");
+    throw new BroadcastSubmitError("broadcast.forbidden", "Your account is not allowed to broadcast.");
   }
 
   // Heuristic engine: cheap early-fail before the AI call (same gate as submit).
@@ -866,7 +866,7 @@ export async function reportBroadcast(
     }
     // Re-throw unexpected failures so the route can surface a 500.
     if (msg.includes("foreign key") || msg.toLowerCase().includes("violates foreign key")) {
-      throw new BroadcastSubmitError("notFound", "Broadcast not found.");
+      throw new BroadcastSubmitError("broadcast.notFound", "Broadcast not found.");
     }
     throw error;
   }

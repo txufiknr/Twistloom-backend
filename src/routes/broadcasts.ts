@@ -204,7 +204,7 @@ router.post("/:id/report", requireAuth, async (c) => {
     const reported = await reportBroadcast(broadcastId, userId, reason);
     return c.json({ reported });
   } catch (error) {
-    if (error instanceof BroadcastSubmitError && error.code === "notFound") {
+    if (error instanceof BroadcastSubmitError && error.code === "broadcast.notFound") {
       return cNotFoundError(c, "Broadcast not found");
     }
     console.error("[POST /api/broadcasts/:id/report] ❌ Error:", error);
@@ -234,13 +234,13 @@ function mapSubmitError(c: Context<AppEnv>, error: BroadcastSubmitError) {
     body.rejectionReason = error.rejectionReason;
   }
   let status: 400 | 403 | 404 | 429 = 400;
-  if (error.code === "forbidden") status = 403;
-  else if (error.code === "cooldown") {
+  if (error.code === "broadcast.forbidden") status = 403;
+  else if (error.code === "broadcast.cooldown") {
     const seconds = error.retryAfterSeconds ?? BROADCAST_DISPLAY_SECONDS;
     c.header("Retry-After", String(seconds));
     status = 429;
-  } else if (error.code === "queueFull") status = 429;
-  else if (error.code === "notFound") status = 404;
+  } else if (error.code === "broadcast.queueFull") status = 429;
+  else if (error.code === "broadcast.notFound") status = 404;
   return c.json(body, status);
 }
 
