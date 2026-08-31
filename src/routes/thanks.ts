@@ -20,6 +20,13 @@ import {
   getMyThanksForBook,
 } from "../services/thanks.js";
 import {
+  createXenditThanksCheckout,
+  handleXenditThanksInvoicePaid,
+  XENDIT_CONFIG,
+  isXenditConfigured,
+} from "../services/xendit.js";
+import { verifyXenditCallbackToken, type XenditInvoice } from "../utils/xendit.js";
+import {
   cApiError,
   cValidationError,
   cNotFoundError,
@@ -35,7 +42,7 @@ const router = new Hono<AppEnv>();
 // POST /thanks/create-checkout-session
 router.post("/create-checkout-session", requireAuth, async (c) => {
   try {
-    const { bookId, pageId, amount, currency: rawCurrency, message } = c.get("body");
+    const { bookId, pageId, amount, currency: rawCurrency, gateway: rawGateway, message } = c.get("body");
     const readerId = c.get("userId")!;
 
     if (!bookId || !amount) {
@@ -47,10 +54,13 @@ router.post("/create-checkout-session", requireAuth, async (c) => {
       return cValidationError(c, "Amount must be a positive number");
     }
 
-    const currency = rawCurrency === "USD" ? "USD" : "IDR";
+    const gateway = rawGateway === PAYMENT_GATEWAY.xendit ? PAYMENT_GATEWAY.xendit : PAYMENT_GATEWAY.stripe;
+    const currency = gateway === PAYMENT_GATEWAY.xendit ? "IDR" : (rawCurrency === "IDR" ? "IDR" : "USD");
+
     const maxTip = currency === "USD" ? THANKS_CONFIG.maxTipAmountUSD : THANKS_CONFIG.maxTipAmountIDR;
-    if (numAmount > maxTip) {
-      return cValidationError(c, `Amount exceeds maximum of ${maxTip} ${currency}`);
+    const minTip = currency === "USD" ? 100 : 10_000;
+    if (numAmount < minTip || numAmount > maxTip) {
+      return cValidationError(c, `Amount must be between ${minTip} and ${maxTip} ${currency}`);
     }
 
     const rl = await checkRateLimit(`thanks-checkout-${readerId}`, {
@@ -91,6 +101,37 @@ router.post("/create-checkout-session", requireAuth, async (c) => {
     const successUrl = `${baseUrl}/books/${bookSlug}${pageSegment}?thanks=success`;
     const cancelUrl = `${baseUrl}/books/${bookSlug}${pageSegment}?thanks=cancel`;
 
+    // ── Xendit Hosted Invoice Path ──────────────────────────────────────────
+    if (gateway === PAYMENT_GATEWAY.xendit) {
+      if (!isXenditConfigured()) {
+        return cValidationError(c, "Xendit gateway is not configured or disabled");
+      }
+
+      const [readerUser] = await dbRead
+        .select({ email: users.email, name: users.name })
+        .from(users)
+        .where(eq(users.userId, readerId))
+        .limit(1);
+
+      const result = await createXenditThanksCheckout({
+        userId: readerId,
+        email: readerUser?.email || "reader@twistloom.com",
+        name: readerUser?.name || undefined,
+        bookId,
+        bookTitle: book.title,
+        creatorId: book.userId,
+        creatorName: creator?.name || undefined,
+        amountIdr: numAmount,
+        pageId: pageId || undefined,
+        message: message || undefined,
+        successUrl,
+        cancelUrl,
+      });
+
+      return c.json(result);
+    }
+
+    // ── Stripe Checkout Session Path ────────────────────────────────────────
     const session = await getStripe().checkout.sessions.create({
       payment_method_types: ["card"],
       mode: "payment",
@@ -133,6 +174,7 @@ router.post("/create-checkout-session", requireAuth, async (c) => {
     return cApiError(c, "Failed to create Thanks checkout session", error);
   }
 });
+
 
 // POST /thanks/stripe/webhook
 router.post("/stripe/webhook", async (c) => {
@@ -188,6 +230,40 @@ router.post("/stripe/webhook", async (c) => {
     return cApiError(c, "Failed to process webhook", error);
   }
 });
+
+// POST /thanks/xendit/webhook
+router.post("/xendit/webhook", async (c) => {
+  try {
+    if (!XENDIT_CONFIG.enabled) {
+      return cValidationError(c, "Xendit gateway is not enabled");
+    }
+
+    const callbackToken = c.req.header("x-callback-token");
+    if (!verifyXenditCallbackToken(callbackToken)) {
+      return c.json({ error: "Invalid callback token" }, 401);
+    }
+
+    const body = (await c.req.json()) as Record<string, unknown>;
+    const eventId =
+      (typeof body.id === "string" && body.id) ||
+      (typeof body.external_id === "string" && body.external_id) ||
+      `xendit-thanks-${Date.now()}`;
+
+    const rawStatus = typeof body.status === "string" ? body.status : "";
+    const status = rawStatus.toUpperCase();
+    const isPaid = status === "PAID" || status === "SETTLED";
+
+    if (isPaid) {
+      const result = await handleXenditThanksInvoicePaid(body as XenditInvoice, eventId);
+      return c.json({ received: true, duplicate: result.duplicate });
+    }
+
+    return c.json({ received: true });
+  } catch (error) {
+    return cApiError(c, "Failed to process Xendit thanks webhook", error);
+  }
+});
+
 
 // GET /thanks/book/:bookId/stats
 router.get("/book/:bookId/stats", async (c) => {

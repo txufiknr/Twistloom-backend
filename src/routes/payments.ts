@@ -37,6 +37,7 @@ import {
   handleXenditCycleSucceeded,
   handleXenditCycleFailed,
   handleXenditInvoicePaid,
+  handleXenditThanksInvoicePaid,
   handleXenditPlanActivated,
   handleXenditPlanDeactivated,
   trackXenditWebhookDelivery,
@@ -690,7 +691,15 @@ router.post("/xendit/webhook", async (c) => {
       status === "SETTLED";
 
     if (isPaid) {
-      const result = await handleXenditInvoicePaid(body as XenditInvoice, eventId);
+      const invoice = body as XenditInvoice;
+      const externalId = typeof invoice.external_id === "string" ? invoice.external_id : "";
+      const meta = (invoice.metadata as Record<string, unknown>) || {};
+      const isThanks = externalId.startsWith("thanks-") || meta.type === "thanks";
+
+      const result = isThanks
+        ? await handleXenditThanksInvoicePaid(invoice, eventId)
+        : await handleXenditInvoicePaid(invoice, eventId);
+
       await finalizeXenditWebhookDelivery(webhookDeliveryId, "success");
       return c.json({ received: true, duplicate: result.duplicate });
     }

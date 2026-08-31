@@ -13,6 +13,7 @@ import { THANKS_CONFIG } from "../config/thanks.js";
 import {
   getCreatorWallet,
   getCreatorEarnings,
+  replyToCreatorEarning,
   initiatePayout,
   getCreatorPayouts,
   savePayoutMethod,
@@ -66,6 +67,39 @@ router.get("/earnings", requireAuth, async (c) => {
     return cApiError(c, "Failed to fetch earnings", error);
   }
 });
+
+// ── POST /wallet/earnings/:earningId/reply ───────────────────────────────────
+
+/**
+ * Sends a personal creator reply/acknowledgement to a reader's Thanks message.
+ */
+router.post("/earnings/:earningId/reply", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId")!;
+    const earningId = c.req.param("earningId");
+    const { reply } = c.get("body");
+
+    if (!reply || typeof reply !== "string" || !reply.trim()) {
+      return cValidationError(c, "Reply message cannot be empty");
+    }
+
+    if (reply.trim().length > 500) {
+      return cValidationError(c, "Reply message cannot exceed 500 characters");
+    }
+
+    const result = await replyToCreatorEarning(userId, earningId, reply);
+    return c.json(result);
+  } catch (error: any) {
+    if (error.message === "Unauthorized to reply to this earning") {
+      return cValidationError(c, error.message);
+    }
+    if (error.message === "Earning record not found") {
+      return cValidationError(c, error.message);
+    }
+    return cApiError(c, "Failed to send reply", error);
+  }
+});
+
 
 // ── POST /wallet/withdraw ────────────────────────────────────────────────────
 

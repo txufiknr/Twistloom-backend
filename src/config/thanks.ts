@@ -59,3 +59,32 @@ export function calculatePlatformFee(amount: number): number {
 export function calculateCreatorAmount(amount: number): number {
   return amount - calculatePlatformFee(amount);
 }
+
+/**
+ * Builds the external_id used for Xendit Thanks tip invoices.
+ * Format: `thanks-{readerId}-{bookId}-{timestampMs}`
+ */
+export function buildXenditThanksExternalId(
+  readerId: string,
+  bookId: string,
+  timestampMs: number = Date.now()
+): string {
+  return `thanks-${readerId}-${bookId}-${timestampMs}`;
+}
+
+/**
+ * Parses a Xendit Thanks external_id back into its components.
+ */
+export function parseXenditThanksExternalId(
+  externalId: string
+): { readerId: string; bookId: string; timestampMs: number } | null {
+  const match = /^thanks-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-(\d+)$/i.exec(
+    externalId
+  );
+  if (!match) return null;
+  return {
+    readerId: match[1],
+    bookId: match[2],
+    timestampMs: Number(match[3]),
+  };
+}

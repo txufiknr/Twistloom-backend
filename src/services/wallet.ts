@@ -21,6 +21,7 @@ import {
   users,
   books,
   transactions,
+  userNotifications,
 } from "../db/schema.js";
 import { THANKS_CONFIG } from "../config/thanks.js";
 import type { CreatorWallet, CreatorEarning, CreatorPayout, ConvertToCreditsResult, EarningSource } from "../types/wallet.js";
@@ -38,12 +39,26 @@ export async function getCreatorWallet(creatorId: string, currency?: string): Pr
     .where(eq(creatorWallets.creatorId, creatorId))
     .limit(1);
 
+  // Compute all-time lifetime stats (gross reader support & platform fee)
+  const [summary] = await dbRead
+    .select({
+      lifetimeGross: sql<number>`coalesce(sum(${creatorEarnings.grossAmount}), 0)::int`,
+      lifetimeFee: sql<number>`coalesce(sum(${creatorEarnings.platformFee}), 0)::int`,
+    })
+    .from(creatorEarnings)
+    .where(eq(creatorEarnings.creatorId, creatorId));
+
+  const lifetimeGrossAmount = summary?.lifetimeGross || 0;
+  const lifetimeFeeAmount = summary?.lifetimeFee || 0;
+
   if (wallet) {
     return {
       creatorId: wallet.creatorId,
       availableAmount: wallet.availableAmount,
       pendingAmount: wallet.pendingAmount,
       withdrawnAmount: wallet.withdrawnAmount,
+      lifetimeGrossAmount,
+      lifetimeFeeAmount,
       currency: wallet.currency,
       payoutVerified: wallet.payoutVerified,
     };
@@ -60,6 +75,8 @@ export async function getCreatorWallet(creatorId: string, currency?: string): Pr
     availableAmount: created.availableAmount,
     pendingAmount: created.pendingAmount,
     withdrawnAmount: created.withdrawnAmount,
+    lifetimeGrossAmount,
+    lifetimeFeeAmount,
     currency: created.currency,
     payoutVerified: created.payoutVerified,
   };
@@ -68,7 +85,7 @@ export async function getCreatorWallet(creatorId: string, currency?: string): Pr
 // ── Earnings Ledger ──────────────────────────────────────────────────────────
 
 /**
- * Gets a creator's earnings history with book titles.
+ * Gets a creator's earnings history with book titles and reply status.
  * Optionally filters by earning source.
  */
 export async function getCreatorEarnings(
@@ -89,10 +106,12 @@ export async function getCreatorEarnings(
       bookTitle: books.title,
       source: creatorEarnings.source,
       grossAmount: creatorEarnings.grossAmount,
+      platformFee: creatorEarnings.platformFee,
       creatorAmount: creatorEarnings.creatorAmount,
       currency: creatorEarnings.currency,
       readerId: creatorEarnings.readerId,
       message: creatorEarnings.message,
+      metadata: creatorEarnings.metadata,
       createdAt: creatorEarnings.createdAt,
     })
     .from(creatorEarnings)
@@ -116,21 +135,123 @@ export async function getCreatorEarnings(
   const readerMap = new Map(readers.map((r) => [r.userId, r.name]));
 
   return {
-    earnings: earnings.map((e) => ({
-      id: e.id,
-      bookId: e.bookId,
-      bookTitle: e.bookTitle,
-      source: e.source as EarningSource,
-      grossAmount: e.grossAmount,
-      creatorAmount: e.creatorAmount,
-      currency: e.currency,
-      readerName: readerMap.get(e.readerId) || "A reader",
-      message: e.message,
-      createdAt: e.createdAt,
-    })),
+    earnings: earnings.map((e) => {
+      const meta = (e.metadata as Record<string, unknown>) || {};
+      return {
+        id: e.id,
+        bookId: e.bookId,
+        bookTitle: e.bookTitle,
+        source: e.source as EarningSource,
+        grossAmount: e.grossAmount,
+        platformFee: e.platformFee,
+        creatorAmount: e.creatorAmount,
+        currency: e.currency,
+        readerId: e.readerId,
+        readerName: readerMap.get(e.readerId) || "A reader",
+        message: e.message,
+        reply: typeof meta.reply === "string" ? meta.reply : null,
+        replyAt: typeof meta.replyAt === "string" ? meta.replyAt : null,
+        createdAt: e.createdAt,
+      };
+    }),
     hasMore,
   };
 }
+
+/**
+ * Replies to a reader's Thanks message.
+ * Updates earning metadata and sends an in-app notification to the reader.
+ */
+export async function replyToCreatorEarning(
+  creatorId: string,
+  earningId: string,
+  replyMessage: string
+): Promise<{ success: boolean; reply: string; replyAt: string }> {
+  const trimmed = replyMessage.trim();
+  if (!trimmed) {
+    throw new Error("Reply message cannot be empty");
+  }
+  if (trimmed.length > 500) {
+    throw new Error("Reply message cannot exceed 500 characters");
+  }
+
+  const [earning] = await dbRead
+    .select({
+      id: creatorEarnings.id,
+      creatorId: creatorEarnings.creatorId,
+      readerId: creatorEarnings.readerId,
+      bookId: creatorEarnings.bookId,
+      metadata: creatorEarnings.metadata,
+    })
+    .from(creatorEarnings)
+    .where(eq(creatorEarnings.id, earningId))
+    .limit(1);
+
+  if (!earning) {
+    throw new Error("Earning record not found");
+  }
+  if (earning.creatorId !== creatorId) {
+    throw new Error("Unauthorized to reply to this earning");
+  }
+
+  const replyAt = new Date().toISOString();
+  const existingMeta = (earning.metadata as Record<string, unknown>) || {};
+  const updatedMeta = {
+    ...existingMeta,
+    reply: trimmed,
+    replyAt,
+  };
+
+  await dbWrite
+    .update(creatorEarnings)
+    .set({
+      metadata: updatedMeta,
+      updatedAt: new Date(),
+    })
+    .where(eq(creatorEarnings.id, earningId));
+
+  // Fetch creator and book details for notification
+  const [creatorUser] = await dbRead
+    .select({ name: users.name })
+    .from(users)
+    .where(eq(users.userId, creatorId))
+    .limit(1);
+
+  const [book] = earning.bookId
+    ? await dbRead
+        .select({ title: books.title, slug: books.slug })
+        .from(books)
+        .where(eq(books.id, earning.bookId))
+        .limit(1)
+    : [null];
+
+  // Send in-app notification to reader (best-effort)
+  try {
+    await dbWrite.insert(userNotifications).values({
+      userId: earning.readerId,
+      type: "thanks_reply",
+      title: `${creatorUser?.name || "The author"} replied to your Thanks!`,
+      message: `"${trimmed}"`,
+      data: {
+        earningId,
+        bookId: earning.bookId,
+        bookSlug: book?.slug,
+        bookTitle: book?.title,
+        creatorName: creatorUser?.name,
+        reply: trimmed,
+      },
+    });
+  } catch (notifErr) {
+    console.error("[wallet] ⚠️ Failed to send thanks reply notification:", notifErr);
+  }
+
+  return {
+    success: true,
+    reply: trimmed,
+    replyAt,
+  };
+}
+
 
 // ── Payout ──────────────────────────────────────────────────────────────────
 

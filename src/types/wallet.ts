@@ -15,6 +15,8 @@ export interface CreatorWallet {
   availableAmount: number;
   pendingAmount: number;
   withdrawnAmount: number;
+  lifetimeGrossAmount?: number;
+  lifetimeFeeAmount?: number;
   currency: string;
   payoutVerified: boolean;
 }
@@ -25,12 +27,17 @@ export interface CreatorEarning {
   bookTitle: string | null;
   source: EarningSource;
   grossAmount: number;
+  platformFee: number;
   creatorAmount: number;
   currency: string;
   readerName: string;
+  readerId: string;
   message: string | null;
+  reply: string | null;
+  replyAt: string | null;
   createdAt: Date;
 }
+
 
 export interface CreatorPayout {
   id: string;

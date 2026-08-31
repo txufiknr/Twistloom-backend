@@ -21,6 +21,8 @@ import { calculatePlatformFee, calculateCreatorAmount } from "../config/thanks.j
 import { getErrorMessage } from "../utils/error.js";
 import { isUniqueConstraintError } from "../utils/retry.js";
 
+import { PAYMENT_GATEWAY, type PaymentGateway } from "../types/payment.js";
+
 // ── Types ───────────────────────────────────────────────────────────────────
 
 export interface RecordThanksOptions {
@@ -30,9 +32,12 @@ export interface RecordThanksOptions {
   pageId?: string;
   grossAmount: number;
   currency: string;
-  stripeSessionId: string;
-  stripePaymentIntentId: string;
-  stripeEventId: string;
+  gateway?: PaymentGateway;
+  stripeSessionId?: string;
+  stripePaymentIntentId?: string;
+  stripeEventId?: string;
+  providerPaymentId?: string;
+  providerEventId?: string;
   message?: string;
 }
 
@@ -40,10 +45,10 @@ export interface RecordThanksOptions {
 
 /**
  * Records a successful Thanks tip from a reader to a creator.
- * Called from the Stripe webhook handler after payment confirmation.
+ * Called from Stripe or Xendit webhook handlers after payment confirmation.
  *
  * Operations (all within a single DB transaction):
- * 1. Idempotency check on stripeEventId
+ * 1. Idempotency check on eventId
  * 2. Insert earnings record (source='thanks')
  * 3. Upsert wallet balance (atomic increment)
  * 4. Send in-app notification to creator (best-effort)
@@ -52,9 +57,13 @@ export async function recordThanks(options: RecordThanksOptions): Promise<{ dupl
   const {
     readerId, creatorId, bookId, pageId,
     grossAmount, currency,
-    stripeSessionId, stripePaymentIntentId, stripeEventId,
     message,
   } = options;
+
+  const eventId = options.providerEventId || options.stripeEventId || `event-${Date.now()}`;
+  const sessionId = options.stripeSessionId || options.providerPaymentId || null;
+  const paymentIntentId = options.stripePaymentIntentId || null;
+  const gateway = options.gateway || (options.stripeSessionId ? PAYMENT_GATEWAY.stripe : PAYMENT_GATEWAY.xendit);
 
   const platformFee = calculatePlatformFee(grossAmount);
   const creatorAmount = calculateCreatorAmount(grossAmount);
@@ -63,7 +72,7 @@ export async function recordThanks(options: RecordThanksOptions): Promise<{ dupl
   const existing = await dbRead
     .select({ id: creatorEarnings.id })
     .from(creatorEarnings)
-    .where(eq(creatorEarnings.stripeEventId, stripeEventId))
+    .where(eq(creatorEarnings.stripeEventId, eventId))
     .limit(1);
 
   if (existing.length > 0) {
@@ -83,11 +92,16 @@ export async function recordThanks(options: RecordThanksOptions): Promise<{ dupl
         platformFee,
         creatorAmount,
         currency,
-        stripeSessionId,
-        stripePaymentIntent: stripePaymentIntentId,
-        stripeEventId,
+        stripeSessionId: sessionId,
+        stripePaymentIntent: paymentIntentId,
+        stripeEventId: eventId,
         status: "completed",
         message: message || null,
+        metadata: {
+          gateway,
+          providerPaymentId: options.providerPaymentId || null,
+          providerEventId: options.providerEventId || null,
+        },
       });
 
       // 3. Upsert wallet (atomic increment, with currency for lazy-create)

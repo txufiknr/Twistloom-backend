@@ -16,10 +16,15 @@ import {
   parseXenditSubscriptionReferenceId,
   XENDIT_CONFIG,
 } from "../config/xendit.js";
+import {
+  buildXenditThanksExternalId,
+  parseXenditThanksExternalId,
+} from "../config/thanks.js";
 import { CREDIT_PACKS, FIRST_PURCHASE_BONUS } from "../config/credits.js";
 import { dbWrite } from "../db/client.js";
 import { transactions, webhookDeliveries } from "../db/schema.js";
 import { awardCredits } from "./credits.js";
+import { recordThanks } from "./thanks.js";
 import { createSubscription, renewSubscription, cancelSubscription, updateSubscription } from "./subscription.js";
 import { isUniqueConstraintError } from "../utils/retry.js";
 import {
@@ -266,6 +271,56 @@ export async function createXenditCreditPackCheckout(params: {
 }
 
 /**
+ * Creates a Xendit hosted invoice for a Thanks creator tip.
+ *
+ * @returns Checkout URL + provider session/invoice id + gateway
+ */
+export async function createXenditThanksCheckout(params: {
+  userId: string;
+  email: string;
+  name?: string;
+  bookId: string;
+  bookTitle: string;
+  creatorId: string;
+  creatorName?: string;
+  amountIdr: number;
+  pageId?: string;
+  message?: string;
+  successUrl: string;
+  cancelUrl: string;
+}): Promise<{ url: string; sessionId: string; gateway: PaymentGateway }> {
+  if (!isXenditConfigured()) {
+    throw new Error("Xendit is not enabled or not configured");
+  }
+
+  const externalId = buildXenditThanksExternalId(params.userId, params.bookId);
+  const invoice = await createXenditInvoice({
+    externalId,
+    amountIdr: params.amountIdr,
+    description: `Thanks for "${params.bookTitle}" — Support ${params.creatorName || "Creator"}`,
+    payerEmail: params.email,
+    successRedirectUrl: params.successUrl,
+    failureRedirectUrl: params.cancelUrl,
+    customerName: params.name,
+    metadata: {
+      type: "thanks",
+      readerId: params.userId,
+      creatorId: params.creatorId,
+      bookId: params.bookId,
+      pageId: params.pageId || "",
+      currency: "IDR",
+      message: params.message || "",
+    },
+  });
+
+  return {
+    url: invoice.invoice_url!,
+    sessionId: invoice.id,
+    gateway: XENDIT_GATEWAY,
+  };
+}
+
+/**
  * Handles a paid Xendit invoice: awards pack credits (+ first-purchase bonus).
  *
  * Idempotent via `(gateway, providerEventId)` / `(gateway, providerPaymentId)`.
@@ -386,6 +441,53 @@ export async function handleXenditInvoicePaid(
   );
   return { duplicate: false };
 }
+
+/**
+ * Handles a paid Xendit invoice for Thanks creator tip.
+ */
+export async function handleXenditThanksInvoicePaid(
+  invoice: XenditInvoice,
+  eventId: string
+): Promise<{ duplicate: boolean }> {
+  const status = (invoice.status || "").toUpperCase();
+  if (status !== "PAID" && status !== "SETTLED") {
+    console.log(`[xendit] ℹ️ Ignoring thanks invoice ${invoice.id} with status=${invoice.status}`);
+    return { duplicate: false };
+  }
+
+  const externalId = invoice.external_id || "";
+  const parsed = parseXenditThanksExternalId(externalId);
+  const meta = invoice.metadata || {};
+
+  const readerId = parsed?.readerId || (typeof meta.readerId === "string" ? meta.readerId : undefined);
+  const bookId = parsed?.bookId || (typeof meta.bookId === "string" ? meta.bookId : undefined);
+  const creatorId = typeof meta.creatorId === "string" ? meta.creatorId : undefined;
+  const pageId = typeof meta.pageId === "string" && meta.pageId ? meta.pageId : undefined;
+  const message = typeof meta.message === "string" && meta.message ? meta.message : undefined;
+
+  if (!readerId || !bookId || !creatorId) {
+    throw new Error(`Xendit thanks invoice missing required metadata (external_id=${externalId})`);
+  }
+
+  const grossAmount = invoice.paid_amount ?? invoice.amount;
+  if (!grossAmount || grossAmount <= 0) {
+    throw new Error(`Invalid Xendit thanks amount: ${grossAmount}`);
+  }
+
+  return recordThanks({
+    readerId,
+    creatorId,
+    bookId,
+    pageId,
+    grossAmount,
+    currency: "IDR",
+    gateway: XENDIT_GATEWAY,
+    providerPaymentId: invoice.id,
+    providerEventId: eventId,
+    message,
+  });
+}
+
 
 /**
  * Tracks or reuses a webhook delivery row for Xendit events.
