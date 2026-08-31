@@ -19,6 +19,7 @@ import {
 } from "../db/schema.js";
 import { calculatePlatformFee, calculateCreatorAmount } from "../config/thanks.js";
 import { getErrorMessage } from "../utils/error.js";
+import { isUniqueConstraintError } from "../utils/retry.js";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -107,7 +108,7 @@ export async function recordThanks(options: RecordThanksOptions): Promise<{ dupl
     });
   } catch (error) {
     // Handle race condition: another webhook processed the same event concurrently
-    if (typeof error === "object" && error !== null && (error as { code?: string }).code === "23505") {
+    if (isUniqueConstraintError(error)) {
       return { duplicate: true };
     }
     throw error;

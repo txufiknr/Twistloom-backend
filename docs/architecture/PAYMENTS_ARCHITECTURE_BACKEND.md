@@ -21,7 +21,10 @@
 11. [Security](#11-security)
 12. [Design decisions & trade-offs](#12-design-decisions--trade-offs)
 13. [File reference map](#13-file-reference-map)
-14. [Adding a new payment gateway](#14-adding-a-new-payment-gateway)
+14. [Adding a new payment gateway & provider evaluation](#14-adding-a-new-payment-gateway--provider-evaluation)
+    - 14.1 [Step-by-step adapter implementation guide](#141-step-by-step-adapter-implementation-guide)
+    - 14.2 [Global payment gateways comparative evaluation](#142-global-payment-gateways-comparative-evaluation)
+    - 14.3 [Indonesian & Southeast Asian payment gateways comparative evaluation](#143-indonesian--southeast-asian-payment-gateways-comparative-evaluation)
 15. [Known issues & future enhancements](#15-known-issues--future-enhancements)
 16. [Implementation status](#16-implementation-status)
 
@@ -57,15 +60,20 @@ graph LR
 
 ### Two payment gateways
 
-| | Stripe | Xendit |
+| Architectural & Operational Dimension | Stripe (International) | Xendit (Indonesia) |
 |---|---|---|
-| **Market** | International (USD) | Indonesia (IDR) |
-| **Credit packs** | Checkout Sessions (`mode: "payment"`) | Invoice API (one-time) |
-| **Subscriptions** | Checkout Sessions (`mode: "subscription"`) | Recurring Plans API |
-| **Free trial** | Supported (30 days, card upfront) | Not supported (goes directly to paid) |
-| **Customer portal** | Stripe Customer Portal | Cancel via API only (no hosted portal) |
-| **Webhook auth** | `stripe-signature` (HMAC-SHA256) | `x-callback-token` (static token) |
-| **Kill switch** | N/A (always available) | `XENDIT_ENABLED` env var |
+| **Target Market** | International / Global | Indonesia / Southeast Asia |
+| **Supported Currency** | `USD` | `IDR` |
+| **Amount DB Column** | `amount_cents: integer` (Cents: `$9.99` → `999`) | `amount_cents: integer` (Rupiah: `Rp 150.000` → `150000`) |
+| **Integration Architecture** | Official Stripe Node SDK (`stripe ^22.2.0`) singleton | Lightweight raw REST API wrapper via `fetch` |
+| **Credit Pack Purchases** | Stripe Checkout Session (`mode: "payment"`) | Xendit Invoice API (`POST /v2/invoices`) |
+| **Recurring Subscriptions** | Stripe Checkout Session (`mode: "subscription"`) | Xendit Recurring Plans API (`POST /recurring/plans`) |
+| **Free Trial Capability** | Supported (30 days, card upfront, `$0.00` invoice) | Not supported natively (direct paid activation) |
+| **Customer Portal** | Hosted Stripe Customer Portal (`GET /payments/subscription/portal`) | Headless API cancellation (`POST /payments/subscription/cancel`) |
+| **Webhook Authentication** | Cryptographic HMAC-SHA256 signature (`stripe-signature`) | Static shared secret token header (`x-callback-token`) |
+| **Webhook Delivery Idempotency** | Tracked in `webhook_deliveries` via `providerEventId` (`evt_...`) | Tracked in `webhook_deliveries` via event/invoice ID |
+| **Rate Limiting Enforcement** | 1 checkout session per 10 seconds per user | 1 checkout session per 10 seconds per user |
+| **Kill Switch / Feature Flag** | Always enabled | `XENDIT_ENABLED=true/false` environment flag |
 
 ---
 
@@ -702,14 +710,12 @@ flowchart TD
 Layer 3 is the one that actually closes the race Layer 2 can't:
 
 ```typescript
-function isUniqueViolation(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && (error as { code?: string }).code === '23505';
-}
+import { isUniqueConstraintError } from "../utils/retry.js";
 
 try {
   await dbWrite.transaction(async (tx) => { /* ... */ });
 } catch (error) {
-  if (isUniqueViolation(error)) {
+  if (isUniqueConstraintError(error)) {
     console.log("Concurrent duplicate detected via unique constraint");
   } else {
     throw error;
@@ -717,7 +723,7 @@ try {
 }
 ```
 
-This pattern is used in five places: the Stripe checkout webhook, the Stripe refund webhook, `createSubscription()`, `renewSubscription()`, and `handleXenditInvoicePaid()`.
+This pattern is used in all critical paths: Stripe checkout webhook, Stripe refund webhook, `createSubscription()`, `renewSubscription()`, and `handleXenditInvoicePaid()`. `isUniqueConstraintError()` robustly walks PostgreSQL error cause chains to detect SQLSTATE 23505 even when wrapped by ORM/runtime abstractions.
 
 ### Xendit-specific idempotency
 
@@ -827,11 +833,13 @@ src/
 
 ---
 
-## 14. Adding a new payment gateway
+## 14. Adding a new payment gateway & provider evaluation
 
-Follow this checklist to add a gateway (e.g. Razorpay, PayPal, Midtrans).
+### 14.1 Step-by-step adapter implementation guide
 
-### Step 1: Register the gateway
+Follow this checklist to add a new gateway adapter (e.g. Razorpay, Paddle, Midtrans).
+
+#### Step 1: Register the gateway
 
 ```typescript
 // src/types/payment.ts
@@ -843,7 +851,7 @@ export const PAYMENT_GATEWAY = {
 } as const satisfies Record<PaymentGateway, PaymentGateway>;
 ```
 
-### Step 2: Add config (if needed)
+#### Step 2: Add config & env bindings
 
 ```typescript
 // src/config/razorpay.ts
@@ -855,7 +863,7 @@ export const RAZORPAY_CONFIG = {
 };
 ```
 
-### Step 3: Implement the adapter
+#### Step 3: Implement the adapter
 
 ```typescript
 // src/services/gateways/razorpay-adapter.ts
@@ -871,11 +879,11 @@ import type {
 
 export class RazorpayAdapter implements PaymentGatewayAdapter {
   readonly gateway = PAYMENT_GATEWAY.razorpay;
-  readonly supportsTrials = false;  // adjust per gateway
+  readonly supportsTrials = false;  // adjust per gateway capability
   readonly supportsPortal = false;
 
   async createCreditPackCheckout(params: CreditPackCheckoutParams): Promise<CheckoutResult> {
-    // Call Razorpay SDK here
+    // Call gateway SDK / REST endpoint
     throw new Error("Not implemented");
   }
 
@@ -889,7 +897,7 @@ export class RazorpayAdapter implements PaymentGatewayAdapter {
 }
 ```
 
-### Step 4: Register in the gateway registry
+#### Step 4: Register in the gateway registry
 
 ```typescript
 // src/services/gateways/registry.ts
@@ -902,22 +910,54 @@ export function initGatewayAdapters(): void {
 }
 ```
 
-### Step 5: Add webhook handler (if needed)
-
-Create webhook handler functions and mount a new route:
+#### Step 5: Add webhook handler route
 
 ```typescript
 // src/routes/payments.ts
 router.post("/razorpay/webhook", async (c) => {
-  // Verify signature, dispatch to handler functions
+  // 1. Verify cryptographic signature / headers
+  // 2. Deduplicate providerEventId in webhook_deliveries
+  // 3. Dispatch to credit allocation / subscription mutation
 });
 ```
 
-### Step 6: Update frontend (if needed)
+#### Step 6: Update frontend types & mappings
 
 1. Add gateway to `GATEWAY_CURRENCY` mapping in `payment-price.ts`
 2. Add locale→gateway mapping in `usePaymentGateway.ts`
-3. Add gateway label/methods translation keys
+3. Add gateway label/methods translation keys in `en.json` and `id.json`
+
+---
+
+### 14.2 Global payment gateways comparative evaluation
+
+| Provider | Integration Model | Webhook Security | Subscription Primitives | Idempotency & Replay Protection | Backend DX & SDK Quality | Key Backend Trade-offs |
+|---|---|---|---|---|---|---|
+| **Stripe** *(Selected)* | Official Node SDK (`stripe ^22.2.0`) | HMAC-SHA256 (`stripe-signature` with timestamp tolerance) | Native Billing (`mode: "subscription"`, trialing, pause, cancel) | Built-in `Idempotency-Key` headers on mutations | ⭐⭐⭐⭐⭐ (Exceptional type definitions, Stripe CLI fixtures) | **Canonical benchmark**. Flawless webhook telemetry, comprehensive error codes (`StripeCardError`, `StripeRateLimitError`). |
+| **Razorpay** | REST API + Node SDK (`razorpay`) | HMAC-SHA256 (`x-razorpay-signature`) | Plans & Subscriptions API with auto-charge | Custom header passing (`X-Payout-Idempotency`) | ⭐⭐⭐⭐ (Well-documented REST API) | Strong focus on UPI / Indian banking. Multi-currency international settlements require specific merchant account approvals. |
+| **Paddle** | REST API (Paddle Billing) | HMAC-SHA256 (`Paddle-Signature`) | Subscription Engine with pause/resume | Idempotency-Key support on v2 endpoints | ⭐⭐⭐ (TypeScript types improving) | Acts as Merchant of Record (MoR) — simplifies global sales taxes, but reduces low-level transaction telemetry control. |
+| **Lemon Squeezy** | REST API | HMAC-SHA256 (`X-Signature`) | Subscription webhooks (`subscription_created`, etc.) | Custom tracking required | ⭐⭐⭐⭐ (Modern REST JSON API) | Great for indie SaaS MoR, but higher platform take-rate (5% + 50¢) and less granular webhook event filtering. |
+| **PayPal / Braintree** | Braintree Node SDK | Asymmetric RSA / HMAC | Recurring Billing Subscriptions | GraphQL/REST Idempotency keys | ⭐⭐⭐ (Fragmented legacy vs modern SDK docs) | High global consumer trust, but heavier SDK footprint and more complex multi-step transaction authorization flows. |
+
+---
+
+### 14.3 Indonesian & Southeast Asian payment gateways comparative evaluation
+
+| Local Provider | API Architecture | Callback / Webhook Security | Recurring Subscription Engine | Sandbox & Test Environments | Settlement & Reconcile Rails | Key Backend Trade-offs |
+|---|---|---|---|---|---|---|
+| **Xendit** *(Selected)* | Clean REST API (`fetch` / OpenAPI) | Static `x-callback-token` header | **Recurring Plans API** (Immediate & scheduled cycles) | ⭐⭐⭐⭐⭐ (Full test-mode simulation with simulated webhooks) | Automated balance payouts, real-time invoice callbacks | **Best developer experience in SEA**. Pure REST endpoints allow lightweight `fetch` implementation without bulky SDK dependencies. |
+| **Midtrans** (GoTo) | REST API + Snap JS | SHA-512 Hash string (`order_id + status_code + gross_amount + server_key`) | Iris / Subscription API (requires enterprise agreement) | ⭐⭐⭐⭐ (Good sandbox dashboard) | Direct bank disbursement, GoPay deep-linking | Highly reliable for one-time GoPay/QRIS transactions, but automated recurring subscription charging requires custom card tokenization agreements. |
+| **DOKU** | REST API (Joko/DOKU Core) | HMAC-SHA256 with Request Timestamp & Client ID | Subscriptions via Direct Tokenization | ⭐⭐⭐ (Sandbox available, UI slightly dated) | Comprehensive multi-bank settlement | Established enterprise banking integration, but signature generation formulas are complex and API documentation is less unified than Xendit. |
+| **Duitku** | REST API | MD5 Hash (`merchant_code + amount + api_key`) | Limited native recurring plan management | ⭐⭐⭐ (Basic sandbox environment) | Bank VA and QRIS aggregation | Low transaction fees for domestic Indonesian one-time payments, but lacks mature recurring subscription state machines. |
+| **Faspay** | REST / SOAP legacy APIs | MD5 / SHA-1 Signature | Requires manual card tokenization orchestration | ⭐⭐⭐ (Sandbox access on request) | Traditional enterprise banking settlement | Enterprise-focused with higher onboarding lead time and legacy protocol heritage. |
+
+---
+
+### 14.4 Backend architectural recommendations
+
+1. **Keep Lightweight REST Wrapper for Xendit**: Maintaining Xendit via native `fetch` helpers in `src/services/gateways/xendit.ts` keeps server cold starts fast and avoids outdated third-party wrapper dependencies.
+2. **Standardize on `webhook_deliveries` Table**: All future gateway additions (e.g. Razorpay) should reuse the existing `webhook_deliveries` table and `providerEventId` unique constraint to ensure zero duplicate credit grants.
+3. **Persist `amount_cents` Uniformly**: Treat all currencies uniformly in the schema using integer storage (`amount_cents`), with cents for USD and whole units for zero-decimal currencies (IDR).
 
 ---
 
@@ -949,14 +989,17 @@ router.post("/razorpay/webhook", async (c) => {
 | Low | `webhookDeliveryId` null guard (3 locations) | **Fixed** — `if (webhookDeliveryId)` guards at `payments.ts:1091, 1104, 1111` |
 | Low | `updatedAt` set on credit operations (violates user-controlled field) | **Fixed** — removed `updatedAt` from `executeWithCredits`, `addCredits`, `awardCredits` per AGENTS.md §8G |
 | Low | Dynamic import of `xendit.ts` (perf) | **Fixed** — changed to static import at `xendit.ts:1-18` |
+| Medium | `refundCreditsIdempotent()` TOCTOU race (double refund) | **Fixed** — idempotency check + `addCredits` wrapped in single `dbWrite.transaction` at `credits.ts:392-423` |
+| High | `isDuplicateTx` shared across branches | **Fixed** — each webhook handler function scoped independently in `stripe-webhook-handlers.ts` |
+| High | Subscription event idempotency | **Resolved** — service-layer `isUniqueViolation` catches + webhook delivery dedup already provide full coverage |
+| Low | `dbRead`/`dbWrite` inconsistency in zero-amount path | **Fixed** — `refundCreditsIdempotent` zero-amount path now uses `dbRead` at `credits.ts:383` |
 
 ### Deferred
 
 | Severity | Issue | Notes |
 |----------|-------|-------|
-| Medium | `refundCredits` TOCTOU race condition | Requires new `deductCredits` helper (Phase 6) |
 | Medium | `amountCents` semantics differ between gateways | Stripe = cents, IDR = whole rupiah (by design) |
-| Medium | `isDuplicateTx` broader than intended | Transactions keyed by (userId, type, refId) |
+| Medium | `isDuplicateTx` broader than intended | Idempotency check uses `LIKE` on JSONB metadata; prefer structured unique constraint |
 | Low | `isUniqueViolation()` duplicated 3× | Can extract utility in Phase 6 |
 | Low | Pack ID config duplication (`credits.ts` + `xendit.ts`) | Acceptable given different price structures |
 | Low | Subscription idempotency vs. credit grant idempotency mismatch | Acceptable trade-off for simplicity |

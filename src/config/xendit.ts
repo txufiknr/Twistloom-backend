@@ -7,10 +7,11 @@
  * @see docs/roadmap/STRIPE_AND_XENDIT_GATEWAY_AGNOSTIC_ROADMAP.md §6.4
  */
 
+import type { CREDIT_PACKS } from "./credits.js";
 import { isValidUuid } from "../utils/uuid.js";
 
-/** Credit pack IDs that have Xendit IDR prices */
-export type XenditCreditPackId = "observer" | "investigator" | "mastermind";
+/** Credit pack IDs that have Xendit IDR prices — synchronized with CREDIT_PACKS */
+export type XenditCreditPackId = (typeof CREDIT_PACKS)[number]["id"];
 
 /**
  * Xendit-specific configuration for IDR pricing and payment channels.

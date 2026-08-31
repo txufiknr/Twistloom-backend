@@ -21,6 +21,7 @@ import { dbWrite } from "../db/client.js";
 import { transactions, webhookDeliveries } from "../db/schema.js";
 import { awardCredits } from "./credits.js";
 import { createSubscription, renewSubscription, cancelSubscription, updateSubscription } from "./subscription.js";
+import { isUniqueConstraintError } from "../utils/retry.js";
 import {
   createXenditCustomer,
   createXenditInvoice,
@@ -29,6 +30,9 @@ import {
   isXenditConfigured,
   type XenditInvoice,
   type XenditRecurringPlan,
+  type XenditCycleSucceededPayload,
+  type XenditCycleFailedPayload,
+  type XenditPlanDeactivatedPayload,
 } from "../utils/xendit.js";
 import { PAYMENT_GATEWAY, type PaymentGateway } from "../types/payment.js";
 
@@ -134,14 +138,10 @@ export async function handleXenditPlanActivated(plan: XenditRecurringPlan, event
 /**
  * Handles `recurring.cycle.succeeded` webhook — renews subscription.
  */
-export async function handleXenditCycleSucceeded(data: {
-  plan_id: string;
-  id: string;
-  amount: number;
-  scheduled_timestamp: string;
-  paid_at?: string;
-  status: string;
-}, eventId: string): Promise<void> {
+export async function handleXenditCycleSucceeded(
+  data: XenditCycleSucceededPayload,
+  eventId: string
+): Promise<void> {
   const planId = data.plan_id;
   const cycleId = data.id;
 
@@ -164,12 +164,10 @@ export async function handleXenditCycleSucceeded(data: {
 /**
  * Handles `recurring.cycle.failed` webhook — marks subscription past_due.
  */
-export async function handleXenditCycleFailed(data: {
-  plan_id: string;
-  id: string;
-  failure_code?: string;
-  failure_message?: string;
-}, _eventId: string): Promise<void> {
+export async function handleXenditCycleFailed(
+  data: XenditCycleFailedPayload,
+  _eventId: string
+): Promise<void> {
   await updateSubscription({
     providerSubscriptionId: data.plan_id,
     gateway: XENDIT_GATEWAY,
@@ -182,10 +180,10 @@ export async function handleXenditCycleFailed(data: {
 /**
  * Handles `recurring.plan.deactivation` webhook — cancels subscription.
  */
-export async function handleXenditPlanDeactivated(data: {
-  id: string;
-  deactivation_date?: string;
-}, eventId: string): Promise<void> {
+export async function handleXenditPlanDeactivated(
+  data: XenditPlanDeactivatedPayload,
+  eventId: string
+): Promise<void> {
   await cancelSubscription({
     providerSubscriptionId: data.id,
     canceledAt: data.deactivation_date ? new Date(data.deactivation_date) : new Date(),
@@ -268,13 +266,6 @@ export async function createXenditCreditPackCheckout(params: {
 }
 
 /**
- * Detects Postgres unique-constraint violation (SQLSTATE 23505).
- */
-function isUniqueViolation(error: unknown): boolean {
-  return typeof error === "object" && error !== null && (error as { code?: string }).code === "23505";
-}
-
-/**
  * Handles a paid Xendit invoice: awards pack credits (+ first-purchase bonus).
  *
  * Idempotent via `(gateway, providerEventId)` / `(gateway, providerPaymentId)`.
@@ -339,12 +330,6 @@ export async function handleXenditInvoicePaid(
 
       if (existing.length > 0) return;
 
-      const priorPurchase = await tx
-        .select({ id: transactions.id })
-        .from(transactions)
-        .where(and(eq(transactions.userId, userId), eq(transactions.type, "purchase")))
-        .limit(1);
-
       await awardCredits(userId, creditsAmount, {
         type: "purchase",
         gateway: XENDIT_GATEWAY,
@@ -365,11 +350,15 @@ export async function handleXenditInvoicePaid(
         providerEventId,
         tx,
       });
-
-      if (priorPurchase.length === 0 && FIRST_PURCHASE_BONUS > 0) {
-        try {
+      // First-purchase bonus: check for an existing bonus row instead of
+      // counting prior purchases. If the bonus awardCredits throws, the
+      // entire transaction rolls back (including the main purchase), so on
+      // redelivery the duplicate guard passes and both are retried atomically.
+      if (FIRST_PURCHASE_BONUS > 0) {
+        const bonusAlreadyAwarded = await tx.select().from(transactions).where(and(eq(transactions.userId, userId), eq(transactions.type, "first_purchase_bonus"))).limit(1);
+        if (bonusAlreadyAwarded.length === 0) {
           await awardCredits(userId, FIRST_PURCHASE_BONUS, {
-            type: "reward",
+            type: "first_purchase_bonus",
             gateway: XENDIT_GATEWAY,
             notificationType: "first_purchase_bonus",
             notificationTitle: "First Purchase Bonus",
@@ -381,13 +370,11 @@ export async function handleXenditInvoicePaid(
           console.log(
             `[xendit] 🎁 Awarded first-purchase bonus (${FIRST_PURCHASE_BONUS} credits) to user ${userId}`
           );
-        } catch (err) {
-          console.error(`[xendit] ❌ Failed to award first-purchase bonus to user ${userId}:`, err);
         }
       }
     });
   } catch (error) {
-    if (isUniqueViolation(error)) {
+    if (isUniqueConstraintError(error)) {
       console.log(`[xendit] 🔄 Duplicate invoice paid event: ${providerEventId}`);
       return { duplicate: true };
     }
@@ -434,7 +421,7 @@ export async function trackXenditWebhookDelivery(
       .returning();
     return { deliveryId: row.id, alreadySuccess: false };
   } catch (error) {
-    if (isUniqueViolation(error)) {
+    if (isUniqueConstraintError(error)) {
       const [dup] = await dbWrite
         .select()
         .from(webhookDeliveries)

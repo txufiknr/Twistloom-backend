@@ -30,8 +30,9 @@ export interface CreditPack {
  * - refund: Credits refunded to user (amountCents is set)
  * - reward: Free credits awarded (daily check-in, promotions)
  * - conversion: Wallet balance converted to credits (amountCents = IDR amount)
+ * - first_purchase_bonus: One-time bonus for first-time purchasers (idempotent via row existence)
  */
-export type TransactionType = "purchase" | "usage" | "refund" | "reward" | "conversion";
+export type TransactionType = "purchase" | "usage" | "refund" | "reward" | "conversion" | "first_purchase_bonus";
 
 /**
  * Options shared by credit consumption, addition, and refund helpers.

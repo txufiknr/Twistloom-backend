@@ -380,7 +380,7 @@ export async function refundCreditsIdempotent(
 
   // Nothing was charged (free demo / zero-cost) — no refund needed
   if (amount === 0) {
-    const [userRow] = await dbWrite
+    const [userRow] = await dbRead
       .select({ credits: users.credits })
       .from(users)
       .where(eq(users.userId, userId))
@@ -389,36 +389,42 @@ export async function refundCreditsIdempotent(
     return userRow.credits;
   }
 
-  // Check for an existing refund record with this correlation ID
-  const existingRefund = await dbWrite
-    .select()
-    .from(transactions)
-    .where(
-      and(
-        eq(transactions.userId, userId),
-        eq(transactions.context, options.context || 'refund'),
-        sql`${transactions.metadata}::text LIKE ${`%${correlationId}%`}`
+  // Wrap idempotency check + addCredits in a single transaction to prevent
+  // two concurrent redelivered webhooks from both passing the check (TOCTOU).
+  return dbWrite.transaction(async (tx) => {
+    // Check for an existing refund record with this correlation ID
+    const existingRefund = await tx
+      .select()
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.userId, userId),
+          eq(transactions.context, options.context || 'refund'),
+          sql`${transactions.metadata}->>'correlationId' = ${correlationId}`
+        )
       )
-    )
-    .limit(1);
-
-  if (existingRefund.length > 0) {
-    // Return current user credits instead of refunding again
-    console.log(`[refundCreditsIdempotent] ℹ️ Refund already processed for correlationId: ${correlationId}`);
-    const [userRow] = await dbWrite
-      .select({ credits: users.credits })
-      .from(users)
-      .where(eq(users.userId, userId))
       .limit(1);
 
-    if (!userRow) throw new Error(`User not found: ${userId}`);
-    return userRow.credits;
-  }
+    if (existingRefund.length > 0) {
+      // Return current user credits instead of refunding again
+      console.log(`[refundCreditsIdempotent] ℹ️ Refund already processed for correlationId: ${correlationId}`);
+      const [userRow] = await tx
+        .select({ credits: users.credits })
+        .from(users)
+        .where(eq(users.userId, userId))
+        .limit(1);
 
-  // No existing refund, proceed with refund
-  return addCredits(userId, amount, {
-    context: options.context || 'refund',
-    metadata: { ...options.metadata, correlationId }
+      if (!userRow) throw new Error(`User not found: ${userId}`);
+      return userRow.credits;
+    }
+
+    // No existing refund, proceed with refund — pass tx so addCredits
+    // participates in the same atomic transaction
+    return addCredits(userId, amount, {
+      context: options.context || 'refund',
+      metadata: { ...options.metadata, correlationId },
+      tx,
+    });
   });
 }
 

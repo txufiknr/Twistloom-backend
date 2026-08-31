@@ -161,6 +161,39 @@ export interface CreateXenditRecurringPlanParams {
 }
 
 /**
+ * Payload for Xendit `recurring.cycle.succeeded` webhook event.
+ */
+export interface XenditCycleSucceededPayload {
+  plan_id: string;
+  id: string;
+  amount: number;
+  scheduled_timestamp: string;
+  paid_at?: string;
+  status: string;
+  [key: string]: unknown;
+}
+
+/**
+ * Payload for Xendit `recurring.cycle.failed` webhook event.
+ */
+export interface XenditCycleFailedPayload {
+  plan_id: string;
+  id: string;
+  failure_code?: string;
+  failure_message?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * Payload for Xendit `recurring.plan.deactivation` webhook event.
+ */
+export interface XenditPlanDeactivatedPayload {
+  id: string;
+  deactivation_date?: string;
+  [key: string]: unknown;
+}
+
+/**
  * Returns true when Xendit is enabled and credentials are present.
  */
 export function isXenditConfigured(): boolean {

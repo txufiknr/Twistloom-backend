@@ -19,10 +19,19 @@ import { getErrorMessage, cApiError, cConflictError, cNotFoundError, cValidation
 import { checkRateLimit, checkIdempotency, storeIdempotencyResult, constructSafeUrl, setIdempotencyProcessing } from "../utils/redis.js";
 import { consumeCredits, getCreditCost } from "../services/credits.js";
 import { CREDIT_ERRORS, isInsufficientCreditsError } from "../config/errors.js";
+import { isUniqueConstraintError } from "../utils/retry.js";
 import { hasActiveVipSubscription, isTrialEligible } from "../services/subscription.js";
+import type { AuthUser } from "../types/express.js";
 import { VIP_BENEFITS, VIP_SUBSCRIPTION, VIP_TRIAL } from "../config/subscription.js";
 import { getXenditPackPriceIdr, XENDIT_CONFIG } from "../config/xendit.js";
-import { verifyXenditCallbackToken, type XenditInvoice, type XenditRecurringPlan } from "../utils/xendit.js";
+import {
+  verifyXenditCallbackToken,
+  type XenditInvoice,
+  type XenditRecurringPlan,
+  type XenditCycleSucceededPayload,
+  type XenditCycleFailedPayload,
+  type XenditPlanDeactivatedPayload,
+} from "../utils/xendit.js";
 import {
   finalizeXenditWebhookDelivery,
   handleXenditCycleSucceeded,
@@ -122,29 +131,23 @@ export function handleInsufficientCreditsError(
   }, 402);
 }
 
-const router = new Hono<AppEnv>();
-
-/**
- * Detects a Postgres unique-constraint violation by checking for SQLSTATE 23505.
- * Used to handle concurrent webhook delivery races where duplicate INSERTs may
-  * collide on the same `providerEventId` or `eventId`.
- *
- * @param error - The error object thrown by a database operation
- * @returns `true` if the error is a Postgres unique violation
- *
- * @example
- * ```typescript
- * try { await dbWrite.insert(...).values(...); }
- * catch (err) {
- *   if (isUniqueViolation(err)) {
- *     // concurrent duplicate
- *   }
- * }
- * ```
- */
-function isUniqueViolation(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && (error as { code?: string }).code === '23505';
+function requireUser(c: Context<AppEnv>): AuthUser {
+  const user = c.get("user");
+  if (!user) {
+    throw new Error("Unauthorized: user context is missing");
+  }
+  return user;
 }
+
+function requireUserId(c: Context<AppEnv>): string {
+  const userId = c.get("userId") ?? c.get("user")?.id;
+  if (!userId) {
+    throw new Error("Unauthorized: user id is missing");
+  }
+  return userId;
+}
+
+const router = new Hono<AppEnv>();
 
 // Stripe webhook handlers are imported from `stripe-webhook-handlers.ts`
 // and aliased above (stripeSubCreated, stripeSubUpdated, etc.).
@@ -163,7 +166,6 @@ router.get("/credit-packs", async (c) => {
   try {
     const rawGateway = c.req.query("gateway");
     const gatewayParam = parseGateway(rawGateway || PAYMENT_GATEWAY.stripe);
-    console.log(`[credit-packs] ▶️ Entered handler, gateway query param: "${rawGateway}" (parsed: ${gatewayParam})`);
     if (!gatewayParam) return cValidationError(c, "Invalid gateway (use stripe or xendit)");
 
     if (gatewayParam === PAYMENT_GATEWAY.xendit) {
@@ -171,7 +173,6 @@ router.get("/credit-packs", async (c) => {
         console.warn(`[credit-packs] ⚠️ Xendit gateway is not enabled — returning 400`);
         return cValidationError(c, "Xendit gateway is not enabled");
       }
-      console.log(`[credit-packs] ✅ Xendit gateway is enabled`);
       const packs = CREDIT_PACKS.map((pack) => ({
         id: pack.id,
         title: pack.title,
@@ -232,7 +233,7 @@ router.post("/create-checkout-session", requireAuth, async (c) => {
     const gateway = parseGateway(gatewayBody ?? PAYMENT_GATEWAY.stripe);
     if (!gateway) return cValidationError(c, "Invalid gateway (use stripe or xendit)");
 
-    const user = c.get("user")!;
+    const user = requireUser(c);
     const { id: userId, email } = user;
 
     const rateLimitResult = await checkRateLimit(`checkout-session-${userId}`, { maxRequests: 1, windowSeconds: 10 });
@@ -288,7 +289,7 @@ router.post("/create-subscription-checkout", requireAuth, async (c) => {
     const gateway = parseGateway(gatewayBody ?? PAYMENT_GATEWAY.stripe);
     if (!gateway) return cValidationError(c, "Invalid gateway (use stripe or xendit)");
 
-    const userProfile = c.get("user")!;
+    const userProfile = requireUser(c);
     const userId = userProfile.id;
 
     const rateLimitResult = await checkRateLimit(`subscription-checkout-${userId}`, { maxRequests: 1, windowSeconds: 10 });
@@ -351,7 +352,7 @@ router.post("/create-subscription-checkout", requireAuth, async (c) => {
  */
 router.get("/subscription/trial-eligibility", requireAuth, async (c) => {
   try {
-    const userId = c.get("user")!.id;
+    const userId = requireUserId(c);
     const eligible = await isTrialEligible(userId);
     return c.json({ eligible });
   } catch (error) {
@@ -383,7 +384,8 @@ router.get("/subscription/trial-eligibility", requireAuth, async (c) => {
 router.post("/create-trial-checkout-session", requireAuth, async (c) => {
   try {
     const { successPath, cancelPath, returnUrl } = c.get("body");
-    const userId = c.get("user")!.id;
+    const user = requireUser(c);
+    const userId = user.id;
 
     const rateLimitResult = await checkRateLimit(`trial-checkout-${userId}`, { maxRequests: 1, windowSeconds: 10 });
     if (!rateLimitResult.allowed) {
@@ -411,8 +413,8 @@ router.post("/create-trial-checkout-session", requireAuth, async (c) => {
     }
 
     // Resolve Stripe customer ID
-    const [user] = await dbRead.select({ customerId: users.customerId, email: users.email }).from(users).where(eq(users.userId, userId)).limit(1);
-    const customerId = user?.customerId ?? undefined;
+    const [dbUser] = await dbRead.select({ customerId: users.customerId, email: users.email }).from(users).where(eq(users.userId, userId)).limit(1);
+    const customerId = dbUser?.customerId ?? undefined;
 
     const adapter = getGatewayAdapter(PAYMENT_GATEWAY.stripe);
     if (!adapter.createTrialCheckout) {
@@ -421,8 +423,8 @@ router.post("/create-trial-checkout-session", requireAuth, async (c) => {
 
     const result = await adapter.createTrialCheckout({
       userId,
-      email: c.get("user")!.email,
-      name: c.get("user")!.name,
+      email: user.email,
+      name: user.name,
       customerId,
       priceId: VIP_SUBSCRIPTION.priceId,
       trialPeriodDays: VIP_TRIAL.trialPeriodDays,
@@ -573,7 +575,7 @@ router.post("/stripe/webhook", async (c) => {
         }).returning();
         webhookDeliveryId = deliveryRecord.id;
       } catch (insertError) {
-        if (isUniqueViolation(insertError)) {
+        if (isUniqueConstraintError(insertError)) {
           const [dupRecord] = await dbRead.select().from(webhookDeliveries).where(and(eq(webhookDeliveries.gateway, PAYMENT_GATEWAY.stripe), eq(webhookDeliveries.eventId, event.id))).limit(1);
           webhookDeliveryId = dupRecord?.id ?? null;
           console.log(`[stripe] 🔄 Concurrent delivery race resolved at webhookDelivery INSERT: ${event.id}`);
@@ -656,14 +658,7 @@ router.post("/xendit/webhook", async (c) => {
       return cRateLimitError(c, "Webhook rate limit exceeded");
     }
 
-    const body = (await c.req.json()) as XenditInvoice & {
-      event?: string;
-      id?: string;
-      external_id?: string;
-      status?: string;
-      plan_id?: string;
-      business_id?: string;
-    };
+    const body = (await c.req.json()) as Record<string, unknown>;
 
     // Invoice callbacks usually POST the invoice object; some products wrap event name.
     // Recurring callbacks have an `event` field (e.g. "recurring.plan.activation").
@@ -687,7 +682,8 @@ router.post("/xendit/webhook", async (c) => {
       return c.json({ received: true, duplicate: true });
     }
 
-    const status = (body.status || "").toUpperCase();
+    const rawStatus = typeof body.status === "string" ? body.status : "";
+    const status = rawStatus.toUpperCase();
     const isPaid =
       eventType === "invoice.paid" ||
       status === "PAID" ||
@@ -703,25 +699,19 @@ router.post("/xendit/webhook", async (c) => {
     try {
       switch (eventType) {
         case "recurring.plan.activation": {
-          await handleXenditPlanActivated(body as unknown as XenditRecurringPlan, eventId);
+          await handleXenditPlanActivated(body as XenditRecurringPlan, eventId);
           break;
         }
         case "recurring.cycle.succeeded": {
-          await handleXenditCycleSucceeded(body as unknown as {
-            plan_id: string; id: string; amount: number; scheduled_timestamp: string; status: string;
-          }, eventId);
+          await handleXenditCycleSucceeded(body as XenditCycleSucceededPayload, eventId);
           break;
         }
         case "recurring.cycle.failed": {
-          await handleXenditCycleFailed(body as unknown as {
-            plan_id: string; id: string; failure_code?: string; failure_message?: string;
-          }, eventId);
+          await handleXenditCycleFailed(body as XenditCycleFailedPayload, eventId);
           break;
         }
         case "recurring.plan.deactivation": {
-          await handleXenditPlanDeactivated(body as unknown as {
-            id: string; deactivation_date?: string;
-          }, eventId);
+          await handleXenditPlanDeactivated(body as XenditPlanDeactivatedPayload, eventId);
           break;
         }
         default: {
@@ -773,14 +763,14 @@ router.post("/xendit/webhook", async (c) => {
  */
 router.post("/consume-credits", requireAuth, async (c) => {
   try {
-    const { costKey, idempotencyKey, context, metadata } = c.get("body");
+    const { costKey, idempotencyKey, context, metadata } = c.get("body") ?? {};
     if (!costKey || typeof costKey !== 'string') return cValidationError(c, "Valid costKey is required");
     if (metadata && typeof metadata !== 'object' && !Array.isArray(metadata)) return cValidationError(c, "Metadata must be an object");
 
     const validCostKeys: CreditCostKey[] = Object.keys(CREDIT_COSTS) as CreditCostKey[];
     if (!validCostKeys.includes(costKey as CreditCostKey)) return cValidationError(c, `Invalid costKey: ${costKey}`);
 
-    const userId = c.get("userId")!;
+    const userId = requireUserId(c);
 
     const rateLimitResult = await checkRateLimit(`credit-consume-${userId}`, { maxRequests: 60, windowSeconds: 60 });
     if (!rateLimitResult.allowed) return cRateLimitError(c, "Too many credit consumption attempts.");
@@ -850,11 +840,11 @@ router.post("/consume-credits", requireAuth, async (c) => {
  */
 router.get("/transactions", requireAuth, async (c) => {
   try {
-    const userId = c.get("userId")!;
+    const userId = requireUserId(c);
     const { limit = "50", offset = "0", type, startDate, endDate } = c.req.query();
 
     const conditions = [eq(transactions.userId, userId)];
-    const transactionTypes: TransactionType[] = ["purchase", "usage", "refund", "reward"];
+    const transactionTypes: TransactionType[] = ["purchase", "usage", "refund", "reward", "first_purchase_bonus"];
     if (type && transactionTypes.includes(type as TransactionType)) conditions.push(eq(transactions.type, type as TransactionType));
     if (startDate) conditions.push(sql`${transactions.createdAt} >= ${startDate}`);
     if (endDate) conditions.push(sql`${transactions.createdAt} <= ${endDate}`);
@@ -989,7 +979,7 @@ router.get("/subscription-plans", async (c) => {
  */
 router.post("/subscription/cancel", requireAuth, async (c) => {
   try {
-    const userId = c.get("user")!.id;
+    const userId = requireUserId(c);
     const subscription = await dbRead
       .select({
         id: subscriptions.id,
@@ -1034,7 +1024,7 @@ router.post("/subscription/cancel", requireAuth, async (c) => {
  */
 router.get("/subscription/portal", requireAuth, async (c) => {
   try {
-    const userId = c.get("user")!.id;
+    const userId = requireUserId(c);
     const baseUrl = process.env.FRONTEND_URL;
     if (!baseUrl) return cApiError(c, "Frontend URL not configured");
 

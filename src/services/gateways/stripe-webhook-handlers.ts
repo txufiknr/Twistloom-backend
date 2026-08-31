@@ -16,6 +16,7 @@ import { CREDIT_PACKS, FIRST_PURCHASE_BONUS } from "../../config/credits.js";
 import { PAYMENT_GATEWAY } from "../../types/payment.js";
 import { createSubscription, updateSubscription, renewSubscription, cancelSubscription, handleTrialWillEnd } from "../subscription.js";
 import { awardCredits } from "../credits.js";
+import { isUniqueConstraintError } from "../../utils/retry.js";
 
 // ── Extended Types (Stripe SDK gaps) ────────────────────────────────────────
 
@@ -29,10 +30,9 @@ interface StripeInvoiceWithSubscription extends Stripe.Invoice {
 }
 
 function isSubscriptionWithPeriods(obj: unknown): obj is StripeSubscriptionWithPeriods {
+  if (typeof obj !== "object" || obj === null) return false;
   const o = obj as Record<string, unknown>;
   return (
-    typeof o === "object" &&
-    o !== null &&
     typeof o.current_period_start === "number" &&
     typeof o.current_period_end === "number"
   );
@@ -48,10 +48,6 @@ function getInvoiceSubscriptionId(
     null;
   if (!raw) return null;
   return typeof raw === "object" ? raw.id ?? null : raw;
-}
-
-function isUniqueViolation(error: unknown): boolean {
-  return typeof error === "object" && error !== null && (error as { code?: string }).code === "23505";
 }
 
 // ── Subscription Handlers ───────────────────────────────────────────────────
@@ -226,7 +222,6 @@ export async function handleCheckoutSessionCompleted(
         isDuplicateTx = true;
         return;
       }
-      const priorPurchase = await tx.select().from(transactions).where(and(eq(transactions.userId, userId), eq(transactions.type, "purchase"))).limit(1);
       await awardCredits(userId, creditsAmount, {
         type: "purchase",
         gateway: PAYMENT_GATEWAY.stripe,
@@ -241,10 +236,15 @@ export async function handleCheckoutSessionCompleted(
         providerEventId,
         tx,
       });
-      if (priorPurchase.length === 0 && FIRST_PURCHASE_BONUS > 0) {
-        try {
+      // First-purchase bonus: check for an existing bonus row instead of
+      // counting prior purchases. If the bonus awardCredits throws, the
+      // entire transaction rolls back (including the main purchase), so on
+      // redelivery the duplicate guard passes and both are retried atomically.
+      if (FIRST_PURCHASE_BONUS > 0) {
+        const bonusAlreadyAwarded = await tx.select().from(transactions).where(and(eq(transactions.userId, userId), eq(transactions.type, "first_purchase_bonus"))).limit(1);
+        if (bonusAlreadyAwarded.length === 0) {
           await awardCredits(userId, FIRST_PURCHASE_BONUS, {
-            type: "reward",
+            type: "first_purchase_bonus",
             gateway: PAYMENT_GATEWAY.stripe,
             notificationType: "first_purchase_bonus",
             notificationTitle: "First Purchase Bonus",
@@ -254,8 +254,6 @@ export async function handleCheckoutSessionCompleted(
             tx,
           });
           console.log(`[stripe] 🎁 Awarded first-purchase bonus (${FIRST_PURCHASE_BONUS} credits) to user ${userId}`);
-        } catch (err) {
-          console.error(`[stripe] ❌ Failed to award first-purchase bonus to user ${userId}:`, err);
         }
       }
       if (webhookDeliveryId) {
@@ -263,7 +261,7 @@ export async function handleCheckoutSessionCompleted(
       }
     });
   } catch (txError) {
-    if (isUniqueViolation(txError)) {
+    if (isUniqueConstraintError(txError)) {
       console.log(`[stripe] 🔄 Concurrent duplicate delivery detected via unique constraint: ${providerEventId}`);
       isDuplicateTx = true;
     } else {
@@ -334,7 +332,7 @@ export async function handleChargeRefunded(
       }
     });
   } catch (txError) {
-    if (isUniqueViolation(txError)) {
+    if (isUniqueConstraintError(txError)) {
       console.log(`[stripe] 🔄 Concurrent duplicate refund delivery detected via unique constraint: ${providerEventId}`);
       isDuplicateTx = true;
     } else {

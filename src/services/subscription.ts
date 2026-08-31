@@ -36,6 +36,7 @@ import { addCredits } from "./credits.js";
 import { VIP_BENEFITS, VIP_TRIAL } from "../config/subscription.js";
 import type { SubscriptionStatus } from "../types/subscription.js";
 import { PAYMENT_GATEWAY, type PaymentGateway } from "../types/payment.js";
+import { isUniqueConstraintError } from "../utils/retry.js";
 
 export type { PaymentGateway };
 
@@ -48,9 +49,6 @@ export type { PaymentGateway };
  * catching this specific error, a redelivery would throw, mark the webhook 'failed',
  * and the provider would keep retrying an event that was already processed successfully.
  */
-function isUniqueViolation(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && (error as { code?: string }).code === '23505';
-}
 
 /**
  * Creates a new subscription record and allocates initial credits
@@ -149,7 +147,7 @@ export async function createSubscription(params: {
       });
     });
   } catch (error) {
-    if (isUniqueViolation(error)) {
+    if (isUniqueConstraintError(error)) {
       // providerSubscriptionId already exists for this gateway — redelivered
       // subscription-created webhook for a subscription we already activated.
       console.log(`[subscription] 🔄 Duplicate createSubscription for ${params.providerSubscriptionId} — already activated, skipping.`);
@@ -281,7 +279,7 @@ export async function renewSubscription(params: {
       });
     });
   } catch (error) {
-    if (isUniqueViolation(error)) {
+    if (isUniqueConstraintError(error)) {
       // This invoice was already processed on a prior delivery of this webhook.
       // The transaction rolled back in full (including the credit allocation
       // above), so it's safe to just treat this as already-handled.
