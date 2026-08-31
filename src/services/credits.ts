@@ -146,10 +146,10 @@ async function consumeCreditsInTransaction(
     );
   }
 
-  // Update user credits
+  // Update user credits (do NOT set updatedAt — it's a user-controlled profile field, per AGENTS.md §8G)
   await tx
     .update(users)
-    .set({ credits: sql`${users.credits} - ${cost}`, updatedAt: new Date() })
+    .set({ credits: sql`${users.credits} - ${cost}` })
     .where(eq(users.userId, userId));
 
   // Record transaction with correlation ID if provided
@@ -246,10 +246,10 @@ export async function addCredits(
     if (!user) throw new Error(`User not found: ${userId}`);
     const currentCredits = user.credits;
 
-    // Update user credits
+    // Update user credits (do NOT set updatedAt — it's a user-controlled profile field, per AGENTS.md §8G)
     await tx
       .update(users)
-      .set({ credits: sql`${users.credits} + ${amount}`, updatedAt: new Date() })
+      .set({ credits: sql`${users.credits} + ${amount}` })
       .where(eq(users.userId, userId));
 
     // Pass metadata as a direct object — see note in consumeCreditsInTransaction.
@@ -617,16 +617,23 @@ export async function awardCredits(
 
   // Use provided transaction or create a new one
   const executeAward = async (tx: DBTransaction) => {
-    // Update user credits
-    const updateResult = await tx
+    // Acquire row lock to prevent race conditions with concurrent awards
+    const [user] = await tx
+      .select({ credits: users.credits })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .for('update')
+      .limit(1);
+
+    if (!user) throw new Error('User not found');
+
+    const newBalance = user.credits + creditsAmount;
+
+    // Update user credits (do NOT set updatedAt — it's a user-controlled profile field, per AGENTS.md §8G)
+    await tx
       .update(users)
       .set({ credits: sql`${users.credits} + ${creditsAmount}` })
-      .where(eq(users.userId, userId))
-      .returning({ credits: users.credits });
-
-    if (!updateResult?.length) throw new Error('User not found');
-
-    const newBalance = updateResult[0].credits;
+      .where(eq(users.userId, userId));
 
     // Create transaction record (provider IDs written for idempotency)
     await tx.insert(transactions).values({

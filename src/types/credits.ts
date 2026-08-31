@@ -29,8 +29,9 @@ export interface CreditPack {
  * - usage: User consumes or receives credits (amountCents is null)
  * - refund: Credits refunded to user (amountCents is set)
  * - reward: Free credits awarded (daily check-in, promotions)
+ * - conversion: Wallet balance converted to credits (amountCents = IDR amount)
  */
-export type TransactionType = "purchase" | "usage" | "refund" | "reward";
+export type TransactionType = "purchase" | "usage" | "refund" | "reward" | "conversion";
 
 /**
  * Options shared by credit consumption, addition, and refund helpers.

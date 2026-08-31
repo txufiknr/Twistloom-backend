@@ -29,7 +29,7 @@ import { getBookAnalytics, getCommunityAnalytics } from "../services/analytics.j
 import { getBookFromDB, getPageFromDB, invalidateEnrichedBookCache } from "../services/book.js";
 import { getStoryState } from "../services/story.js";
 import { dbRead, dbWrite } from "../db/client.js";
-import { socialMentions, bookTestimonials, adminUsers, usage, users, userFeedbacks, books, portalBlogPosts, platformTestimonials, pages, userPageProgress } from "../db/schema.js";
+import { socialMentions, bookTestimonials, adminUsers, usage, users, userFeedbacks, books, portalBlogPosts, platformTestimonials, pages, userPageProgress, creatorPayouts, creatorWallets, creatorPayoutMethods } from "../db/schema.js";
 import type { AppEnv } from "../hono/env.js";
 import { bookStatuses, bookVisibilities, type BookStatus, type BookVisibility } from "../types/book.js";
 import { feedbackAdminStatuses, feedbackCategories, type FeedbackAdminStatus, type FeedbackCategory } from "../types/user.js";
@@ -2452,5 +2452,265 @@ router.post("/vouchers/generate-codes", requireAuth, requirePermission("vouchers
     return cApiError(c, "Failed to generate voucher codes", error);
   }
 });
+
+// ── Admin Payout Management ─────────────────────────────────────────────────
+
+/**
+ * GET /admin/payouts
+ *
+ * Lists payout requests with creator details. Filters by status.
+ * Joins with creator_wallets for available balance and creator_payout_methods
+ * for bank details. Also joins users for creator name/email.
+ */
+router.get("/payouts",
+  requireAuth,
+  requirePermission("payouts"),
+  async (c) => {
+    try {
+      const { status, limit = "50", offset = "0" } = c.req.query();
+      const limitNum = Math.min(Math.max(Number(limit) || 50, 1), 200);
+      const offsetNum = Math.max(Number(offset) || 0, 0);
+
+      const conditions = [];
+      if (status === "pending" || status === "processing" || status === "completed" || status === "failed") {
+        conditions.push(eq(creatorPayouts.status, status));
+      }
+
+      const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+      // Get payouts with creator info
+      const rows = await dbRead
+        .select({
+          id: creatorPayouts.id,
+          creatorId: creatorPayouts.creatorId,
+          amount: creatorPayouts.amount,
+          fee: creatorPayouts.fee,
+          netAmount: creatorPayouts.netAmount,
+          currency: creatorPayouts.currency,
+          status: creatorPayouts.status,
+          providerPayoutId: creatorPayouts.providerPayoutId,
+          failureReason: creatorPayouts.failureReason,
+          createdAt: creatorPayouts.createdAt,
+          updatedAt: creatorPayouts.updatedAt,
+          // Creator info
+          creatorName: users.name,
+          creatorEmail: users.email,
+          // Wallet info
+          walletAvailable: creatorWallets.availableAmount,
+          walletPending: creatorWallets.pendingAmount,
+          walletWithdrawn: creatorWallets.withdrawnAmount,
+          walletCurrency: creatorWallets.currency,
+        })
+        .from(creatorPayouts)
+        .leftJoin(users, eq(creatorPayouts.creatorId, users.userId))
+        .leftJoin(creatorWallets, eq(creatorPayouts.creatorId, creatorWallets.creatorId))
+        .where(whereClause)
+        .orderBy(desc(creatorPayouts.createdAt))
+        .limit(limitNum)
+        .offset(offsetNum);
+
+      const [{ count }] = await dbRead
+        .select({ count: sql<number>`count(*)` })
+        .from(creatorPayouts)
+        .where(whereClause);
+
+      // Enrich with payout method details (bank info)
+      const creatorIds = [...new Set(rows.map((r) => r.creatorId))];
+      const payoutMethods = creatorIds.length > 0
+        ? await dbRead
+            .select()
+            .from(creatorPayoutMethods)
+            .where(sql`${creatorPayoutMethods.creatorId} IN ${creatorIds} AND ${creatorPayoutMethods.isDefault} = true`)
+        : [];
+      const payoutMethodMap = new Map(payoutMethods.map((pm) => [pm.creatorId, pm]));
+
+      const enriched = rows.map((r) => ({
+        ...r,
+        payoutMethod: payoutMethodMap.get(r.creatorId) ?? null,
+      }));
+
+      return c.json({ total: Number(count), limit: limitNum, offset: offsetNum, payouts: enriched });
+    } catch (error) {
+      return cApiError(c, "Failed to list payouts", error);
+    }
+  }
+);
+
+/**
+ * GET /admin/payouts/:id
+ *
+ * Single payout with full creator + payout method details.
+ */
+router.get("/payouts/:id",
+  requireAuth,
+  requirePermission("payouts"),
+  async (c) => {
+    try {
+      const { id } = c.req.param();
+
+      const [row] = await dbRead
+        .select({
+          id: creatorPayouts.id,
+          creatorId: creatorPayouts.creatorId,
+          amount: creatorPayouts.amount,
+          fee: creatorPayouts.fee,
+          netAmount: creatorPayouts.netAmount,
+          currency: creatorPayouts.currency,
+          status: creatorPayouts.status,
+          providerPayoutId: creatorPayouts.providerPayoutId,
+          failureReason: creatorPayouts.failureReason,
+          metadata: creatorPayouts.metadata,
+          createdAt: creatorPayouts.createdAt,
+          updatedAt: creatorPayouts.updatedAt,
+          creatorName: users.name,
+          creatorEmail: users.email,
+          walletAvailable: creatorWallets.availableAmount,
+          walletPending: creatorWallets.pendingAmount,
+          walletWithdrawn: creatorWallets.withdrawnAmount,
+        })
+        .from(creatorPayouts)
+        .leftJoin(users, eq(creatorPayouts.creatorId, users.userId))
+        .leftJoin(creatorWallets, eq(creatorPayouts.creatorId, creatorWallets.creatorId))
+        .where(eq(creatorPayouts.id, id))
+        .limit(1);
+
+      if (!row) {
+        return cNotFoundError(c, "Payout not found");
+      }
+
+      // Get payout method
+      const [payoutMethod] = await dbRead
+        .select()
+        .from(creatorPayoutMethods)
+        .where(and(
+          eq(creatorPayoutMethods.creatorId, row.creatorId),
+          eq(creatorPayoutMethods.isDefault, true),
+        ))
+        .limit(1);
+
+      return c.json({ ...row, payoutMethod: payoutMethod ?? null });
+    } catch (error) {
+      return cApiError(c, "Failed to get payout", error);
+    }
+  }
+);
+
+/**
+ * PATCH /admin/payouts/:id
+ *
+ * Update payout status. Supports:
+ * - processing: Admin has started processing the payout
+ * - completed: Payout sent successfully
+ * - failed: Payout failed (requires failureReason)
+ */
+router.patch("/payouts/:id",
+  requireAuth,
+  requirePermission("payouts"),
+  async (c) => {
+    try {
+      const { id } = c.req.param();
+      const body = c.get("body") as { status?: string; failureReason?: string; providerPayoutId?: string };
+
+      if (!body.status || !["processing", "completed", "failed"].includes(body.status)) {
+        return cValidationError(c, "status must be one of: processing, completed, failed");
+      }
+
+      const newStatus = body.status as "processing" | "completed" | "failed";
+
+      // Validate status transitions
+      const validTransitions: Record<string, string[]> = {
+        pending: ["processing", "failed"],
+        processing: ["completed", "failed"],
+      };
+
+      // Atomic read-validate-write inside a transaction with row-level lock
+      const updated = await dbWrite.transaction(async (tx) => {
+        // Lock the row to prevent concurrent status transitions
+        const [existing] = await tx
+          .select()
+          .from(creatorPayouts)
+          .where(eq(creatorPayouts.id, id))
+          .for('update')
+          .limit(1);
+
+        if (!existing) {
+          return null;
+        }
+
+        if (!validTransitions[existing.status]?.includes(newStatus)) {
+          throw new Error(`Cannot transition from '${existing.status}' to '${newStatus}'`);
+        }
+
+        // If marking as failed, refund the wallet
+        if (newStatus === "failed") {
+          await tx
+            .update(creatorWallets)
+            .set({
+              availableAmount: sql`${creatorWallets.availableAmount} + ${existing.amount}`,
+              updatedAt: new Date(),
+            })
+            .where(eq(creatorWallets.creatorId, existing.creatorId));
+        }
+
+        // Update with conditional WHERE to detect concurrent modifications
+        const [result] = await tx
+          .update(creatorPayouts)
+          .set({
+            status: newStatus,
+            ...(newStatus === "failed"
+              ? { failureReason: body.failureReason || null }
+              : { providerPayoutId: body.providerPayoutId || existing.providerPayoutId, failureReason: null }),
+            updatedAt: new Date(),
+          })
+          .where(and(eq(creatorPayouts.id, id), eq(creatorPayouts.status, existing.status)))
+          .returning();
+
+        return result ?? null;
+      });
+
+      if (!updated) {
+        return cValidationError(c, "Concurrent modification detected; please retry.");
+      }
+
+      return c.json(updated);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to update payout";
+      if (message.startsWith("Cannot transition")) {
+        return cValidationError(c, message);
+      }
+      return cApiError(c, "Failed to update payout", error);
+    }
+  }
+);
+
+/**
+ * GET /admin/payouts/stats
+ *
+ * Aggregate payout stats for the admin dashboard.
+ */
+router.get("/payouts/stats",
+  requireAuth,
+  requirePermission("payouts"),
+  async (c) => {
+    try {
+      const [stats] = await dbRead
+        .select({
+          totalPending: sql<number>`COALESCE(SUM(CASE WHEN ${creatorPayouts.status} = 'pending' THEN ${creatorPayouts.amount} ELSE 0 END), 0)`,
+          totalProcessing: sql<number>`COALESCE(SUM(CASE WHEN ${creatorPayouts.status} = 'processing' THEN ${creatorPayouts.amount} ELSE 0 END), 0)`,
+          totalCompleted: sql<number>`COALESCE(SUM(CASE WHEN ${creatorPayouts.status} = 'completed' THEN ${creatorPayouts.amount} ELSE 0 END), 0)`,
+          totalFailed: sql<number>`COALESCE(SUM(CASE WHEN ${creatorPayouts.status} = 'failed' THEN ${creatorPayouts.amount} ELSE 0 END), 0)`,
+          countPending: sql<number>`COUNT(CASE WHEN ${creatorPayouts.status} = 'pending' THEN 1 END)`,
+          countProcessing: sql<number>`COUNT(CASE WHEN ${creatorPayouts.status} = 'processing' THEN 1 END)`,
+          countCompleted: sql<number>`COUNT(CASE WHEN ${creatorPayouts.status} = 'completed' THEN 1 END)`,
+          countFailed: sql<number>`COUNT(CASE WHEN ${creatorPayouts.status} = 'failed' THEN 1 END)`,
+        })
+        .from(creatorPayouts);
+
+      return c.json(stats);
+    } catch (error) {
+      return cApiError(c, "Failed to fetch payout stats", error);
+    }
+  }
+);
 
 export default router;

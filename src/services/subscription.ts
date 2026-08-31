@@ -31,7 +31,7 @@
 
 import { dbWrite, dbRead } from "../db/client.js";
 import { subscriptions, subscriptionTransactions, users, userNotifications } from "../db/schema.js";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { addCredits } from "./credits.js";
 import { VIP_BENEFITS, VIP_TRIAL } from "../config/subscription.js";
 import type { SubscriptionStatus } from "../types/subscription.js";
@@ -184,6 +184,7 @@ export async function updateSubscription(params: {
   currentPeriodEnd?: Date; // Omit when only status is being updated
   cancelAtPeriodEnd?: boolean;
 }): Promise<void> {
+  const gateway = params.gateway ?? PAYMENT_GATEWAY.stripe;
   await dbWrite
     .update(subscriptions)
     .set({
@@ -196,7 +197,10 @@ export async function updateSubscription(params: {
       ...(params.status !== 'trialing' && { isTrial: false }),
       updatedAt: new Date(),
     })
-    .where(eq(subscriptions.providerSubscriptionId, params.providerSubscriptionId));
+    .where(and(
+      eq(subscriptions.providerSubscriptionId, params.providerSubscriptionId),
+      eq(subscriptions.gateway, gateway)
+    ));
 }
 
 /**
@@ -231,7 +235,10 @@ export async function renewSubscription(params: {
       const [subscription] = await tx
         .select()
         .from(subscriptions)
-        .where(eq(subscriptions.providerSubscriptionId, params.providerSubscriptionId))
+        .where(and(
+          eq(subscriptions.providerSubscriptionId, params.providerSubscriptionId),
+          eq(subscriptions.gateway, gateway)
+        ))
         .limit(1);
 
       if (!subscription) {
@@ -333,7 +340,10 @@ export async function cancelSubscription(params: {
     const [subscription] = await tx
       .select()
       .from(subscriptions)
-      .where(eq(subscriptions.providerSubscriptionId, params.providerSubscriptionId))
+      .where(and(
+        eq(subscriptions.providerSubscriptionId, params.providerSubscriptionId),
+        eq(subscriptions.gateway, gateway)
+      ))
       .limit(1);
 
     if (!subscription) {
@@ -463,11 +473,16 @@ export async function downgradeUserFromVip(userId: string): Promise<void> {
  * that bypasses the frontend gate will still be caught server-side.
  *
  * @param userId - The user to check eligibility for
+ * @param gateway - Payment gateway (defaults to 'stripe'; Xendit does not support trials)
  * @returns true if the user can start a new trial
  *
  * @see VIP_FREE_TRIAL_ROADMAP.md §4.2
  */
-export async function isTrialEligible(userId: string): Promise<boolean> {
+export async function isTrialEligible(userId: string, gateway?: PaymentGateway): Promise<boolean> {
+  // Only Stripe supports trials — Xendit goes directly to paid
+  const effectiveGateway = gateway ?? PAYMENT_GATEWAY.stripe;
+  if (effectiveGateway !== PAYMENT_GATEWAY.stripe) return false;
+
   if (!VIP_TRIAL.enabled) return false;
 
   // Check 1: Never used a trial before (most common reject reason — fast path)

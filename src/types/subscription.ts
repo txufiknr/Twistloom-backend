@@ -1,4 +1,3 @@
-import type Stripe from "stripe";
 import type { PaymentGateway } from "./payment.js";
 
 /**
@@ -12,9 +11,8 @@ export type SubscriptionTransactionType =
   | 'trial_expired'; // Trial ended without converting — creditsAllocated is 0; metadata carries the credits-remaining snapshot. See VIP_FREE_TRIAL_ROADMAP.md Q4.
 
 /**
- * Subscription status for VIP subscriptions
- * Matches Stripe's Subscription.Status type for type safety
- * Not using Stripe.Subscription.Status directly as TypeScript couldn't properly serialize for the build.
+ * Subscription status for VIP subscriptions.
+ * Matches Stripe and Xendit subscription status values for type safety.
  */
 export const subscriptionStatuses = [
   'active',
@@ -25,10 +23,8 @@ export const subscriptionStatuses = [
   'incomplete_expired',
   'trialing',
   'paused'
-] satisfies Stripe.Subscription.Status[];
+] as const;
 
-// export type SubscriptionStatus = typeof subscriptionStatuses[number];
-// see node_modules\stripe\esm\resources\Subscriptions.d.ts (line 473)
 export type SubscriptionStatus = typeof subscriptionStatuses[number] | string & Record<never, never>;
 
 /**

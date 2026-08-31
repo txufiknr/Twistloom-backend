@@ -1,24 +1,29 @@
 # Twistloom — Payments & Subscriptions Architecture (Backend)
 
-**Scope:** Express backend, Stripe integration, credits system, VIP subscriptions, VIP free trial
-**Stack:** Express · PostgreSQL (Neon) · Drizzle ORM · Stripe Node SDK `^22.2.0` (API version 2025-03-31 "basil" generation)
-**Companion doc:** [Payments & Subscriptions Architecture (Frontend)](./PAYMENTS_ARCHITECTURE_FRONTEND.md)
+**Scope:** Gateway-agnostic payment system — Stripe (international USD) + Xendit (Indonesian IDR), credits system, VIP subscriptions, VIP free trial  
+**Stack:** Hono.js 4.12+ · PostgreSQL 18 (Neon) · Drizzle ORM 0.45+ · Stripe Node SDK `^22.2.0` · Xendit REST API (raw fetch)  
+**Last updated:** August 2026  
 
 ---
 
 ## Table of contents
 
 1. [System overview](#1-system-overview)
-2. [Database schema](#2-database-schema)
-3. [The credit system](#3-the-credit-system)
-4. [The VIP subscription system](#4-the-vip-subscription-system)
-5. [The VIP free trial](#5-the-vip-free-trial)
-6. [Stripe webhook processing](#6-stripe-webhook-processing)
-7. [API routes reference](#7-api-routes-reference)
-8. [Idempotency & concurrency](#8-idempotency--concurrency)
-9. [Security](#9-security)
-10. [Design decisions & trade-offs](#10-design-decisions--trade-offs)
-11. [File reference map](#11-file-reference-map)
+2. [Gateway-agnostic architecture](#2-gateway-agnostic-architecture)
+3. [Database schema](#3-database-schema)
+4. [The credit system](#4-the-credit-system)
+5. [The VIP subscription system](#5-the-vip-subscription-system)
+6. [The VIP free trial](#6-the-vip-free-trial-stripe-only)
+7. [Stripe webhook processing](#7-stripe-webhook-processing)
+8. [Xendit webhook processing](#8-xendit-webhook-processing)
+9. [API routes reference](#9-api-routes-reference)
+10. [Idempotency & concurrency](#10-idempotency--concurrency)
+11. [Security](#11-security)
+12. [Design decisions & trade-offs](#12-design-decisions--trade-offs)
+13. [File reference map](#13-file-reference-map)
+14. [Adding a new payment gateway](#14-adding-a-new-payment-gateway)
+15. [Known issues & future enhancements](#15-known-issues--future-enhancements)
+16. [Implementation status](#16-implementation-status)
 
 ---
 
@@ -27,29 +32,157 @@
 Twistloom's monetization has two independent currencies that interact at exactly one point:
 
 - **Credits** — a spendable balance (`users.credits`) consumed per story action (generation, hints, custom actions). Bought directly in packs, or granted as a VIP subscription benefit.
-- **VIP subscription** — a recurring or trial Stripe subscription that grants a badge, a 2x daily check-in multiplier, and a monthly credit grant.
+- **VIP subscription** — a recurring subscription that grants a badge, a 2x daily check-in multiplier, and a monthly credit grant.
 
 The only place these two systems touch is credit *allocation*: a VIP subscription period starting or renewing adds credits to the same balance a credit-pack purchase would.
 
 ```mermaid
 graph LR
-    Client["Next.js Frontend"] -->|REST API, httpOnly cookies| API["Express /payments routes"]
+    Client["Next.js Frontend"] -->|REST API, httpOnly cookies| API["Hono /payments routes"]
     API -->|Drizzle ORM| DB[("PostgreSQL — Neon")]
-    API -->|Checkout Sessions,<br/>Customer Portal, Subscriptions API| Stripe["Stripe API"]
-    Stripe -->|signed webhooks| API
+    API -->|Checkout Sessions,<br/>Subscriptions API| Stripe["Stripe API"]
+    API -->|Invoices,<br/>Recurring Plans API| Xendit["Xendit API"]
+    Stripe -->|signed webhooks<br/>stripe-signature| API
+    Xendit -->|callback webhooks<br/>x-callback-token| API
     Cron["GitHub Actions<br/>vip-expiration.yml<br/>(daily, 03:00 UTC)"] -->|invokes| CronScript["vip-expiration.ts"]
     CronScript -->|downgrades expired VIPs| DB
 
     style Stripe fill:#635BFF,color:#fff
+    style Xendit fill:#47C78A,color:#fff
     style DB fill:#336791,color:#fff
     style Cron fill:#2088FF,color:#fff
 ```
 
-**Core design principle: the backend is the single source of truth.** The frontend never computes VIP status, credit balances, or trial eligibility locally — it always asks the backend and renders what comes back. This matters because Stripe is the actual source of truth for subscription state, and the backend's job is to stay in sync with Stripe via webhooks, not to let the frontend guess.
+**Core design principle: the backend is the single source of truth.** The frontend never computes VIP status, credit balances, or trial eligibility locally — it always asks the backend and renders what comes back. Stripe and Xendit are the actual sources of truth for subscription state; the backend's job is to stay in sync with both via webhooks.
+
+### Two payment gateways
+
+| | Stripe | Xendit |
+|---|---|---|
+| **Market** | International (USD) | Indonesia (IDR) |
+| **Credit packs** | Checkout Sessions (`mode: "payment"`) | Invoice API (one-time) |
+| **Subscriptions** | Checkout Sessions (`mode: "subscription"`) | Recurring Plans API |
+| **Free trial** | Supported (30 days, card upfront) | Not supported (goes directly to paid) |
+| **Customer portal** | Stripe Customer Portal | Cancel via API only (no hosted portal) |
+| **Webhook auth** | `stripe-signature` (HMAC-SHA256) | `x-callback-token` (static token) |
+| **Kill switch** | N/A (always available) | `XENDIT_ENABLED` env var |
 
 ---
 
-## 2. Database schema
+## 2. Gateway-agnostic architecture
+
+### Type system
+
+The `PaymentGateway` type is the single source of truth for gateway identity. Every other file imports from `src/types/payment.ts`.
+
+```typescript
+// src/types/payment.ts
+export const paymentGateways = ["stripe", "xendit"] as const;
+export type PaymentGateway = (typeof paymentGateways)[number];
+export const PAYMENT_GATEWAY = {
+  stripe: "stripe",
+  xendit: "xendit",
+} as const satisfies Record<PaymentGateway, PaymentGateway>;
+
+export function isPaymentGateway(value: unknown): value is PaymentGateway {
+  return typeof value === "string" && (paymentGateways as readonly string[]).includes(value);
+}
+```
+
+Adding a new gateway means adding one string to `paymentGateways` and one entry to `PAYMENT_GATEWAY`.
+
+### Service layer pattern
+
+All core services accept `gateway?: PaymentGateway` defaulting to `PAYMENT_GATEWAY.stripe`:
+
+```typescript
+// src/services/subscription.ts
+export async function createSubscription(params: {
+  userId: string;
+  gateway?: PaymentGateway;           // defaults to 'stripe'
+  providerSubscriptionId: string;     // Stripe sub_xxx or Xendit plan ID
+  providerCustomerId: string;         // Stripe cus_xxx or Xendit customer ID
+  providerPriceId: string;            // Stripe price_xxx or Xendit plan price ID
+  currentPeriodStart: Date;
+  currentPeriodEnd: Date;
+  isTrial?: boolean;
+  trialEnd?: Date | null;
+  providerEventId?: string;           // webhook event ID for idempotency
+}): Promise<void>
+```
+
+The same pattern applies to `renewSubscription()`, `cancelSubscription()`, `updateSubscription()`, and `awardCredits()`.
+
+### Route layer — Gateway Adapter Pattern
+
+Routes never import gateway SDKs directly. Instead, they call `getGatewayAdapter(gateway)` which returns a `PaymentGatewayAdapter` implementation:
+
+```typescript
+// src/routes/payments.ts
+import { getGatewayAdapter } from "../services/gateways/registry.js";
+
+// In route handlers:
+const gateway = parseGateway(gatewayBody ?? PAYMENT_GATEWAY.stripe);
+const adapter = getGatewayAdapter(gateway);
+const result = await adapter.createCreditPackCheckout({ userId, email, packId, ... });
+```
+
+This eliminates the old if/else dispatch pattern. Adding a new gateway means:
+1. Implementing `PaymentGatewayAdapter` (see `src/services/gateways/`)
+2. Registering it in `initGatewayAdapters()`
+3. No changes to route handlers
+
+Both paths return the same response shape: `{ url, sessionId, gateway }`.
+
+### Gateway-specific vs gateway-agnostic layers
+
+```mermaid
+graph TD
+    subgraph "Gateway-Specific"
+        A["config/credits.ts<br/>(Stripe USD prices)"]
+        B["config/xendit.ts<br/>(IDR prices, channels)"]
+        C["utils/stripe.ts<br/>(SDK singleton)"]
+        D["utils/xendit.ts<br/>(raw HTTP fetch)"]
+        E["services/xendit.ts<br/>(maps to agnostic functions)"]
+    end
+    subgraph "Gateway-Agnostic"
+        F["types/payment.ts<br/>(PaymentGateway type)"]
+        G["services/credits.ts<br/>(awardCredits, consumeCredits)"]
+        H["services/subscription.ts<br/>(create/renew/cancel)"]
+        I["routes/payments.ts<br/>(gateway dispatch)"]
+    end
+    E --> G
+    E --> H
+    I --> A
+    I --> B
+    I --> C
+    I --> D
+    I --> G
+    I --> H
+    F -.-> G
+    F -.-> H
+    F -.-> I
+```
+
+### Dual-currency serialization
+
+The `amountCents` column stores USD cents for Stripe and whole IDR rupiah for Xendit. The transactions endpoint maps based on `gateway`:
+
+```typescript
+// src/routes/payments.ts — GET /transactions
+const formattedTransactions = userTransactions.map((tx) => {
+  const isXendit = tx.gateway === PAYMENT_GATEWAY.xendit;
+  return {
+    ...tx,
+    amountUsd: !isXendit && tx.amountCents != null ? tx.amountCents / 100 : null,
+    amountIdr: isXendit && tx.amountCents != null ? tx.amountCents : null,
+  };
+});
+```
+
+---
+
+## 3. Database schema
 
 Five tables carry the whole system. `id()` / `userId()` / `createdAt` / `updatedAt` below are shared column helpers used throughout the schema.
 
@@ -65,6 +198,7 @@ erDiagram
         uuid userId PK
         string tier "standard | vip"
         int credits
+        text customer_id "Stripe cus_xxx or Xendit customer ID"
         timestamp vipExpiresAt
         uuid subscriptionId FK "current subscription pointer"
         timestamp vipTrialUsedAt "sticky, never cleared"
@@ -72,8 +206,10 @@ erDiagram
     subscriptions {
         uuid id PK
         uuid userId FK
-        string stripeSubscriptionId UK
-        string stripeCustomerId
+        text gateway "stripe | xendit"
+        text provider_subscription_id "Stripe sub_xxx or Xendit plan ID"
+        text provider_customer_id "Stripe cus_xxx or Xendit customer ID"
+        text provider_price_id "Stripe price_xxx or Xendit plan price"
         string status "active|trialing|canceled|..."
         boolean isTrial
         timestamp trialEnd
@@ -86,8 +222,9 @@ erDiagram
         uuid userId FK
         string type "activation|renewal|cancellation|trial_started|trial_expired"
         int creditsAllocated
-        string stripeInvoiceId UK
-        string stripeEventId UK
+        text gateway "stripe | xendit"
+        text provider_invoice_id "Stripe in_xxx or Xendit cycle ID"
+        text provider_event_id "webhook event ID"
         jsonb metadata
     }
     transactions {
@@ -95,15 +232,17 @@ erDiagram
         uuid userId FK
         string type "purchase|usage|refund|reward"
         int credits
-        numeric amountUsd
-        string context
+        int amount_cents "USD cents (Stripe) or whole IDR (Xendit)"
+        text context
         jsonb metadata
-        string paymentIntentId UK
-        string stripeEventId UK
+        text gateway "stripe | xendit"
+        text provider_payment_id "Stripe pi_xxx or Xendit invoice ID"
+        text provider_event_id "webhook event ID"
     }
     webhookDeliveries {
         uuid id PK
-        string eventId UK
+        text gateway "stripe | xendit"
+        string event_id UK "unique per gateway"
         string eventType
         timestamp deliveredAt
         timestamp processedAt
@@ -112,37 +251,77 @@ erDiagram
     }
 ```
 
+### Composite unique constraints
+
+All uniqueness is scoped by `(gateway, provider_*)` to prevent cross-gateway event ID collisions:
+
+| Table | Constraint | Purpose |
+|-------|-----------|---------|
+| `subscriptions` | `(gateway, provider_subscription_id)` | Prevent duplicate subscription creation |
+| `transactions` | `(gateway, provider_payment_id)` | Idempotency for credit-pack purchases |
+| `transactions` | `(gateway, provider_event_id)` | Idempotency for webhook events |
+| `subscription_transactions` | `(gateway, provider_invoice_id)` | Idempotency for renewal processing |
+| `subscription_transactions` | `(gateway, provider_event_id)` | Idempotency for webhook events |
+| `webhook_deliveries` | `(gateway, event_id)` | Prevent duplicate webhook processing |
+
 ### Why `users.subscriptionId` matters
 
-A user accumulates a **new** `subscriptions` row every time they subscribe — cancel and resubscribe later, or a trial that lapses followed by a real signup, and you have two (or more) rows for the same user. `users.subscriptionId` is the canonical "which one is current" pointer, kept in sync by `createSubscription()` (sets it) and `downgradeUserFromVip()` (clears it). **Any query that needs "the user's current subscription" must join through this pointer, not just filter `subscriptions.userId`** — an unordered `WHERE userId = X LIMIT 1` has no guarantee of returning the right row once a user has history. This was a real bug (§10 has the full story).
+A user accumulates a **new** `subscriptions` row every time they subscribe — cancel and resubscribe later, or a trial that lapses followed by a real signup, and you have two (or more) rows for the same user. `users.subscriptionId` is the canonical "which one is current" pointer, kept in sync by `createSubscription()` (sets it) and `downgradeUserFromVip()` (clears it). **Any query that needs "the user's current subscription" must join through this pointer, not just filter `subscriptions.userId`**.
 
-### Why `transactions.paymentIntentId` / `stripeEventId` are unique-constrained
+```typescript
+// Correct — joins on the canonical "current subscription" pointer
+.from(users)
+.innerJoin(subscriptions, eq(subscriptions.id, users.subscriptionId))
+.where(eq(users.userId, userId))
 
-These columns exist specifically so a **database-level** guarantee backs up the application-level idempotency check — see [§8](#8-idempotency--concurrency).
+// Wrong — no guarantee of which row comes back for a user with history
+.from(subscriptions)
+.innerJoin(users, eq(subscriptions.userId, users.userId))
+.where(eq(subscriptions.userId, userId))
+.limit(1)
+```
+
+> **⚠️ Migration note:** The schema source in `src/db/schema.ts` has been updated to use generic `provider_*` column names, but the DB migration (Phase 1.1) has not yet been applied to production. See [§15](#15-implementation-status).
 
 ---
 
-## 3. The credit system
+## 4. The credit system
 
 ### Configuration
 
-```ts
-// config/credits.ts
-export const CREDIT_COSTS = {
+```typescript
+// src/config/credits.ts
+export const CREDIT_COSTS_BASE = {
   STORY_GENERATION: 5,
   CHOOSE_OTHER_ACTION: 2,
   SHOW_ACTION_HINT: 1,
   CUSTOM_ACTION: 5,
   CUSTOM_ACTION_AFTER_CHOICE: 7,
-  // ...
+  // ... 28+ cost entries
 } as const;
 
 export const CREDIT_PACKS: CreditPack[] = [
-  { id: "observer",      credits: 50,  priceUSD: 2.99  },
-  { id: "investigator",  credits: 150, priceUSD: 7.99  },
-  { id: "mastermind",    credits: 500, priceUSD: 19.99 },
+  { id: "observer",      credits: 50,  priceUSD: 2.99,  priceId: "price_1TSq8C..." },
+  { id: "investigator",  credits: 150, priceUSD: 7.99,  priceId: "price_1TSqEF..." },
+  { id: "mastermind",    credits: 500, priceUSD: 19.99, priceId: "price_1TSqEp..." },
 ];
 ```
+
+Xendit IDR prices live in a separate config:
+
+```typescript
+// src/config/xendit.ts
+export const XENDIT_CONFIG = {
+  creditPacks: [
+    { id: "observer",      amountIdr: 45000  },  // ~$2.99
+    { id: "investigator",  amountIdr: 125000 },  // ~$7.99
+    { id: "mastermind",    amountIdr: 310000 },  // ~$19.99
+  ],
+  subscription: { amountIdr: 150000 },  // ~$9.99/month
+};
+```
+
+The route layer dynamically maps pack data to gateway-specific responses — `GET /credit-packs?gateway=stripe` returns USD/priceId, `?gateway=xendit` returns IDR/priceIdr.
 
 ### Two credit-granting functions, deliberately different
 
@@ -150,21 +329,22 @@ export const CREDIT_PACKS: CreditPack[] = [
 |---|---|---|
 | Used for | Subscription activation/renewal, daily check-in | Credit-pack purchases, first-purchase bonus |
 | Creates a user notification | No | Yes |
-| Persists `paymentIntentId`/`stripeEventId` | No (not tied to a specific charge) | Yes, when passed |
+| Persists gateway/provider IDs | No (not tied to a specific charge) | Yes — `gateway`, `providerPaymentId`, `providerEventId` |
 | Transaction `type` | `'reward'` | `'purchase'` |
+| Row lock | `SELECT ... FOR UPDATE` | Bare `UPDATE` (see [audit report](../roadmap/PAYMENTS_SYSTEM_BUG_REPORT_AND_AUDIT.md) for known issue) |
 
-Both accept an optional `tx` (Drizzle transaction) so credit allocation stays atomic with whatever else is happening in the same webhook or request — this is not optional in practice, since it's what makes the idempotency guarantees in §8 actually hold.
+Both accept an optional `tx` (Drizzle transaction) so credit allocation stays atomic with whatever else is happening in the same webhook or request.
 
 ### Consume flow
 
-```ts
-// A representative call site — story generation
-const result = await executeWithCredits(userId, CREDIT_COSTS.STORY_GENERATION, {
+```typescript
+const result = await executeWithCredits(userId, CREDIT_COSTS.STORY_GENERATION, async (tx) => {
+  // 1. Credits deducted atomically (SELECT FOR UPDATE + UPDATE)
+  // 2. Your expensive operation goes here
+  return await generateNextPage(bookId);
+}, {
   context: "story_generation",
   metadata: { bookId },
-  idempotencyKey: `story-gen-${bookId}`, // prevents double-charging on retry
-}, async () => {
-  return await generateNextPage(bookId); // the actual expensive operation
 });
 ```
 
@@ -172,33 +352,41 @@ Credit consumption and the operation it pays for happen inside the same DB trans
 
 ---
 
-## 4. The VIP subscription system
+## 5. The VIP subscription system
 
 ### Configuration
 
-```ts
-// config/subscription.ts
+```typescript
+// src/config/subscription.ts
 export const VIP_SUBSCRIPTION: SubscriptionConfig = {
+  id: "vip_monthly",
+  name: "Twistloom VIP",
   priceUSD: 9.99,
   priceId: process.env.STRIPE_VIP_PRICE_ID,
-  monthlyCredits: 50,
+  productId: process.env.STRIPE_VIP_PRODUCT_ID,
+  monthlyCredits: VIP_MONTHLY_CREDITS,  // 200
   checkInMultiplier: 2,
 };
+
+// Xendit pricing lives in config/xendit.ts:
+// XENDIT_CONFIG.subscription.amountIdr = 150000 (IDR)
 ```
+
+The `SubscriptionConfig` type supports optional `priceIdr`, `currency`, and `gateway` fields for future extensibility.
 
 ### Lifecycle
 
 ```mermaid
 stateDiagram-v2
-    [*] --> trialing: trial checkout<br/>(card required, $0 due)
-    [*] --> active: regular checkout<br/>(card charged immediately)
+    [*] --> trialing: Stripe trial checkout<br/>(card required, $0 due)
+    [*] --> active: Regular checkout<br/>(Stripe or Xendit,<br/>card charged immediately)
 
     trialing --> active: trial converts —<br/>card charged at day 30
     trialing --> canceled: end_behavior='cancel',<br/>no valid card at trial end
 
-    active --> active: renewal —<br/>invoice.payment_succeeded<br/>(billing_reason=subscription_cycle)
+    active --> active: renewal —<br/>invoice.payment_succeeded<br/>or recurring.cycle.succeeded
     active --> past_due: card declined
-    past_due --> canceled: Stripe retries exhausted
+    past_due --> canceled: retries exhausted
 
     active --> canceled: user cancels,<br/>cancel_at_period_end reaches period end
 
@@ -207,28 +395,32 @@ stateDiagram-v2
 
 ### The three lifecycle functions
 
-```ts
-// services/subscription.ts
+All three accept `gateway?: PaymentGateway` (defaults to `'stripe'`):
 
-// customer.subscription.created → allocates credits, sets users.tier='vip'
+```typescript
+// src/services/subscription.ts
+
+// customer.subscription.created (Stripe) or recurring.plan.activation (Xendit)
 export async function createSubscription(params: {
-  userId, stripeSubscriptionId, stripeCustomerId, stripePriceId,
-  currentPeriodStart, currentPeriodEnd,
-  isTrial?: boolean, trialEnd?: Date | null,
+  userId, gateway?, providerSubscriptionId, providerCustomerId,
+  providerPriceId, currentPeriodStart, currentPeriodEnd,
+  isTrial?, trialEnd?, providerEventId?,
 }): Promise<void>
 
-// invoice.payment_succeeded (renewals only — see §5) → allocates credits again
+// invoice.payment_succeeded (Stripe) or recurring.cycle.succeeded (Xendit)
 export async function renewSubscription(params: {
-  stripeSubscriptionId, stripeInvoiceId, currentPeriodEnd,
+  providerSubscriptionId, providerInvoiceId, currentPeriodEnd,
+  gateway?, providerEventId?,
 }): Promise<void>
 
-// customer.subscription.deleted → marks canceled, downgrade deferred to cron
+// customer.subscription.deleted (Stripe) or recurring.plan.deactivation (Xendit)
 export async function cancelSubscription(params: {
-  stripeSubscriptionId, canceledAt,
+  providerSubscriptionId, canceledAt,
+  gateway?, providerEventId?,
 }): Promise<void>
 ```
 
-All three run inside `dbWrite.transaction()` and catch Postgres unique-violations (SQLSTATE `23505`) as a signal that a redelivered webhook already did this work — see [§8](#8-idempotency--concurrency).
+All three run inside `dbWrite.transaction()` and catch Postgres unique-violations (SQLSTATE `23505`) as a signal that a redelivered webhook already did this work — see [§10](#10-idempotency--concurrency).
 
 ### The expiration cron
 
@@ -242,26 +434,28 @@ on:
   workflow_dispatch: {}    # manual trigger for testing/backfill
 ```
 
-This is worth calling out explicitly: **`hasActiveVipSubscription()` independently checks `vipExpiresAt > now()`**, so feature-gating is correct even if the cron is delayed — but `users.tier` itself stays `'vip'` until the cron actually runs. Anything reading `tier` directly instead of calling `hasActiveVipSubscription()` will be wrong for up to 24 hours after expiry.
+**`hasActiveVipSubscription()` independently checks `vipExpiresAt > now()`**, so feature-gating is correct even if the cron is delayed — but `users.tier` itself stays `'vip'` until the cron actually runs. Anything reading `tier` directly instead of calling `hasActiveVipSubscription()` will be wrong for up to 24 hours after expiry.
 
 ---
 
-## 5. The VIP free trial
+## 6. The VIP free trial (Stripe-only)
+
+> **⚠️ Stripe-only — Xendit does not support trials. Indonesian users go directly to paid subscriptions.** See [§12](#12-design-decisions--trade-offs) for rationale.
 
 LinkedIn-style: card required upfront (Stripe's default for subscription-mode Checkout), full VIP benefits from day one, 30 days, auto-converts unless canceled.
 
-```ts
-// config/subscription.ts
+```typescript
+// src/config/subscription.ts
 export const VIP_TRIAL = {
   enabled: process.env.VIP_TRIAL_ENABLED === 'true', // kill-switch
   trialPeriodDays: 30,
-  endBehavior: 'cancel' as 'cancel' | 'pause', // see §10
+  endBehavior: 'cancel' as 'cancel' | 'pause',
 };
 ```
 
 ### Eligibility
 
-```ts
+```typescript
 export async function isTrialEligible(userId: string): Promise<boolean> {
   if (!VIP_TRIAL.enabled) return false;
   const user = await getUserVipTrialUsedAt(userId);
@@ -270,11 +464,11 @@ export async function isTrialEligible(userId: string): Promise<boolean> {
 }
 ```
 
-`users.vipTrialUsedAt` is set once, at trial start, and **never cleared** — not by cancellation, not by refund, not by account changes. This is what makes the lockout permanent regardless of what happens to the underlying Stripe subscription.
+`users.vipTrialUsedAt` is set once, at trial start, and **never cleared** — not by cancellation, not by refund, not by account changes. This enforces one-trial-per-user regardless of what happens to the underlying Stripe subscription.
 
-### The trickiest part: why the trial-conversion invoice doesn't double-grant credits
+### Why the trial-conversion invoice doesn't double-grant credits
 
-This is the single most important thing to understand about how the trial interacts with billing. Stripe's `invoice.payment_succeeded` fires for a subscription's *first* invoice — not just genuine renewals — so naively wiring credit allocation to that event double-grants on **every** new subscription, trial or not. The fix is Stripe's `invoice.billing_reason` field:
+Stripe's `invoice.payment_succeeded` fires for a subscription's *first* invoice — not just genuine renewals — so naively wiring credit allocation to that event double-grants on **every** new subscription, trial or not. The fix is Stripe's `invoice.billing_reason` field:
 
 ```mermaid
 sequenceDiagram
@@ -296,39 +490,20 @@ sequenceDiagram
     BE->>BE: renewSubscription() — grants credits (type='renewal')
 ```
 
-```ts
-// routes/payments.ts — handleInvoicePaymentSucceeded
+```typescript
+// src/routes/payments.ts — handleInvoicePaymentSucceeded
 if (invoice.billing_reason !== 'subscription_cycle') {
-  // Initial invoice (subscription_create) — already credited via
-  // handleSubscriptionCreated → createSubscription(). Not a renewal.
-  return;
+  return; // Initial invoice — already credited via createSubscription()
 }
 await renewSubscription({ stripeSubscriptionId, stripeInvoiceId: invoice.id, currentPeriodEnd });
-```
-
-One credit grant at trial start (for the trial's own 30 days), one at conversion (for the next 30 days) — the same one-grant-per-period pattern a regular paying subscriber gets, just with the first period priced at $0.
-
-### Checkout session
-
-```ts
-const session = await getStripe().checkout.sessions.create({
-  mode: "subscription",
-  customer: customerId,
-  line_items: [{ price: VIP_SUBSCRIPTION.priceId, quantity: 1 }],
-  subscription_data: {
-    trial_period_days: VIP_TRIAL.trialPeriodDays,
-    trial_settings: { end_behavior: { missing_payment_method: VIP_TRIAL.endBehavior } },
-  },
-  payment_method_collection: "always", // card required — explicit, not just relying on the default
-});
 ```
 
 ### Trial ending — notification + email
 
 `customer.subscription.trial_will_end` fires ~3 days before trial end:
 
-```ts
-export async function handleTrialWillEnd(stripeSubscriptionId: string): Promise<void> {
+```typescript
+export async function handleTrialWillEnd(providerSubscriptionId: string): Promise<void> {
   // ... fetch user + trial info ...
   await dbWrite.insert(userNotifications).values({ type: 'trial_ending_soon', /* ... */ });
 
@@ -343,12 +518,10 @@ export async function handleTrialWillEnd(stripeSubscriptionId: string): Promise<
 
 ### Trial ends without converting — analytics, not clawback
 
-When a trial cancels via `end_behavior: 'cancel'`, the decision (see [§10](#10-design-decisions--trade-offs)) was **not** to reclaim unused credits, but to record the outcome for later analysis:
+When a trial cancels via `end_behavior: 'cancel'`, unused credits are **not** reclaimed, but the outcome is recorded for later analysis:
 
-```ts
+```typescript
 // Inside cancelSubscription() — checks transaction HISTORY, not the isTrial flag.
-// Why: customer.subscription.updated (trialing→canceled) typically fires BEFORE
-// .deleted, so isTrial is usually already false by the time this code runs.
 const history = await tx.select({ type: subscriptionTransactions.type })
   .from(subscriptionTransactions)
   .where(eq(subscriptionTransactions.subscriptionId, subscription.id));
@@ -367,7 +540,7 @@ if (wasTrial && !everConverted) {
 
 ---
 
-## 6. Stripe webhook processing
+## 7. Stripe webhook processing
 
 Single endpoint, `POST /payments/stripe/webhook`, handling eight event types:
 
@@ -375,80 +548,160 @@ Single endpoint, `POST /payments/stripe/webhook`, handling eight event types:
 flowchart TD
     A["Stripe sends webhook"] --> B{"Signature valid?<br/>stripe.webhooks.constructEvent"}
     B -- No --> Z["400 — reject"]
-    B -- Yes --> C{"webhookDeliveries row exists<br/>with status='success'?"}
-    C -- Yes --> D["200 OK, duplicate:true<br/>(no reprocessing)"]
+    B -- Yes --> C{"webhookDeliveries row exists<br/>(gateway='stripe', status='success')?"}
+    C -- Yes --> D["200 OK, duplicate:true"]
     C -- No --> E["Upsert webhookDeliveries row"]
-    E --> F["Begin DB transaction"]
-    F --> G{"Unique violation on<br/>transactions.stripeEventId?"}
-    G -- "Yes — lost a concurrent race" --> H["Catch, mark duplicate,<br/>200 OK"]
-    G -- No --> I["Process event fully,<br/>commit transaction"]
-    I --> J["Mark webhookDeliveries<br/>status='success'"]
-    H --> K["Return 200"]
-    J --> K
+    E --> F{"Event type?"}
+    F -->|checkout.session.completed<br/>mode=payment| G["awardCredits() +<br/>first-purchase bonus"]
+    F -->|charge.refunded| H["Proportional credit<br/>clawback"]
+    F -->|subscription.*| I["createSubscription /<br/>updateSubscription /<br/>cancelSubscription"]
+    F -->|invoice.payment_succeeded<br/>billing_reason=subscription_cycle| J["renewSubscription()"]
+    F -->|invoice.payment_failed| K["Mark past_due +<br/>send email"]
+    F -->|trial_will_end| L["Notification +<br/>email"]
+    G --> M["Mark delivery success"]
+    H --> M
+    I --> M
+    J --> M
+    K --> M
+    L --> M
 ```
 
 ### Event → handler map
 
 | Event | Handler | Purpose |
 |---|---|---|
-| `checkout.session.completed` | inline, gated on `session.mode === 'payment'` | Credit-pack purchase → `awardCredits()` |
-| `charge.refunded` | inline | Proportional credit clawback on refund |
-| `customer.subscription.created` | `handleSubscriptionCreated` → `createSubscription()` | New subscription (trial or paid) |
-| `customer.subscription.updated` | `handleSubscriptionUpdated` → `updateSubscription()` | Status/period changes, trial conversion |
-| `customer.subscription.deleted` | `handleSubscriptionDeleted` → `cancelSubscription()` | Subscription ends |
-| `customer.subscription.trial_will_end` | `handleTrialWillEndEvent` → `handleTrialWillEnd()` | ~3-day trial-ending reminder |
-| `invoice.payment_succeeded` | `handleInvoicePaymentSucceeded` | Renewals only (`billing_reason` gated — see §5) |
-| `invoice.payment_failed` | `handleInvoicePaymentFailed` | Marks `past_due` |
+| `checkout.session.completed` (mode=`payment`) | `awardCredits()` | Credit-pack purchase → credits |
+| `charge.refunded` | `handleChargeRefunded()` | Proportional credit clawback |
+| `customer.subscription.created` | `createSubscription()` | New subscription (trial or paid) |
+| `customer.subscription.updated` | `updateSubscription()` | Status/period changes, trial conversion |
+| `customer.subscription.deleted` | `cancelSubscription()` | Subscription ends |
+| `customer.subscription.trial_will_end` | `handleTrialWillEnd()` | ~3-day trial-ending reminder |
+| `invoice.payment_succeeded` (`billing_reason=subscription_cycle`) | `renewSubscription()` | Monthly renewal |
+| `invoice.payment_failed` | `handleInvoicePaymentFailed()` | Marks `past_due` + sends email |
 
 ### Why `checkout.session.completed` checks `session.mode`
 
-VIP subscription checkouts (both trial and regular) also fire `checkout.session.completed` — but they have no `session.payment_intent` the way a credit-pack purchase does. Without the mode check, every subscription signup would hit `checkout.session.completed`'s "missing payment intent" validation error and Stripe would retry it fruitlessly for days:
+VIP subscription checkouts also fire `checkout.session.completed` — but they have no `session.payment_intent` the way a credit-pack purchase does. Without the mode check, every subscription signup would hit a "missing payment intent" validation error:
 
-```ts
+```typescript
 if (event.type === "checkout.session.completed" && session.mode === "payment") {
-  // credit-pack purchase logic — everything else falls through to the
-  // subscription-events branch below, which no-ops harmlessly for a
-  // subscription-mode session and marks the webhook handled either way.
+  // credit-pack purchase logic
 }
 ```
 
 ---
 
-## 7. API routes reference
+## 8. Xendit webhook processing
 
-| Method | Path | Auth | Purpose |
-|---|---|---|---|
-| GET | `/payments/credit-packs` | none | List purchasable credit packs |
-| POST | `/payments/create-checkout-session` | required | Credit-pack purchase checkout |
-| POST | `/payments/create-subscription-checkout` | required | Regular VIP subscription checkout |
-| POST | `/payments/create-trial-checkout-session` | required | VIP trial checkout (server re-checks eligibility) |
-| GET | `/payments/subscription` | optional | Current subscription status (`active` or `trialing`) |
-| GET | `/payments/subscription/trial-eligibility` | required | `{ eligible: boolean }` |
-| GET | `/payments/subscription-plans` | none | Plan pricing/benefits for display |
-| POST | `/payments/subscription/cancel` | required | Schedule cancel-at-period-end |
-| GET | `/payments/subscription/portal` | required | Stripe Customer Portal session URL |
-| POST | `/payments/stripe/webhook` | Stripe signature | Webhook ingestion (see §6) |
-| POST | `/payments/consume-credits` | required | Deduct credits for an action |
-| GET | `/payments/transactions` | required | Paginated transaction history |
+Single endpoint, `POST /payments/xendit/webhook`, handling five event types:
 
-All checkout/portal endpoints that accept a `returnUrl` validate its origin against `FRONTEND_URL` before using it — see [§9](#9-security).
+```mermaid
+flowchart TD
+    A["Xendit sends webhook"] --> B{"XENDIT_ENABLED?"}
+    B -- No --> Z["400 — Xendit not enabled"]
+    B -- Yes --> C{"x-callback-token<br/>valid?"}
+    C -- No --> Z2["401 — invalid token"]
+    C -- Yes --> D{"Event type?"}
+    D -->|invoice.paid / invoice.settled| E["handleXenditInvoicePaid()<br/>→ awardCredits()"]
+    D -->|recurring.plan.activation| F["handleXenditPlanActivated()<br/>→ createSubscription()"]
+    D -->|recurring.cycle.succeeded| G["handleXenditCycleSucceeded()<br/>→ renewSubscription()"]
+    D -->|recurring.cycle.failed| H["handleXenditCycleFailed()<br/>→ updateSubscription(past_due)"]
+    D -->|recurring.plan.deactivation| I["handleXenditPlanDeactivated()<br/>→ cancelSubscription()"]
+    D -->|other| J["Log + ack"]
+    E --> K["Finalize delivery"]
+    F --> K
+    G --> K
+    H --> K
+    I --> K
+```
+
+### Event type inference
+
+Xendit callbacks don't always include an explicit `event` field. The handler infers the type:
+
+```typescript
+const eventType =
+  typeof body.event === "string" ? body.event           // recurring.* events
+  : typeof body.status === "string" ? `invoice.${body.status.toLowerCase()}` // invoice callbacks
+  : "invoice.callback";                                  // fallback
+```
+
+### Event → handler map
+
+| Event | Handler | Maps To |
+|---|---|---|
+| `invoice.paid` / `invoice.settled` | `handleXenditInvoicePaid()` | `awardCredits()` with `gateway: 'xendit'` |
+| `recurring.plan.activation` | `handleXenditPlanActivated()` | `createSubscription()` with `gateway: 'xendit'` |
+| `recurring.cycle.succeeded` | `handleXenditCycleSucceeded()` | `renewSubscription()` with `gateway: 'xendit'` |
+| `recurring.cycle.failed` | `handleXenditCycleFailed()` | `updateSubscription(status: 'past_due')` |
+| `recurring.plan.deactivation` | `handleXenditPlanDeactivated()` | `cancelSubscription()` with `gateway: 'xendit'` |
+
+**Key pattern:** Every Xendit handler calls the same gateway-agnostic service functions that Stripe uses, passing `gateway: PAYMENT_GATEWAY.xendit`.
+
+### Xendit subscription lifecycle
+
+Xendit uses the Recurring Plans API. The flow:
+
+1. **Checkout:** `createXenditSubscriptionCheckout()` creates a Xendit customer + recurring plan → returns hosted linking URL
+2. **Activation:** `recurring.plan.activation` webhook → `createSubscription()` with `gateway: 'xendit'`
+3. **Renewal:** `recurring.cycle.succeeded` webhook → `renewSubscription()` with `gateway: 'xendit'`
+4. **Payment failure:** `recurring.cycle.failed` webhook → `updateSubscription(status: 'past_due')`
+5. **Cancellation:** `recurring.plan.deactivation` webhook → `cancelSubscription()` with `gateway: 'xendit'`
+
+### Xendit delivery tracking
+
+`trackXenditWebhookDelivery()` mirrors the Stripe pattern — checks `webhookDeliveries` for `(gateway='xendit', eventId)`, inserts with unique violation handling for concurrent deliveries.
 
 ---
 
-## 8. Idempotency & concurrency
+## 9. API routes reference
+
+| Method | Path | Auth | Gateway | Purpose |
+|--------|------|------|---------|---------|
+| GET | `/credit-packs` | none | Both | List packs (`?gateway=stripe\|xendit`) |
+| POST | `/create-checkout-session` | required | Both | Credit pack checkout (body `gateway`) |
+| POST | `/create-subscription-checkout` | required | Both | VIP subscription checkout |
+| POST | `/create-trial-checkout-session` | required | Stripe only | VIP trial checkout |
+| GET | `/subscription` | optional | Both | Current subscription status |
+| GET | `/subscription/trial-eligibility` | required | Both | Trial eligibility check |
+| GET | `/subscription-plans` | none | Both | Plan pricing/benefits |
+| POST | `/subscription/cancel` | required | Both | Cancel at period end |
+| GET | `/subscription/portal` | required | Stripe only | Customer Portal URL |
+| POST | `/stripe/webhook` | Stripe sig | Stripe | Webhook ingestion |
+| POST | `/xendit/webhook` | Callback token | Xendit | Webhook ingestion |
+| POST | `/consume-credits` | required | Both | Deduct credits for an action |
+| GET | `/transactions` | required | Both | Paginated transaction history |
+| POST | `/vouchers/redeem` | required | Both | Voucher code redemption |
+
+All checkout/portal endpoints that accept a `returnUrl` validate its origin against `FRONTEND_URL` before using it — see [§11](#11-security).
+
+### Gateway-specific routes
+
+- **`POST /create-trial-checkout-session`** — Stripe only. Xendit does not support trials.
+- **`GET /subscription/portal`** — Stripe only. Xendit has no equivalent hosted portal; cancel is done via `POST /subscription/cancel`.
+- **`POST /stripe/webhook`** — Stripe only. Uses `stripe-signature` header verification.
+- **`POST /xendit/webhook`** — Xendit only. Uses `x-callback-token` header verification.
+
+### Gateway-agnostic routes
+
+All other routes accept a `gateway` parameter and dispatch accordingly. The `GET /transactions` endpoint serializes amounts based on gateway: `amountUsd` for Stripe, `amountIdr` for Xendit.
+
+---
+
+## 10. Idempotency & concurrency
 
 Three layers, each catching what the layer above might miss:
 
 ```mermaid
 flowchart TD
-    A["Layer 1: webhookDeliveries table<br/>keyed on Stripe event.id"] -->|"catches exact-duplicate<br/>webhook redelivery"| B
-    B["Layer 2: app-level SELECT check<br/>on transactions.stripeEventId<br/>before INSERT"] -->|"has a race window between<br/>two concurrent deliveries"| C
-    C["Layer 3: DB unique constraint on<br/>transactions.stripeEventId /<br/>paymentIntentId — genuine backstop"] -->|"violation caught,<br/>treated as duplicate"| D["200 OK either way"]
+    A["Layer 1: webhookDeliveries table<br/>keyed on (gateway, event.id)"] -->|"catches exact-duplicate<br/>webhook redelivery"| B
+    B["Layer 2: app-level SELECT check<br/>on (gateway, providerEventId)<br/>before INSERT"] -->|"has a race window between<br/>two concurrent deliveries"| C
+    C["Layer 3: DB unique constraint on<br/>(gateway, providerEventId) /<br/>(gateway, providerPaymentId) — genuine backstop"] -->|"violation caught,<br/>treated as duplicate"| D["200 OK either way"]
 ```
 
-Layer 3 is the one that actually closes the race Layer 2 can't: if two deliveries of the same event both pass the `SELECT ... WHERE stripeEventId = X` check before either commits, they can't both successfully `INSERT` — the second hits a unique-constraint violation, which is caught and treated as "already processed":
+Layer 3 is the one that actually closes the race Layer 2 can't:
 
-```ts
+```typescript
 function isUniqueViolation(error: unknown): boolean {
   return typeof error === 'object' && error !== null && (error as { code?: string }).code === '23505';
 }
@@ -464,194 +717,281 @@ try {
 }
 ```
 
-This pattern is used in four places: the checkout webhook, the refund webhook, `createSubscription()`, and `renewSubscription()`.
+This pattern is used in five places: the Stripe checkout webhook, the Stripe refund webhook, `createSubscription()`, `renewSubscription()`, and `handleXenditInvoicePaid()`.
 
-**This only works because `transactions.paymentIntentId`/`stripeEventId` are actually populated on insert.** Earlier in this system's life they were written into a JSON `metadata` blob instead of these dedicated columns — which silently defeated both the idempotency check *and* the refund lookup (which queries `paymentIntentId` directly). Fixed, but worth remembering why these specific columns exist.
+### Xendit-specific idempotency
+
+Xendit uses the same three-layer pattern:
+- `trackXenditWebhookDelivery()` handles Layer 1 (webhookDeliveries with `gateway: 'xendit'`)
+- `handleXenditInvoiceDuplicate()` checks Layer 2 (existing transaction with `providerEventId`)
+- Layer 3: `(gateway, providerEventId)` unique constraint catches races
 
 ---
 
-## 9. Security
+## 11. Security
 
-- **Webhook signature verification** — `stripe.webhooks.constructEvent(req.body, sig, webhookSecret)` requires the *raw* request body; `express.raw({ type: "application/json" })` must be mounted on this route before any JSON body parser touches it.
-- **Origin-validated redirects** — every endpoint that accepts a `returnUrl` (checkout sessions, customer portal) validates it against `FRONTEND_URL`'s origin before use:
-  ```ts
+- **Webhook signature verification:**
+  - Stripe: `stripe.webhooks.constructEvent(req.body, sig, webhookSecret)` requires the *raw* request body. In Hono, the handler reads `c.req.text()` to preserve signature integrity.
+  - Xendit: `verifyXenditCallbackToken(token)` checks the `x-callback-token` header against `XENDIT_WEBHOOK_TOKEN`. Note: this is a static token, not per-event HMAC — a leaked token grants full webhook spoofing ability. See [audit report](../roadmap/PAYMENTS_SYSTEM_BUG_REPORT_AND_AUDIT.md) for details.
+
+- **Origin-validated redirects** — every endpoint that accepts a `returnUrl` validates it against `FRONTEND_URL`'s origin before use:
+  ```typescript
   const returnUrlObj = new URL(rawReturnUrl, baseUrl);
   if (returnUrlObj.origin !== new URL(baseUrl).origin) {
     throw new Error("Cross-origin returnUrl not allowed");
   }
   ```
-  Without this, an attacker-controlled `returnUrl` becomes an open redirect.
-- **Server-side re-validation** — trial eligibility, VIP status, and origin checks all happen server-side even when the frontend already gated on the same thing. The frontend gate is UX, not security.
-- **Rate limiting** — checkout-session creation endpoints are rate-limited per-user to prevent rapid repeated Stripe API calls (accidental or abusive).
+
+- **Rate limiting:**
+  - Stripe webhook: 300 req/60s global
+  - Xendit webhook: 120 req/60s global
+  - Checkout session creation: 1 req/10s per user
+  - Subscription checkout: 1 req/10s per user (applied before gateway branch, covers both Stripe and Xendit)
+
+- **Kill switches:**
+  - `XENDIT_ENABLED` — rejects Xendit checkout/webhook when false
+  - `VIP_TRIAL_ENABLED` — disables trial checkout when false
+
+- **Server-side re-validation** — trial eligibility, VIP status, and origin checks all happen server-side even when the frontend already gated on the same thing. The frontend gate is UX, not security. `isTrialEligible()` also gates on gateway: returns `false` for non-Stripe gateways since Xendit has no native trial.
 
 ---
 
-## 10. Design decisions & trade-offs
+## 12. Design decisions & trade-offs
 
-Full rationale lives in `VIP_FREE_TRIAL_ROADMAP.md` §9.2 — summarized here for quick reference:
+### Gateway-agnostic decisions
 
-| Decision | Chosen | Why (short version) |
-|---|---|---|
-| Cancel mid-trial | Access continues until trial end | Trial credits are front-loaded at day 0, not metered — there's no incremental gaming risk from matching the paid-subscriber cancellation UX |
-| Failed payment at trial conversion | Immediate `cancel`, not a grace period | No launched-trial data yet to justify `pause`'s added complexity (paused UI state, resume flow) |
-| Re-trial eligibility | Permanent lockout, no cooldown | Insufficient lapsed-trial volume yet for a cooldown's re-engagement value to matter |
-| Unused trial credits on failed conversion | No clawback, but log the data | Abuse is already bounded (one trial, ever, per user, capped at 50 credits) — clawback's UX cost outweighs its thin recovery upside |
-| Trial-ending email | Send via Resend, non-blocking | Stripe's own email is generic/unbranded; the trigger point and infra already existed |
+| Decision | Chosen | Why |
+|----------|--------|-----|
+| Gateway dispatch pattern | Gateway Adapter Pattern (`getGatewayAdapter()`) | Clean separation per gateway; add new gateway by creating adapter + registering in registry |
+| URL construction | Single `buildReturnUrls()` helper | Eliminated 4× duplication; validates origin, supports `payment` and `subscription` param keys |
+| Xendit trials | Skip for v1 | No launched-trial data for Indonesian market; go directly to paid |
+| Xendit Customer Portal | No portal equivalent | Cancel via API; full portal UI is P2/P3 |
+| FX rate | Fixed `XENDIT_USD_TO_IDR_RATE` (default 15500) | Simplicity for v1; floating rate is P3 |
+| Credit pack API | Xendit Invoice API (one-time) | Simple hosted payment page, no SDK dependency |
+| Subscription API | Xendit Recurring Plans API | Handles recurring billing + hosted linking page |
+| Schema columns | Generic `provider_*` names | Gateway-agnostic; adding a new gateway requires zero schema changes |
 
-### Bug this doc exists partly to prevent recurring: the `GET /subscription` join
+### Stripe-specific decisions
 
-`GET /payments/subscription` used to join `subscriptions` to `users` on a bare `userId` match with `.limit(1)` and no ordering. Any user with more than one `subscriptions` row (churned and resubscribed, a lapsed trial followed by a real signup) could get back an arbitrary — possibly long-canceled — row instead of their current one. Fixed by joining on `users.subscriptionId`, the canonical pointer:
+| Decision | Chosen | Why |
+|----------|--------|-----|
+| Cancel mid-trial | Access continues until trial end | Trial credits front-loaded, no incremental gaming risk |
+| Failed payment at conversion | Immediate cancel | No paused-state UI yet |
+| Re-trial eligibility | Permanent lockout | Insufficient lapsed-trial volume for cooldown |
+| Unused trial credits | No clawback, log data | Abuse bounded by one-trial-per-user |
+| Trial-ending email | Send via Resend, non-blocking | Stripe's own email is generic/unbranded |
 
-```ts
-// Correct — joins on the canonical "current subscription" pointer
-.from(users)
-.innerJoin(subscriptions, eq(subscriptions.id, users.subscriptionId))
-.where(eq(users.userId, userId))
+### Bug this doc exists partly to prevent: the `GET /subscription` join
 
-// Wrong — no guarantee of which row comes back for a user with history
-.from(subscriptions)
-.innerJoin(users, eq(subscriptions.userId, users.userId))
-.where(eq(subscriptions.userId, userId))
-.limit(1)
-```
-
-If you're writing a new query against `subscriptions` for "the user's current subscription," use the first pattern.
+`GET /payments/subscription` used to join `subscriptions` to `users` on a bare `userId` match with `.limit(1)` and no ordering. Any user with more than one `subscriptions` row could get back an arbitrary — possibly long-canceled — row instead of their current one. Fixed by joining on `users.subscriptionId`, the canonical pointer.
 
 ---
 
-## 11. File reference map
+## 13. File reference map
 
 ```
 src/
 ├── config/
-│   ├── credits.ts            CREDIT_COSTS, CREDIT_PACKS, bonus amounts
-│   └── subscription.ts       VIP_SUBSCRIPTION, VIP_BENEFITS, VIP_TRIAL
+│   ├── credits.ts            CREDIT_COSTS, CREDIT_PACKS (Stripe prices)
+│   ├── subscription.ts       VIP_SUBSCRIPTION, VIP_BENEFITS, VIP_TRIAL
+│   └── xendit.ts             XENDIT_CONFIG, IDR prices, helper functions
 ├── cron/
-│   └── vip-expiration.ts     Daily downgrade job (see .github/workflows/vip-expiration.yml)
+│   └── vip-expiration.ts     Daily downgrade job
 ├── db/
 │   └── schema.ts             users, subscriptions, subscriptionTransactions,
-│                              transactions, webhookDeliveries
+│                              transactions, webhookDeliveries (gateway-agnostic)
 ├── routes/
-│   └── payments.ts           All /payments/* endpoints + Stripe webhook handler
+│   └── payments.ts           All /payments/* endpoints + Stripe & Xendit webhooks
 ├── services/
 │   ├── credits.ts            addCredits, awardCredits, consumeCredits, refunds
-│   └── subscription.ts       createSubscription, renewSubscription,
-│                              cancelSubscription, isTrialEligible,
-│                              handleTrialWillEnd, hasActiveVipSubscription
+│   ├── subscription.ts       createSubscription, renewSubscription,
+│   │                          cancelSubscription, isTrialEligible (gateway-agnostic)
+│   ├── xendit.ts             Xendit business logic, webhook handlers
+│   ├── voucher.ts            Voucher code generation and redemption
+│   └── gateways/
+│       ├── registry.ts       getGatewayAdapter(), initGatewayAdapters()
+│       ├── stripe-adapter.ts StripeAdapter implements PaymentGatewayAdapter
+│       ├── stripe-webhook-handlers.ts  Stripe webhook event handlers
+│       └── xendit-adapter.ts XenditAdapter implements PaymentGatewayAdapter
 ├── types/
 │   ├── credits.ts            CreditPack, TransactionType, ConsumeCreditsOptions
-│   └── subscription.ts       SubscriptionStatus, SubscriptionTransactionType,
-│                              SubscriptionConfig
+│   ├── payment.ts            PaymentGateway, PAYMENT_GATEWAY, isPaymentGateway
+│   ├── payment-gateway-adapter.ts  PaymentGatewayAdapter interface
+│   ├── subscription.ts       SubscriptionStatus, SubscriptionConfig (gateway-aware)
+│   └── voucher.ts            VoucherCampaign, VoucherCode, VoucherRedemption
 └── utils/
-    ├── stripe.ts              getStripe() singleton
-    └── email.ts               sendTrialEndingEmail + other transactional emails
+    ├── stripe.ts             getStripe() singleton (used only by StripeAdapter)
+    ├── xendit.ts             Raw HTTP fetch helpers (Invoice, Customer, Recurring)
+    └── email.ts              sendTrialEndingEmail + other transactional emails
 ```
 
 ---
 
-## 12. Issues & Future Enhancements
+## 14. Adding a new payment gateway
 
-### 🔴 Critical
+Follow this checklist to add a gateway (e.g. Razorpay, PayPal, Midtrans).
 
-#### 12.1 `awardCredits()` ignores `paymentIntentId` / `stripeEventId`
+### Step 1: Register the gateway
 
-**Severity:** Critical — breaks the Layer 3 unique-constraint idempotency backstop.
+```typescript
+// src/types/payment.ts
+export const paymentGateways = ["stripe", "xendit", "razorpay"] as const;
+export const PAYMENT_GATEWAY = {
+  stripe: "stripe",
+  xendit: "xendit",
+  razorpay: "razorpay",
+} as const satisfies Record<PaymentGateway, PaymentGateway>;
+```
 
-**Description:** `AwardCreditsOptions` accepts `paymentIntentId` and `stripeEventId`, and the webhook handler passes them, but `awardCredits()` never writes them to the `transactions` insert. This means two concurrent webhook deliveries of `checkout.session.completed` that both pass the SELECT idempotency check can both successfully insert a transaction row, potentially double-crediting the user. The `webhookDeliveries.eventId` unique constraint is the only remaining guard.
+### Step 2: Add config (if needed)
 
-**Fix:** Add `paymentIntentId` and `stripeEventId` to the `transactions.insert()` call inside `awardCredits()`.
+```typescript
+// src/config/razorpay.ts
+export const RAZORPAY_CONFIG = {
+  enabled: !!process.env.RAZORPAY_KEY_ID,
+  keyId: process.env.RAZORPAY_KEY_ID || "",
+  keySecret: process.env.RAZORPAY_KEY_SECRET || "",
+  webhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET || "",
+};
+```
 
-### ✅ Resolved
+### Step 3: Implement the adapter
 
-#### 12.2 `transactions.amount_usd` (real) → `transactions.amount_cents` (integer)
+```typescript
+// src/services/gateways/razorpay-adapter.ts
+import { PAYMENT_GATEWAY } from "../../types/payment.js";
+import type {
+  PaymentGatewayAdapter,
+  CreditPackCheckoutParams,
+  SubscriptionCheckoutParams,
+  TrialCheckoutParams,
+  PortalParams,
+  CheckoutResult,
+} from "../../types/payment-gateway-adapter.js";
 
-**Location:** `src/db/schema.ts:1053`
+export class RazorpayAdapter implements PaymentGatewayAdapter {
+  readonly gateway = PAYMENT_GATEWAY.razorpay;
+  readonly supportsTrials = false;  // adjust per gateway
+  readonly supportsPortal = false;
 
-**Resolution (2026-07-12):** Renamed to `amount_cents: integer` (Stripe-compatible cents). API response still returns `amountUsd` (dollars) via `amountCents / 100` in the transactions endpoint serializer.
+  async createCreditPackCheckout(params: CreditPackCheckoutParams): Promise<CheckoutResult> {
+    // Call Razorpay SDK here
+    throw new Error("Not implemented");
+  }
 
-#### 12.3 `subscription/cancel` — joined via `users.subscriptionId`
+  async createSubscriptionCheckout(params: SubscriptionCheckoutParams): Promise<CheckoutResult> {
+    throw new Error("Not implemented");
+  }
 
-**Location:** `src/routes/payments.ts:1671-1675`
+  async cancelSubscription(providerSubscriptionId: string): Promise<void> {
+    throw new Error("Not implemented");
+  }
+}
+```
 
-**Resolution (2026-07-12):** Updated to `innerJoin(users, eq(users.subscriptionId, subscriptions.id))` matching the canonical pattern documented in §10.
+### Step 4: Register in the gateway registry
 
-#### 12.6 Trial metadata added to regular subscription checkout
+```typescript
+// src/services/gateways/registry.ts
+import { RazorpayAdapter } from "./razorpay-adapter.js";
 
-**Location:** `src/routes/payments.ts:637,642`
+export function initGatewayAdapters(): void {
+  adapters.set(PAYMENT_GATEWAY.stripe, new StripeAdapter());
+  adapters.set(PAYMENT_GATEWAY.xendit, new XenditAdapter());
+  adapters.set(PAYMENT_GATEWAY.razorpay, new RazorpayAdapter());
+}
+```
 
-**Resolution (2026-07-12):** Regular `create-subscription-checkout` now passes `isTrial: "false"` in both `session.metadata` and `subscription_data.metadata`, matching the trial checkout's `isTrial: "true"`.
+### Step 5: Add webhook handler (if needed)
 
-### 🟡 Moderate (remaining)
+Create webhook handler functions and mount a new route:
 
-#### 12.4 `subscription/portal` should use canonical join pattern
+```typescript
+// src/routes/payments.ts
+router.post("/razorpay/webhook", async (c) => {
+  // Verify signature, dispatch to handler functions
+});
+```
 
-**Location:** `src/routes/payments.ts:1761-1766`
+### Step 6: Update frontend (if needed)
 
-**Description:** Selects `stripeCustomerId` from `subscriptions` ordered by recency. If the invariant that all rows share the same `customerId` ever breaks, this silently returns a stale value.
-
-**Recommendation:** Join via `users.subscriptionId` or read `stripeCustomerId` directly from `users`.
-
-#### 12.5 Webhook rate limit mismatch
-
-**Description:** API documentation says 1000 req/min per IP; actual code uses 300 req/60sec global (single shared Redis key for all Stripe IPs).
-
-**Recommendation:** Sync docs to code or increase limit + switch to IP-based key if Stripe IP space is known.
-
-### 🟢 Minor
-
-- `checkout.session.completed` mode guard (`session.mode === "payment"`) at line 1100 makes the subsequent `paymentIntentId` null-check at line 1107 redundant — subscription sessions have no payment intent anyway.
-- Type guard `isSubscriptionWithPeriods` at line 64 uses `any`; could use `unknown` for better type safety.
-- Handle `subscription/portal` returning 404 for missing `customerId` — could be confusing vs. "no subscription found" vs. "user never created a customer."
-
----
-
-## 13. Resolved Open Questions
-
-All three open questions from the initial audit were resolved on 2026-07-12:
-
-| # | Question | Decision | Implementation |
-|---|---|---|---|
-| Q1 | `amountUsd` → integer cents? | Yes — integer cents | Renamed to `amountCents` in schema; API returns computed `amountUsd` |
-| Q2 | `subscription/cancel` → canonical join? | Yes | Updated to `innerJoin` via `users.subscriptionId` |
-| Q3 | Regular checkout → `isTrial: "false"`? | Yes | Added to both `session.metadata` and `subscription_data.metadata` |
-
----
-
----
-
-## 14. Gateway-agnostic payments (Stripe + Xendit) — 2026-07-24
-
-**Status:** Backend Phase 0–2 implemented in code; **DB migration still required** before deploy.
-
-### Column renames (Drizzle `schema.ts`)
-
-| Table | Old | New |
-|-------|-----|-----|
-| `users` | `stripe_customer_id` | `customer_id` |
-| `subscriptions` | `stripe_*` | `gateway` + `provider_subscription_id` / `provider_customer_id` / `provider_price_id` |
-| `transactions` | `payment_intent_id`, `stripe_event_id` | `gateway` + `provider_payment_id` / `provider_event_id` |
-| `subscription_transactions` | `stripe_invoice_id`, `stripe_event_id` | `gateway` + `provider_invoice_id` / `provider_event_id` |
-| `webhook_deliveries` | unique on `event_id` | `gateway` + unique `(gateway, event_id)` |
-
-Shared type: `PaymentGateway` / `PAYMENT_GATEWAY` in `src/types/payment.ts`.
-
-### Xendit credit packs (v1)
-
-- Config: `src/config/xendit.ts`
-- Invoice client: `src/utils/xendit.ts` (raw `fetch`, no SDK)
-- Service: `src/services/xendit.ts`
-- Routes: `GET /credit-packs?gateway=`, `POST /create-checkout-session` body `{ gateway }`, `POST /xendit/webhook` (`x-callback-token`)
-- Env: `XENDIT_ENABLED`, `XENDIT_SECRET_KEY`, `XENDIT_WEBHOOK_TOKEN`, `XENDIT_USD_TO_IDR_RATE`
-- VIP subscriptions remain **Stripe-only** until Phase 2b
-
-### Critical fixes shipped with this work
-
-- `awardCredits()` persists `gateway` / `providerPaymentId` / `providerEventId` (idempotency)
-- `subscriptionTransactions.providerEventId` written on create/renew
-- Invoice subscription ID via shared `getInvoiceSubscriptionId()` (payment_succeeded + payment_failed)
-
-Full plan: [STRIPE_AND_XENDIT_GATEWAY_AGNOSTIC_ROADMAP.md](../roadmap/STRIPE_AND_XENDIT_GATEWAY_AGNOSTIC_ROADMAP.md)
+1. Add gateway to `GATEWAY_CURRENCY` mapping in `payment-price.ts`
+2. Add locale→gateway mapping in `usePaymentGateway.ts`
+3. Add gateway label/methods translation keys
 
 ---
 
-*Last updated: July 24, 2026 (gateway-agnostic schema + Xendit credit packs; see §14)*
+## 15. Known issues & future enhancements
+
+### Resolved
+
+| # | Issue | Resolution |
+|---|-------|-----------|
+| §12.1 (old) | `awardCredits()` ignores `providerPaymentId`/`providerEventId` | **Fixed** — `awardCredits()` now persists `gateway`, `providerPaymentId`, `providerEventId` in the transactions insert |
+| §12.2 (old) | `amount_usd` (real) → `amount_cents` (integer) | **Fixed** — Renamed to `amount_cents: integer` in schema |
+| §12.3 (old) | `subscription/cancel` joined via wrong pointer | **Fixed** — Updated to `innerJoin(users, eq(users.subscriptionId, subscriptions.id))` |
+| §12.6 (old) | Missing `isTrial: "false"` on regular checkout | **Fixed** — Added to both `session.metadata` and `subscription_data.metadata` |
+
+### Active (see [audit report](../roadmap/PAYMENTS_SYSTEM_BUG_REPORT_AND_AUDIT.md) for full details)
+
+| Severity | Issue | Status |
+|----------|-------|--------|
+| Critical | BigInt truncation in refund math (micro-refunds claw back 0 credits) | **Fixed** — ceiling division with `+ BigInt(1)` |
+| Critical | `parseInt` NaN pagination bypass | **Fixed** — clamped to `Math.max(parseInt() \|\| 0, 0)` at `payments.ts:1358` |
+| High | URL construction duplicated 4× (DRY violation) | **Fixed** — extracted `buildReturnUrls()` helper at `payments.ts:57-84` |
+| High | Xendit subscription checkouts not rate-limited | **Fixed** — rate limit applied before gateway branch at `payments.ts:611` |
+| High | `subscription-plans` leaks full config object | **Fixed** — only whitelisted fields returned at `payments.ts:1426-1458` |
+| Medium | `awardCredits()` missing row lock (race condition) | **Fixed** — `SELECT ... FOR UPDATE` at `credits.ts:620-626` |
+| Medium | `providerSubscriptionId` lookups without gateway filter | **Fixed** — `eq(subscriptions.gateway, gateway)` added to `updateSubscription`, `renewSubscription`, `cancelSubscription` at `subscription.ts:200-203, 238-241, 344-346` |
+| Medium | `isTrialEligible` missing gateway gate | **Fixed** — returns `false` for non-Stripe gateways at `subscription.ts:482-484` |
+| Low | `catch (error: any)` / `error: unknown` consistency | **Fixed** — all `catch` blocks now use `unknown` type |
+| Low | PII logging in production | **Fixed** — email logging removed |
+| Low | `webhookDeliveryId` null guard (3 locations) | **Fixed** — `if (webhookDeliveryId)` guards at `payments.ts:1091, 1104, 1111` |
+| Low | `updatedAt` set on credit operations (violates user-controlled field) | **Fixed** — removed `updatedAt` from `executeWithCredits`, `addCredits`, `awardCredits` per AGENTS.md §8G |
+| Low | Dynamic import of `xendit.ts` (perf) | **Fixed** — changed to static import at `xendit.ts:1-18` |
+
+### Deferred
+
+| Severity | Issue | Notes |
+|----------|-------|-------|
+| Medium | `refundCredits` TOCTOU race condition | Requires new `deductCredits` helper (Phase 6) |
+| Medium | `amountCents` semantics differ between gateways | Stripe = cents, IDR = whole rupiah (by design) |
+| Medium | `isDuplicateTx` broader than intended | Transactions keyed by (userId, type, refId) |
+| Low | `isUniqueViolation()` duplicated 3× | Can extract utility in Phase 6 |
+| Low | Pack ID config duplication (`credits.ts` + `xendit.ts`) | Acceptable given different price structures |
+| Low | Subscription idempotency vs. credit grant idempotency mismatch | Acceptable trade-off for simplicity |
+| Low | Trial eligibility stale cache | Backend re-validates at checkout |
+| Low | `refundCreditsIdempotent` best-effort log-and-continue | Acceptable for edge case |
+
+### Future enhancements
+
+- Phase 6: Testing & polish
+- Phase 7: Soft launch
+- Xendit Customer Portal (P2/P3)
+- Application-layer free trial for Xendit (P3)
+- IP/geo-based gateway default (P3)
+- Floating FX rate (P3)
+
+Full roadmap: `docs/roadmap/STRIPE_AND_XENDIT_GATEWAY_AGNOSTIC_ROADMAP.md`
+
+---
+
+## 16. Implementation status
+
+| Phase | Name | Status |
+|-------|------|--------|
+| Phase 0 | Pre-requisite & Bugfix Sprint | Mostly Done (Xendit business reg pending) |
+| Phase 1 | Foundation (DB migration) | **Partially Done — migration pending** |
+| Phase 2 | Xendit Backend — Credit Packs | Done |
+| Phase 2b | Xendit Backend — Subscriptions | Done |
+| Phases 4-5 | Frontend Gateway Selector & Pricing | Done |
+| Phase 6 | Testing & Polish | Not started |
+| Phase 7 | Soft Launch | Not started |
+
+> **⚠️ DB migration pending:** The Drizzle schema source in `src/db/schema.ts` has been updated to use generic `provider_*` column names, but the migration (Phase 1.1) has not yet been applied to production. No Xendit code should reach production until the migration + deploy (Phase 1.5) are complete.
+
+Full plan: `docs/roadmap/STRIPE_AND_XENDIT_GATEWAY_AGNOSTIC_ROADMAP.md`
+
+---
+
+*Last updated: August 2026 (gateway-agnostic architecture consolidation; 13 bug fixes applied, 8 deferred to Phase 6). Companion to frontend doc: `PAYMENTS_ARCHITECTURE_FRONTEND.md`*

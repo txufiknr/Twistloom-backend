@@ -1,0 +1,350 @@
+/**
+ * Creator Wallet Service
+ *
+ * Core business logic for creator wallet operations — balance management,
+ * earnings ledger, payouts, and balance-to-credits conversion.
+ * All wallet mutations are atomic via Postgres transactions.
+ *
+ * This service is the SSOT for creator balance. It is independent of any
+ * specific earning source (thanks, revenue_share, etc.).
+ *
+ * @see docs/architecture/CREATOR_WALLET_ARCHITECTURE.md
+ */
+
+import { eq, sql, and, desc } from "drizzle-orm";
+import { dbRead, dbWrite } from "../db/client.js";
+import {
+  creatorEarnings,
+  creatorWallets,
+  creatorPayouts,
+  creatorPayoutMethods,
+  users,
+  books,
+  transactions,
+} from "../db/schema.js";
+import { THANKS_CONFIG } from "../config/thanks.js";
+import type { CreatorWallet, CreatorEarning, CreatorPayout, ConvertToCreditsResult, EarningSource } from "../types/wallet.js";
+
+// ── Balance ──────────────────────────────────────────────────────────────────
+
+/**
+ * Gets or creates a creator's wallet. Lazily creates on first access.
+ * When called from recordThanks, pass the currency so the wallet is created with the correct currency.
+ */
+export async function getCreatorWallet(creatorId: string, currency?: string): Promise<CreatorWallet> {
+  const [wallet] = await dbRead
+    .select()
+    .from(creatorWallets)
+    .where(eq(creatorWallets.creatorId, creatorId))
+    .limit(1);
+
+  if (wallet) {
+    return {
+      creatorId: wallet.creatorId,
+      availableAmount: wallet.availableAmount,
+      pendingAmount: wallet.pendingAmount,
+      withdrawnAmount: wallet.withdrawnAmount,
+      currency: wallet.currency,
+      payoutVerified: wallet.payoutVerified,
+    };
+  }
+
+  // Lazily create wallet on first access, using the provided currency or defaulting to IDR
+  const [created] = await dbWrite
+    .insert(creatorWallets)
+    .values({ creatorId, currency: currency || "IDR" })
+    .returning();
+
+  return {
+    creatorId: created.creatorId,
+    availableAmount: created.availableAmount,
+    pendingAmount: created.pendingAmount,
+    withdrawnAmount: created.withdrawnAmount,
+    currency: created.currency,
+    payoutVerified: created.payoutVerified,
+  };
+}
+
+// ── Earnings Ledger ──────────────────────────────────────────────────────────
+
+/**
+ * Gets a creator's earnings history with book titles.
+ * Optionally filters by earning source.
+ */
+export async function getCreatorEarnings(
+  creatorId: string,
+  limit = 20,
+  offset = 0,
+  source?: EarningSource,
+): Promise<{ earnings: CreatorEarning[]; hasMore: boolean }> {
+  const conditions = [eq(creatorEarnings.creatorId, creatorId)];
+  if (source) {
+    conditions.push(eq(creatorEarnings.source, source));
+  }
+
+  const rows = await dbRead
+    .select({
+      id: creatorEarnings.id,
+      bookId: creatorEarnings.bookId,
+      bookTitle: books.title,
+      source: creatorEarnings.source,
+      grossAmount: creatorEarnings.grossAmount,
+      creatorAmount: creatorEarnings.creatorAmount,
+      currency: creatorEarnings.currency,
+      readerId: creatorEarnings.readerId,
+      message: creatorEarnings.message,
+      createdAt: creatorEarnings.createdAt,
+    })
+    .from(creatorEarnings)
+    .leftJoin(books, eq(creatorEarnings.bookId, books.id))
+    .where(and(...conditions))
+    .orderBy(desc(creatorEarnings.createdAt))
+    .limit(limit + 1)
+    .offset(offset);
+
+  const hasMore = rows.length > limit;
+  const earnings = rows.slice(0, limit);
+
+  // Resolve reader names (batch)
+  const readerIds = [...new Set(earnings.map((r) => r.readerId))];
+  const readers = readerIds.length > 0
+    ? await dbRead
+        .select({ userId: users.userId, name: users.name })
+        .from(users)
+        .where(sql`${users.userId} IN ${readerIds}`)
+    : [];
+  const readerMap = new Map(readers.map((r) => [r.userId, r.name]));
+
+  return {
+    earnings: earnings.map((e) => ({
+      id: e.id,
+      bookId: e.bookId,
+      bookTitle: e.bookTitle,
+      source: e.source as EarningSource,
+      grossAmount: e.grossAmount,
+      creatorAmount: e.creatorAmount,
+      currency: e.currency,
+      readerName: readerMap.get(e.readerId) || "A reader",
+      message: e.message,
+      createdAt: e.createdAt,
+    })),
+    hasMore,
+  };
+}
+
+// ── Payout ──────────────────────────────────────────────────────────────────
+
+/**
+ * Initiates a payout request. In v0.5, this creates a pending payout record
+ * for manual admin processing. Validates minimum balance and payout verification.
+ */
+export async function initiatePayout(creatorId: string): Promise<CreatorPayout> {
+  const [payout] = await dbWrite.transaction(async (tx) => {
+    // 1. Lock wallet row to prevent concurrent double-spend
+    const [wallet] = await tx
+      .select({
+        availableAmount: creatorWallets.availableAmount,
+        payoutVerified: creatorWallets.payoutVerified,
+        currency: creatorWallets.currency,
+      })
+      .from(creatorWallets)
+      .where(eq(creatorWallets.creatorId, creatorId))
+      .for("update")
+      .limit(1);
+
+    if (!wallet) throw new Error("WALLET_NOT_FOUND");
+    if (!wallet.payoutVerified) throw new Error("PAYOUT_NOT_VERIFIED");
+
+    const minimum = wallet.currency === "USD"
+      ? THANKS_CONFIG.minimumWithdrawalUSD
+      : THANKS_CONFIG.minimumWithdrawalIDR;
+
+    if (wallet.availableAmount < minimum) {
+      throw new Error("BELOW_MINIMUM");
+    }
+
+    const amount = wallet.availableAmount;
+
+    // 2. Deduct from available balance atomically
+    const [updated] = await tx
+      .update(creatorWallets)
+      .set({
+        availableAmount: sql`${creatorWallets.availableAmount} - ${amount}`,
+        updatedAt: new Date(),
+      })
+      .where(eq(creatorWallets.creatorId, creatorId))
+      .returning();
+
+    if (!updated || updated.availableAmount < 0) {
+      throw new Error("INSUFFICIENT_BALANCE");
+    }
+
+    // 3. Create payout record
+    const [payout] = await tx
+      .insert(creatorPayouts)
+      .values({
+        creatorId,
+        amount,
+        fee: 0,
+        netAmount: amount,
+        currency: wallet.currency,
+        status: "pending",
+      })
+      .returning();
+
+    return [payout];
+  });
+
+  return {
+    id: payout.id,
+    amount: payout.amount,
+    fee: payout.fee,
+    netAmount: payout.netAmount,
+    currency: payout.currency,
+    status: payout.status,
+    createdAt: payout.createdAt,
+  };
+}
+
+/**
+ * Gets payout history for a creator.
+ */
+export async function getCreatorPayouts(
+  creatorId: string,
+  limit = 20,
+): Promise<CreatorPayout[]> {
+  const rows = await dbRead
+    .select()
+    .from(creatorPayouts)
+    .where(eq(creatorPayouts.creatorId, creatorId))
+    .orderBy(desc(creatorPayouts.createdAt))
+    .limit(limit);
+
+  return rows.map((r) => ({
+    id: r.id,
+    amount: r.amount,
+    fee: r.fee,
+    netAmount: r.netAmount,
+    currency: r.currency,
+    status: r.status,
+    createdAt: r.createdAt,
+  }));
+}
+
+/**
+ * Saves or updates a creator's payout method (bank account).
+ */
+export async function savePayoutMethod(
+  creatorId: string,
+  methodType: string,
+  bankName: string,
+  accountNumber: string,
+  accountName: string,
+): Promise<void> {
+  await dbWrite.transaction(async (tx) => {
+    // Mark payout as verified (inside transaction for atomicity)
+    await tx
+      .update(creatorWallets)
+      .set({ payoutVerified: true, updatedAt: new Date() })
+      .where(eq(creatorWallets.creatorId, creatorId));
+
+    // Upsert payout method (set all others as non-default)
+    await tx
+      .update(creatorPayoutMethods)
+      .set({ isDefault: false })
+      .where(eq(creatorPayoutMethods.creatorId, creatorId));
+
+    await tx.insert(creatorPayoutMethods).values({
+      creatorId,
+      methodType,
+      bankName,
+      accountNumberEncrypted: accountNumber, // TODO: encrypt in production
+      accountName,
+      isDefault: true,
+      isVerified: true,
+    });
+  });
+}
+
+// ── Balance → Credits Conversion ────────────────────────────────────────────
+
+/**
+ * Converts wallet balance to credits atomically.
+ * Deducts from creator_wallets.available_amount, adds to users.credits,
+ * and inserts a 'conversion' transaction record — all in one Postgres TX.
+ */
+export async function convertBalanceToCredits(
+  creatorId: string,
+  idrAmount: number,
+): Promise<ConvertToCreditsResult> {
+  if (idrAmount <= 0) {
+    throw new Error("INVALID_AMOUNT");
+  }
+
+  if (idrAmount < THANKS_CONFIG.minConversionAmountIDR) {
+    throw new Error("BELOW_MINIMUM");
+  }
+
+  const creditsToAdd = Math.floor(idrAmount / THANKS_CONFIG.idrPerCredit);
+  if (creditsToAdd <= 0) {
+    throw new Error("AMOUNT_TOO_LOW");
+  }
+
+  // Deduct the exact IDR amount that maps to the integer credit count
+  const deductedIdr = creditsToAdd * THANKS_CONFIG.idrPerCredit;
+
+  return await dbWrite.transaction(async (tx) => {
+    // 1. Lock and read wallet
+    const [wallet] = await tx
+      .select({ availableAmount: creatorWallets.availableAmount, currency: creatorWallets.currency })
+      .from(creatorWallets)
+      .where(eq(creatorWallets.creatorId, creatorId))
+      .for("update")
+      .limit(1);
+
+    if (!wallet) throw new Error("WALLET_NOT_FOUND");
+    if (wallet.availableAmount < deductedIdr) throw new Error("INSUFFICIENT_BALANCE");
+
+    // 2. Deduct from wallet
+    await tx
+      .update(creatorWallets)
+      .set({
+        availableAmount: sql`${creatorWallets.availableAmount} - ${deductedIdr}`,
+        updatedAt: new Date(),
+      })
+      .where(eq(creatorWallets.creatorId, creatorId));
+
+    // 3. Add credits to user
+    const [user] = await tx
+      .select({ credits: users.credits })
+      .from(users)
+      .where(eq(users.userId, creatorId))
+      .for("update")
+      .limit(1);
+
+    if (!user) throw new Error("USER_NOT_FOUND");
+
+    await tx
+      .update(users)
+      .set({ credits: sql`${users.credits} + ${creditsToAdd}`, updatedAt: new Date() })
+      .where(eq(users.userId, creatorId));
+
+    // 4. Insert transaction record
+    await tx.insert(transactions).values({
+      userId: creatorId,
+      type: "conversion",
+      credits: creditsToAdd,
+      amountCents: deductedIdr,
+      context: "wallet_to_credits",
+      metadata: { idrAmount: deductedIdr, idrPerCredit: THANKS_CONFIG.idrPerCredit },
+      createdAt: new Date(),
+    });
+
+    return {
+      converted: deductedIdr,
+      creditsAdded: creditsToAdd,
+      newBalance: wallet.availableAmount - deductedIdr,
+      newCredits: (user.credits ?? 0) + creditsToAdd,
+    };
+  });
+}

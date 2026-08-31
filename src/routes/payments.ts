@@ -1,8 +1,9 @@
 /**
  * Payments Routes Module (Hono)
  *
- * Checkout sessions, credit packs, subscriptions, and webhooks for Stripe and
- * Xendit (credit packs). DB is gateway-agnostic; routes set `gateway` on writes.
+ * Checkout sessions, credit packs, subscriptions, and webhooks for all
+ * payment gateways. DB is gateway-agnostic; routes delegate to gateway
+ * adapters via `getGatewayAdapter()`.
  */
 
 import { Hono, type Context } from "hono";
@@ -11,87 +12,86 @@ import { eq, sql, and, desc, inArray } from "drizzle-orm";
 import { createPaginatedResponse, calculatePaginationMeta } from "../utils/pagination.js";
 import { requireAuth, optionalAuth } from "../middleware/nextauth.js";
 import { dbRead, dbWrite } from "../db/client.js";
-import { users, transactions, webhookDeliveries, userNotifications, subscriptions } from "../db/schema.js";
-import { CREDIT_PACKS, type CreditCostKey, CREDIT_COSTS, FIRST_PURCHASE_BONUS } from "../config/credits.js";
+import { users, transactions, webhookDeliveries, subscriptions } from "../db/schema.js";
+import { CREDIT_PACKS, type CreditCostKey, CREDIT_COSTS } from "../config/credits.js";
 import type { TransactionType } from "../types/credits.js";
 import { getErrorMessage, cApiError, cConflictError, cNotFoundError, cValidationError, cRateLimitError } from "../utils/error.js";
 import { checkRateLimit, checkIdempotency, storeIdempotencyResult, constructSafeUrl, setIdempotencyProcessing } from "../utils/redis.js";
-import { consumeCredits, getCreditCost, awardCredits } from "../services/credits.js";
+import { consumeCredits, getCreditCost } from "../services/credits.js";
 import { CREDIT_ERRORS, isInsufficientCreditsError } from "../config/errors.js";
-import { createSubscription, updateSubscription, renewSubscription, cancelSubscription, hasActiveVipSubscription, isTrialEligible, handleTrialWillEnd } from "../services/subscription.js";
+import { hasActiveVipSubscription, isTrialEligible } from "../services/subscription.js";
 import { VIP_BENEFITS, VIP_SUBSCRIPTION, VIP_TRIAL } from "../config/subscription.js";
-import { getStripe } from "../utils/stripe.js";
 import { getXenditPackPriceIdr, XENDIT_CONFIG } from "../config/xendit.js";
-import { verifyXenditCallbackToken, isXenditConfigured, type XenditInvoice, type XenditRecurringPlan } from "../utils/xendit.js";
+import { verifyXenditCallbackToken, type XenditInvoice, type XenditRecurringPlan } from "../utils/xendit.js";
 import {
-  createXenditCreditPackCheckout,
-  createXenditSubscriptionCheckout,
   finalizeXenditWebhookDelivery,
   handleXenditCycleSucceeded,
   handleXenditCycleFailed,
   handleXenditInvoicePaid,
   handleXenditPlanActivated,
   handleXenditPlanDeactivated,
-  cancelXenditSubscription,
   trackXenditWebhookDelivery,
 } from "../services/xendit.js";
+import { getGatewayAdapter, initGatewayAdapters } from "../services/gateways/registry.js";
+import {
+  handleSubscriptionCreated as stripeSubCreated,
+  handleSubscriptionUpdated as stripeSubUpdated,
+  handleSubscriptionDeleted as stripeSubDeleted,
+  handleInvoicePaymentSucceeded as stripeInvoiceSucceeded,
+  handleInvoicePaymentFailed as stripeInvoiceFailed,
+  handleTrialWillEndEvent as stripeTrialWillEnd,
+  handleCheckoutSessionCompleted as stripeCheckoutCompleted,
+  handleChargeRefunded as stripeChargeRefunded,
+} from "../services/gateways/stripe-webhook-handlers.js";
 import type { AppEnv } from "../hono/env.js";
 import { getClientIp } from "../hono/express-shim.js";
 import { isPaymentGateway, PAYMENT_GATEWAY, type PaymentGateway } from "../types/payment.js";
+
+// Initialize gateway adapters at module load
+initGatewayAdapters();
 
 function parseGateway(value: unknown): PaymentGateway | null {
   return isPaymentGateway(value) ? value : null;
 }
 
 /**
- * Extended Stripe Subscription interface with properties that exist in the API
- * but are missing from the TypeScript definition (stripe@22.2.0).
+ * Builds success/cancel URLs from user-provided returnUrl or fallback paths.
+ * Validates returnUrl origin against FRONTEND_URL to prevent open redirects.
  *
- * The Stripe SDK's `Subscription` type omits `current_period_start` and
- * `current_period_end` as top-level fields. This interface restores them
- * for type-safe access in webhook handlers.
+ * @param returnUrl - User-provided return URL (optional)
+ * @param successPath - Path to use when returnUrl is not provided
+ * @param cancelPath - Path to use when returnUrl is not provided
+ * @param baseUrl - FRONTEND_URL env var
+ * @param paramKey - Query parameter key ('payment' for credit packs, 'subscription' for VIP)
+ * @returns Validated success and cancel URLs
  */
-interface StripeSubscriptionWithPeriods extends Stripe.Subscription {
-  /** Unix timestamp (seconds) of the current billing period start */
-  current_period_start: number;
-  /** Unix timestamp (seconds) of the current billing period end */
-  current_period_end: number;
-}
-
-/**
- * Extended Stripe Invoice interface with properties that exist in the API
- * but are missing from the TypeScript definition (stripe@22.2.0).
- *
- * `subscription` is a top-level field in Stripe's raw Invoice JSON response,
- * but the SDK's Invoice type only exposes it through `parent.subscription_details`.
- * This extended interface makes it accessible directly without `any`.
- */
-interface StripeInvoiceWithSubscription extends Stripe.Invoice {
-  /** Subscription ID or expanded Subscription object (raw API field) */
-  subscription?: string | Stripe.Subscription;
-}
-
-/**
- * Type guard that validates a Stripe subscription object contains the required
- * period properties (`current_period_start`, `current_period_end`) missing from
- * the base SDK type.
- *
- * @param obj - The raw event data object from a Stripe webhook
- * @returns `true` if the object has valid numeric period properties
- *
- * @example
- * ```typescript
- * const sub = event.data.object;
- * if (!isSubscriptionWithPeriods(sub)) {
- *   return console.error("Invalid subscription object");
- * }
- * // sub is now typed as StripeSubscriptionWithPeriods
- * ```
- */
-function isSubscriptionWithPeriods(obj: any): obj is StripeSubscriptionWithPeriods {
-  return obj &&
-         typeof obj.current_period_start === 'number' &&
-         typeof obj.current_period_end === 'number';
+function buildReturnUrls(
+  returnUrl: string | undefined,
+  successPath: string | undefined,
+  cancelPath: string | undefined,
+  baseUrl: string,
+  paramKey: 'payment' | 'subscription',
+): { successUrl: string; cancelUrl: string } {
+  if (returnUrl) {
+    try {
+      const returnUrlObj = new URL(returnUrl, baseUrl);
+      const baseUrlObj = new URL(baseUrl);
+      if (returnUrlObj.origin !== baseUrlObj.origin) {
+        throw new Error("Cross-origin returnUrl not allowed");
+      }
+      const successUrl = new URL(returnUrl, baseUrl);
+      successUrl.searchParams.set(paramKey, 'success');
+      const cancelUrl = new URL(returnUrl, baseUrl);
+      cancelUrl.searchParams.set(paramKey, 'cancel');
+      return { successUrl: successUrl.toString(), cancelUrl: cancelUrl.toString() };
+    } catch {
+      // Invalid returnUrl — fall back to defaults
+    }
+  }
+  return {
+    successUrl: constructSafeUrl(successPath, baseUrl, `/dashboard?${paramKey}=success`),
+    cancelUrl: constructSafeUrl(cancelPath, baseUrl, `/pricing?${paramKey}=cancel`),
+  };
 }
 
 /**
@@ -146,272 +146,8 @@ function isUniqueViolation(error: unknown): boolean {
   return typeof error === 'object' && error !== null && (error as { code?: string }).code === '23505';
 }
 
-/**
- * Handles `customer.subscription.created` webhook events from Stripe.
- *
- * Validates the subscription object shape, extracts userId from metadata,
- * resolves price ID from the first line item, and persists the subscription
- * via {@link createSubscription}. Supports both regular and trial subscriptions.
- *
- * @param event - The Stripe webhook event. `event.data.object` is expected to
- *                include `current_period_start` and `current_period_end`.
- *
- * @example
- * ```typescript
- * // Dispatched from webhook handler:
- * if (event.type === "customer.subscription.created") {
- *   await handleSubscriptionCreated(event);
- * }
- * ```
- */
-async function handleSubscriptionCreated(event: Stripe.Event) {
-  const subscription = event.data.object;
-  if (!isSubscriptionWithPeriods(subscription)) {
-    return console.error("[subscription] ❌ Invalid subscription object: missing period properties");
-  }
-  const userId = subscription.metadata?.userId;
-  if (!userId) {
-    return console.error("[subscription] ❌ Missing userId in subscription metadata");
-  }
-  const isTrial = subscription.status === 'trialing';
-  const trialEnd = subscription.trial_end ? new Date(subscription.trial_end * 1000) : null;
-  const priceId = subscription.items.data[0].price.id;
-  await createSubscription({
-    userId,
-    gateway: PAYMENT_GATEWAY.stripe,
-    providerSubscriptionId: subscription.id,
-    providerCustomerId: subscription.customer as string,
-    providerPriceId: priceId,
-    currentPeriodStart: new Date(subscription.current_period_start * 1000),
-    currentPeriodEnd: new Date(subscription.current_period_end * 1000),
-    isTrial,
-    trialEnd,
-    providerEventId: event.id,
-  });
-  console.log(`[subscription] ✅ Created subscription for user ${userId}${isTrial ? " (trial)" : ""}`);
-}
-
-/**
- * Handles `customer.subscription.updated` webhook events from Stripe.
- *
- * Updates the local subscription record's status, period end, and
- * cancel-at-period-end flag. Used to sync status changes (e.g. active → past_due)
- * and billing anchor shifts.
- *
- * @param event - The Stripe webhook event. `event.data.object` must include
- *                `current_period_start` and `current_period_end`.
- *
- * @example
- * ```typescript
- * if (event.type === "customer.subscription.updated") {
- *   await handleSubscriptionUpdated(event);
- * }
- * ```
- */
-async function handleSubscriptionUpdated(event: Stripe.Event) {
-  const subscription = event.data.object;
-  if (!isSubscriptionWithPeriods(subscription)) {
-    return console.error("[subscription] ❌ Invalid subscription object: missing period properties");
-  }
-  await updateSubscription({
-    gateway: PAYMENT_GATEWAY.stripe,
-    providerSubscriptionId: subscription.id,
-    status: subscription.status,
-    currentPeriodEnd: new Date(subscription.current_period_end * 1000),
-    cancelAtPeriodEnd: subscription.cancel_at_period_end,
-  });
-  console.log(`[subscription] 🔄 Updated subscription ${subscription.id}`);
-}
-
-/**
- * Handles `customer.subscription.deleted` webhook events from Stripe.
- *
- * Cancels the local subscription record, recording the cancellation timestamp.
- * This fires when a subscription ends (either immediately or at period end
- * after `cancel_at_period_end` was set).
- *
- * @param event - The Stripe webhook event. `event.data.object` is cast to
- *                `Stripe.Subscription` (no extended properties needed).
- *
- * @example
- * ```typescript
- * if (event.type === "customer.subscription.deleted") {
- *   await handleSubscriptionDeleted(event);
- * }
- * ```
- */
-async function handleSubscriptionDeleted(event: Stripe.Event) {
-  const subscription = event.data.object as Stripe.Subscription;
-  await cancelSubscription({
-    gateway: PAYMENT_GATEWAY.stripe,
-    providerSubscriptionId: subscription.id,
-    canceledAt: subscription.canceled_at ? new Date(subscription.canceled_at * 1000) : new Date(),
-    providerEventId: event.id,
-  });
-  console.log(`[subscription] ❌ Canceled subscription ${subscription.id}`);
-
-  // Billing email (always on) — non-blocking
-  try {
-    const [row] = await dbRead
-      .select({
-        userId: users.userId,
-        email: users.email,
-        name: users.name,
-        currentPeriodEnd: subscriptions.currentPeriodEnd,
-      })
-      .from(subscriptions)
-      .innerJoin(users, eq(subscriptions.userId, users.userId))
-      .where(eq(subscriptions.providerSubscriptionId, subscription.id))
-      .limit(1);
-    if (row?.email) {
-      const { sendSubscriptionCanceledEmail, sendEmailSafe } = await import("../utils/email.js");
-      sendEmailSafe("subscription.deleted", () =>
-        sendSubscriptionCanceledEmail(
-          row.email,
-          row.name || "there",
-          row.currentPeriodEnd ?? undefined,
-          { userId: row.userId },
-        ),
-      );
-    }
-  } catch (emailError) {
-    console.error("[subscription] ❌ Failed to send subscription-canceled email:", emailError);
-  }
-}
-
-/**
- * Resolves the Stripe subscription ID from an Invoice payload.
- *
- * Prefers the top-level `subscription` field (standard API), with a fallback to
- * `parent.subscription_details.subscription` for newer Invoice shapes.
- */
-function getInvoiceSubscriptionId(
-  invoice: StripeInvoiceWithSubscription | Stripe.Invoice
-): string | null {
-  const withSub = invoice as StripeInvoiceWithSubscription;
-  const raw =
-    withSub.subscription ??
-    invoice.parent?.subscription_details?.subscription ??
-    null;
-  if (!raw) return null;
-  return typeof raw === "object" ? raw.id ?? null : raw;
-}
-
-/**
- * Handles `invoice.payment_succeeded` webhook events from Stripe.
- *
- * Extracts the subscription ID from the invoice (via the raw API `subscription`
- * field or `parent.subscription_details.subscription`), filters to
- * `billing_reason === 'subscription_cycle'` only (skipping trials, prorations,
- * and invoice corrections), and renews the subscription via {@link renewSubscription}.
- *
- * @param event - The Stripe webhook event. `event.data.object` is cast to
- *                {@link StripeInvoiceWithSubscription} for type-safe access to
- *                the raw `subscription` field.
- *
- * @example
- * ```typescript
- * if (event.type === "invoice.payment_succeeded") {
- *   await handleInvoicePaymentSucceeded(event);
- * }
- * ```
- */
-async function handleInvoicePaymentSucceeded(event: Stripe.Event) {
-  const invoice = event.data.object as StripeInvoiceWithSubscription;
-  const subscriptionId = getInvoiceSubscriptionId(invoice);
-  if (!subscriptionId) {
-    return console.error("[subscription] ❌ Missing subscriptionId in invoice");
-  }
-  if (invoice.billing_reason !== 'subscription_cycle') {
-    console.log(`[subscription] ℹ️ Skipping credit grant for invoice ${invoice.id} (billing_reason=${invoice.billing_reason}, not a renewal)`);
-    return;
-  }
-  const periodEnd = invoice.lines?.data[0]?.period?.end;
-  if (!periodEnd) {
-    return console.error("[subscription] ❌ Could not determine period end from invoice");
-  }
-  await renewSubscription({
-    gateway: PAYMENT_GATEWAY.stripe,
-    providerSubscriptionId: subscriptionId,
-    providerInvoiceId: invoice.id,
-    currentPeriodEnd: new Date(periodEnd * 1000),
-    providerEventId: event.id,
-  });
-  console.log(`[subscription] 💳 Renewed subscription ${subscriptionId}`);
-}
-
-/**
- * Handles `invoice.payment_failed` webhook events from Stripe.
- *
- * Extracts the subscription ID (same accessor as payment_succeeded), then
- * updates the local subscription status to `past_due` so downstream logic
- * (e.g. dunning emails, access revocation) can react.
- *
- * @param event - The Stripe webhook event with a failed invoice
- *
- * @example
- * ```typescript
- * if (event.type === "invoice.payment_failed") {
- *   await handleInvoicePaymentFailed(event);
- * }
- * ```
- */
-async function handleInvoicePaymentFailed(event: Stripe.Event) {
-  const invoice = event.data.object as StripeInvoiceWithSubscription;
-  const subscriptionId = getInvoiceSubscriptionId(invoice);
-  if (!subscriptionId) {
-    return console.error("[subscription] ❌ Missing subscriptionId in failed invoice");
-  }
-  await updateSubscription({
-    gateway: PAYMENT_GATEWAY.stripe,
-    providerSubscriptionId: subscriptionId,
-    status: 'past_due',
-  });
-  console.log(`[subscription] ❌ Payment failed for subscription ${subscriptionId}`);
-
-  // Billing email (always on) — non-blocking
-  try {
-    const [row] = await dbRead
-      .select({ userId: users.userId, email: users.email, name: users.name })
-      .from(subscriptions)
-      .innerJoin(users, eq(subscriptions.userId, users.userId))
-      .where(eq(subscriptions.providerSubscriptionId, subscriptionId))
-      .limit(1);
-    if (row?.email) {
-      const { sendPaymentFailedEmail, sendEmailSafe } = await import("../utils/email.js");
-      const portalUrl = process.env.FRONTEND_URL
-        ? `${process.env.FRONTEND_URL.replace(/\/$/, "")}/dashboard/account/subscription`
-        : undefined;
-      sendEmailSafe("invoice.payment_failed", () =>
-        sendPaymentFailedEmail(row.email, row.name || "there", portalUrl, { userId: row.userId }),
-      );
-    }
-  } catch (emailError) {
-    console.error("[subscription] ❌ Failed to send payment-failed email:", emailError);
-  }
-}
-
-/**
- * Handles `customer.subscription.trial_will_end` webhook events from Stripe.
- *
- * Delegates to {@link handleTrialWillEnd} which handles trial-expiry notifications
- * (e.g. sending reminders). Stripe fires this 3 days before the trial ends.
- *
- * @param event - The Stripe webhook event. `event.data.object` is cast to
- *                `Stripe.Subscription`.
- *
- * @example
- * ```typescript
- * if (event.type === "customer.subscription.trial_will_end") {
- *   await handleTrialWillEndEvent(event);
- * }
- * ```
- */
-async function handleTrialWillEndEvent(event: Stripe.Event) {
-  const subscription = event.data.object as Stripe.Subscription;
-  await handleTrialWillEnd(subscription.id);
-  console.log(`[subscription] ⏰ Trial ending soon for subscription ${subscription.id}`);
-}
+// Stripe webhook handlers are imported from `stripe-webhook-handlers.ts`
+// and aliased above (stripeSubCreated, stripeSubUpdated, etc.).
 
 /**
  * GET /credit-packs
@@ -507,59 +243,25 @@ router.post("/create-checkout-session", requireAuth, async (c) => {
     const baseUrl = process.env.FRONTEND_URL;
     if (!baseUrl) return cApiError(c, "Frontend URL not configured");
 
-    let successUrl: string;
-    let cancelUrl: string;
-
-    if (returnUrl) {
-      try {
-        const returnUrlObj = new URL(returnUrl, baseUrl);
-        const baseUrlObj = new URL(baseUrl);
-        if (returnUrlObj.origin !== baseUrlObj.origin) {
-          throw new Error("Cross-origin returnUrl not allowed");
-        }
-        returnUrlObj.searchParams.set('payment', 'success');
-        successUrl = returnUrlObj.toString();
-        returnUrlObj.searchParams.set('payment', 'cancel');
-        cancelUrl = returnUrlObj.toString();
-      } catch {
-        successUrl = constructSafeUrl(successPath, baseUrl, '/dashboard?payment=success');
-        cancelUrl = constructSafeUrl(cancelPath, baseUrl, '/pricing?payment=cancel');
-      }
-    } else {
-      successUrl = constructSafeUrl(successPath, baseUrl, '/dashboard?payment=success');
-      cancelUrl = constructSafeUrl(cancelPath, baseUrl, '/pricing?payment=cancel');
-    }
+    const { successUrl, cancelUrl } = buildReturnUrls(returnUrl, successPath, cancelPath, baseUrl, 'payment');
 
     const pack = CREDIT_PACKS.find((p) => p.id === packId);
     if (!pack) return cNotFoundError(c, "Credit pack not found");
 
-    if (gateway === PAYMENT_GATEWAY.xendit) {
-      if (!isXenditConfigured()) {
-        return cValidationError(c, "Xendit gateway is not enabled or configured");
-      }
-      const result = await createXenditCreditPackCheckout({
-        userId,
-        email,
-        name: user.name,
-        packId: pack.id,
-        successUrl,
-        cancelUrl,
-      });
-      return c.json(result);
-    }
-
-    const session = await getStripe().checkout.sessions.create({
-      payment_method_types: ["card"],
-      mode: "payment",
-      customer_email: email,
-      line_items: [{ price: pack.priceId, quantity: 1 }],
-      metadata: { userId, packId: pack.id, credits: pack.credits.toString() },
-      client_reference_id: userId,
-      success_url: successUrl,
-      cancel_url: cancelUrl,
+    const adapter = getGatewayAdapter(gateway);
+    const result = await adapter.createCreditPackCheckout({
+      userId,
+      email,
+      name: user.name,
+      packId: pack.id,
+      priceId: pack.priceId,
+      priceAmount: pack.priceUSD,
+      credits: pack.credits,
+      successUrl,
+      cancelUrl,
     });
 
-    return c.json({ url: session.url, sessionId: session.id, gateway: PAYMENT_GATEWAY.stripe });
+    return c.json({ url: result.url, sessionId: result.sessionId, gateway });
   } catch (error) {
     return cApiError(c, "Failed to create checkout session", error);
   }
@@ -589,47 +291,6 @@ router.post("/create-subscription-checkout", requireAuth, async (c) => {
     const userProfile = c.get("user")!;
     const userId = userProfile.id;
 
-    if (gateway === PAYMENT_GATEWAY.xendit) {
-      if (!isXenditConfigured()) {
-        return cValidationError(c, "Xendit gateway is not enabled or configured");
-      }
-
-      const baseUrl = process.env.FRONTEND_URL;
-      if (!baseUrl) return cApiError(c, "Frontend URL not configured");
-
-      let successUrl: string;
-      let cancelUrl: string;
-
-      if (returnUrl) {
-        try {
-          const returnUrlObj = new URL(returnUrl, baseUrl);
-          const baseUrlObj = new URL(baseUrl);
-          if (returnUrlObj.origin !== baseUrlObj.origin) {
-            throw new Error("Cross-origin returnUrl not allowed");
-          }
-          returnUrlObj.searchParams.set('subscription', 'success');
-          successUrl = returnUrlObj.toString();
-          returnUrlObj.searchParams.set('subscription', 'cancel');
-          cancelUrl = returnUrlObj.toString();
-        } catch {
-          successUrl = constructSafeUrl(successPath, baseUrl, '/dashboard?subscription=success');
-          cancelUrl = constructSafeUrl(cancelPath, baseUrl, '/pricing');
-        }
-      } else {
-        successUrl = constructSafeUrl(successPath, baseUrl, '/dashboard?subscription=success');
-        cancelUrl = constructSafeUrl(cancelPath, baseUrl, '/pricing');
-      }
-
-      const result = await createXenditSubscriptionCheckout({
-        userId,
-        email: userProfile.email,
-        name: userProfile.name,
-        successUrl,
-        cancelUrl,
-      });
-      return c.json(result);
-    }
-
     const rateLimitResult = await checkRateLimit(`subscription-checkout-${userId}`, { maxRequests: 1, windowSeconds: 10 });
     if (!rateLimitResult.allowed) {
       return cRateLimitError(c, "Too many checkout session attempts. Please wait a few seconds before trying again.");
@@ -641,57 +302,33 @@ router.post("/create-subscription-checkout", requireAuth, async (c) => {
     const baseUrl = process.env.FRONTEND_URL;
     if (!baseUrl) return cApiError(c, "Frontend URL not configured");
 
-    let successUrl: string;
-    let cancelUrl: string;
+    const { successUrl, cancelUrl } = buildReturnUrls(returnUrl, successPath, cancelPath, baseUrl, 'subscription');
 
-    if (returnUrl) {
-      try {
-        const returnUrlObj = new URL(returnUrl, baseUrl);
-        const baseUrlObj = new URL(baseUrl);
-        if (returnUrlObj.origin !== baseUrlObj.origin) {
-          throw new Error("Cross-origin returnUrl not allowed");
-        }
-        returnUrlObj.searchParams.set('subscription', 'success');
-        successUrl = returnUrlObj.toString();
-        returnUrlObj.searchParams.set('subscription', 'cancel');
-        cancelUrl = returnUrlObj.toString();
-      } catch {
-        successUrl = constructSafeUrl(successPath, baseUrl, '/dashboard?subscription=success');
-        cancelUrl = constructSafeUrl(cancelPath, baseUrl, '/pricing');
-      }
-    } else {
-      successUrl = constructSafeUrl(successPath, baseUrl, '/dashboard?subscription=success');
-      cancelUrl = constructSafeUrl(cancelPath, baseUrl, '/pricing');
+    // Resolve Stripe customer ID for subscription gateways that need it
+    let customerId: string | undefined;
+    if (gateway === PAYMENT_GATEWAY.stripe) {
+      if (!VIP_SUBSCRIPTION.priceId) return cApiError(c, "VIP subscription not configured");
+      const [user] = await dbRead.select({ customerId: users.customerId, email: users.email }).from(users).where(eq(users.userId, userId)).limit(1);
+      customerId = user?.customerId ?? undefined;
     }
 
-    if (!VIP_SUBSCRIPTION.priceId) return cApiError(c, "VIP subscription not configured");
-
-    const [user] = await dbRead.select({ customerId: users.customerId, email: users.email }).from(users).where(eq(users.userId, userId)).limit(1);
-    let customerId = user?.customerId;
-    const userEmail = user?.email;
-
-    if (!customerId) {
-      const customer = await getStripe().customers.create({
-        email: userEmail ?? c.get("user")!.email,
-        metadata: { userId },
-      });
-      customerId = customer.id;
-      await dbWrite.update(users).set({ customerId }).where(eq(users.userId, userId));
-    }
-
-    const session = await getStripe().checkout.sessions.create({
-      payment_method_types: ["card"],
-      mode: "subscription",
-      customer: customerId,
-      line_items: [{ price: VIP_SUBSCRIPTION.priceId, quantity: 1 }],
-      metadata: { userId, subscriptionType: 'vip', isTrial: "false" },
-      client_reference_id: userId,
-      success_url: successUrl,
-      cancel_url: cancelUrl,
-      subscription_data: { metadata: { userId, isTrial: "false" } },
+    const adapter = getGatewayAdapter(gateway);
+    const result = await adapter.createSubscriptionCheckout({
+      userId,
+      email: userProfile.email,
+      name: userProfile.name,
+      customerId,
+      priceId: VIP_SUBSCRIPTION.priceId,
+      successUrl,
+      cancelUrl,
     });
 
-    return c.json({ url: session.url, sessionId: session.id, gateway: PAYMENT_GATEWAY.stripe });
+    // Persist auto-created customer ID for future use
+    if (result.customerId && !customerId) {
+      await dbWrite.update(users).set({ customerId: result.customerId }).where(eq(users.userId, userId));
+    }
+
+    return c.json({ url: result.url, sessionId: result.sessionId, gateway });
   } catch (error) {
     return cApiError(c, "Failed to create subscription checkout session", error);
   }
@@ -744,116 +381,63 @@ router.get("/subscription/trial-eligibility", requireAuth, async (c) => {
  * ```
  */
 router.post("/create-trial-checkout-session", requireAuth, async (c) => {
-  const LOG_TAG = '[trial-checkout]';
   try {
-    console.log(`${LOG_TAG} ▶️ Entered handler`);
     const { successPath, cancelPath, returnUrl } = c.get("body");
     const userId = c.get("user")!.id;
-    console.log(`${LOG_TAG} userId=${userId}`);
 
-    console.log(`${LOG_TAG} 🔒 Checking rate limit for trial-checkout-${userId}`);
     const rateLimitResult = await checkRateLimit(`trial-checkout-${userId}`, { maxRequests: 1, windowSeconds: 10 });
     if (!rateLimitResult.allowed) {
-      console.log(`${LOG_TAG} ⛔ Rate limited`);
       return cRateLimitError(c, "Too many checkout session attempts. Please wait a few seconds before trying again.");
     }
-    console.log(`${LOG_TAG} ✅ Rate limit passed`);
 
-    console.log(`${LOG_TAG} 🔧 VIP_TRIAL.enabled=${VIP_TRIAL.enabled}`);
     if (!VIP_TRIAL.enabled) {
-      console.log(`${LOG_TAG} ⛔ Trials disabled via VIP_TRIAL.enabled`);
       return cValidationError(c, "Trials are not currently available");
     }
 
-    console.log(`${LOG_TAG} 🔍 Checking trial eligibility for userId=${userId}`);
     const eligible = await isTrialEligible(userId);
-    console.log(`${LOG_TAG} ✅ Trial eligible=${eligible}`);
     if (!eligible) {
-      console.log(`${LOG_TAG} ⛔ Not eligible for trial`);
       return cValidationError(c, "Trial not available for this account");
     }
 
     const baseUrl = process.env.FRONTEND_URL;
     if (!baseUrl) {
-      console.log(`${LOG_TAG} ❌ FRONTEND_URL not configured`);
       return cApiError(c, "Frontend URL not configured");
     }
-    console.log(`${LOG_TAG} ✅ FRONTEND_URL=${baseUrl}`);
 
-    let successUrl: string;
-    let cancelUrl: string;
+    const { successUrl, cancelUrl } = buildReturnUrls(returnUrl, successPath, cancelPath, baseUrl, 'subscription');
 
-    if (returnUrl) {
-      console.log(`${LOG_TAG} 🔗 Processing returnUrl=${returnUrl}`);
-      try {
-        const returnUrlObj = new URL(returnUrl, baseUrl);
-        const baseUrlObj = new URL(baseUrl);
-        if (returnUrlObj.origin !== baseUrlObj.origin) {
-          console.log(`${LOG_TAG} ❌ Cross-origin returnUrl rejected`);
-          throw new Error("Cross-origin returnUrl not allowed");
-        }
-        returnUrlObj.searchParams.set('subscription', 'success');
-        successUrl = returnUrlObj.toString();
-        returnUrlObj.searchParams.set('subscription', 'cancel');
-        cancelUrl = returnUrlObj.toString();
-      } catch {
-        console.log(`${LOG_TAG} ⚠️ returnUrl parsing failed, falling back to defaults`);
-        successUrl = constructSafeUrl(successPath, baseUrl, '/dashboard?subscription=success');
-        cancelUrl = constructSafeUrl(cancelPath, baseUrl, '/pricing');
-      }
-    } else {
-      successUrl = constructSafeUrl(successPath, baseUrl, '/dashboard?subscription=success');
-      cancelUrl = constructSafeUrl(cancelPath, baseUrl, '/pricing');
-    }
-    console.log(`${LOG_TAG} ✅ URLs: success=${successUrl}, cancel=${cancelUrl}`);
-
-    console.log(`${LOG_TAG} 🔧 Checking VIP_SUBSCRIPTION.priceId`);
     if (!VIP_SUBSCRIPTION.priceId) {
-      console.log(`${LOG_TAG} ❌ VIP_SUBSCRIPTION.priceId is not configured`);
       return cApiError(c, "VIP subscription not configured");
     }
-    console.log(`${LOG_TAG} ✅ VIP_SUBSCRIPTION.priceId=${VIP_SUBSCRIPTION.priceId}`);
 
+    // Resolve Stripe customer ID
     const [user] = await dbRead.select({ customerId: users.customerId, email: users.email }).from(users).where(eq(users.userId, userId)).limit(1);
-    let customerId = user?.customerId;
-    const userEmail = user?.email;
-    console.log(`${LOG_TAG} 📡 User lookup: customerId=${customerId || 'null (will create)'}, email=${userEmail}`);
+    const customerId = user?.customerId ?? undefined;
 
-    if (!customerId) {
-      console.log(`${LOG_TAG} 👤 Creating new Stripe customer for userId=${userId}`);
-      const customer = await getStripe().customers.create({
-        email: userEmail ?? c.get("user")!.email,
-        metadata: { userId },
-      });
-      customerId = customer.id;
-      console.log(`${LOG_TAG} ✅ Stripe customer created: id=${customerId}`);
-      await dbWrite.update(users).set({ customerId }).where(eq(users.userId, userId));
-      console.log(`${LOG_TAG} ✅ User updated with customerId`);
+    const adapter = getGatewayAdapter(PAYMENT_GATEWAY.stripe);
+    if (!adapter.createTrialCheckout) {
+      return cApiError(c, "Trial checkout not supported for this gateway");
     }
 
-    console.log(`${LOG_TAG} 💳 Creating Stripe checkout session...`);
-    console.log(`${LOG_TAG} 💳 trial_period_days=${VIP_TRIAL.trialPeriodDays}, endBehavior=${VIP_TRIAL.endBehavior}`);
-    const session = await getStripe().checkout.sessions.create({
-      payment_method_types: ["card"],
-      mode: "subscription",
-      customer: customerId,
-      line_items: [{ price: VIP_SUBSCRIPTION.priceId, quantity: 1 }],
-      subscription_data: {
-        trial_period_days: VIP_TRIAL.trialPeriodDays,
-        trial_settings: { end_behavior: { missing_payment_method: VIP_TRIAL.endBehavior } },
-        metadata: { userId, isTrial: "true" },
-      },
-      payment_method_collection: "always",
-      metadata: { userId, subscriptionType: 'vip', isTrial: "true" },
-      client_reference_id: userId,
-      success_url: successUrl,
-      cancel_url: cancelUrl,
+    const result = await adapter.createTrialCheckout({
+      userId,
+      email: c.get("user")!.email,
+      name: c.get("user")!.name,
+      customerId,
+      priceId: VIP_SUBSCRIPTION.priceId,
+      trialPeriodDays: VIP_TRIAL.trialPeriodDays,
+      trialEndBehavior: VIP_TRIAL.endBehavior,
+      successUrl,
+      cancelUrl,
     });
 
-    console.log(`${LOG_TAG} ✅ Stripe session created: id=${session.id}, url=${session.url}`);
-    return c.json({ url: session.url, sessionId: session.id });
+    // Persist auto-created customer ID for future use
+    if (result.customerId && !customerId) {
+      await dbWrite.update(users).set({ customerId: result.customerId }).where(eq(users.userId, userId));
+    }
+
+    return c.json({ url: result.url, sessionId: result.sessionId });
   } catch (error) {
-    console.log(`[trial-checkout] ❌ CAUGHT ERROR:`, error);
     return cApiError(c, "Failed to create trial checkout session", error);
   }
 });
@@ -970,6 +554,7 @@ router.post("/stripe/webhook", async (c) => {
     if (!webhookSecret) return cApiError(c, "Webhook secret not configured");
 
     const rawBody = await c.req.text();
+    const { getStripe } = await import("../utils/stripe.js");
     const event = getStripe().webhooks.constructEvent(rawBody, sig, webhookSecret);
 
     const existingDelivery = await dbRead.select().from(webhookDeliveries).where(and(eq(webhookDeliveries.gateway, PAYMENT_GATEWAY.stripe), eq(webhookDeliveries.eventId, event.id))).limit(1);
@@ -1000,171 +585,29 @@ router.post("/stripe/webhook", async (c) => {
       webhookDeliveryId = existingDelivery[0].id;
     }
 
-    let isDuplicateTx = false;
-
     if (event.type === "checkout.session.completed" && (event.data.object as Stripe.Checkout.Session).mode === "payment") {
-      const session = event.data.object as Stripe.Checkout.Session;
-      const providerEventId = event.id;
-      const providerPaymentId = session.payment_intent as string;
-      if (!providerPaymentId) return cValidationError(c, "Missing payment intent");
-
-      const userId = session.metadata?.userId;
-      const credits = session.metadata?.credits;
-      const packId = session.metadata?.packId;
-      if (!userId || !credits || !packId) return cValidationError(c, "Invalid session metadata");
-
-      const creditsAmount = Number(credits);
-      const pack = CREDIT_PACKS.find((p) => p.id === packId);
-      if (!pack) return cValidationError(c, "Invalid credit pack");
-      if (session.amount_total !== Math.round(pack.priceUSD * 100)) {
-        return cValidationError(c, "Amount validation failed");
-      }
-
-      try {
-        await dbWrite.transaction(async (tx) => {
-          const existingTransaction = await tx.select().from(transactions).where(and(eq(transactions.gateway, PAYMENT_GATEWAY.stripe), eq(transactions.providerEventId, providerEventId))).limit(1);
-          if (existingTransaction.length > 0) {
-            isDuplicateTx = true;
-            return;
-          }
-          const priorPurchase = await tx.select().from(transactions).where(and(eq(transactions.userId, userId), eq(transactions.type, 'purchase'))).limit(1);
-          await awardCredits(userId, creditsAmount, {
-            type: "purchase",
-            gateway: PAYMENT_GATEWAY.stripe,
-            notificationType: "payment_success",
-            notificationTitle: "Payment Successful",
-            notificationMessage: `Your purchase of ${creditsAmount} credits (${pack.title}) was successful`,
-            notificationData: { amountCents: session.amount_total, providerPaymentId, packId },
-            metadata: { providerPaymentId, providerEventId, amountCents: session.amount_total, packId },
-            amountCents: session.amount_total ?? undefined,
-            context: 'credit_pack_purchase',
-            providerPaymentId,
-            providerEventId,
-            tx,
-          });
-          if (priorPurchase.length === 0 && FIRST_PURCHASE_BONUS > 0) {
-            try {
-              await awardCredits(userId, FIRST_PURCHASE_BONUS, {
-                type: 'reward',
-                gateway: PAYMENT_GATEWAY.stripe,
-                notificationType: 'first_purchase_bonus',
-                notificationTitle: 'First Purchase Bonus',
-                notificationMessage: `You received ${FIRST_PURCHASE_BONUS} credits for your first purchase`,
-                notificationData: { amountCents: session.amount_total, packId, providerPaymentId },
-                metadata: { providerEventId, providerPaymentId, packId },
-                tx,
-              });
-              console.log(`[stripe] 🎁 Awarded first-purchase bonus (${FIRST_PURCHASE_BONUS} credits) to user ${userId}`);
-            } catch (err) {
-              console.error(`[stripe] ❌ Failed to award first-purchase bonus to user ${userId}:`, err);
-            }
-          }
-          await tx.update(webhookDeliveries).set({ status: 'success', processedAt: new Date(), updatedAt: new Date() }).where(eq(webhookDeliveries.id, webhookDeliveryId!));
-        });
-      } catch (txError) {
-        if (isUniqueViolation(txError)) {
-          console.log(`[stripe] 🔄 Concurrent duplicate delivery detected via unique constraint: ${providerEventId}`);
-          isDuplicateTx = true;
-        } else {
-          throw txError;
-        }
-      }
-
-      if (isDuplicateTx) {
+      const result = await stripeCheckoutCompleted(event, webhookDeliveryId);
+      if (result.duplicate) {
         if (webhookDeliveryId) {
           await dbWrite.update(webhookDeliveries).set({ status: 'success', processedAt: new Date(), updatedAt: new Date() }).where(eq(webhookDeliveries.id, webhookDeliveryId)).catch(console.error);
         }
         return c.json({ received: true, duplicate: true });
       }
     } else if (event.type === "charge.refunded") {
-      const charge = event.data.object as Stripe.Charge;
-      const providerPaymentId = charge.payment_intent as string;
-      const providerEventId = event.id;
-      if (!providerPaymentId) return cValidationError(c, 'Missing payment intent');
-
-      const refundEmailMeta: { userId: string; credits: number }[] = [];
-
-      try {
-        await dbWrite.transaction(async (tx) => {
-          const existingRefund = await tx.select().from(transactions).where(and(eq(transactions.gateway, PAYMENT_GATEWAY.stripe), eq(transactions.providerEventId, providerEventId))).limit(1);
-          if (existingRefund.length > 0) {
-            isDuplicateTx = true;
-            return;
-          }
-          const originalTransaction = await tx.select().from(transactions).where(and(eq(transactions.gateway, PAYMENT_GATEWAY.stripe), eq(transactions.providerPaymentId, providerPaymentId))).limit(1);
-          if (!originalTransaction.length) {
-            console.warn(`[stripe] ⚠️ charge.refunded for paymentIntent ${providerPaymentId} has no matching credit-pack transaction — likely a subscription charge. Skipping credit clawback.`);
-            await tx.update(webhookDeliveries).set({ status: 'success', processedAt: new Date(), updatedAt: new Date() }).where(eq(webhookDeliveries.id, webhookDeliveryId!));
-            return;
-          }
-          const transaction = originalTransaction[0];
-          const refundCents = charge.amount_refunded ?? 0;
-          const originalCents = transaction.amountCents!;
-          const creditsToDeduct = Number((BigInt(refundCents) * BigInt(transaction.credits)) / BigInt(originalCents));
-          if (creditsToDeduct > 0) {
-            await tx.update(users).set({ credits: sql`GREATEST(0, ${users.credits} - ${creditsToDeduct})` }).where(eq(users.userId, transaction.userId));
-            await tx.insert(transactions).values({
-              userId: transaction.userId,
-              type: 'refund',
-              credits: -creditsToDeduct,
-              amountCents: -refundCents,
-              gateway: PAYMENT_GATEWAY.stripe,
-              providerPaymentId,
-              providerEventId: event.id,
-            });
-            await tx.insert(userNotifications).values({
-              userId: transaction.userId,
-              type: 'refund',
-              title: 'Refund Processed',
-              message: `${creditsToDeduct} credits have been deducted from your account due to a refund`,
-              data: { creditsDeducted: creditsToDeduct, refundCents, refundAmount: refundCents / 100, originalPaymentId: providerPaymentId },
-            });
-            refundEmailMeta.push({ userId: transaction.userId, credits: creditsToDeduct });
-          }
-          await tx.update(webhookDeliveries).set({ status: 'success', processedAt: new Date(), updatedAt: new Date() }).where(eq(webhookDeliveries.id, webhookDeliveryId!));
-        });
-
-        const refundMeta = refundEmailMeta[0];
-        if (refundMeta) {
-          try {
-            const [u] = await dbRead
-              .select({ email: users.email, name: users.name })
-              .from(users)
-              .where(eq(users.userId, refundMeta.userId))
-              .limit(1);
-            if (u?.email) {
-              const { sendRefundProcessedEmail, sendEmailSafe } = await import("../utils/email.js");
-              sendEmailSafe("charge.refunded", () =>
-                sendRefundProcessedEmail(u.email, u.name || "there", refundMeta.credits, {
-                  userId: refundMeta.userId,
-                }),
-              );
-            }
-          } catch (emailError) {
-            console.error("[stripe] ❌ Failed to send refund email:", emailError);
-          }
-        }
-      } catch (txError) {
-        if (isUniqueViolation(txError)) {
-          console.log(`[stripe] 🔄 Concurrent duplicate refund delivery detected via unique constraint: ${providerEventId}`);
-          isDuplicateTx = true;
-        } else {
-          throw txError;
-        }
-      }
-      if (isDuplicateTx) {
+      const result = await stripeChargeRefunded(event, webhookDeliveryId);
+      if (result.duplicate) {
         if (webhookDeliveryId) {
           await dbWrite.update(webhookDeliveries).set({ status: 'success', processedAt: new Date(), updatedAt: new Date() }).where(eq(webhookDeliveries.id, webhookDeliveryId)).catch(console.error);
         }
         return c.json({ received: true, duplicate: true });
       }
     } else {
-      if (event.type === "customer.subscription.created") await handleSubscriptionCreated(event);
-      else if (event.type === "customer.subscription.updated") await handleSubscriptionUpdated(event);
-      else if (event.type === "customer.subscription.deleted") await handleSubscriptionDeleted(event);
-      else if (event.type === "customer.subscription.trial_will_end") await handleTrialWillEndEvent(event);
-      else if (event.type === "invoice.payment_succeeded") await handleInvoicePaymentSucceeded(event);
-      else if (event.type === "invoice.payment_failed") await handleInvoicePaymentFailed(event);
+      if (event.type === "customer.subscription.created") await stripeSubCreated(event);
+      else if (event.type === "customer.subscription.updated") await stripeSubUpdated(event);
+      else if (event.type === "customer.subscription.deleted") await stripeSubDeleted(event);
+      else if (event.type === "customer.subscription.trial_will_end") await stripeTrialWillEnd(event);
+      else if (event.type === "invoice.payment_succeeded") await stripeInvoiceSucceeded(event);
+      else if (event.type === "invoice.payment_failed") await stripeInvoiceFailed(event);
 
       if (webhookDeliveryId) {
         await dbWrite.update(webhookDeliveries).set({ status: 'success', processedAt: new Date(), updatedAt: new Date() }).where(eq(webhookDeliveries.id, webhookDeliveryId));
@@ -1419,8 +862,8 @@ router.get("/transactions", requireAuth, async (c) => {
     const countResult = await dbRead.select({ count: sql<number>`count(*)::int` }).from(transactions).where(and(...conditions));
     const totalCount = countResult[0].count;
 
-    const limitNum = parseInt(limit);
-    const offsetNum = parseInt(offset);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 50, 1), 200);
+    const offsetNum = Math.max(parseInt(offset) || 0, 0);
     const page = Math.floor(offsetNum / limitNum) + 1;
 
     const userTransactions = await dbRead.select().from(transactions).where(and(...conditions)).orderBy(desc(transactions.createdAt)).limit(limitNum).offset(offsetNum);
@@ -1509,7 +952,12 @@ router.get("/subscription-plans", async (c) => {
     return c.json({
       plans: [
         {
-          ...VIP_SUBSCRIPTION,
+          id: VIP_SUBSCRIPTION.id,
+          name: VIP_SUBSCRIPTION.name,
+          description: VIP_SUBSCRIPTION.description,
+          priceUSD: VIP_SUBSCRIPTION.priceUSD,
+          monthlyCredits: VIP_SUBSCRIPTION.monthlyCredits,
+          checkInMultiplier: VIP_SUBSCRIPTION.checkInMultiplier,
           currency: "USD" as const,
           gateway: PAYMENT_GATEWAY.stripe,
           benefits,
@@ -1557,11 +1005,8 @@ router.post("/subscription/cancel", requireAuth, async (c) => {
     if (subscription.length === 0) return cNotFoundError(c, "No active subscription found");
 
     const sub = subscription[0];
-    if (sub.gateway === PAYMENT_GATEWAY.stripe) {
-      await getStripe().subscriptions.update(sub.providerSubscriptionId, { cancel_at_period_end: true });
-    } else if (sub.gateway === PAYMENT_GATEWAY.xendit) {
-      await cancelXenditSubscription(sub.providerSubscriptionId);
-    }
+    const adapter = getGatewayAdapter(sub.gateway);
+    await adapter.cancelSubscription(sub.providerSubscriptionId);
     await dbWrite.update(subscriptions).set({ cancelAtPeriodEnd: true }).where(eq(subscriptions.id, sub.id));
     return c.json({ success: true, message: "Subscription will be canceled at period end" });
   } catch (error) {
@@ -1620,8 +1065,12 @@ router.get("/subscription/portal", requireAuth, async (c) => {
 
     if (!customerId) return cNotFoundError(c, "No subscription found");
 
-    const session = await getStripe().billingPortal.sessions.create({ customer: customerId, return_url: returnUrl });
-    return c.json({ url: session.url });
+    const adapter = getGatewayAdapter(PAYMENT_GATEWAY.stripe);
+    if (!adapter.supportsPortal || !adapter.createPortalSession) {
+      return cApiError(c, "Portal not supported for this gateway");
+    }
+    const result = await adapter.createPortalSession({ customerId, returnUrl });
+    return c.json({ url: result.url });
   } catch (error) {
     return cApiError(c, "Failed to create portal session", error);
   }
@@ -1647,10 +1096,10 @@ router.post("/vouchers/redeem", requireAuth, async (c) => {
     const { redeemVoucher } = await import("../services/voucher.js");
     const result = await redeemVoucher(userId, body.code, body.idempotencyKey);
     return c.json(result);
-  } catch (error: any) {
-    const code = error?.code as string | undefined;
-    if (code) {
-      return cApiError(c, error.message, { code }, 422);
+  } catch (error: unknown) {
+    const err = error as { code?: string; message?: string };
+    if (err.code) {
+      return cApiError(c, err.message || "Failed to redeem voucher", { code: err.code }, 422);
     }
     return cApiError(c, "Failed to redeem voucher", error);
   }

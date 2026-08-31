@@ -1,3 +1,7 @@
+> **⚠️ OBSOLETE** — This document has been consolidated into [PAYMENTS_ARCHITECTURE_BACKEND.md](./PAYMENTS_ARCHITECTURE_BACKEND.md), which covers the current gateway-agnostic architecture (Stripe + Xendit). The content below is preserved for historical reference only and may contain outdated information (e.g., Express framework references, Stripe-only column names, missing Xendit integration).
+
+---
+
 # Stripe Payment Architecture & Best Practices
 
 ## Overview

@@ -9,7 +9,9 @@ export type AchievementMetric =
   | 'referredUsers'
   | 'followersCount'
   | 'maxCheckinStreak'
-  | 'customActionsWritten';
+  | 'customActionsWritten'
+  | 'easterEggsFound'
+  | 'creatorsSupported';
 
 export interface AchievementRule {
   id: string;

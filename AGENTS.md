@@ -386,6 +386,138 @@ Before providing code modifications:
 
 ---
 
+### 8. Payment Gateway & Credits Anti-Patterns (Hard-Won Lessons)
+
+These patterns emerged from a comprehensive audit of the Stripe + Xendit gateway-agnostic payment system. Violations caused real production bugs.
+
+#### A. Numeric Parsing: Never Use `parseInt` on Decimal Strings
+
+Stripe returns prices as strings (`"1000"` for $10.00). Using `parseInt` on decimal strings silently drops the fractional part:
+
+```typescript
+// ❌ CRITICAL BUG — drops decimal: parseInt("10.5") → 10
+const amount = parseInt(price.amount);
+
+// ✅ Use parseFloat for decimal string → number
+const amount = parseFloat(price.amount);
+```
+
+If you need integer math for `BigInt` arithmetic, use a custom parser that handles both integer and decimal strings.
+
+#### B. BigInt Ceiling Division — PostgreSQL Has No `CEIL()` for Integers
+
+PostgreSQL's `ceil()` returns `double precision`, which truncates on `BigInt` cast. Use the integer ceiling division formula:
+
+```typescript
+// ❌ BROKEN — truncates: ceil(105n / 100n)::int4 → 10
+BigInt(Math.ceil(Number(105n / 100n)))
+
+// ✅ Correct integer ceiling division
+(a + b - 1n) / b  // e.g. (105n + 100n - 1n) / 100n → 2
+```
+
+#### C. Rate Limiting — Never Use In-Memory Counters in Serverless
+
+Serverless functions are stateless. In-memory rate limiters reset on every cold start, allowing unlimited requests:
+
+```typescript
+// ❌ BROKEN in serverless — counter resets on cold start
+const attempts = new Map<string, number>();
+
+// ✅ Use Upstash Redis atomic ops
+const limit = await checkRateLimit(`auth-attempt:${ip}`, { maxRequests: 5, windowSeconds: 60 });
+```
+
+Always fail open if Redis is unavailable — don't block legitimate traffic.
+
+#### D. Gateway Filtering — Handle Race Conditions in Payment Status Checks
+
+When a user's payment status depends on the active gateway, check both gateways during the resolution window. Xendit webhook delivery can lag 1-5 minutes behind the user's redirect:
+
+```typescript
+// ✅ Check both gateways to handle cross-gateway payment status lag
+const hasActiveSubscription = await checkStripeSubscription(userId)
+  || await checkXenditSubscription(userId);
+```
+
+#### E. IsTrialEligible — Don't Use Admin-Only Endpoint for Client Gating
+
+Admin features (like Xendit subscription creation) must not gate trial eligibility checks. All users must be able to check trial status regardless of admin status:
+
+```typescript
+// ❌ Uses admin-only endpoint, blocks normal users
+const trialCheck = await adminApi.checkTrialEligibility(userId);
+
+// ✅ Uses public endpoint available to all authenticated users
+const trialCheck = await publicApi.getTrialEligibility();
+```
+
+#### F. Log PII — Never Log Usernames, Emails, or IPs in Production
+
+Payment flows generate sensitive audit data. Use hashed identifiers in logs:
+
+```typescript
+// ❌ Leaks PII in production logs
+console.log(`Payment for user ${user.username} from IP ${ip}`);
+
+// ✅ Use correlation IDs for tracing; log only non-PII metadata
+console.log(`[Payment] correlationId=${correlationId} gateway=${gateway} amount=${amount}`);
+```
+
+#### G. `updatedAt` — Always Preserve Existing Timestamps on Non-Profile Updates
+
+Payment-related updates must not overwrite `updatedAt` — it's a user-controlled profile field:
+
+```typescript
+// ❌ Overwrites user's last-profile-edit timestamp
+await tx.update(users).set({ credits: newCredits, updatedAt: new Date() });
+
+// ✅ Only update credits-related fields
+await tx.update(users).set({ credits: newCredits });
+```
+
+#### H. Row Locking — Always Lock Before Deducting Credits
+
+`executeWithCredits` acquires `SELECT ... FOR UPDATE` on `users.credits`. Never bypass it with direct `dbWrite` queries:
+
+```typescript
+// ❌ Skips row lock — concurrent requests can double-spend
+await dbWrite.update(users).set({ credits: sql`${credits} - ${cost}` });
+
+// ✅ Use executeWithCredits — atomic transaction with row lock
+const { result } = await executeWithCredits(userId, "STORY_GENERATION", async (tx) => {
+  return tx.insert(books).values({ ... }).returning();
+});
+```
+
+#### I. Refunds — Always Verify Idempotency Before Refunding
+
+Post-commit async failures must use `refundCreditsIdempotent`, which checks the `transactions` table before issuing refunds:
+
+```typescript
+// ❌ Blind refund — enables duplicate refund attacks
+await refundCredits(userId, costKey, amount);
+
+// ✅ Idempotent refund — verifies against transactions table
+await refundCreditsIdempotent(userId, costKey, { correlationId });
+```
+
+#### J. Webhook DeliveryId — Guard Against Undefined
+
+Stripe webhook events may have `undefined` delivery IDs in test mode or during retries. Always guard:
+
+```typescript
+// ❌ May log "undefined" or throw
+console.log(`Processing webhook: deliveryId=${event.deliveryId}`);
+
+// ✅ Guard against undefined
+if (event.deliveryId) {
+  console.log(`[Webhook] deliveryId=${event.deliveryId}`);
+}
+```
+
+---
+
 ## 📚 Architecture Documentation Sitemap
 
 Before modifying or adding core backend subsystems, read the respective architectural specification:
@@ -396,7 +528,7 @@ Before modifying or adding core backend subsystems, read the respective architec
 | **AI Chat & Streaming** | [`AI_CHAT_STREAM_ARCHITECTURE.md`](file:///d:/Projects/Twistloom/Twistloom-backend/docs/architecture/AI_CHAT_STREAM_ARCHITECTURE.md) | `src/utils/ai-chat.ts`, `src/utils/prompt-stream.ts` |
 | **Branch Traversal & Cache** | [`BRANCH_TRAVERSAL_ARCHITECTURE.md`](file:///d:/Projects/Twistloom/Twistloom-backend/docs/architecture/BRANCH_TRAVERSAL_ARCHITECTURE.md) | `src/utils/branch-traversal.ts`, `src/services/story-state-cache.ts` |
 | **Payments & Credits** | [`PAYMENTS_ARCHITECTURE_BACKEND.md`](file:///d:/Projects/Twistloom/Twistloom-backend/docs/architecture/PAYMENTS_ARCHITECTURE_BACKEND.md) | `src/services/credits.ts`, `src/config/credits.ts` |
-| **Stripe Webhooks & Billing** | [`STRIPE_PAYMENT_ARCHITECTURE.md`](file:///d:/Projects/Twistloom/Twistloom-backend/docs/architecture/STRIPE_PAYMENT_ARCHITECTURE.md) | `src/routes/payments.ts`, `src/services/stripe.ts` |
+| **Stripe Webhooks & Billing** | [`STRIPE_PAYMENT_ARCHITECTURE.md`](file:///d:/Projects/Twistloom/Twistloom-backend/docs/architecture/STRIPE_PAYMENT_ARCHITECTURE.md) | `src/routes/payments.ts`, `src/services/gateways/stripe-adapter.ts`, `src/services/gateways/stripe-webhook-handlers.ts` |
 | **AI LLM Orchestration** | [`AI_LLM_ARCHITECTURE.md`](file:///d:/Projects/Twistloom/Twistloom-backend/docs/architecture/AI_LLM_ARCHITECTURE.md) | `src/utils/ai-clients.ts`, `src/utils/ai-parser.ts` |
 | **Explore, Filter & Cache** | [`BOOK_EXPLORE_FILTER_SORTING_ARCHITECTURE.md`](file:///d:/Projects/Twistloom/Twistloom-backend/docs/architecture/BOOK_EXPLORE_FILTER_SORTING_ARCHITECTURE.md) | `src/routes/books.ts`, `src/services/cache.ts` |
 | **Dual Authentication** | [`DUAL_AUTH_ARCHITECTURE.md`](file:///d:/Projects/Twistloom/Twistloom-backend/docs/architecture/DUAL_AUTH_ARCHITECTURE.md) | `src/routes/auth.ts`, `src/middleware/auth.ts` |

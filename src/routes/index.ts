@@ -12,6 +12,8 @@ import loreRouter from "./lore.js";
 import notificationsRouter from "./notifications.js";
 import broadcastsRouter from "./broadcasts.js";
 import consumablesRouter from "./consumables.js";
+import thanksRouter from "./thanks.js";
+import walletRouter from "./wallet.js";
 import { APP_NAME, VERSION } from "../config/constants.js";
 import type { AppEnv } from "../hono/env.js";
 
@@ -28,6 +30,8 @@ router.get("/", (c) => {
       "/admin": "Administrative tools and debugging endpoints",
       "/auth": "Authentication endpoints",
       "/payments": "Payment checkout (Stripe/Xendit), credits, and webhooks",
+      "/thanks": "Creator tipping — Stripe Checkout, webhooks, book stats",
+      "/wallet": "Creator wallet — balance, earnings, payouts, credit conversion",
       "/social-mentions": "Public social-proof wall (featured mentions)",
       "/email": "Public email utilities (unsubscribe)",
       "/blog": "Public portal blog posts (published only)",
@@ -49,5 +53,7 @@ router.route("/pen", loreRouter);
 router.route("/notifications", notificationsRouter);
 router.route("/broadcasts", broadcastsRouter);
 router.route("/consumables", consumablesRouter);
+router.route("/thanks", thanksRouter);
+router.route("/wallet", walletRouter);
 
 export default router;

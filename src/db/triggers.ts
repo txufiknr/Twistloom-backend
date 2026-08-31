@@ -1332,6 +1332,72 @@ export async function ensureUserCountersTriggers(): Promise<void> {
     `);
     console.log("✅ Trigger created: Custom Actions Written (Lifetime)");
 
+    // ==========================================
+    // 11. EASTER EGGS FOUND (Type A: Lifetime)
+    // ==========================================
+    // +1 when a user claims an easter egg (INSERT into easter_egg_discoveries).
+    // Eggs are ephemeral — the roll happens at runtime. This table is a claim log.
+    await dbWrite.execute(`
+      CREATE OR REPLACE FUNCTION update_user_easter_eggs_found() RETURNS TRIGGER AS $$
+      BEGIN
+        INSERT INTO user_counters (user_id, easter_eggs_found, updated_at)
+        VALUES (NEW.user_id, 1, NOW())
+        ON CONFLICT (user_id) DO UPDATE SET
+          easter_eggs_found = user_counters.easter_eggs_found + 1,
+          updated_at = NOW();
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    await dbWrite.execute(`DROP TRIGGER IF EXISTS easter_eggs_found_trigger ON easter_egg_discoveries;`);
+    await dbWrite.execute(`
+      CREATE TRIGGER easter_eggs_found_trigger
+        AFTER INSERT ON easter_egg_discoveries
+        FOR EACH ROW EXECUTE FUNCTION update_user_easter_eggs_found();
+    `);
+    console.log("✅ Trigger created: Easter Eggs Found (Lifetime)");
+
+    // ==========================================
+    // 12. CREATORS SUPPORTED (Type A: Lifetime)
+    // ==========================================
+    // +1 the FIRST time a reader sends Thanks to a given creator.
+    // Uses NOT EXISTS to ensure only the first tip per (reader, creator) pair
+    // increments the counter — subsequent tips to the same creator are ignored.
+    // This means creatorsSupported = COUNT(DISTINCT creator_id) from creator_earnings.
+    await dbWrite.execute(`
+      CREATE OR REPLACE FUNCTION update_user_creators_supported() RETURNS TRIGGER AS $$
+      BEGIN
+        IF (TG_OP = 'INSERT' AND NEW.status = 'completed') OR 
+           (TG_OP = 'UPDATE' AND OLD.status != 'completed' AND NEW.status = 'completed') THEN
+          -- Lock the target row to prevent concurrent double-counting (MVCC race)
+          PERFORM 1 FROM user_counters WHERE user_id = NEW.reader_id FOR UPDATE;
+          IF NOT EXISTS (
+            SELECT 1 FROM creator_earnings
+            WHERE reader_id = NEW.reader_id
+              AND creator_id = NEW.creator_id
+              AND status = 'completed'
+              AND id != NEW.id
+            LIMIT 1
+          ) THEN
+            INSERT INTO user_counters (user_id, creators_supported, updated_at)
+            VALUES (NEW.reader_id, 1, NOW())
+            ON CONFLICT (user_id) DO UPDATE SET
+              creators_supported = user_counters.creators_supported + 1,
+              updated_at = NOW();
+          END IF;
+        END IF;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    await dbWrite.execute(`DROP TRIGGER IF EXISTS creator_earnings_creators_supported_trigger ON creator_earnings;`);
+    await dbWrite.execute(`
+      CREATE TRIGGER creator_earnings_creators_supported_trigger
+        AFTER INSERT OR UPDATE ON creator_earnings
+        FOR EACH ROW EXECUTE FUNCTION update_user_creators_supported();
+    `);
+    console.log("✅ Trigger created: Creators Supported (Lifetime)");
+
     console.log("🎉 All user_counters DB triggers successfully deployed.");
   } catch (error) {
     console.error("❌ Failed to create user_counters triggers:", getErrorMessage(error));

@@ -1539,6 +1539,12 @@ export const userCounters = pgTable(
     // Custom actions authored (outcome = 'allow' in custom_actions table)
     customActionsWritten: integer("custom_actions_written").notNull().default(0),
 
+    // Easter eggs discovered (lifetime, claimed from reader pages)
+    easterEggsFound: integer("easter_eggs_found").notNull().default(0),
+
+    // Creators supported via Thanks (lifetime, distinct creators tipped)
+    creatorsSupported: integer("creators_supported").notNull().default(0),
+
     // Check-in streak tracking
     activeCheckinStreak: integer("active_checkin_streak").notNull().default(0),
     maxCheckinStreak: integer("max_checkin_streak").notNull().default(0),
@@ -3186,5 +3192,135 @@ export const companionAnswers = pgTable(
     index("companion_answers_session_idx").on(t.sessionId),
     index("companion_answers_page_idx").on(t.pageId),
     index("companion_answers_created_idx").on(t.createdAt.desc()),
+  ]
+);
+
+// ── Creator Thanks / Tipping System ─────────────────────────────────────────
+
+/**
+ * Creator earnings from reader Thanks.
+ *
+ * Each row represents one successful Thanks tip from a reader to a creator.
+ * Platform fee is deducted at time of payment; `creator_amount` is what the
+ * creator actually receives. Source of truth for the creator wallet balance.
+ *
+ * @see docs/roadmap/THANKS_CREATOR_TIPPING_ROADMAP.md
+ */
+export const creatorEarnings = pgTable(
+  "creator_earnings",
+  {
+    id: id(),
+    creatorId: uuid("creator_id").notNull().references(() => users.userId, { onDelete: "cascade" }),
+    bookId: bookId("cascade"),
+    pageId: uuid("page_id").references(() => pages.id, { onDelete: "set null" }),
+    readerId: uuid("reader_id").notNull().references(() => users.userId, { onDelete: "cascade" }),
+    source: text("source").notNull().default("thanks")
+      .$type<"thanks" | "revenue_share" | "custom_action" | "other">(),
+    grossAmount: integer("gross_amount").notNull(),
+    platformFee: integer("platform_fee").notNull(),
+    creatorAmount: integer("creator_amount").notNull(),
+    currency: text("currency").notNull().default("IDR"),
+    stripeSessionId: text("stripe_session_id"),
+    stripePaymentIntent: text("stripe_payment_intent"),
+    stripeEventId: text("stripe_event_id"),
+    status: text("status").notNull().default("completed")
+      .$type<"pending" | "completed" | "refunded">(),
+    message: text("message"),
+    metadata: jsonb("metadata"),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    index("creator_earnings_creator_idx").on(t.creatorId, t.createdAt.desc()),
+    index("creator_earnings_creator_status_idx").on(t.creatorId, t.status),
+    index("creator_earnings_book_idx").on(t.bookId),
+    index("creator_earnings_reader_idx").on(t.readerId),
+    index("creator_earnings_source_idx").on(t.source),
+    unique("creator_earnings_stripe_event_unique").on(t.stripeEventId),
+    unique("creator_earnings_stripe_session_unique").on(t.stripeSessionId),
+  ]
+);
+
+/**
+ * Creator wallets — aggregated balances from all earning sources.
+ *
+ * One row per creator. `available_amount` is what the creator can withdraw.
+ * `pending_amount` holds funds not yet cleared (e.g. dispute window).
+ * Created lazily on first earning receipt (thanks, revenue share, etc.).
+ *
+ * @see docs/architecture/CREATOR_WALLET_ARCHITECTURE.md
+ */
+export const creatorWallets = pgTable(
+  "creator_wallets",
+  {
+    creatorId: uuid("creator_id").primaryKey().references(() => users.userId, { onDelete: "cascade" }),
+    availableAmount: integer("available_amount").notNull().default(0),
+    pendingAmount: integer("pending_amount").notNull().default(0),
+    withdrawnAmount: integer("withdrawn_amount").notNull().default(0),
+    currency: text("currency").notNull().default("IDR"),
+    payoutVerified: boolean("payout_verified").notNull().default(false),
+    createdAt,
+    updatedAt,
+  }
+);
+
+/**
+ * Creator payout requests (withdrawals).
+ *
+ * One row per withdrawal attempt. In v0.5, payouts are processed manually
+ * by admins. Status transitions: pending → processing → completed | failed.
+ *
+ * @see docs/roadmap/THANKS_CREATOR_TIPPING_ROADMAP.md
+ */
+export const creatorPayouts = pgTable(
+  "creator_payouts",
+  {
+    id: id(),
+    creatorId: uuid("creator_id").notNull().references(() => users.userId, { onDelete: "cascade" }),
+    amount: integer("amount").notNull(),
+    fee: integer("fee").notNull().default(0),
+    netAmount: integer("net_amount").notNull(),
+    currency: text("currency").notNull().default("IDR"),
+    status: text("status").notNull().default("pending")
+      .$type<"pending" | "processing" | "completed" | "failed">(),
+    providerPayoutId: text("provider_payout_id"),
+    providerMethod: text("provider_method"),
+    providerAccountLast4: text("provider_account_last4"),
+    failureReason: text("failure_reason"),
+    metadata: jsonb("metadata"),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    index("creator_payouts_creator_idx").on(t.creatorId, t.createdAt.desc()),
+    index("creator_payouts_creator_status_idx").on(t.creatorId, t.status),
+    index("creator_payouts_status_idx").on(t.status),
+  ]
+);
+
+/**
+ * Creator payout methods (bank accounts / e-wallets).
+ *
+ * Stores the creator's payout destination details. Account numbers are
+ * encrypted at rest. Only needed when creator attempts first withdrawal.
+ *
+ * @see docs/roadmap/THANKS_CREATOR_TIPPING_ROADMAP.md
+ */
+export const creatorPayoutMethods = pgTable(
+  "creator_payout_methods",
+  {
+    id: id(),
+    creatorId: uuid("creator_id").notNull().references(() => users.userId, { onDelete: "cascade" }),
+    methodType: text("method_type").notNull(),
+    bankName: text("bank_name"),
+    accountNumberEncrypted: text("account_number_encrypted"),
+    accountName: text("account_name"),
+    isDefault: boolean("is_default").notNull().default(true),
+    isVerified: boolean("is_verified").notNull().default(false),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    index("creator_payout_methods_creator_idx").on(t.creatorId),
   ]
 );

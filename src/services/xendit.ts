@@ -20,7 +20,7 @@ import { CREDIT_PACKS, FIRST_PURCHASE_BONUS } from "../config/credits.js";
 import { dbWrite } from "../db/client.js";
 import { transactions, webhookDeliveries } from "../db/schema.js";
 import { awardCredits } from "./credits.js";
-import { createSubscription, renewSubscription, cancelSubscription } from "./subscription.js";
+import { createSubscription, renewSubscription, cancelSubscription, updateSubscription } from "./subscription.js";
 import {
   createXenditCustomer,
   createXenditInvoice,
@@ -170,8 +170,6 @@ export async function handleXenditCycleFailed(data: {
   failure_code?: string;
   failure_message?: string;
 }, _eventId: string): Promise<void> {
-  const { updateSubscription } = await import("./subscription.js");
-
   await updateSubscription({
     providerSubscriptionId: data.plan_id,
     gateway: XENDIT_GATEWAY,

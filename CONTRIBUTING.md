@@ -20,6 +20,8 @@ This document serves as a comprehensive guide for human developers and contribut
    - [6.4 Server-Sent Events (SSE) Streaming](#64-server-sent-events-sse-streaming)
     - [6.5 AI Provider Orchestration & Fallback](#65-ai-provider-orchestration--fallback)
     - [6.6 Hot-Path & Serialization Performance](#66-hot-path--serialization-performance)
+    - [6.7 Input Sanitization & Security Best Practices](#67-input-sanitization--security-best-practices)
+    - [6.8 Payment Gateway & Credits Best Practices](#68-payment-gateway--credits-best-practices)
 7. [Code Quality & Standards](#-code-quality--standards)
 8. [Testing & Debugging](#-testing--debugging)
 9. [Pull Request & Contribution Process](#-pull-request--contribution-process)
@@ -270,6 +272,39 @@ To protect against XSS attacks, null-byte injection, and corrupt unicode sequenc
    - Sanitizes structured ending beats, validates ending type against `endingTypes`, and sanitizes MC profile fields.
 4. **Parameter bounds (`src/config/story.ts`)**:
    - Enforce standard character and numeric boundaries on route handlers (`PEN_TITLE_MAX_LENGTH`, `PEN_SUMMARY_MAX_LENGTH`, `PEN_TARGET_PAGES_MIN/MAX`).
+
+---
+
+### 6.8 Payment Gateway & Credits Best Practices
+
+These rules emerged from a comprehensive audit of the Stripe + Xendit payment system. Each reflects a real production bug.
+
+#### Numeric Parsing
+- **Never use `parseInt` on decimal price strings.** Stripe returns `"1000"` for $10.00; `parseInt("10.5")` silently drops the fractional part. Use `parseFloat()` for string→number conversions.
+- For `BigInt` ceiling division, use `(a + b - 1n) / b` — PostgreSQL's `ceil()` returns `double precision` which truncates on cast.
+
+#### Rate Limiting
+- **Always use Upstash Redis atomic ops** for rate limiting. In-memory counters reset on every serverless cold start, allowing unlimited requests. Fail open gracefully if Redis is unavailable.
+
+#### Row Locking & Transactions
+- **Always use `executeWithCredits`** for credit deductions. It acquires `SELECT ... FOR UPDATE` on `users.credits`. Never bypass with direct `dbWrite` queries — concurrent requests can double-spend.
+- **Pass `tx` to all internal database operations.** Any query on `dbWrite` directly bypasses the transaction and fails to roll back.
+- **Keep activity logging outside the transaction boundary** so analytics errors never roll back financial commits.
+
+#### Idempotency & Refunds
+- Use `setIdempotencyProcessing()` with TTL for sensitive operations (generation, credit consumption).
+- Post-commit async failures must use `refundCreditsIdempotent()`, which checks the `transactions` table before issuing refunds — prevents duplicate refund attacks.
+
+#### Gateway-Agnostic Patterns
+- **Check both gateways** during the Xendit webhook delivery window (1-5 min lag). A user may have paid via Stripe but the redirect shows Xendit.
+- **Don't gate trial eligibility on admin-only endpoints.** All users must be able to check trial status.
+- **Guard webhook `deliveryId` against undefined** — Stripe test mode and retries may produce `undefined`.
+
+#### Logging
+- **Never log PII** (usernames, emails, IPs) in production payment flows. Use correlation IDs and log only non-PII metadata (gateway, amount, currency).
+
+#### Timestamps
+- **Preserve `updatedAt` on non-profile updates.** Payment-related mutations must not overwrite the user-controlled profile timestamp.
 
 ---
 

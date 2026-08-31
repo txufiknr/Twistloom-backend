@@ -16,6 +16,7 @@ import type { AchievementRule } from "../types/achievements.js";
  *  followersCount       user_follows          (INSERT / DELETE, tracks following_id)
  *  maxCheckinStreak     user_checkins         (INSERT, consecutive-day logic)
  *  customActionsWritten custom_actions        (INSERT, outcome = 'allow')  ← NEW
+ *  easterEggsFound     easter_egg_discoveries (INSERT/UPDATE, claimed = true)
  */
 export const ACHIEVEMENT_REGISTRY: AchievementRule[] = [
 
@@ -296,7 +297,7 @@ export const ACHIEVEMENT_REGISTRY: AchievementRule[] = [
     id: 'custom_10',
     title: 'The Meddler',
     description: 'Forced fate\'s hand 10 times with your own written choices',
-    metric: 'customActionsWritten' as AchievementRule['metric'],
+    metric: 'customActionsWritten',
     threshold: 10,
     badgeImageUrl: 'badge_custom_bronze', tier: 'bronze',
   },
@@ -304,7 +305,7 @@ export const ACHIEVEMENT_REGISTRY: AchievementRule[] = [
     id: 'custom_50',
     title: 'Fate Forger',
     description: 'Forged 50 paths the Loom never anticipated. It noticed.',
-    metric: 'customActionsWritten' as AchievementRule['metric'],
+    metric: 'customActionsWritten',
     threshold: 50,
     badgeImageUrl: 'badge_custom_silver', tier: 'silver',
   },
@@ -312,7 +313,7 @@ export const ACHIEVEMENT_REGISTRY: AchievementRule[] = [
     id: 'custom_100',
     title: 'Chaos Author',
     description: 'Authored 100 custom actions that bent the narrative\'s spine',
-    metric: 'customActionsWritten' as AchievementRule['metric'],
+    metric: 'customActionsWritten',
     threshold: 100,
     badgeImageUrl: 'badge_custom_gold', tier: 'gold',
   },
@@ -320,8 +321,77 @@ export const ACHIEVEMENT_REGISTRY: AchievementRule[] = [
     id: 'custom_250',
     title: 'Reality Sculptor',
     description: 'Sculpted 250 custom choices from raw possibility. The Loom no longer resists you.',
-    metric: 'customActionsWritten' as AchievementRule['metric'],
+    metric: 'customActionsWritten',
     threshold: 250,
     badgeImageUrl: 'badge_custom_platinum', tier: 'platinum',
+  },
+
+  // ── EASTER EGGS FOUND ─────────────────────────────────────────────────────
+  // Source: easter_egg_discoveries WHERE claimed = true
+  // Requires: easterEggsFound column in user_counters + trigger #11
+  {
+    id: 'egg_1',
+    title: 'Something Hidden',
+    description: 'Some stories hide more than their endings. You found the first thread.',
+    metric: 'easterEggsFound', threshold: 1,
+    badgeImageUrl: 'badge_egg_bronze', tier: 'bronze',
+  },
+  {
+    id: 'egg_5',
+    title: 'Lore Seeker',
+    description: 'Five secrets pulled from the dark. You are beginning to see the pattern.',
+    metric: 'easterEggsFound', threshold: 5,
+    badgeImageUrl: 'badge_egg_silver', tier: 'silver',
+  },
+  {
+    id: 'egg_20',
+    title: 'Thread Seeker',
+    description: 'Twenty hidden threads unearthed. The Loom leaves its doors unlocked for you.',
+    metric: 'easterEggsFound', threshold: 20,
+    badgeImageUrl: 'badge_egg_gold', tier: 'gold',
+  },
+  {
+    id: 'egg_50',
+    title: 'Secrets of the Loom',
+    description: 'Fifty secrets discovered. The Loom has nothing left to hide from you.',
+    metric: 'easterEggsFound', threshold: 50,
+    badgeImageUrl: 'badge_egg_platinum', tier: 'platinum',
+  },
+
+  // ── CREATORS SUPPORTED (Thanks) ────────────────────────────────────────────
+  // Source: creator_earnings WHERE status = 'completed'
+  // Requires: creatorsSupported column in user_counters + trigger #12
+  // Metric counts DISTINCT creators the reader has sent Thanks to (not total tips).
+  {
+    id: 'thanks_1',
+    title: 'Blood Money',
+    description: 'Your first coin slipped into the dark. A creator felt it.',
+    metric: 'creatorsSupported',
+    threshold: 1,
+    badgeImageUrl: 'badge_thanks_bronze', tier: 'bronze',
+  },
+  {
+    id: 'thanks_5',
+    title: 'The Consigliere',
+    description: 'Five creators owe you a debt. You are building something dangerous.',
+    metric: 'creatorsSupported',
+    threshold: 5,
+    badgeImageUrl: 'badge_thanks_silver', tier: 'silver',
+  },
+  {
+    id: 'thanks_20',
+    title: 'Shadow Patron',
+    description: 'Twenty creators dance to your invisible strings. The dark economy has a new landlord.',
+    metric: 'creatorsSupported',
+    threshold: 20,
+    badgeImageUrl: 'badge_thanks_gold', tier: 'gold',
+  },
+  {
+    id: 'thanks_50',
+    title: 'The Syndicate',
+    description: 'Fifty creators. One name in the shadows. You don\'t just read the dark — you fund it.',
+    metric: 'creatorsSupported',
+    threshold: 50,
+    badgeImageUrl: 'badge_thanks_platinum', tier: 'platinum',
   },
 ];
