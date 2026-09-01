@@ -24,6 +24,8 @@ import {
   userNotifications,
 } from "../db/schema.js";
 import { THANKS_CONFIG } from "../config/thanks.js";
+import { getXenditPackPriceIdr } from "../config/xendit.js";
+import { CREDIT_PACKS } from "../config/credits.js";
 import type { CreatorWallet, CreatorEarning, CreatorPayout, ConvertToCreditsResult, EarningSource } from "../types/wallet.js";
 
 // ── Balance ──────────────────────────────────────────────────────────────────
@@ -393,26 +395,44 @@ export async function savePayoutMethod(
  * Converts wallet balance to credits atomically.
  * Deducts from creator_wallets.available_amount, adds to users.credits,
  * and inserts a 'conversion' transaction record — all in one Postgres TX.
+ *
+ * Two conversion modes:
+ * 1. Pack conversion (packId provided): Uses pack's IDR price and credit count for parity with credit shop.
+ * 2. Custom conversion (amount provided): Uses flat IDR_PER_CREDIT rate for flexible amounts.
  */
 export async function convertBalanceToCredits(
   creatorId: string,
   idrAmount: number,
+  packId?: string,
 ): Promise<ConvertToCreditsResult> {
-  if (idrAmount <= 0) {
-    throw new Error("INVALID_AMOUNT");
-  }
+  let creditsToAdd: number;
+  let deductedIdr: number;
+  let resolvedPackId: string | undefined;
 
-  if (idrAmount < THANKS_CONFIG.minConversionAmountIDR) {
-    throw new Error("BELOW_MINIMUM");
+  if (packId) {
+    // Pack-parity conversion: use pack's fixed IDR price and credit count
+    const packCredits = CREDIT_PACKS.find((p) => p.id === packId)?.credits;
+    const packPriceIdr = getXenditPackPriceIdr(packId);
+    if (!packCredits || !packPriceIdr) {
+      throw new Error("INVALID_PACK");
+    }
+    creditsToAdd = packCredits;
+    deductedIdr = packPriceIdr;
+    resolvedPackId = packId;
+  } else {
+    // Custom amount conversion: flat rate
+    if (idrAmount <= 0) {
+      throw new Error("INVALID_AMOUNT");
+    }
+    if (idrAmount < THANKS_CONFIG.minConversionAmountIDR) {
+      throw new Error("BELOW_MINIMUM");
+    }
+    creditsToAdd = Math.floor(idrAmount / THANKS_CONFIG.idrPerCredit);
+    if (creditsToAdd <= 0) {
+      throw new Error("AMOUNT_TOO_LOW");
+    }
+    deductedIdr = creditsToAdd * THANKS_CONFIG.idrPerCredit;
   }
-
-  const creditsToAdd = Math.floor(idrAmount / THANKS_CONFIG.idrPerCredit);
-  if (creditsToAdd <= 0) {
-    throw new Error("AMOUNT_TOO_LOW");
-  }
-
-  // Deduct the exact IDR amount that maps to the integer credit count
-  const deductedIdr = creditsToAdd * THANKS_CONFIG.idrPerCredit;
 
   return await dbWrite.transaction(async (tx) => {
     // 1. Lock and read wallet
@@ -457,7 +477,11 @@ export async function convertBalanceToCredits(
       credits: creditsToAdd,
       amountCents: deductedIdr,
       context: "wallet_to_credits",
-      metadata: { idrAmount: deductedIdr, idrPerCredit: THANKS_CONFIG.idrPerCredit },
+      metadata: {
+        idrAmount: deductedIdr,
+        idrPerCredit: resolvedPackId ? undefined : THANKS_CONFIG.idrPerCredit,
+        packId: resolvedPackId,
+      },
       createdAt: new Date(),
     });
 
@@ -466,6 +490,7 @@ export async function convertBalanceToCredits(
       creditsAdded: creditsToAdd,
       newBalance: wallet.availableAmount - deductedIdr,
       newCredits: (user.credits ?? 0) + creditsToAdd,
+      packId: resolvedPackId,
     };
   });
 }

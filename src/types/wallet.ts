@@ -54,4 +54,6 @@ export interface ConvertToCreditsResult {
   creditsAdded: number;
   newBalance: number;
   newCredits: number;
+  /** When converting via pack, the pack ID used for pricing */
+  packId?: string;
 }

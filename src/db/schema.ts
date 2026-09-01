@@ -1951,6 +1951,60 @@ export const userInventory = pgTable(
 );
 
 /**
+ * Easter Egg discoveries claim log (SSOT).
+ * @summary Records every claimed Easter Egg per user per page. Eggs themselves
+ *   are ephemeral (rolled at runtime on page turn); this table prevents
+ *   double-claiming and drives lifetime discovery metrics via DB Trigger #11.
+ * @example
+ * {
+ *   "id": "egg123",
+ *   "user_id": "user456",
+ *   "book_id": "book789",
+ *   "page_id": "page012",
+ *   "paragraph_index": 2,
+ *   "kind": "easter_egg",
+ *   "created_at": "2026-08-31T00:00:00.000Z"
+ * }
+ */
+export const easterEggDiscoveries = pgTable(
+  "easter_egg_discoveries",
+  {
+    id: id(),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    bookId: uuid("book_id").notNull().references(() => books.id, { onDelete: "cascade" }),
+    pageId: uuid("page_id").notNull().references(() => pages.id, { onDelete: "cascade" }),
+    paragraphIndex: integer("paragraph_index"),
+    kind: text("kind").notNull().default("easter_egg"),
+    createdAt,
+  },
+  (t) => [
+    unique("easter_egg_discoveries_user_page_unique").on(t.userId, t.pageId),
+    index("easter_egg_discoveries_user_idx").on(t.userId),
+    index("easter_egg_discoveries_page_idx").on(t.pageId),
+    index("easter_egg_discoveries_book_idx").on(t.bookId),
+  ]
+);
+
+/**
+ * Anti-farm rate limit & daily roll budget ledger for Easter Egg runtime checks.
+ * @summary Tracks how many rolls a user has performed today and the timestamp
+ *   of their last roll to enforce cooldowns and daily attempt caps.
+ */
+export const easterEggRollBudget = pgTable(
+  "easter_egg_roll_budget",
+  {
+    userId: uuid("user_id").primaryKey().references(() => users.userId, { onDelete: "cascade" }),
+    lastRollAt: timestamp("last_roll_at", { withTimezone: true }),
+    rollsToday: integer("rolls_today").notNull().default(0),
+    day: text("day").notNull(),
+    updatedAt,
+  },
+  (t) => [
+    index("easter_egg_roll_budget_day_idx").on(t.day),
+  ]
+);
+
+/**
  * Global broadcast messages (📣 Megaphone).
  * @summary User- and system-generated banner messages displayed across the
  *   Twistloom client. Scheduling is computed at insert time: each approved

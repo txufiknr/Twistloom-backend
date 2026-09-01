@@ -28,7 +28,18 @@ export const CONSUMABLES_REGISTRY: ConsumableItemDefinition[] = [
       "Broadcast a short message to every reader for a few seconds. Runs AI moderation before it goes live.",
     creditsPrice: 100,
     available: true,
+    accountBound: false,
     icon: "📣",
+  },
+  {
+    type: "easter_egg",
+    name: "🥚 Easter Egg",
+    description:
+      "A mysterious egg uncovered from the depths of a story. Crack it open to reveal credits, consumables, or rare lore rewards.",
+    creditsPrice: 0,
+    available: false,
+    accountBound: true,
+    icon: "🥚",
   },
 ];
 

@@ -132,20 +132,36 @@ router.post("/withdraw", requireAuth, async (c) => {
 // ── POST /wallet/convert-to-credits ──────────────────────────────────────────
 
 /**
- * Converts wallet balance to credits at the configured rate.
+ * Converts wallet balance to credits.
+ * Two modes:
+ * 1. Pack conversion: { packId: "observer" } — uses pack's IDR price and credit count
+ * 2. Custom conversion: { amount: 50000 } — uses flat IDR_PER_CREDIT rate
  */
 router.post("/convert-to-credits", requireAuth, async (c) => {
   try {
     const userId = c.get("userId")!;
-    const { amount } = c.get("body");
+    const { amount, packId } = c.get("body");
 
+    if (packId) {
+      // Pack-parity conversion
+      if (typeof packId !== "string") {
+        return cValidationError(c, "packId must be a string");
+      }
+      const result = await convertBalanceToCredits(userId, 0, packId);
+      return c.json(result);
+    }
+
+    // Custom amount conversion
     if (!amount || typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) {
-      return cValidationError(c, "amount must be a positive number (IDR)");
+      return cValidationError(c, "amount must be a positive number (IDR) when packId is not provided");
     }
 
     const result = await convertBalanceToCredits(userId, amount);
     return c.json(result);
   } catch (error: any) {
+    if (error.message === "INVALID_PACK") {
+      return cValidationError(c, "Invalid credit pack ID");
+    }
     if (error.message === "BELOW_MINIMUM") {
       return cValidationError(c, `Minimum conversion is ${THANKS_CONFIG.minConversionAmountIDR} IDR`);
     }

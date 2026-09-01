@@ -55,7 +55,8 @@ const router = new Hono<AppEnv>();
  */
 router.get("/", async (c) => {
   try {
-    return c.json({ items: CONSUMABLES_REGISTRY });
+    const purchasableItems = CONSUMABLES_REGISTRY.filter((def) => def.available);
+    return c.json({ items: purchasableItems });
   } catch (error) {
     console.error("[GET /api/consumables] ❌ Error:", error);
     return cApiError(c, "Failed to load consumables catalog", error);

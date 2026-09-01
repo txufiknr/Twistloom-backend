@@ -14,6 +14,7 @@ import broadcastsRouter from "./broadcasts.js";
 import consumablesRouter from "./consumables.js";
 import thanksRouter from "./thanks.js";
 import walletRouter from "./wallet.js";
+import easterEggsRouter from "./easter-eggs.js";
 import { APP_NAME, VERSION } from "../config/constants.js";
 import type { AppEnv } from "../hono/env.js";
 
@@ -35,6 +36,7 @@ router.get("/", (c) => {
       "/social-mentions": "Public social-proof wall (featured mentions)",
       "/email": "Public email utilities (unsubscribe)",
       "/blog": "Public portal blog posts (published only)",
+      "/easter-eggs": "Easter egg discovery, claim, and reward cracking",
     },
   });
 });
@@ -55,5 +57,6 @@ router.route("/broadcasts", broadcastsRouter);
 router.route("/consumables", consumablesRouter);
 router.route("/thanks", thanksRouter);
 router.route("/wallet", walletRouter);
+router.route("/easter-eggs", easterEggsRouter);
 
 export default router;

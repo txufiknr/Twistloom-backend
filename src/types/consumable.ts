@@ -10,22 +10,24 @@
  * Extensible union — add new purchasable item keys here AND in the registry
  * (`src/config/consumables.ts`).
  */
-export type InventoryItemType = "megaphone";
+export type InventoryItemType = "megaphone" | "easter_egg";
 
 /**
- * A purchasable consumable definition in the registry (SSOT).
+ * A consumable definition in the registry (SSOT).
  */
 export interface ConsumableItemDefinition {
   /** Stable inventory key; must match {@link InventoryItemType}. */
   type: InventoryItemType;
-  /** Human-readable name shown in the purchase UI (emoji-friendly). */
+  /** Human-readable name shown in the UI (emoji-friendly). */
   name: string;
   /** Short, user-facing description of what the item does. */
   description: string;
-  /** Credit cost to buy ONE unit. SSOT for the price. */
+  /** Credit cost to buy ONE unit. SSOT for the price. (0 for non-purchasables) */
   creditsPrice: number;
-  /** When `false`, the item cannot be purchased (hidden/disabled in UI). */
+  /** When `false`, the item cannot be purchased (hidden/disabled in shop). */
   available: boolean;
+  /** Whether the item is non-transferable / account-bound. */
+  accountBound?: boolean;
   /** Optional glyph shown next to the name. */
   icon?: string;
   /** Optional purchase cap per user (undefined = unlimited). */

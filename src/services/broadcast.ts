@@ -59,6 +59,7 @@ import type {
   BroadcastRejectReason,
   BroadcastSource,
   BroadcastStatus,
+  BroadcastType,
   PublicBroadcast,
 } from "../types/broadcast.js";
 
@@ -831,6 +832,57 @@ export async function getOwnerBroadcastState(userId: string): Promise<{
     isBroadcastQueueFull(),
   ]);
   return { megaphones, cooldownRemainingSeconds, queueFull };
+}
+
+/**
+ * Sends a system-originated broadcast (e.g. Easter Egg discovery / jackpot).
+ * System broadcasts bypass Megaphone item deduction and user cooldown gates.
+ *
+ * @param userId - Initiating user ID (for attribution / join)
+ * @param message - The broadcast message to display
+ * @param type - Message type (defaults to 'message')
+ * @returns Broadcast ID on success, null if skipped due to full queue
+ */
+export async function sendSystemBroadcast(
+  userId: string,
+  message: string,
+  type: BroadcastType = "message",
+): Promise<string | null> {
+  try {
+    const queueFull = await isBroadcastQueueFull();
+    if (queueFull) {
+      console.warn("[sendSystemBroadcast] ⚠️ Queue full, skipping system broadcast:", message);
+      return null;
+    }
+
+    const broadcastId = generateId();
+    const result = await dbWrite.transaction(async (tx) => {
+      const schedule = await computeSchedule(tx);
+      await tx.insert(broadcasts).values({
+        id: broadcastId,
+        userId,
+        source: "system" as BroadcastSource,
+        type,
+        message: cleanSingleLineText(message, BROADCAST_MAX_LENGTH),
+        status: "queued" as BroadcastStatus,
+        moderationResult: {
+          outcome: "approve",
+          reasons: [],
+        },
+        containsSpoiler: false,
+        startsAt: schedule.startsAt,
+        expiresAt: schedule.expiresAt,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      return broadcastId;
+    });
+
+    return result;
+  } catch (error) {
+    console.error("[sendSystemBroadcast] ❌ Error sending system broadcast:", error);
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
