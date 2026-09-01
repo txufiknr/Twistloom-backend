@@ -14,7 +14,7 @@
 import { type DBClient, dbRead, dbWrite, isTransaction } from "../db/client.js";
 import { pages, books, branches, users, userPageProgress, userCompletedBooks, userActionHints, customActions, bookGenerations, userComments, canonValidations } from "../db/schema.js";
 import type { ImageKitUploadResponse } from "../types/image.js";
-import { and, eq, asc, or, desc, ne, sql, isNull, lt } from "drizzle-orm";
+import { and, eq, asc, or, desc, ne, sql, isNull, lt, countDistinct } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
 import { sanitizeActionsForMode } from "../utils/book-mode.js";
 import { validateGeneratedPage } from "../utils/page-validation.js";
@@ -1588,6 +1588,59 @@ export function mapCustomActionRowToAction(row: {
 }
 
 /**
+ * Computes per-action choice statistics for a given page.
+ *
+ * Queries `userPageProgress` (which already records every reader's choice)
+ * to count distinct readers per destination page. No new table is needed —
+ * the data is already captured by `confirmVisit` / `markPageVisited`.
+ *
+ * Returns `null` when total distinct readers < `CHOICE_ECHO_MIN_THRESHOLD`
+ * to avoid showing misleading small-sample percentages.
+ *
+ * @param bookId - Book identifier
+ * @param pageId - Source page (the page the reader chose FROM)
+ * @returns Choice stats or null if below threshold
+ */
+export async function getPageChoiceStats(
+  bookId: string,
+  pageId: string,
+): Promise<{ totalReaders: number; choiceCounts: Record<string, number> } | null> {
+  const CHOICE_ECHO_MIN_THRESHOLD = 5;
+
+  const rows = await dbRead
+    .select({
+      nextPageId: sql<string>`action->>'nextPageId'`,
+      chooserCount: countDistinct(userPageProgress.userId),
+    })
+    .from(userPageProgress)
+    .where(and(
+      eq(userPageProgress.bookId, bookId),
+      eq(userPageProgress.actionedPageId, pageId),
+    ))
+    .groupBy(sql`action->>'nextPageId'`);
+
+  // Total distinct readers who made a choice on this page
+  const [{ total } = { total: 0 }] = await dbRead
+    .select({ total: countDistinct(userPageProgress.userId) })
+    .from(userPageProgress)
+    .where(and(
+      eq(userPageProgress.bookId, bookId),
+      eq(userPageProgress.actionedPageId, pageId),
+    ));
+
+  if (total < CHOICE_ECHO_MIN_THRESHOLD) return null;
+
+  const choiceCounts: Record<string, number> = {};
+  for (const row of rows) {
+    if (row.nextPageId) {
+      choiceCounts[row.nextPageId] = row.chooserCount;
+    }
+  }
+
+  return { totalReaders: total, choiceCounts };
+}
+
+/**
  * Builds the query for per-paragraph comment counts on a page.
  *
  * Page-level comments (no paragraph scope) are reported under key `0`. Grouped
@@ -1873,7 +1926,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
   // community-actions endpoint once the reader scrolls down to the action
   // area — removing the query from every page's hot path across all page
   // numbers, not just page 1.
-  const [selectedActions, storyState, translation, shownActionHint, branchName, paragraphCommentCountsRows, latestCanonValidation] = await Promise.all([
+  const [selectedActions, storyState, translation, shownActionHint, branchName, paragraphCommentCountsRows, latestCanonValidation, actionChoiceStats] = await Promise.all([
     // Query user's chosen action for this page (if authenticated).
     // Page 1 has no parent page → no previously-selected action is possible.
     isPageOne
@@ -1912,6 +1965,15 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
 
     // Latest canon validation audit for this page (roadmap 1.1)
     loadLatestCanonValidation(pageId),
+
+    // Choice Echoes — per-action reader counts from userPageProgress.
+    // Page 1 has no prior choice context, so skip entirely.
+    // Below CHOICE_ECHO_MIN_THRESHOLD (5), getPageChoiceStats returns null
+    // and the field is omitted from the payload — the frontend treats
+    // undefined as "no data yet".
+    isPageOne
+      ? Promise.resolve(null)
+      : getPageChoiceStats(bookId, pageId),
   ]);
 
   if (targetLanguage && translation) {
@@ -2061,6 +2123,11 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
           wasRevised: latestCanonValidation.wasRevised,
         } satisfies CanonValidationSummary)
       : undefined,
+
+    // Choice Echoes — per-action reader percentages (Choice Echoes roadmap §7).
+    // Keyed by destination page ID so the frontend matches against
+    // BranchingChoice.destinationPageId directly — no text fuzzy-matching.
+    actionChoiceStats: actionChoiceStats ?? undefined,
   // } satisfies Record<keyof EnrichedStoryPage, unknown>;
   };
 

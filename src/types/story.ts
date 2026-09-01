@@ -1415,6 +1415,28 @@ export type EnrichedStoryPage = Partial<Omit<UserStoryPage, 'stateDelta'>> & {
   paragraphCommentCounts?: Record<number, number>;
   /** Latest generation-time canon validation summary (roadmap 1.1), if any */
   canonValidation?: CanonValidationSummary;
+
+  /**
+   * Aggregate choice statistics for this page — how many distinct readers
+   * chose each action (keyed by destination page ID). Computed from
+   * `userPageProgress` rows where `actioned_page_id = this page`.
+   *
+   * Omitted when fewer than `CHOICE_ECHO_MIN_THRESHOLD` (5) distinct readers
+   * have chosen on this page, to avoid showing misleading small-sample
+   * percentages. The frontend treats `undefined` as "no data yet".
+   *
+   * Design decision (Open Question — navigation timing):
+   * Stats are bundled into the page payload (not a separate endpoint) so
+   * the frontend can animate bars in parallel with navigation — zero
+   * added latency. The trade-off is that cached page 1 payloads (Redis)
+   * won't carry per-user stats, which is correct because page 1 has no
+   * prior choice to compare against.
+   */
+  actionChoiceStats?: {
+    totalReaders: number;
+    /** Keyed by destination page ID → count of unique readers who chose that action */
+    choiceCounts: Record<string, number>;
+  };
 };
 
 // export type StoryPageNav = Record<number, StoryPageNavItem>;

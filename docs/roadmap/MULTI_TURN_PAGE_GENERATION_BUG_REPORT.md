@@ -1,481 +1,681 @@
 # Multi-Turn Page Generation: Comprehensive Audit & Bug Report
 
-> **Document Version:** 1.0.0  
-> **Date:** 2026-08-19  
-> **Status:** Review & Decision Pending  
-> **Audited Files:**  
-> - `Twistloom-backend/src/utils/ai-chat.ts`  
-> - `Twistloom-backend/src/utils/prompt.ts`  
-> - `Twistloom-backend/src/schema/story.ts`  
-> - `Twistloom-backend/src/types/prompt.ts`  
-> - `Twistloom-backend/src/types/story.ts`  
-> - `Twistloom-backend/src/config/ai-chat.ts`  
-> - `Twistloom-backend/src/utils/gemini.ts`  
-> - `Twistloom-backend/docs/roadmap/MULTI_TURN_PAGE_GENERATION_ROADMAP.md`  
+> **Document Version:** 2.0.0
+> **Date:** 2026-09-01
+> **Status:** Review & Decision Pending
+> **Audited Files:**
+> - `src/utils/prompt.ts` (6085 lines — core orchestration, prompt builders, evaluators)
+> - `src/utils/field-instructions.ts` (339 lines — generic field instruction sections)
+> - `src/utils/ai-chat.ts` (2057 lines — `runEvaluationPass`, `aiPrompt`)
+> - `src/utils/ai-parser.ts` (982 lines — `sanitise`, `parseAISafely`)
+> - `src/schema/story.ts` (1229 lines — schema definitions)
+> - `src/types/prompt.ts` (141 lines — `GenerationStageDefinition<T>`)
+> - `src/config/ai-chat.ts` (121 lines — token budgets, feature flag)
+> - `src/services/page-generation-checkpoints.ts` (174 lines — checkpoint cache)
+> - `src/db/schema.ts` (checkpoint table definition)
 
 ---
 
-## 1. Executive Summary & Architectural Health Check
+## 1. Previous Report Status (BUG-01 through BUG-04, ISSUE-05 through ISSUE-07)
 
-The multi-turn page generation refactor successfully splits the monolithic single-pass page generation call into a two-turn pipeline:
-1. **Turn A (`story_page`):** Generates narrative prose and scene presentation (`StoryPageGeneration`, 11 fields, max output tokens: 2,200).
-2. **Turn B (`state_delta`):** Reads Turn A's output as `GENERATED PAGE` and produces state modifications (`StateDeltaGenerationWithBranch`, 24 fields + `branchNames`, max output tokens: 1,800).
-3. **Merge & Evaluation:** Merges Turn A + Turn B into a canonical `StoryGeneration` object and executes a single post-merge evaluation pass.
+The original report (v1.0.0, 2026-08-19) identified 4 bugs and 3 issues. **All 4 bugs and ISSUE-06 have been fixed** in the current codebase through checkpoints 5–8. ISSUE-05 and ISSUE-07 remain open as documented deferred enhancements (Phases 9–10 in the roadmap).
 
-### Architectural Health Score
-| Dimension | Rating | Status / Observations |
-| :--- | :---: | :--- |
-| **Schema Separation & Typing** | **A-** | Clear type boundaries (`StoryPageGeneration`, `StateDeltaGenerationWithBranch`), clean schema definitions. Minor discrepancy in `closeThreads`. |
-| **Prompt Engineering & Stage Framing** | **B+** | Imperative task framing in Turn B is effective. However, Turn B carries excessive duplicate prompt context from Turn A. |
-| **Evaluation & Resilience** | **C+** | Post-merge evaluation has critical bugs: drops structured schema definitions in non-Gemini modes, thrashes Gemini explicit context cache, and drops SSE/DB progress callbacks. |
-| **Cross-Turn State Consistency** | **B** | Slug-ID handoff (`charactersPresent` / `placeId` -> `newCharacters` / `newPlaces`) is specified in prompts but lacks deterministic server-side fallback recovery if the LLM misses an ID. |
-| **Multiverse Parallel Concurrency** | **A-** | `Promise.allSettled` per candidate is resilient; token budgets per candidate are well-clamped. Requires RPM rate limiter awareness. |
+| ID | Description | Status | Fix Location |
+|---|---|---|---|
+| **BUG-01** | Gemini cache thrashing — evaluator reused Turn A's `:story_page` slot | ✅ **Fixed** (checkpoint 5) | `prompt.ts:1839` — `createCacheKey([bookId, merged])` derives content-based key |
+| **BUG-02** | Structured schema dropped — `outputJsonStructure`/`outputJsonRequired` missing | ✅ **Fixed** (checkpoint 5) | `prompt.ts:1861–1862` — now passes `STORY_GENERATION_SCHEMA_DEFINITION`/`STORY_GENERATION_REQUIRED_FIELDS` |
+| **BUG-03** | SSE/DB progress callbacks dropped | ✅ **Fixed** (checkpoint 5) | `prompt.ts:5206–5207` — `onProgress`/`onGenerationProgress` now accepted and threaded through |
+| **BUG-04** | `calendarDate` fallback applied too late | ✅ **Fixed** (checkpoint 5) | `prompt.ts:5335` — fallback applied at merge time before evaluation |
+| **ISSUE-05** | No server-side slug-ID reconciliation | ⏳ **Deferred** (Phase 9) | Not implemented — documented future enhancement |
+| **ISSUE-06** | Schema description said "titles" instead of "IDs" for `closeThreads` | ✅ **Fixed** | `schema/story.ts:601` — now reads "Thread IDs to be closed" |
+| **ISSUE-07** | Turn B receives redundant previous-pages prose | ⏳ **Deferred** (Phase 10) | Not implemented — documented future enhancement |
 
 ---
 
-## 2. Critical & High-Severity Bugs (Broken Functionality & Runtime Failure Modes)
+## 2. New Issues Found in Current Codebase
 
-### 🔴 BUG-01: Gemini Context Cache Thrashing & Cache Pollution in `evaluateMergedStoryGeneration`
+### 🔴 NEW-01: Function Name Typo — `buildEvaluatorOuputFormatBlurb`
 
-- **Severity:** High / Performance Critical
-- **Affected Files:**
-  - `Twistloom-backend/src/utils/prompt.ts` (lines 2052–2118)
-  - `Twistloom-backend/src/utils/ai-chat.ts` (lines 1689–1695)
-  - `Twistloom-backend/src/utils/gemini.ts` (lines 228–306)
-
-#### Root Cause Analysis
-In `evaluateMergedStoryGeneration`, the code attempts to optimize Gemini caching by reusing Turn A's cached content ID:
-```typescript
-// Twistloom-backend/src/utils/prompt.ts:2107
-cachedContentId: cachedContentId ? `${cachedContentId}:story_page` : undefined,
-```
-The inline doc comment states:
-> *"cachedContentId is suffixed :story_page here... since this evaluation call reuses Turn A's exact systemPrompt — the two share identical cache content, so this reuses Turn A's already-warmed cache instead of paying to create a new one."*
-
-However, `runEvaluationPass` appends the dynamic generation output into `documents`:
-```typescript
-// Twistloom-backend/src/utils/ai-chat.ts:1689-1695
-documents: [
-  ...documents,
-  {
-    title: 'GENERATED JSON (from previous AI)',
-    snippet: result.output,
-  }
-],
-```
-When `resolveGeminiCachedContent` calls `getOrCreateGeminiCache("...:story_page", model, systemPrompt, formattedDocuments, bookId)`:
-1. `formattedDocuments` contains the new dynamic document (`GENERATED JSON`), so `prefixHash` (DJB2 hash of `systemInstruction + formattedDocuments`) differs from Turn A's `prefixHash`.
-2. `existing.prefixHash === prefixHash` evaluates to **`false`**.
-3. `getOrCreateGeminiCache` treats this as a cache update: it executes `ai.caches.create(...)` on Google's servers (**adding ~300–800ms network latency** for a single-use cache) and overwrites the Redis & L1 entry under key `gemini:content-cache:...:story_page`.
-4. The next generation turn or retry hitting `:story_page` finds the evaluator's hash, misses again, and creates *another* cache, causing continuous cache thrashing.
-
-#### Impact
-- **0% Gemini Cache Hit Rate** on evaluation passes.
-- **Latency regression:** Adds ~300–800ms to every evaluation call due to `ai.caches.create`.
-- **Cache eviction of Turn A:** Evicts Turn A's warmed cache in Redis/L1, destroying prompt cache benefits for subsequent turns or parallel candidate evaluations.
-
-#### Proposed Solution
-Pass `cachedContentId: undefined` in `evaluateMergedStoryGeneration` options so evaluation relies on Gemini's automatic implicit prefix caching instead of creating an ephemeral explicit cache on dynamic payload:
-```typescript
-// Twistloom-backend/src/utils/prompt.ts:2107
-cachedContentId: undefined, // Evaluation contains dynamic 'GENERATED JSON' document; omit explicit cache
-```
-Alternatively, if character/place document caching is desired for evaluation, pass `GENERATED JSON` inside `evaluatorPrompt` (the user prompt) rather than in `documents`, allowing `documents` to remain byte-identical to Turn A.
-
----
-
-### 🔴 BUG-02: Structured Output Schema Dropped in `evaluateMergedStoryGeneration`
-
-- **Severity:** High / Runtime Failure on OpenAI, Groq, Cerebras, Mistral
-- **Affected Files:**
-  - `Twistloom-backend/src/utils/prompt.ts` (lines 2100–2115)
-  - `Twistloom-backend/src/schema/story.ts` (lines 748–770)
-  - `Twistloom-backend/src/utils/ai-chat.ts` (lines 1673–1720)
-
-#### Root Cause Analysis
-In `evaluateMergedStoryGeneration`:
-```typescript
-// Twistloom-backend/src/utils/prompt.ts:2100-2115
-const evaluated = await runEvaluationPass<StoryGeneration>(
-  baseResult,
-  evaluatorPrompt,
-  {
-    modelSelection: AI_CHAT_MODELS_EVALUATION,
-    config,
-    documents,
-    cachedContentId: undefined,
-    logPrompts: true,
-    meta: { bookId },
-    // ⚠️ MISSING: outputJsonStructure and outputJsonRequired
-  },
-  systemPrompt,
-  baseContext,
-  onProgress,
-  onGenerationProgress,
-);
-```
-Inside `runEvaluationPass`, the evaluation schema is built via:
-```typescript
-// Twistloom-backend/src/utils/ai-chat.ts:1700
-outputJsonStructure: buildEvaluationSchemaDefinition(evaluationOptions),
-```
-Looking at `buildEvaluationSchemaDefinition` in `src/schema/story.ts`:
-```typescript
-// Twistloom-backend/src/schema/story.ts:752-763
-export function buildEvaluationSchemaDefinition<T extends Record<string, unknown>>(options: AIPromptOptions): Record<keyof AIJsonEvaluation<T>, AIJsonProperty> {
-  const { useStringEvaluatorOutput = true, outputJsonStructure, outputJsonRequired } = options;
-  ...
-  return {
-    output: useStringEvaluatorOutput
-      ? { type: 'string', description: '...' }
-      : {
-          type: 'object',
-          properties: outputJsonStructure, // ⚠️ undefined!
-          required: outputJsonRequired,     // ⚠️ undefined!
-          additionalProperties: outputJsonStructure ? false : undefined,
-        },
-    ...
-```
-When `useStringEvaluatorOutput` is `false` (structured object mode used when non-Gemini evaluators are active or when `resolveUseStringEvaluator` returns `false`), `options.outputJsonStructure` is `undefined`.
-The resulting schema sends `output: { type: 'object', properties: undefined }` to providers like OpenAI, Groq, Cerebras, or Mistral, resulting in API 400 Bad Request errors (`Invalid schema: properties is required for type object`).
-
-#### Impact
-- Hard failure / API crash during evaluation pass whenever structured mode (`useStringEvaluatorOutput: false`) is triggered.
-
-#### Proposed Solution
-Explicitly pass `outputJsonStructure` and `outputJsonRequired` in `evaluateMergedStoryGeneration`:
-```typescript
-// Twistloom-backend/src/utils/prompt.ts:2100-2115
-const evaluated = await runEvaluationPass<StoryGeneration>(
-  baseResult,
-  evaluatorPrompt,
-  {
-    modelSelection: AI_CHAT_MODELS_EVALUATION,
-    config,
-    documents,
-    cachedContentId: undefined,
-    outputJsonStructure: STORY_GENERATION_SCHEMA_DEFINITION,
-    outputJsonRequired: STORY_GENERATION_REQUIRED_FIELDS,
-    logPrompts: true,
-    meta: { bookId },
-  },
-  systemPrompt,
-  baseContext,
-  onProgress,
-  onGenerationProgress,
-);
-```
-
----
-
-### 🔴 BUG-03: Complete Drop of SSE / DB Progress Callbacks in Multi-Turn Flow
-
-- **Severity:** High / UX & Telemetry Degradation
-- **Affected Files:**
-  - `Twistloom-backend/src/utils/prompt.ts` (lines 5384–5459, 5538–5544, 5728–5754)
-
-#### Root Cause Analysis
-In `generateStoryGenerationMultiTurn`:
-```typescript
-// Twistloom-backend/src/utils/prompt.ts:5384-5390
-async function generateStoryGenerationMultiTurn(options: {
-  setup: Awaited<ReturnType<typeof prepareNextPageGenerationSetup>>;
-  book: Book;
-  actionedPage: CandidateGenerationPage;
-  baseContext: string;
-  fateContext?: { fateIndex: number; fateCount: number };
-}): Promise<AIResponse<StoryGeneration>>
-```
-Notice that `options` does **not** accept `onProgress?: ProgressCallback` or `onGenerationProgress?: (step: StoryGenerationStep) => Promise<void>`.
-
-Inside `generateStoryGenerationMultiTurn`:
-1. `runGenerationStage<StoryPageGeneration>(...)` for Turn A receives `undefined` for both callbacks.
-2. `runGenerationStage<StateDeltaGenerationWithBranch>(...)` for Turn B receives `undefined` for both callbacks.
-3. `evaluateMergedStoryGeneration(...)` receives `undefined` for both callbacks (line 5458).
-
-#### Impact
-- When `USE_MULTI_TURN_GENERATION` is `true`, all SSE stream events (`ai_generation_start`, `ai_generation_complete`, `ai_evaluation_start`, `ai_evaluation_complete`) and database generation step updates (`onGenerationProgress`) are silently dropped.
-- Clients listening to SSE updates on page generation will receive no progress events until generation completely finishes.
-
-#### Proposed Solution
-1. Update `generateStoryGenerationMultiTurn` to accept and propagate `onProgress` and `onGenerationProgress`.
-2. Update callers in `generateNextPage` and `generateNextPages` to pass progress callbacks.
-3. Optional enhancement: Tag SSE events with stage metadata (`stage: 'story_page' | 'state_delta' | 'evaluating'`) so frontends can show granular progress (e.g. *"Authoring prose..."* -> *"Updating world state & consequences..."* -> *"Refining output..."*).
-
----
-
-### 🟡 BUG-04: Date Fallback Timing & Overwrite Vulnerability at Turn A/B Merge
-
-- **Severity:** Medium
-- **Affected Files:**
-  - `Twistloom-backend/src/utils/prompt.ts` (lines 5454–5456, 5578–5581, 5811–5814)
-  - `Twistloom-backend/docs/roadmap/MULTI_TURN_PAGE_GENERATION_ROADMAP.md` (lines 261–262)
-
-#### Root Cause Analysis
-The Multi-Turn Roadmap specified:
-```typescript
-// MULTI_TURN_PAGE_GENERATION_ROADMAP.md Part 2.4 line 261-262
-const generatedStoryPage: StoryGeneration = {
-  ...storyPage,
-  ...stateDelta,
-  calendarDate: storyPage.calendarDate ?? actionedPage.calendarDate,
-};
-```
-However, in `prompt.ts` line 5455:
-```typescript
-// Twistloom-backend/src/utils/prompt.ts:5455
-const merged: StoryGeneration = { ...storyPage, ...stateDelta };
-```
-If Turn B's LLM hallucinates an empty or null `calendarDate` field, spreading `stateDelta` second will overwrite `storyPage.calendarDate`.
-Additionally, because the fallback to `actionedPage.calendarDate` is delayed until `generateNextPage` line 5580, `evaluateMergedStoryGeneration` receives `merged` *before* the date fallback is applied. If Turn A omitted `calendarDate`, the evaluator sees an undefined date and may penalize consistency in the rubric.
-
-#### Proposed Solution
-Ensure the date fallback is applied immediately during object merge in `generateStoryGenerationMultiTurn`:
-```typescript
-// Twistloom-backend/src/utils/prompt.ts:5455
-const merged: StoryGeneration = {
-  ...storyPage,
-  ...stateDelta,
-  calendarDate: storyPage.calendarDate ?? actionedPage.calendarDate,
-};
-```
-
----
-
-## 3. Medium & Low Priority Issues & Inefficiencies
-
-### 🟡 ISSUE-05: Lack of Fault-Tolerant Server Synthesis for Invented Slug IDs
-
-- **Severity:** Medium / Robustness
-- **Affected Files:**
-  - `Twistloom-backend/src/utils/prompt.ts` (lines 1267, 1296, 1395, 1425)
-  - `Twistloom-backend/src/utils/story.ts` (lines 498–578)
+- **Severity:** Low / Code Quality
+- **File:** `src/utils/prompt.ts:1482`
 
 #### Description
-In the multi-turn architecture, Turn A is instructed to invent slug IDs for new entities (e.g. `placeId: "flooded-basement-stairwell"`, `charactersPresent: [{ characterId: "hollow-eyed-clerk" }]`), and Turn B is instructed:
-> *"The GENERATED PAGE's charactersPresent/placeId may reference an ID not in KNOWN... You MUST add a newCharacters/newPlaces entry using that EXACT ID."*
 
-While models follow this prompt most of the time, non-deterministic LLMs (especially fast fallback models like Llama 3.3 70B or Mistral Small) occasionally:
-1. Miss adding the `newCharacters` or `newPlaces` entry in Turn B.
-2. Slightly alter the ID (e.g. `hollow_eyed_clerk` vs `hollow-eyed-clerk`).
-3. Invent a different ID in `newCharacters` than what Turn A used in `charactersPresent`.
-
-When this happens, `applyStateDelta` receives an unmapped ID. In subsequent pages, `formatCurrentSituationForPrompt` logs:
-`[charactersPresent] ⚠️ Character ID "hollow-eyed-clerk" does not exist` and the entity is never tracked in character/place memory.
+The function name contains a typo: `buildEvaluatorOuputFormatBlurb` should be `buildEvaluatorOutputFormatBlurb` (missing `t` in "Output"). This is a public-facing identifier used in 3 locations (`prompt.ts:1482`, `prompt.ts:1503`, `prompt.ts:1910`). While it doesn't affect runtime behavior, it violates the codebase's naming conventions and creates friction for anyone grepping for "output" or "OutputFormat".
 
 #### Proposed Solution
-Add a lightweight server-side reconciliation helper right after merge (in `generateStoryGenerationMultiTurn` or `resolvePageDelta`):
-```typescript
-function reconcileInventedSlugIds(merged: StoryGeneration, state: StoryState): void {
-  // 1. Reconcile placeId
-  if (merged.placeId && merged.placeId !== 'unknown' && !state.places[merged.placeId]) {
-    const hasPlaceEntry = merged.newPlaces?.some(p => p.placeId === merged.placeId);
-    if (!hasPlaceEntry) {
-      merged.newPlaces = merged.newPlaces ?? [];
-      merged.newPlaces.push({
-        placeId: merged.placeId,
-        knownName: formatSlugToTitle(merged.placeId),
-        type: 'scene_location',
-        category: 'other',
-        context: `Location introduced during scene at page ${state.page}`,
-        familiarity: 0.1,
-      });
-    }
-  }
 
-  // 2. Reconcile charactersPresent
-  for (const char of merged.charactersPresent ?? []) {
-    if (char.characterId && !state.characters[char.characterId]) {
-      const hasCharEntry = merged.newCharacters?.some(c => c.characterId === char.characterId);
-      if (!hasCharEntry) {
-        merged.newCharacters = merged.newCharacters ?? [];
-        merged.newCharacters.push({
-          characterId: char.characterId,
-          knownName: formatSlugToTitle(char.characterId),
-          recognitionLevel: 'unfamiliar',
-          gender: 'unknown',
-          role: char.sceneRole || 'supporting',
-          bio: 'Character encountered during the scene.',
-        });
-      }
-    }
-  }
-}
+Rename to `buildEvaluatorOutputFormatBlurb` across all 3 call sites. This is a safe mechanical rename with no behavioral change.
+
+```typescript
+// Before
+function buildEvaluatorOuputFormatBlurb(useStringEvaluatorOutput: boolean): string { ... }
+// After
+function buildEvaluatorOutputFormatBlurb(useStringEvaluatorOutput: boolean): string { ... }
 ```
 
+**Effort:** 5 minutes. **Risk:** None.
+
 ---
 
-### 🟡 ISSUE-06: Schema vs Prompt Discrepancy on `closeThreads` Field
+### 🔴 NEW-02: Turn B Receives Full Previous Pages Prose (Token Waste)
 
-- **Severity:** Low / Schema Ambiguity
-- **Affected Files:**
-  - `Twistloom-backend/src/schema/story.ts` (line 601)
-  - `Twistloom-backend/src/utils/prompt.ts` (lines 1478, 1765)
+- **Severity:** Medium / Cost & Latency
+- **Files:** `src/utils/prompt.ts:3488–3563` (`formatNextPageStoryContextPrompt`), `prompt.ts:1218` (`buildStateDeltaPrompt`)
 
 #### Description
-- In `STORY_STATE_GENERATION_SCHEMA` (`src/schema/story.ts:601`), `closeThreads` is defined with description:
-  `"Thread titles to be closed if any."`
-- In `buildNextPageFieldInstructionSections` (`src/utils/prompt.ts:1478`):
-  `"Include thread IDs that should be marked as closed"`
-- In `buildStateDeltaReviewChecklist` (`src/utils/prompt.ts:1765`):
-  `"Every ID referenced in .../closeThreads matches an ID that already exists"`
-- In `processThreadUpdates` (`src/utils/story.ts:1140`):
-  `thread.threadId === closeId` (matches on ID, not title).
+
+Turn B's prompt is built via `buildStateDeltaPrompt`, which calls `formatNextPageStoryContextPrompt(params)` **identically** to Turn A. This means Turn B receives:
+
+| Section | Tokens (est.) | Needed by Turn B? |
+|---|---|---|
+| `CURRENT PHASE` | ~50 | Yes — drives phase-conditional delta decisions |
+| `MAIN CHARACTER (POV)` | ~200 | Marginal — inventory/injuries matter for `newCharacters` updates |
+| `STORY CONTEXT` (summary + temporal) | ~150 | Yes — `contextHistory` summarization needs the running clock |
+| `RELEVANT PAST EVENTS` (pgvector) | ~300–600 | **No** — semantic recall of past events is for narrative prose continuity, not state derivation |
+| `CURRENT FACTS` | ~200 | Yes — `factUpdates` needs to know what's already established |
+| `PREVIOUS PAGES` (5 pages of full prose) | ~1500–2500 | **No** — Turn B reads the `GENERATED PAGE` section; it doesn't need verbatim prose from 5 prior pages |
+| `CURRENT PAGE` (actioned page prose) | ~400–600 | Marginal — action text is relevant, but full prose is redundant with `GENERATED PAGE` |
+| `CURRENT SITUATION` | ~200 | Yes — character presence, scene momentum |
+| `ACTION SELECTION` | ~100 | **No** — Turn B doesn't author actions |
+
+**Estimated waste:** ~2,000–3,500 tokens per Turn B call (~25–35% of total input tokens).
+
+#### Why This Matters
+
+With 3 parallel multiverse candidates, each candidate runs Turn A + Turn B. Turn B's redundant tokens multiply: 3 candidates × ~2,500 wasted tokens = ~7,500 wasted tokens per page transition. At current API pricing, this is a non-trivial cost increase for zero quality improvement.
 
 #### Proposed Solution
-Fix the schema description in `src/schema/story.ts:601` to:
-`description: "Thread IDs to be closed if any."`
 
----
+Create `formatStateDeltaStoryContextPrompt(params)` — a lightweight variant that retains only the sections Turn B needs:
 
-### 🟡 ISSUE-07: Excessive Duplicate Context in Turn B User Prompt (Token Inefficiency)
-
-- **Severity:** Medium / Cost & Latency Inefficiency
-- **Affected Files:**
-  - `Twistloom-backend/src/utils/prompt.ts` (lines 1209–1228)
-
-#### Description
-In `buildStateDeltaPrompt`:
 ```typescript
-function buildStateDeltaPrompt(params: BuildNextPagePromptParams, storyPage: StoryPageGeneration): string {
-  const { advancedState: state, book } = params;
-  const { language } = book;
+function formatStateDeltaStoryContextPrompt(params: BuildNextPagePromptParams): string {
+  const { advancedState: state, actionedPage, book } = params;
+  const { contextHistory, factsHistory, hiddenState } = state;
+  const { calendarDate, elapsedDays } = actionedPage;
+  const { storyStartDate } = book;
 
+  // Only the sections Turn B actually reads
   return [
-    `TASK: ${formatStateDeltaTaskPrompt(language)}`,
-    formatNextPageStoryContextPrompt(params),
-    `GENERATED PAGE:\n${formatGeneratedPageForDeltaPrompt(storyPage)}`,
-    formatNextPageNarrativePrompt(params, false),
-    state.plannedCharacters?.length && RULES_PLANNED_CHARACTERS,
-  ].filter(Boolean).join(`\n\n---\n`);
+    `CURRENT PHASE:\n${getStoryStateInfo(state).phase} ${getStoryStateInfo(state).phaseGoal}`,
+    `STORY CONTEXT:\n${contextHistory || 'No story summary yet.'}`,
+    `CURRENT FACTS:\n${formatCurrentFacts(factsHistory)}`,
+    `CURRENT SITUATION:\n${formatCurrentSituationForPrompt(actionedPage, state)}`,
+  ].filter(Boolean).join('\n\n---\n');
 }
 ```
-`formatNextPageStoryContextPrompt(params)` includes:
-- `PREVIOUS PAGES`: Full verbatim prose for up to 5 previous pages (~1,500–2,500 tokens).
-- `CURRENT PAGE`: Full verbatim prose of the actioned page (~400–600 tokens).
-- `CURRENT SITUATION`: Scene momentum, characters, objects (~200 tokens).
-- `RELEVANT PAST EVENTS`: Semantic retrieval excerpts (~300–600 tokens).
 
-Turn B is then given the newly written `GENERATED PAGE` in full.
-Because Turn B's purpose is strictly state derivation from the `GENERATED PAGE`, passing all 5 previous pages of full prose is redundant. Turn B only needs:
-- `STORY CONTEXT` (running summary & temporal clock).
-- `CURRENT FACTS` (so it knows what's already known vs new).
-- `ACTIVE THREADS`, `KNOWN CHARACTERS`, `KNOWN PLACES`.
-- `GENERATED PAGE` (the text to analyze).
+Then update `buildStateDeltaPrompt` to call `formatStateDeltaStoryContextPrompt(params)` instead of `formatNextPageStoryContextPrompt(params)`.
+
+**Effort:** 45 minutes. **Risk:** Low — Turn B's state derivation accuracy is grounded in the `GENERATED PAGE` section, not historical prose. The conservative design (keep facts, threads, entities) ensures no delta-relevant context is lost.
+
+**Note:** This is the same conclusion as ISSUE-07 in the original report and Phase 10 in the roadmap. Both independently identified this as the single highest-ROI token optimization in the multi-turn pipeline.
+
+---
+
+### 🔴 NEW-03: Evaluator Prompt Duplicates Generation Prompt Content
+
+- **Severity:** Medium / Cost & Prompt Bloat
+- **File:** `src/utils/prompt.ts:1495–1524` (`buildNextPageEvaluatorPrompt`)
+
+#### Description
+
+`buildNextPageEvaluatorPrompt` constructs the evaluator's user prompt by including:
+
+```typescript
+const taskPrompt = `TASK: Evaluate a newly generated branching story page...
+
+Original task (on previous AI): ${formatNextPageTaskPrompt(state, candidateCount, language, book.mode)}
+
+${formatNextPageStoryContextPrompt(params)}
+
+---
+${formatNextPageNarrativePrompt(params)}
+
+---
+EXPECTED JSON SCHEMA:
+${candidateCount > 1 ? multiNextPageOutputFormat : nextPageOutputFormat}
+
+---
+FIELD INSTRUCTIONS:
+${buildNextPageFieldInstructions(state, action, sceneType)}`;
+```
+
+The evaluator prompt includes the **full story context**, **full narrative style**, **full field instructions**, and **full expected JSON schema** — all of which were already sent in the generation prompt. The evaluator model receives these instructions twice: once baked into the `systemPrompt` (which is passed through from the generation call), and again in the user prompt.
+
+This means the evaluator's ~12k token prompt is ~50% redundant content that was already used to produce the output being evaluated.
+
+#### Impact
+
+- **Cost:** The evaluation pass sends ~6k redundant tokens per call. With 3 parallel candidates, that's ~18k redundant tokens per page transition.
+- **Latency:** Extra input tokens increase time-to-first-token on the evaluation call.
+- **Quality risk:** The evaluator seeing the same instructions twice may bias it toward the model's own generation style rather than providing an independent assessment.
 
 #### Proposed Solution
-Create a lightweight context formatter `formatStateDeltaStoryContextPrompt` that omits full previous pages' prose while retaining facts and active entity registries. This will reduce Turn B's prompt token footprint by **2,000–3,500 tokens per request** (a ~25–35% reduction in total input tokens per page generation).
+
+Strip the redundant sections from the evaluator prompt. The evaluator only needs:
+1. The **task framing** (what was being evaluated)
+2. The **scoring rubric** (how to score)
+3. The **STEP 3 CORRECT** instructions (how to fix)
+4. The **output format** (what shape to return)
+
+The story context, narrative style, and field instructions are already baked into the `systemPrompt` the evaluator receives. Repeating them in the user prompt is pure waste.
+
+```typescript
+// Proposed evaluator prompt structure
+const taskPrompt = `TASK: Evaluate a newly generated story page...
+
+Original task: ${formatNextPageTaskPrompt(state, candidateCount, language, book.mode)}
+
+---
+SCORING RUBRIC:
+${buildScoringRubric(state)}
+
+---
+STEP 3 — CORRECT
+${buildCorrectionInstructions()}`;
+```
+
+**Effort:** 1 hour. **Risk:** Low — the evaluator's rubric and correction logic are self-contained; the story context/narrative style/field instructions are not referenced by the rubric dimensions.
 
 ---
 
-## 4. Performance, Concurrency & Rate Limit Considerations
+### 🟡 NEW-04: Missing `AbortSignal` Propagation in Non-Streaming Path
 
-### Multiverse Parallel Multi-Turn Fan-Out Analysis
-When generating branching candidates with `candidateCount = 3` in `generateNextPages`:
-- **Legacy flow:** 1 single-shot batch request (`candidateCount: 3`) + 1 evaluation pass = **2 API calls total**.
-- **Multi-turn flow:** 3 parallel `generateStoryGenerationMultiTurn` instances.
-  - Candidate 1: Turn A + Turn B + Eval = 3 calls
-  - Candidate 2: Turn A + Turn B + Eval = 3 calls
-  - Candidate 3: Turn A + Turn B + Eval = 3 calls
-  - **Total: 9 API calls per action transition.**
+- **Severity:** Medium / UX Degradation on Client Disconnect
+- **Files:** `src/utils/prompt.ts:5854` (`executePromptForJSON`), `prompt.ts:5141` (`runGenerationStage`), `prompt.ts:5200` (`generateStoryGenerationMultiTurn`)
 
-#### Rate Limit Implications
-- Fast providers like Cerebras (30 RPM) and Groq (30 RPM) will consume ~30% of their per-minute quota on a single multiverse transition.
-- **Mitigation in place:** `src/utils/ai-limiters.ts` uses Bottleneck token-bucket limiters with `retryWithBackoff`.
-- **Recommendation:** Ensure fallback provider waterfall has at least 3 high-capacity providers enabled (Gemini 2.5 Flash, Mistral, OpenAI/OpenRouter, Cohere) so parallel bursts seamlessly spill over without blocking user requests.
+#### Description
 
----
+The SSE streaming path (`aiStreamSSE`) properly propagates `c.req.raw.signal` for client disconnect cancellation. However, the non-streaming structured-output path (`executePromptForJSON` → `aiPrompt`) does **not** accept or propagate an `AbortSignal`:
 
-## 5. Open Questions & Architectural Decisions for User Alignment
+```typescript
+// executePromptForJSON — no signal parameter
+export async function executePromptForJSON<T extends Record<string, unknown>>(
+  params: AIPromptForJsonParams<T>,
+  onProgress?: ProgressCallback,
+  onGenerationProgress?: (step: StoryGenerationStep) => Promise<void>,
+): Promise<AIResponse<T>> { ... }
+```
 
-Below are key architectural decisions that require your explicit preference. Each question includes trade-offs and our recommended approach.
+This means when a client disconnects during a multi-turn generation (or any non-streaming generation), the in-flight AI API calls continue consuming GPU resources until they naturally complete or time out. For multi-turn generation specifically, a client disconnect during Turn A means Turn A + Turn B + Evaluation all continue running wastefully.
 
----
+#### Proposed Solution
 
-### ❓ Question 1: Evaluation Strategy in Multi-Turn — Post-Merge vs. Turn A Only vs. Dual-Turn?
+Thread `AbortSignal` through the non-streaming path:
 
-- **Current Implementation:** Single post-merge evaluation on the combined `StoryGeneration` object.
-- **Context:**
-  - In 95% of generation errors, the failure mode is in Turn A's narrative prose (e.g., POV camera break, unnatural dialogue, pacing monotone, bodily posture contradiction, repetition).
-  - Turn B generates structured state updates which are already validated downstream by Zod schemas, `extractStateDelta`, `applyStateDelta`, and `runCanonValidationPass`.
-  - Evaluating the merged object requires sending the full legacy 35-field schema and full prompt rubric (~12k input tokens) to the evaluator.
+1. Add `signal?: AbortSignal` to `executePromptForJSON`'s signature
+2. Pass it to `aiPrompt` (which already supports it internally via `aiStreamSSE` or provider SDK abort handlers)
+3. Add `signal?: AbortSignal` to `GenerationStageDefinition<T>` and `generateStoryGenerationMultiTurn`
+4. Thread from `generateNextPage`/`generateNextPages` which already receive `c.req.raw.signal` from route handlers
 
-#### Options:
-1. **Option A (Current): Post-Merge Evaluation on `StoryGeneration`**
-   - *Pros:* Evaluates both prose and state coherence in one pass.
-   - *Cons:* Evaluator prompt is large (~12k tokens); evaluator can hallucinate state modifications while trying to fix prose.
-2. **Option B (Recommended): Evaluate Turn A (`StoryPageGeneration`) Prose Only**
-   - *Pros:* Evaluator prompt is cut in half (~5k tokens); focuses 100% of evaluator attention on narrative quality, POV continuity, and prose rhythm; runs before Turn B so Turn B extracts state from already-polished prose.
-   - *Cons:* Evaluator does not score state delta fields (though canon validator already checks them).
-3. **Option C: Dual Per-Turn Evaluation**
-   - *Pros:* Independent evaluation per stage.
-   - *Cons:* Doubles evaluator API calls (4 calls per page, 12 calls per multiverse action).
-
-> **💡 Best Recommendation:** **Option B (Evaluate Turn A Prose Directly Before Turn B).**  
-> Running the rubric evaluation on Turn A allows Turn B to extract state deltas from the final, polished prose. It halves evaluator prompt token costs and eliminates evaluator state-patching hallucinations.
+**Effort:** 30 minutes. **Risk:** Low — `aiPrompt` already handles `AbortSignal` internally; this is purely plumbing.
 
 ---
 
-### ❓ Question 2: Handling of Unknown/Invented Slug IDs — Pure Prompt vs. Server Synthesis?
+### 🟡 NEW-05: Turn B System Prompt Missing `RULES_FALSE_PREVIEW`
 
-- **Current Implementation:** Pure prompt-based handoff (instructing Turn A to invent slug IDs and Turn B to detect and register them in `newCharacters`/`newPlaces`).
-- **Context:** LLMs occasionally fail to register the matching entry in Turn B, causing untracked character/place entities.
+- **Severity:** Low / Design Consistency
+- **Files:** `src/utils/prompt.ts:353–385` (`buildPresetSystemPrompt`)
 
-#### Options:
-1. **Option A: Pure Prompt Enforcement (Current)**
-   - Rely strictly on system prompts and review checklists.
-   - *Risk:* ~5–10% chance of untracked entity when using fast fallback models.
-2. **Option B (Recommended): Hybrid (Prompt Enforcement + Deterministic Server Synthesis Fallback)**
-   - Keep current prompts, but add a post-merge reconciliation step (as detailed in Issue 05) that automatically stubs missing `newPlaces`/`newCharacters` entries if Turn B omitted them.
+#### Description
 
-> **💡 Best Recommendation:** **Option B.**  
-> Server synthesis adds 0ms latency, requires no extra AI calls, and guarantees 100% referential integrity in `places` and `characters` tables.
+Turn A uses `buildPresetSystemPrompt('next', nextPreset)` which includes:
+- `RULES_ROUTE_MEMORY`
+- `RULES_STORY_CONSISTENCY`
+- `RULES_FUTURE_NOTES`
+- **`RULES_FALSE_PREVIEW`**
+- `buildFirstPageRuleSet(preset)`
 
----
+Turn B uses `buildPresetSystemPrompt('state-delta', nextPreset)` which includes:
+- `RULES_ROUTE_MEMORY`
+- `RULES_STORY_CONSISTENCY`
+- `RULES_FUTURE_NOTES`
+- `RULES_CHARACTER`
+- `RULES_CHARACTER_RECOGNITION`
+- `RULES_PLACE`
 
-### ❓ Question 3: SSE & Progress Event Granularity for Multi-Turn Pipeline
+Turn B is **missing** `RULES_FALSE_PREVIEW`. This is likely intentional (Turn B doesn't write narrative previews), but it creates an asymmetry: the evaluator scoring the merged object uses the `'next'` system prompt (via the `systemPrompt` parameter passed to `evaluateMergedStoryGeneration`), which includes `RULES_FALSE_PREVIEW`. This means the evaluator was generated under rules that Turn B never saw.
 
-- **Current Implementation:** Callbacks are dropped (Bug 03).
-- **Context:** When re-wiring callbacks, what level of event detail should be exposed to the client?
+#### Impact
 
-#### Options:
-1. **Option A: Legacy Mirroring**
-   - Emit single `ai_generation_start` at the beginning and `ai_generation_complete` at the end.
-2. **Option B (Recommended): Granular Stage Telemetry**
-   - Emit stage-tagged events:
-     - `step: 'authoring_scene'` (Turn A)
-     - `step: 'updating_world_state'` (Turn B)
-     - `step: 'evaluating_quality'` (Eval Pass)
+Minimal — `RULES_FALSE_PREVIEW` governs narrative misdirection in prose, which Turn B doesn't write. The evaluator sees it because it evaluates the merged object including Turn A's prose. However, the asymmetry is worth documenting.
 
-> **💡 Best Recommendation:** **Option B.**  
-> Frontends can display live status steppers, significantly improving perceived performance during the 6–8 second generation window.
+#### Proposed Solution
 
----
+No code change needed. Document the rationale in `buildPresetSystemPrompt`:
 
-### ❓ Question 4: Context Pruning for Turn B Prompt
+```typescript
+case 'state-delta':
+  return [
+    RULES_ROUTE_MEMORY,
+    RULES_STORY_CONSISTENCY,
+    RULES_FUTURE_NOTES,
+    // RULES_FALSE_PREVIEW intentionally omitted: governs narrative
+    // misdirection in prose — Turn B authors state deltas, not prose.
+    RULES_CHARACTER,
+    RULES_CHARACTER_RECOGNITION,
+    RULES_PLACE,
+  ].join('\n\n---\n');
+```
 
-- **Current Implementation:** Conservative — Turn B receives full `formatNextPageStoryContextPrompt` (including 5 previous pages of prose) + `GENERATED PAGE`.
-- **Context:** Turn B's prompt is ~14k tokens, of which ~3k tokens are historical page prose that Turn B does not need.
-
-#### Options:
-1. **Option A: Keep Conservative (Full Context)**
-   - Maximum possible context, but higher cost and slower time-to-first-token.
-2. **Option B (Recommended): Prune Previous Pages Prose from Turn B**
-   - Omit the verbatim prose of `PREVIOUS PAGES` and `RELEVANT PAST EVENTS` from Turn B, while retaining running summary, current facts, active threads, and known entity registries.
-
-> **💡 Best Recommendation:** **Option B.**  
-> Saves ~2,500 input tokens per candidate with zero loss in state derivation accuracy.
+**Effort:** 5 minutes. **Risk:** None.
 
 ---
 
-## 6. Action Plan & Priority Matrix
+### 🟡 NEW-06: Memoization Key Fragility in `formatNextPageNarrativePrompt`
 
-| Priority | Issue / Task | Scope / Files | Estimated Effort |
-| :---: | :--- | :--- | :---: |
-| **P0** | **Fix BUG-01:** Omit explicit `cachedContentId` on dynamic evaluation pass in `evaluateMergedStoryGeneration` to prevent Gemini cache thrashing. | `src/utils/prompt.ts` | 15 mins |
-| **P0** | **Fix BUG-02:** Pass `outputJsonStructure` and `outputJsonRequired` to `runEvaluationPass` in `evaluateMergedStoryGeneration`. | `src/utils/prompt.ts` | 15 mins |
-| **P0** | **Fix BUG-03:** Thread `onProgress` and `onGenerationProgress` through `generateStoryGenerationMultiTurn`. | `src/utils/prompt.ts` | 30 mins |
-| **P1** | **Fix BUG-04:** Apply `calendarDate` fallback during object merge in `generateStoryGenerationMultiTurn`. | `src/utils/prompt.ts` | 10 mins |
-| **P1** | **Fix ISSUE-06:** Update `closeThreads` description in `src/schema/story.ts` from `"titles"` to `"IDs"`. | `src/schema/story.ts` | 5 mins |
-| **P2** | **Implement ISSUE-05:** Add deterministic server reconciliation for invented slug IDs. | `src/utils/prompt.ts` / `src/utils/story.ts` | 45 mins |
-| **P2** | **Implement ISSUE-07:** Create pruned `formatStateDeltaStoryContextPrompt` to save 2.5k tokens on Turn B. | `src/utils/prompt.ts` | 45 mins |
+- **Severity:** Low / Correctness Risk
+- **File:** `src/utils/prompt.ts:3580–3631`
+
+#### Description
+
+`formatNextPageNarrativePrompt` memoizes its result using `params` (a `BuildNextPagePromptParams` object) as the cache key via `narrativePromptCache.get(params)`:
+
+```typescript
+let perBool = narrativePromptCache.get(params);
+if (!perBool) { perBool = new Map<boolean, string>(); narrativePromptCache.set(params, perBool); }
+const cached = perBool.get(includeProseStyle);
+```
+
+This relies on **object identity** — the same JavaScript object reference. The code comment explains this is safe because `params` is created fresh per `prepareNextPageGenerationSetup` call and reused across parallel fates within one `generateNextPages` call.
+
+However, this is fragile:
+1. If someone refactors `prepareNextPageGenerationSetup` to cache/reuse the `promptParams` object across calls, the memoization would return stale results.
+2. If `promptParams` properties are mutated after creation (e.g., a field is updated between fates), the cached result would be stale.
+3. The `narrativePromptCache` is never explicitly bounded — if `params` objects accumulate without cleanup, it could grow unbounded.
+
+#### Proposed Solution
+
+Two options:
+
+**Option A (conservative):** Add a comment documenting the invariant and the risks of breaking it:
+
+```typescript
+// INVARIANT: `params` must be a fresh object created per
+// prepareNextPageGenerationSetup call. Never reuse or mutate
+// promptParams across calls. Cache is per-request and bounded
+// by the number of parallel fates (typically 1–3).
+```
+
+**Option B (robust):** Replace identity-based caching with content-based caching using a stable key (e.g., `advancedState.page` + `actionedPage.id` + `includeProseStyle`):
+
+```typescript
+const cacheKey = `${advancedState.page}:${actionedPage.id}:${includeProseStyle}`;
+const cached = narrativePromptCache.get(cacheKey);
+```
+
+**Effort:** 15 minutes (Option A) or 30 minutes (Option B). **Risk:** Low — the current identity-based approach works correctly today; this is a defensive improvement.
+
+---
+
+### 🟡 NEW-07: Evaluator Evaluation Threshold Inconsistency
+
+- **Severity:** Low / Design Inconsistency
+- **Files:** `src/utils/prompt.ts:1542` (page generation), `prompt.ts:1950` (book creation)
+
+#### Description
+
+The page generation evaluator corrects when `scoreBefore < 75`:
+```typescript
+// prompt.ts:1542
+Only rewrite if total scoreBefore < 75, ...
+```
+
+The book creation evaluator corrects when `scoreBefore < 80`:
+```typescript
+// prompt.ts:1950
+Only rewrite if total scoreBefore < 80, ...
+```
+
+The 5-point difference is intentional (the doc comment at line 1901 says "a flawed initialization contaminates every page downstream"), but the threshold values are hardcoded magic numbers scattered across two functions. If the project ever wants to tune these thresholds, they need to be updated in two places.
+
+#### Proposed Solution
+
+Extract to named constants in `config/ai-chat.ts` or `config/story.ts`:
+
+```typescript
+// config/story.ts
+export const EVALUATION_CORRECTION_THRESHOLD_PAGE = 75;
+export const EVALUATION_CORRECTION_THRESHOLD_BOOK_CREATION = 80;
+```
+
+**Effort:** 10 minutes. **Risk:** None.
+
+---
+
+### 🟡 NEW-08: `checkGeneratedPage` Sanity Check Is Schema-Only
+
+- **Severity:** Low / Checkpoint Cache Quality
+- **Files:** `src/utils/prompt.ts:5272`, `src/utils/page-validation.ts:217`
+
+#### Description
+
+The checkpoint cache uses `checkGeneratedPage(storyPage, undefined, ...)` as a gate before caching Turn A's output:
+
+```typescript
+// prompt.ts:5272
+const turnAHealthy = checkGeneratedPage(storyPage, undefined, `${baseContext}:turnA`);
+```
+
+`checkGeneratedPage` (`page-validation.ts:217`) validates schema compliance: required fields present, valid enum values, valid array lengths, etc. It does **not** validate semantic quality — a page with empty `text`, garbled prose, or a POV break would pass the sanity check as long as the JSON structure is valid.
+
+This means a schema-valid but semantically broken Turn A could be cached and replayed on every retry, defeating the self-healing property the checkpoint is designed to provide.
+
+#### Impact
+
+Low — the evaluator pass runs after the checkpoint write and would catch semantic issues. But the evaluator corrects rather than rejects, so a cached semantically-weak page persists as the "base" that the evaluator corrects from, potentially producing lower-quality corrections than a fresh Turn A would.
+
+#### Proposed Solution
+
+Add lightweight semantic checks to the checkpoint gate:
+
+```typescript
+const turnAHealthy = checkGeneratedPage(storyPage, undefined, `${baseContext}:turnA`)
+  && (storyPage.text?.length ?? 0) > 100  // minimum viable prose length
+  && (storyPage.actions?.length ?? 0) >= MIN_ACTION_CHOICES;  // must offer choices
+```
+
+**Effort:** 15 minutes. **Risk:** Low — adding stricter validation to the cache gate only means fewer (higher-quality) cache entries; a miss just means Turn A runs fresh, which is the baseline behavior.
+
+---
+
+### ⚪ NEW-09: No TTL on In-Memory Narrative Prompt Cache
+
+- **Severity:** Informational / Memory Hygiene
+- **File:** `src/utils/prompt.ts:3583–3586`
+
+#### Description
+
+`narrativePromptCache` is an in-memory `Map` used for page-scoped memoization of `formatNextPageNarrativePrompt`. The cache is never explicitly cleared — it relies on `params` object references being garbage-collected when the generation request completes.
+
+In a serverless environment (Vercel), this is fine — the process is ephemeral. But in a long-running local dev server (`bun dev`), the cache grows with each generation request and is never pruned. Over a long dev session with many page generations, this could accumulate stale entries.
+
+#### Proposed Solution
+
+Add a `maxSize` bound or use an LRU cache instead of a plain `Map`:
+
+```typescript
+import { LRUCache } from 'lru-cache';
+
+const narrativePromptCache = new LRUCache<string, Map<boolean, string>>({
+  max: 100,  // bound to ~100 recent generation requests
+  ttl: 5 * 60 * 1000,  // 5 minutes
+});
+```
+
+Or, simpler: export a `clearPromptCaches()` function callable from dev tooling.
+
+**Effort:** 15 minutes. **Risk:** None in serverless; minimal in long-running processes.
+
+---
+
+## 3. Design Improvements (Not Bugs, But Worth Considering)
+
+### IMP-01: Evaluate Turn A Before Turn B (Alternative Evaluation Strategy)
+
+**Current:** Single post-merge evaluation on the combined `StoryGeneration`.
+**Alternative:** Evaluate Turn A's prose *before* Turn B runs, so Turn B always extracts state from already-polished prose.
+
+| Approach | Pros | Cons |
+|---|---|---|
+| **Post-merge (current)** | 1 evaluator call; catches cross-turn inconsistencies; reuses fully-tested rubric | Turn B extracts state from potentially-flawed prose |
+| **Turn A only (before B)** | Turn B operates on corrected prose; evaluator focuses 100% on narrative quality; evaluator prompt is smaller (~5k vs ~12k) | Turn B's structural correctness gets no evaluation pass; reintroduces per-turn cost concern (1 extra call) |
+
+**Recommendation:** Keep post-merge for now. The quality difference is marginal (evaluator corrects the merged object anyway), and the cost simplification is valuable. Revisit if Turn B state-derivation accuracy from uncorrected prose becomes a measurable issue.
+
+---
+
+### IMP-02: Deterministic Slug-ID Reconciliation (Phase 9)
+
+**Current:** Pure prompt-level convention (Turn A invents, Turn B reuses).
+**Alternative:** Add a server-side reconciliation step after merge that stubs missing `newCharacters`/`newPlaces` entries.
+
+This is already documented as Phase 9 in the roadmap. The implementation sketch exists in the roadmap. Key open question: what should a "minimum-viable synthesized character" contain? (Placeholder name from slug? Inferred from page text? Flagged specially for UI?)
+
+**Recommendation:** Implement when telemetry shows slug-ID mismatch rate exceeds 1% of page generations.
+
+---
+
+### IMP-03: Stage-Tagged SSE Events for Frontend Progress
+
+**Current:** `runGenerationStage` tags progress events with `stage: 'story_page' | 'state_delta'` (checkpoint 5 fix).
+**Enhancement:** Expose granular step labels to the frontend:
+
+```typescript
+// Frontend could display:
+// "Authoring prose..." (Turn A)
+// "Updating world state & consequences..." (Turn B)
+// "Refining output..." (Evaluation)
+```
+
+**Recommendation:** Implement alongside the frontend multi-turn progress UI.
+
+---
+
+## 4. Performance & Rate Limit Analysis
+
+### API Call Count Comparison
+
+| Path | Legacy | Multi-Turn |
+|---|---|---|
+| Single page (`generateNextPage`) | 1 generation + 1 eval = **2 calls** | 1 Turn A + 1 Turn B + 1 eval = **3 calls** |
+| Multiverse 3 candidates (`generateNextPages`) | 1 batch generation + 1 eval = **2 calls** | 3 × (Turn A + Turn B + eval) = **9 calls** |
+
+### Rate Limit Impact
+
+With `candidateCount = 3` (default multiverse):
+- **Cerebras (30 RPM):** 9 calls consume ~30% of quota per page transition
+- **Groq (30 RPM):** Same
+- **Gemini (2000 RPM):** Negligible impact
+- **Mistral (varies):** Depends on plan tier
+
+**Mitigation in place:** `src/utils/ai-limiters.ts` Bottleneck token-bucket limiters with `retryWithBackoff`.
+
+**Recommendation:** Ensure the provider waterfall has ≥3 high-capacity providers (Gemini, Mistral, OpenRouter) enabled so parallel bursts spill over without blocking.
+
+---
+
+## 5. Action Plan & Priority Matrix
+
+| Priority | ID | Issue | Effort | Risk |
+|---|---|---|---|---|
+| **P1** | NEW-02 | Turn B context pruning (~25–35% token savings) | 45 min | Low |
+| **P1** | NEW-03 | Evaluator prompt deduplication (~6k tokens saved) | 1 hr | Low |
+| **P2** | NEW-04 | AbortSignal propagation in non-streaming path | 30 min | Low |
+| **P2** | NEW-08 | Semantic checks in checkpoint cache gate | 15 min | Low |
+| **P3** | NEW-01 | Rename `buildEvaluatorOuputFormatBlurb` | 5 min | None |
+| **P3** | NEW-05 | Document RULES_FALSE_PREVIEW omission rationale | 5 min | None |
+| **P3** | NEW-06 | Memoization key robustness | 15–30 min | Low |
+| **P3** | NEW-07 | Extract evaluation thresholds to named constants | 10 min | None |
+| **P3** | NEW-09 | Bounded narrative prompt cache | 15 min | None |
+
+---
+
+## 6. Summary
+
+| Category | Count | Status |
+|---|---|---|
+| Previous bugs (BUG-01–04) | 4 | All fixed |
+| Previous issues (ISSUE-05–07) | 3 | 1 fixed, 2 deferred |
+| New issues found | 9 | Open |
+| Design improvements | 3 | Documented |
+
+**Overall architectural health:** The multi-turn pipeline is structurally sound. The schema composition (same objects, not copies), the field instruction split (single-source array filtered by stage), the checkpoint cache (best-effort, deterministic keying), and the parallel multiverse (`Promise.allSettled` isolation) are all well-designed. The issues found are primarily token-efficiency optimizations and defensive hardening, not correctness bugs.
+
+---
+
+## 7. Pen State Proposal vs Multi-turn Turn B: Overlap Analysis & DRY Opportunity
+
+> **Scope**: This section audits whether Pen's `/finalize/propose` state-inference logic duplicates Turn B's StateDelta pipeline, and proposes a shared abstraction if warranted.
+
+### 7.1 Core Job Comparison
+
+Both systems perform the **same conceptual task**: read a generated story page and infer what changed in the story state. The execution differs significantly, however.
+
+| Dimension | Pen `/finalize/propose` | Multi-turn Turn B (StateDelta) |
+|---|---|---|
+| **Trigger** | Author calls `POST /api/pen/sessions/:id/finalize/propose` with `draftText` | Automatic after Turn A (StoryPage) completes |
+| **Input** | Author's draft prose (plain text) + canon context | AI-generated story page + canon context |
+| **Output semantics** | **Full replacement** — model returns COMPLETE resulting inventory/injuries/scene; must carry forward everything that persists | **Delta** — model returns only what changed; engine merges via `resolvePageDelta` |
+| **Human-in-the-loop** | Proposal → author accepts/edits in publish dialog → adopted via `/finalize` | Fully automated; no human review step |
+| **Schema scope** | 13 fields (scene metadata + inventory + injuries + facts + flags + action classification) | ~30 fields (all of Pen's overlapping fields PLUS characters, places, threads, psychology, future notes, branchNames, minutesPassed, viableEnding) |
+| **Context budget** | 2 pages of prose (~3–5k tokens) | 5 previous pages + full story context (~14k+ tokens) |
+| **Credit cost** | Free (`PEN_FINALIZE_PROPOSE` = 0) | Part of page generation credit |
+| **Audit trail** | `penEdits` row with `editType: 'plan'` | No separate audit; embedded in generation |
+
+### 7.2 Field-Level Overlap Matrix
+
+| Field | Pen Schema | Turn B Schema | Identical? | Notes |
+|---|---|---|---|---|
+| `inventory` | `PenStateProposalInventoryItem[]` (full replacement) | `INVENTORY_ITEM_SCHEMA[]` (delta) | **Same shape, different semantics** | Pen model carries forward all items; Turn B outputs only changes |
+| `injuries` | `PenStateProposalInjury[]` (full replacement) | `INJURY_SCHEMA[]` (delta) | **Same shape, different semantics** | Same pattern as inventory |
+| `mood` | `enum moods` | `enum moods` (page stage) | **Identical** | Both constrained to same enum |
+| `weather` | `enum placeWeathers` | `enum placeWeathers` (page stage) | **Identical** | Both constrained to same enum |
+| `calendarDate` | `string YYYY-MM-DD` | `string yyyy-MM-dd` | **Identical** | Same format |
+| `timeOfDay` | `string` | `string` | **Identical** | Same semantics |
+| `keyEvents` | `string[]` | `string[]` (page stage) | **Identical** | Both editorial scene metadata |
+| `keyObjects` | `string[]` | `string[]` (page stage) | **Identical** | Both editorial scene metadata |
+| `plotFlags` | `{fact, type, isMajorEvent}[]` | `addPlotFlags` (same shape) | **Identical** | Same schema structure |
+| `facts` | `{key, value, type?, reason?}[]` | `factUpdates` (same shape) | **Near-identical** | Pen uses `facts`, Turn B uses `factUpdates`; Turn B adds `page` field |
+| `outline` | Separate `outline` field with `isDone`/`doneAtPage` | Nested in `viableEnding.outline` | **Same concept, different nesting** | Pen surfaces outline as top-level; Turn B nests under viableEnding |
+| `actionType` | `enum actionTypes` | ❌ not in delta | **Pen-only** | D-4 core: classifies author's choice text |
+| `actionHintText` | `string` | ❌ not in delta | **Pen-only** | D-4 core: AI-inferred reader-facing hint |
+| `actionHintType` | `enum actionHintTypes` | ❌ not in delta | **Pen-only** | D-4 core: hint classification |
+| `newCharacters` | ❌ | `INITIAL_CHARACTER_SCHEMA[]` | **Turn B-only** | |
+| `updatedCharacters` | ❌ | `UPDATE_CHARACTER_SCHEMA[]` | **Turn B-only** | |
+| `relationshipUpdates` | ❌ | `RELATIONSHIP_UPDATE_SCHEMA[]` | **Turn B-only** | |
+| `newPlaces` / `updatedPlaces` | ❌ | `INITIAL_PLACE_SCHEMA[]` / `UPDATE_PLACE_SCHEMA[]` | **Turn B-only** | |
+| `contextHistory` | ❌ (Pen doesn't update running summary) | `string` | **Turn B-only** | |
+| `newThreads` / `updateThreads` / `addClues` / `closeThreads` | ❌ | Thread schemas | **Turn B-only** | |
+| `futureNoteAdd` / `futureNoteRemove` | ❌ | `FUTURE_NOTE_SCHEMA[]` | **Turn B-only** | |
+| `traumaTagAdd` / `traumaTagRemove` | ❌ | `string[]` | **Turn B-only** | |
+| `flagUpdates` (psychological) | ❌ | `{type, level}[]` | **Turn B-only** | |
+| `viableEnding` | ❌ (Pen uses separate `/ending` endpoint) | `VIABLE_ENDING_SCHEMA` | **Turn B-only** | |
+| `minutesPassed` | ❌ | `number` | **Turn B-only** | |
+| `branchNames` | ❌ | `string[]` | **Turn B-only** | |
+
+### 7.3 Prompt Context Comparison
+
+**Pen State Proposal** (`buildPenStateProposalPrompt` in `src/utils/pen-prompt.ts:1053`):
+```
+Stable-per-session: persona, summary, lore, narrative style, language
+Per-page: CANONICAL STATE (via buildCanonicalBlock), RECENT STORY (2 pages)
+Per-request: CURRENT DRAFT, CURRENT SCENE, CURRENT INVENTORY & INJURIES
+Option lists: MOOD OPTIONS, WEATHER OPTIONS, CATEGORY OPTIONS, ACTION TYPE OPTIONS, etc.
+Estimated: ~3–5k tokens
+```
+
+**Turn B StateDelta** (`buildStateDeltaPrompt` in `src/utils/prompt.ts:1218`):
+```
+TASK: formatStateDeltaTaskPrompt (delta instructions)
+CONTEXT: formatNextPageStoryContextPrompt (~14k tokens)
+  - CURRENT PHASE + phase goal
+  - MAIN CHARACTER (POV) + inventory + injuries
+  - STORY CONTEXT (contextHistory + temporal)
+  - RELEVANT PAST EVENTS (vector retrieval)
+  - CURRENT FACTS
+  - PREVIOUS PAGES (5 pages of prose)
+  - CURRENT PAGE (the generated page)
+  - CURRENT SITUATION
+  - ACTION SELECTION
+GENERATED PAGE: formatGeneratedPageForDeltaPrompt
+NARRATIVE RULES: formatNextPageNarrativePrompt
+FIELD INSTRUCTIONS: buildStateDeltaFieldInstructions (all delta fields)
+Estimated: ~14k+ tokens
+```
+
+### 7.4 Service Flow Comparison
+
+**Pen** (`proposePenStateUpdates` in `src/services/pen.ts:2332`):
+1. Load session + book + state + branch path + page texts
+2. Resolve triggered lore entries
+3. Build prompt via `buildPenStateProposalPrompt`
+4. Execute AI with `PEN_STATE_PROPOSAL_SCHEMA` → `aiPrompt`
+5. Coerce via `coerceStateProposal` (validates enums, clamps lengths, merges outline)
+6. Write audit trail (`penEdits` editType `plan`)
+7. Return proposal to frontend
+8. **Human review**: author accepts/edits in publish dialog
+9. `finalizePenDraft` injects adopted fields into `generatedStoryPage`
+10. `resolvePageDelta` computes state delta from the story page
+11. `persistPageWithState` writes page + new state
+
+**Turn B** (automated within `generateStoryGenerationMultiTurn`):
+1. Inherited from Turn A (state, action, generated page)
+2. `runGenerationStage` → `buildStateDeltaPrompt`
+3. Execute AI with `STATE_DELTA_WITH_BRANCH_SCHEMA_DEFINITION` → `runGenerationStage`
+4. `resolvePageDelta` computes state delta from AI output
+5. `persistPageWithState` writes page + new state
+
+### 7.5 Shared Infrastructure Already in Place
+
+Both systems already share:
+- **`buildCanonicalBlock`** (`src/utils/pen-prompt.ts:213`) — renders compact canonical state block; Pen calls it directly, engine uses a different renderer
+- **`createNarrativeStyle`** (`src/utils/narrative-style.ts`) — both generate narrative style instructions from state
+- **`resolvePageDelta`** (`src/utils/prompt.ts`) — both ultimately call this to compute the final state delta
+- **`advanceStoryState`** (`src/utils/story.ts`) — both advance state before delta computation
+- **`processPlotFlagUpdates` / `processFactUpdates`** (`src/utils/story.ts`) — both apply flags/facts to state
+
+### 7.6 Recommendation: Targeted DRY Extraction (Not Full Unification)
+
+**Full unification is NOT recommended** because:
+1. Different output semantics (replacement vs delta) make a shared schema impractical
+2. Different schema scopes (Pen is deliberately narrow; Turn B is comprehensive)
+3. Different context budgets (Pen is lightweight for sub-second latency; Turn B has full context)
+4. Different execution patterns (proposal+human-review vs automated)
+
+**Targeted DRY extraction IS recommended** for these shared pieces:
+
+#### IMP-04: Shared Inventory/Injury Coercion (Priority: P3, Effort: 1 hr)
+
+Both systems validate and coerce inventory items and injuries with near-identical logic:
+- `coerceStateProposalInventoryItem` (`src/services/pen.ts:2051`)
+- `coerceStateProposalInjury` (`src/services/pen.ts:2105`)
+- Turn B's `INVENTORY_ITEM_SCHEMA` / `INJURY_SCHEMA` (`src/schema/story.ts`)
+
+**Proposal**: Extract shared `coerceInventoryItems(raw: unknown[]) → InventoryItem[]` and `coerceInjuries(raw: unknown[]) → Injury[]` into a new `src/utils/state-coercion.ts` module. Both Pen and Turn B call these instead of implementing their own validation. The `coerceStateProposal` function in `pen.ts` becomes a thin wrapper that calls the shared coercers + Pen-specific fields (outline, plotFlags, facts, actionType/hint).
+
+#### IMP-05: Shared Field Instruction Fragments (Priority: P3, Effort: 45 min)
+
+The overlapping fields (inventory, injuries, facts, flags) have nearly identical instruction prose in:
+- `PEN_STATE_PROPOSAL_SYSTEM` (`src/utils/pen-prompt.ts:779`)
+- `buildStateDeltaFieldInstructions` (`src/utils/field-instructions.ts:333`)
+
+**Proposal**: Extract shared instruction fragments for inventory/injuries/facts/flags into `src/utils/field-instructions.ts` as named exports (e.g., `INVENTORY_FIELD_INSTRUCTIONS`, `INJURIES_FIELD_INSTRUCTIONS`). Both Pen's system prompt and Turn B's field instructions compose from these fragments. This prevents the two from drifting when inventory semantics evolve (e.g., the `amount: 0 → auto-remove` rule).
+
+#### IMP-06: Shared Plot Flag / Fact Coercion (Priority: P3, Effort: 30 min)
+
+Both systems coerce plot flags and facts with identical validation:
+- `coerceStateProposal` (`src/services/pen.ts:2231–2259`)
+- Turn B's schema-level validation + `processPlotFlagUpdates` / `processFactUpdates`
+
+**Proposal**: Extract `coercePlotFlags(raw: unknown[]) → PlotFlag[]` and `coerceFacts(raw: unknown[]) → FactUpdate[]` into `src/utils/state-coercion.ts`.
+
+### 7.7 Updated Priority Matrix
+
+| Priority | ID | Issue | Effort | Risk |
+|---|---|---|---|---|
+| **P1** | NEW-02 | Turn B context pruning (~25–35% token savings) | 45 min | Low |
+| **P1** | NEW-03 | Evaluator prompt deduplication (~6k tokens saved) | 1 hr | Low |
+| **P2** | NEW-04 | AbortSignal propagation in non-streaming path | 30 min | Low |
+| **P2** | NEW-08 | Semantic checks in checkpoint cache gate | 15 min | Low |
+| **P3** | NEW-01 | Rename `buildEvaluatorOuputFormatBlurb` | 5 min | None |
+| **P3** | NEW-05 | Document RULES_FALSE_PREVIEW omission rationale | 5 min | None |
+| **P3** | NEW-06 | Memoization key robustness | 15–30 min | Low |
+| **P3** | NEW-07 | Extract evaluation thresholds to named constants | 10 min | None |
+| **P3** | NEW-09 | Bounded narrative prompt cache | 15 min | None |
+| **P3** | IMP-04 | Shared inventory/injury coercion | 1 hr | Low |
+| **P3** | IMP-05 | Shared field instruction fragments | 45 min | Low |
+| **P3** | IMP-06 | Shared plot flag / fact coercion | 30 min | Low |
+
+### 7.8 Updated Summary
+
+| Category | Count | Status |
+|---|---|---|
+| Previous bugs (BUG-01–04) | 4 | All fixed |
+| Previous issues (ISSUE-05–07) | 3 | 1 fixed, 2 deferred |
+| New issues found | 9 | Open |
+| Design improvements | 3 | Documented |
+| Pen/Turn B overlap analysis | 1 | Documented (§7) |
+| New DRY improvements | 3 | Proposed (IMP-04–06) |

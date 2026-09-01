@@ -16,7 +16,8 @@
 - [ ] search jaccard similarity (by book keywords & title)
 - [ ] need change to cursor pagination?
 
-[ ] pas split multi-turn udah stable, DRY infer state delta dari story page sama pen finalize propose
+[ ] multi-turn & pen propose DRY infer state delta: `PEN_STATE_PROPOSAL_vs_MULTI_TURN_TURND_DRY_ROADMAP.md`
+[ ] tackle new issues in `MULTI_TURN_PAGE_GENERATION_BUG_REPORT.md`
 
 ---
 
@@ -78,28 +79,22 @@ I think this is good opportunity because:
 - Now it moving towards AI-native Interactive fiction where writers can write any genre, not only psychological thrillers
 - there's Pen text adventure mode
 
-So:
-- add MC & character's in-world level (and world's `maxLevel` as book meta or story state)
-- enable with "Enable level system" in Pen setup wizard or when creating book
-- add `levelRecognition` (known/unknown/approximate) in Character or CharacterRelationship type
+you can thoroughly learn and examine current implementation around StoryState, Character, and CharacterRelationship type in @src/types/character.ts @src/types/story.ts @src/utils/story.ts @src/utils/characters.ts 
 
-Please elaborate, grounded on actual codebase
+LEVELING SYSTEM (intended):
+- add MC & character's in-world `level` (and world's `maxLevel` as book meta or story state)
+- in pen creation wizard: enable with "Enable level system" when create pen book (auto-checked for `text_adventure` mode)
+- in original & on-demand book generation: AI should infer from story theme input whether leveling system is needed
+- in `Character`/`CharacterRelationship` type: add optional `levelRecognition` prop (known/unknown/approximate)
+- in pen editor: show character's level in `CastChip.tsx`
+- in reader page: show character's level in "lore on hover" popover, ReaderPageInfo, PageInfoModal
 
-
-please thoroughly learn and examine current implementation around StoryState, Character, and CharacterRelationship type in @src/types/character.ts @src/types/story.ts @src/utils/story.ts @src/utils/characters.ts 
 please write a comprehensive roadmap MD for this in @docs/roadmap\ , grounded on actual codebase
-
-LEVELING SYSTEM:
-- add MC & character's in-world `level` (and world's `maxLevel`)
-- enable with "Enable level system" when create pen book (auto-checked for "text adventure" mode)
-- for original & on-demand book generation, AI should infer whether leveling system is necessary
-- add `levelRecognition` in `Character`/`CharacterRelationship` type
-- show character's level in `CastChip.tsx`
 
 ---
 
 [@] sync sampling formula with ai-sampling.ts
-[ ] implement trust and safety enforcement system (TODO-trust-safety.md & TRUST_AND_SAFETY_ENFORCEMENT_SYSTEM.md)
+[@] implement trust and safety enforcement system (TODO-trust-safety.md & TRUST_AND_SAFETY_ENFORCEMENT_SYSTEM.md)
 [ ] on book.ending edit, evaluate with AI for security and plausibility
 [ ] always generate AI illustration for page 1
 [ ] can you apply requireVerifiedEmail middleware on "Profile & account management routes" routes first, sequentially?
