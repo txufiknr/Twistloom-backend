@@ -71,6 +71,8 @@ export const pages = pgTable(
     mood: text("mood").$type<Mood>(), // Current emotional atmosphere
     placeId: text("place_id"), // Current place ID where the story is taking place
     weather: text("weather").$type<PlaceWeather>(), // Current weather conditions at the place
+    imagePrompt: text("image_prompt"), // AI-written, English-only text-to-image description of this page's most visually striking moment (optional — future-proofing for selective illustration, see StoryScene JSDoc in types/story.ts)
+    imageImportance: real("image_importance"), // 0.0-1.0, how much this page rewards being illustrated (optional; travels with imagePrompt)
     calendarDate: text("calendar_date"), // Current in-world date (e.g., "2026-07-26")
     elapsedDays: integer("elapsed_days"), // Days elapsed since the story begin
     timeOfDay: text("time_of_day"), // Current time mark (e.g., time range, 'night', 'HH:mm', 'unknown')

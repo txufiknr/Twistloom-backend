@@ -383,6 +383,14 @@ function pushListSection<T>(lines: string[], label: string, items: T[] | undefin
  * @param characters - Record of character memories keyed by character ID
  * @returns Formatted string for prompt inclusion
  *
+ * Note: the MC intentionally never gets an `[ID: ...]` tag here (see the
+ * example's first line below) — every story has exactly one MC, so there's
+ * no need to disambiguate one from a list the way side characters do. The
+ * dialogue-attribution convention (RULES_DIALOGUE_ATTRIBUTION in
+ * utils/prompt.ts) relies on this: it uses the reserved literal `mc` for
+ * lines the MC speaks aloud, specifically because no real character ID is
+ * ever exposed here for the model to confuse it with.
+ *
  * @example
  * ```
  * · Sarah Chen (MC) - 28 years old, female

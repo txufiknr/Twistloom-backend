@@ -51,12 +51,13 @@ function buildNextPageFieldInstructionSections(state: StoryState, action: Action
   { fields: ['text'], stage: 'page', text: `text
   - Write in the target language's first-person singular. Never refer to the MC as "the protagonist" or "the narrator".
   - Continue seamlessly from the previous page.${sceneType === 'transition' ? '' : ` No time skip. No location jump. No off-screen actions.`}
-  - ${isDialogueAction ? `It's a dialogue action, so begin directly with "[dialogue]."` : `Begin immediately with the chosen action — lead with the target language's action phrase or any necessary causal steps.`}
+  - ${isDialogueAction ? `It's a dialogue action — open the page with the MC actually speaking those words aloud as narrated first-person dialogue (marked per DIALOGUE ATTRIBUTION MARKERS).` : `Begin immediately with the chosen action — lead with the target language's action phrase or any necessary causal steps.`}
   - Open mid-moment, but maintain causal continuity. Avoid recap or unnecessary setup.
   - Open from the physical state the previous page ended on (where the MC is, how their body is positioned). If that baseline isn't unambiguous, establish it in the first line.
   - Track the MC's body continuously: posture and orientation never change without a written physical transition. No off-screen repositioning.
   - Keep the camera welded to the MC: show only what they can see/hear/infer. Anchor every pronoun to one clear antecedent; name the owner before a body part acts.
   - This is a fast-paced story, don't over explain small details (e.g. clothing, accessories) unless they're plot important.
+  - Mark every spoken line with its speaker per DIALOGUE ATTRIBUTION MARKERS — [character_id]/[mc]/[???] on its own line before the quoted words. Never mark narration or internal thought.
 ${isEarlyPhase ? `  - Tone: unsettling, not terrifying. Something is wrong — but not yet catastrophic.` : ''}
 ${isMidPhase ? `  - Tone: escalating. Dread should feel earned and personal by now.` : ''}
 ${isLatePhase ? `  - Tone: fracturing. Reality and relationships should feel increasingly unstable.` : ''}
@@ -73,6 +74,11 @@ ${isLatePhase || isFinale ? `  - Familiar places should feel subtly wrong now �
   - Keep consistent with recent pages unless enough time has passed or the scene has moved somewhere conditions would plausibly differ.
   - Omit if not narratively relevant to this page.
 ${isLatePhase || isFinale ? `  - A sudden shift can heighten dread — but don't reuse it as a cheap scare every page.` : ''}` },
+  { fields: ['imagePrompt', 'imageImportance'], stage: 'page', text: `imagePrompt, imageImportance (optional — for future selective illustration; omit both if this page has nothing worth drawing)
+  - imagePrompt: ALWAYS write in ENGLISH regardless of the story's language — this is the one field exempt from the language rules above, since it feeds an image-generation model, not the reader. One to two sentences, concrete and filmable: character appearance/pose, setting, lighting/atmosphere, one key object or symbol. Evocative and atmospheric to match this story's psychological-horror tone — suggestion and mood over explicit gore.
+  - Never use character IDs, JSON field names, or game/UI terms (no "composure", "trauma tag", "momentum") inside imagePrompt — describe only what a camera could see.
+  - imageImportance: 0.0-1.0, how much this page rewards being illustrated. NOT the same as a major plot beat — a plot-critical phone call can be visually empty, a minor scene in a decaying carnival can be visually rich. 0.8-1.0 = a defining visual moment (a reveal, a monster's first full appearance, an ending); 0.4-0.7 = real visual character (a new place, a tense standoff); 0.0-0.3 = dialogue-heavy or interior pages with little to draw.
+  - Omit imageImportance whenever imagePrompt is omitted — the two travel together.` },
   { fields: ['calendarDate'], stage: 'page', text: `calendarDate:
   - Increment if the day has changed.
   - Use 'yyyy-MM-dd' format (e.g., "2026-07-26").` },

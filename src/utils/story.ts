@@ -1,4 +1,4 @@
-import { ARCHETYPE_ACTION_AFFINITY, DANGEROUS_ACTIONS, DEFAULT_SCENE_URGENCY, MAJOR_EVENT_CLIMAX_FLOOR, MANIPULATION_HINT_AFFINITY, MAX_ACTION_HISTORY, MAX_CHARACTERS, MAX_DOMINANT_TRAITS, MAX_FUTURE_NOTES, MAX_PLACES, MAX_TRAUMA_TAGS, MOMENTUM_BASELINE_SCORE, MOMENTUM_PERSISTENCE, MOMENTUM_RECENCY_WINDOW, MOMENTUM_THRESHOLDS, MOMENTUM_WEIGHTS, RESOLVING_DROP_THRESHOLD, SAFE_ACTIONS, SCENE_ROLE_DANGER, SCENE_TYPE_URGENCY, TENDENCY_RECENCY_WINDOW, THREAD_PRIORITY_WEIGHT, THREAT_PROXIMITY_SCORE, SANITY_DEFAULT_DECAY_RATE, SANITY_DEFAULT_MAX_COMPOSURE, SANITY_MIN_MAX_COMPOSURE, SANITY_REALITY_RESIST_COST, SANITY_RESOLUTION_RECOVERY, SANITY_TRAUMA_MAX_PENALTY } from "../config/story.js";
+import { ARCHETYPE_ACTION_AFFINITY, DANGEROUS_ACTIONS, DEFAULT_SCENE_URGENCY, MAJOR_EVENT_CLIMAX_FLOOR, MANIPULATION_HINT_AFFINITY, MAX_ACTION_HISTORY, MAX_CHARACTERS, MAX_DOMINANT_TRAITS, MAX_FUTURE_NOTES, MAX_PLACES, MAX_TRAUMA_TAGS, MEMORY_INTEGRITY_EARLY_PHASE_FLOOR, MEMORY_INTEGRITY_MID_PHASE_FLOOR, MOMENTUM_BASELINE_SCORE, MOMENTUM_PERSISTENCE, MOMENTUM_RECENCY_WINDOW, MOMENTUM_THRESHOLDS, MOMENTUM_WEIGHTS, REALITY_STABILITY_EARLY_PHASE_FLOOR, REALITY_STABILITY_MID_PHASE_FLOOR, RESOLVING_DROP_THRESHOLD, SAFE_ACTIONS, SCENE_ROLE_DANGER, SCENE_TYPE_URGENCY, TENDENCY_RECENCY_WINDOW, THREAD_PRIORITY_WEIGHT, THREAT_PROXIMITY_SCORE, SANITY_DEFAULT_DECAY_RATE, SANITY_DEFAULT_MAX_COMPOSURE, SANITY_EARLY_PHASE_FLOOR, SANITY_MID_PHASE_EARNED_CRASH_TRAUMA, SANITY_MID_PHASE_FLOOR, SANITY_MIN_MAX_COMPOSURE, SANITY_PHASE_DECAY_MULTIPLIER, SANITY_REALITY_RESIST_COST, SANITY_RESOLUTION_RECOVERY, SANITY_TRAUMA_MAX_PENALTY } from "../config/story.js";
 import { HIDDEN_STATE_DEFAULTS, STORY_STATE_DEFAULTS, SANITY_STATE_DEFAULTS } from "../schema/story.js";
 import { storyPhases, plotFlagTypes } from "../types/story.js";
 import { calculateHealthStatus, processCharacterUpdates } from "./characters.js";
@@ -1389,6 +1389,17 @@ export function updateHiddenState(state: StoryState, context: NarrativeContext):
   
   memoryScore = Math.max(0, Math.min(1.0, memoryScore));
 
+  // Phase floor (see MEMORY_INTEGRITY_EARLY_PHASE_FLOOR's JSDoc in
+  // config/story.ts): unlike composure, memoryScore is recomputed fresh
+  // every page with no memory of past pages, so without this a single
+  // worst-case page can swing straight to 'corrupted' as early as page 5 —
+  // which forces determineNarrativeMode (narrative-style.ts) into
+  // 'fractured' regardless of phase.
+  const memoryPhaseFloor = phase === 'EARLY' ? MEMORY_INTEGRITY_EARLY_PHASE_FLOOR
+    : phase === 'MID' ? MEMORY_INTEGRITY_MID_PHASE_FLOOR
+    : 0;
+  memoryScore = Math.max(memoryScore, memoryPhaseFloor);
+
   if (memoryScore <= 0.35) state.memoryIntegrity = "corrupted";
   else if (memoryScore <= 0.65) state.memoryIntegrity = "fragmented";
   else state.memoryIntegrity = "stable";
@@ -1406,6 +1417,17 @@ export function updateHiddenState(state: StoryState, context: NarrativeContext):
   
   if (isFinale) stabilityScore -= 0.3; // The world inherently breaks in the finale
   stabilityScore = Math.max(0, Math.min(1.0, stabilityScore));
+
+  // Phase floor — same rationale as memoryScore above: stabilityScore takes
+  // its own direct momentum/sceneStress hit independent of memoryIntegrity,
+  // so fixing memoryScore alone doesn't stop realityStability from reaching
+  // 'broken' on a single early worst-case page. realityStability feeds
+  // prose pressure the same way memoryIntegrity does (see formatHiddenState
+  // in utils/prompt.ts), so it gets the same guard.
+  const stabilityPhaseFloor = phase === 'EARLY' ? REALITY_STABILITY_EARLY_PHASE_FLOOR
+    : phase === 'MID' ? REALITY_STABILITY_MID_PHASE_FLOOR
+    : 0;
+  stabilityScore = Math.max(stabilityScore, stabilityPhaseFloor);
 
   if (stabilityScore <= 0.3) state.hiddenState.realityStability = "broken";
   else if (stabilityScore <= 0.6) state.hiddenState.realityStability = "slipping";
@@ -1471,18 +1493,47 @@ export function ensureSanityState(state: StoryState): SanityState {
  * Behavior:
  * - Permanent maxComposure shrinks with trauma tags
  * - Decays under rising/critical momentum, amplified by threatProximity
+ * - Phase-scaled (see below) so the SAME momentum/threat combination decays
+ *   composure slower in EARLY and faster in FINALE, without changing what
+ *   "critical momentum" or "immediate threat" mean at any phase
  * - Small recovery on resolution momentum (capped at maxComposure)
  * - First crash sets hasCrashed + crashedAtPage (sticky); further decay freezes
  * - Crisis side-effects (ending pressure) are applied in applySanityCrisisEffects
  *
  * Spending composure to resist reality collapse is opt-in via
- * {@link spendComposureToResistReality} (reader action), not automatic here.
+ * {@link spendComposureToResistReality} (reader action), not automatic here
+ * — that action deliberately bypasses the phase floors below, since it is a
+ * reader-initiated, consensual spend rather than involuntary decay.
+ *
+ * ### Phase-awareness (composure pacing across the story)
+ *
+ * Prior to phase-awareness, worst-case decay (critical momentum + immediate
+ * threat + 3 trauma tags) could crash composure from 100 to 0 in as few as
+ * ~8 pages — regardless of whether that was page 2 or page 190. That
+ * defeated `storyPhases.EARLY`'s goal of "ground the character, keep
+ * tension light" by putting the reader in crisis before the mystery had
+ * even been seeded. Two mechanisms now scale decay to phase:
+ *
+ * 1. `SANITY_PHASE_DECAY_MULTIPLIER` scales the base momentum-driven decay
+ *    (applied BEFORE the threat/trauma amplifiers below, so those amplifiers
+ *    still mean the same thing at every phase — only the base severity
+ *    changes).
+ * 2. A phase floor prevents decay from crossing a threshold at all:
+ *    - EARLY: hard floor at `SANITY_EARLY_PHASE_FLOOR` — composure can
+ *      never reach 0, so `hasCrashed` cannot trigger. EARLY should read as
+ *      "good and relieving," not a ticking crisis clock.
+ *    - MID: soft floor at `SANITY_MID_PHASE_FLOOR`, lifted only once
+ *      `traumaTags.length >= SANITY_MID_PHASE_EARNED_CRASH_TRAUMA` — a MID
+ *      crash is possible but should be rare and narratively earned through
+ *      accumulated trauma, not incidental to a lucky/unlucky momentum run.
+ *    - LATE / FINALE: no floor — composure can shatter freely, matching
+ *      `storyPhases.LATE`/`.FINALE`'s "fracture"/"collapse" goals.
  *
  * @param state - Current story state (mutated in place)
  * @param context - Current momentum, scene type, and phase
  */
 export function updateSanity(state: StoryState, context: NarrativeContext): void {
-  const { momentum = 'building' } = context;
+  const { momentum = 'building', phase = 'EARLY' } = context;
   const sanity = ensureSanityState(state);
 
   // Trauma permanently reduces max capacity; clamp current composure to new max
@@ -1512,6 +1563,11 @@ export function updateSanity(state: StoryState, context: NarrativeContext): void
     decayThisPage = Math.round(sanity.decayRate * 0.5);
   }
 
+  // Phase-scale the base decay BEFORE threat/trauma amplifiers — see
+  // "Phase-awareness" in the JSDoc above for why this ordering matters.
+  const phaseMultiplier = SANITY_PHASE_DECAY_MULTIPLIER[phase] ?? 1.0;
+  decayThisPage = Math.round(decayThisPage * phaseMultiplier);
+
   // Threat proximity amplifies decay
   if (state.hiddenState.threatProximity === 'immediate') {
     decayThisPage = Math.round(decayThisPage * 1.5);
@@ -1522,6 +1578,22 @@ export function updateSanity(state: StoryState, context: NarrativeContext): void
   // Every 3 trauma tags adds +1 decay this page
   if (state.traumaTags.length >= 3) {
     decayThisPage += Math.floor(state.traumaTags.length / 3);
+  }
+
+  // Phase floor — clamp decay so composure cannot cross the floor this page.
+  // EARLY's floor is unconditional (never crashes); MID's lifts once trauma
+  // has been "earned" (see SANITY_MID_PHASE_EARNED_CRASH_TRAUMA). LATE and
+  // FINALE have no floor (floor = 0 → clamp below is a no-op).
+  const phaseFloor = phase === 'EARLY'
+    ? SANITY_EARLY_PHASE_FLOOR
+    : phase === 'MID' && state.traumaTags.length < SANITY_MID_PHASE_EARNED_CRASH_TRAUMA
+      ? SANITY_MID_PHASE_FLOOR
+      : 0;
+  if (phaseFloor > 0 && sanity.composure - decayThisPage < phaseFloor) {
+    // Already-below-floor composure (e.g. inherited from a phase change) is
+    // left untouched rather than healed back up — this only stops further
+    // decay-driven erosion, it never restores composure on its own.
+    decayThisPage = Math.max(0, sanity.composure - phaseFloor);
   }
 
   if (decayThisPage > 0) {
@@ -2409,57 +2481,4 @@ export function getStoryStateInfo(state: StoryState): StoryStateInfo {
     charactersSlot,
     placesSlot,
   } satisfies StoryStateInfo;
-}
-
-/**
- * Generates language-specific tone and style constraints for the LLM prompt.
- * 
- * This ensures the AI avoids formal, robotic translations and maintains
- * a gritty, novelistic, and highly emotive first-person narrative voice.
- * It dynamically tailors negative constraints to the grammatical quirks of 
- * specific target languages (ISO 639-1) to prevent "Language Drift".
- *
- * @param {string} languageCode - The ISO 639-1 language code (e.g., 'en', 'id', 'es').
- * @returns {string} The localized style constraint prompt block.
- * 
- * @example
- * // Returns the universal baseline plus Indonesian overrides (e.g., forbidding "saya")
- * const stylePrompt = getLocalizedStyleConstraints('id');
- */
-export function getLocalizedStyleConstraints(languageCode: string): string {
-  // 1. The Universal Baseline: Applies to EVERY language to set the core Thriller identity.
-  const universalBaseline = `
-CRITICAL TONE & LOCALIZATION CONSTRAINTS:
-- LITERARY PROSE: Write in a highly evocative, novelistic style suitable for a gritty thriller. STRICTLY AVOID formal, academic, standard, or "AI-sounding" rigid vocabulary.
-- INFORMAL POV: The narrative voice must feel deeply personal and emotive. Never sound like a formal translator or assistant.`;
-
-  // 2. Language-Specific Overrides: Hard guardrails against default LLM formal behavior.
-  let localizedOverrides = "";
-
-  switch (languageCode.toLowerCase()) {
-    case 'id':
-      localizedOverrides = `
-- INDONESIAN OVERRIDES: You are STRICTLY FORBIDDEN from using "Bahasa Baku" (e.g., never use rigid phrasing like "Identik dengan saya"). You MUST use "aku" for the first-person pronoun—never use "saya". Maximize the use of poetic, visceral, and contemporary novelistic Indonesian.`;
-      break;
-
-    case 'es':
-      localizedOverrides = `
-- SPANISH OVERRIDES: Use informal, visceral phrasing. You MUST default to "tú" instead of the formal "usted" for internal monologue, unless the specific character dynamic demands it. Avoid sterile, textbook Spanish translations.`;
-      break;
-
-    case 'fr':
-      localizedOverrides = `
-- FRENCH OVERRIDES: Write in a modern, gritty literary style. Default to "tu" for internal thoughts and casual dialogue rather than the formal "vous". Avoid bureaucratic or polite phrasing.`;
-      break;
-
-    case 'ja':
-      localizedOverrides = `
-- JAPANESE OVERRIDES: AVOID polite/formal forms (Desu/Masu). Use casual, dramatic, or gritty literary forms (Da/De aru) appropriate for a psychological thriller inner monologue.`;
-      break;
-
-    // Add more languages as Twistloom expands
-  }
-
-  // Combine and return the clean constraint block
-  return `${universalBaseline}${localizedOverrides}`.trim();
 }

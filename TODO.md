@@ -93,6 +93,14 @@ please write a comprehensive roadmap MD for this in @docs/roadmap\ , grounded on
 
 ---
 
+how is `SANITY_*_PHASE_FLOOR` (clamp) fights with AI generation result in `updateSanity` function?
+what if AI totally drops the sanity in the page 5 narrative, but engine keep sanity 30 until page 30 (because page 30 is still early phase), so in page 6 to 30 sanity stays 30 regardless of what actually going on in the narrative?
+
+
+what about take out dynamic/language-conditional `localizedOverrides` outside system prompt (move down to user prompt)? thus keep system prompt static for prompt caching
+
+---
+
 [@] sync sampling formula with ai-sampling.ts
 [@] implement trust and safety enforcement system (TODO-trust-safety.md & TRUST_AND_SAFETY_ENFORCEMENT_SYSTEM.md)
 [ ] on book.ending edit, evaluate with AI for security and plausibility

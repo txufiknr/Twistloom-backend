@@ -361,7 +361,7 @@ export const UPDATE_PLACE_SCHEMA: AIJsonProperty = {
 };
 
 export const CHARACTER_PLAN_PROPERTIES: Record<keyof CharacterPlan, AIJsonProperty> = {
-  characterId: { type: 'string', description: 'Lowercase slug identifier (e.g., "Lisa Park" → "lisa_p")' },
+  characterId: { type: 'string', description: 'Lowercase slug identifier (e.g., "Lisa Park" → "lisa_p"). Always use underscore.' },
   knownName: { type: 'string', description: `Preferred alias, known as, nick, or reference based on recognitionLevel. If really unknown, use descriptions, pronouns, roles, or words interpreted by MC.` },
   realName: { type: 'string', description: 'Real full name, even if undisclosed yet.' },
   role: { type: 'string', description: 'Role or occupation known to the MC (e.g. "schoolmate", "librarian").' },
@@ -490,6 +490,8 @@ export const STORY_PAGE_GENERATION_SCHEMA: Record<keyof StoryPageGeneration, AIJ
   mood: { type: 'string', description: 'Current emotional atmosphere', enum: [...moods] },
   placeId: { type: 'string', description: 'Current place ID or "unknown"' },
   weather: { type: 'string', enum: [...placeWeathers], description: 'Current weather conditions' },
+  imagePrompt: { type: 'string', description: `Optional. Text-to-image-ready description (ALWAYS in English regardless of story language) of this page's single most visually striking moment — 1-2 sentences, concrete and filmable. Omit if nothing on this page is visually distinct.` },
+  imageImportance: { type: 'number', description: `Optional, 0.0-1.0. How much this page rewards being illustrated (not the same as plot significance). Omit whenever imagePrompt is omitted.` },
   calendarDate: { type: 'string', description: `Current in-world date in 'yyyy-MM-dd' format` },
   timeOfDay: { type: 'string', description: `Current time mark (e.g., 'night', 'HH:mm', '2 AM', 'unknown', time range)` },
   sceneType: { type: 'string', enum: [...Object.keys(sceneTypes)] },

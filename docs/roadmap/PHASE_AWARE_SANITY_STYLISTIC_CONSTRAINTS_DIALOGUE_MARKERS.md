@@ -1,9 +1,51 @@
 # Phase-Aware Sanity, Stylistic Constraints & Gamified Dialogue Enhancement
 
-**Status:** Proposed  
-**Created:** 2026-09-01  
-**Scope:** `src/utils/prompt.ts`, `src/utils/story.ts`, `src/config/story.ts`, `src/utils/narrative-style.ts`, new utility modules  
-**Priority:** High — affects narrative quality across all stories
+**Status:** Implemented — backend generation contract, schema, DB persistence, and prompt-caching hardening complete (2026-09-02). Frontend rendering in progress. See [Implementation Notes](#implementation-notes).
+**Created:** 2026-09-01 · **Last updated:** 2026-09-02
+**Scope:** `src/utils/prompt.ts`, `src/utils/story.ts`, `src/config/story.ts`, `src/types/story.ts`, `src/types/book.ts` (read-only, verified), `src/utils/field-instructions.ts`, `src/utils/characters.ts`, `src/utils/page-validation.ts`, `src/schema/story.ts`, `src/schema/db.ts` (Drizzle `pages` table), `src/services/book.ts` (page mappers), `src/utils/narrative-style.ts` (read-only, verified), `src/utils/player-profile.ts` (read-only, verified), new `src/utils/localized-style.ts`, new `src/utils/dialogue-parser.ts` · frontend: `reader-store.ts`, `SettingsModal.tsx`, new `dialogue-parser` (client), `StoryText.tsx` (pending), `ReaderPageClient.tsx` (pending)
+**Priority:** High — affects narrative quality and reader-facing rendering across all stories
+
+---
+
+## Implementation Notes
+
+### Round 1 (2026-09-01) — backend generation contract
+- Phase-scaled composure decay (`SANITY_PHASE_DECAY_MULTIPLIER`) + phase floors (`SANITY_EARLY_PHASE_FLOOR`=30 hard, `SANITY_MID_PHASE_FLOOR`=15 lifted only once `traumaTags.length >= SANITY_MID_PHASE_EARNED_CRASH_TRAUMA`=3) — extends this doc's flat-multiplier proposal with an earned-crash gate, since a multiplier alone makes a MID crash *less common*, not genuinely *rare*.
+- Phase-aware `formatSanityState`; enriched `storyPhases` (types/story.ts) with narrative beats (EARLY: relief/allies; MID: earned power-ups/weapons, shifting alliances; LATE: collapse possible) — kept out of `formatSanityState` to preserve the composure/narrative-goal separation this doc's own analysis established.
+- `RULES_DIALOGUE_ATTRIBUTION`, `[character_id]`/`[mc]`/`[???]` markers, `utils/dialogue-parser.ts`, soft validation hook — 2 malformed-regex bugs in this doc's own draft snippets fixed (missing capture-group paren in `stripDialogueMarkers` and the validation hook).
+- `utils/localized-style.ts` (id/es/fr/ja/ko/pt/de) — replaces a dead, unwired draft of the same function found sitting in `utils/story.ts`.
+- `imagePrompt`/`imageImportance` per-page fields added to the generation contract mid-round, as a forward-looking optional-illustration feature (not in this doc's original 3 problems).
+
+### Round 2 (2026-09-02) — closing gaps found once `schema/story.ts`, `schema/db.ts`, `services/book.ts`, `narrative-style.ts`, `player-profile.ts` came in hand
+
+**Schema/DB wiring for `imagePrompt`/`imageImportance` (previously flagged as blocked, now closed):**
+- `schema/story.ts`'s `STORY_PAGE_GENERATION_SCHEMA` (the AI JSON schema, `satisfies Record<keyof StoryPageGeneration, AIJsonProperty>`) — added both keys; cascades automatically into the first-page and multi-turn schemas via existing spread composition, no further edits needed there.
+- `schema/db.ts`'s Drizzle `pages` table — added `imagePrompt`/`imageImportance` columns (`text`/`real`, matching the `sceneFocus`-style score-column convention already used elsewhere).
+- `services/book.ts` — **three independent page mappers** needed the same two fields added by hand, since none of them derive from a single shared source: `mapToStoryPage` (would have failed to compile — `satisfies Record<keyof StoryPage, unknown>`), `mapToPersistedStoryPage` (would NOT have failed to compile, since optional fields don't force `satisfies X` to list them — silently drops the fields instead, which is worse), and `mapToEnrichedPage` (the reader-facing serializer — its `satisfies Record<keyof EnrichedStoryPage, unknown>` check is commented out in the source, so this one would have shipped silently broken with no compiler warning at all). Also added to the `DBNewPage` insert payload.
+- ⚠️ **Flagged, not changed:** `mapToEnrichedPage`'s commented-out `satisfies` check looks worth re-enabling (it's exactly the guard that would have caught this gap automatically), but re-enabling it without a full type-checker to verify against risks introducing a real compile error I can't detect with a syntax-only check. Left as-is; recommend the team re-enable it under `tsc`.
+
+**`[dialogue]` collision — investigated, not a bug, guarded further:**
+- `services/book.ts` revealed `stripActionTypeTags`, a pre-existing, *intentional* mechanism that strips bracketed `ActionType` control markers (e.g. `[dialogue].`) from page text before persistence. Round 1 had reworded `field-instructions.ts`'s dialogue-action instruction away from literally emitting `[dialogue].`, having read it as ambiguous prose rather than a known, working mechanism — that reword is still correct to keep (the strip function remains a harmless no-op safety net either way, and the reword reduces confusion with the new `[character_id]` markers), but it surfaced a **real, narrow collision risk**: `ACTION_TYPE_TAG_PATTERN` matches any of 13 reserved words in brackets (`explore/escape/social/risk/ignore/attack/deceive/protect/create/heal/dialogue/custom/other`) — if a side character's AI-generated ID ever exactly equals one of those words, their dialogue marker would be silently stripped before storage. No code-level slug generator exists to guard against this (character IDs are AI-generated, not deterministically slugified), so guarded at the prompt/schema level instead: `characterId`'s schema description and `RULES_DIALOGUE_ATTRIBUTION` both now explicitly forbid those 13 words plus `mc`/`???` as character IDs. This reduces but — same caveat as everywhere prompt compliance is the only guardrail — does not mathematically eliminate the risk.
+
+**New parallel finding — `memoryIntegrity`/`realityStability` had the same phase-blindness composure did:**
+- `narrative-style.ts`'s `determineNarrativeMode` forces `'fractured'` prose mode whenever `memoryClarity <= 0.3` (i.e. `memoryIntegrity === 'corrupted'`), with **no phase check** — the only existing phase gate is `isEnding` (FINALE) forcing fractured unconditionally; nothing stopped EARLY from reaching the same state.
+- Traced to `updateHiddenState` (story.ts): unlike composure, `memoryScore`/`stabilityScore` are recomputed **fresh every page** with no memory of prior pages — so this was never a "decays too fast" problem, it's that a single worst-case page (critical momentum + a horror-tagged scene + a couple of trauma tags) can swing straight to `'corrupted'`/`'broken'` with zero ramp-up, confirmed reachable as early as page 5.
+- Fixed with the same floor pattern as composure: `MEMORY_INTEGRITY_EARLY_PHASE_FLOOR`/`_MID_PHASE_FLOOR` and `REALITY_STABILITY_EARLY_PHASE_FLOOR`/`_MID_PHASE_FLOOR` (config/story.ts), applied in `updateHiddenState`. EARLY floors sit just above each resource's worst-band threshold so the *middle* band (fragmented/slipping — "seeds of doubt," per `storyPhases.EARLY`) stays reachable; only the worst band is floored out.
+- `narrative-style.ts` and `player-profile.ts` themselves needed **no changes** — both are pure consumers of `state.memoryIntegrity`/`state.hiddenState`, so they inherit the fix automatically. Confirmed neither file references `sanityState`/composure anywhere (the separation SANITY_STATE_ARCHITECTURE.md describes is real, not aspirational).
+
+**Self-review checklist now cross-checks prose against the composure band (new, not in original proposal):**
+- The clamp guarantees the composure *number* behaves correctly per phase, but nothing previously stopped the AI from narrating a full psychological break in prose while the engine correctly held the number well above 0 — a real narrative/mechanic mismatch risk, raised directly by the user. Added a bullet to both `buildNextPageReviewChecklist` and its Turn-A-duplicate `buildStoryPageReviewChecklist` (Section 2, Tension & Pacing) explicitly cross-checking narrated intensity against the Composure/Pressure band shown earlier in the same prompt. This is a second, independent check (self-review, not just generation-time steering) but — like the phase floor itself — is LLM compliance, not a hard guarantee; a keyword-heuristic backstop in `page-validation.ts` (same pattern as `checkDialogueMarkerCoverage`) was considered and deferred as likely too noisy to be useful signal.
+
+**Prompt-caching hardening (new, not in original proposal):**
+- `getLocalizedStyleConstraints`'s output was being spliced into the *system* prompt (via a `language` param on `buildPresetSystemPrompt`), which fragments the prompt-cache into one bucket per language instead of one shared entry across the whole platform — expensive given this system prompt includes every `RULES_*` block. `buildPresetSystemPrompt` is now 100% static given `(type, preset)` alone; the style constraints moved to the user turn instead (`formatNextPageNarrativePrompt`, unconditionally for both Turn A and Turn B; `buildBookCreationPrompt` for the first page) — both were already fully dynamic per call, so nothing was lost from caching that wasn't already uncached. `RULES_LANGUAGE_LOCALIZATION` stays in the system prompt since it's already language-agnostic prose. Trade-off worth watching: system-role instructions are generally followed slightly more reliably than user-role ones on weaker models in the waterfall.
+
+**Frontend (in progress):**
+- `reader-store.ts`: new `dialogueDisplayMode: 'plain' | 'gamified'` preference + `setDialogueDisplayMode`, following the existing `ReaderPrefs` pattern exactly (deep-merge-on-load already makes new fields forward-compatible, per the store's own persist logic).
+- `SettingsModal.tsx`: new toggle, reusing existing `soundtrackVolumeRow` styling — no new CSS needed.
+- New client-side `dialogue-parser` (mirrors `utils/dialogue-parser.ts`; duplicated rather than shared since frontend/backend read as separate deployable units from the files in hand).
+- **Still pending:** `StoryText.tsx` (both the static JSX render path and the TypeIt typewriter-animation path need to detect and render/strip markers — the animation path in particular needs care, since TypeIt's HTML typing behavior with block-level "balloon" markup hasn't been verified against a live implementation), `StoryText.module.css` (balloon styling), and confirming `ReaderPageClient.tsx` passes what `StoryText.tsx` will need (character/lore data for avatar+name resolution).
+
+**Still open from the original proposal:** OQ-3 (translation pipeline — strip or preserve markers), OQ-9 (marker visibility to readers pre-frontend-support) — resolved by the frontend work above once it lands.
 
 ---
 
@@ -11,18 +53,23 @@
 
 | # | Item | Status | Phase |
 |---|------|--------|-------|
-| 1 | Phase-aware composure decay (engine) | ⏳ Proposed | Story Engine |
-| 2 | Phase-aware composure prompt guidance | ⏳ Proposed | Prompt |
-| 3 | Language-specific stylistic constraints | ⏳ Proposed | Prompt |
-| 4a | Dialogue attribution rules (prompt) | ⏳ Proposed | Prompt |
+| 1 | Phase-aware composure decay (engine) | ✅ Implemented (extended with MID earned-trauma floor) | Story Engine |
+| 2 | Phase-aware composure prompt guidance | ✅ Implemented | Prompt |
+| 3 | Language-specific stylistic constraints | ✅ Implemented, relocated to user turn for cache efficiency | Prompt |
+| 4a | Dialogue attribution rules (prompt) | ✅ Implemented (+ reserved-word collision guard) | Prompt |
 | 4b | Character ID in prompt context | ✅ Already exists | — |
-| 4c | Dialogue parser utility | ⏳ Proposed | New Utility |
-| 4d | Validation hook for markers | ⏳ Proposed | Validation |
-| 5 | Early phase floor value decision | ⏳ Open | Design |
-| 6 | Dialogue marker format decision | ⏳ Open | Design |
-| 7 | Translation pipeline integration | ⏳ Open | Pipeline |
-| 8 | Prompt token budget impact | ⏳ Open | Performance |
-| 9 | Marker visibility to readers | ⏳ Open | Frontend |
+| 4c | Dialogue parser utility (backend) | ✅ Implemented (2 regex bugs fixed vs. this doc's draft) | New Utility |
+| 4c′ | Dialogue parser utility (frontend) | ✅ Implemented | New Utility |
+| 4d | Validation hook for markers | ✅ Implemented (soft/non-blocking) | Validation |
+| 5 | Early phase floor value decision | ✅ Resolved — 30 | Design |
+| 6 | Dialogue marker format decision | ✅ Resolved — line-start prefix, `[mc]` reserved token | Design |
+| 7 | Translation pipeline integration | ⏳ Open (needs translation-cron file) | Pipeline |
+| 8 | Prompt token budget impact | ✅ Accepted (~300-400 tokens, see OQ-4) | Performance |
+| 9 | Marker visibility to readers | 🔄 Settings + store done; `StoryText.tsx` rendering pending | Frontend |
+| 10 | `imagePrompt`/`imageImportance` per-page fields | ✅ Fully wired: generation contract, AI schema, DB columns, all 3 page mappers | New (added 2026-09-01) |
+| 11 | `memoryIntegrity`/`realityStability` phase floors | ✅ Implemented | Story Engine (new, found 2026-09-02) |
+| 12 | Composure/prose alignment self-review check | ✅ Implemented (soft, checklist-level) | Prompt (new, found 2026-09-02) |
+| 13 | Prompt-caching: static system prompt | ✅ Implemented | Prompt (new, 2026-09-02) |
 
 > **Legend:** ✅ Complete | ⏳ Pending | ◻️ Not Started | ⏩ Deferred | 🔄 In Progress
 
@@ -577,19 +624,30 @@ export function parseDialogueMarkers(text: string): DialogueSegment[] {
  *
  * @param text - Raw page text with markers
  * @returns Text with all [id] markers removed
+ *
+ * SHIPPED VERSION NOTE: the regex below as originally drafted here —
+ * `/^\[[\w_]+|\?\?\?)\]\s*/gm` — is malformed (missing the opening
+ * capture-group paren after `\[`, leaving a stray unmatched `)`); it throws
+ * `SyntaxError: Invalid regular expression` at import time rather than
+ * running. The actual shipped `utils/dialogue-parser.ts` fixes this by
+ * deriving both this function and `parseDialogueMarkers` from one source
+ * pattern string (`DIALOGUE_MARKER_SOURCE`) instead of two independently
+ * hand-written literals — see that file. Corrected inline below for anyone
+ * copying from this doc directly.
  */
 export function stripDialogueMarkers(text: string): string {
-  return text.replace(/^\[[\w_]+|\?\?\?)\]\s*/gm, '');
+  return text.replace(/^\[([\w_]+|\?\?\?)\]\s*/gm, '');
 }
 ```
 
-**◻️ Step 4d: Post-generation validation hook**
+**✅ Step 4d: Post-generation validation hook** — Implemented
 
-In the page validation pipeline (`validateGeneratedPage` / `checkGeneratedPage`), add a soft warning when markers are inconsistently used:
+In the page validation pipeline (`checkGeneratedPage`), a soft warning fires when markers are inconsistently used:
 
 ```typescript
-// In checkGeneratedPage or validateGeneratedPage:
-const hasAnyMarkers = /^\[[\w_]+|\?\?\?)\]/m.test(page.text);
+// In checkGeneratedPage (corrected regex — see stripDialogueMarkers note above
+// for the same missing-paren bug this snippet originally had too):
+const hasAnyMarkers = /^\[([\w_]+|\?\?\?)\]/m.test(page.text);
 const dialogueLines = page.text.match(/"[^"]+"/g);
 if (dialogueLines && dialogueLines.length > 2 && !hasAnyMarkers) {
   // Soft warning — don't reject, but log for prompt refinement
@@ -954,13 +1012,27 @@ The smallest context window in the waterfall is Cohere at ~32K tokens. 2,900 tok
 
 | Status | File | Changes |
 |--------|------|---------|
-| ◻️ | `src/config/story.ts` | Add `SANITY_PHASE_DECAY_MULTIPLIER`, `SANITY_EARLY_PHASE_FLOOR` |
-| ◻️ | `src/utils/story.ts` | Phase-gate `updateSanity()` decay logic |
-| ◻️ | `src/utils/prompt.ts` | Phase-aware `formatSanityState()`, add `RULES_DIALOGUE_ATTRIBUTION` |
-| ◻️ | `src/utils/localized-style.ts` | New file: `getLocalizedStyleConstraints()` |
-| ◻️ | `src/utils/dialogue-parser.ts` | New file: `parseDialogueMarkers()`, `stripDialogueMarkers()` |
-| ◻️ | `src/utils/page-validation.ts` | Soft warning for missing dialogue markers |
-| ◻️ | `docs/architecture/SANITY_STATE_ARCHITECTURE.md` | Update lifecycle docs to reflect phase-awareness |
+| ✅ | `src/config/story.ts` | Added `SANITY_PHASE_DECAY_MULTIPLIER`, `SANITY_EARLY_PHASE_FLOOR`, `SANITY_MID_PHASE_FLOOR`, `SANITY_MID_PHASE_EARNED_CRASH_TRAUMA`, `MEMORY_INTEGRITY_*_PHASE_FLOOR`, `REALITY_STABILITY_*_PHASE_FLOOR` |
+| ✅ | `src/utils/story.ts` | Phase-gated `updateSanity()`; phase-floored `memoryScore`/`stabilityScore` in `updateHiddenState()`; removed dead `getLocalizedStyleConstraints` draft (moved to localized-style.ts) |
+| ✅ | `src/utils/prompt.ts` | Phase-aware `formatSanityState()`; `RULES_DIALOGUE_ATTRIBUTION` (+ reserved-word collision guard); `imagePrompt`/`imageImportance` in all 3 output-format templates; `buildPresetSystemPrompt` reverted to static (no `language` param) for prompt-cache efficiency; style constraints moved to `formatNextPageNarrativePrompt`/`buildBookCreationPrompt`; composure/prose alignment bullet added to both review-checklist functions |
+| ✅ | `src/types/story.ts` | Enriched `storyPhases` EARLY/MID/LATE narrative-beat text; added `imagePrompt`/`imageImportance` to `StoryScene` |
+| ✅ | `src/utils/localized-style.ts` | New file: `getLocalizedStyleConstraints()` — fuller id/es/fr/ja/ko/pt/de coverage than the dead draft it replaces |
+| ✅ | `src/utils/dialogue-parser.ts` | New file: `parseDialogueMarkers()`, `stripDialogueMarkers()`, `hasDialogueMarkers()` — regex bugs from this doc's own draft fixed |
+| ✅ | `src/utils/page-validation.ts` | Soft warning for missing dialogue markers (`checkDialogueMarkerCoverage`); soft range-check for `imageImportance` |
+| ✅ | `src/utils/field-instructions.ts` | Added `imagePrompt`/`imageImportance` field instructions; fixed a pre-existing `[dialogue].` literal that collided with the new marker convention |
+| ✅ | `src/utils/characters.ts` | JSDoc note on `formatCharactersForPrompt` explaining why the MC has no `[ID: ...]` tag (ties into the reserved `[mc]` marker) |
+| ✅ | `src/schema/story.ts` | `imagePrompt`/`imageImportance` added to `STORY_PAGE_GENERATION_SCHEMA`; `characterId` description now forbids the 13 reserved ActionType words + `mc`/`???` |
+| ✅ | `src/schema/db.ts` (Drizzle `pages` table) | Added `imagePrompt` (text) / `imageImportance` (real) columns |
+| ✅ | `src/services/book.ts` | `imagePrompt`/`imageImportance` added to the `DBNewPage` insert payload and all 3 independent page mappers (`mapToStoryPage`, `mapToPersistedStoryPage`, `mapToEnrichedPage`) — see Round 2 notes above for why each needed its own fix |
+| ✅ (verified, no change needed) | `src/utils/narrative-style.ts` | Confirmed no `sanityState`/composure reference anywhere; `phaseDirectives` text confirmed complementary (not conflicting) with `storyPhases`; this is the file that surfaced the `memoryIntegrity` finding above |
+| ✅ (verified, no change needed) | `src/utils/player-profile.ts` | Confirmed pure consumer of `state.memoryIntegrity`/flags; inherits the phase-floor fix automatically; confirmed no sanityState reference |
+| ✅ | `docs/architecture/SANITY_STATE_ARCHITECTURE.md` | Updated lifecycle docs and constants table to reflect phase-awareness |
+| ✅ | `reader-store.ts` (frontend) | New `dialogueDisplayMode` preference + setter |
+| ✅ | `SettingsModal.tsx` (frontend) | New toggle for dialogue display mode |
+| ✅ | `dialogue-parser` (frontend, new file) | Client-side marker parsing, mirrors the backend module |
+| 🔄 | `StoryText.tsx` / `StoryText.module.css` (frontend) | Pending — marker-aware rendering for both the static and TypeIt animation paths |
+| ⏳ | `ReaderPageClient.tsx` (frontend) | Not yet reviewed for whether it already passes what `StoryText.tsx` will need |
+| ⚠️ flagged, not changed | `src/services/book.ts`'s `mapToEnrichedPage` | Its `satisfies Record<keyof EnrichedStoryPage, unknown>` check is commented out in the source — recommend re-enabling under `tsc` (couldn't verify safely with only a syntax-only checker in hand) |
 
 ---
 

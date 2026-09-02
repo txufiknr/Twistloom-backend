@@ -7,6 +7,7 @@ import { createNonRetryableError } from "./retry.js";
 import { createCacheKey } from "./cache.js";
 import { TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_ACTIVE_THREADS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS, MAX_THREADS_CLUES, FUTURE_NOTE_LOOKAHEAD_DAYS } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
+import { getLocalizedStyleConstraints } from "./localized-style.js";
 import { buildNextPageFieldInstructions, buildStoryPageFieldInstructions, buildStateDeltaFieldInstructions } from "./field-instructions.js";
 import { aiPrompt, createAIOptionsWithSchema, resolveUseStringEvaluator, runEvaluationPass } from "./ai-chat.js";
 import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, applyStateDelta, advanceStoryState, calculatePsychologicalDeltas, mapFutureNoteWithKey, createStoryThread } from "./story.js";
@@ -291,6 +292,40 @@ ${formatKeyValueList(storyMomentums)}`;
 export const RULES_SCENE_TYPES = `SCENE TYPES (sorted by most important):
 ${formatKeyValueList(sceneTypes)}`;
 
+/**
+ * Dialogue-marker convention for gamified dialogue UI. The frontend parses
+ * marked lines (see utils/dialogue-parser.ts's `parseDialogueMarkers`,
+ * pattern `^\[([\w_]+|\?\?\?)\]\s*` anchored to line-start with the
+ * multiline flag) and renders them as distinct speech elements instead of
+ * plain prose.
+ *
+ * Scoped-down version of the fuller structured-dialogue-block concept in
+ * TODO-gamified-dialogue-chatgpt.md: markers only, no schema/JSON change,
+ * so existing `text` rendering keeps working even before the frontend adds
+ * marker-aware UI (it just reads as `[tom_m] "Hello."` in plain text today).
+ *
+ * IDs, not display names: the CHARACTERS section already lists every side
+ * character as `[ID: character_id]` (see `formatCharactersForPrompt` in
+ * characters.ts), so the AI always has a valid ID to mark with. Resolving
+ * an ID to a reader-facing name (including recognition-level gating via
+ * RULES_CHARACTER_RECOGNITION) is the frontend's job at render time — the
+ * marker itself is never a display name.
+ *
+ * `[mc]` is a reserved literal, not a real character ID (the MC has none —
+ * `formatCharactersForPrompt` never lists one for the MC by design, since
+ * there is always exactly one MC per story). Side-character IDs are always
+ * derived from name/role slugs (e.g. `tom_m`, `lisa_park`), so a bare `mc`
+ * never collides with one in practice.
+ */
+export const RULES_DIALOGUE_ATTRIBUTION = `DIALOGUE ATTRIBUTION MARKERS:
+- Every line of SPOKEN dialogue from a side character starts with that character's ID in brackets, on its own line: [character_id] "Dialogue text."
+- Use the existing character ID. Never a display name, nickname, or an ID you invent.
+- If the MC speaks ALOUD to another character, prefix that line with the reserved marker [mc] — e.g. [mc] "Stay back."
+- If the speaker's identity is deliberately unknown to the reader (a voice on a phone, someone in the dark), use [???] instead of an ID.
+- Never mark narration or internal thoughts. Only actual quoted words.
+- One marker per spoken line, placed once at the very start of that line.
+- This is a structural marker for the app's UI, not narrative content. Never explain, reference, or acknowledge it within the story itself.`;
+
 // ============================================================================
 // WRITING PRESET PROMPT BUILDERS
 // ============================================================================
@@ -312,6 +347,7 @@ function buildFirstPageRuleSet(preset: WritingPreset = 'default'): string {
     RULES_EMBODIED_SCENE_CONTINUITY,
     pageTextRules,
     RULES_ACTIONS,
+    RULES_DIALOGUE_ATTRIBUTION,
   ].join('\n\n---\n');
 }
 
@@ -349,6 +385,22 @@ function buildFirstPageRuleSet(preset: WritingPreset = 'default'): string {
  * RULES_FALSE_PREVIEW is intentionally kept OUT of state-delta: it's a prose
  * technique enacted in page text (Turn A), not something any delta field
  * encodes.
+ *
+ * This function is deliberately 100% deterministic given `(type, preset)` —
+ * no story/book-specific input of any kind, including language. That's a
+ * prompt-caching decision, not an oversight: earlier this took an optional
+ * `language` param and spliced `getLocalizedStyleConstraints`'s per-language
+ * output straight into the system prompt. That works, but every distinct
+ * language fragments the system-prompt cache into its own bucket instead of
+ * every generation call across the whole platform sharing ONE cache entry —
+ * this system prompt is large (every RULES_* block), so that fragmentation
+ * is expensive at scale. The language-specific style constraints now live in
+ * the user turn instead — see `formatNextPageNarrativePrompt`'s
+ * `includeProseStyle` block and `buildBookCreationPrompt`'s LANGUAGE
+ * REQUIREMENT section — where per-call content was already fully dynamic
+ * (and thus never cached) regardless. RULES_LANGUAGE_LOCALIZATION stays here
+ * because it's already language-agnostic prose (never names a specific
+ * language), so it costs nothing to keep in the static, cacheable part.
  */
 function buildPresetSystemPrompt(type: 'first' | 'next' | 'state-delta', preset: WritingPreset = 'default'): string {
   const writingStyle = PROMPT_SYSTEM_WRITING_STYLE[preset] ?? PROMPT_SYSTEM_WRITING_STYLE.default;
@@ -378,8 +430,9 @@ function buildPresetSystemPrompt(type: 'first' | 'next' | 'state-delta', preset:
     }
   })();
 
-  // Language enforcement is preset-independent (applies identically across
-  // every generation phase/turn), so it's spliced in once here rather than
+  // Language ENFORCEMENT (not per-language style) is preset-independent
+  // (applies identically across every generation phase/turn) and
+  // language-agnostic text, so it's spliced in once here rather than
   // duplicated into all 8 PROMPT_SYSTEM_WRITING_STYLE strings.
   return `${writingStyle}\n\n---\n${RULES_LANGUAGE_LOCALIZATION}\n\n---\n${rules}`;
 }
@@ -552,6 +605,8 @@ const firstBookOutputFormat: string = `{
     "text": "...",
     "mood": "${moodValues}",
     "weather": "${weatherValues}",
+    "imagePrompt": "English, text-to-image description of this page's most visual moment (optional)",
+    "imageImportance": <number between 0.0 and 1.0, optional>,
     "calendarDate": "<yyyy-MM-dd>",
     "timeOfDay": "e.g., 'night', 'HH:mm', '2 AM', 'unknown', time range",
     "sceneType": "${sceneTypeValues}",
@@ -708,6 +763,8 @@ const nextPageOutputFormat: string = `{
   "mood": "${moodValues}",
   "placeId": "<place_id>",
   "weather": "${weatherValues}",
+  "imagePrompt": "English, text-to-image description of this page's most visual moment (optional)",
+  "imageImportance": <number between 0.0 and 1.0, optional>,
   "calendarDate": "<yyyy-MM-dd>",
   "timeOfDay": "...",
   "minutesPassed": <number>,
@@ -934,6 +991,8 @@ const storyPageOutputFormat: string = `{
   "mood": "${moodValues}",
   "placeId": "<place_id>",
   "weather": "${weatherValues}",
+  "imagePrompt": "English, text-to-image description of this page's most visual moment (optional)",
+  "imageImportance": <number between 0.0 and 1.0, optional>,
   "calendarDate": "<yyyy-MM-dd>",
   "timeOfDay": "...",
   "sceneType": "${sceneTypeValues}",
@@ -1257,6 +1316,7 @@ function buildNextPageReviewChecklist(state: StoryState, language: string): stri
 
 2. Tension & Pacing
   □ Tone and events reflect current psychological flags? → If NO: adjust intensity (fear high → distorted perception, guilt high → intrusive echoes).
+  □ Does the psychological intensity written this page match the Composure/Pressure band shown earlier in this prompt? → If Pressure reads HOLDING/WEARING/STRAINED but the page narrates a full breakdown, dissociation, or "reality shatters" moment, dial the prose back — that grade of collapse requires CRITICAL/CRISIS pressure or an actual crash, not just phase or plot drama. If Pressure reads CRITICAL/CRISIS but the prose stays composed and controlled, escalate to match instead.
   □ Emotional contrast with the previous page? → If NO: shift register (panic → silence, chaos → routine, dread → warmth that feels wrong).
   □ Page overloaded with events? → Simplify to one clear movement.
   □ Page too empty — nothing changed? → Add one meaningful change: in perception, relationship, or environment.
@@ -1364,6 +1424,7 @@ function buildStoryPageReviewChecklist(state: StoryState, language: string): str
 
 2. Tension & Pacing
   □ Tone and events reflect current psychological flags? → If NO: adjust intensity (fear high → distorted perception, guilt high → intrusive echoes).
+  □ Does the psychological intensity written this page match the Composure/Pressure band shown earlier in this prompt? → If Pressure reads HOLDING/WEARING/STRAINED but the page narrates a full breakdown, dissociation, or "reality shatters" moment, dial the prose back — that grade of collapse requires CRITICAL/CRISIS pressure or an actual crash, not just phase or plot drama. If Pressure reads CRITICAL/CRISIS but the prose stays composed and controlled, escalate to match instead.
   □ Emotional contrast with the previous page? → If NO: shift register (panic → silence, chaos → routine, dread → warmth that feels wrong).
   □ Page overloaded with events? → Simplify to one clear movement.
   □ Page too empty — nothing changed? → Add one meaningful change: in perception, relationship, or environment.
@@ -3593,7 +3654,9 @@ function formatNextPageNarrativePrompt(params: BuildNextPagePromptParams, includ
   const result = `${includeProseStyle ? `NARRATIVE STYLE & PROSE ATMOSPHERE:
 ${createNarrativeStyle(state).instructions}
 
-` : ''}PSYCHOLOGICAL FLAGS (Accumulated):
+` : ''}${getLocalizedStyleConstraints(book.language)}
+
+PSYCHOLOGICAL FLAGS (Accumulated):
 ${formatPsychologicalFlags(flags, memoryIntegrity)}
 
 PSYCHOLOGICAL PROFILE (Behavioral analysis):
@@ -3604,7 +3667,7 @@ HIDDEN STATE (Influence writing, don't reveal):
 ${formatHiddenState(hiddenState, currentPage)}
 
 COMPOSURE (Reader resource — not memory integrity):
-${formatSanityState(sanityState)}
+${formatSanityState(sanityState, phase)}
 
 ROUTE MEMORY (Influence writing, don't reveal):
 ${formatRouteContext(state)}
@@ -3822,8 +3885,18 @@ function formatPsychologicalFlags(flags: PsychologicalFlags, memoryIntegrity: Me
  * The AI should pressure the MC when composure is low, and enter crisis
  * mode when crashed — without ever naming the meter to the reader.
  * @see SANITY_STATE_ARCHITECTURE.md.
+ *
+ * @param phase - Current story phase. Adds phase-specific behavioral
+ * guidance on top of the ratio-based pressure band below, so the AI
+ * receives an explicit signal that (for example) low composure in EARLY
+ * should read very differently from low composure in LATE — the pressure
+ * band alone doesn't carry that distinction. This is prompt-only guidance;
+ * it does not change the underlying composure numbers, which are already
+ * phase-scaled by `updateSanity` (see SANITY_PHASE_DECAY_MULTIPLIER /
+ * SANITY_EARLY_PHASE_FLOOR / SANITY_MID_PHASE_FLOOR in config/story.ts).
+ * Optional and defaults to no extra guidance so existing callers still work.
  */
-function formatSanityState(sanityState: SanityState | undefined): string {
+function formatSanityState(sanityState: SanityState | undefined, phase?: StoryPhase): string {
   const { composure, maxComposure, hasCrashed, crashedAtPage } = sanityState ?? SANITY_STATE_DEFAULTS;
   const ratio = maxComposure > 0 ? composure / maxComposure : 0;
 
@@ -3841,8 +3914,35 @@ function formatSanityState(sanityState: SanityState | undefined): string {
     ? `\n• Crashed at page: ${crashedAtPage} (sticky crisis — do not restore safety)`
     : '';
 
+  // Phase-specific behavioral guidance — tells the AI HOW to write the
+  // current pressure band differently depending on story phase, not just
+  // WHAT the band is. Empty string (no extra line) when phase is unknown or
+  // already crashed (the CRISIS pressure text above already says enough).
+  const phaseGuidance = (!phase || hasCrashed) ? '' : (() => {
+    switch (phase) {
+      case 'EARLY':
+        return ratio > 0.75
+          ? 'EARLY PHASE: Composure is healthy. Keep psychological pressure SUBTLE — unease in implication, not overt breakdown. This is where the MC should feel relief, curiosity, and connection, not dread.'
+          : 'EARLY PHASE: Composure is dipping but cannot crash yet. Introduce quiet wrongness — a detail that doesn\'t add up — without escalating to overt psychological warfare. Balance it with a genuine grounding beat (an ally, a small win, a safe moment).';
+      case 'MID':
+        return ratio > 0.5
+          ? 'MID PHASE: Composure is resilient. Push harder — betrayals, impossible choices, reality glitches the MC cannot explain — but a full break should still be rare and earned, not incidental.'
+          : 'MID PHASE: Composure is strained. Alternate pressure with brief recovery — a clue clicks, an ally\'s loyalty wavers or an unlikely one steps up, an unexpected advantage (a power, a weapon, a discovery) is earned through what was just survived. A genuine crash is possible but should feel like a rare, earned collapse, not routine attrition.';
+      case 'LATE':
+        return ratio > 0.5
+          ? 'LATE PHASE: Composure still holds — surprising given the circumstances. Use this resilience against the MC: they think they can handle it, then pull the rug.'
+          : 'LATE PHASE: Composure is shredded. The MC operates on instinct and fear. A full collapse is a real possibility now, not just pressure — converge storylines toward the ending.';
+      case 'FINALE':
+        return 'FINALE PHASE: Composure pacing is irrelevant now — write with maximum psychological intensity. No safe spaces, no recovery beats, no mercy.';
+      default:
+        return '';
+    }
+  })();
+
+  const guidanceLine = phaseGuidance ? `\n• Phase Guidance: ${phaseGuidance}` : '';
+
   return `• Composure: ${composure}/${maxComposure}${hasCrashed ? ' [CRASHED]' : ''}
-• Pressure: ${pressure}${crashNote}
+• Pressure: ${pressure}${crashNote}${guidanceLine}
 • Never name "composure" or a sanity meter to the reader — pressure the prose, not the label.`;
 }
 
@@ -4191,6 +4291,8 @@ ${isNonEnglish ? `- Do not translate the STORY THEME, character names, and exist
 - Do not default to any other language.
 - Do not mix languages.` : ''}
 
+${getLocalizedStyleConstraints(language)}
+
 STORY THEME:\n"""\n${theme.trim()}\n"""
 
 TITLE IDEA:\n${titleIdea || '-'}
@@ -4282,6 +4384,8 @@ firstPage:
 - charactersPresent: side characters in the scene besides MC. Must match characters in initialCharacters. sceneFocus: between 0.0 to 1.0 (highest = character to focus).
 - keyObjects: objects introduced or used this page that may have future narrative significance.
 - momentum: narrative pressure or urgency level in the first page. Thriller openings often start at "rising" or sometimes "critial", just saying.
+- imagePrompt: optional. ALWAYS write in ENGLISH regardless of target language — the one field exempt from the language rule above, since it feeds an image-generation model, not the reader. 1-2 sentences, concrete and filmable (character appearance/pose, setting, lighting, one key object), matching this story's psychological-horror tone. Omit if this page has nothing visually distinct.
+- imageImportance: optional, 0.0-1.0. How much this page rewards being illustrated (not the same as plot significance — see field-instructions.ts's fuller guidance for the same field on later pages). Omit whenever imagePrompt is omitted.
 
 initialState:
 - flags: set based on opening scene — not defaults.

@@ -1,4 +1,4 @@
-import type { ActionHintType, ActionType, AIActionConfig, Archetype, CharacterSceneRole, ManipulationAffinity, SceneType, StoryMomentum, ThreatProximity } from "../types/story.js";
+import type { ActionHintType, ActionType, AIActionConfig, Archetype, CharacterSceneRole, ManipulationAffinity, SceneType, StoryMomentum, StoryPhase, ThreatProximity } from "../types/story.js";
 import type { ThreadPriority } from "../types/story-thread.js";
 import type { StoryMC } from "../types/character.js";
 
@@ -84,6 +84,100 @@ export const SANITY_REALITY_RESIST_COST = 15;
 
 /** Composure at or below this is treated as "critical" for prompt pressure. */
 export const SANITY_CRITICAL_THRESHOLD = 25;
+
+/**
+ * Phase-specific multiplier applied to `updateSanity`'s base decay (from
+ * momentum) BEFORE the threat-proximity and trauma-tag amplifiers.
+ *
+ * Root cause this exists to fix: prior to phase-awareness, `updateSanity`
+ * applied identical decay math on page 2 as on page 190 — worst case
+ * (critical momentum + immediate threat + 3 trauma tags) crashed composure
+ * from 100 to 0 in as few as ~8 pages, regardless of story phase. That
+ * defeated the EARLY-phase goal of "ground the character, keep tension
+ * light" (see `storyPhases.EARLY` in types/story.ts) by putting the reader
+ * in psychological crisis before the mystery had even been seeded.
+ *
+ * Values are deliberately < 1.0 for EARLY/MID (slow the bleed) and > 1.0
+ * for FINALE (composure should crash faster once the story is committed to
+ * collapse) — LATE stays at the original unscaled rate. Combined with
+ * `SANITY_EARLY_PHASE_FLOOR`/`SANITY_MID_PHASE_FLOOR` below (which gate
+ * whether composure can reach 0 at all), not just how fast it drops.
+ */
+export const SANITY_PHASE_DECAY_MULTIPLIER: Record<StoryPhase, number> = {
+  EARLY: 0.4,
+  MID: 0.7,
+  LATE: 1.0,
+  FINALE: 1.2,
+};
+
+/**
+ * Hard floor on composure during EARLY phase — decay can bring composure
+ * down to this value but never below it, so `hasCrashed` cannot trigger and
+ * the CRITICAL pressure band (ratio ≤ 0.25, i.e. composure ≤ 25 against the
+ * default 100 max) never appears while the mystery is still being seeded.
+ *
+ * 30 is deliberate, not arbitrary: it sits just above the CRITICAL band's
+ * ratio-0.25 boundary, so EARLY-phase pressure can read as low as WEARING
+ * but never CRITICAL/CRISIS (see `formatSanityState` in utils/prompt.ts).
+ * This directly encodes "EARLY should feel good and relieving for the MC" —
+ * composure can still dip to signal something is off, but the reader is
+ * never put in crisis before MID begins.
+ */
+export const SANITY_EARLY_PHASE_FLOOR = 30;
+
+/**
+ * Soft floor on composure during MID phase — same mechanism as
+ * `SANITY_EARLY_PHASE_FLOOR` but lower, and conditionally lifted (see
+ * `SANITY_MID_PHASE_EARNED_CRASH_TRAUMA` below). A full composure crash in
+ * MID should be rare and feel narratively *earned*, not incidental to a
+ * lucky/unlucky run of momentum — this floor plus the trauma gate is what
+ * makes that rare rather than routine.
+ */
+export const SANITY_MID_PHASE_FLOOR = 15;
+
+/**
+ * Trauma tag count required before `SANITY_MID_PHASE_FLOOR` lifts and a
+ * genuine composure crash becomes possible in MID phase.
+ *
+ * Reuses the same threshold as the existing "every 3 trauma tags adds +1
+ * decay" escalation in `updateSanity`, so the floor lifts at the same story
+ * moment the engine already treats as meaningfully trauma-laden — a crash
+ * in MID therefore only becomes reachable once the story has independently
+ * earned it through accumulated trauma, not merely a few pages of bad luck.
+ */
+export const SANITY_MID_PHASE_EARNED_CRASH_TRAUMA = 3;
+
+/**
+ * Phase floors for `updateHiddenState`'s memoryScore/stabilityScore
+ * calculations — the same class of fix as SANITY_EARLY_PHASE_FLOOR /
+ * SANITY_MID_PHASE_FLOOR above, for a completely independent resource.
+ *
+ * Root cause: `memoryIntegrity` (stable/fragmented/corrupted) and
+ * `hiddenState.realityStability` (stable/slipping/broken) are recomputed
+ * FRESH every page from current momentum/trauma/scene stress — unlike
+ * composure, neither has any memory of past pages. That means, unlike
+ * composure, this was never a "decays too fast" problem — it's that a
+ * SINGLE worst-case page (critical momentum + a horror-tagged scene + a
+ * couple of trauma tags) can swing straight to 'corrupted'/'broken' with no
+ * ramp-up at all, as early as page 5. `memoryIntegrity === 'corrupted'`
+ * then forces `determineNarrativeMode` (narrative-style.ts) into
+ * 'fractured' mode regardless of story phase — the exact "too intense too
+ * early" failure this whole project exists to fix, just reached through a
+ * different resource than composure. `realityStability` feeds prose
+ * pressure the same way (see `formatHiddenState` in utils/prompt.ts) and
+ * is vulnerable to the identical single-page swing.
+ *
+ * EARLY floors sit just above each resource's worst-band threshold (0.35
+ * for corrupted, 0.3 for broken) so the MIDDLE band (fragmented/slipping —
+ * "seeds of unreliability and doubt", per storyPhases.EARLY) stays fully
+ * reachable; only the worst band is floored out. MID floors are lower —
+ * reachable but should take real stacking (not one unlucky page) to hit.
+ * LATE/FINALE are intentionally unfloored.
+ */
+export const MEMORY_INTEGRITY_EARLY_PHASE_FLOOR = 0.4;
+export const MEMORY_INTEGRITY_MID_PHASE_FLOOR = 0.2;
+export const REALITY_STABILITY_EARLY_PHASE_FLOOR = 0.4;
+export const REALITY_STABILITY_MID_PHASE_FLOOR = 0.2;
 
 export const MAX_FUTURE_NOTES = 10;
 

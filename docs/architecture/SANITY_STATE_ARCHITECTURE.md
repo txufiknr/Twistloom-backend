@@ -108,7 +108,11 @@ Tuning constants live in `src/config/story.ts`:
 | `SANITY_MIN_MAX_COMPOSURE` | 40 | Floor for maxComposure |
 | `SANITY_RESOLUTION_RECOVERY` | 3 | Heal on `resolution` momentum |
 | `SANITY_REALITY_RESIST_COST` | 15 | Cost for `spendComposureToResistReality` |
-| `SANITY_CRITICAL_THRESHOLD` | 25 | Prompt “critical” band helper |
+| `SANITY_CRITICAL_THRESHOLD` | 25 | Prompt "critical" band helper |
+| `SANITY_PHASE_DECAY_MULTIPLIER` | EARLY .4 / MID .7 / LATE 1.0 / FINALE 1.2 | Scales decay by story phase (2026-09-01) |
+| `SANITY_EARLY_PHASE_FLOOR` | 30 | Hard floor — EARLY can never crash |
+| `SANITY_MID_PHASE_FLOOR` | 15 | Soft floor — lifts once trauma is earned |
+| `SANITY_MID_PHASE_EARNED_CRASH_TRAUMA` | 3 | Trauma tags needed to lift the MID floor |
 
 ---
 
@@ -137,14 +141,18 @@ advanceStoryState
 
 1. Ensure object exists; sync `maxComposure` from trauma count.
 2. If already crashed → force `composure = 0` and return (no recovery).
-3. Decay from **previous page’s** `momentum` in `NarrativeContext`:
+3. Decay from **previous page's** `momentum` in `NarrativeContext`:
    - `critical` → full `decayRate`
    - `rising` → half `decayRate`
    - `building` / `resolution` → 0 decay
-4. Amplify by `hiddenState.threatProximity` (`immediate` ×1.5, `near` ×1.2).
-5. Extra +1 decay per 3 trauma tags this page.
-6. On `resolution` momentum → +`SANITY_RESOLUTION_RECOVERY` (capped at max).
-7. First time composure ≤ 0 → `hasCrashed = true`, `crashedAtPage = state.page`.
+4. **Phase-scale the decay** (added 2026-09-01) by `SANITY_PHASE_DECAY_MULTIPLIER[phase]` — EARLY 0.4×, MID 0.7×, LATE 1.0×, FINALE 1.2× — applied before step 5, so threat/trauma amplifiers still mean the same thing at every phase.
+5. Amplify by `hiddenState.threatProximity` (`immediate` ×1.5, `near` ×1.2).
+6. Extra +1 decay per 3 trauma tags this page.
+7. **Clamp to the phase floor** (added 2026-09-01): EARLY has a hard floor at `SANITY_EARLY_PHASE_FLOOR` (30) — composure can never reach 0, so `hasCrashed` cannot trigger. MID has a floor at `SANITY_MID_PHASE_FLOOR` (15) that lifts only once `traumaTags.length >= SANITY_MID_PHASE_EARNED_CRASH_TRAUMA` (3) — a MID crash is possible but should be rare and narratively earned. LATE/FINALE have no floor. See config/story.ts's JSDoc on each constant for the full rationale; see PHASE_AWARE_SANITY_STYLISTIC_CONSTRAINTS_DIALOGUE_MARKERS.md for the investigation that motivated this (composure was crashing as early as ~8 pages in, regardless of story phase).
+8. On `resolution` momentum → +`SANITY_RESOLUTION_RECOVERY` (capped at max).
+9. First time composure ≤ 0 (only reachable per the phase floor rule above) → `hasCrashed = true`, `crashedAtPage = state.page`.
+
+Phase floors gate `updateSanity`'s automatic decay only — `spendComposureToResistReality` (step below, a reader-initiated opt-in spend) deliberately bypasses them, since a floor meant to stop *involuntary* early crashes has no reason to block a reader's own deliberate choice.
 
 #### `applySanityCrisisEffects(state)`
 
@@ -376,6 +384,7 @@ Never invent composure client-side; always trust server state after each action.
 | Prompt surface | Done |
 | Crash → ending pressure | Done |
 | `StyleInput.sanity` → `memoryClarity` | Done |
+| Phase-aware decay/floor (EARLY never crashes, MID rare/earned) | Done (2026-09-01) |
 | Reader UI HUD | Frontend |
 | Explicit “spend composure” player action | Backend helper ready; route/UI TBD |
 | Achievements on crash / survival | Optional |

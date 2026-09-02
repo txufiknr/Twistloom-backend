@@ -1039,6 +1039,36 @@ export type StoryScene = {
   momentum?: StoryMomentum;
   /** Characters physically present in the scene */
   charactersPresent?: SceneCharacter[];
+  /**
+   * AI-written, English-only (regardless of story language — see
+   * `imagePrompt` field instructions in utils/field-instructions.ts),
+   * text-to-image-ready description of this page's single most visually
+   * striking moment. Optional: the AI omits it on pages with nothing worth
+   * illustrating.
+   *
+   * Future-proofing for optional per-page illustration (a gamification
+   * lever, not a committed feature): added to the generation contract now
+   * so the AI starts producing this data immediately, ahead of any UI or
+   * image-generation pipeline consuming it. Distinct from `PlotFlag`/
+   * `StateDelta`'s `isMajorEvent` (narrative significance) — a page can be
+   * plot-critical with nothing visual to draw, or visually striking in an
+   * otherwise minor scene; see `imageImportance` below for the visual axis.
+   *
+   * NOT YET WIRED beyond generation: needs a companion key added to
+   * schema/story.ts's `STORY_PAGE_SCHEMA_DEFINITION` (`satisfies
+   * Record<keyof StoryPageGeneration, AIJsonProperty>` will fail to compile
+   * without it), a persistence column + mapping in the book service layer,
+   * and eventual consumption by an actual image-generation call.
+   */
+  imagePrompt?: string;
+  /**
+   * 0.0–1.0 — how much this page rewards being illustrated, for selective/
+   * budgeted image generation rather than one image per page. Omitted
+   * whenever `imagePrompt` is omitted; the two are written together.
+   * See `imagePrompt`'s JSDoc above for the schema/persistence wiring this
+   * field still needs outside the generation contract.
+   */
+  imageImportance?: number;
 };
 
 /**
@@ -1856,11 +1886,23 @@ export type InitialStoryState = Partial<Pick<StoryState, 'flags' | 'difficulty' 
 
 /**
  * Story Phase Directives
+ *
+ * EARLY/MID/LATE were rebalanced 2026-09-01 to give the AI explicit
+ * narrative-beat guidance per phase, not just a tension-level description —
+ * the prior text told the model WHEN to escalate but not what kind of
+ * concrete story beats (relief, alliances, earned power-ups, fracturing
+ * trust) should fill each phase. Composure/pressure mechanics stay out of
+ * this text by design (see SANITY_STATE_ARCHITECTURE.md's separation of
+ * "reader resource" from "narrative goal") — pair with `formatSanityState`
+ * in utils/prompt.ts for the mechanical pressure banding, and with
+ * SANITY_PHASE_DECAY_MULTIPLIER / SANITY_EARLY_PHASE_FLOOR /
+ * SANITY_MID_PHASE_FLOOR in config/story.ts for why EARLY can't crash and
+ * MID crashes only rarely.
  */
 export const storyPhases = {
-  EARLY: `(Intrigue & Seeding) — Ground the character and introduce the core mystery. Establish an atmosphere of subtle unease by planting initial seeds of unreliability and doubt. Keep tension light, prioritizing intrigue over outright dread.`,
-  MID: `(Escalation & Rhythm) — Warp the MC's grip on reality and actively escalate psychological pressure. Balance active threads using varied build-and-release tension cycles, exploiting established character patterns to complicate the horror.`,
-  LATE: `(Convergence & Fracture) — Drive tensions to a volatile flashpoint where mental distortions reach full parity. Introduce no new major threads; focus strictly on converging existing storylines and collapsing open questions toward the viable ending.`,
+  EARLY: `(Intrigue & Seeding) — Ground the character and introduce the core mystery. Give the MC real moments of relief and belonging — an ally made, a small victory, a place that feels safe — before establishing subtle unease through initial seeds of unreliability and doubt. Keep tension light, prioritizing intrigue and connection over outright dread.`,
+  MID: `(Escalation & Rhythm) — Warp the MC's grip on reality and actively escalate psychological pressure. Balance active threads using varied build-and-release tension cycles, exploiting established character patterns to complicate the horror. Let alliances start to shift — a friend's loyalty comes into question, or an unlikely bond forms — and occasionally reward the MC with an unexpected advantage (a power, a weapon, a discovery) earned through what they just survived. Full psychological breaks are rare here; most pressure should crack, not shatter.`,
+  LATE: `(Convergence & Fracture) — Drive tensions to a volatile flashpoint where mental distortions reach full parity. Introduce no new major threads; focus strictly on converging existing storylines and collapsing open questions toward the viable ending. Psychological collapse is now a real possibility, not just pressure.`,
   FINALE: `(Collapse & Resolution) — Execute full psychological and narrative collapse at maximum "NIGHTMARE" difficulty. Prefer a focused cast. Introduce no new characters or mysteries—every active thread must definitively resolve or deliberately shatter.`,
 };
 

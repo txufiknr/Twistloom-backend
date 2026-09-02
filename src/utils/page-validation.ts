@@ -11,6 +11,7 @@
 
 import { MIN_CHARS_PER_PAGE } from "../config/story.js";
 import type { BookMode } from "../types/book.js";
+import { hasDialogueMarkers } from "./dialogue-parser.js";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -124,6 +125,52 @@ export function checkTextLength(
 // ── Actions validation ────────────────────────────────────────────────────
 
 /**
+ * Threshold (exclusive) for `checkDialogueMarkerCoverage`'s quoted-line
+ * count — see {@link checkDialogueMarkerCoverage} function's JSDoc for why 2 was chosen.
+ */
+const DIALOGUE_MARKER_COVERAGE_QUOTE_THRESHOLD = 2;
+
+/**
+ * Soft (non-blocking) signal: does this page have substantial quoted
+ * dialogue but zero `[character_id]`/`[mc]`/`[???]` markers (see
+ * RULES_DIALOGUE_ATTRIBUTION in utils/prompt.ts)?
+ *
+ * Heuristic, not authoritative — deliberately does NOT fail the page:
+ * - A page can have 1-2 incidental quoted phrases (a sign, a remembered
+ *   line) with no real spoken dialogue; that's not a coverage gap.
+ * - The quote-counting regex can't tell dialogue from a quoted document,
+ *   text message, or inner thought the writer chose to italicize/quote.
+ * This exists purely to surface a prompt-quality signal in logs (has the
+ * model been dropping markers on dialogue-heavy pages?) without ever
+ * rejecting or retrying a page over it — that's why it's wired into
+ * `checkGeneratedPage` but plays no part in that function's boolean result.
+ */
+export function checkDialogueMarkerCoverage(text: string, label?: string): void {
+  const quotedLines = text.match(/"[^"]+"/g);
+  if (quotedLines && quotedLines.length > DIALOGUE_MARKER_COVERAGE_QUOTE_THRESHOLD && !hasDialogueMarkers(text)) {
+    console.warn(`⚠️ ${label ? `[${label}] ` : ''}Page has ${quotedLines.length} quoted lines but no dialogue-attribution markers`);
+  }
+}
+
+/**
+ * Soft (non-blocking) signal: is `imageImportance` outside its documented
+ * 0.0-1.0 range?
+ *
+ * Never throws or fails the page — `imagePrompt`/`imageImportance` are an
+ * optional, forward-looking field pair (see the `imageImportance` JSDoc on
+ * `StoryScene` in types/story.ts for the still-open schema/persistence
+ * wiring) with no downstream consumer yet to protect from a bad value, so
+ * this exists purely to catch drift early in logs.
+ */
+export function checkImageImportanceRange(imageImportance: number, label?: string): void {
+  if (imageImportance < 0 || imageImportance > 1) {
+    console.warn(`⚠️ ${label ? `[${label}] ` : ''}imageImportance out of range (${imageImportance}, expected 0.0-1.0)`);
+  }
+}
+
+// ── Actions validation ────────────────────────────────────────────────────
+
+/**
  * Throws if `actions` is not a non-empty array, or if the count exceeds the
  * hard cap (`MAX_ACTIONS_PER_PAGE`) for branching modes.
  *
@@ -191,6 +238,8 @@ export interface PageCheckInput {
   text: string;
   actions?: unknown;
   isDeadEnd?: boolean;
+  /** Optional — see `checkImageImportanceRange` below for why this is soft-checked only. */
+  imageImportance?: number;
 }
 
 /**
@@ -213,6 +262,11 @@ export function validateGeneratedPage(
  * Runs all checks, returning `true` if every check passes.
  * Logs individual warnings for each failure so the caller can
  * `continue`/skip the page.
+ *
+ * Also runs `checkDialogueMarkerCoverage`/`checkImageImportanceRange` —
+ * both are soft, log-only signals (see their own JSDoc) and are
+ * deliberately excluded from the `checks` array below, so neither one can
+ * ever flip this function's boolean result.
  */
 export function checkGeneratedPage(
   page: PageCheckInput,
@@ -224,5 +278,9 @@ export function checkGeneratedPage(
     checkNoJsonLeak(page.text, label),
     checkPageActions(page.actions, mode, label),
   ];
+  checkDialogueMarkerCoverage(page.text, label);
+  if (page.imageImportance !== undefined) {
+    checkImageImportanceRange(page.imageImportance, label);
+  }
   return checks.every(Boolean);
 }

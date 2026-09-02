@@ -526,6 +526,20 @@
       "when": 1788144216806,
       "tag": "0075_material_black_knight",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1788314498743,
+      "tag": "0076_nostalgic_magik",
+      "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1788341851551,
+      "tag": "0077_tidy_puck",
+      "breakpoints": true
     }
   ]
 }
