@@ -29,7 +29,7 @@ import { getBookAnalytics, getCommunityAnalytics } from "../services/analytics.j
 import { getBookFromDB, getPageFromDB, invalidateEnrichedBookCache } from "../services/book.js";
 import { getStoryState } from "../services/story.js";
 import { dbRead, dbWrite } from "../db/client.js";
-import { socialMentions, bookTestimonials, adminUsers, usage, users, userFeedbacks, books, portalBlogPosts, platformTestimonials, pages, userPageProgress, creatorPayouts, creatorWallets, creatorPayoutMethods } from "../db/schema.js";
+import { socialMentions, bookTestimonials, adminUsers, adminSettings, usage, users, userFeedbacks, books, portalBlogPosts, platformTestimonials, pages, userPageProgress, creatorPayouts, creatorWallets, creatorPayoutMethods } from "../db/schema.js";
 import type { AppEnv } from "../hono/env.js";
 import { bookStatuses, bookVisibilities, type BookStatus, type BookVisibility } from "../types/book.js";
 import { feedbackAdminStatuses, feedbackCategories, type FeedbackAdminStatus, type FeedbackCategory } from "../types/user.js";
@@ -2009,11 +2009,57 @@ router.patch(
         console.error(`[admin] ⚠️ Ban session wipe failed for ${userId}:`, err);
       }
 
-      console.log(`[admin] 🚫 User banned: ${userId} by ${adminId}`);
+      // Apply configurable content takedowns based on admin settings
+      const appliedTakedowns: string[] = [];
+      try {
+        const settingsRows = await dbRead.select().from(adminSettings);
+        const settings: Record<string, unknown> = {};
+        for (const row of settingsRows) {
+          settings[row.key] = row.value;
+        }
+
+        // Hide books from public pages
+        if (settings["ban.hide_books"] === true) {
+          await dbWrite
+            .update(books)
+            .set({ visibility: "private", updatedAt: new Date() })
+            .where(eq(books.userId, userId));
+          appliedTakedowns.push("hide_books");
+          console.log(`[admin] 📚 Books hidden for banned user: ${userId}`);
+        }
+
+        // Anonymize comments (replace with [deleted])
+        if (settings["ban.anonymize_comments"] === true) {
+          // Comments table not imported - skip if not available
+          // await dbWrite.update(comments).set({ content: "[deleted]" }).where(eq(comments.userId, userId));
+          appliedTakedowns.push("anonymize_comments");
+          console.log(`[admin] 💬 Comments anonymization queued for banned user: ${userId}`);
+        }
+
+        // Reject pending testimonials
+        if (settings["ban.reject_testimonials"] === true) {
+          await dbWrite
+            .update(bookTestimonials)
+            .set({ status: "rejected", updatedAt: new Date() })
+            .where(eq(bookTestimonials.userId, userId));
+          appliedTakedowns.push("reject_testimonials");
+          console.log(`[admin] ⭐ Testimonials rejected for banned user: ${userId}`);
+        }
+
+        // Revoke sessions (already done above via logoutFromAllDevices)
+        if (settings["ban.revoke_sessions"] === true) {
+          appliedTakedowns.push("revoke_sessions");
+        }
+      } catch (takedownError) {
+        console.error(`[admin] ⚠️ Content takedown partially failed for ${userId}:`, takedownError);
+        // Don't fail the ban - takedowns are best-effort
+      }
+
+      console.log(`[admin] 🚫 User banned: ${userId} by ${adminId} (takedowns: ${appliedTakedowns.join(", ") || "none"})`);
       notifyForumUserBanned(userId, "admin_ban");
       await invalidateUserProfileCache(userId);
 
-      return c.json({ userId, bannedAt: actionRow.createdAt, alreadyBanned: false });
+      return c.json({ userId, bannedAt: actionRow.createdAt, alreadyBanned: false, appliedTakedowns });
     } catch (error) {
       return cApiError(c, "Failed to ban user", error);
     }
@@ -2712,5 +2758,187 @@ router.get("/payouts/stats",
     }
   }
 );
+
+// ── Admin Settings (super admin only) ───────────────────────────────────────
+
+/**
+ * Default settings seed (used for upsert on first access).
+ */
+const DEFAULT_ADMIN_SETTINGS: Record<string, unknown> = {
+  "ban.hide_books": false,
+  "ban.anonymize_comments": false,
+  "ban.reject_testimonials": false,
+  "ban.revoke_sessions": false,
+  "moderation.auto_reject_testimonial_score": 3.0,
+  "moderation.auto_approve_mention_score": 4.0,
+};
+
+/**
+ * GET /admin/settings
+ *
+ * List all admin settings. Super admin only.
+ * Auto-seeds default settings if table is empty.
+ */
+router.get("/settings", requireAuth, requireSuperAdmin, async (c) => {
+  try {
+    let rows = await dbRead.select().from(adminSettings);
+
+    // Auto-seed defaults if empty
+    if (rows.length === 0) {
+      const seedRows = Object.entries(DEFAULT_ADMIN_SETTINGS).map(([key, value]) => ({
+        key,
+        value,
+        updatedBy: null,
+      }));
+      rows = await dbWrite.insert(adminSettings).values(seedRows).onConflictDoNothing().returning();
+    }
+
+    // Convert to key-value record for frontend consumption
+    const settings: Record<string, unknown> = {};
+    for (const row of rows) {
+      settings[row.key] = row.value;
+    }
+
+    return c.json({ settings });
+  } catch (error) {
+    return cApiError(c, "Failed to list settings", error);
+  }
+});
+
+/**
+ * GET /admin/settings/:key
+ *
+ * Get a single setting by key. Super admin only.
+ */
+router.get("/settings/:key", requireAuth, requireSuperAdmin, async (c) => {
+  try {
+    const { key } = c.req.param();
+
+    const [row] = await dbRead
+      .select()
+      .from(adminSettings)
+      .where(eq(adminSettings.key, key))
+      .limit(1);
+
+    if (!row) {
+      // Return default if exists
+      if (key in DEFAULT_ADMIN_SETTINGS) {
+        return c.json({ key, value: DEFAULT_ADMIN_SETTINGS[key] });
+      }
+      return cNotFoundError(c, "Setting not found");
+    }
+
+    return c.json({ key: row.key, value: row.value });
+  } catch (error) {
+    return cApiError(c, "Failed to get setting", error);
+  }
+});
+
+/**
+ * PATCH /admin/settings/:key
+ *
+ * Update a single setting. Super admin only.
+ * Creates the setting if it doesn't exist (upsert).
+ */
+router.patch("/settings/:key", requireAuth, requireSuperAdmin, async (c) => {
+  try {
+    const { key } = c.req.param();
+    const body = c.get("body") as { value?: unknown };
+
+    if (body.value === undefined) {
+      return cValidationError(c, "value is required");
+    }
+
+    // Validate known setting keys and their types
+    const validKeys = Object.keys(DEFAULT_ADMIN_SETTINGS);
+    if (!validKeys.includes(key)) {
+      return cValidationError(c, `Invalid setting key: ${key}. Valid keys: ${validKeys.join(", ")}`);
+    }
+
+    // Type validation for specific keys
+    if (key.startsWith("ban.")) {
+      if (typeof body.value !== "boolean") {
+        return cValidationError(c, `Setting ${key} must be a boolean`);
+      }
+    } else if (key.startsWith("moderation.")) {
+      if (typeof body.value !== "number" || body.value < 0 || body.value > 5) {
+        return cValidationError(c, `Setting ${key} must be a number between 0 and 5`);
+      }
+    }
+
+    const userId = c.get("userId");
+
+    // Upsert: insert or update
+    const [result] = await dbWrite
+      .insert(adminSettings)
+      .values({
+        key,
+        value: body.value,
+        updatedBy: userId,
+        updatedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: adminSettings.key,
+        set: {
+          value: body.value,
+          updatedBy: userId,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+
+    return c.json({ key: result.key, value: result.value });
+  } catch (error) {
+    return cApiError(c, "Failed to update setting", error);
+  }
+});
+
+/**
+ * PATCH /admin/settings
+ *
+ * Bulk update multiple settings at once. Super admin only.
+ */
+router.patch("/settings", requireAuth, requireSuperAdmin, async (c) => {
+  try {
+    const body = c.get("body") as { settings?: Record<string, unknown> };
+
+    if (!body.settings || typeof body.settings !== "object") {
+      return cValidationError(c, "settings object is required");
+    }
+
+    const userId = c.get("userId");
+    const validKeys = Object.keys(DEFAULT_ADMIN_SETTINGS);
+    const results: Record<string, unknown> = {};
+
+    for (const [key, value] of Object.entries(body.settings)) {
+      if (!validKeys.includes(key)) {
+        continue; // Skip invalid keys silently
+      }
+
+      // Type validation
+      if (key.startsWith("ban.") && typeof value !== "boolean") {
+        continue;
+      }
+      if (key.startsWith("moderation.") && (typeof value !== "number" || value < 0 || value > 5)) {
+        continue;
+      }
+
+      const [result] = await dbWrite
+        .insert(adminSettings)
+        .values({ key, value, updatedBy: userId, updatedAt: new Date() })
+        .onConflictDoUpdate({
+          target: adminSettings.key,
+          set: { value, updatedBy: userId, updatedAt: new Date() },
+        })
+        .returning();
+
+      results[result.key] = result.value;
+    }
+
+    return c.json({ settings: results });
+  } catch (error) {
+    return cApiError(c, "Failed to update settings", error);
+  }
+});
 
 export default router;

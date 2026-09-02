@@ -2590,6 +2590,32 @@ export const adminUsers = pgTable(
 );
 
 /**
+ * Admin settings — platform-wide configuration (super admin only).
+ *
+ * Key-value store for toggleable policies and thresholds.
+ * Keys follow dot-separated namespace convention (e.g. "ban.hide_books").
+ *
+ * @example
+ * {
+ *   "key": "ban.hide_books",
+ *   "value": true,
+ *   "updated_by": "system-user-uuid",
+ *   "created_at": "2026-09-02T00:00:00.000Z",
+ *   "updated_at": "2026-09-02T00:00:00.000Z"
+ * }
+ */
+export const adminSettings = pgTable(
+  "admin_settings",
+  {
+    key: text("key").primaryKey(),
+    value: jsonb("value").notNull().default(false),
+    updatedBy: text("updated_by"),
+    createdAt,
+    updatedAt,
+  }
+);
+
+/**
  * User reports — moderation inbox for reported user profiles.
  *
  * Mirrors the `user_feedbacks` / `book_testimonials` curation model: a public
