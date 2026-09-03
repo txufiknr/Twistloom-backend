@@ -2661,10 +2661,10 @@ router.get("/explore", optionalAuth, async (c) => {
  * GET /api/books/tags/popular
  * 
  * Fetches popular tags/keywords from books for filtering.
- * Returns most frequently used tags across all published books.
+ * Returns most frequently used tags across all published books with usage counts.
  * 
  * @query limit - Maximum number of tags to return (default: 20, max: 100)
- * @returns Array of popular tag names sorted by frequency
+ * @returns Array of popular tags with keyword and count, sorted by frequency
  * 
  * @example
  * // Request
@@ -2672,7 +2672,11 @@ router.get("/explore", optionalAuth, async (c) => {
  * 
  * // Response
  * {
- *   "tags": ["thriller", "mystery", "horror", "suspense", "detective", "psychological", "crime", "adventure"]
+ *   "tags": [
+ *     { "keyword": "thriller", "count": 42 },
+ *     { "keyword": "mystery", "count": 38 },
+ *     { "keyword": "horror", "count": 31 }
+ *   ]
  * }
  */
 router.get("/tags/popular", async (c) => {

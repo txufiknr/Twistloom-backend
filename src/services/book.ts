@@ -106,7 +106,7 @@ const publicBookStatsCache = new LRUCache<string, PublicStats>({
  * TTL: 10 minutes (popular tags change infrequently)
  * Max size: 5 entries (different limits)
  */
-const popularTagsCache = new LRUCache<string, string[]>({
+const popularTagsCache = new LRUCache<string, Array<{ keyword: string; count: number }>>({
   max: 5,
   ttl: 10 * 60 * 1000, // 10 minutes
 });
@@ -2889,10 +2889,10 @@ export async function getSimilarBooks(bookId: string, limit: number = 10): Promi
  * Example:
  * ```typescript
  * const tags = await getPopularTags(10);
- * // Returns: ["thriller", "mystery", "horror", "suspense", ...]
+ * // Returns: [{ keyword: "thriller", count: 42 }, { keyword: "mystery", count: 38 }, ...]
  * ```
  */
-export async function getPopularTags(limit: number = 20): Promise<string[]> {
+export async function getPopularTags(limit: number = 20): Promise<Array<{ keyword: string; count: number }>> {
   const cacheKey = `popular:tags:${limit}`;
 
   const cached = popularTagsCache.get(cacheKey);
@@ -2914,8 +2914,10 @@ export async function getPopularTags(limit: number = 20): Promise<string[]> {
       LIMIT ${limit}
     `);
 
-    // Extract tag names from result
-    const tags = result.rows.map(row => row.keyword as string);
+    const tags = result.rows.map(row => ({
+      keyword: row.keyword as string,
+      count: Number(row.count),
+    }));
 
     popularTagsCache.set(cacheKey, tags);
 
