@@ -2628,10 +2628,10 @@ function assembleDraft(spans: DraftSpan[]): { text: string; spans: DraftSpan[] }
     const start = offset;
     const text = span.text ?? "";
     const end = start + text.length;
-    offset = end + 1; // reserve the joining space
+    offset = end + 2; // reserve the joining double-newline
     return { ...span, charOffsetStart: start, charOffsetEnd: end };
   });
-  return { text: positioned.map((s) => s.text).join(" "), spans: positioned };
+  return { text: positioned.map((s) => s.text).join("\n\n"), spans: positioned };
 }
 
 /**
