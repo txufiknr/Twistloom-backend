@@ -12,7 +12,7 @@
  */
 
 import { type DBClient, dbRead, dbWrite, isTransaction } from "../db/client.js";
-import { pages, books, branches, users, userPageProgress, userCompletedBooks, userActionHints, customActions, bookGenerations, userComments, canonValidations } from "../db/schema.js";
+import { pages, books, branches, users, userPageProgress, userCompletedBooks, userActionHints, customActions, bookGenerations, userComments, canonValidations, loreEntries, uploadedImages } from "../db/schema.js";
 import type { ImageKitUploadResponse } from "../types/image.js";
 import { and, eq, asc, or, desc, ne, sql, isNull, lt, countDistinct } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
@@ -117,6 +117,68 @@ const popularTagsCache = new LRUCache<string, string[]>({
  */
 export function invalidatePopularTagsCache(): void {
   popularTagsCache.clear();
+}
+
+/**
+ * LRU cache for per-book character avatar image maps.
+ *
+ * Character images are book-level attributes (same URL across all pages/branches)
+ * and change extremely rarely — only when an author manually replaces a portrait
+ * in Pen. Caching at book level avoids per-page-flip DB queries while keeping
+ * memory bounded.
+ *
+ * Cache key: bookId
+ * TTL: 15 minutes (images change infrequently)
+ * Max size: 200 books
+ */
+const characterImageCache = new LRUCache<string, Map<string, string>>({
+  max: 200,
+  ttl: 15 * 60 * 1000, // 15 minutes
+});
+
+/**
+ * Returns the characterId → imageUrl map for a book, backed by an in-memory
+ * LRU cache. On cache miss, batch-fetches from lore_entries × uploaded_images
+ * and populates the cache.
+ *
+ * The map may be empty (no lore character images for this book) but is never
+ * null — callers can safely .get() without a null check.
+ *
+ * @param bookId - Book to fetch character images for
+ * @returns Map from characterId to imageUrl
+ */
+export async function getCharacterImageMap(bookId: string): Promise<Map<string, string>> {
+  const cached = characterImageCache.get(bookId);
+  if (cached) return cached;
+
+  const rows = await dbRead
+    .select({
+      linkedCharacterId: loreEntries.linkedCharacterId,
+      imageUrl: uploadedImages.imageUrl,
+    })
+    .from(loreEntries)
+    .innerJoin(uploadedImages, eq(loreEntries.imageId, uploadedImages.imageId))
+    .where(eq(loreEntries.bookId, bookId));
+
+  const map = new Map<string, string>();
+  for (const row of rows) {
+    if (row.linkedCharacterId && row.imageUrl) {
+      map.set(row.linkedCharacterId, row.imageUrl);
+    }
+  }
+
+  characterImageCache.set(bookId, map);
+  return map;
+}
+
+/**
+ * Invalidates the character image cache for a book.
+ * Called when lore entries with character links are created, updated, or deleted.
+ *
+ * @param bookId - Book whose character image cache should be invalidated
+ */
+export function invalidateCharacterImageCache(bookId: string): void {
+  characterImageCache.delete(bookId);
 }
 
 /**
@@ -1996,6 +2058,10 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
     const { places, characters, injuries, inventory, healthStatus, sanityState, contextHistory, actionsHistory, plotFlags, threads, viableEnding, flags, traumaTags } = storyState;
     const { phase } = getStoryStateInfo(storyState);
     const activeThreads = threads.filter(t => ['open', 'developing'].includes(t.status));
+
+    // Character avatar images (book-level LRU cache — avoids per-page DB query).
+    const characterImageMap = await getCharacterImageMap(dbPage.bookId);
+
     // Reader-safe composure slice (omit decayRate — engine-only)
     const enrichedSanity = sanityState
       ? {
@@ -2039,11 +2105,13 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
         gender: character.gender,
         role: character.role,
         bio: character.bio,
+        appearance: character.appearance,
         traits: character.traits?.map(parseTrait),
         names: resolveCharacterLoreNames(character),
         lastInteractionAtPage: character.pastInteractions?.length
           ? Math.max(...character.pastInteractions.map(pi => pi.page))
           : character.introducedAtPage,
+        imageUrl: characterImageMap.get(characterId) ?? undefined,
       }) satisfies Record<keyof EnrichedStoryPageCharacter, unknown>)
     } satisfies Record<keyof EnrichedStoryPageContext, unknown>;
   }

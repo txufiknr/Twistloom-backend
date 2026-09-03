@@ -126,7 +126,7 @@ export interface BookStats {
   branchesCount: number;
 }
 
-export type BookAuthor = { id: string } & Pick<User, 'email' | 'username' | 'name' | 'imageUrl' | 'avatarFrame'>;
+export type BookAuthor = { id: string } & Pick<User, 'email' | 'username' | 'name' | 'imageUrl' | 'avatarFrame' | 'bio'>;
 
 /**
  * Complete book data as stored in database

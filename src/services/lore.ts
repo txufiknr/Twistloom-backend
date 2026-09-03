@@ -13,7 +13,7 @@
 import { eq, getTableColumns, sql } from "drizzle-orm";
 import { loreEntries, books, uploadedImages } from "../db/schema.js";
 import { dbRead, dbWrite } from "../db/client.js";
-import { getBookFromDB } from "./book.js";
+import { getBookFromDB, invalidateCharacterImageCache } from "./book.js";
 import {
   uploadLoreCharacterImage,
   persistUploadedImage,
@@ -180,6 +180,11 @@ export async function createLoreEntry(
       return created;
     });
 
+    // Invalidate character image cache when a linked character's avatar changes.
+    if (input.linkedCharacterId) {
+      invalidateCharacterImageCache(bookId);
+    }
+
     return toEntry({ ...entry, imageUrl: newImageUrl });
   } catch (error) {
     if (newImageId) {
@@ -284,6 +289,12 @@ export async function updateLoreEntry(
       await deleteFileFromImageKit(oldImageIdToDelete);
     }
 
+    // Invalidate character image cache when a linked character's avatar changes.
+    const effectiveLinkedCharacterId = update.linkedCharacterId ?? existing.linkedCharacterId;
+    if (effectiveLinkedCharacterId) {
+      invalidateCharacterImageCache(existing.bookId);
+    }
+
     return toEntry({ ...entry, imageUrl: effectiveImageUrl });
   } catch (error) {
     if (newImageId) {
@@ -315,6 +326,11 @@ export async function deleteLoreEntry(userId: string, entryId: string): Promise<
       .set({ canonVersion: sql`${books.canonVersion} + 1`, updatedAt: new Date() })
       .where(eq(books.id, existing.bookId));
   });
+
+  // Invalidate character image cache when a linked character entry is deleted.
+  if (existing.linkedCharacterId) {
+    invalidateCharacterImageCache(existing.bookId);
+  }
 
   if (existing.imageId) {
     await deleteFileFromImageKit(existing.imageId);

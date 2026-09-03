@@ -114,6 +114,7 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
       // name: users.penName || users.name || "Anonymous",
       imageUrl: users.imageUrl,
       avatarFrame: users.avatarFrame,
+      bio: users.bio,
     } satisfies Record<keyof BookAuthor, unknown>,
 
     // Denormalized engagement metrics (O(1))
@@ -1076,7 +1077,7 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
  *    visitor percentage)
  *
  * Story context (actionsHistory, plotFlags, places, characters…) is NOT
- * built here. It is served by `mapToEnrichedPage` directly from the
+ * built here. It is served by {@link mapToEnrichedPage} directly from the
  * persisted StoryState, which is the single source of truth.
  *
  * @param params - Parameters for the page visit

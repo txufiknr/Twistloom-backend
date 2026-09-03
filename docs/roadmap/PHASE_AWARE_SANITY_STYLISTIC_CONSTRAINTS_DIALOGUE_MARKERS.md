@@ -1,6 +1,6 @@
 # Phase-Aware Sanity, Stylistic Constraints & Gamified Dialogue Enhancement
 
-**Status:** Implemented — backend generation contract, schema, DB persistence, and prompt-caching hardening complete (2026-09-02). Frontend rendering in progress. See [Implementation Notes](#implementation-notes).
+**Status:** Implemented — backend generation contract, schema, DB persistence, prompt-caching hardening, and frontend rendering all complete (2026-09-02). See [Implementation Notes](#implementation-notes).
 **Created:** 2026-09-01 · **Last updated:** 2026-09-02
 **Scope:** `src/utils/prompt.ts`, `src/utils/story.ts`, `src/config/story.ts`, `src/types/story.ts`, `src/types/book.ts` (read-only, verified), `src/utils/field-instructions.ts`, `src/utils/characters.ts`, `src/utils/page-validation.ts`, `src/schema/story.ts`, `src/schema/db.ts` (Drizzle `pages` table), `src/services/book.ts` (page mappers), `src/utils/narrative-style.ts` (read-only, verified), `src/utils/player-profile.ts` (read-only, verified), new `src/utils/localized-style.ts`, new `src/utils/dialogue-parser.ts` · frontend: `reader-store.ts`, `SettingsModal.tsx`, new `dialogue-parser` (client), `StoryText.tsx` (pending), `ReaderPageClient.tsx` (pending)
 **Priority:** High — affects narrative quality and reader-facing rendering across all stories
@@ -43,7 +43,8 @@
 - `reader-store.ts`: new `dialogueDisplayMode: 'plain' | 'gamified'` preference + `setDialogueDisplayMode`, following the existing `ReaderPrefs` pattern exactly (deep-merge-on-load already makes new fields forward-compatible, per the store's own persist logic).
 - `SettingsModal.tsx`: new toggle, reusing existing `soundtrackVolumeRow` styling — no new CSS needed.
 - New client-side `dialogue-parser` (mirrors `utils/dialogue-parser.ts`; duplicated rather than shared since frontend/backend read as separate deployable units from the files in hand).
-- **Still pending:** `StoryText.tsx` (both the static JSX render path and the TypeIt typewriter-animation path need to detect and render/strip markers — the animation path in particular needs care, since TypeIt's HTML typing behavior with block-level "balloon" markup hasn't been verified against a live implementation), `StoryText.module.css` (balloon styling), and confirming `ReaderPageClient.tsx` passes what `StoryText.tsx` will need (character/lore data for avatar+name resolution).
+- **Round 3 (2026-09-02) — frontend rendering complete:** `StoryText.tsx` now branches on `dialogueDisplayMode` in both render paths. Static path: `paragraphMeta` (per-paragraph `matchDialogueMarker` classification) drives a ternary between the existing `<p>` and a new `DialogueBalloon` JSX component. TypeIt path: `loreWrappedParagraphs` now carries `{html, speakerId}` pairs instead of bare strings, and `buildDialogueBalloonHtml` constructs the balloon as a raw HTML string for `.type()` — the avatar/name chrome is inserted immediately (TypeIt only animates text nodes; a bare `<img>`/label has nothing to reveal character-by-character) while the dialogue text types out normally inside it. `dialogueDisplayMode`/`dialogueSpeakersById` are read via refs inside the animation effect (same pattern already used for `loreWrappedParagraphs`/`shouldSkipAnimation`) so a mid-reveal settings change or background refetch can't tear down a running typewriter. Speaker resolution (`dialogueSpeakersById`) reuses the existing `loreEntities` memo rather than re-deriving avatar matching — just adds the ID→name lookup dialogue markers need on top. `ReaderPageClient.tsx` needed no changes — it already passes `mc={book.mc}` and `bookId={book.id}`, everything `StoryText.tsx`'s new logic needs.
+- **Still open:** any *other* `<StoryText>` call site for infinite-scroll mode (the component's own JSDoc mentions multiple simultaneous instances there) wasn't in hand to verify it also threads `mc`/`bookId` through.
 
 **Still open from the original proposal:** OQ-3 (translation pipeline — strip or preserve markers), OQ-9 (marker visibility to readers pre-frontend-support) — resolved by the frontend work above once it lands.
 
@@ -65,7 +66,7 @@
 | 6 | Dialogue marker format decision | ✅ Resolved — line-start prefix, `[mc]` reserved token | Design |
 | 7 | Translation pipeline integration | ⏳ Open (needs translation-cron file) | Pipeline |
 | 8 | Prompt token budget impact | ✅ Accepted (~300-400 tokens, see OQ-4) | Performance |
-| 9 | Marker visibility to readers | 🔄 Settings + store done; `StoryText.tsx` rendering pending | Frontend |
+| 9 | Marker visibility to readers | ✅ Implemented (main reader path — see round 3 note; scroll-mode call site unverified) | Frontend |
 | 10 | `imagePrompt`/`imageImportance` per-page fields | ✅ Fully wired: generation contract, AI schema, DB columns, all 3 page mappers | New (added 2026-09-01) |
 | 11 | `memoryIntegrity`/`realityStability` phase floors | ✅ Implemented | Story Engine (new, found 2026-09-02) |
 | 12 | Composure/prose alignment self-review check | ✅ Implemented (soft, checklist-level) | Prompt (new, found 2026-09-02) |
@@ -1030,8 +1031,8 @@ The smallest context window in the waterfall is Cohere at ~32K tokens. 2,900 tok
 | ✅ | `reader-store.ts` (frontend) | New `dialogueDisplayMode` preference + setter |
 | ✅ | `SettingsModal.tsx` (frontend) | New toggle for dialogue display mode |
 | ✅ | `dialogue-parser` (frontend, new file) | Client-side marker parsing, mirrors the backend module |
-| 🔄 | `StoryText.tsx` / `StoryText.module.css` (frontend) | Pending — marker-aware rendering for both the static and TypeIt animation paths |
-| ⏳ | `ReaderPageClient.tsx` (frontend) | Not yet reviewed for whether it already passes what `StoryText.tsx` will need |
+| ✅ | `StoryText.tsx` / `StoryText.module.css` (frontend) | Marker-aware rendering for both the static and TypeIt animation paths; balloon CSS |
+| ✅ | `ReaderPageClient.tsx` (frontend) | Verified, no change needed — already passes `mc`/`bookId` |
 | ⚠️ flagged, not changed | `src/services/book.ts`'s `mapToEnrichedPage` | Its `satisfies Record<keyof EnrichedStoryPage, unknown>` check is commented out in the source — recommend re-enabling under `tsc` (couldn't verify safely with only a syntax-only checker in hand) |
 
 ---

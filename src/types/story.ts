@@ -1541,7 +1541,7 @@ export type EnrichedStoryPageContext = {
  * identity the recognition gate has not yet revealed.
  */
 export type EnrichedStoryPagePlace = Pick<PlaceMemory, 'type' | 'category' | 'context'> & { placeId: string; name: string; names: string[]; traits?: { key: string; value: string }[]; lastVisitedAtPage: number };
-export type EnrichedStoryPageCharacter = Pick<CharacterMemory, 'gender' | 'role' | 'bio'> & { characterId: string; name: string; names: string[]; traits?: { key: string; value: string }[]; lastInteractionAtPage: number };
+export type EnrichedStoryPageCharacter = Pick<CharacterMemory, 'gender' | 'role' | 'bio' | 'appearance'> & { characterId: string; name: string; names: string[]; traits?: { key: string; value: string }[]; lastInteractionAtPage: number; imageUrl?: string };
 
 /**
  * | System          | Purpose                     |
