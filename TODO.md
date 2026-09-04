@@ -93,14 +93,6 @@ please write a comprehensive roadmap MD for this in @docs/roadmap\ , grounded on
 
 ---
 
-how is `SANITY_*_PHASE_FLOOR` (clamp) fights with AI generation result in `updateSanity` function?
-what if AI totally drops the sanity in the page 5 narrative, but engine keep sanity 30 until page 30 (because page 30 is still early phase), so in page 6 to 30 sanity stays 30 regardless of what actually going on in the narrative?
-
-
-what about take out dynamic/language-conditional `localizedOverrides` outside system prompt (move down to user prompt)? thus keep system prompt static for prompt caching
-
----
-
 [@] sync sampling formula with ai-sampling.ts
 [@] implement trust and safety enforcement system (TODO-trust-safety.md & TRUST_AND_SAFETY_ENFORCEMENT_SYSTEM.md)
 [ ] on book.ending edit, evaluate with AI for security and plausibility
@@ -118,49 +110,7 @@ what about take out dynamic/language-conditional `localizedOverrides` outside sy
 [@] pen prompt: ensure find matching lore entity from story text via triggerKeywords
 [ ] instead of 1 big failing request (schema too complex for gemini or prompt token exceeds) should we using multi-turn request for generating single big page json? ask AI to generate each json key and append sequentially in each turn, will that solve the problem?
 [ ] agentic mcp: TWISTLOOM_AGENT_MCP_ROADMAP.md
-
 [ ] claude: TODO-ai-gateway-decouple.md
-
----
-
-api\index.ts
-src\hono\express-shim.ts
-src\app.ts
-src\server.bun.ts
-src\middleware\cache.ts
-
-2026-08-15 10:30:55.282 [error] [app] ❌ Unhandled error: TypeError: this.raw.headers.get is not a function
-    at HonoRequest.header (file:///var/task/node_modules/hono/dist/request.js:75:31)
-    at cors2 (file:///var/task/node_modules/hono/dist/middleware/cors/index.js:39:53)
-    at dispatch (file:///var/task/node_modules/hono/dist/compose.js:22:23)
-    at file:///var/task/node_modules/hono/dist/compose.js:22:46
-    at <anonymous> (/vercel/path0/src/middleware/cache.ts:26:9)
-    at dispatch (file:///var/task/node_modules/hono/dist/compose.js:22:23)
-    at file:///var/task/node_modules/hono/dist/compose.js:22:46
-    at compress2 (file:///var/task/node_modules/hono/dist/middleware/compress/index.js:37:11)
-    at dispatch (file:///var/task/node_modules/hono/dist/compose.js:22:23)
-    at file:///var/task/node_modules/hono/dist/compose.js:22:46
-2026-08-15 10:30:55.304 [error] [app] ❌ Unhandled error: TypeError: this.raw.headers.get is not a function
-    at HonoRequest.header (file:///var/task/node_modules/hono/dist/request.js:75:31)
-    at compress2 (file:///var/task/node_modules/hono/dist/middleware/compress/index.js:52:30)
-    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
-    at async dispatch (file:///var/task/node_modules/hono/dist/compose.js:22:17)
-    at async <anonymous> (/vercel/path0/src/app.ts:40:3)
-    at async dispatch (file:///var/task/node_modules/hono/dist/compose.js:22:17)
-    at async file:///var/task/node_modules/hono/dist/hono-base.js:307:25
-    at async Server.r (/opt/rust/nodejs.js:2:16316)
-    at async Server.<anonymous> (/opt/rust/nodejs.js:17:14507)
-2026-08-15 10:30:55.317 [warn] WARN: default export returned a `Response`.
-├▶ The default-export signature is `(req, res) => void` — returns are
-│  ignored. You likely meant the Web `fetch`-style API.
-│
-├▶ Fix: export a `fetch` function or a named HTTP method:
-│         export function GET(request) { return new Response('ok') }
-│
-├▶ Fix: write the response through `res`:
-│         export default function (req, res) { res.end('ok') }
-│
-╰▶ Read more: https://vercel.com/docs/functions/functions-api-reference#function-signature
 
 ---
 

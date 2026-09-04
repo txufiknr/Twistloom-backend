@@ -133,14 +133,18 @@ export function updatePlace(params: {
     ];
   }
 
-  // Deliberate place familiarity change if provided
-  if (familiarityCorrection !== 0) {
-    updated.familiarity = Math.min(Math.max(updated.familiarity + familiarityCorrection, 0), 1);
-  }
-
   // Re-calculate familiarity last, once visitCount/lastVisitedAtPage/keyEvents
   // all reflect this page's updates
   updated.familiarity = calculatePlaceFamiliarity(updated, page);
+
+  // Apply AI correction AFTER deterministic recalculation (additive delta).
+  // This mirrors the urgencyCorrection pattern in processThreadUpdates():
+  // the formula handles 90% of cases (visits, recency, events), while
+  // the correction handles edge cases the formula cannot infer (memory loss,
+  // place revealed as illusion, reality shift, etc.)
+  if (familiarityCorrection !== 0) {
+    updated.familiarity = Math.min(Math.max(updated.familiarity + familiarityCorrection, 0), 1);
+  }
   
   return updated;
 }

@@ -961,6 +961,26 @@ router.get('/:bookId/status', requireAuth, async (c) => {
         }
       }
 
+      // Fetch first page text once generation reaches `ai_generation` or later,
+      // so the frontend can render a live preview while still in progress.
+      let firstPageText: string | null = null;
+      const generationStep = data.generationStep ?? 'theme_validation';
+      const stepsWithFirstPage: string[] = [
+        'ai_generation', 'ai_evaluation', 'finalizing', 'complete',
+      ];
+      if (stepsWithFirstPage.includes(generationStep)) {
+        try {
+          const [firstPage] = await dbRead
+            .select({ text: pages.text })
+            .from(pages)
+            .where(and(eq(pages.bookId, bookId), eq(pages.page, 1)))
+            .limit(1);
+          firstPageText = firstPage?.text ?? null;
+        } catch {
+          // Non-fatal: preview will show loading skeleton instead.
+        }
+      }
+
       const status: BookCreationStatus = {
         bookId:                   data.bookId,
         status:                   data.bookStatus ?? 'draft',
@@ -976,6 +996,7 @@ router.get('/:bookId/status', requireAuth, async (c) => {
         updatedAt:                data.bookUpdatedAt,
         isRefunded:               data.isRefunded,
         book: enrichedBook,
+        firstPageText,
       };
 
       return { kind: "ok" as const, status };

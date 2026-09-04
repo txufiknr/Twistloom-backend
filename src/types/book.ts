@@ -104,6 +104,12 @@ export interface BookCreationStatus {
    * request.
    */
   book?: EnrichedBookData | null;
+  /**
+   * First story page text — populated once the generation reaches `ai_generation`
+   * or later. Allows the frontend to render a live preview while generation is
+   * still in progress.
+   */
+  firstPageText?: string | null;
 }
 
 /**
