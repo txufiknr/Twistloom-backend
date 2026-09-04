@@ -13,18 +13,6 @@ export const IS_GITHUB_ACTIONS = Boolean(process.env.GITHUB_ACTIONS);
 /** Default server port */
 export const PORT: number = Number(process.env.PORT) || 3000;
 
-/** Feature flag gating the multi-turn (stage-split) page generation pipeline.
- * See MULTI_TURN_PAGE_GENERATION_ROADMAP.md Part 3 Phase 8. Read at module
- * load (same pattern as IS_PRODUCTION); use `isMultiTurnGenerationEnabled()`
- * for dynamic per-request toggling without a process restart. */
-export const USE_MULTI_TURN_GENERATION: boolean = process.env.USE_MULTI_TURN_GENERATION === 'true';
-
-/** Live (per-call) read of the multi-turn flag — supports dynamic dev toggling
- * without a restart, unlike the module-load `USE_MULTI_TURN_GENERATION`. */
-export function isMultiTurnGenerationEnabled(): boolean {
-  return process.env.USE_MULTI_TURN_GENERATION === 'true';
-}
-
 /** Github repo */
 export const GITHUB_REPO_OWNER = process.env.GITHUB_REPO_OWNER || "txufiknr";
 export const GITHUB_REPO_NAME = process.env.GITHUB_REPO_NAME || "Twistloom-backend";

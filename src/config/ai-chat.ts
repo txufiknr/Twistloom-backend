@@ -6,6 +6,17 @@ export const EVALUATION_FALLBACK_LIMIT: number | undefined = undefined;
 export const MAX_SCHEMA_LENGTH: number = 30_000;
 
 /**
+ * Feature flag gating the multi-turn (stage-split) page generation pipeline.
+ * 
+ * `false` (default): `generateNextPage`/`generateNextPages` use the
+ * original single combined "page + state delta" request, byte-identical to
+ * pre-refactor behavior — this is the safe rollback state.
+ * `true`: routes through the 2-turn (single page) / parallel-multi-turn
+ * (multiverse) pipeline in prompt.ts.
+ */
+export const USE_MULTI_TURN_GENERATION = true;
+
+/**
  * Per-turn output-token budgets for multi-turn (stage-split) page generation
  * — see MULTI_TURN_PAGE_GENERATION_ROADMAP.md Part 2 & Part 3 Phase 2.
  *
@@ -31,31 +42,7 @@ export const MAX_SCHEMA_LENGTH: number = 30_000;
  * tightening further.
  */
 export const STORY_PAGE_MAX_OUTPUT_TOKEN: number = 2200;
-/** See {@link STORY_PAGE_MAX_OUTPUT_TOKEN} doc for the full rationale. */
 export const STATE_DELTA_MAX_OUTPUT_TOKEN: number = 1800;
-// STORY_PAGE_EVALUATION_OUTPUT_TOKEN / STATE_DELTA_EVALUATION_OUTPUT_TOKEN
-// (per-turn evaluator budgets) were removed here — checkpoint 2 (Part 5.5
-// Q2) redesigned evaluation from one pass per turn to a single pass on the
-// merged object, reusing EVALUATION_SCORING_OUTPUT_TOKEN above unchanged
-// (see ai-chat.ts's runEvaluationPass / prompt.ts's evaluateMergedStoryGeneration)
-// — these two never got wired to anything after that redesign and were
-// caught as dead exports during the checkpoint-4 lint/typecheck pass.
-
-/**
- * Feature flag gating the multi-turn (stage-split) page generation pipeline
- * — see MULTI_TURN_PAGE_GENERATION_ROADMAP.md Part 3 Phase 8.
- *
- * `false` (default): `generateNextPage`/`generateNextPages` use the
- * original single combined "page + state delta" request, byte-identical to
- * pre-refactor behavior — this is the safe rollback state.
- * `true`: routes through the 2-turn (single page) / parallel-multi-turn
- * (multiverse) pipeline in prompt.ts.
- *
- * Centralized in `config/env.ts` (alongside `IS_PRODUCTION`) for consistency;
- * `isMultiTurnGenerationEnabled()` there also supports dynamic per-request
- * toggling without a process restart.
- */
-export { USE_MULTI_TURN_GENERATION, isMultiTurnGenerationEnabled } from "./env.js";
 
 /**
  * NVIDIA API request timeout in milliseconds
