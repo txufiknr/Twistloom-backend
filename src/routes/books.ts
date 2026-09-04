@@ -185,6 +185,11 @@ import { retrieveSimilarPages, retrieveBookCluesForQuery } from "../services/vec
 
 const router = new Hono<AppEnv>();
 
+/** Steps at which page 1 text exists in the pages table. */
+const STEPS_WITH_FIRST_PAGE: readonly string[] = [
+  'ai_generation', 'ai_evaluation', 'finalizing', 'complete',
+];
+
 /**
  * Checks whether the user has reached the concurrent generation limit.
  * If so, responds with 429 and returns true.
@@ -965,10 +970,11 @@ router.get('/:bookId/status', requireAuth, async (c) => {
       // so the frontend can render a live preview while still in progress.
       let firstPageText: string | null = null;
       const generationStep = data.generationStep ?? 'theme_validation';
-      const stepsWithFirstPage: string[] = [
-        'ai_generation', 'ai_evaluation', 'finalizing', 'complete',
-      ];
-      if (stepsWithFirstPage.includes(generationStep)) {
+      if (
+        STEPS_WITH_FIRST_PAGE.includes(generationStep)
+        && data.generationStatus !== 'failed'
+        && data.generationStatus !== 'cancelled'
+      ) {
         try {
           const [firstPage] = await dbRead
             .select({ text: pages.text })
@@ -985,7 +991,7 @@ router.get('/:bookId/status', requireAuth, async (c) => {
         bookId:                   data.bookId,
         status:                   data.bookStatus ?? 'draft',
         generationStatus:         data.generationStatus ?? 'pending',
-        generationStep:           data.generationStep  ?? 'theme_validation',
+        generationStep,
         generationStepDescription,
         generationStartedAt:      data.generationStartedAt,
         generationCompletedAt:    data.generationCompletedAt,

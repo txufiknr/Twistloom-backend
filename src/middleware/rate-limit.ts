@@ -88,15 +88,26 @@ export interface RateLimitOptions {
  * - Serverless-safe (Upstash REST API, no persistent connections)
  */
 export function rateLimit(config: RateLimitConfig = DEFAULT_RATE_LIMIT, opts?: RateLimitOptions) {
-  const { maxRequests, windowSeconds, message } = config;
+  const { maxRequests, windowSeconds, message, prefix } = config;
 
-  // Create rate limiter instance if Redis is available
+  // Create rate limiter instance if Redis is available.
+  //
+  // Each per-route limiter MUST supply a unique `prefix` so that its Redis key
+  // namespace is isolated from every other limiter. Without this, all instances
+  // with the same prefix + identifier + window write to the identical Redis key
+  // (`@upstash/ratelimit:<userId>:<bucket>`), causing every limiter to
+  // double-count against the same shared counter.
+  //
+  // The global `rateLimitByUser` passes no prefix and falls back to the
+  // library default (`@upstash/ratelimit`). Per-route configs must never omit
+  // their prefix.
   const redis = getRedisClient();
   const ratelimit = redis
     ? new Ratelimit({
         redis,
         limiter: Ratelimit.slidingWindow(maxRequests, `${windowSeconds} s`),
         analytics: true, // Track rate limit analytics
+        prefix: prefix ? `rl:${prefix}` : undefined,
       })
     : null;
 

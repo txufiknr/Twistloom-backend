@@ -46,6 +46,7 @@ router.get(
     windowSeconds: 1,
     maxRequests: 2,
     message: "Too many page check requests. Please slow down.",
+    prefix: "easter-egg-check",
   }),
   async (c) => {
     try {
@@ -84,6 +85,7 @@ router.post(
     windowSeconds: 60,
     maxRequests: 10,
     message: "Too many claim attempts. Please wait.",
+    prefix: "easter-egg-claim",
   }),
   async (c) => {
     try {
@@ -119,6 +121,7 @@ router.post(
     windowSeconds: 60,
     maxRequests: 20,
     message: "Please wait before cracking another egg.",
+    prefix: "easter-egg-crack",
   }),
   async (c) => {
     try {

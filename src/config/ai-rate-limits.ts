@@ -42,6 +42,16 @@ export interface AIRateLimitConfig {
   maxRequests: number;
   /** Sliding-window length in seconds */
   windowSeconds: number;
+  /**
+   * Unique Redis key prefix for this rate limiter.
+   *
+   * Each per-route limiter MUST have a distinct prefix so its counter is
+   * isolated in Redis. Without this, all limiters with the same prefix +
+   * identifier + window write to the same Redis key, causing double-counting.
+   *
+   * The value is used as `rl:<prefix>` in the Redis key namespace.
+   */
+  prefix?: string;
 }
 
 /** Read a positive int from an env var, falling back to `fallback`. */
@@ -58,16 +68,21 @@ function readInt(envKey: string, fallback: number): number {
  *                    `RLIST_MAX_<prefix>` / `RLIST_SECONDS_<prefix>`
  * @param fallbackMax - Default max requests when the env override is absent
  * @param fallbackWindowSeconds - Default window length when the override is absent
+ * @param redisPrefix - Unique Redis key prefix to isolate this limiter's counter.
+ *                      Every per-route limiter MUST supply one to prevent
+ *                      key-namespace collisions with other limiters.
  * @returns A merged {@link AIRateLimitConfig} consumable by `rateLimit()`
  */
 function buildRateLimit(
   envPrefix: string,
   fallbackMax: number,
-  fallbackWindowSeconds: number
+  fallbackWindowSeconds: number,
+  redisPrefix: string,
 ): AIRateLimitConfig {
   return {
     maxRequests: readInt(`RLIST_MAX_${envPrefix}`, fallbackMax),
     windowSeconds: readInt(`RLIST_SECONDS_${envPrefix}`, fallbackWindowSeconds),
+    prefix: redisPrefix,
   };
 }
 
@@ -85,7 +100,7 @@ function buildRateLimit(
  * ceiling low.
  */
 export const BOOK_CREATION_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
-  "BOOK_CREATION", 5, 60
+  "BOOK_CREATION", 5, 60, "book-creation"
 );
 
 /**
@@ -100,7 +115,7 @@ export const BOOK_CREATION_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
  * 10/min is a comfortable margin above a normal creation session's requests.
  */
 export const BOOK_STREAM_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
-  "BOOK_STREAM", 10, 60
+  "BOOK_STREAM", 10, 60, "book-stream"
 );
 
 /**
@@ -119,7 +134,7 @@ export const BOOK_STREAM_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
  * is comfortable for genuine use while bounding scripted / anonymous abuse.
  */
 export const BOOK_PROMPT_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
-  "BOOK_PROMPT", 10, 60
+  "BOOK_PROMPT", 10, 60, "book-prompt"
 );
 
 /**
@@ -133,7 +148,7 @@ export const BOOK_PROMPT_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
  * downstream compute + credits — keep the ceiling moderate to bound queue spam.
  */
 export const BOOK_ASYNC_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
-  "BOOK_ASYNC", 10, 60
+  "BOOK_ASYNC", 10, 60, "book-async"
 );
 
 /**
@@ -147,7 +162,7 @@ export const BOOK_ASYNC_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
  * for genuine reading while capping obvious hammering.
  */
 export const ACTION_HINT_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
-  "ACTION_HINT", 30, 60
+  "ACTION_HINT", 30, 60, "action-hint"
 );
 
 /**
@@ -162,7 +177,7 @@ export const ACTION_HINT_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
  * amplification vector; 20/min keeps previews usable while closing the gap.
  */
 export const CUSTOM_ACTION_PREVIEW_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
-  "CUSTOM_ACTION_PREVIEW", 20, 60
+  "CUSTOM_ACTION_PREVIEW", 20, 60, "custom-action-preview"
 );
 
 /**
@@ -178,7 +193,7 @@ export const CUSTOM_ACTION_PREVIEW_RATE_LIMIT: AIRateLimitConfig = buildRateLimi
  * strictness; 10/min bounds cost and repeated debit churn.
  */
 export const CUSTOM_ACTION_SUBMIT_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
-  "CUSTOM_ACTION_SUBMIT", 10, 60
+  "CUSTOM_ACTION_SUBMIT", 10, 60, "custom-action-submit"
 );
 
 /**
@@ -194,7 +209,7 @@ export const CUSTOM_ACTION_SUBMIT_RATE_LIMIT: AIRateLimitConfig = buildRateLimit
  * before its balance (or the credit check) catches up.
  */
 export const PEN_CONTINUE_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
-  "PEN_CONTINUE", 20, 60
+  "PEN_CONTINUE", 20, 60, "pen-continue"
 );
 
 /**
@@ -211,7 +226,7 @@ export const PEN_CONTINUE_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
  * the credit check) catches up.
  */
 export const PEN_ESSENTIALS_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
-  "PEN_ESSENTIALS", 10, 60
+  "PEN_ESSENTIALS", 10, 60, "pen-essentials"
 );
 
 /**
@@ -222,7 +237,7 @@ export const PEN_ESSENTIALS_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
  * it gets the same spend-shape guard as essentials auto-fill.
  */
 export const PEN_FINALIZE_PROPOSE_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
-  "PEN_FINALIZE_PROPOSE", 10, 60
+  "PEN_FINALIZE_PROPOSE", 10, 60, "pen-finalize-propose"
 );
 
 /**
@@ -232,7 +247,7 @@ export const PEN_FINALIZE_PROPOSE_RATE_LIMIT: AIRateLimitConfig = buildRateLimit
  * and retry churn.
  */
 export const PEN_TRANSFORM_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
-  "PEN_TRANSFORM", 20, 60
+  "PEN_TRANSFORM", 20, 60, "pen-transform"
 );
 
 /**
@@ -242,7 +257,7 @@ export const PEN_TRANSFORM_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
  * and retry churn.
  */
 export const PEN_CAST_DETECT_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
-  "PEN_CAST_DETECT", 20, 60
+  "PEN_CAST_DETECT", 20, 60, "pen-cast-detect"
 );
 
 /**
@@ -256,7 +271,7 @@ export const PEN_CAST_DETECT_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
  * companion usable during active reading while capping abuse.
  */
 export const COMPANION_ASK_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
-  "COMPANION_ASK", 20, 60
+  "COMPANION_ASK", 20, 60, "companion-ask"
 );
 
 /**
@@ -271,7 +286,7 @@ export const COMPANION_ASK_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
  * composer responsive.
  */
 export const BROADCAST_PREVIEW_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
-  "BROADCAST_PREVIEW", 20, 60
+  "BROADCAST_PREVIEW", 20, 60, "broadcast-preview"
 );
 
 /**
@@ -285,7 +300,7 @@ export const BROADCAST_PREVIEW_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
  * custom-action submit strictness.
  */
 export const BROADCAST_SUBMIT_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
-  "BROADCAST_SUBMIT", 10, 60
+  "BROADCAST_SUBMIT", 10, 60, "broadcast-submit"
 );
 
 /**
@@ -298,5 +313,5 @@ export const BROADCAST_SUBMIT_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
  * why: 10/min is comfortable for genuine purchase while bounding abuse.
  */
 export const CONSUMABLE_PURCHASE_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
-  "CONSUMABLE_PURCHASE", 10, 60
+  "CONSUMABLE_PURCHASE", 10, 60, "consumable-purchase"
 );

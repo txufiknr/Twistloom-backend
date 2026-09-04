@@ -1018,7 +1018,7 @@ router.post("/sessions/:id/finalize/propose", requireAuth, rateLimit(PEN_FINALIZ
  * novel always uses the single default. `adoptInventory`/`adoptInjuries` are
  * the confirmed "adopt as canon" state proposal from `/finalize/propose`.
  */
-router.post("/sessions/:id/finalize", requireAuth, rateLimit({ maxRequests: 10, windowSeconds: 60 }), requireNotSuspended, async (c) => {
+router.post("/sessions/:id/finalize", requireAuth, rateLimit({ maxRequests: 10, windowSeconds: 60, prefix: "pen-finalize" }), requireNotSuspended, async (c) => {
   try {
     const userId = c.get("userId");
     if (!userId) return cApiError(c, "Authentication required", undefined, 401);
