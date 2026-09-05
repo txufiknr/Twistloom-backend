@@ -65,7 +65,7 @@ import { classifyGenAIError, getErrorMessage, isGenAIErrorRetryable } from './er
 import { dbWrite } from '../db/client.js';
 import { pages } from '../db/schema.js';
 import { clearActionProgressEvents, storeActionProgressEvent } from './progress-tracking.js';
-import { eq } from 'drizzle-orm';
+import { eq, and, isNull } from 'drizzle-orm';
 import { LOCK_KEYS, withLock } from './distributed-lock.js';
 import { createNonRetryableError, type ErrorWithCustomProperties, retryWithBackoffOrNull } from './retry.js';
 import { generateNextPages } from './prompt.js';
@@ -1384,11 +1384,20 @@ export async function triggerCandidateGenerationWorkflow(params: {
       return { success: true, alreadyInProgress: true };
     }
 
-    // Set isGeneratingStartedAt to now() to mark generation as in progress
+    // Set isGeneratingStartedAt to now() using atomic Compare-And-Set to eliminate
+    // race conditions where concurrent requests could both attempt to dispatch a workflow.
     const isGeneratingStartedAt = new Date();
-    await dbWrite.update(pages)
+    const updateResult = await dbWrite.update(pages)
       .set({ isGeneratingStartedAt })
-      .where(eq(pages.id, pageId));
+      .where(and(
+        eq(pages.id, pageId),
+        isNull(pages.isGeneratingStartedAt)
+      ));
+
+    if ((updateResult.rowCount ?? 0) === 0) {
+      console.log(`[${context}] ⏳ Generation claimed or already in progress for page ${pageId}`);
+      return { success: true, alreadyInProgress: true };
+    }
     console.log(`[${context}] ⏰ Set isGeneratingStartedAt for page ${pageId}:`, isGeneratingStartedAt);
 
     // Trigger workflow via reusable utility
