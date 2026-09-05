@@ -26,6 +26,7 @@ import { requireSuperAdmin, requirePermission, resolveAdminAccess, normalizePerm
 import { cApiError, cValidationError, cNotFoundError } from "../utils/error.js";
 import { reconstructStoryState } from "../utils/branch-traversal.js";
 import { getBookAnalytics, getCommunityAnalytics } from "../services/analytics.js";
+import { getAdminBusinessMetrics } from "../services/admin-business-analytics.js";
 import { getBookFromDB, getPageFromDB, invalidateEnrichedBookCache } from "../services/book.js";
 import { getStoryState } from "../services/story.js";
 import { dbRead, dbWrite } from "../db/client.js";
@@ -1390,6 +1391,25 @@ router.get("/analytics",
       return c.json({ total: Number(totalRows), limit: limitNum, offset: offsetNum, books: analytics });
     } catch (error) {
       return cApiError(c, "Failed to list analytics", error);
+    }
+  }
+);
+
+/**
+ * GET /admin/analytics/business
+ *
+ * Platform-wide business, financial, revenue (ARR/MRR, credit packs),
+ * DAU/MAU engagement, and churn metrics.
+ */
+router.get("/analytics/business",
+  requireAuth,
+  requirePermission("analytics"),
+  async (c) => {
+    try {
+      const data = await getAdminBusinessMetrics();
+      return c.json(data);
+    } catch (error) {
+      return cApiError(c, "Failed to load business analytics", error);
     }
   }
 );

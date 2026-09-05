@@ -1,6 +1,9 @@
 import type { SubscriptionConfig } from "../types/subscription.js";
 import { VIP_MONTHLY_CREDITS } from "./credits.js";
 
+export const STRIPE_MONTHLY_PRICE_USD = 9.99;
+export const XENDIT_MONTHLY_PRICE_IDR = 150000;
+
 /**
  * VIP Subscription Configuration
  * @overview Configuration for VIP monthly subscription
@@ -15,7 +18,7 @@ export const VIP_SUBSCRIPTION: SubscriptionConfig = {
   id: "vip_monthly",
   name: "Twistloom VIP",
   description: "Monthly VIP membership with exclusive benefits",
-  priceUSD: 9.99,
+  priceUSD: STRIPE_MONTHLY_PRICE_USD,
   priceId: process.env.STRIPE_VIP_PRICE_ID || "",
   productId: process.env.STRIPE_VIP_PRODUCT_ID || "",
   monthlyCredits: VIP_MONTHLY_CREDITS,
