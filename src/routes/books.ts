@@ -5437,16 +5437,20 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
       return c.json(doneResponse);
     }
     
-    // Actions incomplete: only dispatch workflow if client explicitly passed `trigger=true`
-    if (shouldTrigger) {
-      console.log(`[GET /candidates/status] ⏳ Generation incomplete for page ${pageIdStr}: triggering background workflow (trigger=true)`);
+    // Incomplete actions: dispatch workflow if explicitly requested (?trigger=true) OR as an
+    // auto-start safety net if generation has never been started (dbPage.isGeneratingStartedAt is null).
+    // Note: triggerCandidateGenerationWorkflow sets isGeneratingStartedAt in the DB, so subsequent
+    // polls enter the `if (isGenerating)` branch above and will never re-trigger.
+    let workflowTriggered = false;
+    if (shouldTrigger || !dbPage.isGeneratingStartedAt) {
+      console.log(`[GET /candidates/status] ⏳ Generation incomplete for page ${pageIdStr}: triggering background workflow (${shouldTrigger ? 'trigger=true' : 'auto-start unstarted'})`);
       const workflowResult = await triggerCandidateGenerationWorkflow({
         bookTitle: dbBook.title,
         bookId: dbPage.bookId,
         pageId: pageIdStr,
         userId: userId ?? requireEnv("SYSTEM_USER_ID"), // Use system user ID for unauthenticated requests
         maxDepth: MAX_BRANCHING_PREGENERATION_DEPTH, // Also pre-generate next-level depths
-        context: 'GET /candidates/status?trigger=true',
+        context: shouldTrigger ? 'GET /candidates/status?trigger=true' : 'GET /candidates/status (auto-start)',
       });
 
       // If workflow trigger failed, log error and inform client
@@ -5458,19 +5462,20 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
           isGenerating: false,
         }, 503);
       }
+      workflowTriggered = true;
     } else {
       console.log(`[GET /candidates/status] ⏳ Generation incomplete for page ${pageIdStr} (read-only poll, trigger=false)`);
     }
 
     const fallbackResponse: CandidateGenerationStatus = {
-      isGenerating: true,
+      isGenerating: workflowTriggered,
       completedActions,
       totalActions,
       // Full action set — mirrors the page payload: pending actions included,
       // disabled until their destinations resolve.
       actions: mergedActions,
       actionProgress: progressEventFallback,
-      startedAt: new Date().toISOString(),
+      startedAt: workflowTriggered ? new Date().toISOString() : undefined,
       lastUpdated: new Date().toISOString(),
     };
     setCoalesced(`cand:${userId ?? "anon"}:${pageIdStr}`, fallbackResponse);
