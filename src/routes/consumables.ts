@@ -7,7 +7,7 @@
  *
  * Endpoints:
  * - GET  /api/consumables        — public catalog of purchasable items
- * - POST /api/consumables/purchase — buy one unit with credits (auth)
+ * - POST /api/consumables/purchase — buy one or more units with credits (auth)
  *
  * Prices, names, and availability live in `CONSUMABLES_REGISTRY`
  * (`src/config/consumables.ts`) — the single source of truth. Purchasing debits
@@ -23,11 +23,8 @@ import type { AppEnv } from "../hono/env.js";
 import { requireAuth } from "../middleware/nextauth.js";
 import { rateLimit } from "../middleware/rate-limit.js";
 import { cApiError, cValidationError } from "../utils/error.js";
-import { purchaseConsumable, getUserItemCount } from "../services/consumables.js";
-import {
-  CONSUMABLES_REGISTRY,
-  CONSUMABLES_BY_TYPE,
-} from "../config/consumables.js";
+import { purchaseConsumableBatch, getUserItemCount } from "../services/consumables.js";
+import { CONSUMABLES_REGISTRY, CONSUMABLES_BY_TYPE } from "../config/consumables.js";
 import type { InventoryItemType } from "../types/consumable.js";
 import { CONSUMABLE_PURCHASE_RATE_LIMIT } from "../config/ai-rate-limits.js";
 
@@ -66,21 +63,23 @@ router.get("/", async (c) => {
 /**
  * POST /api/consumables/purchase
  *
- * Buys ONE unit of the requested consumable. Charges the registry-defined credit
- * price via `executeWithCredits` (atomic) and increments the user's
- * `user_inventory`. If the inventory write fails, `executeWithCredits`
- * auto-refunds the credits. Rejected/unavailable items cost nothing.
+ * Buys one or more units of the requested consumable. Charges the registry-defined
+ * credit price × quantity via `executeWithCredits` (atomic) and increments the
+ * user's `user_inventory` in a single DB transaction. If the inventory write fails,
+ * `executeWithCredits` auto-refunds the credits. Rejected/unavailable items cost
+ * nothing.
  *
  * @route POST /api/consumables/purchase
  * @auth Required
  * @body {string} itemType - Registry item key (e.g. `"megaphone"`)
- * @returns `{ itemType, quantity }` — the new owned quantity of that item
+ * @body {number} [quantity=1] - Units to purchase (1–99)
+ * @returns `{ itemType, quantity, purchased }` — new owned quantity and units bought
  *
  * @example
  * POST /api/consumables/purchase
- * { "itemType": "megaphone" }
+ * { "itemType": "megaphone", "quantity": 2 }
  * // Response
- * { "itemType": "megaphone", "quantity": 4 }
+ * { "itemType": "megaphone", "quantity": 4, "purchased": 2 }
  */
 router.post(
   "/purchase",
@@ -89,7 +88,10 @@ router.post(
   async (c) => {
     try {
       const userId = c.get("userId")!;
-      const { itemType } = c.get("body") as { itemType?: unknown };
+      const { itemType, quantity: rawQty } = c.get("body") as {
+        itemType?: unknown;
+        quantity?: unknown;
+      };
 
       if (
         typeof itemType !== "string" ||
@@ -105,15 +107,20 @@ router.post(
         return cValidationError(c, `${def.name} is not available for purchase`);
       }
 
+      const quantity = Math.max(1, Math.min(99, Number(rawQty) || 1));
+
       if (def.maxPerUser !== undefined) {
         const owned = await getUserItemCount(userId, type);
-        if (owned >= def.maxPerUser) {
-          return cValidationError(c, `You already own the maximum of ${def.maxPerUser} ${def.name}`);
+        if (owned + quantity > def.maxPerUser) {
+          return cValidationError(
+            c,
+            `Cannot buy ${quantity} × ${def.name} — you already own ${owned}, max is ${def.maxPerUser}`,
+          );
         }
       }
 
-      const quantity = await purchaseConsumable(userId, type);
-      return c.json({ itemType: type, quantity });
+      const newQuantity = await purchaseConsumableBatch(userId, type, quantity);
+      return c.json({ itemType: type, quantity: newQuantity, purchased: quantity });
     } catch (error) {
       console.error("[POST /api/consumables/purchase] ❌ Error:", error);
       return cApiError(c, "Failed to purchase consumable", error);

@@ -107,9 +107,77 @@ export async function purchaseConsumable(
   return result;
 }
 
-/** Convenience wrapper: purchase one 📣 Megaphone. */
-export async function purchaseMegaphone(userId: string): Promise<number> {
-  return purchaseConsumable(userId, MEGAPHONE);
+/**
+ * Purchases multiple units of a consumable item in a single atomic transaction.
+ *
+ * Charges `creditsPrice * quantity` credits via `executeWithCredits` and performs
+ * a single upsert incrementing by `quantity`. Either all units are acquired or
+ * none (on insufficient credits, maxPerUser breach, etc.).
+ *
+ * @param userId - Buyer
+ * @param itemType - Registry item to buy
+ * @param quantity - Number of units to purchase (must be ≥ 1)
+ * @returns The new owned quantity of that item after the batch purchase
+ */
+export async function purchaseConsumableBatch(
+  userId: string,
+  itemType: InventoryItemType,
+  quantity: number,
+): Promise<number> {
+  if (quantity < 1) throw new Error("quantity must be at least 1");
+
+  const def = getConsumable(itemType);
+  if (!def.available) {
+    throw new Error(`${def.name} is not available for purchase`);
+  }
+
+  const totalCost = def.creditsPrice * quantity;
+
+  const { result } = await executeWithCredits(
+    userId,
+    totalCost,
+    async (tx) => {
+      // Enforce per-user cap inside the transaction if defined
+      if (def.maxPerUser !== undefined) {
+        const [existing] = await tx
+          .select({ quantity: userInventory.quantity })
+          .from(userInventory)
+          .where(and(eq(userInventory.userId, userId), eq(userInventory.itemType, itemType)))
+          .for("update")
+          .limit(1);
+
+        const currentQty = existing?.quantity ?? 0;
+        if (currentQty + quantity > def.maxPerUser) {
+          throw new Error(
+            `Cannot purchase ${quantity} × ${def.name} — you already own ${currentQty}, max is ${def.maxPerUser}`,
+          );
+        }
+      }
+
+      await tx
+        .insert(userInventory)
+        .values({ userId, itemType, quantity, lastPurchasedAt: new Date() })
+        .onConflictDoUpdate({
+          target: [userInventory.userId, userInventory.itemType],
+          set: {
+            quantity: sql`${userInventory.quantity} + ${quantity}`,
+            lastPurchasedAt: new Date(),
+            updatedAt: new Date(),
+          },
+        });
+
+      const [row] = await tx
+        .select({ quantity: userInventory.quantity })
+        .from(userInventory)
+        .where(and(eq(userInventory.userId, userId), eq(userInventory.itemType, itemType)))
+        .limit(1);
+
+      return row?.quantity ?? 0;
+    },
+    { context: "consumable_purchase", metadata: { itemType, quantity } },
+  );
+
+  return result;
 }
 
 /**
