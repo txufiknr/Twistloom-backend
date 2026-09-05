@@ -1,7 +1,8 @@
 import type { StoryGenerationStep } from "../types/book.js";
+import { FEATURE_FREE_DEMO } from "./credits.js";
 
 /** Total cost of a book generation */
-export const BOOK_GENERATION_COST = 5;
+export const BOOK_GENERATION_COST = FEATURE_FREE_DEMO ? 0 : 5;
 
 /**
  * Stage-based refund mapping.
@@ -10,10 +11,10 @@ export const BOOK_GENERATION_COST = 5;
  * Matches the frontend config in twistloom-web/src/lib/utils/generation-refund.ts.
  */
 export const STAGE_REFUND: Record<StoryGenerationStep, number | null> = {
-  theme_validation: 5,
-  book_initialization: 5,
-  ai_generation: 3,
-  ai_evaluation: 1,
+  theme_validation: FEATURE_FREE_DEMO ? 0 : 5,
+  book_initialization: FEATURE_FREE_DEMO ? 0 : 5,
+  ai_generation: FEATURE_FREE_DEMO ? 0 : 3,
+  ai_evaluation: FEATURE_FREE_DEMO ? 0 : 1,
   finalizing: null,
   complete: null,
 };
