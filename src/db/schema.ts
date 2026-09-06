@@ -3280,13 +3280,14 @@ export const companionAnswers = pgTable(
 // ── Creator Thanks / Tipping System ─────────────────────────────────────────
 
 /**
- * Creator earnings from reader Thanks.
+ * Creator earnings from reader Thanks and platform royalties.
  *
- * Each row represents one successful Thanks tip from a reader to a creator.
- * Platform fee is deducted at time of payment; `creator_amount` is what the
- * creator actually receives. Source of truth for the creator wallet balance.
+ * Source of truth for all creator earnings. Supports multi-currency intake
+ * (Stripe USD & Xendit IDR) with currency normalization (intake_amount,
+ * intake_currency, fx_rate, settlement_amount) into the creator's wallet currency.
  *
- * @see docs/roadmap/THANKS_CREATOR_TIPPING_ROADMAP.md
+ * @see docs/architecture/CREATOR_WALLET_ARCHITECTURE.md
+ * @see docs/roadmap/CREATOR_WALLET_GLOBAL_ALIGNMENT_AUDIT.md
  */
 export const creatorEarnings = pgTable(
   "creator_earnings",
@@ -3298,13 +3299,28 @@ export const creatorEarnings = pgTable(
     readerId: uuid("reader_id").notNull().references(() => users.userId, { onDelete: "cascade" }),
     source: text("source").notNull().default("thanks")
       .$type<"thanks" | "revenue_share" | "custom_action" | "other">(),
-    grossAmount: integer("gross_amount").notNull(),
-    platformFee: integer("platform_fee").notNull(),
-    creatorAmount: integer("creator_amount").notNull(),
-    currency: text("currency").notNull().default("IDR"),
+
+    // ── Multi-Currency Audit & Normalization ──────────────────────────────
+    intakeAmount: integer("intake_amount").notNull().default(0),      // Amount paid by reader (USD cents or whole IDR)
+    intakeCurrency: text("intake_currency").notNull().default("IDR")   // 'USD' | 'IDR'
+      .$type<"USD" | "IDR">(),
+    fxRate: real("fx_rate").notNull().default(1.0),                    // Spot/platform FX rate applied at intake
+    settlementAmount: integer("settlement_amount").notNull().default(0), // Gross converted to creator wallet currency
+
+    grossAmount: integer("gross_amount").notNull(),                   // Gross in creator wallet currency
+    platformFee: integer("platform_fee").notNull(),                   // 5% platform cut in creator wallet currency
+    creatorAmount: integer("creator_amount").notNull(),               // 95% net credited to creator wallet
+    currency: text("currency").notNull().default("IDR")               // Creator wallet settlement currency ('IDR' | 'USD')
+      .$type<"IDR" | "USD">(),
+
+    gateway: text("gateway").notNull().default("stripe")
+      .$type<"stripe" | "xendit">(),
+    providerPaymentId: text("provider_payment_id"),                   // Stripe session/pi ID or Xendit invoice ID
+    providerEventId: text("provider_event_id").notNull(),              // Stripe event ID or Xendit callback ID
     stripeSessionId: text("stripe_session_id"),
     stripePaymentIntent: text("stripe_payment_intent"),
     stripeEventId: text("stripe_event_id"),
+
     status: text("status").notNull().default("completed")
       .$type<"pending" | "completed" | "refunded">(),
     message: text("message"),
@@ -3320,6 +3336,7 @@ export const creatorEarnings = pgTable(
     index("creator_earnings_source_idx").on(t.source),
     unique("creator_earnings_stripe_event_unique").on(t.stripeEventId),
     unique("creator_earnings_stripe_session_unique").on(t.stripeSessionId),
+    unique("creator_earnings_provider_event_unique").on(t.gateway, t.providerEventId),
   ]
 );
 
@@ -3327,10 +3344,10 @@ export const creatorEarnings = pgTable(
  * Creator wallets — aggregated balances from all earning sources.
  *
  * One row per creator. `available_amount` is what the creator can withdraw.
- * `pending_amount` holds funds not yet cleared (e.g. dispute window).
- * Created lazily on first earning receipt (thanks, revenue share, etc.).
+ * Units match `currency`: whole Rupiah for 'IDR', cents for 'USD'.
  *
  * @see docs/architecture/CREATOR_WALLET_ARCHITECTURE.md
+ * @see docs/roadmap/CREATOR_WALLET_GLOBAL_ALIGNMENT_AUDIT.md
  */
 export const creatorWallets = pgTable(
   "creator_wallets",
@@ -3339,8 +3356,10 @@ export const creatorWallets = pgTable(
     availableAmount: integer("available_amount").notNull().default(0),
     pendingAmount: integer("pending_amount").notNull().default(0),
     withdrawnAmount: integer("withdrawn_amount").notNull().default(0),
-    currency: text("currency").notNull().default("IDR"),
+    currency: text("currency").notNull().default("IDR")
+      .$type<"IDR" | "USD">(),
     payoutVerified: boolean("payout_verified").notNull().default(false),
+    stripeConnectAccountId: text("stripe_connect_account_id"),
     createdAt,
     updatedAt,
   }
@@ -3349,10 +3368,10 @@ export const creatorWallets = pgTable(
 /**
  * Creator payout requests (withdrawals).
  *
- * One row per withdrawal attempt. In v0.5, payouts are processed manually
- * by admins. Status transitions: pending → processing → completed | failed.
+ * One row per withdrawal attempt.
+ * Status transitions: pending → processing → completed | failed.
  *
- * @see docs/roadmap/THANKS_CREATOR_TIPPING_ROADMAP.md
+ * @see docs/roadmap/CREATOR_WALLET_GLOBAL_ALIGNMENT_AUDIT.md
  */
 export const creatorPayouts = pgTable(
   "creator_payouts",
@@ -3362,9 +3381,12 @@ export const creatorPayouts = pgTable(
     amount: integer("amount").notNull(),
     fee: integer("fee").notNull().default(0),
     netAmount: integer("net_amount").notNull(),
-    currency: text("currency").notNull().default("IDR"),
+    currency: text("currency").notNull().default("IDR")
+      .$type<"IDR" | "USD">(),
     status: text("status").notNull().default("pending")
       .$type<"pending" | "processing" | "completed" | "failed">(),
+    provider: text("provider").default("xendit")
+      .$type<"xendit" | "stripe" | "manual">(),
     providerPayoutId: text("provider_payout_id"),
     providerMethod: text("provider_method"),
     providerAccountLast4: text("provider_account_last4"),
@@ -3381,24 +3403,28 @@ export const creatorPayouts = pgTable(
 );
 
 /**
- * Creator payout methods (bank accounts / e-wallets).
+ * Creator payout methods (bank accounts / e-wallets / Stripe Connect).
  *
- * Stores the creator's payout destination details. Account numbers are
- * encrypted at rest. Only needed when creator attempts first withdrawal.
+ * Stores creator payout destination details.
  *
- * @see docs/roadmap/THANKS_CREATOR_TIPPING_ROADMAP.md
+ * @see docs/roadmap/CREATOR_WALLET_GLOBAL_ALIGNMENT_AUDIT.md
  */
 export const creatorPayoutMethods = pgTable(
   "creator_payout_methods",
   {
     id: id(),
     creatorId: uuid("creator_id").notNull().references(() => users.userId, { onDelete: "cascade" }),
-    methodType: text("method_type").notNull(),
+    methodType: text("method_type").notNull()
+      .$type<"bank_transfer" | "e_wallet" | "stripe_connect">(),
     bankName: text("bank_name"),
+    bankCode: text("bank_code"),
     accountNumberEncrypted: text("account_number_encrypted"),
     accountName: text("account_name"),
+    currency: text("currency").notNull().default("IDR")
+      .$type<"IDR" | "USD">(),
     isDefault: boolean("is_default").notNull().default(true),
     isVerified: boolean("is_verified").notNull().default(false),
+    metadata: jsonb("metadata"),
     createdAt,
     updatedAt,
   },

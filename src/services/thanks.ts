@@ -18,6 +18,7 @@ import {
   userNotifications,
 } from "../db/schema.js";
 import { calculatePlatformFee, calculateCreatorAmount } from "../config/thanks.js";
+import { XENDIT_CONFIG } from "../config/xendit.js";
 import { getErrorMessage } from "../utils/error.js";
 import { isUniqueConstraintError } from "../utils/retry.js";
 
@@ -65,52 +66,107 @@ export async function recordThanks(options: RecordThanksOptions): Promise<{ dupl
   const paymentIntentId = options.stripePaymentIntentId || null;
   const gateway = options.gateway || (options.stripeSessionId ? PAYMENT_GATEWAY.stripe : PAYMENT_GATEWAY.xendit);
 
-  const platformFee = calculatePlatformFee(grossAmount);
-  const creatorAmount = calculateCreatorAmount(grossAmount);
+  // Only populate stripeEventId for Stripe events; use providerEventId for all gateways
+  const stripeEventId = gateway === PAYMENT_GATEWAY.stripe ? eventId : null;
 
   // 1. Quick idempotency check before entering transaction
   const existing = await dbRead
     .select({ id: creatorEarnings.id })
     .from(creatorEarnings)
-    .where(eq(creatorEarnings.stripeEventId, eventId))
+    .where(
+      and(
+        eq(creatorEarnings.gateway, gateway),
+        eq(creatorEarnings.providerEventId, eventId),
+      ),
+    )
     .limit(1);
 
   if (existing.length > 0) {
     return { duplicate: true };
   }
 
+  // 2. Determine target creator's settlement currency
+  const [existingWallet] = await dbRead
+    .select({ currency: creatorWallets.currency })
+    .from(creatorWallets)
+    .where(eq(creatorWallets.creatorId, creatorId))
+    .limit(1);
+
+  let targetCurrency: "IDR" | "USD" = "IDR";
+  if (existingWallet?.currency) {
+    targetCurrency = existingWallet.currency === "USD" ? "USD" : "IDR";
+  } else {
+    // New wallet: check creator's preferredLocale
+    const [creatorUser] = await dbRead
+      .select({ preferredLocale: users.preferredLocale })
+      .from(users)
+      .where(eq(users.userId, creatorId))
+      .limit(1);
+    targetCurrency = creatorUser?.preferredLocale === "id" ? "IDR" : "USD";
+  }
+
+  // 3. Multi-currency normalization
+  const normalizedIntakeCurrency = (currency || (gateway === PAYMENT_GATEWAY.stripe ? "USD" : "IDR")).toUpperCase() as "IDR" | "USD";
+  const fxRate = XENDIT_CONFIG.usdToIdrRate || 15500;
+  let appliedFxRate = 1.0;
+  let settlementGross: number;
+
+  if (normalizedIntakeCurrency === "USD" && targetCurrency === "IDR") {
+    // Reader paid USD cents ($10.00 = 1000 cents) -> Creator settles in whole IDR
+    appliedFxRate = fxRate;
+    settlementGross = Math.round((grossAmount / 100) * fxRate);
+  } else if (normalizedIntakeCurrency === "IDR" && targetCurrency === "USD") {
+    // Reader paid whole IDR (155,000 IDR) -> Creator settles in USD cents (1000 cents)
+    appliedFxRate = 1 / fxRate;
+    settlementGross = Math.round((grossAmount / fxRate) * 100);
+  } else {
+    // Matching currency
+    appliedFxRate = 1.0;
+    settlementGross = grossAmount;
+  }
+
+  const platformFee = calculatePlatformFee(settlementGross);
+  const creatorAmount = calculateCreatorAmount(settlementGross);
+
   try {
     await dbWrite.transaction(async (tx) => {
-      // 2. Insert earnings record (source='thanks')
+      // 4. Insert normalized earnings record (source='thanks')
       await tx.insert(creatorEarnings).values({
         creatorId,
         bookId,
         pageId: pageId !== undefined ? pageId : null,
         readerId,
         source: "thanks",
-        grossAmount,
+        intakeAmount: grossAmount,
+        intakeCurrency: normalizedIntakeCurrency,
+        fxRate: appliedFxRate,
+        settlementAmount: settlementGross,
+        grossAmount: settlementGross,
         platformFee,
         creatorAmount,
-        currency,
+        currency: targetCurrency,
+        gateway,
+        providerPaymentId: sessionId,
+        providerEventId: eventId,
         stripeSessionId: sessionId,
         stripePaymentIntent: paymentIntentId,
-        stripeEventId: eventId,
+        stripeEventId,
         status: "completed",
         message: message || null,
         metadata: {
           gateway,
-          providerPaymentId: options.providerPaymentId || null,
-          providerEventId: options.providerEventId || null,
+          providerPaymentId: sessionId,
+          providerEventId: eventId,
         },
       });
 
-      // 3. Upsert wallet (atomic increment, with currency for lazy-create)
+      // 5. Upsert creator wallet (atomic increment in creator's settlement currency)
       await tx
         .insert(creatorWallets)
         .values({
           creatorId,
           availableAmount: creatorAmount,
-          currency,
+          currency: targetCurrency,
         })
         .onConflictDoUpdate({
           target: creatorWallets.creatorId,
@@ -128,7 +184,7 @@ export async function recordThanks(options: RecordThanksOptions): Promise<{ dupl
     throw error;
   }
 
-  // 4. Notifications (non-blocking, best-effort, outside financial transaction)
+  // 6. Notifications (non-blocking, best-effort, outside financial transaction)
   try {
     const [reader, book] = await Promise.all([
       dbRead.select({ name: users.name }).from(users).where(eq(users.userId, readerId)).limit(1),
@@ -148,9 +204,11 @@ export async function recordThanks(options: RecordThanksOptions): Promise<{ dupl
         readerName,
         bookId,
         bookTitle,
-        grossAmount,
+        grossAmount: settlementGross,
         creatorAmount,
-        currency,
+        currency: targetCurrency,
+        intakeAmount: grossAmount,
+        intakeCurrency: normalizedIntakeCurrency,
       },
     });
   } catch (notifError) {
@@ -169,11 +227,13 @@ export async function recordThanks(options: RecordThanksOptions): Promise<{ dupl
 export async function getBookThanksStats(bookId: string): Promise<{
   thanksCount: number;
   totalAmount: number;
+  currency: "IDR" | "USD" | null;
 }> {
   const [result] = await dbRead
     .select({
       thanksCount: sql<number>`count(*)::int`,
       totalAmount: sql<number>`coalesce(sum(${creatorEarnings.creatorAmount}), 0)::int`,
+      currency: sql<"IDR" | "USD">`min(${creatorEarnings.currency})`,
     })
     .from(creatorEarnings)
     .where(
@@ -187,6 +247,7 @@ export async function getBookThanksStats(bookId: string): Promise<{
   return {
     thanksCount: result?.thanksCount ?? 0,
     totalAmount: result?.totalAmount ?? 0,
+    currency: result?.currency ?? null,
   };
 }
 
@@ -196,11 +257,12 @@ export async function getBookThanksStats(bookId: string): Promise<{
 export async function getMyThanksForBook(
   readerId: string,
   bookId: string,
-): Promise<{ hasThanked: boolean; totalAmount: number }> {
+): Promise<{ hasThanked: boolean; totalAmount: number; currency: "IDR" | "USD" | null }> {
   const [result] = await dbRead
     .select({
       hasThanked: sql<boolean>`count(*) > 0`,
       totalAmount: sql<number>`coalesce(sum(${creatorEarnings.creatorAmount}), 0)::int`,
+      currency: sql<"IDR" | "USD">`min(${creatorEarnings.currency})`,
     })
     .from(creatorEarnings)
     .where(
@@ -215,5 +277,6 @@ export async function getMyThanksForBook(
   return {
     hasThanked: result?.hasThanked ?? false,
     totalAmount: result?.totalAmount ?? 0,
+    currency: result?.currency ?? null,
   };
 }

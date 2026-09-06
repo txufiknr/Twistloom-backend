@@ -60,6 +60,24 @@ export interface PortalParams {
   returnUrl: string;
 }
 
+export interface ThanksCheckoutParams {
+  userId: string;
+  email: string;
+  name?: string;
+  bookId: string;
+  bookTitle: string;
+  creatorId: string;
+  creatorName?: string;
+  amount: number;
+  currency: string;
+  platformFee: number;
+  creatorAmount: number;
+  pageId?: string;
+  message?: string;
+  successUrl: string;
+  cancelUrl: string;
+}
+
 // ── Return Types ────────────────────────────────────────────────────────────
 
 export interface CheckoutResult {
@@ -86,6 +104,9 @@ export interface PaymentGatewayAdapter {
 
   /** Create a free trial subscription checkout (optional — not all gateways support trials) */
   createTrialCheckout?(params: TrialCheckoutParams): Promise<CheckoutResult>;
+
+  /** Create a creator tipping (Thanks) checkout session (optional) */
+  createThanksCheckout?(params: ThanksCheckoutParams): Promise<CheckoutResult>;
 
   // ── Subscription Management ─────────────────────────────────────────────
 

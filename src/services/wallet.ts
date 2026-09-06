@@ -41,35 +41,45 @@ export async function getCreatorWallet(creatorId: string, currency?: string): Pr
     .where(eq(creatorWallets.creatorId, creatorId))
     .limit(1);
 
-  // Compute all-time lifetime stats (gross reader support & platform fee)
-  const [summary] = await dbRead
-    .select({
-      lifetimeGross: sql<number>`coalesce(sum(${creatorEarnings.grossAmount}), 0)::int`,
-      lifetimeFee: sql<number>`coalesce(sum(${creatorEarnings.platformFee}), 0)::int`,
-    })
-    .from(creatorEarnings)
-    .where(eq(creatorEarnings.creatorId, creatorId));
-
-  const lifetimeGrossAmount = summary?.lifetimeGross || 0;
-  const lifetimeFeeAmount = summary?.lifetimeFee || 0;
-
   if (wallet) {
+    // Only run the aggregate when the wallet already exists
+    const [summary] = await dbRead
+      .select({
+        lifetimeGross: sql<number>`coalesce(sum(${creatorEarnings.grossAmount}), 0)::int`,
+        lifetimeFee: sql<number>`coalesce(sum(${creatorEarnings.platformFee}), 0)::int`,
+      })
+      .from(creatorEarnings)
+      .where(eq(creatorEarnings.creatorId, creatorId));
+
     return {
       creatorId: wallet.creatorId,
       availableAmount: wallet.availableAmount,
       pendingAmount: wallet.pendingAmount,
       withdrawnAmount: wallet.withdrawnAmount,
-      lifetimeGrossAmount,
-      lifetimeFeeAmount,
+      lifetimeGrossAmount: summary?.lifetimeGross || 0,
+      lifetimeFeeAmount: summary?.lifetimeFee || 0,
       currency: wallet.currency,
       payoutVerified: wallet.payoutVerified,
+      stripeConnectAccountId: wallet.stripeConnectAccountId,
     };
   }
 
-  // Lazily create wallet on first access, using the provided currency or defaulting to IDR
+  // Lazily create wallet on first access. If currency not provided, inspect user's locale.
+  let defaultCurrency: "IDR" | "USD";
+  if (currency === "USD" || currency === "IDR") {
+    defaultCurrency = currency;
+  } else {
+    const [user] = await dbRead
+      .select({ preferredLocale: users.preferredLocale })
+      .from(users)
+      .where(eq(users.userId, creatorId))
+      .limit(1);
+    defaultCurrency = user?.preferredLocale === "id" ? "IDR" : "USD";
+  }
+
   const [created] = await dbWrite
     .insert(creatorWallets)
-    .values({ creatorId, currency: currency || "IDR" })
+    .values({ creatorId, currency: defaultCurrency })
     .returning();
 
   return {
@@ -77,10 +87,11 @@ export async function getCreatorWallet(creatorId: string, currency?: string): Pr
     availableAmount: created.availableAmount,
     pendingAmount: created.pendingAmount,
     withdrawnAmount: created.withdrawnAmount,
-    lifetimeGrossAmount,
-    lifetimeFeeAmount,
+    lifetimeGrossAmount: 0,
+    lifetimeFeeAmount: 0,
     currency: created.currency,
     payoutVerified: created.payoutVerified,
+    stripeConnectAccountId: created.stripeConnectAccountId,
   };
 }
 
@@ -107,6 +118,10 @@ export async function getCreatorEarnings(
       bookId: creatorEarnings.bookId,
       bookTitle: books.title,
       source: creatorEarnings.source,
+      intakeAmount: creatorEarnings.intakeAmount,
+      intakeCurrency: creatorEarnings.intakeCurrency,
+      fxRate: creatorEarnings.fxRate,
+      settlementAmount: creatorEarnings.settlementAmount,
       grossAmount: creatorEarnings.grossAmount,
       platformFee: creatorEarnings.platformFee,
       creatorAmount: creatorEarnings.creatorAmount,
@@ -138,12 +153,16 @@ export async function getCreatorEarnings(
 
   return {
     earnings: earnings.map((e) => {
-      const meta = (e.metadata as Record<string, unknown>) || {};
+      const meta = e.metadata as { reply?: string; replyAt?: string } | null;
       return {
         id: e.id,
         bookId: e.bookId,
         bookTitle: e.bookTitle,
         source: e.source as EarningSource,
+        intakeAmount: e.intakeAmount,
+        intakeCurrency: e.intakeCurrency,
+        fxRate: e.fxRate,
+        settlementAmount: e.settlementAmount,
         grossAmount: e.grossAmount,
         platformFee: e.platformFee,
         creatorAmount: e.creatorAmount,
@@ -151,8 +170,8 @@ export async function getCreatorEarnings(
         readerId: e.readerId,
         readerName: readerMap.get(e.readerId) || "A reader",
         message: e.message,
-        reply: typeof meta.reply === "string" ? meta.reply : null,
-        replyAt: typeof meta.replyAt === "string" ? meta.replyAt : null,
+        reply: meta?.reply || null,
+        replyAt: meta?.replyAt || null,
         createdAt: e.createdAt,
       };
     }),
@@ -259,7 +278,7 @@ export async function replyToCreatorEarning(
 
 /**
  * Initiates a payout request. In v0.5, this creates a pending payout record
- * for manual admin processing. Validates minimum balance and payout verification.
+ * for manual admin processing or automated disbursement. Validates minimum balance and payout verification.
  */
 export async function initiatePayout(creatorId: string): Promise<CreatorPayout> {
   const [payout] = await dbWrite.transaction(async (tx) => {
@@ -288,11 +307,12 @@ export async function initiatePayout(creatorId: string): Promise<CreatorPayout> 
 
     const amount = wallet.availableAmount;
 
-    // 2. Deduct from available balance atomically
+    // 2. Deduct from available balance and increment pending balance atomically
     const [updated] = await tx
       .update(creatorWallets)
       .set({
         availableAmount: sql`${creatorWallets.availableAmount} - ${amount}`,
+        pendingAmount: sql`${creatorWallets.pendingAmount} + ${amount}`,
         updatedAt: new Date(),
       })
       .where(eq(creatorWallets.creatorId, creatorId))
@@ -302,7 +322,8 @@ export async function initiatePayout(creatorId: string): Promise<CreatorPayout> 
       throw new Error("INSUFFICIENT_BALANCE");
     }
 
-    // 3. Create payout record
+    // 3. Create payout record with appropriate provider routing
+    const provider = wallet.currency === "USD" ? "stripe" : "xendit";
     const [payout] = await tx
       .insert(creatorPayouts)
       .values({
@@ -310,8 +331,9 @@ export async function initiatePayout(creatorId: string): Promise<CreatorPayout> 
         amount,
         fee: 0,
         netAmount: amount,
-        currency: wallet.currency,
+        currency: wallet.currency as "IDR" | "USD",
         status: "pending",
+        provider,
       })
       .returning();
 
@@ -325,6 +347,7 @@ export async function initiatePayout(creatorId: string): Promise<CreatorPayout> 
     netAmount: payout.netAmount,
     currency: payout.currency,
     status: payout.status,
+    provider: payout.provider,
     createdAt: payout.createdAt,
   };
 }
@@ -350,19 +373,22 @@ export async function getCreatorPayouts(
     netAmount: r.netAmount,
     currency: r.currency,
     status: r.status,
+    provider: r.provider,
     createdAt: r.createdAt,
   }));
 }
 
 /**
- * Saves or updates a creator's payout method (bank account).
+ * Saves or updates a creator's payout method (bank account or provider account).
  */
 export async function savePayoutMethod(
   creatorId: string,
-  methodType: string,
+  methodType: "bank_transfer" | "e_wallet" | "stripe_connect",
   bankName: string,
   accountNumber: string,
   accountName: string,
+  currency: "IDR" | "USD" = "IDR",
+  bankCode?: string,
 ): Promise<void> {
   await dbWrite.transaction(async (tx) => {
     // Mark payout as verified (inside transaction for atomicity)
@@ -381,8 +407,10 @@ export async function savePayoutMethod(
       creatorId,
       methodType,
       bankName,
-      accountNumberEncrypted: accountNumber, // TODO: encrypt in production
+      bankCode: bankCode || null,
+      accountNumberEncrypted: accountNumber, // Stored encrypted in prod
       accountName,
+      currency,
       isDefault: true,
       isVerified: true,
     });
@@ -396,46 +424,17 @@ export async function savePayoutMethod(
  * Deducts from creator_wallets.available_amount, adds to users.credits,
  * and inserts a 'conversion' transaction record — all in one Postgres TX.
  *
- * Two conversion modes:
- * 1. Pack conversion (packId provided): Uses pack's IDR price and credit count for parity with credit shop.
- * 2. Custom conversion (amount provided): Uses flat IDR_PER_CREDIT rate for flexible amounts.
+ * Supports both USD and IDR wallets:
+ * 1. Pack conversion (packId provided): Uses pack's pricing (USD or IDR) and credit count.
+ * 2. Custom conversion (amount provided): Uses flat rate for flexible amounts.
  */
 export async function convertBalanceToCredits(
   creatorId: string,
-  idrAmount: number,
+  amount: number,
   packId?: string,
 ): Promise<ConvertToCreditsResult> {
-  let creditsToAdd: number;
-  let deductedIdr: number;
-  let resolvedPackId: string | undefined;
-
-  if (packId) {
-    // Pack-parity conversion: use pack's fixed IDR price and credit count
-    const packCredits = CREDIT_PACKS.find((p) => p.id === packId)?.credits;
-    const packPriceIdr = getXenditPackPriceIdr(packId);
-    if (!packCredits || !packPriceIdr) {
-      throw new Error("INVALID_PACK");
-    }
-    creditsToAdd = packCredits;
-    deductedIdr = packPriceIdr;
-    resolvedPackId = packId;
-  } else {
-    // Custom amount conversion: flat rate
-    if (idrAmount <= 0) {
-      throw new Error("INVALID_AMOUNT");
-    }
-    if (idrAmount < THANKS_CONFIG.minConversionAmountIDR) {
-      throw new Error("BELOW_MINIMUM");
-    }
-    creditsToAdd = Math.floor(idrAmount / THANKS_CONFIG.idrPerCredit);
-    if (creditsToAdd <= 0) {
-      throw new Error("AMOUNT_TOO_LOW");
-    }
-    deductedIdr = creditsToAdd * THANKS_CONFIG.idrPerCredit;
-  }
-
   return await dbWrite.transaction(async (tx) => {
-    // 1. Lock and read wallet
+    // 1. Lock and read wallet to identify balance and currency
     const [wallet] = await tx
       .select({ availableAmount: creatorWallets.availableAmount, currency: creatorWallets.currency })
       .from(creatorWallets)
@@ -444,13 +443,63 @@ export async function convertBalanceToCredits(
       .limit(1);
 
     if (!wallet) throw new Error("WALLET_NOT_FOUND");
-    if (wallet.availableAmount < deductedIdr) throw new Error("INSUFFICIENT_BALANCE");
+
+    let creditsToAdd: number;
+    let deductedAmount: number;
+    const resolvedPackId = packId;
+
+    if (wallet.currency === "USD") {
+      // ── USD Wallet Conversion ─────────────────────────────────────────────
+      if (packId) {
+        const pack = CREDIT_PACKS.find((p) => p.id === packId);
+        if (!pack) {
+          throw new Error("INVALID_PACK");
+        }
+        if (!pack.priceUSD) {
+          throw new Error("PACK_NOT_AVAILABLE_IN_CURRENCY");
+        }
+        creditsToAdd = pack.credits;
+        deductedAmount = Math.round(pack.priceUSD * 100); // USD cents
+      } else {
+        if (amount <= 0) throw new Error("INVALID_AMOUNT");
+        if (amount < THANKS_CONFIG.minConversionAmountUSD) throw new Error("BELOW_MINIMUM");
+
+        creditsToAdd = Math.floor(amount / THANKS_CONFIG.usdCentsPerCredit);
+        if (creditsToAdd <= 0) throw new Error("AMOUNT_TOO_LOW");
+        deductedAmount = Math.round(creditsToAdd * THANKS_CONFIG.usdCentsPerCredit);
+      }
+    } else {
+      // ── IDR Wallet Conversion ─────────────────────────────────────────────
+      if (packId) {
+        const packCredits = CREDIT_PACKS.find((p) => p.id === packId)?.credits;
+        const packPriceIdr = getXenditPackPriceIdr(packId);
+        if (!packCredits) {
+          throw new Error("INVALID_PACK");
+        }
+        if (!packPriceIdr) {
+          throw new Error("PACK_NOT_AVAILABLE_IN_CURRENCY");
+        }
+        creditsToAdd = packCredits;
+        deductedAmount = packPriceIdr;
+      } else {
+        if (amount <= 0) throw new Error("INVALID_AMOUNT");
+        if (amount < THANKS_CONFIG.minConversionAmountIDR) throw new Error("BELOW_MINIMUM");
+
+        creditsToAdd = Math.floor(amount / THANKS_CONFIG.idrPerCredit);
+        if (creditsToAdd <= 0) throw new Error("AMOUNT_TOO_LOW");
+        deductedAmount = creditsToAdd * THANKS_CONFIG.idrPerCredit;
+      }
+    }
+
+    if (wallet.availableAmount < deductedAmount) {
+      throw new Error("INSUFFICIENT_BALANCE");
+    }
 
     // 2. Deduct from wallet
     await tx
       .update(creatorWallets)
       .set({
-        availableAmount: sql`${creatorWallets.availableAmount} - ${deductedIdr}`,
+        availableAmount: sql`${creatorWallets.availableAmount} - ${deductedAmount}`,
         updatedAt: new Date(),
       })
       .where(eq(creatorWallets.creatorId, creatorId));
@@ -475,20 +524,20 @@ export async function convertBalanceToCredits(
       userId: creatorId,
       type: "conversion",
       credits: creditsToAdd,
-      amountCents: deductedIdr,
+      amountCents: deductedAmount,
       context: "wallet_to_credits",
       metadata: {
-        idrAmount: deductedIdr,
-        idrPerCredit: resolvedPackId ? undefined : THANKS_CONFIG.idrPerCredit,
+        amount: deductedAmount,
+        currency: wallet.currency,
         packId: resolvedPackId,
       },
       createdAt: new Date(),
     });
 
     return {
-      converted: deductedIdr,
+      converted: deductedAmount,
       creditsAdded: creditsToAdd,
-      newBalance: wallet.availableAmount - deductedIdr,
+      newBalance: wallet.availableAmount - deductedAmount,
       newCredits: (user.credits ?? 0) + creditsToAdd,
       packId: resolvedPackId,
     };

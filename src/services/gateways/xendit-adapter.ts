@@ -11,12 +11,14 @@ import {
   createXenditCreditPackCheckout as _createCreditPackCheckout,
   createXenditSubscriptionCheckout as _createSubscriptionCheckout,
   cancelXenditSubscription as _cancelSubscription,
+  createXenditThanksCheckout as _createThanksCheckout,
 } from "../xendit.js";
 import { isXenditConfigured } from "../../utils/xendit.js";
 import type {
   PaymentGatewayAdapter,
   CreditPackCheckoutParams,
   SubscriptionCheckoutParams,
+  ThanksCheckoutParams,
   CheckoutResult,
 } from "../../types/payment-gateway-adapter.js";
 
@@ -54,5 +56,25 @@ export class XenditAdapter implements PaymentGatewayAdapter {
 
   async cancelSubscription(providerSubscriptionId: string): Promise<void> {
     await _cancelSubscription(providerSubscriptionId);
+  }
+
+  async createThanksCheckout(params: ThanksCheckoutParams): Promise<CheckoutResult> {
+    if (!isXenditConfigured()) {
+      throw new Error("Xendit gateway is not enabled or configured");
+    }
+    return _createThanksCheckout({
+      userId: params.userId,
+      email: params.email,
+      name: params.name,
+      bookId: params.bookId,
+      bookTitle: params.bookTitle,
+      creatorId: params.creatorId,
+      creatorName: params.creatorName,
+      amountIdr: params.amount,
+      pageId: params.pageId,
+      message: params.message,
+      successUrl: params.successUrl,
+      cancelUrl: params.cancelUrl,
+    });
   }
 }

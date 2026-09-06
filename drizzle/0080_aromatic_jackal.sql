@@ -1,0 +1,1 @@
+ALTER TABLE "creator_earnings" ALTER COLUMN "provider_event_id" SET NOT NULL;

@@ -13,6 +13,7 @@ import type {
   CreditPackCheckoutParams,
   SubscriptionCheckoutParams,
   TrialCheckoutParams,
+  ThanksCheckoutParams,
   PortalParams,
   CheckoutResult,
 } from "../../types/payment-gateway-adapter.js";
@@ -140,5 +141,46 @@ export class StripeAdapter implements PaymentGatewayAdapter {
       return_url: params.returnUrl,
     });
     return { url: session.url };
+  }
+
+  async createThanksCheckout(params: ThanksCheckoutParams): Promise<CheckoutResult> {
+    const session = await getStripe().checkout.sessions.create({
+      payment_method_types: ["card"],
+      mode: "payment",
+      line_items: [
+        {
+          price_data: {
+            currency: params.currency.toLowerCase(),
+            product_data: {
+              name: `Thanks for "${params.bookTitle}"`,
+              description: `Support ${params.creatorName || "the creator"}`,
+            },
+            unit_amount: params.amount,
+          },
+          quantity: 1,
+        },
+      ],
+      metadata: {
+        type: "thanks",
+        readerId: params.userId,
+        creatorId: params.creatorId,
+        bookId: params.bookId,
+        pageId: params.pageId || "",
+        grossAmount: params.amount.toString(),
+        platformFee: params.platformFee.toString(),
+        creatorAmount: params.creatorAmount.toString(),
+        currency: params.currency,
+        message: params.message || "",
+      },
+      client_reference_id: params.userId,
+      success_url: params.successUrl,
+      cancel_url: params.cancelUrl,
+    });
+
+    return {
+      url: session.url!,
+      sessionId: session.id,
+      gateway: PAYMENT_GATEWAY.stripe,
+    };
   }
 }

@@ -547,6 +547,20 @@
       "when": 1788393901536,
       "tag": "0078_light_korath",
       "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1788650562129,
+      "tag": "0079_nappy_katie_power",
+      "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "7",
+      "when": 1788651694857,
+      "tag": "0080_aromatic_jackal",
+      "breakpoints": true
     }
   ]
 }

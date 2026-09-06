@@ -17,8 +17,9 @@ export interface CreatorWallet {
   withdrawnAmount: number;
   lifetimeGrossAmount?: number;
   lifetimeFeeAmount?: number;
-  currency: string;
+  currency: "IDR" | "USD" | string;
   payoutVerified: boolean;
+  stripeConnectAccountId?: string | null;
 }
 
 export interface CreatorEarning {
@@ -26,10 +27,14 @@ export interface CreatorEarning {
   bookId: string;
   bookTitle: string | null;
   source: EarningSource;
+  intakeAmount?: number;
+  intakeCurrency?: "IDR" | "USD" | string;
+  fxRate?: number;
+  settlementAmount?: number;
   grossAmount: number;
   platformFee: number;
   creatorAmount: number;
-  currency: string;
+  currency: "IDR" | "USD" | string;
   readerName: string;
   readerId: string;
   message: string | null;
@@ -38,14 +43,14 @@ export interface CreatorEarning {
   createdAt: Date;
 }
 
-
 export interface CreatorPayout {
   id: string;
   amount: number;
   fee: number;
   netAmount: number;
-  currency: string;
+  currency: "IDR" | "USD" | string;
   status: string;
+  provider?: string | null;
   createdAt: Date;
 }
 

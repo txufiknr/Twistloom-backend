@@ -138,8 +138,8 @@ router.post("/withdraw", requireAuth, async (c) => {
  * 2. Custom conversion: { amount: 50000 } — uses flat IDR_PER_CREDIT rate
  */
 router.post("/convert-to-credits", requireAuth, async (c) => {
+  const userId = c.get("userId")!;
   try {
-    const userId = c.get("userId")!;
     const { amount, packId } = c.get("body");
 
     if (packId) {
@@ -153,7 +153,7 @@ router.post("/convert-to-credits", requireAuth, async (c) => {
 
     // Custom amount conversion
     if (!amount || typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) {
-      return cValidationError(c, "amount must be a positive number (IDR) when packId is not provided");
+      return cValidationError(c, "amount must be a positive number when packId is not provided");
     }
 
     const result = await convertBalanceToCredits(userId, amount);
@@ -162,8 +162,15 @@ router.post("/convert-to-credits", requireAuth, async (c) => {
     if (error.message === "INVALID_PACK") {
       return cValidationError(c, "Invalid credit pack ID");
     }
+    if (error.message === "PACK_NOT_AVAILABLE_IN_CURRENCY") {
+      return cValidationError(c, "This credit pack is not available in your wallet currency");
+    }
     if (error.message === "BELOW_MINIMUM") {
-      return cValidationError(c, `Minimum conversion is ${THANKS_CONFIG.minConversionAmountIDR} IDR`);
+      const wallet = await getCreatorWallet(userId);
+      const minAmount = wallet.currency === "USD"
+        ? `${THANKS_CONFIG.minConversionAmountUSD} cents ($1.00 USD)`
+        : `${THANKS_CONFIG.minConversionAmountIDR.toLocaleString()} IDR`;
+      return cValidationError(c, `Minimum conversion is ${minAmount}`);
     }
     if (error.message === "AMOUNT_TOO_LOW") {
       return cValidationError(c, "Amount too low to convert to any credits");
@@ -199,13 +206,16 @@ router.get("/payouts", requireAuth, async (c) => {
 router.post("/payout-method", requireAuth, async (c) => {
   try {
     const userId = c.get("userId")!;
-    const { methodType, bankName, accountNumber, accountName } = c.get("body");
+    const { methodType, bankName, accountNumber, accountName, currency, bankCode } = c.get("body");
 
     if (!methodType || !bankName || !accountNumber || !accountName) {
       return cValidationError(c, "All fields are required: methodType, bankName, accountNumber, accountName");
     }
 
-    await savePayoutMethod(userId, methodType, bankName, accountNumber, accountName);
+    const validMethod = methodType === "e_wallet" || methodType === "stripe_connect" ? methodType : "bank_transfer";
+    const validCurrency = currency === "USD" ? "USD" : "IDR";
+
+    await savePayoutMethod(userId, validMethod, bankName, accountNumber, accountName, validCurrency, bankCode);
     return c.json({ success: true, message: "Payout method saved" });
   } catch (error) {
     return cApiError(c, "Failed to save payout method", error);

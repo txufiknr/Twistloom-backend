@@ -38,6 +38,10 @@ export const THANKS_CONFIG = {
   idrPerCredit: 1_000,
   /** Minimum IDR amount convertible in a single transaction */
   minConversionAmountIDR: 10_000,
+  /** How many USD cents equals 1 credit (~6.45 cents = $0.0645 per credit, aligned with 1000 IDR / 15500) */
+  usdCentsPerCredit: 6.45,
+  /** Minimum USD cents convertible in a single transaction ($1.00 = 100 cents) */
+  minConversionAmountUSD: 100,
 } as const;
 
 export type ThanksCurrency = "IDR" | "USD";

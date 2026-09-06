@@ -2707,12 +2707,25 @@ router.patch("/payouts/:id",
           throw new Error(`Cannot transition from '${existing.status}' to '${newStatus}'`);
         }
 
-        // If marking as failed, refund the wallet
+        // If marking as failed, refund the wallet (pending -> available)
         if (newStatus === "failed") {
           await tx
             .update(creatorWallets)
             .set({
               availableAmount: sql`${creatorWallets.availableAmount} + ${existing.amount}`,
+              pendingAmount: sql`GREATEST(0, ${creatorWallets.pendingAmount} - ${existing.amount})`,
+              updatedAt: new Date(),
+            })
+            .where(eq(creatorWallets.creatorId, existing.creatorId));
+        }
+
+        // If marking as completed, finalize the withdrawal (pending -> withdrawn)
+        if (newStatus === "completed") {
+          await tx
+            .update(creatorWallets)
+            .set({
+              pendingAmount: sql`GREATEST(0, ${creatorWallets.pendingAmount} - ${existing.amount})`,
+              withdrawnAmount: sql`${creatorWallets.withdrawnAmount} + ${existing.amount}`,
               updatedAt: new Date(),
             })
             .where(eq(creatorWallets.creatorId, existing.creatorId));

@@ -20,11 +20,10 @@ import {
   getMyThanksForBook,
 } from "../services/thanks.js";
 import {
-  createXenditThanksCheckout,
   handleXenditThanksInvoicePaid,
   XENDIT_CONFIG,
-  isXenditConfigured,
 } from "../services/xendit.js";
+import { getGatewayAdapter } from "../services/gateways/registry.js";
 import { verifyXenditCallbackToken, type XenditInvoice } from "../utils/xendit.js";
 import {
   cApiError,
@@ -101,75 +100,36 @@ router.post("/create-checkout-session", requireAuth, async (c) => {
     const successUrl = `${baseUrl}/books/${bookSlug}${pageSegment}?thanks=success`;
     const cancelUrl = `${baseUrl}/books/${bookSlug}${pageSegment}?thanks=cancel`;
 
-    // ── Xendit Hosted Invoice Path ──────────────────────────────────────────
-    if (gateway === PAYMENT_GATEWAY.xendit) {
-      if (!isXenditConfigured()) {
-        return cValidationError(c, "Xendit gateway is not configured or disabled");
-      }
+    const [readerUser] = await dbRead
+      .select({ email: users.email, name: users.name })
+      .from(users)
+      .where(eq(users.userId, readerId))
+      .limit(1);
 
-      const [readerUser] = await dbRead
-        .select({ email: users.email, name: users.name })
-        .from(users)
-        .where(eq(users.userId, readerId))
-        .limit(1);
-
-      const result = await createXenditThanksCheckout({
-        userId: readerId,
-        email: readerUser?.email || "reader@twistloom.com",
-        name: readerUser?.name || undefined,
-        bookId,
-        bookTitle: book.title,
-        creatorId: book.userId,
-        creatorName: creator?.name || undefined,
-        amountIdr: numAmount,
-        pageId: pageId || undefined,
-        message: message || undefined,
-        successUrl,
-        cancelUrl,
-      });
-
-      return c.json(result);
+    const adapter = getGatewayAdapter(gateway);
+    if (!adapter.createThanksCheckout) {
+      return cValidationError(c, `Payment gateway ${gateway} does not support Thanks tipping`);
     }
 
-    // ── Stripe Checkout Session Path ────────────────────────────────────────
-    const session = await getStripe().checkout.sessions.create({
-      payment_method_types: ["card"],
-      mode: "payment",
-      line_items: [
-        {
-          price_data: {
-            currency: currency.toLowerCase(),
-            product_data: {
-              name: `Thanks for "${book.title}"`,
-              description: `Support ${creator?.name || "the creator"}`,
-            },
-            unit_amount: numAmount,
-          },
-          quantity: 1,
-        },
-      ],
-      metadata: {
-        type: "thanks",
-        readerId,
-        creatorId: book.userId,
-        bookId,
-        pageId: pageId || "",
-        grossAmount: numAmount.toString(),
-        platformFee: platformFee.toString(),
-        creatorAmount: creatorAmount.toString(),
-        currency,
-        message: message || "",
-      },
-      client_reference_id: readerId,
-      success_url: successUrl,
-      cancel_url: cancelUrl,
+    const result = await adapter.createThanksCheckout({
+      userId: readerId,
+      email: readerUser?.email || "reader@twistloom.com",
+      name: readerUser?.name || undefined,
+      bookId,
+      bookTitle: book.title,
+      creatorId: book.userId,
+      creatorName: creator?.name || undefined,
+      amount: numAmount,
+      currency,
+      platformFee,
+      creatorAmount,
+      pageId: pageId || undefined,
+      message: message || undefined,
+      successUrl,
+      cancelUrl,
     });
 
-    return c.json({
-      url: session.url,
-      sessionId: session.id,
-      gateway: PAYMENT_GATEWAY.stripe,
-    });
+    return c.json(result);
   } catch (error) {
     return cApiError(c, "Failed to create Thanks checkout session", error);
   }
@@ -213,7 +173,7 @@ router.post("/stripe/webhook", async (c) => {
         bookId,
         pageId: pageId || undefined,
         grossAmount,
-        currency: currency || "IDR",
+        currency: currency || (session.currency ? session.currency.toUpperCase() : "USD"),
         stripeSessionId: session.id,
         stripePaymentIntentId: session.payment_intent as string,
         stripeEventId: event.id,
