@@ -26,6 +26,7 @@ import type { ResourceAIProvider, ResourceAIScore, ResourceTimestamp, ResourceTr
 import type { EnforcementAction, ViolationType, ViolationSeverity, RiskTier, ReportTargetType, ReportType, ReportStatus, AppealStatus, ViolationEventSource } from "../types/trust-safety.js";
 import { BOOK_MIN_PAGES } from "../config/story.js";
 import { FIRST_TIME_CREDITS } from "../config/credits.js";
+import type { WalletCurrency } from "../types/wallet.js";
 
 /** Pre-defined columns */
 // const id = () => uuid("id").primaryKey().$defaultFn(generateId);
@@ -3311,7 +3312,7 @@ export const creatorEarnings = pgTable(
     platformFee: integer("platform_fee").notNull(),                   // 5% platform cut in creator wallet currency
     creatorAmount: integer("creator_amount").notNull(),               // 95% net credited to creator wallet
     currency: text("currency").notNull().default("IDR")               // Creator wallet settlement currency ('IDR' | 'USD')
-      .$type<"IDR" | "USD">(),
+      .$type<WalletCurrency>(),
 
     gateway: text("gateway").notNull().default("stripe")
       .$type<"stripe" | "xendit">(),
@@ -3357,7 +3358,7 @@ export const creatorWallets = pgTable(
     pendingAmount: integer("pending_amount").notNull().default(0),
     withdrawnAmount: integer("withdrawn_amount").notNull().default(0),
     currency: text("currency").notNull().default("IDR")
-      .$type<"IDR" | "USD">(),
+      .$type<WalletCurrency>(),
     payoutVerified: boolean("payout_verified").notNull().default(false),
     stripeConnectAccountId: text("stripe_connect_account_id"),
     createdAt,
@@ -3382,7 +3383,7 @@ export const creatorPayouts = pgTable(
     fee: integer("fee").notNull().default(0),
     netAmount: integer("net_amount").notNull(),
     currency: text("currency").notNull().default("IDR")
-      .$type<"IDR" | "USD">(),
+      .$type<WalletCurrency>(),
     status: text("status").notNull().default("pending")
       .$type<"pending" | "processing" | "completed" | "failed">(),
     provider: text("provider").default("xendit")
@@ -3421,7 +3422,7 @@ export const creatorPayoutMethods = pgTable(
     accountNumberEncrypted: text("account_number_encrypted"),
     accountName: text("account_name"),
     currency: text("currency").notNull().default("IDR")
-      .$type<"IDR" | "USD">(),
+      .$type<WalletCurrency>(),
     isDefault: boolean("is_default").notNull().default(true),
     isVerified: boolean("is_verified").notNull().default(false),
     metadata: jsonb("metadata"),

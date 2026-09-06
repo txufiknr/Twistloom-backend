@@ -10,19 +10,13 @@
 
 import { eq, sql, and } from "drizzle-orm";
 import { dbRead, dbWrite } from "../db/client.js";
-import {
-  creatorEarnings,
-  creatorWallets,
-  users,
-  books,
-  userNotifications,
-} from "../db/schema.js";
+import { creatorEarnings, creatorWallets, users, books, userNotifications } from "../db/schema.js";
 import { calculatePlatformFee, calculateCreatorAmount } from "../config/thanks.js";
 import { XENDIT_CONFIG } from "../config/xendit.js";
 import { getErrorMessage } from "../utils/error.js";
 import { isUniqueConstraintError } from "../utils/retry.js";
-
 import { PAYMENT_GATEWAY, type PaymentGateway } from "../types/payment.js";
+import type { WalletCurrency } from "../types/wallet.js";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -92,7 +86,7 @@ export async function recordThanks(options: RecordThanksOptions): Promise<{ dupl
     .where(eq(creatorWallets.creatorId, creatorId))
     .limit(1);
 
-  let targetCurrency: "IDR" | "USD" = "IDR";
+  let targetCurrency: WalletCurrency = "IDR";
   if (existingWallet?.currency) {
     targetCurrency = existingWallet.currency === "USD" ? "USD" : "IDR";
   } else {
@@ -106,7 +100,7 @@ export async function recordThanks(options: RecordThanksOptions): Promise<{ dupl
   }
 
   // 3. Multi-currency normalization
-  const normalizedIntakeCurrency = (currency || (gateway === PAYMENT_GATEWAY.stripe ? "USD" : "IDR")).toUpperCase() as "IDR" | "USD";
+  const normalizedIntakeCurrency = (currency || (gateway === PAYMENT_GATEWAY.stripe ? "USD" : "IDR")).toUpperCase() as WalletCurrency;
   const fxRate = XENDIT_CONFIG.usdToIdrRate || 15500;
   let appliedFxRate = 1.0;
   let settlementGross: number;
@@ -227,13 +221,31 @@ export async function recordThanks(options: RecordThanksOptions): Promise<{ dupl
 export async function getBookThanksStats(bookId: string): Promise<{
   thanksCount: number;
   totalAmount: number;
-  currency: "IDR" | "USD" | null;
+  currency: WalletCurrency | null;
 }> {
-  const [result] = await dbRead
+  // 1. Resolve book's author settlement currency
+  const [book] = await dbRead
+    .select({ userId: books.userId })
+    .from(books)
+    .where(eq(books.id, bookId))
+    .limit(1);
+
+  let targetCurrency: WalletCurrency = "IDR";
+  if (book?.userId) {
+    const [wallet] = await dbRead
+      .select({ currency: creatorWallets.currency })
+      .from(creatorWallets)
+      .where(eq(creatorWallets.creatorId, book.userId))
+      .limit(1);
+    if (wallet?.currency) {
+      targetCurrency = wallet.currency;
+    }
+  }
+
+  const rows = await dbRead
     .select({
-      thanksCount: sql<number>`count(*)::int`,
-      totalAmount: sql<number>`coalesce(sum(${creatorEarnings.creatorAmount}), 0)::int`,
-      currency: sql<"IDR" | "USD">`min(${creatorEarnings.currency})`,
+      creatorAmount: creatorEarnings.creatorAmount,
+      currency: creatorEarnings.currency,
     })
     .from(creatorEarnings)
     .where(
@@ -244,10 +256,33 @@ export async function getBookThanksStats(bookId: string): Promise<{
       ),
     );
 
+  if (rows.length === 0) {
+    return {
+      thanksCount: 0,
+      totalAmount: 0,
+      currency: targetCurrency,
+    };
+  }
+
+  const fxRate = XENDIT_CONFIG.usdToIdrRate || 15500;
+  let totalAmount = 0;
+
+  for (const row of rows) {
+    if (row.currency === targetCurrency) {
+      totalAmount += row.creatorAmount;
+    } else if (row.currency === "USD" && targetCurrency === "IDR") {
+      totalAmount += Math.round((row.creatorAmount / 100) * fxRate);
+    } else if (row.currency === "IDR" && targetCurrency === "USD") {
+      totalAmount += Math.round((row.creatorAmount / fxRate) * 100);
+    } else {
+      totalAmount += row.creatorAmount;
+    }
+  }
+
   return {
-    thanksCount: result?.thanksCount ?? 0,
-    totalAmount: result?.totalAmount ?? 0,
-    currency: result?.currency ?? null,
+    thanksCount: rows.length,
+    totalAmount,
+    currency: targetCurrency,
   };
 }
 
@@ -257,12 +292,30 @@ export async function getBookThanksStats(bookId: string): Promise<{
 export async function getMyThanksForBook(
   readerId: string,
   bookId: string,
-): Promise<{ hasThanked: boolean; totalAmount: number; currency: "IDR" | "USD" | null }> {
-  const [result] = await dbRead
+): Promise<{ hasThanked: boolean; totalAmount: number; currency: WalletCurrency | null }> {
+  // 1. Resolve book's author settlement currency
+  const [book] = await dbRead
+    .select({ userId: books.userId })
+    .from(books)
+    .where(eq(books.id, bookId))
+    .limit(1);
+
+  let targetCurrency: WalletCurrency = "IDR";
+  if (book?.userId) {
+    const [wallet] = await dbRead
+      .select({ currency: creatorWallets.currency })
+      .from(creatorWallets)
+      .where(eq(creatorWallets.creatorId, book.userId))
+      .limit(1);
+    if (wallet?.currency) {
+      targetCurrency = wallet.currency;
+    }
+  }
+
+  const rows = await dbRead
     .select({
-      hasThanked: sql<boolean>`count(*) > 0`,
-      totalAmount: sql<number>`coalesce(sum(${creatorEarnings.creatorAmount}), 0)::int`,
-      currency: sql<"IDR" | "USD">`min(${creatorEarnings.currency})`,
+      creatorAmount: creatorEarnings.creatorAmount,
+      currency: creatorEarnings.currency,
     })
     .from(creatorEarnings)
     .where(
@@ -274,9 +327,32 @@ export async function getMyThanksForBook(
       ),
     );
 
+  if (rows.length === 0) {
+    return {
+      hasThanked: false,
+      totalAmount: 0,
+      currency: targetCurrency,
+    };
+  }
+
+  const fxRate = XENDIT_CONFIG.usdToIdrRate || 15500;
+  let totalAmount = 0;
+
+  for (const row of rows) {
+    if (row.currency === targetCurrency) {
+      totalAmount += row.creatorAmount;
+    } else if (row.currency === "USD" && targetCurrency === "IDR") {
+      totalAmount += Math.round((row.creatorAmount / 100) * fxRate);
+    } else if (row.currency === "IDR" && targetCurrency === "USD") {
+      totalAmount += Math.round((row.creatorAmount / fxRate) * 100);
+    } else {
+      totalAmount += row.creatorAmount;
+    }
+  }
+
   return {
-    hasThanked: result?.hasThanked ?? false,
-    totalAmount: result?.totalAmount ?? 0,
-    currency: result?.currency ?? null,
+    hasThanked: true,
+    totalAmount,
+    currency: targetCurrency,
   };
 }

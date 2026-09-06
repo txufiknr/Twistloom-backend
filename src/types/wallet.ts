@@ -10,6 +10,12 @@
 /** Earning source that deposited funds into the wallet */
 export type EarningSource = "thanks" | "revenue_share" | "custom_action" | "other";
 
+/** Supported creator wallet settlement currencies */
+export type WalletCurrency = "IDR" | "USD";
+
+/** Payout status lifecycle states */
+export type PayoutStatus = "pending" | "processing" | "completed" | "failed";
+
 export interface CreatorWallet {
   creatorId: string;
   availableAmount: number;
@@ -17,7 +23,7 @@ export interface CreatorWallet {
   withdrawnAmount: number;
   lifetimeGrossAmount?: number;
   lifetimeFeeAmount?: number;
-  currency: "IDR" | "USD" | string;
+  currency: WalletCurrency;
   payoutVerified: boolean;
   stripeConnectAccountId?: string | null;
 }
@@ -28,13 +34,13 @@ export interface CreatorEarning {
   bookTitle: string | null;
   source: EarningSource;
   intakeAmount?: number;
-  intakeCurrency?: "IDR" | "USD" | string;
+  intakeCurrency?: WalletCurrency;
   fxRate?: number;
   settlementAmount?: number;
   grossAmount: number;
   platformFee: number;
   creatorAmount: number;
-  currency: "IDR" | "USD" | string;
+  currency: WalletCurrency;
   readerName: string;
   readerId: string;
   message: string | null;
@@ -48,8 +54,8 @@ export interface CreatorPayout {
   amount: number;
   fee: number;
   netAmount: number;
-  currency: "IDR" | "USD" | string;
-  status: string;
+  currency: WalletCurrency;
+  status: PayoutStatus;
   provider?: string | null;
   createdAt: Date;
 }

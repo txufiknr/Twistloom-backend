@@ -167,13 +167,16 @@ router.post("/stripe/webhook", async (c) => {
         return cValidationError(c, "Invalid Stripe amount");
       }
 
+      // Authoritative currency from Stripe session, fallback to metadata or "USD"
+      const resolvedCurrency = (session.currency ? session.currency.toUpperCase() : (currency || "USD"));
+
       const result = await recordThanks({
         readerId,
         creatorId,
         bookId,
         pageId: pageId || undefined,
         grossAmount,
-        currency: currency || (session.currency ? session.currency.toUpperCase() : "USD"),
+        currency: resolvedCurrency,
         stripeSessionId: session.id,
         stripePaymentIntentId: session.payment_intent as string,
         stripeEventId: event.id,

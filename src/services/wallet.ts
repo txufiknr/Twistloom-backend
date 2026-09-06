@@ -26,7 +26,7 @@ import {
 import { THANKS_CONFIG } from "../config/thanks.js";
 import { getXenditPackPriceIdr } from "../config/xendit.js";
 import { CREDIT_PACKS } from "../config/credits.js";
-import type { CreatorWallet, CreatorEarning, CreatorPayout, ConvertToCreditsResult, EarningSource } from "../types/wallet.js";
+import type { CreatorWallet, CreatorEarning, CreatorPayout, ConvertToCreditsResult, EarningSource, WalletCurrency } from "../types/wallet.js";
 
 // ── Balance ──────────────────────────────────────────────────────────────────
 
@@ -65,7 +65,7 @@ export async function getCreatorWallet(creatorId: string, currency?: string): Pr
   }
 
   // Lazily create wallet on first access. If currency not provided, inspect user's locale.
-  let defaultCurrency: "IDR" | "USD";
+  let defaultCurrency: WalletCurrency;
   if (currency === "USD" || currency === "IDR") {
     defaultCurrency = currency;
   } else {
@@ -80,7 +80,13 @@ export async function getCreatorWallet(creatorId: string, currency?: string): Pr
   const [created] = await dbWrite
     .insert(creatorWallets)
     .values({ creatorId, currency: defaultCurrency })
+    .onConflictDoNothing()
     .returning();
+
+  if (!created) {
+    // Another concurrent transaction created the wallet — re-fetch
+    return getCreatorWallet(creatorId);
+  }
 
   return {
     creatorId: created.creatorId,
@@ -331,7 +337,7 @@ export async function initiatePayout(creatorId: string): Promise<CreatorPayout> 
         amount,
         fee: 0,
         netAmount: amount,
-        currency: wallet.currency as "IDR" | "USD",
+        currency: wallet.currency as WalletCurrency,
         status: "pending",
         provider,
       })
@@ -387,7 +393,7 @@ export async function savePayoutMethod(
   bankName: string,
   accountNumber: string,
   accountName: string,
-  currency: "IDR" | "USD" = "IDR",
+  currency: WalletCurrency = "IDR",
   bankCode?: string,
 ): Promise<void> {
   await dbWrite.transaction(async (tx) => {

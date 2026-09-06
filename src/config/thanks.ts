@@ -44,8 +44,6 @@ export const THANKS_CONFIG = {
   minConversionAmountUSD: 100,
 } as const;
 
-export type ThanksCurrency = "IDR" | "USD";
-
 /**
  * Calculate the platform fee for a given tip amount.
  * @param amount - Gross tip amount in smallest currency unit
