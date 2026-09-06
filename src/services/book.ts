@@ -793,17 +793,47 @@ export async function getBookPages(bookId: string): Promise<DBPage[]> {
   return result;
 }
 
+/** Reserved slugs that cannot be used by books to prevent URL conflicts with system/showcase routes */
+export const RESERVED_BOOK_SLUGS = new Set([
+  'stats', 'explore', 'originals', 'popular', 'top-picks', 'trending',
+  'tags', 'comments', 'prompt', 'generations', 'workflow-webhook',
+  'insert', 'async', 'stream', 'pen', 'share', 'testimonials',
+  'new', 'create', 'admin', 'api', 'read', 'similar', 'archive', 'visibility',
+]);
+
 /**
- * Checks if a slug already exists in the database
+ * Validates slug format: 3 to 60 characters, lowercase letters, numbers, and single hyphens.
+ */
+export function isValidSlug(slug: string): boolean {
+  if (!slug || typeof slug !== 'string') return false;
+  if (slug.length < 3 || slug.length > 60) return false;
+  const isUuid: boolean = isValidUuid(slug);
+  if (isUuid) return false;
+  return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug);
+}
+
+/**
+ * Checks if a slug already exists in the database.
+ * Uses primary DB (dbWrite) by default to avoid stale read-replica collisions.
  * 
  * @param slug - The slug to check
+ * @param options.excludeBookId - Optional book ID to exclude (so a book doesn't collide with itself on update)
+ * @param options.client - Optional DB client (defaults to dbWrite)
  * @returns Promise resolving to true if slug exists, false otherwise
  */
-async function slugExists(slug: string): Promise<boolean> {
-  const existing = await dbRead
-    .select({ slug: books.slug })
+export async function slugExists(
+  slug: string,
+  options?: { excludeBookId?: string; client?: DBClient }
+): Promise<boolean> {
+  const { excludeBookId, client = dbWrite } = options ?? {};
+  const conditions = [eq(books.slug, slug)];
+  if (excludeBookId) {
+    conditions.push(ne(books.id, excludeBookId));
+  }
+  const existing = await client
+    .select({ id: books.id })
     .from(books)
-    .where(eq(books.slug, slug))
+    .where(and(...conditions))
     .limit(1);
   return existing.length > 0;
 }
@@ -815,22 +845,31 @@ async function slugExists(slug: string): Promise<boolean> {
  * alternative titles or appending a numeric suffix if needed.
  * 
  * @param title - The book title to generate slug from
- * @param alternativeTitles - Optional array of alternative titles to try as fallback
+ * @param options.alternativeTitles - Optional array of alternative titles to try as fallback
+ * @param options.excludeBookId - Optional book ID to exclude from collision checks (for updates)
+ * @param options.client - Optional DB client to query against
  * @returns Promise resolving to slug and the title that was used
  * 
  * @example
  * ```typescript
- * const result = await generateUniqueSlug("The Amazing Adventure", ["Dead City"]);
+ * const result = await generateUniqueSlug("The Amazing Adventure", { alternativeTitles: ["Dead City"] });
  * // If "amazing-adventure" exists, returns { slug: "dead-city", title: "Dead City" }
  * ```
  */
-async function generateUniqueSlug(title: string, alternativeTitles?: string[]): Promise<BookSlugGenerationResult> {
-  const RESERVED_SLUGS = new Set(['stats', 'explore']);
+export async function generateUniqueSlug(
+  title: string,
+  options?: {
+    alternativeTitles?: string[];
+    excludeBookId?: string;
+    client?: DBClient;
+  }
+): Promise<BookSlugGenerationResult> {
+  const { alternativeTitles, excludeBookId, client = dbWrite } = options ?? {};
   const baseSlug = generateSlug(title);
 
   if (baseSlug) {
     // If base slug is available and not a reserved endpoint, use original title
-    if (!await slugExists(baseSlug) && !RESERVED_SLUGS.has(baseSlug)) {
+    if (!RESERVED_BOOK_SLUGS.has(baseSlug) && !await slugExists(baseSlug, { excludeBookId, client })) {
       return { slug: baseSlug, title };
     }
 
@@ -838,10 +877,9 @@ async function generateUniqueSlug(title: string, alternativeTitles?: string[]): 
     if (alternativeTitles && alternativeTitles.length > 0) {
       for (const altTitle of alternativeTitles) {
         const altSlug = generateSlug(altTitle);
-        if (!altSlug) continue;
-        if (RESERVED_SLUGS.has(altSlug)) continue;
+        if (!altSlug || RESERVED_BOOK_SLUGS.has(altSlug)) continue;
 
-        if (!await slugExists(altSlug)) {
+        if (!await slugExists(altSlug, { excludeBookId, client })) {
           return { slug: altSlug, title: altTitle };
         }
       }
@@ -853,13 +891,13 @@ async function generateUniqueSlug(title: string, alternativeTitles?: string[]): 
 
     while (suffix <= 100) { // Prevent infinite loops
       // Skip any suffix that would produce a reserved slug
-      if (RESERVED_SLUGS.has(uniqueSlug)) {
+      if (RESERVED_BOOK_SLUGS.has(uniqueSlug)) {
         suffix++;
         uniqueSlug = `${baseSlug}-${suffix}`;
         continue;
       }
 
-      if (!await slugExists(uniqueSlug)) {
+      if (!await slugExists(uniqueSlug, { excludeBookId, client })) {
         return { slug: uniqueSlug, title };
       }
 
@@ -871,9 +909,9 @@ async function generateUniqueSlug(title: string, alternativeTitles?: string[]): 
     console.warn(`[generateUniqueSlug] ⚠️ Could not generate unique slug for "${title}", using random ID`);
   }
 
-  // If base slug is empty, generate a random one (avoid reserved collisions)
+  // If base slug is empty or suffixes exhausted, generate a random one (avoid reserved & existing collisions)
   let id = generateId().substring(0, 8);
-  while (RESERVED_SLUGS.has(id)) {
+  while (RESERVED_BOOK_SLUGS.has(id) || await slugExists(id, { excludeBookId, client })) {
     id = generateId().substring(0, 8);
   }
   return { slug: id, title };
@@ -895,7 +933,7 @@ export async function insertBook(book: DBNewBook, options: { client?: DBClient, 
   const { client = dbWrite, alternativeTitles } = options;
 
   // Generate unique slug from title (may use alternative title to avoid duplicate)
-  const { slug: uniqueSlug, title: chosenTitle } = await generateUniqueSlug(book.title, alternativeTitles);
+  const { slug: uniqueSlug, title: chosenTitle } = await generateUniqueSlug(book.title, { client, alternativeTitles });
   
   // Compose final book data to be inserted
   const newBookData: DBNewBook = { // DBNewBook = typeof books.$inferInsert;
@@ -1114,15 +1152,27 @@ export async function updateBook(
 ): Promise<DBBook> {
   const { client = dbWrite, invalidateCache = true } = options ?? {};
 
-  // ── Publish-transition detection (visibility: non-public → 'public') ─────
-  // This is the single chokepoint for "publishing" a book, so follower
-  // notifications live here — every path that flips a book public (the
-  // PATCH /visibility route used by AI / pen / story books, admin tools, etc.)
-  // is covered automatically. Only do the extra read when a visibility change
-  // is actually requested (publishing is rare, so common edits stay cheap).
-  let publishNotify: { authorId: string; bookId: string; bookSlug: string; bookTitle: string } | null = null;
-  if (updates.visibility === 'public') {
-    const [current] = await client
+  // Check if we need to query current book state:
+  // - Visibility transition or publish notification
+  // - Auto-assign slug on publish (status === 'active' && visibility === 'public')
+  // - Custom slug validation/assignment
+  const needsCurrent =
+    updates.visibility !== undefined ||
+    updates.status !== undefined ||
+    updates.slug !== undefined ||
+    updates.title !== undefined;
+
+  let current: {
+    visibility: BookVisibility;
+    status: BookStatus;
+    isOriginal: boolean;
+    userId: string | null;
+    slug: string | null;
+    title: string;
+  } | undefined = undefined;
+
+  if (needsCurrent) {
+    const [row] = await client
       .select({
         visibility: books.visibility,
         status: books.status,
@@ -1134,33 +1184,98 @@ export async function updateBook(
       .from(books)
       .where(eq(books.id, bookId))
       .limit(1);
+    current = row;
+  }
 
-    if (
-      current &&
-      current.visibility !== 'public' &&
-      current.status === 'active' &&
-      !current.isOriginal &&
-      current.userId
-    ) {
-      publishNotify = {
-        authorId: current.userId,
-        bookId,
-        bookSlug: current.slug ?? '',
-        bookTitle: current.title,
-      };
+  const effectiveStatus: BookStatus = (updates.status as BookStatus) ?? current?.status ?? 'active';
+  const effectiveVisibility: BookVisibility = (updates.visibility as BookVisibility) ?? current?.visibility ?? 'private';
+  const effectiveTitle: string = updates.title ?? current?.title ?? '';
+  const isPublished = effectiveStatus === 'active' && effectiveVisibility === 'public';
+
+  // ── Slug Handling (Option 2: Industry Standard + Custom Slug) ───────────
+  let isAutoSlug = false;
+  if (updates.slug !== undefined) {
+    // Explicit custom slug requested by user
+    const rawSlug = typeof updates.slug === 'string' ? updates.slug.trim().toLowerCase() : '';
+    if (!rawSlug) {
+      throw new Error('Custom slug cannot be empty');
+    }
+    if (!isValidSlug(rawSlug)) {
+      throw new Error('Invalid slug format. Must be 3-60 characters, lowercase alphanumeric and hyphens (e.g. "my-story-title").');
+    }
+    if (RESERVED_BOOK_SLUGS.has(rawSlug)) {
+      throw new Error(`The slug "${rawSlug}" is reserved for system routes. Please choose a different slug.`);
+    }
+    if (await slugExists(rawSlug, { excludeBookId: bookId, client })) {
+      throw new Error(`The slug "${rawSlug}" is already taken by another story. Please choose a different slug.`);
+    }
+    updates.slug = rawSlug;
+  } else if (isPublished && current && !current.slug) {
+    // Auto-assign slug on first publish if book has no slug
+    const { slug: autoSlug } = await generateUniqueSlug(effectiveTitle, { excludeBookId: bookId, client });
+    updates.slug = autoSlug;
+    isAutoSlug = true;
+  }
+
+  // ── Publish-transition detection (visibility: non-public → 'public') ─────
+  let publishNotify: { authorId: string; bookId: string; bookSlug: string; bookTitle: string } | null = null;
+  if (
+    current &&
+    current.visibility !== 'public' &&
+    effectiveVisibility === 'public' &&
+    effectiveStatus === 'active' &&
+    !current.isOriginal &&
+    current.userId
+  ) {
+    publishNotify = {
+      authorId: current.userId,
+      bookId,
+      bookSlug: updates.slug ?? current.slug ?? '',
+      bookTitle: effectiveTitle,
+    };
+  }
+
+  // Execute update with race-condition retry for auto-generated slug conflicts
+  let updated: DBBook | undefined;
+  const MAX_UPDATE_RETRIES = 3;
+
+  for (let attempt = 1; attempt <= MAX_UPDATE_RETRIES; attempt++) {
+    try {
+      const [result] = await client
+        .update(books)
+        .set({ ...updates, updatedAt: new Date() })
+        .where(eq(books.id, bookId))
+        .returning();
+      updated = result;
+      break;
+    } catch (err) {
+      if (isUniqueConstraintError(err) && isAutoSlug && attempt < MAX_UPDATE_RETRIES) {
+        console.warn(`[updateBook] ⚠️ Slug collision on attempt ${attempt} for "${effectiveTitle}", retrying with new suffix...`);
+        const { slug: retrySlug } = await generateUniqueSlug(effectiveTitle, { excludeBookId: bookId, client });
+        updates.slug = retrySlug;
+        if (publishNotify) {
+          publishNotify.bookSlug = retrySlug;
+        }
+        continue;
+      }
+      throw err;
     }
   }
 
-  const [updated] = await client
-    .update(books)
-    .set({ ...updates, updatedAt: new Date() })
-    .where(eq(books.id, bookId))
-    .returning();
+  if (!updated) {
+    throw new Error(`Failed to update book ${bookId}`);
+  }
 
   if (invalidateCache) {
-    // Invalidate cache for this book
+    // Invalidate cache for this book ID and any associated slugs
     invalidateBookCache(bookId);
     invalidateEnrichedBookCache(bookId);
+    if (current?.slug) {
+      invalidateEnrichedBookCache(current.slug);
+    }
+    if (updated.slug) {
+      invalidateEnrichedBookCache(updated.slug);
+    }
     // Book metadata changes (e.g. title → main-branch branchName) must not
     // leave a stale 30-day page 1 payload behind
     await invalidatePageOneCache(bookId);

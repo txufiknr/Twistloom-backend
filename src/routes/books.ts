@@ -128,7 +128,7 @@ import { extractPaginationParams, createPaginatedResponse, calculatePaginationMe
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import { validateSearchQuery, validateLanguageCode, isValidLanguageCode, validateAgeRange, validateGender, validateRatingFilter, validateRatingCountFilter, createRelevanceExpression, buildTokenizedSearchCondition, wordJaccardSimilarity, trigramSimilarity, jaccardSimilarity } from "../utils/search.js";
 import type { ImageUploadSource } from "../types/image.js";
-import { updateBook, updateBookVisibility, insertBook, uploadBookCoverImage, uploadBookCharacterAvatarImage, sanitizeBookTextField, sanitizeBookEnding, sanitizeMainCharacter, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage, mapBookFromDb, invalidatePopularTagsCache, invalidateBookCache, invalidateEnrichedBookCache, invalidatePageOneCache, loadParagraphCommentCounts, loadCommunityActions } from "../services/book.js";
+import { updateBook, updateBookVisibility, insertBook, uploadBookCoverImage, uploadBookCharacterAvatarImage, sanitizeBookTextField, sanitizeBookEnding, sanitizeMainCharacter, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage, mapBookFromDb, invalidatePopularTagsCache, invalidateBookCache, invalidateEnrichedBookCache, invalidatePageOneCache, loadParagraphCommentCounts, loadCommunityActions, isValidSlug, RESERVED_BOOK_SLUGS, slugExists } from "../services/book.js";
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
 import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookPage, enrichBooksWithUserData } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache } from "../services/cache.js";
@@ -1585,7 +1585,7 @@ router.put("/:id", requireAuth, async (c) => {
   try {
     const { id } = c.req.param();
     const userId = c.get("userId")!;
-    const { title, hook, summary, keywords, visibility, status: newStatus, mc, ending, totalPages } = c.get("body");
+    const { title, hook, summary, keywords, visibility, status: newStatus, mc, ending, totalPages, slug } = c.get("body");
 
     // Verify book ownership
     const [book] = await dbRead.select({ 
@@ -1625,6 +1625,25 @@ router.put("/:id", requireAuth, async (c) => {
     if (keywords !== undefined) updateData.keywords = sanitizeKeywords(keywords);
     if (visibility !== undefined && bookVisibilities.includes(visibility as BookVisibility)) updateData.visibility = visibility;
     if (newStatus !== undefined && bookStatuses.includes(newStatus as BookStatus)) updateData.status = newStatus;
+    if (slug !== undefined) {
+      if (typeof slug !== 'string') {
+        return cValidationError(c, "slug must be a string");
+      }
+      const trimmedSlug = slug.trim().toLowerCase();
+      if (!trimmedSlug) {
+        return cValidationError(c, "slug cannot be empty");
+      }
+      if (!isValidSlug(trimmedSlug)) {
+        return cValidationError(c, "slug must be 3-60 characters and contain only lowercase letters, numbers, and hyphens (no leading or trailing hyphens)");
+      }
+      if (RESERVED_BOOK_SLUGS.has(trimmedSlug)) {
+        return cValidationError(c, `The slug "${trimmedSlug}" is reserved for system routes. Please choose a different slug.`);
+      }
+      if (await slugExists(trimmedSlug, { excludeBookId: book.id })) {
+        return cValidationError(c, `The slug "${trimmedSlug}" is already taken by another story.`);
+      }
+      updateData.slug = trimmedSlug;
+    }
     if (mc !== undefined) {
       // Strip image fields from mc — use character-image route for avatar uploads
       const { imageUrl: _imgUrl, imageId: _imgId, ...mcTextFields } = mc;
@@ -2044,7 +2063,7 @@ router.patch("/:id/visibility", requireAuth, async (c) => {
     });
 
     return c.json({
-      book: updatedBook,
+      book: mapBookFromDb(updatedBook),
       visibility: updatedBook.visibility,
     });
   } catch (error) {
@@ -2787,6 +2806,13 @@ router.delete("/:id", requireAuth, async (c) => {
 
     // Drop the long-lived Redis page 1 cache for this book (all languages)
     await invalidatePageOneCache(bookToDelete.id);
+
+    // Invalidate in-memory book and enriched book caches
+    invalidateBookCache(bookToDelete.id);
+    invalidateEnrichedBookCache(bookToDelete.id);
+    if (bookToDelete.slug) {
+      invalidateEnrichedBookCache(bookToDelete.slug);
+    }
 
     if (bookToDelete.status === 'active' && bookToDelete.visibility === 'public') {
       notifyForumStoryArchived(bookToDelete.id, bookToDelete.slug);
