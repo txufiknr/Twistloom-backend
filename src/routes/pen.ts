@@ -276,8 +276,8 @@ router.get("/pages/:pageId", requireAuth, async (c) => {
 
 /**
  * PATCH /api/pen/pages/:pageId/actions
- * Update the text of a specific action on a published page.
- * Body: { actionIndex: number, text: string }
+ * Update the text or destination choice wiring of a specific action on a published page.
+ * Body: { actionIndex: number, text?: string, destinationPageId?: string | null, splitTimeline?: boolean }
  */
 router.patch("/pages/:pageId/actions", requireAuth, async (c) => {
   try {
@@ -290,20 +290,47 @@ router.patch("/pages/:pageId/actions", requireAuth, async (c) => {
       return cValidationError(c, "Request body must be a JSON object");
     }
 
-    const { actionIndex, text } = body as { actionIndex?: unknown; text?: unknown };
+    const { actionIndex, text, destinationPageId, splitTimeline } = body as {
+      actionIndex?: unknown;
+      text?: unknown;
+      destinationPageId?: unknown;
+      splitTimeline?: unknown;
+    };
     if (typeof actionIndex !== "number" || !Number.isInteger(actionIndex) || actionIndex < 0) {
       return cValidationError(c, "actionIndex must be a non-negative integer");
     }
-    if (typeof text !== "string" || text.trim().length === 0) {
-      return cValidationError(c, "text must be a non-empty string");
+
+    let sanitizedText: string | undefined = undefined;
+    if (text !== undefined) {
+      if (typeof text !== "string" || text.trim().length === 0) {
+        return cValidationError(c, "text must be a non-empty string when provided");
+      }
+      if (text.trim().length > PEN_DRAFT_ACTION_TEXT_MAX_LENGTH) {
+        return cValidationError(c, `text must be at most ${PEN_DRAFT_ACTION_TEXT_MAX_LENGTH} characters`);
+      }
+      sanitizedText = text.trim();
     }
-    if (text.trim().length > PEN_DRAFT_ACTION_TEXT_MAX_LENGTH) {
-      return cValidationError(c, `text must be at most ${PEN_DRAFT_ACTION_TEXT_MAX_LENGTH} characters`);
+
+    let sanitizedDestId: string | null | undefined = undefined;
+    if (destinationPageId !== undefined) {
+      if (destinationPageId === null) {
+        sanitizedDestId = null;
+      } else if (typeof destinationPageId === "string" && destinationPageId.trim().length > 0) {
+        sanitizedDestId = destinationPageId.trim();
+      } else {
+        return cValidationError(c, "destinationPageId must be a non-empty string or null");
+      }
+    }
+
+    if (sanitizedText === undefined && sanitizedDestId === undefined) {
+      return cValidationError(c, "At least one of 'text' or 'destinationPageId' must be provided");
     }
 
     const page = await updatePenPageAction(userId, pageId, {
       actionIndex,
-      text: text.trim(),
+      text: sanitizedText,
+      destinationPageId: sanitizedDestId,
+      splitTimeline: typeof splitTimeline === "boolean" ? splitTimeline : false,
     });
     return c.json({ page });
   } catch (error) {

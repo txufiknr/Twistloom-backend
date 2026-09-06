@@ -9,13 +9,15 @@
  *   - `check*`      → returns boolean, logs a warning (use for loop skips)
  */
 
-import { MIN_CHARS_PER_PAGE } from "../config/story.js";
+import { MIN_CHARS_PER_PAGE, MIN_CHARS_PER_PAGE_IMPORTED } from "../config/story.js";
 import type { BookMode } from "../types/book.js";
 import { hasDialogueMarkers } from "./dialogue-parser.js";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
 export const MAX_ACTIONS_PER_PAGE = 6;
+export const MAX_ACTIONS_PER_PAGE_IMPORTED = 12;
+export { MIN_CHARS_PER_PAGE, MIN_CHARS_PER_PAGE_IMPORTED };
 
 // ── JSON field leak detection ──────────────────────────────────────────────
 
@@ -179,11 +181,18 @@ export function checkImageImportanceRange(imageImportance: number, label?: strin
  * is enforced by `sanitizeActionsForMode` (silently strips to the first action)
  * and by the strict `validatePageActionsForMode` gate at persist/insert time.
  */
+export interface PageValidationOptions {
+  allowEmpty?: boolean;
+  isImported?: boolean;
+  minChars?: number;
+  maxActions?: number;
+}
+
 export function validatePageActions(
   actions: unknown,
   mode?: BookMode,
   label?: string,
-  options?: { allowEmpty?: boolean },
+  options?: PageValidationOptions,
 ): void {
   const tag = label ? `${label}: ` : '';
 
@@ -196,9 +205,14 @@ export function validatePageActions(
     }
     throw new Error(`${tag}Page must have at least 1 action, got 0`);
   }
-  if (mode && mode !== 'novel' && actions.length > MAX_ACTIONS_PER_PAGE) {
+  const maxActions = options?.maxActions ?? (
+    mode === 'novel'
+      ? 1
+      : (options?.isImported ? MAX_ACTIONS_PER_PAGE_IMPORTED : MAX_ACTIONS_PER_PAGE)
+  );
+  if (mode && mode !== 'novel' && actions.length > maxActions) {
     throw new Error(
-      `${tag}Mode "${mode}" allows at most ${MAX_ACTIONS_PER_PAGE} actions, got ${actions.length}`,
+      `${tag}Mode "${mode}" allows at most ${maxActions} actions, got ${actions.length}`,
     );
   }
 }
@@ -215,16 +229,23 @@ export function checkPageActions(
   actions: unknown,
   mode?: BookMode,
   label?: string,
+  options?: PageValidationOptions,
 ): boolean {
   const tag = label ? `[${label}] ` : '';
 
   if (!Array.isArray(actions) || actions.length < 1) {
+    if (options?.allowEmpty) return true;
     console.warn(`⚠️ ${tag}Invalid or empty actions — skipping`);
     return false;
   }
-  if (mode && mode !== 'novel' && actions.length > MAX_ACTIONS_PER_PAGE) {
+  const maxActions = options?.maxActions ?? (
+    mode === 'novel'
+      ? 1
+      : (options?.isImported ? MAX_ACTIONS_PER_PAGE_IMPORTED : MAX_ACTIONS_PER_PAGE)
+  );
+  if (mode && mode !== 'novel' && actions.length > maxActions) {
     console.warn(
-      `⚠️ ${tag}Too many actions (${actions.length} > ${MAX_ACTIONS_PER_PAGE}) for mode "${mode}" — skipping`,
+      `⚠️ ${tag}Too many actions (${actions.length} > ${maxActions}) for mode "${mode}" — skipping`,
     );
     return false;
   }
@@ -250,12 +271,13 @@ export function validateGeneratedPage(
   page: PageCheckInput,
   mode?: BookMode,
   label?: string,
-  options?: { allowEmpty?: boolean },
+  options?: PageValidationOptions,
 ): void {
-  validateTextLength(page.text, MIN_CHARS_PER_PAGE, label);
+  const minChars = options?.minChars ?? (options?.isImported ? MIN_CHARS_PER_PAGE_IMPORTED : MIN_CHARS_PER_PAGE);
+  validateTextLength(page.text, minChars, label);
   validateNoJsonLeak(page.text, label);
   const allowEmpty = options?.allowEmpty ?? page.isDeadEnd ?? false;
-  validatePageActions(page.actions, mode, label, { allowEmpty });
+  validatePageActions(page.actions, mode, label, { ...options, allowEmpty });
 }
 
 /**
@@ -272,11 +294,13 @@ export function checkGeneratedPage(
   page: PageCheckInput,
   mode?: BookMode,
   label?: string,
+  options?: PageValidationOptions,
 ): boolean {
+  const minChars = options?.minChars ?? (options?.isImported ? MIN_CHARS_PER_PAGE_IMPORTED : MIN_CHARS_PER_PAGE);
   const checks = [
-    checkTextLength(page.text, MIN_CHARS_PER_PAGE, label),
+    checkTextLength(page.text, minChars, label),
     checkNoJsonLeak(page.text, label),
-    checkPageActions(page.actions, mode, label),
+    checkPageActions(page.actions, mode, label, options),
   ];
   checkDialogueMarkerCoverage(page.text, label);
   if (page.imageImportance !== undefined) {

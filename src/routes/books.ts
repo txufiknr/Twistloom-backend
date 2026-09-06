@@ -159,7 +159,7 @@ import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 import { notifyForumOfBookChange, notifyForumStoryArchived } from "../services/forum-queue.js";
 import { createAIOptionsWithSchema, aiPrompt } from "../utils/ai-chat.js";
 import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
-import { BOOK_MIN_PAGES, PEN_AUTHORING_MODES, PEN_DEFAULT_AUTHORING_MODE, PEN_DEFAULT_BOOK_MODE, PEN_DEFAULT_TITLE, PEN_PLACEHOLDER_MC, PEN_SUMMARY_MAX_LENGTH, PEN_TARGET_PAGES_MAX, PEN_TARGET_PAGES_MIN, PEN_TITLE_MAX_LENGTH, PEN_TITLE_MIN_LENGTH, COMMENT_CONTENT_MAX_LENGTH } from "../config/story.js";
+import { BOOK_MIN_PAGES, PEN_AUTHORING_MODES, PEN_DEFAULT_AUTHORING_MODE, PEN_DEFAULT_BOOK_MODE, PEN_DEFAULT_TITLE, PEN_PLACEHOLDER_MC, PEN_DEFAULT_IMPORTED_MC, PEN_SUMMARY_MAX_LENGTH, PEN_TARGET_PAGES_MAX, PEN_TARGET_PAGES_MIN, PEN_TITLE_MAX_LENGTH, PEN_TITLE_MIN_LENGTH, COMMENT_CONTENT_MAX_LENGTH } from "../config/story.js";
 import type { CustomActionValidationResult, CustomActionPreviewResponse, CustomActionSubmitResponse } from "../types/custom-action.js";
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { MAX_BRANCHING_PREGENERATION_DEPTH, COMPANION_CACHE_JACCARD_THRESHOLD, COMPANION_CACHE_CANDIDATE_SCAN_LIMIT } from "../config/story.js";
@@ -331,13 +331,14 @@ router.post("/pen", requireAuth, requireNotSuspended, async (c) => {
     const sanitizedSummary = sanitizeBookTextField("summary", summary);
 
     // `books.mc` is NOT NULL. If the client provided an initial `mc` (e.g. from
-    // Text Adventure protagonist onboarding), sanitize and store it. Otherwise,
-    // seed the neutral placeholder whose UI label falls back to "MC" (§2.i).
-    let mc: StoryMC = PEN_PLACEHOLDER_MC;
+    // Text Adventure protagonist onboarding), sanitize and store it. If the book
+    // is imported (M.B2), seed a compliant full profile (PEN_DEFAULT_IMPORTED_MC)
+    // so Page 1 passes publication cleanly. Otherwise seed the neutral placeholder.
+    let mc: StoryMC = body.isImported ? { ...PEN_DEFAULT_IMPORTED_MC } : PEN_PLACEHOLDER_MC;
     if (body.mc && typeof body.mc === "object" && !Array.isArray(body.mc)) {
       const sanitizedMc = sanitizeMainCharacter(body.mc);
       if (sanitizedMc) {
-        mc = sanitizedMc;
+        mc = body.isImported ? { ...PEN_DEFAULT_IMPORTED_MC, ...sanitizedMc } : sanitizedMc;
       }
     }
 

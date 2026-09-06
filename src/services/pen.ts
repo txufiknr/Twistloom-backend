@@ -35,14 +35,14 @@ import type { AIPromptForJson } from "../types/ai-chat.js";
 import { AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 import type { PenContinueLength } from "../config/story.js";
-import { PEN_DRAFT_CAST_LIMIT, PEN_CONTINUE_MAX_TOKENS, penContinueLengthForAssistance, PEN_ESSENTIALS_MAX_TOKENS, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TOKENS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_FINALIZE_PROPOSE_MAX_ITEM_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TRAITS, PEN_DRAFT_BUFFER_MAX_CHARS, PEN_DRAFTS_PER_PARENT, PEN_DRAFT_LABEL_MAX_LENGTH, PEN_DRAFT_ACTION_TEXT_MAX_LENGTH, PEN_DRAFT_ACTION_HINT_MAX_LENGTH, PEN_TRANSFORM_MAX_TOKENS, PEN_TRANSFORM_SELECTION_MAX_LENGTH, PEN_PAGE_EDIT_DIFF_TOLERANCE, PEN_MIN_ENDING_PAGE, PEN_TA_LATENT_BRANCH_COUNT, PEN_TA_PROMOTE_LATENT_BRANCHES, PEN_TA_GATE2_CANON_CHECK } from "../config/story.js";
+import { PEN_DRAFT_CAST_LIMIT, PEN_CONTINUE_MAX_TOKENS, penContinueLengthForAssistance, PEN_ESSENTIALS_MAX_TOKENS, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TOKENS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_FINALIZE_PROPOSE_MAX_ITEM_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TRAITS, PEN_DRAFT_BUFFER_MAX_CHARS, PEN_DRAFTS_PER_PARENT, PEN_DRAFT_LABEL_MAX_LENGTH, PEN_DRAFT_ACTION_TEXT_MAX_LENGTH, PEN_DRAFT_ACTION_HINT_MAX_LENGTH, PEN_TRANSFORM_MAX_TOKENS, PEN_TRANSFORM_SELECTION_MAX_LENGTH, PEN_PAGE_EDIT_DIFF_TOLERANCE, PEN_MIN_ENDING_PAGE, PEN_TA_LATENT_BRANCH_COUNT, PEN_TA_PROMOTE_LATENT_BRANCHES, PEN_TA_GATE2_CANON_CHECK, PEN_DEFAULT_IMPORTED_MC } from "../config/story.js";
 import { generateId } from "../utils/uuid.js";
 import { executeWithCredits } from "./credits.js";
 import { persistPageWithState, insertStoryPage, getPageFromDB, mapToPersistedStoryPage } from "./book.js";
 import { insertStoryState } from "./story.js";
 import { advanceStoryState, createEmptyStoryState, createInitialHiddenState, processPlotFlagUpdates, processFactUpdates } from "../utils/story.js";
 import { resolvePageDelta, determineBranchIdForPage } from "../utils/prompt.js";
-import { sanitizeActionsForMode, validatePageActionsForMode, maxDestinationsPerActionForMode, maxActionsForMode } from "../utils/book-mode.js";
+import { sanitizeActionsForMode, validatePageActionsForMode, maxDestinationsPerActionForMode, maxActionsForMode, MAX_ACTIONS_PER_PAGE_IMPORTED } from "../utils/book-mode.js";
 import { validateGeneratedPage } from "../utils/page-validation.js";
 import { runGate1 } from "./custom-actions.js";
 import { calculateHealthStatus } from "../utils/characters.js";
@@ -2491,6 +2491,8 @@ export type PenFinalizeInput = {
   force?: boolean;
   /** Mark this page as the story / branch conclusion ("The End" / 🏁). Sets actions to [] and caps StoryState.maxPage. */
   isEnding?: boolean;
+  /** Relaxes minimum character floor, increases action cap, and seeds MC profile if missing (M.B1, M.B2). */
+  isImported?: boolean;
   amendments?: CanonAmendment[];
   actions?: { text: string; type: string; hint?: { text?: string; type?: string } }[];
   /**
@@ -2762,13 +2764,25 @@ export async function finalizePenDraft(
   // MC canon lock guard: page 1 requires a fully completed protagonist profile
   // (name, gender, age, bio) before the story can be published.
   if (pageNumber === 1) {
-    const mc = book.mc;
+    let mc = book.mc;
     const hasName = typeof mc?.name === "string" && mc.name.trim().length > 0;
     const hasGender = mc?.gender === "male" || mc?.gender === "female";
     const hasAge = typeof mc?.age === "number" && !Number.isNaN(mc.age) && mc.age > 0;
     const hasBio = typeof mc?.bio === "string" && mc.bio.trim().length > 0;
     if (!hasName || !hasGender || !hasAge || !hasBio) {
-      throw new PenFinalizeError("Main character profile (name, gender, age, bio) must be completed before publishing page 1");
+      if (input.isImported) {
+        // Auto-seed compliant fallback MC profile for imported stories (M.B2)
+        mc = {
+          name: hasName ? mc.name : PEN_DEFAULT_IMPORTED_MC.name,
+          gender: hasGender ? mc.gender : PEN_DEFAULT_IMPORTED_MC.gender,
+          age: hasAge ? mc.age : PEN_DEFAULT_IMPORTED_MC.age,
+          bio: hasBio ? mc.bio : PEN_DEFAULT_IMPORTED_MC.bio,
+        };
+        await updateBook(book.id, { mc });
+        book.mc = mc;
+      } else {
+        throw new PenFinalizeError("Main character profile (name, gender, age, bio) must be completed before publishing page 1");
+      }
     }
   }
 
@@ -2955,6 +2969,7 @@ export async function finalizePenDraft(
         context: "pen-finalize",
         book: { id: book.id, storyStartDate: book.storyStartDate ?? undefined, mode: book.mode, visibility: book.visibility, status: book.status },
         allowEmptyActions: input.isEnding === true,
+        isImported: input.isImported,
       });
 
       // Semantic Vector Memory Embedding (pgvector ingestion for pages, characters, places, and clues):
@@ -3070,8 +3085,14 @@ export async function finalizePenDraft(
         ...(pageOneAdopted.keyObjects.length ? { keyObjects: pageOneAdopted.keyObjects } : {}),
         stateDelta: {},
       };
-      validateGeneratedPage(pageToInsert, book.mode, "pen-finalize", { allowEmpty: input.isEnding });
-      validatePageActionsForMode(book.mode, pageToInsert.actions, { allowEmpty: input.isEnding });
+      validateGeneratedPage(pageToInsert, book.mode, "pen-finalize", {
+        allowEmpty: input.isEnding,
+        isImported: input.isImported,
+      });
+      validatePageActionsForMode(book.mode, pageToInsert.actions, {
+        allowEmpty: input.isEnding,
+        isImported: input.isImported,
+      });
 
       newPage = await insertStoryPage(userId, 1, pageToInsert, {
         bookId: book.id,
@@ -3305,9 +3326,12 @@ export async function finalizePenDraft(
               // dead "Continue" next to the author's real choice, then enforce
               // the mode's action-count cap.
               const realActions = parentActions.filter((a) => !isInertPlaceholder(a));
-              if (realActions.length >= maxActionsForMode(book.mode)) {
+              const effectiveMaxActions = input.isImported && book.mode !== 'novel'
+                ? MAX_ACTIONS_PER_PAGE_IMPORTED
+                : maxActionsForMode(book.mode);
+              if (realActions.length >= effectiveMaxActions) {
                 throw new PenFinalizeError(
-                  `This page already has its full set of ${maxActionsForMode(book.mode)} choices — fork an existing choice to continue`,
+                  `This page already has its full set of ${effectiveMaxActions} choices — fork an existing choice to continue`,
                 );
               }
               return [
@@ -3316,7 +3340,7 @@ export async function finalizePenDraft(
               ];
             })();
 
-      validatePageActionsForMode(book.mode, nextActions);
+      validatePageActionsForMode(book.mode, nextActions, { isImported: input.isImported });
       await tx
         .update(pages)
         .set({ actions: nextActions, updatedAt: new Date() })
@@ -3681,17 +3705,25 @@ export async function getPenAuthorPage(userId: string, pageId: string): Promise<
   };
 }
 
+export type UpdatePenPageActionInput = {
+  actionIndex: number;
+  text?: string;
+  destinationPageId?: string | null;
+  splitTimeline?: boolean;
+};
+
 /**
- * Updates the text of a specific action on a published page.
+ * Updates the text or destination choice wiring of a specific action on a published page.
+ * Strictly preserves Twistloom's single-parent arborescence and monotonic temporal progression.
  *
  * @param userId - The authenticated user's id (ownership guard)
  * @param pageId - The published page to update
- * @param input - { actionIndex: number, text: string }
+ * @param input - { actionIndex: number, text?: string, destinationPageId?: string | null, splitTimeline?: boolean }
  */
 export async function updatePenPageAction(
   userId: string,
   pageId: string,
-  input: { actionIndex: number; text: string }
+  input: UpdatePenPageActionInput
 ): Promise<PenAuthorPage> {
   const page = await getPageFromDB(pageId);
   if (!page) throw new PenSessionNotFoundError("Page not found");
@@ -3704,13 +3736,113 @@ export async function updatePenPageAction(
     throw new Error("Invalid action index");
   }
 
-  const trimmedText = input.text.trim();
-  if (!trimmedText) {
-    throw new Error("Action text cannot be empty");
+  let text = currentActions[input.actionIndex].text;
+  if (input.text !== undefined) {
+    const trimmedText = input.text.trim();
+    if (!trimmedText) {
+      throw new Error("Action text cannot be empty");
+    }
+    text = trimmedText;
+  }
+
+  let destinationPageIds = currentActions[input.actionIndex].destinationPageIds ?? [];
+  if (input.destinationPageId !== undefined) {
+    if (input.destinationPageId === null) {
+      destinationPageIds = [];
+    } else {
+      const destPage = await getPageFromDB(input.destinationPageId);
+      if (!destPage || destPage.bookId !== page.bookId) {
+        throw new Error("Destination page not found or belongs to a different book");
+      }
+      // Monotonic progression invariant: destination cannot precede source in time
+      if (destPage.page <= page.page) {
+        throw new Error(
+          `Destination page must be later in the timeline (page ${destPage.page} <= page ${page.page})`
+        );
+      }
+
+      let targetPageId = destPage.id;
+      // Arborescence check:
+      if (destPage.parentId === page.id) {
+        // Direct child - already points to this parent
+      } else if (destPage.parentId === null) {
+        // Unparented/detached node being adopted by this parent
+        await dbWrite
+          .update(pages)
+          .set({ parentId: page.id, updatedAt: new Date() })
+          .where(eq(pages.id, destPage.id));
+      } else {
+        // Multi-parent conflict: destPage already belongs to another parent
+        if (input.splitTimeline === true) {
+          // Timeline Splitting (M.B5): clone destination page & story state under page.id
+          const parentState = await getStoryStateWithBranch(book.id, page.id);
+          const clonedPageId = generateId();
+          const clonedBranchId = generateId();
+          const clonedPageNumber = page.page + 1;
+
+          await dbWrite.insert(pages).values({
+            id: clonedPageId,
+            userId,
+            bookId: book.id,
+            branchId: clonedBranchId,
+            parentId: page.id,
+            page: clonedPageNumber,
+            text: destPage.text,
+            mood: destPage.mood,
+            placeId: destPage.placeId,
+            weather: destPage.weather,
+            imagePrompt: destPage.imagePrompt,
+            imageImportance: destPage.imageImportance,
+            calendarDate: destPage.calendarDate,
+            elapsedDays: destPage.elapsedDays,
+            timeOfDay: destPage.timeOfDay,
+            sceneType: destPage.sceneType,
+            momentum: destPage.momentum,
+            charactersPresent: destPage.charactersPresent ?? [],
+            keyEvents: destPage.keyEvents ?? [],
+            keyObjects: destPage.keyObjects ?? [],
+            actions: destPage.actions ?? [],
+            stateDelta: destPage.stateDelta ?? {},
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          });
+
+          let targetState: StoryState;
+          if (parentState) {
+            const { newState } = resolvePageDelta({
+              generatedStoryPage: destPage as unknown as StoryGeneration,
+              advancedState: parentState,
+              currentState: parentState,
+              expectedPageNumber: clonedPageNumber,
+              context: "pen-rewire-split",
+            });
+            targetState = newState;
+          } else {
+            const destState = await getStoryStateWithBranch(book.id, destPage.id);
+            targetState = destState
+              ? { ...destState, pageId: clonedPageId, page: clonedPageNumber }
+              : createEmptyStoryState(clonedPageId, clonedPageNumber, book.totalPages ?? clonedPageNumber);
+          }
+          await insertStoryState(book.id, clonedPageId, targetState, "original");
+          targetPageId = clonedPageId;
+        } else {
+          throw new Error(
+            `Destination page ${destPage.id} already belongs to parent ${destPage.parentId}. Pass splitTimeline: true to clone this timeline into an arborescent branch.`
+          );
+        }
+      }
+
+      // Mode limit check:
+      if (book.mode === "novel" || book.mode === "interactive") {
+        destinationPageIds = [targetPageId];
+      } else {
+        destinationPageIds = Array.from(new Set([...destinationPageIds, targetPageId]));
+      }
+    }
   }
 
   const updatedActions = currentActions.map((action, idx) =>
-    idx === input.actionIndex ? { ...action, text: trimmedText } : action
+    idx === input.actionIndex ? { ...action, text, destinationPageIds } : action
   );
 
   await dbWrite

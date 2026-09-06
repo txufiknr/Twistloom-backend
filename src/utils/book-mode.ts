@@ -29,6 +29,9 @@ import { bookModes } from "../types/book.js";
 /** Hard cap on the number of actions a page may carry in any mode. */
 export const MAX_ACTIONS_PER_PAGE = 6;
 
+/** Relaxed cap on the number of actions an imported story page may carry (M.B1). */
+export const MAX_ACTIONS_PER_PAGE_IMPORTED = 12;
+
 /**
  * Returns the maximum number of actions allowed on a page for the given mode.
  *
@@ -86,26 +89,31 @@ export function clampCandidateCountForMode(mode: BookMode, requested: number): n
  * generation), so this only checks the ACTION-COUNT rule:
  *
  *   - novel       : exactly 1 action
- *   - interactive : 1..MAX_ACTIONS_PER_PAGE actions
- *   - multiverse  : 1..MAX_ACTIONS_PER_PAGE actions
+ *   - interactive : 1..MAX_ACTIONS_PER_PAGE actions (or MAX_ACTIONS_PER_PAGE_IMPORTED for imports)
+ *   - multiverse  : 1..MAX_ACTIONS_PER_PAGE actions (or MAX_ACTIONS_PER_PAGE_IMPORTED for imports)
  *
  * The per-action destination count is enforced separately, when candidate
  * generation writes destinations back (see `enforceModeOnActionDestinations`).
  *
  * @param mode - The book's creation mode
  * @param actions - The actions array about to be persisted
+ * @param options - Optional validation overrides (allowEmpty, isImported, maxActions)
  * @throws Error if the action count violates the mode's branching contract
  */
 export function validatePageActionsForMode(
   mode: BookMode,
   actions: Action[],
-  options?: { allowEmpty?: boolean }
+  options?: { allowEmpty?: boolean; isImported?: boolean; maxActions?: number }
 ): void {
   if (!bookModes.includes(mode)) {
     throw new Error(`validatePageActionsForMode: unknown book mode "${mode}"`);
   }
 
-  const maxActions = maxActionsForMode(mode);
+  const maxActions = options?.maxActions ?? (
+    mode === 'novel'
+      ? 1
+      : (options?.isImported ? MAX_ACTIONS_PER_PAGE_IMPORTED : maxActionsForMode(mode))
+  );
   const actionCount = actions.length;
 
   if (actionCount < 1) {

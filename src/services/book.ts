@@ -615,6 +615,7 @@ export async function persistPageWithState(params: {
   context?: string;
   book: Pick<Book, 'storyStartDate' | 'mode' | 'id' | 'visibility' | 'status'>;
   allowEmptyActions?: boolean;
+  isImported?: boolean;
 }): Promise<PersistedStoryPage> {
   const {
     userId,
@@ -629,6 +630,7 @@ export async function persistPageWithState(params: {
     context = "persistPageWithState",
     book,
     allowEmptyActions,
+    isImported,
   } = params;
 
   const { storyStartDate, mode } = book;
@@ -648,7 +650,10 @@ export async function persistPageWithState(params: {
 
   // Double-defense: revalidate the page before persisting (text length, JSON
   // leaks, actions). Throw here rather than silently inserting bad data.
-  validateGeneratedPage(generatedStoryPage, mode, 'persistPageWithState', { allowEmpty: allowEmptyActions });
+  validateGeneratedPage(generatedStoryPage, mode, 'persistPageWithState', {
+    allowEmpty: allowEmptyActions,
+    isImported,
+  });
 
   const { momentum: calculatedMomentum } = calculateStoryMomentum({
     state: newState,

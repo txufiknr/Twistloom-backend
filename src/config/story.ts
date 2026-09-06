@@ -5,6 +5,8 @@ import type { StoryMC } from "../types/character.js";
 export const BOOK_MIN_PAGES = 80;
 export const BOOK_MAX_PAGES = 200;
 export const MIN_CHARS_PER_PAGE = 200;
+/** Relaxed minimum character floor for imported stories (M.B1). */
+export const MIN_CHARS_PER_PAGE_IMPORTED = 10;
 export const MAX_WORDS_PER_PAGE = 120;
 export const MAX_WORDS_SUMMARIZED_CONTEXT = 300;
 
@@ -609,13 +611,23 @@ export const PEN_MC_NAME_MAX_LENGTH = 120;
 export const PEN_MC_BIO_MAX_LENGTH = 1000;
 export const PEN_MC_AGE_MIN = 0;
 export const PEN_MC_AGE_MAX = 1_000_000_000;
-
 /** Reader comments & collection limits. */
 export const COMMENT_CONTENT_MAX_LENGTH = 2000;
 export const COLLECTION_NAME_MAX_LENGTH = 50;
 
 /** Placeholder MC seed for Pen-created books (schema NOT NULL); author shapes the real MC later. */
 export const PEN_PLACEHOLDER_MC: StoryMC = { name: "MC", age: 0, gender: "male", bio: "" };
+
+/**
+ * Fully-formed default MC seed for imported stories (M.B2).
+ * Passes Page 1 MC canon lock guard (hasName, hasGender, age > 0, hasBio).
+ */
+export const PEN_DEFAULT_IMPORTED_MC: StoryMC = {
+  name: "The Protagonist",
+  age: 25,
+  gender: "female",
+  bio: "The protagonist of this interactive story.",
+};
 
 // ============================================================================
 // TEXT ADVENTURE LATENT SIBLING BRANCHES (B6) + GATE 2 (§18.8 / roadmap §6)
