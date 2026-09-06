@@ -30,6 +30,7 @@ import {
   cValidationError,
   cNotFoundError,
   cRateLimitError,
+  getErrorMessage,
 } from "../utils/error.js";
 import { checkRateLimit } from "../utils/redis.js";
 import { getStripe } from "../utils/stripe.js";
@@ -131,6 +132,10 @@ router.post("/create-checkout-session", requireAuth, async (c) => {
 
     return c.json(result);
   } catch (error) {
+    const errorMsg = getErrorMessage(error, "Failed to create Thanks checkout session");
+    if (errorMsg.includes("not enabled") || errorMsg.includes("not configured")) {
+      return cValidationError(c, errorMsg);
+    }
     return cApiError(c, "Failed to create Thanks checkout session", error);
   }
 });
