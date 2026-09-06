@@ -100,14 +100,15 @@ const publicBookStatsCache = new LRUCache<string, PublicStats>({
 /**
  * LRU cache for popular tags
  * 
- * Cache key: "popular:tags:{limit}"
+ * Cache key: "popular:tags:{limit}:{language|all}"
  * - limit: number of tags requested
+ * - language: ISO 639-1 code or 'all' for unfiltered
  * 
  * TTL: 10 minutes (popular tags change infrequently)
- * Max size: 5 entries (different limits)
+ * Max size: 10 entries (different limits × languages)
  */
 const popularTagsCache = new LRUCache<string, Array<{ keyword: string; count: number }>>({
-  max: 5,
+  max: 10,
   ttl: 10 * 60 * 1000, // 10 minutes
 });
 
@@ -2892,20 +2893,31 @@ export async function getSimilarBooks(bookId: string, limit: number = 10): Promi
  * // Returns: [{ keyword: "thriller", count: 42 }, { keyword: "mystery", count: 38 }, ...]
  * ```
  */
-export async function getPopularTags(limit: number = 20): Promise<Array<{ keyword: string; count: number }>> {
-  const cacheKey = `popular:tags:${limit}`;
+export async function getPopularTags(limit: number = 20, language?: string | null): Promise<Array<{ keyword: string; count: number }>> {
+  const lang = language?.split('-')[0]?.toLowerCase() || null;
+  const cacheKey = `popular:tags:${limit}:${lang || 'all'}`;
 
   const cached = popularTagsCache.get(cacheKey);
   if (cached) return cached;
 
   try {
-    // Use database-level aggregation for efficient keyword counting
+    // Build language filter: match the user's language OR English as fallback.
+    // When no language is specified, skip the filter entirely (all languages).
+    const langFilter = lang
+      ? sql`AND (${books.language} = ${lang} OR ${books.language} = 'en')`
+      : sql``;
+
+    // Use database-level aggregation for efficient keyword counting.
+    // Only counts tags from active, publicly-visible books.
     const result = await dbRead.execute(sql`
       SELECT keyword, COUNT(*) AS count
       FROM (
         SELECT unnest(${books.keywords}) AS keyword
         FROM ${books}
         WHERE cardinality(${books.keywords}) > 0
+          AND ${books.status} = 'active'
+          AND ${books.visibility} = 'public'
+          ${langFilter}
       ) expanded
       WHERE keyword IS NOT NULL
         AND keyword != ''
@@ -2914,10 +2926,36 @@ export async function getPopularTags(limit: number = 20): Promise<Array<{ keywor
       LIMIT ${limit}
     `);
 
-    const tags = result.rows.map(row => ({
+    let tags = result.rows.map(row => ({
       keyword: row.keyword as string,
       count: Number(row.count),
     }));
+
+    // Language fallback: if filtering by language returned zero tags,
+    // fall back to English-only so the tag chips always have content.
+    if (lang && tags.length === 0) {
+      const fallbackResult = await dbRead.execute(sql`
+        SELECT keyword, COUNT(*) AS count
+        FROM (
+          SELECT unnest(${books.keywords}) AS keyword
+          FROM ${books}
+          WHERE cardinality(${books.keywords}) > 0
+            AND ${books.status} = 'active'
+            AND ${books.visibility} = 'public'
+            AND ${books.language} = 'en'
+        ) expanded
+        WHERE keyword IS NOT NULL
+          AND keyword != ''
+        GROUP BY keyword
+        ORDER BY count DESC
+        LIMIT ${limit}
+      `);
+
+      tags = fallbackResult.rows.map(row => ({
+        keyword: row.keyword as string,
+        count: Number(row.count),
+      }));
+    }
 
     popularTagsCache.set(cacheKey, tags);
 

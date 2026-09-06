@@ -2709,9 +2709,11 @@ router.get("/explore", optionalAuth, async (c) => {
 router.get("/tags/popular", async (c) => {
   try {
     const limit = Math.min(parseInt(c.req.query().limit as string) || 20, 100);
+    const headerLanguage = c.get("headerLanguage") || 'en';
     
     // Uses LRU cache internally via getPopularTags
-    const tags = await getPopularTags(limit);
+    // Filters to active + public books in the user's language (with English fallback)
+    const tags = await getPopularTags(limit, headerLanguage);
     
     return c.json({ tags });
   } catch (error) {
