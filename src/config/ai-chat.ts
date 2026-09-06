@@ -14,7 +14,7 @@ export const MAX_SCHEMA_LENGTH: number = 30_000;
  * `true`: routes through the 2-turn (single page) / parallel-multi-turn
  * (multiverse) pipeline in prompt.ts.
  */
-export const USE_MULTI_TURN_GENERATION = true;
+export const USE_MULTI_TURN_GENERATION = false;
 
 /**
  * Per-turn output-token budgets for multi-turn (stage-split) page generation

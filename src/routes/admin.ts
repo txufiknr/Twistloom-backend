@@ -30,7 +30,7 @@ import { getAdminBusinessMetrics } from "../services/admin-business-analytics.js
 import { getBookFromDB, getPageFromDB, invalidateEnrichedBookCache } from "../services/book.js";
 import { getStoryState } from "../services/story.js";
 import { dbRead, dbWrite } from "../db/client.js";
-import { socialMentions, bookTestimonials, adminUsers, adminSettings, usage, users, userFeedbacks, books, portalBlogPosts, platformTestimonials, pages, userPageProgress, creatorPayouts, creatorWallets, creatorPayoutMethods } from "../db/schema.js";
+import { socialMentions, bookTestimonials, adminUsers, adminSettings, usage, users, userFeedbacks, books, portalBlogPosts, platformTestimonials, pages, userPageProgress, creatorPayouts, creatorWallets, creatorPayoutMethods, transactions, subscriptions } from "../db/schema.js";
 import type { AppEnv } from "../hono/env.js";
 import { bookStatuses, bookVisibilities, type BookStatus, type BookVisibility } from "../types/book.js";
 import { feedbackAdminStatuses, feedbackCategories, type FeedbackAdminStatus, type FeedbackCategory } from "../types/user.js";
@@ -40,6 +40,12 @@ import { notifyForumUserBanned, notifyForumUserUnbanned } from "../services/foru
 import { invalidateUserProfileCache } from "../services/cache.js";
 import { getNeonProjectUsage, NeonApiError } from "../services/neon-usage.js";
 import { applyEnforcementAction, revokeEnforcementAction, getActiveEnforcementsForUser } from "../services/trust-safety.js";
+import {
+  parsePaymentGateway,
+  formatPaymentAmount,
+  getGatewayCurrency,
+  getSubscriptionPlanName,
+} from "../utils/payment.js";
 
 const router = new Hono<AppEnv>();
 
@@ -1410,6 +1416,187 @@ router.get("/analytics/business",
       return c.json(data);
     } catch (error) {
       return cApiError(c, "Failed to load business analytics", error);
+    }
+  }
+);
+
+/**
+ * GET /admin/payments/transactions
+ *
+ * Platform-wide credit pack purchases and one-time payment ledger.
+ */
+router.get("/payments/transactions",
+  requireAuth,
+  requirePermission("analytics"),
+  async (c) => {
+    try {
+      const { search, gateway, limit = "50", offset = "0" } = c.req.query();
+      const limitNum = Math.min(Math.max(Number(limit) || 50, 1), 100);
+      const offsetNum = Math.max(Number(offset) || 0, 0);
+
+      const conditions = [eq(transactions.type, "purchase")];
+
+      const resolvedGateway = parsePaymentGateway(gateway);
+      if (resolvedGateway) {
+        conditions.push(eq(transactions.gateway, resolvedGateway));
+      }
+
+      if (search && search.trim().length > 0) {
+        const query = `%${search.trim()}%`;
+        conditions.push(
+          or(
+            ilike(users.email, query),
+            ilike(users.name, query),
+            ilike(users.username, query),
+            ilike(transactions.providerPaymentId, query),
+            ilike(transactions.context, query)
+          )!
+        );
+      }
+
+      const countResult = await dbRead
+        .select({ total: count() })
+        .from(transactions)
+        .innerJoin(users, eq(transactions.userId, users.userId))
+        .where(and(...conditions));
+
+      const total = Number(countResult[0]?.total ?? 0);
+
+      const rows = await dbRead
+        .select({
+          id: transactions.id,
+          userId: transactions.userId,
+          type: transactions.type,
+          credits: transactions.credits,
+          amountCents: transactions.amountCents,
+          gateway: transactions.gateway,
+          providerPaymentId: transactions.providerPaymentId,
+          providerEventId: transactions.providerEventId,
+          context: transactions.context,
+          metadata: transactions.metadata,
+          createdAt: transactions.createdAt,
+          user: {
+            name: users.name,
+            email: users.email,
+            username: users.username,
+            imageUrl: users.imageUrl,
+          },
+        })
+        .from(transactions)
+        .innerJoin(users, eq(transactions.userId, users.userId))
+        .where(and(...conditions))
+        .orderBy(desc(transactions.createdAt))
+        .limit(limitNum)
+        .offset(offsetNum);
+
+      const formatted = rows.map((r) => ({
+        ...r,
+        amountFormatted: formatPaymentAmount(r.amountCents, r.gateway),
+        currency: getGatewayCurrency(r.gateway),
+      }));
+
+      return c.json({
+        total,
+        limit: limitNum,
+        offset: offsetNum,
+        transactions: formatted,
+      });
+    } catch (error) {
+      return cApiError(c, "Failed to list transactions", error);
+    }
+  }
+);
+
+/**
+ * GET /admin/payments/subscriptions
+ *
+ * Platform-wide VIP subscription ledger.
+ */
+router.get("/payments/subscriptions",
+  requireAuth,
+  requirePermission("analytics"),
+  async (c) => {
+    try {
+      const { search, status, gateway, limit = "50", offset = "0" } = c.req.query();
+      const limitNum = Math.min(Math.max(Number(limit) || 50, 1), 100);
+      const offsetNum = Math.max(Number(offset) || 0, 0);
+
+      const conditions = [];
+
+      if (status && status.trim().length > 0) {
+        conditions.push(eq(subscriptions.status, status));
+      }
+
+      const resolvedGateway = parsePaymentGateway(gateway);
+      if (resolvedGateway) {
+        conditions.push(eq(subscriptions.gateway, resolvedGateway));
+      }
+
+      if (search && search.trim().length > 0) {
+        const query = `%${search.trim()}%`;
+        conditions.push(
+          or(
+            ilike(users.email, query),
+            ilike(users.name, query),
+            ilike(users.username, query),
+            ilike(subscriptions.providerSubscriptionId, query),
+            ilike(subscriptions.providerCustomerId, query)
+          )!
+        );
+      }
+
+      const countResult = await dbRead
+        .select({ total: count() })
+        .from(subscriptions)
+        .innerJoin(users, eq(subscriptions.userId, users.userId))
+        .where(conditions.length > 0 ? and(...conditions) : undefined);
+
+      const total = Number(countResult[0]?.total ?? 0);
+
+      const rows = await dbRead
+        .select({
+          id: subscriptions.id,
+          userId: subscriptions.userId,
+          gateway: subscriptions.gateway,
+          providerSubscriptionId: subscriptions.providerSubscriptionId,
+          providerCustomerId: subscriptions.providerCustomerId,
+          providerPriceId: subscriptions.providerPriceId,
+          status: subscriptions.status,
+          currentPeriodStart: subscriptions.currentPeriodStart,
+          currentPeriodEnd: subscriptions.currentPeriodEnd,
+          cancelAtPeriodEnd: subscriptions.cancelAtPeriodEnd,
+          canceledAt: subscriptions.canceledAt,
+          isTrial: subscriptions.isTrial,
+          trialEnd: subscriptions.trialEnd,
+          metadata: subscriptions.metadata,
+          createdAt: subscriptions.createdAt,
+          user: {
+            name: users.name,
+            email: users.email,
+            username: users.username,
+            imageUrl: users.imageUrl,
+          },
+        })
+        .from(subscriptions)
+        .innerJoin(users, eq(subscriptions.userId, users.userId))
+        .where(conditions.length > 0 ? and(...conditions) : undefined)
+        .orderBy(desc(subscriptions.createdAt))
+        .limit(limitNum)
+        .offset(offsetNum);
+
+      const formatted = rows.map((r) => ({
+        ...r,
+        planName: getSubscriptionPlanName(r.gateway),
+      }));
+
+      return c.json({
+        total,
+        limit: limitNum,
+        offset: offsetNum,
+        subscriptions: formatted,
+      });
+    } catch (error) {
+      return cApiError(c, "Failed to list subscriptions", error);
     }
   }
 );

@@ -55,14 +55,10 @@ import {
 } from "../services/gateways/stripe-webhook-handlers.js";
 import type { AppEnv } from "../hono/env.js";
 import { getClientIp } from "../hono/express-shim.js";
-import { isPaymentGateway, PAYMENT_GATEWAY, type PaymentGateway } from "../types/payment.js";
+import { PAYMENT_GATEWAY, parsePaymentGateway as parseGateway } from "../utils/payment.js";
 
 // Initialize gateway adapters at module load
 initGatewayAdapters();
-
-function parseGateway(value: unknown): PaymentGateway | null {
-  return isPaymentGateway(value) ? value : null;
-}
 
 /**
  * Builds success/cancel URLs from user-provided returnUrl or fallback paths.
