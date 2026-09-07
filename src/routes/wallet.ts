@@ -19,10 +19,7 @@ import {
   savePayoutMethod,
   convertBalanceToCredits,
 } from "../services/wallet.js";
-import {
-  cApiError,
-  cValidationError,
-} from "../utils/error.js";
+import { cApiError, cValidationError, getErrorMessage } from "../utils/error.js";
 import type { AppEnv } from "../hono/env.js";
 import type { EarningSource } from "../types/wallet.js";
 
@@ -89,12 +86,13 @@ router.post("/earnings/:earningId/reply", requireAuth, async (c) => {
 
     const result = await replyToCreatorEarning(userId, earningId, reply);
     return c.json(result);
-  } catch (error: any) {
-    if (error.message === "Unauthorized to reply to this earning") {
-      return cValidationError(c, error.message);
+  } catch (error: unknown) {
+    const msg = getErrorMessage(error);
+    if (msg === "Unauthorized to reply to this earning") {
+      return cValidationError(c, msg);
     }
-    if (error.message === "Earning record not found") {
-      return cValidationError(c, error.message);
+    if (msg === "Earning record not found") {
+      return cValidationError(c, msg);
     }
     return cApiError(c, "Failed to send reply", error);
   }
@@ -111,18 +109,19 @@ router.post("/withdraw", requireAuth, async (c) => {
   try {
     const payout = await initiatePayout(userId);
     return c.json({ success: true, payout });
-  } catch (error: any) {
-    if (error.message === "PAYOUT_NOT_VERIFIED") {
+  } catch (error: unknown) {
+    const msg = getErrorMessage(error);
+    if (msg === "PAYOUT_NOT_VERIFIED") {
       return cValidationError(c, "Please set up your payout method first");
     }
-    if (error.message === "BELOW_MINIMUM") {
+    if (msg === "BELOW_MINIMUM") {
       const wallet = await getCreatorWallet(userId);
       const minAmount = wallet.currency === "USD"
         ? THANKS_CONFIG.minimumWithdrawalUSD
         : THANKS_CONFIG.minimumWithdrawalIDR;
       return cValidationError(c, `Minimum withdrawal is ${minAmount} ${wallet.currency}`);
     }
-    if (error.message === "INSUFFICIENT_BALANCE") {
+    if (msg === "INSUFFICIENT_BALANCE") {
       return cValidationError(c, "Insufficient balance for withdrawal");
     }
     return cApiError(c, "Failed to initiate withdrawal", error);
@@ -158,24 +157,25 @@ router.post("/convert-to-credits", requireAuth, async (c) => {
 
     const result = await convertBalanceToCredits(userId, amount);
     return c.json(result);
-  } catch (error: any) {
-    if (error.message === "INVALID_PACK") {
+  } catch (error: unknown) {
+    const msg = getErrorMessage(error);
+    if (msg === "INVALID_PACK") {
       return cValidationError(c, "Invalid credit pack ID");
     }
-    if (error.message === "PACK_NOT_AVAILABLE_IN_CURRENCY") {
+    if (msg === "PACK_NOT_AVAILABLE_IN_CURRENCY") {
       return cValidationError(c, "This credit pack is not available in your wallet currency");
     }
-    if (error.message === "BELOW_MINIMUM") {
+    if (msg === "BELOW_MINIMUM") {
       const wallet = await getCreatorWallet(userId);
       const minAmount = wallet.currency === "USD"
         ? `${THANKS_CONFIG.minConversionAmountUSD} cents ($1.00 USD)`
         : `${THANKS_CONFIG.minConversionAmountIDR.toLocaleString()} IDR`;
       return cValidationError(c, `Minimum conversion is ${minAmount}`);
     }
-    if (error.message === "AMOUNT_TOO_LOW") {
+    if (msg === "AMOUNT_TOO_LOW") {
       return cValidationError(c, "Amount too low to convert to any credits");
     }
-    if (error.message === "INSUFFICIENT_BALANCE") {
+    if (msg === "INSUFFICIENT_BALANCE") {
       return cValidationError(c, "Insufficient wallet balance");
     }
     return cApiError(c, "Failed to convert balance to credits", error);

@@ -289,7 +289,7 @@ A user accumulates a **new** `subscriptions` row every time they subscribe — c
 .limit(1)
 ```
 
-> **⚠️ Migration note:** The schema source in `src/db/schema.ts` has been updated to use generic `provider_*` column names, but the DB migration (Phase 1.1) has not yet been applied to production. See [§15](#15-implementation-status).
+> **✅ Migration applied:** The schema source in `src/db/schema.ts` uses generic `provider_*` column names, and the DB migration (Phase 1.1) has been applied to production.
 
 ---
 
@@ -998,13 +998,24 @@ router.post("/razorpay/webhook", async (c) => {
 
 | Severity | Issue | Notes |
 |----------|-------|-------|
-| Medium | `amountCents` semantics differ between gateways | Stripe = cents, IDR = whole rupiah (by design) |
-| Medium | `isDuplicateTx` broader than intended | Idempotency check uses `LIKE` on JSONB metadata; prefer structured unique constraint |
-| Low | `isUniqueViolation()` duplicated 3× | Can extract utility in Phase 6 |
+| ~~Medium~~ | ~~`amountCents` semantics differ between gateways~~ | **Resolved** — per-row split into `amountUsd`/`amountIdr` + gateway-scoped summary aggregates |
+| ~~Medium~~ | ~~`isDuplicateTx` broader than intended~~ | **Resolved** — now uses exact JSONB key matching (`->>'correlationId'`), not `LIKE` |
+| ~~Low~~ | ~~`isUniqueViolation()` duplicated 3×~~ | **Resolved** — consolidated into `isUniqueConstraintError()` in `src/utils/retry.ts` |
 | Low | Pack ID config duplication (`credits.ts` + `xendit.ts`) | Acceptable given different price structures |
 | Low | Subscription idempotency vs. credit grant idempotency mismatch | Acceptable trade-off for simplicity |
 | Low | Trial eligibility stale cache | Backend re-validates at checkout |
 | Low | `refundCreditsIdempotent` best-effort log-and-continue | Acceptable for edge case |
+
+### Known active issues (from code review 2026-09-07)
+
+| Severity | Issue | Location | Notes |
+|----------|-------|----------|-------|
+| ~~Medium~~ | ~~`totalAmountSpent` SQL divides all `amountCents` by 100~~ | ~~`payments.ts:880`~~ | **Fixed** — now returns `totalAmountUsd` (Stripe cents / 100) and `totalAmountIdr` (Xendit whole rupiah) separately |
+| ~~Low~~ | ~~No rate limit on `POST /subscription/cancel`~~ | ~~`payments.ts:985`~~ | **Fixed** — added 3 req/60s per-user rate limit |
+| ~~Low~~ | ~~No rate limit on `POST /vouchers/redeem`~~ | ~~`payments.ts:1081`~~ | **Fixed** — added 5 req/60s per-user rate limit |
+| ~~Low~~ | ~~`catch (error: any)` in `src/routes/wallet.ts`~~ | ~~`wallet.ts:92,114,161`~~ | **Fixed** — replaced with `catch (error: unknown)` + `getErrorMessage()` helper |
+
+> All issues from the 2026-09-07 code review have been resolved.
 
 ### Future enhancements
 
@@ -1023,18 +1034,18 @@ Full roadmap: `docs/roadmap/STRIPE_AND_XENDIT_GATEWAY_AGNOSTIC_ROADMAP.md`
 
 | Phase | Name | Status |
 |-------|------|--------|
-| Phase 0 | Pre-requisite & Bugfix Sprint | Mostly Done (Xendit business reg pending) |
-| Phase 1 | Foundation (DB migration) | **Partially Done — migration pending** |
-| Phase 2 | Xendit Backend — Credit Packs | Done |
-| Phase 2b | Xendit Backend — Subscriptions | Done |
-| Phases 4-5 | Frontend Gateway Selector & Pricing | Done |
+| Phase 0 | Pre-requisite & Bugfix Sprint | ✅ Done (Xendit business reg still pending) |
+| Phase 1 | Foundation (DB migration + deploy) | ✅ Done |
+| Phase 2 | Xendit Backend — Credit Packs | ✅ Done |
+| Phase 2b | Xendit Backend — Subscriptions | ✅ Done |
+| Phases 4-5 | Frontend Gateway Selector & Pricing | ✅ Done |
 | Phase 6 | Testing & Polish | Not started |
 | Phase 7 | Soft Launch | Not started |
 
-> **⚠️ DB migration pending:** The Drizzle schema source in `src/db/schema.ts` has been updated to use generic `provider_*` column names, but the migration (Phase 1.1) has not yet been applied to production. No Xendit code should reach production until the migration + deploy (Phase 1.5) are complete.
+> **⚠️ Xendit business registration (Phase 0.1) still pending.** No Xendit code should be enabled in production (`XENDIT_ENABLED=true`) until the merchant account is approved. The code is deployed and feature-flagged off.
 
 Full plan: `docs/roadmap/STRIPE_AND_XENDIT_GATEWAY_AGNOSTIC_ROADMAP.md`
 
 ---
 
-*Last updated: August 2026 (gateway-agnostic architecture consolidation; 13 bug fixes applied, 8 deferred to Phase 6). Companion to frontend doc: `PAYMENTS_ARCHITECTURE_FRONTEND.md`*
+*Last updated: September 2026 (gateway-agnostic architecture complete; DB migration + deploy applied; 15 bug fixes applied, 2 deferred items resolved, 4 remaining items tracked. Companion to frontend doc: `PAYMENTS_ARCHITECTURE_FRONTEND.md`*

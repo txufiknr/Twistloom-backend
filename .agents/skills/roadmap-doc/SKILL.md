@@ -147,7 +147,7 @@ Present the chosen design with clear justification. For non-trivial designs, inc
 **Rules:**
 - If there is only one obvious design, skip alternatives and go straight to the description.
 - Always state what the design does **not** change (non-breaking guarantees).
-- Reference existing codebase patterns (e.g., "follows the pattern in `BookDetailsForm.tsx:302-328`").
+- Reference existing codebase patterns (e.g., "follows the pattern in `src/utils/pen-prompt.ts:213-260`").
 
 ---
 
@@ -292,7 +292,7 @@ A comprehensive list of all files that will be or were modified.
 - Group by area (Backend, Frontend, Config, Schema, etc.) if the list is long.
 - Mark **NEW** files explicitly.
 - Include line numbers for existing files where the change lands.
-- Include a **Codebase Findings** subsection if bugs, inefficiencies, or architectural gaps were discovered during analysis (see `AI_PAGE_ILLUSTRATION_ROADMAP.md` §15 for reference).
+- Include a **Codebase Findings** subsection if bugs, inefficiencies, or architectural gaps were discovered during analysis (see `CANDIDATE_GENERATION_ENHANCEMENT_ROADMAP.md` or `LLM_OPTIMIZATION_ROADMAP.md` for examples).
 
 ---
 
@@ -360,10 +360,10 @@ These existing roadmaps exemplify the canonical structure. Consult them for edge
 
 | Document | Best For |
 |----------|----------|
-| `AI_PAGE_ILLUSTRATION_ROADMAP.md` | Design alternatives with pros/cons, feasibility, codebase findings, Mermaid diagrams |
-| `FRONTEND_FLUID_CPU_OPTIMIZATION_ROADMAP.md` | Master plan table, tiered implementation, non-breaking guarantees |
-| `SECURITY_HARDENING_ROADMAP.md` | Priority overview table, per-item severity/effort/status |
-| `ADMIN_DASHBOARD_ROADMAP.md` | Open Questions with options and decisions, Q4 Proposal pattern |
-| `USER_PROFILE_ENHANCEMENT_ROADMAP.md` | Open Questions with recommendations, completion status legend |
-| `PEN_SECTION_READINESS_P2_ROADMAP.md` | "Status at a glance" table, design decisions, verdict section |
-| `PERFORMANCE_OPTIMIZATION_ROADMAP.md` | Phase-based structure with priority levels |
+| `AI_ORCHESTRATION_ROADMAP.md` | Multi-provider architecture, design alternatives with pros/cons, Mermaid diagrams |
+| `BRANCH_TRAVERSAL_FUTURE_IMPROVEMENTS.md` | Implementation plan with prioritized steps, non-breaking guarantees |
+| `ASYNC_BOOK_CREATION_ROADMAP.md` | Problem statement with current state, phased implementation plan |
+| `CANDIDATE_GENERATION_ENHANCEMENT_ROADMAP.md` | Feasibility analysis, tiered implementation, codebase findings |
+| `LLM_OPTIMIZATION_ROADMAP.md` | Performance-focused design rationale, priority overview table |
+| `STRIPE_AND_XENDIT_GATEWAY_AGNOSTIC_ROADMAP.md` | Open Questions with options/decisions, integration architecture |
+| `TWISTLOOM_SCALABILITY_BIBLE.md` | Comprehensive problem statement, design alternatives, completion status |

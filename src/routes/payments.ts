@@ -877,7 +877,8 @@ router.get("/transactions", requireAuth, async (c) => {
         totalCreditsPurchased: sql<number>`SUM(CASE WHEN ${transactions.type} = 'purchase' THEN ${transactions.credits} ELSE 0 END)`,
         totalCreditsUsed: sql<number>`SUM(CASE WHEN ${transactions.type} = 'usage' THEN ABS(${transactions.credits}) ELSE 0 END)`,
         totalCreditsRewarded: sql<number>`SUM(CASE WHEN ${transactions.type} = 'reward' THEN ${transactions.credits} ELSE 0 END)`,
-        totalAmountSpent: sql<number>`SUM(CASE WHEN ${transactions.type} = 'purchase' THEN ${transactions.amountCents} ELSE 0 END) / 100.0`,
+        totalAmountSpentStripe: sql<number | null>`SUM(CASE WHEN ${transactions.type} = 'purchase' AND ${transactions.gateway} != 'xendit' THEN ${transactions.amountCents} ELSE 0 END)`,
+        totalAmountSpentXendit: sql<number | null>`SUM(CASE WHEN ${transactions.type} = 'purchase' AND ${transactions.gateway} = 'xendit' THEN ${transactions.amountCents} ELSE 0 END)`,
       })
       .from(transactions)
       .where(eq(transactions.userId, userId))
@@ -892,7 +893,8 @@ router.get("/transactions", requireAuth, async (c) => {
         totalCreditsPurchased: summary[0]?.totalCreditsPurchased || 0,
         totalCreditsUsed: summary[0]?.totalCreditsUsed || 0,
         totalCreditsRewarded: summary[0]?.totalCreditsRewarded || 0,
-        totalAmountSpent: summary[0]?.totalAmountSpent || 0,
+        totalAmountUsd: summary[0]?.totalAmountSpentStripe != null ? summary[0].totalAmountSpentStripe / 100 : null,
+        totalAmountIdr: summary[0]?.totalAmountSpentXendit || null,
         currentBalance: userBalance[0]?.credits || 0,
       },
     });
@@ -985,6 +987,12 @@ router.get("/subscription-plans", async (c) => {
 router.post("/subscription/cancel", requireAuth, async (c) => {
   try {
     const userId = requireUserId(c);
+
+    const rateLimitResult = await checkRateLimit(`subscription-cancel-${userId}`, { maxRequests: 3, windowSeconds: 60 });
+    if (!rateLimitResult.allowed) {
+      return cRateLimitError(c);
+    }
+
     const subscription = await dbRead
       .select({
         id: subscriptions.id,
@@ -1082,6 +1090,11 @@ router.post("/vouchers/redeem", requireAuth, async (c) => {
   try {
     const userId = c.get("userId");
     if (!userId) return cApiError(c, "Unauthorized", null, 401);
+
+    const rateLimitResult = await checkRateLimit(`voucher-redeem-${userId}`, { maxRequests: 5, windowSeconds: 60 });
+    if (!rateLimitResult.allowed) {
+      return cRateLimitError(c, "Too many voucher redemption attempts. Please wait before trying again.");
+    }
 
     const body = c.get("body") as { code?: string; idempotencyKey?: string };
     if (!body?.code || !body?.idempotencyKey) {

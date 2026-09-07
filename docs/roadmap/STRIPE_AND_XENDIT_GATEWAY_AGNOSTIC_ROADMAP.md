@@ -1,6 +1,6 @@
 # Stripe + Xendit Gateway-Agnostic Payment Architecture — Implementation Roadmap
 
-**Status:** ✅ Backend Phase 2b + Frontend Phases 4–5 complete — DB migrate (1.1) & deploy (1.5) remain; Phase 6 testing next
+**Status:** ✅ Phases 0–5 + DB migration + deploy complete — Phase 6 testing next; Xendit business registration (0.1) still pending
 **Scope:** Both `twistloom-web` (Next.js frontend) and `twistloom-backend` (Hono.js/Express backend)
 **Stack:** Stripe Node SDK · Xendit Node SDK · PostgreSQL (Neon) · Drizzle ORM · TypeScript
 
@@ -1353,7 +1353,7 @@ It may hit the timeout. The Stripe webhook handler already has this concern, but
 | Step | What | Who | Status |
 |------|------|-----|--------|
 | 0.1 | Confirm Xendit business registration (Indonesia entity/NIB) — blocker | Product | ⏳ Pending |
-| 0.2 | Fix `handleInvoicePaymentSucceeded()` `invoice.parent` → `invoice.subscription` | Backend | ✅ Done — uses `invoice.subscription` with `parent` fallback |
+| 0.2 | Fix `handleInvoicePaymentSucceeded()` `invoice.parent` → `invoice.subscription` | Backend | ✅ Done — `getInvoiceSubscriptionId()` uses `subscription` primary + `parent` fallback for Stripe API compat |
 | 0.3 | Fix `awardCredits()` to actually write `providerPaymentId`/`providerEventId` (renamed equivalents) | Backend | ✅ Done |
 | 0.4 | Fix `subscriptionTransactions.providerEventId` to be written on create/renew | Backend | ✅ Done |
 
@@ -1361,11 +1361,11 @@ It may hit the timeout. The Stripe webhook handler already has this concern, but
 
 | Step | What | Who | Status |
 |------|------|-----|--------|
-| 1.1 | Database migration: add `gateway` column + rename columns | Backend | ⏳ Pending — run `pnpm db:generate` / `pnpm db:migrate` (schema source already updated) |
+| 1.1 | Database migration: add `gateway` column + rename columns | Backend | ✅ Done — applied to production |
 | 1.2 | Update Drizzle ORM schema (`schema.ts`) | Backend | ✅ Done |
 | 1.3 | Rename all service function params (subscription.ts, credits.ts) | Backend | ✅ Done |
 | 1.4 | Update all route references to use renamed columns | Backend | ✅ Done |
-| 1.5 | Deploy Phase 0 bugfixes and Phase 1 migration to production before any Xendit code | Backend | ⏳ Pending |
+| 1.5 | Deploy Phase 0 bugfixes and Phase 1 migration to production before any Xendit code | Backend | ✅ Done |
 
 ### Phase 2: Xendit Backend Integration — Credit Packs Only (Days 3-5)
 
@@ -1641,4 +1641,4 @@ These items are **not required for v1 soft launch**. Ship migrate → env → Ph
 
 ---
 
-*Generated: 2026-07-24 · Last updated: 2026-07-25 — Frontend Phases 4–5 complete; §13 optional later (Xendit manage UI, geo default, app-layer trial) documented. **Your next actions:** DB migration + deploy if pending, Phase 6 testing (Stripe + Xendit sandbox).*
+*Generated: 2026-07-24 · Last updated: 2026-09-07 — Phases 0–5 complete; DB migration + deploy applied to production; Phase 6 testing next. **Your next actions:** Phase 6 testing (Stripe + Xendit sandbox), Xendit business registration (Phase 0.1).*`
