@@ -109,6 +109,7 @@ export const RULES_DIALOGUE_ATTRIBUTION = `DIALOGUE ATTRIBUTION MARKERS:
   - Side character: [character_id] "Dialogue text."
   - MC speaking aloud: [mc] "Dialogue text."
   - Unknown speaker: [???] "Dialogue text."
+- Keep marker and dialogue on the SAME line (never split across lines).
 - Never mark narration or internal thoughts.
 - UI markers only — never reference or explain them in the story.`;
 

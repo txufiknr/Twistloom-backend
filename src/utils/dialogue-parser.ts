@@ -58,6 +58,38 @@ const DIALOGUE_MARKER_LINE_PATTERN = new RegExp(DIALOGUE_MARKER_SOURCE);
 const DIALOGUE_MARKER_SCAN_PATTERN = new RegExp(DIALOGUE_MARKER_SOURCE, 'gm');
 
 /**
+ * Normalizes dialogue markers by collapsing standalone marker tags onto the same
+ * line as their following dialogue text.
+ *
+ * Edge case: occasionally an AI outputs the dialogue marker on its own line:
+ *   [lisa_p]
+ *   "Hello."
+ * When unnormalized, per-line parser regexes match `[lisa_p]` with empty text,
+ * producing `{ type: 'dialogue', speakerId: 'lisa_p', text: '' }` (rendering an empty
+ * dialogue balloon in the frontend), while `"Hello."` is rendered as plain prose below it.
+ *
+ * This function collapses the marker and dialogue onto a single line:
+ *   [lisa_p] "Hello."
+ *
+ * Robustness guarantees:
+ * - Tolerates multiple newlines and intervening blank lines with whitespace
+ * - Supports CRLF (`\r\n`) and LF (`\n`)
+ * - Negative lookahead `(?!\[)` ensures two consecutive markers without dialogue are never merged
+ * - Preserves standard quotes `"`, smart curly quotes `“`, single quotes `'`, em-dashes, and unquoted speech
+ * - Preserves surrounding prose paragraphs and non-marker bracketed text
+ *
+ * @param text - Raw narrative text
+ * @returns Normalized text with dialogue markers and their dialogue on the same line
+ */
+export function normalizeDialogueMarkers(text: string): string {
+  if (!text || typeof text !== 'string') return text;
+  return text.replace(
+    /^\[([\w_]+|\?\?\?)\][^\S\r\n]*(?:\r?\n\s*)+(?!\[)(\S.*)$/gm,
+    '[$1] $2'
+  );
+}
+
+/**
  * Parses a page's `text` field into prose and dialogue segments.
  *
  * Splits on lines that start with a dialogue marker. Consecutive
@@ -65,6 +97,9 @@ const DIALOGUE_MARKER_SCAN_PATTERN = new RegExp(DIALOGUE_MARKER_SOURCE, 'gm');
  * (trimmed) whenever a marker is hit and at the end of input — so
  * multi-line narration between two spoken lines stays one segment rather
  * than fragmenting per line.
+ *
+ * Normalizes broken multiline markers (e.g. `[lisa_p]\n"Hello."`) prior to
+ * segmenting so speech bubbles are never emitted empty.
  *
  * @param text - Raw page text from AI generation
  * @returns Ordered array of prose and dialogue segments
@@ -78,8 +113,9 @@ const DIALOGUE_MARKER_SCAN_PATTERN = new RegExp(DIALOGUE_MARKER_SOURCE, 'gm');
  * // ]
  */
 export function parseDialogueMarkers(text: string): DialogueSegment[] {
+  const normalized = normalizeDialogueMarkers(text);
   const segments: DialogueSegment[] = [];
-  const lines = text.split('\n');
+  const lines = normalized.split('\n');
   let currentProse: string[] = [];
 
   const flushProse = () => {
@@ -112,6 +148,9 @@ export function parseDialogueMarkers(text: string): DialogueSegment[] {
  * anything: every line's relative position and content (minus the marker
  * prefix) is preserved.
  *
+ * Normalizes broken multiline markers prior to stripping to prevent orphaned
+ * blank lines before dialogue.
+ *
  * @param text - Raw page text with markers
  * @returns Text with every leading `[id]`/`[mc]`/`[???]` marker removed
  *
@@ -119,7 +158,7 @@ export function parseDialogueMarkers(text: string): DialogueSegment[] {
  * stripDialogueMarkers('[mara] "Hello."\n[elias] "Hi."'); // '"Hello."\n"Hi."'
  */
 export function stripDialogueMarkers(text: string): string {
-  return text
+  return normalizeDialogueMarkers(text)
     .split('\n')
     .map(line => line.replace(DIALOGUE_MARKER_LINE_PATTERN, '$2'))
     .join('\n');

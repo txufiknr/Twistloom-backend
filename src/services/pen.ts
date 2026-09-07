@@ -49,6 +49,7 @@ import { calculateHealthStatus } from "../utils/characters.js";
 import { uploadPenDraftImage as uploadPenDraftImageToKit, persistUploadedImage, deleteFileFromImageKit } from "./image.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { htmlToPlainText } from "../utils/text-processing.js";
+import { normalizeDialogueMarkers } from "../utils/dialogue-parser.js";
 import { embedPersistedPage, embedStateDeltaEntities, retrieveSimilarPages } from "./vector-memory.js";
 
 /**
@@ -3981,7 +3982,7 @@ export async function updatePenPageProse(
   if (!book) throw new PenSessionNotFoundError("Book not found");
   if (book.userId !== userId) throw new PenBookOwnershipError();
 
-  const trimmedText = input.text.trim();
+  const trimmedText = normalizeDialogueMarkers(input.text.trim());
   if (!trimmedText) {
     throw new Error("Page prose cannot be empty");
   }

@@ -41,6 +41,7 @@ import { generateBranchId, getStoryStateWithBranch } from "./story-branch.js";
 import { sanitizeText, generateSlug, sanitizeKeywords, parseTrait, cleanSingleLineText, cleanMultilineText } from "../utils/text-processing.js";
 import { generateId, isValidUuid } from "../utils/uuid.js";
 import { calculateActionTendency, calculateStoryMomentum, getStoryStateInfo } from "../utils/story.js";
+import { normalizeDialogueMarkers } from "../utils/dialogue-parser.js";
 import { applyPageTranslation, getPageToTranslate, getPageTranslation, shouldTranslate } from "./translation.js";
 import { LRUCache } from "lru-cache";
 import { createCacheKey } from "../utils/cache.js";
@@ -403,9 +404,10 @@ export async function insertStoryPage(
   } = aiResponseProvider;
 
   const elapsedDays = storyStartDate && calendarDate ? daysBetween(storyStartDate, calendarDate) : undefined;
-  // Strip AI control markers (e.g. "[dialogue]") from the narrative before it
-  // touches the database — they are prompt scaffolding, not story content.
-  const sanitizedPageText = stripActionTypeTags(page.text);
+  // Strip AI control markers (e.g. "[dialogue]") and normalize dialogue markers
+  // onto single lines before narrative touches the database — ensuring speech
+  // balloon UI rendering is never split or corrupted.
+  const sanitizedPageText = normalizeDialogueMarkers(stripActionTypeTags(page.text));
   const newPageData: DBNewPage = {
     userId,
     bookId,

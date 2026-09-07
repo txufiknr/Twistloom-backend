@@ -54,7 +54,7 @@ function buildNextPageFieldInstructionSections(state: StoryState, action: Action
   - ${isDialogueAction ? `Dialogue action: open with MC speaking aloud, prefixed with marker.` : `Action: open immediately with the chosen action or necessary causal prep.`}
   - Open from the previous page's physical state. If ambiguous, establish position in the first line.
   - Continuous body staging: welded camera, posture shifts require written transitions. Anchor pronouns to clear antecedents.
-  - Spoken lines MUST have line-start speaker markers ([character_id]/[mc]/[???]). Never mark thoughts or narration.
+  - Spoken lines MUST have line-start speaker markers ([character_id]/[mc]/[???]) on the same line. Never mark thoughts or narration.
   - Fast pace: avoid decorative exposition unless plot-relevant.
 ${isEarlyPhase ? `  - Tone: unsettling, not terrifying. Something is wrong — but not yet catastrophic.` : ''}
 ${isMidPhase ? `  - Tone: escalating. Dread should feel earned and personal by now.` : ''}
