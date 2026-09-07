@@ -366,27 +366,15 @@ export function getMainCharacterInfo(params: {
  *     - item 1
  *     - item 2
  *
- * Used for multi-faceted, relational, or narrative-heavy fields (secrets,
- * interactions, relationships, injuries, schedules) where structural separation
- * is critical for LLM attention and AST predictability.
+ * Universal 2-level AST formatter for character properties (secrets, traits,
+ * interactions, relationships, injuries, schedules). Keeps YAML syntax pure,
+ * avoids inline colon-collision on "key: value" traits, and drops multi-token
+ * Unicode arrows in favor of standard hyphens.
  */
 function pushListSection<T>(lines: string[], label: string, items: T[] | undefined, formatItem: (item: T) => string): void {
   if (!items?.length) return;
   lines.push(`  - ${label}:`);
   items.forEach(item => lines.push(`    - ${formatItem(item)}`));
-}
-
-/**
- * Pushes a compact inline list section under a character header:
- *   - Label: item 1; item 2
- *
- * Used for atomic descriptive tags (traits) where all items are short descriptors.
- * Uniformly emitted as a single line across all characters to guarantee schema
- * consistency without instance-by-instance AST drift.
- */
-function pushInlineListSection<T>(lines: string[], label: string, items: T[] | undefined, formatItem: (item: T) => string, separator: string = '; '): void {
-  if (!items?.length) return;
-  lines.push(`  - ${label}: ${items.map(formatItem).join(separator)}`);
 }
 
 /**
@@ -441,7 +429,9 @@ function pushInlineListSection<T>(lines: string[], label: string, items: T[] | u
  *     - Page 15: First meeting here, seemed nervous
  *   - Potential twist: identity
  *   - Physical state: disappeared
- *   - Traits: skills: teaching, gardening; favorite food: pizza
+ *   - Traits:
+ *     - skills: teaching, gardening
+ *     - favorite food: pizza
  * ```
  */
 export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string, CharacterMemory>, recalledInteractions?: Record<string, string>): string {
@@ -565,8 +555,8 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
         return parts.join(' | ');
       });
 
-      // Traits with compact inline formatting (semantic field uniformity across all characters)
-      pushInlineListSection(details, 'Traits', traits, trait => trait);
+      // Traits with pure YAML indented bullets (Solution A: zero colon-collision with "key: value")
+      pushListSection(details, 'Traits', traits, trait => trait);
 
       return `${mainInfo}\n${details.join('\n')}`;
     })

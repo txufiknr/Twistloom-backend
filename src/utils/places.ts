@@ -261,17 +261,16 @@ export function updateConnection(place: PlaceMemory, update: PlaceConnectionUpda
 }
 
 /**
- * Pushes a "  - Label:" header followed by one "    -> item" line per entry,
+ * Pushes a "  - Label:" header followed by one "    - item" line per entry,
  * or nothing at all if the list is empty/undefined. Every optional list
  * section below (Traits, Key events, Key objects, Associated characters,
- * Known routes) used to repeat this same header-then-forEach shape inline;
- * centralizing it means the indentation/arrow convention can't drift
- * between sections as new ones get added.
+ * Known routes) uses this uniform 2-level AST format with standard hyphens,
+ * eliminating multi-token Unicode arrows and preventing inline delimiter collisions.
  */
 function pushListSection<T>(lines: string[], label: string, items: T[] | undefined, formatItem: (item: T) => string): void {
   if (!items?.length) return;
   lines.push(`  - ${label}:`);
-  items.forEach(item => lines.push(`    → ${formatItem(item)}`));
+  items.forEach(item => lines.push(`    - ${formatItem(item)}`));
 }
 
 /**
@@ -305,34 +304,34 @@ function pushListSection<T>(lines: string[], label: string, items: T[] | undefin
  *   - Context: narrow river behind the school
  *   - Hints: downstream leads to marsh; foggy at twilight
  *   - Traits:
- *     → Smell of decaying vegetation
+ *     - Smell of decaying vegetation
  *   - Key events:
- *     → Page 3: Body discovered
- *     → Page 14: First meeting with Lisa
+ *     - Page 3: Body discovered
+ *     - Page 14: First meeting with Lisa
  *   - Key objects:
- *     → 1x Large Mirror in corner of the boathouse (color: black)
+ *     - 1x Large Mirror in corner of the boathouse (color: black)
  *   - Associated characters:
- *     → Lisa (first met here)
- *     → Tom (saved from drowning here)
+ *     - Lisa (first met here)
+ *     - Tom (saved from drowning here)
  * 
  * • Abandoned Church (building) - familiarity: 0.6 [ID: abandoned_church] [Parent ID: oakhaven_city]
  *   - Real name: Project Lazarus Research Facility (hidden)
  *   - Visited: 2x (last: page 30)
  *   - Context: abandoned stone church outside town
  *   - Key events:
- *     → Page 24: Hidden tunnel discovered
- *     → Page 30: Cult symbol found
+ *     - Page 24: Hidden tunnel discovered
+ *     - Page 30: Cult symbol found
  *   - Associated characters:
- *     → Marcus (first met here)
+ *     - Marcus (first met here)
  *   - Known routes:
- *     → old_river: 2 minutes walk, alley, obstacles: fallen timber
+ *     - old_river: 2 minutes walk, alley, obstacles: fallen timber
  * 
  * • Town Library (building) - familiarity: 0.9 [ID: town_library]
  *   - Visited: 4x (last: page 18, mood: quiet)
  *   - Context: two-story brick building on Main Street
  *   - Traits:
- *     → Smell of old paper
- *     → Creaky wooden stairs
+ *     - Smell of old paper
+ *     - Creaky wooden stairs
  */
 export function formatPlacesForPrompt(places: Record<string, PlaceMemory>, currentPage: number, recalledEvents?: Record<string, string>): string {
   const placeEntries = Object.entries(places);
@@ -384,7 +383,7 @@ export function formatPlacesForPrompt(places: Record<string, PlaceMemory>, curre
     const recalledEvent = recalledEvents?.[id];
     if (recalledEvent) {
       lines.push('  - Earlier events (recalled):');
-      lines.push(`    → ${recalledEvent}`);
+      lines.push(`    - ${recalledEvent}`);
     }
 
     const keyObjects = place.keyObjects?.filter(i => i.amount);
@@ -398,9 +397,9 @@ export function formatPlacesForPrompt(places: Record<string, PlaceMemory>, curre
 
     pushListSection(lines, 'Known routes', place.knownConnections, conn => {
       const parts = [conn.travelTime, conn.routeType, conn.accessibility].filter(Boolean);
-      const details = parts.length ? ` (${parts.join(', ')})` : '';
-      const notes = conn.notes ? ` ${conn.notes}` : '';
-      return `${conn.targetId}:${notes}${details}`;
+      const details = parts.length ? `(${parts.join(', ')})` : '';
+      const desc = [conn.notes, details].filter(Boolean).join(' ');
+      return desc ? `${conn.targetId}: ${desc}` : conn.targetId;
     });
 
     return lines.join('\n');

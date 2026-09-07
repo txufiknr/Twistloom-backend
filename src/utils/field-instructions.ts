@@ -49,15 +49,13 @@ function buildNextPageFieldInstructionSections(state: StoryState, action: Action
 
   return [
   { fields: ['text'], stage: 'page', text: `text
-  - Write in the target language's first-person singular. Never refer to the MC as "the protagonist" or "the narrator".
-  - Continue seamlessly from the previous page.${sceneType === 'transition' ? '' : ` No time skip. No location jump. No off-screen actions.`}
-  - ${isDialogueAction ? `It's a dialogue action — open the page with the MC actually speaking those words aloud as narrated first-person dialogue (marked per DIALOGUE ATTRIBUTION MARKERS).` : `Begin immediately with the chosen action — lead with the target language's action phrase or any necessary causal steps.`}
-  - Open mid-moment, but maintain causal continuity. Avoid recap or unnecessary setup.
-  - Open from the physical state the previous page ended on (where the MC is, how their body is positioned). If that baseline isn't unambiguous, establish it in the first line.
-  - Track the MC's body continuously: posture and orientation never change without a written physical transition. No off-screen repositioning.
-  - Keep the camera welded to the MC: show only what they can see/hear/infer. Anchor every pronoun to one clear antecedent; name the owner before a body part acts.
-  - This is a fast-paced story, don't over explain small details (e.g. clothing, accessories) unless they're plot important.
-  - Mark every spoken line with its speaker per DIALOGUE ATTRIBUTION MARKERS — [character_id]/[mc]/[???] on its own line before the quoted words. Never mark narration or internal thought.
+  - Write in the target language's first-person singular. Never refer to MC as the protagonist or narrator.
+  - Seamless continuation without recap.${sceneType === 'transition' ? '' : ' Real-time camera: no time skips, location jumps, or off-screen actions.'}
+  - ${isDialogueAction ? `Dialogue action: open with MC speaking aloud, prefixed with marker.` : `Action: open immediately with the chosen action or necessary causal prep.`}
+  - Open from the previous page's physical state. If ambiguous, establish position in the first line.
+  - Continuous body staging: welded camera, posture shifts require written transitions. Anchor pronouns to clear antecedents.
+  - Spoken lines MUST have line-start speaker markers ([character_id]/[mc]/[???]). Never mark thoughts or narration.
+  - Fast pace: avoid decorative exposition unless plot-relevant.
 ${isEarlyPhase ? `  - Tone: unsettling, not terrifying. Something is wrong — but not yet catastrophic.` : ''}
 ${isMidPhase ? `  - Tone: escalating. Dread should feel earned and personal by now.` : ''}
 ${isLatePhase ? `  - Tone: fracturing. Reality and relationships should feel increasingly unstable.` : ''}
@@ -79,7 +77,7 @@ ${isLatePhase || isFinale ? `  - A sudden shift can heighten dread — but don't
   - Never use character IDs, JSON field names, or game/UI terms (no "composure", "trauma tag", "momentum") inside imagePrompt — describe only what a camera could see.
   - imageImportance: 0.0-1.0, how much this page rewards being illustrated. NOT the same as a major plot beat — a plot-critical phone call can be visually empty, a minor scene in a decaying carnival can be visually rich. 0.8-1.0 = a defining visual moment (a reveal, a monster's first full appearance, an ending); 0.4-0.7 = real visual character (a new place, a tense standoff); 0.0-0.3 = dialogue-heavy or interior pages with little to draw.
   - Omit imageImportance whenever imagePrompt is omitted — the two travel together.` },
-  { fields: ['calendarDate'], stage: 'page', text: `calendarDate:
+  { fields: ['calendarDate'], stage: 'page', text: `calendarDate
   - Increment if the day has changed.
   - Use 'yyyy-MM-dd' format (e.g., "2026-07-26").` },
   { fields: ['timeOfDay'], stage: 'page', text: `timeOfDay
@@ -91,11 +89,10 @@ ${isLatePhase || isFinale ? `  - A sudden shift can heighten dread — but don't
   - Use precise values when time is narratively significant (e.g., a 3-minute countdown, 45-minute interrogation).
   - Values under 1 can indicate seconds (0.5 ≈ 30 seconds). Values over 120 imply multiple hours.` },
   { fields: ['sceneType'], stage: 'page', text: `sceneType
-  - Select the single dominant narrative function of the page.
-  - Analyze user's selected action to either maintain previous scene type or transition to a new, logical scene type.
-  - Choose the scene type that best represents the page's primary narrative purpose, not merely its setting, mood, or individual actions.
-  - If multiple scene types apply, choose the most important narrative function.
-  - Use "transition" only when no stronger narrative function dominates the page.` },
+  - Dominant narrative function of this page based on chosen action.
+  - Analyze whether to maintain current scene type or transition to a new one.
+  - Pick the primary purpose if multiple apply; not merely setting or mood.
+  - Use "transition" only as fallback when no stronger function dominates.` },
   { fields: ['charactersPresent'], stage: 'page', text: `charactersPresent
   - Physically present side characters only (exclude MC and remote/remembered characters).
   - Every ID must match an existing known character${isFinale ? `.
@@ -135,7 +132,7 @@ ${isFinale ? `  - Existing trauma tags should be echoing and surfacing now, not 
   { fields: ['futureNoteAdd', 'futureNoteRemove'], stage: 'delta', text: `futureNoteAdd / futureNoteRemove
 ${futureNotes.length < MAX_FUTURE_NOTES ? `  - ONLY add for important unresolved clues, revelations, promises, relationships, mysteries, or future developments which matter later.
   - Do NOT add for temporary details, completed events, or facts already captured by plot flags.
-  - Prefer advancing existing future notes before creating new ones. Avoid duplicate or overlapping future notes.` : ''}
+  - Prefer advancing existing future notes before creating new ones. Avoid duplicate or overlapping future notes.` : `  - Maximum future notes reached (${MAX_FUTURE_NOTES} limit). Remove fulfilled notes before adding new ones.`}
   - Future notes represent narrative obligations, not immediate requirements. Do not resolve a future note merely because it exists.
   - Remove notes which have been fulfilled or become irrelevant.
   - If fulfilling a future note materially changes the story, record the outcome as a plot flag.
@@ -148,31 +145,19 @@ ${!isLatePhase && charactersSlot > 0 ? `  - Add new planned character candidates
   - plannedIntro: brief hook describing how/when they might first appear.`
 : `  - Do not add new planned characters. ${isLatePhase ? 'Phase is too late for meaningful future introductions.' : `${MAX_CHARACTERS} characters limit reached.`}`}` },
   { fields: ['factUpdates'], stage: 'delta', text: `factUpdates
-  - Represents long-term story memory, discoveries, or important established facts that influence future turns.
-  - key: consistent ${FACT_KEY_FORMAT}. Type can be either: ${formatOneOf(Object.keys(factTypes))}.
-  - value: latest known state. Prefer concise value over long sentence (explanation can be added in reason).
-  - reason: 1-sentence, why or how it hapenned or changed.
-  - Facts should be objectively true within the story after this page ends.
-  - Do NOT record every event that happened on the page.
-  - Don't duplicate: reuse existing keys whenever updating the same fact (only meaningful change).
-  - ONLY include facts that meet at least one of these criteria (if unsure, omit it):
-    → Permanently change the story world.
-    → Reveal important information to remember 20+ pages later.
-    → Change a character's status, goal, relationship, possession, or knowledge.
-    → Establish a mystery clue, suspect, or revelation.` },
+  - Long-term memory facts affecting future pages.
+  - key: consistent ${FACT_KEY_FORMAT}. Type: ${formatOneOf(Object.keys(factTypes))}.
+  - value: concise latest state; reason: 1-sentence explanation.
+  - Facts must be objectively true after this page ends. Do not record speculation.
+  - Reuse existing keys when updating the same fact (avoid duplication).
+  - Record only lasting world shifts, 20+ page revelations, mystery clues, or key character status changes.` },
   { fields: ['addPlotFlags'], stage: 'delta', text: `addPlotFlags
-  - Add ONLY for crucial story developments that impact narrative trajectory and become established canon (max 2 per page).
-  - Do NOT add for temporary actions, routine events, minor clues, short-lived details, or if no lasting story state changed.
-  - Use for major revelations, death, betrayal, irreversible decisions, or major shifts in story direction.
-  - fact: describe the newly established story fact clearly and specifically (subject + verb + object).
-  - isMajorEvent: true only for irreversible events or major turning points with lasting consequences.
-  - Major-event pacing:
-    → Review recent major events before introducing a new major event.
-    → If multiple major events occurred recently, prefer fallout, consequences, investigation, tension, or character reactions before introducing another major event.
-    → Do NOT create major events solely to escalate the plot.
-  - Expected distribution:
-    → Most pages: 0-1 plot flags.
-    → Major turning points: up to 2 plot flags.` },
+  - Crucial irreversible developments only (death, betrayal, major shift; max 2/page, normally 0-1).
+  - Do not add for routine actions, minor clues, or temporary details.
+  - fact: clear description (subject + verb + object).
+  - isMajorEvent: true only for turning points with permanent consequences.
+  - Pacing: review recent major events first; prefer fallout before introducing another.
+    Do NOT create major events solely to escalate the plot.` },
   { fields: ['contextHistory'], stage: 'delta', text: `contextHistory
   - Running summary from page 1 until now — key plot developments, hard facts, major events.
   - Incorporate the overall story context while keeping all essential narrative elements.
@@ -189,7 +174,7 @@ ${isLastPage ? `  - This is the last page, just provide a single action that con
   - hint.text: what will happen as a consequence — written as a story beat, not a label. Invisible to the player.
   - ${isFinale ? `Max ${MAX_ACTION_CHOICES_FINALE} choices — the story is closing in.` : `${MIN_ACTION_CHOICES}-${MAX_ACTION_CHOICES} choices.`} Each must be meaningfully distinct.
   - Vary across: reckless / cautious / emotional / avoidant.
-  - ${isLatePhase ? `Each action text should be distinct despite similar outcomes` : `Each action text should be distinct and convey unique consequences.`}
+  - ${isLatePhase ? `Each action text should be distinct despite similar outcomes.` : `Each action text should be distinct and convey unique consequences.`}
   - At least one should feel subtly wrong or inadvisable.
 ${isEarlyPhase ? `  - Choices should feel open and curious — stakes are present but not yet dire.` : ''}
 ${isMidPhase ? `  - Choices should reflect the player's established decision patterns. Make the trap feel tailored.` : ''}
@@ -244,11 +229,7 @@ ${placesSlot === 0 ? `  - Can't introduce new places (${MAX_PLACES} limit). Upda
   - Might need to update other places' hints to link with this new place.`
 : `  - No new places. If MC is somewhere new, question whether it's necessary.`}
   - For updates: only on revisit or significant event. Include only changed fields.
-  - familiarityCorrection: always 0 except on major condition:
-    → place changes drastically, or fundamentally changes how MC understands it.
-    → learns hidden functions/secrets, discovers new areas, gains deeper understanding.
-    → memory loss/confusion, familiar assumptions proven false, environment unrecognizable.
-    → Do NOT use for ordinary visits, repeated exposure, or gradual learning (handled automatically).
+  - familiarityCorrection: 0 unless place fundamentally shifts (secret wing found, illusion broken, memory loss). Do NOT use for ordinary visits, repeated exposure, or gradual learning — handled automatically.
 ${isLatePhase || isFinale ? `  - High-familiarity places revisited now should feel distorted.` : ''}` },
   { fields: ['placeConnections'], stage: 'delta', text: `placeConnections
   - Add new if visiting/adding a new place or when a place is first connected.
@@ -280,14 +261,14 @@ ${isEarlyPhase || isMidPhase ? `  - Add clues to existing threads to advance mys
   - isFalse: set to true if this is a deliberate misdirection (false clue).` : ''}
 ${isLatePhase ? `  - Add revealing clues that push threads toward resolution.` : ''}
 ${isFinale ? `  - Add final clues that complete thread resolutions.` : ''}` },
-  { fields: ['closeThreads'], stage: 'delta', text: `${isLatePhase ? 'closeThreads' : ''}
-${isLatePhase ? `  - Close threads that have been fully resolved or are no longer relevant.
-  - Include thread IDs that should be marked as closed (resolution should be in updateThreads.resolution)` : ''}
-${isFinale ? `  - All remaining threads must be closed in the finale.` : ''}` },
+  { fields: ['closeThreads'], stage: 'delta', text: isLatePhase ? `closeThreads
+  - Close threads that have been fully resolved or are no longer relevant.
+  - Include thread IDs that should be marked as closed (resolution should be in updateThreads.resolution).${isFinale ? `
+  - All remaining threads must be closed in the finale.` : ''}` : '' },
   { fields: ['viableEnding'], stage: 'delta', text: `viableEnding
   - Don't output viableEnding if unchanged
   - Only output if story trajectory has meaningfully shifted and the previously planned ending no longer fits, or if outline should be updated.
-${futureNotes.length ? `  - Ensure it supports or aligns with future notes` : ''}
+${futureNotes.length ? `  - Ensure it supports or aligns with future notes.` : ''}
   - text: Summary of the desired doom (${VIABLE_ENDING_LENGTH}). Specific to this MC and theme — not a genre template.
   - outline: A roadmap to reach the ending. 1-2 sentence per item. Align done count with current ${phase} phase. Don't change what have been done, only adjust what haven't done.
 ${isEarlyPhase ? `  - Rarely needed this early. Only revise if the theme has fundamentally diverged from the original plan.` : ''}
@@ -306,7 +287,10 @@ ${isFinale ? `  - Do not revise. The ending is now in motion — execute it.` : 
  * pre-split function — verified via automated diff during authoring.
  */
 export function buildNextPageFieldInstructions(state: StoryState, action: Action, sceneType: SceneType = 'transition'): string {
-  return buildNextPageFieldInstructionSections(state, action, sceneType).map(s => s.text).join('\n\n');
+  return buildNextPageFieldInstructionSections(state, action, sceneType)
+    .filter(s => s.text.trim().length > 0)
+    .map(s => s.text)
+    .join('\n\n');
 }
 
 /**
@@ -321,7 +305,7 @@ export function buildNextPageFieldInstructions(state: StoryState, action: Action
  */
 export function buildStoryPageFieldInstructions(state: StoryState, action: Action, sceneType: SceneType = 'transition'): string {
   return buildNextPageFieldInstructionSections(state, action, sceneType, true)
-    .filter(s => s.stage === 'page')
+    .filter(s => s.stage === 'page' && s.text.trim().length > 0)
     .map(s => s.text)
     .join('\n\n');
 }
@@ -336,7 +320,7 @@ export function buildStoryPageFieldInstructions(state: StoryState, action: Actio
  */
 export function buildStateDeltaFieldInstructions(state: StoryState, action: Action, sceneType: SceneType = 'transition'): string {
   return buildNextPageFieldInstructionSections(state, action, sceneType, true)
-    .filter(s => s.stage === 'delta')
+    .filter(s => s.stage === 'delta' && s.text.trim().length > 0)
     .map(s => s.text)
     .join('\n\n');
 }
