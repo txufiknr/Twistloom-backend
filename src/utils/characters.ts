@@ -386,10 +386,10 @@ function pushListSection<T>(lines: string[], label: string, items: T[] | undefin
  * Note: the MC intentionally never gets an `[ID: ...]` tag here (see the
  * example's first line below) — every story has exactly one MC, so there's
  * no need to disambiguate one from a list the way side characters do. The
- * dialogue-attribution convention (RULES_DIALOGUE_ATTRIBUTION in
- * utils/prompt.ts) relies on this: it uses the reserved literal `mc` for
- * lines the MC speaks aloud, specifically because no real character ID is
- * ever exposed here for the model to confuse it with.
+ * dialogue-attribution convention {@link RULES_DIALOGUE_ATTRIBUTION} relies
+ * on this: it uses the reserved literal `mc` for lines the MC speaks aloud,
+ * specifically because no real character ID is ever exposed here for the
+ * model to confuse it with.
  *
  * @example
  * ```

@@ -1,12 +1,12 @@
 /**
  * Parses the `[character_id]` / `[mc]` / `[???]` dialogue-attribution
  * markers the AI writes at the start of spoken-dialogue lines in page text
- * (see `RULES_DIALOGUE_ATTRIBUTION` in utils/prompt.ts for the generation
- * side of this contract) into structured segments a frontend can render as
- * distinct "speech" UI instead of plain prose — the "gamified dialogue"
- * concept from TODO-gamified-dialogue-chatgpt.md, scoped down to markers
- * only rather than a full structured-JSON dialogue block, so it layers on
- * top of the existing plain-`text`-field pipeline with zero schema change.
+ * (see {@link RULES_DIALOGUE_ATTRIBUTION} for the generation side of this
+ * contract) into structured segments a frontend can render as distinct
+ * "speech" UI instead of plain prose — the "gamified dialogue" concept
+ * from TODO-gamified-dialogue-chatgpt.md, scoped down to markers only
+ * rather than a full structured-JSON dialogue block, so it layers on top
+ * of the existing plain-`text`-field pipeline with zero schema change.
  *
  * Every consumer of this module (frontend renderer, translation pipeline,
  * TTS, EPUB export) should go through `parseDialogueMarkers` or

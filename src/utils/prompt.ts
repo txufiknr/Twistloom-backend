@@ -292,40 +292,6 @@ ${formatKeyValueList(storyMomentums)}`;
 export const RULES_SCENE_TYPES = `SCENE TYPES (sorted by most important):
 ${formatKeyValueList(sceneTypes)}`;
 
-/**
- * Dialogue-marker convention for gamified dialogue UI. The frontend parses
- * marked lines (see utils/dialogue-parser.ts's `parseDialogueMarkers`,
- * pattern `^\[([\w_]+|\?\?\?)\]\s*` anchored to line-start with the
- * multiline flag) and renders them as distinct speech elements instead of
- * plain prose.
- *
- * Scoped-down version of the fuller structured-dialogue-block concept in
- * TODO-gamified-dialogue-chatgpt.md: markers only, no schema/JSON change,
- * so existing `text` rendering keeps working even before the frontend adds
- * marker-aware UI (it just reads as `[tom_m] "Hello."` in plain text today).
- *
- * IDs, not display names: the CHARACTERS section already lists every side
- * character as `[ID: character_id]` (see `formatCharactersForPrompt` in
- * characters.ts), so the AI always has a valid ID to mark with. Resolving
- * an ID to a reader-facing name (including recognition-level gating via
- * RULES_CHARACTER_RECOGNITION) is the frontend's job at render time — the
- * marker itself is never a display name.
- *
- * `[mc]` is a reserved literal, not a real character ID (the MC has none —
- * `formatCharactersForPrompt` never lists one for the MC by design, since
- * there is always exactly one MC per story). Side-character IDs are always
- * derived from name/role slugs (e.g. `tom_m`, `lisa_park`), so a bare `mc`
- * never collides with one in practice.
- */
-export const RULES_DIALOGUE_ATTRIBUTION = `DIALOGUE ATTRIBUTION MARKERS:
-- Every line of SPOKEN dialogue from a side character starts with that character's ID in brackets, on its own line: [character_id] "Dialogue text."
-- Use the existing character ID. Never a display name, nickname, or an ID you invent.
-- If the MC speaks ALOUD to another character, prefix that line with the reserved marker [mc] — e.g. [mc] "Stay back."
-- If the speaker's identity is deliberately unknown to the reader (a voice on a phone, someone in the dark), use [???] instead of an ID.
-- Never mark narration or internal thoughts. Only actual quoted words.
-- One marker per spoken line, placed once at the very start of that line.
-- This is a structural marker for the app's UI, not narrative content. Never explain, reference, or acknowledge it within the story itself.`;
-
 // ============================================================================
 // WRITING PRESET PROMPT BUILDERS
 // ============================================================================
@@ -347,7 +313,6 @@ function buildFirstPageRuleSet(preset: WritingPreset = 'default'): string {
     RULES_EMBODIED_SCENE_CONTINUITY,
     pageTextRules,
     RULES_ACTIONS,
-    RULES_DIALOGUE_ATTRIBUTION,
   ].join('\n\n---\n');
 }
 

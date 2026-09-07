@@ -79,9 +79,44 @@ const BASE_OPENING_RULES = `PAGE OPENING RULES (IMMEDIATE EXECUTION):
 - ANTI-RECAP: never summarize past events. Trust the reader's memory.
 - CAUSAL FRICTION: don't skip necessary intermediate actions, movements, or physical prep.`;
 
+/**
+ * Dialogue-marker convention for gamified dialogue UI. The frontend parses
+ * marked lines (see utils/dialogue-parser.ts's `parseDialogueMarkers`,
+ * pattern `^\[([\w_]+|\?\?\?)\]\s*` anchored to line-start with the
+ * multiline flag) and renders them as distinct speech elements instead of
+ * plain prose.
+ *
+ * Scoped-down version of the fuller structured-dialogue-block concept in
+ * TODO-gamified-dialogue-chatgpt.md: markers only, no schema/JSON change,
+ * so existing `text` rendering keeps working even before the frontend adds
+ * marker-aware UI (it just reads as `[tom_m] "Hello."` in plain text today).
+ *
+ * IDs, not display names: the CHARACTERS section already lists every side
+ * character as `[ID: character_id]` (see `formatCharactersForPrompt` in
+ * characters.ts), so the AI always has a valid ID to mark with. Resolving
+ * an ID to a reader-facing name (including recognition-level gating via
+ * RULES_CHARACTER_RECOGNITION) is the frontend's job at render time — the
+ * marker itself is never a display name.
+ *
+ * `[mc]` is a reserved literal, not a real character ID (the MC has none —
+ * `formatCharactersForPrompt` never lists one for the MC by design, since
+ * there is always exactly one MC per story). Side-character IDs are always
+ * derived from name/role slugs (e.g. `tom_m`, `lisa_park`), so a bare `mc`
+ * never collides with one in practice.
+ */
+export const RULES_DIALOGUE_ATTRIBUTION = `DIALOGUE ATTRIBUTION MARKERS:
+- Prefix every line of SPOKEN dialogue at line-start:
+  - Side character: [character_id] "Dialogue text."
+  - MC speaking aloud: [mc] "Dialogue text."
+  - Unknown speaker: [???] "Dialogue text."
+- Never mark narration or internal thoughts.
+- UI markers only — never reference or explain them in the story.`;
+
 const BASE_DIALOGUE_RULES = `DIALOGUE FORMATTING:
-- Every spoken line — even a single word, even with a dialogue tag — MUST use quotation marks (e.g., "Wait.", "No.", "Run.").
-- Silent thought = no quotation marks, emphasize with *italic* (e.g., *I need to run.*).`;
+- Every spoken line — even a single word, even with a dialogue tag — MUST use quotation marks.
+- Silent thought = no quotation marks, emphasize with *italic* — *I need to run.*
+
+${RULES_DIALOGUE_ATTRIBUTION}`;
 
 const BASE_ENDING_RULES = `PAGE ENDING RULES (DYNAMIC TENSION):
 - FINAL BEAT: the last 1-3 sentences escalate narrative pull — a new question, revelation, unsettling realization, or physical threat — never fully resolved.
@@ -422,16 +457,18 @@ ${BASE_ENDING_RULES}
   experimental: `PAGE FORMAT:
 - Max ${MAX_WORDS_PER_PAGE} words. Write in the target language, but let language break when reality breaks.
 - The format serves the fracture. Paragraph length varies deliberately: long streams, single words, glitching repetitions.
-- Meta formatting: parenthetical thoughts addressed to the reader, intrusive bracketed corrections.
+- Meta formatting: parenthetical thoughts addressed to the reader (e.g., "(Correction: you never left)"), fourth-wall glitches. NEVER start a line with bracketed text like [correction] — brackets at line-start are reserved exclusively for UI dialogue markers.
 
 PAGE OPENING RULES:
 - Continue from the selected action, but the connection may be unstable. Did the action really happen?
 - Open with the MC's immediate perception, which may be wrong, delayed, or impossible.
 - Time may have passed, or skipped, or looped.
 
-DIALOGUE FORMATTING:
-- Every spoken line MUST use quotation marks on first occurrence. If it loops, drop quotes to show reality breaking.
-- Internal voices may appear in dialogue format.
+${BASE_DIALOGUE_RULES}
+- Reality-breaking speech: spoken lines can stutter, glitch, repeat erratically, or cut off mid-word ("Wait, I didn't—"). The [character_id] marker MUST still lead the line so the UI balloon renders.
+- Phantom & disembodied voices: if an unknown presence, auditory hallucination, or disembodied voice speaks aloud to the MC, use [???] "Spoken words." If a dead or absent character's voice is heard, use their [character_id] "Spoken words."
+- Internal voices vs. speech: silent internal voices, intrusive thoughts, or alter-egos arguing in the MC's mind belong in *italic* prose without quotation marks or speaker markers (*Don't look at him.*) — reserve speaker markers strictly for voices heard aloud.
+- Dissolving loops: if a character's spoken line loops so many times it dissolves from dialogue into ambient narration, transition subsequent echoes into plain unquoted, un-marked text.
 
 PAGE ENDING RULES:
 - End on a fracture — something that contradicts what the reader thought they understood.

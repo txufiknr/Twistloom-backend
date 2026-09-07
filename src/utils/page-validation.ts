@@ -135,7 +135,7 @@ const DIALOGUE_MARKER_COVERAGE_QUOTE_THRESHOLD = 2;
 /**
  * Soft (non-blocking) signal: does this page have substantial quoted
  * dialogue but zero `[character_id]`/`[mc]`/`[???]` markers (see
- * RULES_DIALOGUE_ATTRIBUTION in utils/prompt.ts)?
+ * {@link RULES_DIALOGUE_ATTRIBUTION})?
  *
  * Heuristic, not authoritative — deliberately does NOT fail the page:
  * - A page can have 1-2 incidental quoted phrases (a sign, a remembered
