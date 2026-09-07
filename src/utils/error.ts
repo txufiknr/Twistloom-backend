@@ -329,43 +329,164 @@ function isUndiciAbortError(error: unknown): boolean {
 }
 
 /**
- * Safely extracts error message string from any error type.
- * Handles Error objects, strings, and unknown error types.
- * 
- * @param error - Error object, string, or unknown error type
- * @returns Error message as string
- * 
- * @example
- * ```typescript
- * try {
- *   await someOperation();
- * } catch (error) {
- *   const message = getErrorMessage(error);
- *   console.error(message);
- * }
- * ```
+ * Options for {@link getErrorMessage}.
  */
-export function getErrorMessage(error: unknown, fallback: string = 'Unknown error'): string {
-  // Handle nested error shape where error.message contains a JSON string with another error object
-  // Example: { error: { message: '{"error": {"code": 503, "message": "..."}}', code: 503, status: "..." } }
-  if (typeof error === 'object' && error !== null) {
-    const errObj = error as any;
-    if (errObj.error && typeof errObj.error === 'object' && errObj.error.message) {
-      const outerMessage = errObj.error.message;
-      if (typeof outerMessage === 'string') {
-        try {
-          const parsed = JSON.parse(outerMessage);
-          if (parsed.error && parsed.error.message) {
-            return parsed.error.message;
-          }
-        } catch {
-          // If parsing fails, continue to normal handling
-        }
-      }
-    }
+export interface GetErrorMessageOptions {
+  /** Returned when nothing usable could be extracted. */
+  fallbackMessage?: string;
+  /**
+   * Also check HTTP-client-style nested paths — `response.data.error.message`,
+   * `response.data.message`, `data.error.message`, `data.message` — on top
+   * of the always-on `error.message` shape.
+   *
+   * Off by default: `data`/`response` are generic property names a plain
+   * domain object could legitimately have for unrelated reasons (e.g. an
+   * internal `{ data, message }` response envelope), and checking them
+   * unconditionally risks surfacing an unrelated `.data.message` instead of
+   * the error's real message. Turn this on where you know the error came
+   * from an HTTP client (axios, a fetch wrapper, etc.).
+   */
+  maybeHttpError?: boolean;
+}
+
+/**
+ * Narrows an unknown value to something we can safely index into.
+ *
+ * Deliberately broader than "plain object" — Error instances, arrays, and
+ * class instances are all `typeof 'object'` and all fine to probe with a
+ * bracket index, so we don't need (or want) a stricter check here.
+ */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+/**
+ * Reads a trimmed string off a nested path (e.g. ['data', 'message']), or
+ * returns undefined if any segment is missing, or the final value isn't a
+ * non-empty string.
+ */
+function getNestedMessage(value: unknown, path: readonly string[]): string | undefined {
+  let current: unknown = value;
+  for (const key of path) {
+    if (!isRecord(current)) return undefined;
+    current = current[key];
+  }
+  if (typeof current !== 'string') return undefined;
+  const trimmed = current.trim();
+  return trimmed || undefined;
+}
+
+/**
+ * Unwraps a JSON-encoded error payload embedded in a plain string, e.g. an
+ * SDK that stuffs '{"error":{"message":"Service unavailable"}}' into a
+ * string or an Error's `.message` instead of throwing a structured object.
+ *
+ * Returns undefined (never throws, never returns '') when the string isn't
+ * JSON or doesn't match a shape we recognize — callers fall back to the raw
+ * trimmed string in that case, so this only ever narrows the message, never
+ * discards it.
+ */
+function extractJsonMessage(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('{')) return undefined; // skip JSON.parse for obviously-non-JSON strings
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    return getNestedMessage(parsed, ['error', 'message']) ?? getNestedMessage(parsed, ['message']);
+  } catch {
+    return undefined;
+  }
+}
+
+export function getErrorMessage(error: unknown, fallback?: string): string;
+export function getErrorMessage(error: unknown, options?: GetErrorMessageOptions): string;
+/**
+ * Safely extracts a human-readable message from a value caught in a `catch`
+ * block or a rejected promise, regardless of what was actually thrown.
+ *
+ * The second argument accepts either a plain fallback string (the common
+ * case) or an options object, so the shorthand call site stays as short as
+ * `getErrorMessage(err, 'Failed to load')` while still leaving room to opt
+ * into `maybeHttpError` where it's actually needed.
+ *
+ * Check order is deliberate, not incidental:
+ *   1. String errors, possibly JSON-encoded.
+ *   2. Structured provider errors — `error.message` always; the deeper
+ *      `response.data.*` / `data.*` paths only when `maybeHttpError` is
+ *      set. Checked BEFORE `instanceof Error` — an axios-style error IS an
+ *      Error, but the message worth showing lives under `.response.data`,
+ *      not the generic top-level `.message` ("Request failed with status
+ *      code 500"). Checking Error first would hide the real payload.
+ *   3. Plain Error instances, including ones whose `.message` is itself a
+ *      JSON string.
+ *   4. Generic objects with a `.message` string.
+ *   5. Any other object shape: JSON.stringify it rather than discard it —
+ *      with many AI providers in play, an error shape you haven't
+ *      special-cased yet is the common case, not the exception.
+ *   6. Non-null primitives thrown directly (numbers, booleans, etc.).
+ *
+ * @param error - Whatever was thrown or rejected; intentionally `unknown`.
+ * @param fallbackOrOptions - A fallback string, or a {@link GetErrorMessageOptions}.
+ */
+export function getErrorMessage(
+  error: unknown,
+  fallbackOrOptions?: string | GetErrorMessageOptions,
+): string {
+  const { fallbackMessage = 'Unknown error', maybeHttpError = false } =
+    typeof fallbackOrOptions === 'string'
+      ? { fallbackMessage: fallbackOrOptions }
+      : (fallbackOrOptions ?? {});
+
+  // 1. String errors.
+  if (typeof error === 'string') {
+    const trimmed = error.trim();
+    return trimmed ? (extractJsonMessage(trimmed) ?? trimmed) : fallbackMessage;
   }
 
-  return error instanceof Error ? error.message : error ? String(error) : fallback;
+  if (isRecord(error)) {
+    // 2. Structured provider errors. `error.message` is always checked —
+    // it's the shape most AI-provider SDKs use directly. The HTTP-client
+    // paths only run when the caller has told us this error is likely
+    // HTTP-shaped, to avoid false positives on unrelated `.data`/`.response`
+    // fields (see GetErrorMessageOptions.maybeHttpError).
+    const candidatePaths: readonly (readonly string[])[] = maybeHttpError
+      ? [
+          ['response', 'data', 'error', 'message'],
+          ['response', 'data', 'message'],
+          ['data', 'error', 'message'],
+          ['data', 'message'],
+          ['error', 'message'],
+        ]
+      : [['error', 'message']];
+
+    for (const path of candidatePaths) {
+      const found = getNestedMessage(error, path);
+      if (found) return extractJsonMessage(found) ?? found;
+    }
+
+    // 3. Standard JS Errors.
+    if (error instanceof Error) {
+      const trimmed = error.message.trim();
+      return trimmed ? (extractJsonMessage(trimmed) ?? trimmed) : fallbackMessage;
+    }
+
+    // 4. Generic object with a `.message` string.
+    if (typeof error.message === 'string') {
+      const trimmed = error.message.trim();
+      if (trimmed) return extractJsonMessage(trimmed) ?? trimmed;
+    }
+
+    // 5. Unrecognized object shape — stringify instead of discarding it.
+    try {
+      const stringified = JSON.stringify(error);
+      if (stringified && stringified !== '{}') return stringified;
+    } catch {
+      // Circular reference — nothing more we can safely extract.
+    }
+    return fallbackMessage;
+  }
+
+  // 6. Non-null, non-object primitives thrown directly.
+  return error !== undefined && error !== null && error !== '' ? String(error) : fallbackMessage;
 }
 
 /**
