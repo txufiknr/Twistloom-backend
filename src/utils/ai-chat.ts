@@ -10,7 +10,7 @@ import { classifyGenAIError, isGenAIErrorRetryable } from "./error.js";
 import { retryWithBackoff } from "./retry.js";
 import { isCompleteFinishReason } from "./ai-chat-stream.js";
 import { AI_CHAT_MODEL_RETRY_COUNT } from "../config/ai-chat.js";
-import { parseAISafely } from "./ai-parser.js";
+import { parseAISafely, extractFirstBalancedJsonObject } from "./ai-parser.js";
 import { buildEvaluationSchemaDefinition, EVALUATION_REQUIRED_FIELDS } from "../schema/story.js";
 import { edgeGroup } from './edge-group.js';
 import { convertToGeminiSchema, getOrCreateGeminiCache } from "./gemini.js";
@@ -1813,8 +1813,12 @@ export async function runEvaluationPass<T extends Record<string, unknown> | stri
         const raw = evaluationResult.output as unknown as string;
         if (raw) {
           try {
+            // Isolate first balanced JSON object to prevent leaked outer keys
+            // (e.g. scoreBefore, scoreAfter) from reaching the parser and
+            // causing Stage 1-3 failures that route to @isdk/json-repair.
+            const isolated = extractFirstBalancedJsonObject(raw) ?? raw;
             const parsed = await parseAISafely<Record<string, unknown>>(
-              { output: raw, provider: evalProvider },
+              { output: isolated, provider: evalProvider },
               {
                 schema: options.outputJsonStructure,
                 requiredFields: options.outputJsonRequired ?? [],

@@ -11,8 +11,8 @@
  * | 1     | `parseSanitizedJson`                  | ✓     | Wrapped / prefixed JSON objects          |
  * | 2     | Native `JSON.parse`                   | ✓     | Clean output — zero overhead             |
  * | 3     | `jsonrepair` → parse                  | ✓     | Structural repair; **truncation**        |
- * | 4     | `@isdk/json-repair` + schema          | async | **Semantic coercion** (schema-guided)    |
- * | 5     | `repairTokenCorruption` → parse       | ✓     | Typographic quotes, bad escape sequences |
+ * | 4     | `repairTokenCorruption` → parse       | ✓     | Typographic quotes, bad escape sequences |
+ * | 5     | `@isdk/json-repair` + schema          | async | **Semantic coercion** (schema-guided)    |
  * | 6     | Heuristic fix → parse                 | ✓     | Single quotes, unquoted keys             |
  * | 7     | Heuristic fix → `jsonrepair`          | ✓     | Combined belt-and-suspenders             |
  * | 8     | `extractPartialJSON` regex sweep      | ✓     | Scalar KV pairs from total wreckage      |
@@ -24,15 +24,15 @@
  * unclosed braces and strings from max-token truncation, trailing commas,
  * Python constants, JSONP wrappers, and JavaScript comments.
  *
- * **`@isdk/json-repair`** (Stage 4) — the only library that uses your JSON
- * Schema as a semantic map. Can coerce `status: Success!` → `'success'` because
- * it knows from the schema that `status` is `enum['success','error']`. Async
- * and more expensive; invoked only after cheap synchronous stages fail.
- *
- * **`repairTokenCorruption`** (Stage 5) — self-contained TypeScript tokeniser,
+ * **`repairTokenCorruption`** (Stage 4) — self-contained TypeScript tokeniser,
  * zero external dependencies. Handles what structural libraries miss: curly /
  * typographic quotes, invalid escape sequences inside strings, semicolon
  * separators, and duplicate commas. See `ai-token-repair.ts`.
+ *
+ * **`@isdk/json-repair`** (Stage 5) — the only library that uses your JSON
+ * Schema as a semantic map. Can coerce `status: Success!` → `'success'` because
+ * it knows from the schema that `status` is `enum['success','error']`. Async
+ * and more expensive; invoked only after cheap synchronous stages fail.
  *
  * Truncation Strategy:
  *
@@ -53,10 +53,58 @@
  */
 
 import { jsonrepair } from 'jsonrepair';
-import { jsonRepair as isdkRepair, SchemaWalker } from '@isdk/json-repair';
+import { jsonRepair as isdkRepair, SchemaWalker, RepairParser } from '@isdk/json-repair';
 import { repairTokenCorruption } from './ai-token-repair.js';
 import type { AIResponse, AIJsonProperty } from '../types/ai-chat.js';
 import { convertSingleToDoubleQuotes } from './quote.js';
+
+// ─── @isdk/json-repair escape-stripping patch ─────────────────────────────────
+// Defuse a bug in RepairParser.consumeString where backslashes are stripped
+// from standard JSON escape sequences (\n → n, \t → t, etc.). The original
+// method discards the '\' and appends the next character verbatim without
+// unescaping. This patch replaces it with RFC 8259-compliant unescaping.
+const _originalConsumeString = (RepairParser.prototype as any).consumeString;
+(RepairParser.prototype as any).consumeString = function (this: any) {
+  const quote = this.next();
+  let s = '';
+  while (this.pos < this.input.length && this.peek() !== quote) {
+    if (this.peek() === '\\') {
+      this.next(); // consume '\'
+      if (this.pos < this.input.length) {
+        const esc = this.next();
+        switch (esc) {
+          case 'n': s += '\n'; break;
+          case 'r': s += '\r'; break;
+          case 't': s += '\t'; break;
+          case 'b': s += '\b'; break;
+          case 'f': s += '\f'; break;
+          case '"': s += '"'; break;
+          case "'": s += "'"; break;
+          case '\\': s += '\\'; break;
+          case '/': s += '/'; break;
+          case 'u': {
+            const hex = this.input.slice(this.pos, this.pos + 4);
+            if (/^[0-9a-fA-F]{4}$/.test(hex)) {
+              s += String.fromCharCode(parseInt(hex, 16));
+              this.pos += 4;
+            } else {
+              s += 'u';
+            }
+            break;
+          }
+          default:
+            s += esc;
+        }
+      }
+    } else {
+      s += this.next();
+    }
+  }
+  if (this.peek() === quote) {
+    this.next();
+  }
+  return s;
+};
 
 // ─── Public option types ──────────────────────────────────────────────────────
 
@@ -435,35 +483,7 @@ async function runParsePipeline(
     // jsonrepair throws when it cannot produce a repairable result.
   }
 
-  // ── Stage 4: @isdk/json-repair with schema (semantic coercion) ─────────────
-  // The key differentiator over pure structural repair. Uses your JSON Schema
-  // as a semantic map to coerce values that structural parsers cannot handle:
-  //   • Natural-language values: `"age": "about thirty"` → `30` (integer)
-  //   • Fuzzy enum matching:     `status: Success!` → `'success'`
-  //   • Greedy string capture:   unquoted multi-word values → string
-  //   • Implicit arrays without brackets
-  //
-  // Returns a *parsed object* directly (no JSON.parse needed after it).
-  // Async, ~5 ms typical. Only invoked when Stages 2–3 have already failed.
-  //
-  // SchemaWalker is compiled once and cached — concurrent requests with the
-  // same schema share the same pre-compiled walker (see getOrCreateWalker).
-  if (schema && Object.keys(schema).length > 0) {
-    try {
-      const rootSchema = toRootSchema(schema);
-      const walker = await getOrCreateWalker(rootSchema);
-      const parsed = await isdkRepair(candidate, walker);
-      if (isPlainObject(parsed)) {
-        console.log(`[${logContext}] 🔧 Stage 4: @isdk/json-repair (schema-guided)`);
-        recordParseOutcome(logContext, false);
-        return parsed as Record<string, unknown>;
-      }
-    } catch {
-      // isdkRepair throws when it cannot coerce the input to the schema.
-    }
-  }
-
-  // ── Stage 5: Token-level corruption repair ─────────────────────────────────
+  // ── Stage 4: Token-level corruption repair ─────────────────────────────────
   // Self-contained TypeScript tokeniser from `ai-token-repair.ts`.
   // Zero external dependencies. Handles character/token-level corruption that
   // structural libraries miss because they lack string-context awareness:
@@ -477,17 +497,48 @@ async function runParsePipeline(
   //   • Duplicate commas: ,, → ,
   //
   // Returns a repaired *string* — same contract as jsonrepair. Synchronous.
+  // Placed BEFORE @isdk/json-repair (Stage 5) because it is faster (~0.1ms
+  // vs ~5ms), zero-dependency, and does not suffer from the escape-stripping
+  // bug in RepairParser.consumeString.
   try {
     const tokenRepaired = repairTokenCorruption(candidate);
     const parsed = tryParse(tokenRepaired);
     if (parsed) {
-      console.log(`[${logContext}] 🔧 Stage 5: token-level repair`);
+      console.log(`[${logContext}] 🔧 Stage 4: token-level repair`);
       recordParseOutcome(logContext, false);
       return parsed;
     }
   } catch {
     // repairTokenCorruption is designed to never throw, but a defensive catch
     // ensures pipeline integrity regardless.
+  }
+
+  // ── Stage 5: @isdk/json-repair with schema (semantic coercion) ─────────────
+  // The key differentiator over pure structural repair. Uses your JSON Schema
+  // as a semantic map to coerce values that structural parsers cannot handle:
+  //   • Natural-language values: `"age": "about thirty"` → `30` (integer)
+  //   • Fuzzy enum matching:     `status: Success!` → `'success'`
+  //   • Greedy string capture:   unquoted multi-word values → string
+  //   • Implicit arrays without brackets
+  //
+  // Returns a *parsed object* directly (no JSON.parse needed after it).
+  // Async, ~5 ms typical. Only invoked when Stages 2–4 have already failed.
+  //
+  // SchemaWalker is compiled once and cached — concurrent requests with the
+  // same schema share the same pre-compiled walker (see getOrCreateWalker).
+  if (schema && Object.keys(schema).length > 0) {
+    try {
+      const rootSchema = toRootSchema(schema);
+      const walker = await getOrCreateWalker(rootSchema);
+      const parsed = await isdkRepair(candidate, walker);
+      if (isPlainObject(parsed)) {
+        console.log(`[${logContext}] 🔧 Stage 5: @isdk/json-repair (schema-guided)`);
+        recordParseOutcome(logContext, false);
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // isdkRepair throws when it cannot coerce the input to the schema.
+    }
   }
 
   // ── Stage 6: Heuristic pre-fix → native JSON.parse ────────────────────────
@@ -523,6 +574,61 @@ async function runParsePipeline(
 }
 
 // ─── JSON candidate extraction ────────────────────────────────────────────────
+
+/**
+ * Extracts the first balanced JSON object `{ ... }` from a string.
+ *
+ * Tracks JSON string boundaries and escape sequences (`\"`) so braces inside
+ * string literals are ignored. Returns immediately when the root object's
+ * depth reaches 0.
+ *
+ * Prevents downstream parsers from choking when models leak trailing outer
+ * keys, markdown comments, or metadata past the object's closing brace
+ * (e.g. Gemini leaking `",\n "scoreBefore": ...` inside string evaluator output).
+ *
+ * @param str - Raw or candidate JSON string
+ * @returns Balanced JSON object substring, or null if no balanced object exists
+ */
+export function extractFirstBalancedJsonObject(str: string): string | null {
+  const start = str.indexOf('{');
+  if (start === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start; i < str.length; i++) {
+    const ch = str[i];
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (ch === '\\') {
+      escaped = true;
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+
+    if (!inString) {
+      if (ch === '{') {
+        depth++;
+      } else if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          return str.substring(start, i + 1);
+        }
+      }
+    }
+  }
+
+  return null;
+}
 
 /**
  * Extracts the most likely JSON object string from raw AI output.
@@ -585,19 +691,20 @@ function extractJsonCandidate(clean: string, logContext: string): string | null 
   const start = clean.indexOf('{');
   if (start === -1) return null; // No `{` at all — definitely not JSON output.
 
-  const end = clean.lastIndexOf('}');
-
-  if (end > start) {
-    // Balanced-looking object found (may still be internally corrupt, but
-    // that is what the repair pipeline is for).
-    return clean.substring(start, end + 1);
+  // Use balanced extraction to isolate the first complete JSON object.
+  // Prevents swallowing trailing leaked keys/metadata (e.g. Gemini leaking
+  // evaluation wrapper fields inside string evaluator output).
+  const balanced = extractFirstBalancedJsonObject(clean);
+  if (balanced) {
+    console.log(`[${logContext}] 📋 Extracted balanced JSON object`);
+    return balanced;
   }
 
-  // end === -1 or end ≤ start:
-  // The AI hit its token limit before closing the object. No `}` anywhere.
-  // Forward the open fragment to jsonrepair (Stage 3) which specialises in
-  // closing unclosed structures. Fields serialised before the cutoff are
-  // recovered intact; tail fields receive schema defaults.
+  // No balanced object found — the AI hit its token limit before closing
+  // the object. No closing `}` anywhere. Forward the open fragment to
+  // jsonrepair (Stage 3) which specialises in closing unclosed structures.
+  // Fields serialised before the cutoff are recovered intact; tail fields
+  // receive schema defaults.
   console.log(`[${logContext}] ⚠️ Truncated JSON (no closing '}') — forwarding open fragment to repair pipeline`);
   return clean.substring(start);
 }
@@ -961,22 +1068,22 @@ function trimStringValues<T extends Record<string, unknown>>(
  * @returns The parsed object typed as T
  */
 function parseSanitizedJson<T>(rawOutput: string): T {
-  // Find the true boundaries of the JSON object
-  const firstBrace = rawOutput.indexOf('{');
-  const lastBrace = rawOutput.lastIndexOf('}');
-
-  // Validation check: ensure both braces exist and are positioned correctly
-  if (firstBrace === -1 || lastBrace === -1 || firstBrace > lastBrace) {
-    throw new SyntaxError("Failed to locate valid JSON object boundaries in the model output.");
+  // Use balanced extraction to isolate the first complete JSON object.
+  // Prevents swallowing trailing leaked keys/metadata past the closing brace.
+  const balanced = extractFirstBalancedJsonObject(rawOutput);
+  if (!balanced) {
+    // Fallback: try naive bounds if balanced extraction fails (e.g. truncated JSON)
+    const firstBrace = rawOutput.indexOf('{');
+    const lastBrace = rawOutput.lastIndexOf('}');
+    if (firstBrace === -1 || lastBrace === -1 || firstBrace > lastBrace) {
+      throw new SyntaxError("Failed to locate valid JSON object boundaries in the model output.");
+    }
+    return JSON.parse(rawOutput.substring(firstBrace, lastBrace + 1)) as T;
   }
 
-  // Extract exactly what sits between (and including) the outer curly braces
-  const cleanedJsonString = rawOutput.substring(firstBrace, lastBrace + 1);
-
   try {
-    return JSON.parse(cleanedJsonString) as T;
+    return JSON.parse(balanced) as T;
   } catch (error) {
-    // Edge case: If the JSON itself inside the braces is still broken
     throw new Error("Sanitized string isolated, but JSON parsing failed.", { cause: error });
   }
 }

@@ -1514,7 +1514,7 @@ function buildEvaluatorOuputFormatBlurb(useStringEvaluatorOutput: boolean): stri
     // Without this instruction the model has no explicit signal that
     // reflowing/removing those breaks is wrong, and nothing else in this
     // prompt says so either.
-    ? 'CRITICAL — the "output" field must be the FULL corrected JSON serialized as a VALID JSON STRING (see "EXPECTED JSON SCHEMA"). Begin with "{" and end exactly with "}" (raw JSON text, properly escaped inside the string). PRESERVE every inner escape sequence verbatim: a paragraph break inside the corrected JSON must be written as \\n (backslash-n) — never as a literal newline, never removed or reflowed. Preserve "**"/"*" emphasis markers exactly as written.'
+    ? 'CRITICAL — the "output" field must be the FULL corrected JSON serialized as a VALID JSON STRING (see "EXPECTED JSON SCHEMA"). Begin with "{" and end exactly with "}" (raw JSON text, properly escaped inside the string). PRESERVE every inner escape sequence verbatim: a paragraph break inside the corrected JSON must be written as \\n (backslash-n) — never as a literal newline, never removed or reflowed. Preserve "**"/"*" emphasis markers exactly as written. The "output" field must contain ONLY the corrected JSON object — never include "scoreBefore", "scoreAfter", or any evaluation wrapper fields inside the "output" string.'
     : '';
 }
 
