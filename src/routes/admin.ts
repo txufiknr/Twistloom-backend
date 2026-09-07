@@ -3156,4 +3156,104 @@ router.patch("/settings", requireAuth, requireSuperAdmin, async (c) => {
   }
 });
 
+// ============================================================================
+// HELP CENTER FEEDBACK ADMIN ROUTES
+// ============================================================================
+
+/**
+ * GET /admin/help-feedbacks
+ *
+ * Lists help center article feedback votes for admin review. Supports
+ * vote filter and pagination. Joins with users for the voter's name.
+ *
+ * @query {string} [vote] - Optional filter: "helpful" | "not_helpful"
+ * @query {number} [limit] - Max rows (default: 50, max: 200)
+ * @query {number} [offset] - Rows to skip (default: 0)
+ */
+router.get("/help-feedbacks",
+  requireAuth,
+  requirePermission("feedbacks"),
+  async (c) => {
+    try {
+      const { vote, limit = "50", offset = "0" } = c.req.query();
+      const limitNum = Math.min(Math.max(Number(limit) || 50, 1), 200);
+      const offsetNum = Math.max(Number(offset) || 0, 0);
+
+      const { helpArticleFeedback } = await import("../db/schema.js");
+
+      const conditions = [];
+      if (vote === "helpful" || vote === "not_helpful") {
+        conditions.push(eq(helpArticleFeedback.vote, vote));
+      }
+
+      const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+      const rows = await dbRead
+        .select({
+          articleId: helpArticleFeedback.articleId,
+          userId: helpArticleFeedback.userId,
+          vote: helpArticleFeedback.vote,
+          createdAt: helpArticleFeedback.createdAt,
+          userName: users.name,
+        })
+        .from(helpArticleFeedback)
+        .leftJoin(users, eq(helpArticleFeedback.userId, users.userId))
+        .where(whereClause)
+        .orderBy(desc(helpArticleFeedback.createdAt))
+        .limit(limitNum)
+        .offset(offsetNum);
+
+      const [{ count }] = await dbRead
+        .select({ count: sql<number>`count(*)` })
+        .from(helpArticleFeedback)
+        .where(whereClause);
+
+      return c.json({
+        total: Number(count),
+        limit: limitNum,
+        offset: offsetNum,
+        feedbacks: rows,
+      });
+    } catch (error) {
+      return cApiError(c, "Failed to list help feedbacks", error);
+    }
+  }
+);
+
+/**
+ * DELETE /admin/help-feedbacks/:articleId/:userId
+ *
+ * Deletes a single help feedback entry. Used to remove spam or
+ * administrative corrections.
+ */
+router.delete("/help-feedbacks/:articleId/:userId",
+  requireAuth,
+  requirePermission("feedbacks"),
+  async (c) => {
+    try {
+      const { articleId, userId } = c.req.param();
+
+      const { helpArticleFeedback } = await import("../db/schema.js");
+
+      const [deleted] = await dbWrite
+        .delete(helpArticleFeedback)
+        .where(
+          and(
+            eq(helpArticleFeedback.articleId, articleId),
+            eq(helpArticleFeedback.userId, userId),
+          ),
+        )
+        .returning({ id: helpArticleFeedback.id });
+
+      if (!deleted) {
+        return cNotFoundError(c, "Help feedback not found");
+      }
+
+      return c.json({ success: true });
+    } catch (error) {
+      return cApiError(c, "Failed to delete help feedback", error);
+    }
+  }
+);
+
 export default router;

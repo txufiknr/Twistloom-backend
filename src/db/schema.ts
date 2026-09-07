@@ -3433,3 +3433,29 @@ export const creatorPayoutMethods = pgTable(
     index("creator_payout_methods_creator_idx").on(t.creatorId),
   ]
 );
+
+/**
+ * Help center article feedback — reader votes on article helpfulness.
+ *
+ * One row per (articleId, userId) pair. Changing a vote upserts (replaces).
+ * The articleId is a free-form string key matching the frontend help-center
+ * config (e.g. "branching-stories", "custom-actions"). No FK constraint —
+ * help content lives in i18n JSON, not in the database.
+ */
+export const helpArticleFeedback = pgTable(
+  "help_article_feedback",
+  {
+    id: id(),
+    articleId: text("article_id").notNull(),
+    userId: uuid("user_id").notNull().references(() => users.userId, { onDelete: "cascade" }),
+    vote: text("vote").notNull().$type<"helpful" | "not_helpful">(),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    unique("help_article_feedback_article_user_unique").on(t.articleId, t.userId),
+    index("help_article_feedback_article_idx").on(t.articleId),
+    index("help_article_feedback_user_idx").on(t.userId),
+    index("help_article_feedback_vote_idx").on(t.vote),
+  ]
+);
