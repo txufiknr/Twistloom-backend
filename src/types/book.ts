@@ -490,7 +490,7 @@ export type VisitBookPageResult = {
 
 export type EnrichedPageOptions = {
   userId?: string,
-  book?: Pick<Book, 'language' | 'title' | 'status'>,
+  book?: Pick<Book, 'language' | 'title' | 'status' | 'mode'>,
   headerLanguage?: string | null,
   translate?: boolean
 } & TakeActionValidity;

@@ -201,6 +201,18 @@ async function processSpecificPage(bookId: string, pageId: string, triggeredBy?:
       return null;
     }
 
+    // In novel mode, if the page already has a destination, skip generation entirely
+    if (dbBook?.mode === 'novel' && dbPage.actions?.some(a => a.destinationPageIds?.length)) {
+      console.log(`[processSpecificPage] ⏭️ Novel mode page ${pageId} already has destination in DB, skipping candidate generation`);
+      if (dbPage.isGeneratingStartedAt) {
+        const { dbWrite } = await import("../db/client.js");
+        const { pages } = await import("../db/schema.js");
+        const { eq } = await import("drizzle-orm");
+        await dbWrite.update(pages).set({ isGeneratingStartedAt: null }).where(eq(pages.id, pageId));
+      }
+      return pageId;
+    }
+
     // Convert null fields to undefined for type compatibility
     const systemUserId = requireEnv('SYSTEM_USER_ID');
     const pageForGeneration = await mapToUserStoryPage(dbPage, systemUserId, []);
@@ -264,6 +276,14 @@ async function processPageGeneration(params: {
 
     if (dbPage.pendingGenerationCount !== pendingBefore) {
       console.log(`[${context}] ⚠️ Pending generation count mismatch in database:`, { pendingBefore, inDatabase: dbPage.pendingGenerationCount });
+    }
+
+    // In novel mode, if the page already has a destination, skip generation entirely
+    const { getBookFromDB } = await import("../services/book.js");
+    const dbBook = await getBookFromDB(dbPage.bookId);
+    if (dbBook?.mode === 'novel' && actionsBefore.some(action => action.destinationPageIds?.length)) {
+      console.log(`[${context}] ✨ Novel mode page ${pageId} already has destination in database, skipping generation`);
+      return { updatedPage: pageForGeneration, successCount: 0, pendingAfter: 0 };
     }
 
     hasNoPendingActions = hasNoPendingActions || pendingBefore === 0;

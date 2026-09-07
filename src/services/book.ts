@@ -1995,7 +1995,13 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
   const { userId, book, headerLanguage, translate = false, sourceAction, isUserTakeAction } = options;
   const { language = 'en' } = book ?? {};
 
-  const canonActions = dbPage.actions;
+  let canonActions = dbPage.actions;
+  // Novel mode enforcement: exactly 1 action per page. If the page carries multiple actions,
+  // sanitize to the completed action (or the first action) so originalActionsCount is always 1.
+  if (book?.mode === 'novel' && canonActions.length > 1) {
+    const completedAction = canonActions.find(a => a.destinationPageIds?.length);
+    canonActions = [completedAction ?? canonActions[0]];
+  }
   let allActions = canonActions;
   // Ship EVERY action — completed AND still-pending — so the reader sees all
   // choices immediately on first render. Actions whose `destinationPageIds` is
@@ -2010,7 +2016,9 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
   // LRU caches — a cached copy would freeze the pending actions as permanently
   // disabled. Computed independently of `visibleActions` (which now always
   // carries the full list) so the two concerns stay decoupled.
-  let hasIncompleteActions = allActions.some(action => !action.destinationPageIds?.length);
+  let hasIncompleteActions = book?.mode === 'novel'
+    ? !canonActions[0]?.destinationPageIds?.length
+    : allActions.some(action => !action.destinationPageIds?.length);
   const { id: pageId, bookId } = dbPage;
   const isPageOne = dbPage.page === 1;
 

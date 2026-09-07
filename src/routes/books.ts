@@ -5172,7 +5172,8 @@ router.get("/:identifier/:pageId/candidates", requireAuth, async (c) => {
 
     return streamSSE(c, async (stream) => {
       // Check if some actions need generation
-      if (isDone) {
+      const isNovelDone = dbBook.mode === 'novel' && (userPage.actions.some(a => a.destinationPageIds?.length) || dbPage.actions.some(a => a.destinationPageIds?.length));
+      if (isDone || isNovelDone) {
         console.log(`[GET /candidates] ℹ️ No actions need generation for page ${pageIdStr}, sending SSE complete event`);
         try {
           await stream.writeSSE({ event: 'complete', data: JSON.stringify(userPage) });
@@ -5327,6 +5328,48 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
 
     const { dbBook, dbPage, userPage, isGenerating, isDone } = validationResult;
     const { actions, updatedAt } = userPage;
+
+    // ── Novel mode early return ──────────────────────────────────────────────
+    // Novel mode is strictly linear: EXACTLY 1 action leading to EXACTLY 1 destination.
+    // If the database already has an action with destinationPageIds for this novel page,
+    // generation is 100% complete. We must NEVER trigger any background workflow or retry
+    // generation, even when requested with `?trigger=true` (which the frontend sends on its
+    // first poll when its local state hasn't received destinations yet).
+    // Early return immediately with isGenerating: false and the completed action.
+    if (dbBook.mode === 'novel') {
+      const completedNovelAction = actions.find((a) => a.destinationPageIds?.length)
+        ?? dbPage.actions?.find((a) => a.destinationPageIds?.length);
+      if (completedNovelAction) {
+        if (dbPage.isGeneratingStartedAt) {
+          await dbWrite.update(pages).set({ isGeneratingStartedAt: null }).where(eq(pages.id, dbPage.id));
+          dbPage.isGeneratingStartedAt = null;
+        }
+        if (dbPage.actions.length > 1) {
+          await dbWrite.update(pages).set({ actions: [completedNovelAction] }).where(eq(pages.id, dbPage.id));
+        }
+        void clearActionProgressEvents(pageIdStr);
+
+        const novelDoneResponse: CandidateGenerationStatus = {
+          isGenerating: false,
+          completedActions: 1,
+          totalActions: 1,
+          actions: [completedNovelAction],
+          actionProgress: [{
+            action: completedNovelAction.text,
+            status: 'completed',
+            timestamp: new Date().toISOString(),
+            destinationPageIds: completedNovelAction.destinationPageIds,
+            source: completedNovelAction.source,
+            customActionId: completedNovelAction.customActionId,
+          }],
+          startedAt: undefined,
+          lastUpdated: (dbPage.updatedAt ?? new Date()).toISOString(),
+        };
+        setCoalesced(`cand:${userId ?? "anon"}:${pageIdStr}`, novelDoneResponse);
+        console.log(`[GET /candidates/status] ✅ Novel mode early return for page ${pageIdStr}: action already has destination [${completedNovelAction.destinationPageIds?.join(', ')}], skipped retry generation entirely`);
+        return c.json(novelDoneResponse);
+      }
+    }
 
     // ── Own custom actions ────────────────────────────────────────────────────
     // Only the owner's own custom submissions participate in this page's

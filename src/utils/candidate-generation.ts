@@ -149,8 +149,8 @@ function logMetrics(metrics: Partial<GenerationMetrics>): void {
  * }
  * ```
  */
-export function hasPendingCandidates(page: UserStoryPage): boolean {
-  const pendingActions = getPendingActionsCount(page);
+export function hasPendingCandidates(page: UserStoryPage, book?: Pick<Book, 'mode'>): boolean {
+  const pendingActions = getPendingActionsCount(page, book);
   return pendingActions > 0;
 }
 
@@ -158,6 +158,7 @@ export function hasPendingCandidates(page: UserStoryPage): boolean {
  * Get pending actions count for a page
  * 
  * @param page - The story page to check
+ * @param book - Optional book context to enforce mode branching rules
  * @returns number - Number of actions needing generation
  * 
  * @example
@@ -166,7 +167,10 @@ export function hasPendingCandidates(page: UserStoryPage): boolean {
  * console.log(`Page has ${pendingCount} pending actions`);
  * ```
  */
-export function getPendingActionsCount(page: UserStoryPage): number {
+export function getPendingActionsCount(page: UserStoryPage, book?: Pick<Book, 'mode'>): number {
+  if (book?.mode === 'novel' && page.actions.some(action => action.destinationPageIds?.length)) {
+    return 0;
+  }
   return page.actions.filter(action => !action.destinationPageIds?.length).length;
 }
 
@@ -241,6 +245,17 @@ export async function validateCandidateGeneration(
 
   // Early exit: skip if no actions need generation
   console.log(`[validateCandidateGeneration] 👉 Examining ${page.actions.length} actions from page ${page.page}:`, page.actions.map(a => a.text));
+  if (currentBook.mode === 'novel' && page.actions.some(action => action.destinationPageIds?.length)) {
+    console.log(`[validateCandidateGeneration] ⏩ Novel mode page ${page.id} already has destination in database, skipping generation`);
+    return {
+      canGenerate: false,
+      reason: 'Novel mode already has completed destination',
+      book: currentBook,
+      pendingActions: [],
+      currentDepth,
+      maxDepth
+    };
+  }
   const pendingActions = page.actions.filter(action => !action.destinationPageIds?.length);
   if (pendingActions.length === 0) {
     return {
@@ -310,6 +325,13 @@ export function validatePageForJobEnqueue(page: UserStoryPage, currentBook: Book
   }
   
   // Early exit: skip if no actions need generation
+  if (currentBook.mode === 'novel' && page.actions.some(action => action.destinationPageIds?.length)) {
+    return {
+      canEnqueue: false,
+      reason: `Novel mode page ${page.id} already has completed destination`,
+      pendingActions: []
+    };
+  }
   const pendingActions = page.actions.filter(action => !action.destinationPageIds?.length);
   
   if (pendingActions.length === 0) {
@@ -506,17 +528,25 @@ export async function generateCandidatePages(params: GenerateCandidatePageParams
       // Top-up path: generate the missing alternatives
       // Clamp to the mode limit so novel/interactive never top-up beyond 1.
       const modeLimit = clampCandidateCountForMode(currentBook.mode, limit);
-      const needed = Math.min(limit - existing.length, modeLimit);
-      console.log(`[generateCandidatePage] 🔁 Topping up ${existing.length}→${existing.length + needed} (generating ${needed} more)`);
-      const topUpPages = await generateNextPages({
-        userId,
-        book: currentBook,
-        currentState,
-        actionedPage,
-        generateNewBranchId: true, // always new branch — first slot is taken
-        candidateCount: needed,
-      });
-      newPages.push(...topUpPages);
+      const needed = Math.max(0, Math.min(limit - existing.length, modeLimit - existing.length));
+      if (needed <= 0) {
+        console.log(`[generateCandidatePage] ✅ Mode "${currentBook.mode}" destination limit reached (${existing.length}/${modeLimit}), skipping top-up`);
+        for (const id of existing) {
+          const page = await getStoryPageById(userId, bookId, id);
+          if (page) newPages.push(page);
+        }
+      } else {
+        console.log(`[generateCandidatePage] 🔁 Topping up ${existing.length}→${existing.length + needed} (generating ${needed} more)`);
+        const topUpPages = await generateNextPages({
+          userId,
+          book: currentBook,
+          currentState,
+          actionedPage,
+          generateNewBranchId: true, // always new branch — first slot is taken
+          candidateCount: needed,
+        });
+        newPages.push(...topUpPages);
+      }
     }
   }
 
@@ -923,6 +953,14 @@ export async function ensureCandidatesForPageWithStrategy(
     const initialDBActions = currentDBPage.actions;
 
     // Re-check pending actions after acquiring lock (another instance might have processed them)
+    if (currentBook.mode === 'novel' && initialDBActions.some(action => action.destinationPageIds?.length)) {
+      console.log(`[ensureCandidatesForPage] ⏩ Novel mode page ${page.id} already has destination in database (lock check), skipping generation`);
+      if (currentDBPage.isGeneratingStartedAt) {
+        await dbWrite.update(pages).set({ isGeneratingStartedAt: null }).where(eq(pages.id, page.id));
+      }
+      return currentPage;
+    }
+
     const recheckedPendingDBActions = initialDBActions.filter(action => !action.destinationPageIds?.length);
     if (recheckedPendingDBActions.length === 0) {
       console.log(`[ensureCandidatesForPage] ⏩ Actions already processed by another instance`);
@@ -1379,6 +1417,15 @@ export async function triggerCandidateGenerationWorkflow(params: {
       return { success: false, error: 'Page not found' };
     }
 
+    const dbBook = await getBookFromDB(bookId);
+    if (dbBook?.mode === 'novel' && dbPage.actions?.some(a => a.destinationPageIds?.length)) {
+      console.log(`[${context}] ⏭️ Novel mode page ${pageId} already has destination in DB, skipping workflow trigger`);
+      if (dbPage.isGeneratingStartedAt) {
+        await dbWrite.update(pages).set({ isGeneratingStartedAt: null }).where(eq(pages.id, pageId));
+      }
+      return { success: true, alreadyInProgress: false };
+    }
+
     if (dbPage.isGeneratingStartedAt) {
       console.log(`[${context}] ⏳ Generation already in progress for page ${pageId} (started at ${dbPage.isGeneratingStartedAt})`);
       return { success: true, alreadyInProgress: true };
@@ -1535,6 +1582,25 @@ export async function validateAndRetrievePageForGeneration(
 
   const dbBook = await getBookFromDB(dbPage.bookId);
   if (!dbBook) return null;
+
+  // Novel mode check: strictly linear (1 action, 1 destination). If an action already has a destination,
+  // the page candidate generation is 100% complete.
+  if (dbBook.mode === 'novel') {
+    const completedAction = dbPage.actions?.find(a => a.destinationPageIds?.length);
+    if (completedAction) {
+      if (dbPage.isGeneratingStartedAt) {
+        await dbWrite.update(pages).set({ isGeneratingStartedAt: null }).where(eq(pages.id, dbPage.id));
+        dbPage.isGeneratingStartedAt = null;
+      }
+      if (dbPage.actions.length > 1) {
+        await dbWrite.update(pages).set({ actions: [completedAction] }).where(eq(pages.id, dbPage.id));
+        dbPage.actions = [completedAction];
+      }
+      void clearActionProgressEvents(pageId);
+      const userPage = userId ? await mapToUserStoryPage(dbPage, userId) : mapToPersistedStoryPage(dbPage);
+      return { dbBook, dbPage, userPage, isGenerating: false, isDone: true, totalPendingActions: 0 };
+    }
+  }
 
   // Check if generation is stuck and reset if needed
   const { isGenerating, isDone, totalPendingActions } = await checkAndResetStuckGeneration(dbPage);
