@@ -137,7 +137,10 @@ export type UserActivityType =
   'quest_reward_claimed' |
   'page_dwell' |
   'time_travel_preview' |
-  'time_travel_commit';
+  'time_travel_commit' |
+  'page_reacted' |
+  'book_completed' |
+  'testimonial_created';
 
 export type CheckinClaimType = 'regular' | 'vip_2x';
 

@@ -175,7 +175,7 @@ import type { UserComment } from "../types/user.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
 import { MAX_CONCURRENT_GENERATIONS, AI_VALIDATION_TIMEOUT_MS, BOOK_CREATION_PROMPT_MIN_CHARS } from "../config/book-creation.js";
 import { BOOK_CREATION_RATE_LIMIT, BOOK_STREAM_RATE_LIMIT, BOOK_ASYNC_RATE_LIMIT, BOOK_PROMPT_RATE_LIMIT, ACTION_HINT_RATE_LIMIT, CUSTOM_ACTION_PREVIEW_RATE_LIMIT, CUSTOM_ACTION_SUBMIT_RATE_LIMIT, COMPANION_ASK_RATE_LIMIT } from "../config/ai-rate-limits.js";
-import { isValidReactionEmoji, REACTION_IDS, reactionIdList } from "../config/reactions.js";
+import { isValidReactionEmoji, REACTION_IDS, reactionIdList, REACTION_EMOJI_MAP } from "../config/reactions.js";
 import { generateRandomCharacter } from "../utils/characters.js";
 import { COMPANION_SYSTEM, COMPANION_RESULT_SCHEMA, COMPANION_RESULT_REQUIRED_FIELDS, buildCompanionUserPrompt, buildCompanionPageContext, type CompanionResult, type CompanionChatTurn, type CompanionSemanticContext } from "../utils/companion-prompt.js";
 import { validateCompanionQuestion } from "../utils/prompt-security.js";
@@ -3681,6 +3681,21 @@ router.post("/:id/comments", requireAuth, requireNotSuspended, requireNotMuted, 
       return joined;
     });
 
+    if (commentWithUser) {
+      void logUserActivity({
+        userId,
+        activityType: 'commented',
+        targetType: 'comment',
+        targetId: commentWithUser.id as string,
+        metadata: {
+          bookId: id as string,
+          pageId: normalizedPageId,
+          paragraphNumber: normalizedParagraphNumber,
+          contentSnippet: cleanContent.slice(0, 150),
+        },
+      }, { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } });
+    }
+
     c.status(201); return c.json({ comment: commentWithUser });
   } catch (error) {
     return cApiError(c, "Failed to create comment", error);
@@ -3725,8 +3740,9 @@ async function createCommentInScope(
   content: string,
   scope: { pageId: string | null; paragraphNumber: number | null },
   parentCommentId?: string,
+  options?: { req?: { ip?: string | null; get?: (header: string) => string | undefined | null } },
 ): Promise<Record<keyof UserComment, unknown>> {
-  return dbWrite.transaction(async (tx) => {
+  const joined = await dbWrite.transaction(async (tx) => {
     const [newComment] = await tx.insert(userComments).values({
       userId,
       bookId,
@@ -3738,7 +3754,7 @@ async function createCommentInScope(
       updatedAt: new Date(),
     }).returning();
 
-    const [joined] = await tx
+    const [row] = await tx
       .select({
         id: userComments.id,
         userId: userComments.userId,
@@ -3758,8 +3774,25 @@ async function createCommentInScope(
       .where(eq(userComments.id, newComment.id))
       .limit(1);
 
-    return joined;
+    return row;
   });
+
+  if (joined) {
+    void logUserActivity({
+      userId,
+      activityType: 'commented',
+      targetType: 'comment',
+      targetId: joined.id as string,
+      metadata: {
+        bookId,
+        pageId: scope.pageId,
+        paragraphNumber: scope.paragraphNumber,
+        contentSnippet: content.slice(0, 150),
+      },
+    }, options);
+  }
+
+  return joined;
 }
 
 /**
@@ -4032,7 +4065,7 @@ router.post("/:id/pages/:pageId/comments", requireAuth, requireNotSuspended, req
     const comment = await createCommentInScope(userId, id as string, cleanContent, {
       pageId: pageId as string,
       paragraphNumber: normalizedParagraphNumber,
-    }, parentCommentId);
+    }, parentCommentId, { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } });
 
     c.status(201); return c.json({ comment });
   } catch (error) {
@@ -4152,7 +4185,7 @@ router.post("/:id/pages/:pageId/paragraphs/:paragraphNumber/comments", requireAu
     const comment = await createCommentInScope(userId, id as string, cleanContent, {
       pageId: pageId as string,
       paragraphNumber: parsedParagraph,
-    }, parentCommentId);
+    }, parentCommentId, { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } });
 
     c.status(201); return c.json({ comment });
   } catch (error) {
@@ -6725,6 +6758,19 @@ router.put("/:identifier/:pageId/reactions", requireAuth, async (c) => {
       });
     });
 
+    void logUserActivity({
+      userId,
+      activityType: 'page_reacted',
+      targetType: 'book',
+      targetId: book.id,
+      metadata: {
+        pageId: pageIdStr,
+        pageNumber: dbPage.page,
+        emoji,
+        glyph: REACTION_EMOJI_MAP[emoji as keyof typeof REACTION_EMOJI_MAP] || emoji,
+      },
+    }, { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } });
+
     c.header("Cache-Control", "no-cache");
     return c.json(await loadPageReactionState(book.id, pageIdStr, userId));
   } catch (error) {
@@ -7786,6 +7832,20 @@ router.post("/:identifier/testimonials", requireAuth, requireNotSuspended, requi
   invalidateEnrichedBookCache(book.id);
   // The author's profile testimonial aggregate changed too.
   if (book.userId) await invalidateUserProfileCache(book.userId);
+
+  if (created) {
+    void logUserActivity({
+      userId,
+      activityType: 'testimonial_created',
+      targetType: 'book',
+      targetId: book.id,
+      metadata: {
+        testimonialId: created.id,
+        rating: normalizedRating,
+        contentSnippet: content.trim().slice(0, 150),
+      },
+    }, { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } });
+  }
 
   c.status(201); return c.json({ testimonial });
 });

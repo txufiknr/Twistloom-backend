@@ -251,6 +251,55 @@ export async function logUserActivity(params: DBNewUserActivityLog, options?: { 
       }
     }
 
+    // Deduplicate: if the user already reacted on this same page recently, update the reaction log
+    // rather than inserting duplicate logs for every toggle or emoji swap.
+    if (params.activityType === 'page_reacted' && params.metadata && typeof params.metadata === 'object') {
+      const pageId = (params.metadata as Record<string, unknown>).pageId;
+      if (typeof pageId === 'string' && pageId) {
+        const [existingReactionLog] = await client
+          .select({ id: userActivityLogs.id })
+          .from(userActivityLogs)
+          .where(and(
+            eq(userActivityLogs.userId, userId),
+            eq(userActivityLogs.activityType, 'page_reacted'),
+            sql`${userActivityLogs.metadata}->>'pageId' = ${pageId}`,
+          ))
+          .orderBy(desc(userActivityLogs.createdAt))
+          .limit(1);
+
+        if (existingReactionLog) {
+          await client
+            .update(userActivityLogs)
+            .set({
+              metadata: params.metadata,
+              createdAt: new Date(),
+            })
+            .where(eq(userActivityLogs.id, existingReactionLog.id));
+          await updateUserLastActivity(userId, client);
+          return;
+        }
+      }
+    }
+
+    // Prevent duplicate logs for book completion on the same book
+    if (params.activityType === 'book_completed' && params.targetId) {
+      const pageId = (params.metadata as Record<string, unknown> | undefined)?.pageId;
+      const [existingCompletionLog] = await client
+        .select({ id: userActivityLogs.id })
+        .from(userActivityLogs)
+        .where(and(
+          eq(userActivityLogs.userId, userId),
+          eq(userActivityLogs.activityType, 'book_completed'),
+          eq(userActivityLogs.targetId, params.targetId),
+          typeof pageId === 'string' && pageId ? sql`${userActivityLogs.metadata}->>'pageId' = ${pageId}` : sql`1=1`,
+        ))
+        .limit(1);
+
+      if (existingCompletionLog) {
+        return;
+      }
+    }
+
     await client.insert(userActivityLogs).values({
       ...params,
       ipAddress: req?.ip,
@@ -1252,7 +1301,7 @@ export async function enrichActivityLogs(
       : Promise.resolve([]),
     commentIds.size > 0
       ? dbRead
-          .select({ id: userComments.id, content: userComments.content, bookId: userComments.bookId })
+          .select({ id: userComments.id, content: userComments.content, bookId: userComments.bookId, paragraphNumber: userComments.paragraphNumber })
           .from(userComments)
           .where(inArray(userComments.id, [...commentIds]))
       : Promise.resolve([]),
@@ -1299,13 +1348,33 @@ export async function enrichActivityLogs(
       } else {
         enriched.title = humanizeActivityType(log.activityType);
       }
-      // Fallback for book_creation_started: use book.originalThemeInput as detail when hook/summary is unavailable
-      if (!enriched.detail && log.activityType === 'book_creation_started') {
+
+      const meta = (log.metadata as Record<string, unknown>) || {};
+
+      if (log.activityType === 'page_reacted') {
+        enriched.title = book ? book.title : 'Page Reaction';
+        const glyph = (meta.glyph || meta.emoji || '') as string;
+        const pageNum = meta.pageNumber as number | undefined;
+        enriched.detail = pageNum
+          ? `Reacted ${glyph} on Page ${pageNum}`.trim()
+          : `Reacted ${glyph}`.trim();
+      } else if (log.activityType === 'book_completed') {
+        enriched.title = book ? book.title : 'Book Completed';
+        const pageNum = meta.pageNumber as number | undefined;
+        enriched.detail = pageNum
+          ? `Completed story at Page ${pageNum}`
+          : (book?.hook || book?.summary || 'Completed the story');
+      } else if (log.activityType === 'testimonial_created') {
+        enriched.title = book ? book.title : 'Book Testimonial';
+        const rating = meta.rating ? `★ ${meta.rating}/5 — ` : '';
+        const snippet = (meta.contentSnippet as string) || (book ? (book.hook || book.summary || '') : '');
+        enriched.detail = `${rating}${snippet}`.slice(0, 150);
+      } else if (!enriched.detail && log.activityType === 'book_creation_started') {
+        // Fallback for book_creation_started: use book.originalThemeInput as detail when hook/summary is unavailable
         if (book && book.originalThemeInput) {
           enriched.detail = book.originalThemeInput;
-        } else if (log.metadata && typeof log.metadata === 'object') {
-          const meta = log.metadata as Record<string, unknown>;
-          if (typeof meta.theme === 'string') enriched.detail = meta.theme;
+        } else if (typeof meta.theme === 'string') {
+          enriched.detail = meta.theme;
         }
       }
     } else if (log.targetType === 'user') {
@@ -1316,10 +1385,27 @@ export async function enrichActivityLogs(
       }
     } else if (log.targetType === 'comment') {
       const comment = commentMap.get(log.targetId);
+      const meta = (log.metadata as Record<string, unknown>) || {};
+      const metaPNum = meta.paragraphNumber as number | undefined;
+      const metaBookTitle = meta.bookTitle as string | undefined;
+
       if (comment) {
-        const bookTitle = comment.bookId ? commentBookMap.get(comment.bookId) : undefined;
-        enriched.title = bookTitle ? `Comment on ${bookTitle}` : 'Comment';
-        enriched.detail = (comment.content || '').slice(0, 150);
+        const bookTitle = comment.bookId ? commentBookMap.get(comment.bookId) : metaBookTitle;
+        const pNum = comment.paragraphNumber ?? metaPNum;
+        enriched.title = bookTitle
+          ? (pNum ? `Comment on ${bookTitle} (Paragraph ${pNum})` : `Comment on ${bookTitle}`)
+          : (pNum ? `Comment (Paragraph ${pNum})` : 'Comment');
+        enriched.detail = (comment.content || (meta.contentSnippet as string) || '').slice(0, 150);
+      } else {
+        // Resilient fallback if the comment row was deleted
+        const pNum = metaPNum;
+        const bookTitle = metaBookTitle;
+        enriched.title = bookTitle
+          ? (pNum ? `Comment on ${bookTitle} (Paragraph ${pNum})` : `Comment on ${bookTitle}`)
+          : (pNum ? `Comment (Paragraph ${pNum})` : humanizeActivityType(log.activityType));
+        if (typeof meta.contentSnippet === 'string') {
+          enriched.detail = meta.contentSnippet.slice(0, 150);
+        }
       }
     }
 
@@ -1343,6 +1429,9 @@ function humanizeActivityType(type: string): string {
     onboarding_complete: 'Onboarding Complete',
     referrer_set: 'Referrer Set',
     quest_reward_claimed: 'Quest Reward Claimed',
+    page_reacted: 'Page Reacted',
+    book_completed: 'Book Completed',
+    testimonial_created: 'Testimonial Created',
   };
   return map[type] || type;
 }

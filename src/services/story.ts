@@ -475,6 +475,20 @@ async function markPageVisitedWithClient(params: {
     // completion was a fresh insert (onConflictDoNothing means a replay of the
     // same ending returns null but the stats query itself is idempotent).
     endingStats = await computeEndingStats(bookId, pageId, userId, client);
+
+    // Log user activity for book completion (deduplicated in logUserActivity)
+    void logUserActivity({
+      userId,
+      activityType: 'book_completed',
+      targetType: 'book',
+      targetId: bookId,
+      metadata: {
+        pageId,
+        branchId,
+        pageNumber,
+        completionId: completion?.id,
+      },
+    }, { client });
   }
 
   return { session, nthVisit, visitorPercentage, readerUserId: userId, endingStats };

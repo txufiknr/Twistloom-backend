@@ -29,3 +29,13 @@ export function isValidReactionEmoji(value: unknown): value is ReactionEmojiId {
 export function reactionIdList(): string {
   return REACTION_IDS.join(', ');
 }
+
+/** Convenience map: reaction id -> glyph for activity logging and notifications. */
+export const REACTION_EMOJI_MAP: Record<ReactionEmojiId, string> = {
+  shocked: '😱',
+  'mind-blown': '🤯',
+  emotional: '😭',
+  tense: '😰',
+  loved: '❤️',
+  peak: '🔥',
+};
