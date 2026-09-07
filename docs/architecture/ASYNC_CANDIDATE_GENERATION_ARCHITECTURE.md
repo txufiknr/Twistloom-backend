@@ -1,489 +1,435 @@
-# Asynchronous Candidate Generation Architecture
+# Asynchronous Candidate Generation & Duplicate AI Generation Guardrails
 
-> **⚠️ SUPERSEDED — This document is stale.** Progress tracking is now
-> **DB-backed** (not the LRU 5-min cache described here), the backend is Hono
-> on Bun/Vercel (not Express/Next.js), and the system now includes the
-> book-mode branching contract, write-chain serialization, and the custom-action
-> on-demand path. See
-> **[`NEXT_PAGE_GENERATION_ARCHITECTURE.md`](./NEXT_PAGE_GENERATION_ARCHITECTURE.md)**
-> for the current, implementation-accurate architecture. This file is kept for
-> historical reference only.
+**Status:** Current, implementation-accurate.  
+**Companion document:** [`NEXT_PAGE_GENERATION_ARCHITECTURE.md`](./NEXT_PAGE_GENERATION_ARCHITECTURE.md) (covers the broader end-to-end sync + async story generation pipeline).
 
-## Overview
+---
 
-This document describes the asynchronous candidate generation system that solves timeout limitations by using on-demand GitHub Actions workflows for Express.js deployments. The system provides reliable background processing with extended timeouts (30 minutes) and real-time progress updates via Server-Sent Events (SSE).
+## 1. Overview
 
-## Problem Statement
+Twistloom pre-generates destination pages for choices before the reader clicks them, ensuring seamless, zero-latency transitions during story reading. However, generating branching candidates requires calling AI provider models (e.g., Mistral, Gemini, Cerebras, OpenRouter) and performing structured output extraction, evaluation, and database persistence.
 
-### Original Issues
-- **Vercel Timeout**: Synchronous AI generation often exceeded 5-minute limit
-- **Express.js Incompatibility**: Next.js `after()` and `waitUntil()` don't work in Express.js
-- **Poor UX**: Users experienced timeouts and failed page generation
-- **Resource Waste**: Long-running serverless functions were inefficient
-- **Scalability**: Synchronous processing didn't scale with user load
+Because serverless HTTP request lifecycles (such as Vercel serverless functions) enforce strict CPU and execution timeouts, heavy candidate pre-generation is decoupled from the HTTP request cycle and offloaded to an **asynchronous worker pipeline** powered by **on-demand GitHub Actions workflows**.
 
-### Root Cause
-The `ensureCandidatesForPage` function performed synchronous AI generation chains that could take 2-10 minutes depending on:
-- Number of actions (3-9 per page)
-- AI model response times
-- Network latency
-- Database operations
-- Retry attempts for failures
+### The Cost of Duplicate AI Generation
+AI generation is the single most expensive operation in the system in terms of:
+- **Financial cost**: Provider token pricing for long narrative context, structured schemas, and evaluator passes.
+- **Provider rate limits**: Concurrency and RPM ceilings across AI models.
+- **Database & CPU overhead**: Complex psychological state calculations, pgvector embeddings, and branch persistence.
 
-## Solution Architecture
+Consequently, the architecture employs **multi-layered guardrails** to prevent duplicate AI generations, redundant workflow triggers, and runaway polling loops—with specialized, zero-leak guarantees for strictly linear **Novel Mode** stories.
 
-### Core Design Principles
-1. **Immediate Response**: API calls return in <10 seconds
-2. **Background Processing**: Heavy AI work moved to GitHub Actions workflows
-3. **Extended Timeouts**: 30-minute timeout via GitHub Actions (vs 5-minute Vercel limit)
-4. **Express.js Compatible**: Works with Express.js deployment (no Next.js dependencies)
-5. **Fault Tolerant**: Built-in retries and error handling
-6. **Real-time Progress**: SSE polling for generation status updates
+---
 
-### Technology Stack
-- **Workflow Trigger**: GitHub Actions `workflow_dispatch` API
-- **Processing**: GitHub Actions runners (30-minute timeout)
-- **Progress Tracking**: LRU cache for action progress events (5-minute TTL)
-- **Polling**: Server-Sent Events (SSE) for real-time updates
-- **Database**: Neon PostgreSQL (shared with app data)
-- **Retry Logic**: Built-in exponential backoff with network error detection
-
-## Architecture Diagram
+## 2. Technology Stack & Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           USER REQUEST                                  │
-│              (GET /api/books/:id/:pageId/candidates)                    │
-└─────────────────────────┬───────────────────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                      API LAYER (Express.js)                             │
-│  • validateAndRetrievePageForGeneration() - Validation & retrieval      │
-│  • triggerCandidateGenerationWorkflow() - Dispatch GitHub workflow                   │
-│  • pollForCandidateGeneration() - SSE polling for progress              │
-│  • Immediate SSE response with progress updates                         │
-└─────────────────────────┬───────────────────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                 GITHUB ACTIONS WORKFLOW                                 │
-│  • retry-pending-generations.yml - On-demand workflow dispatch          │
-│  • 30-minute timeout (vs 5-minute Vercel limit)                         │
-│  • Environment variables: book_id, page_id, triggered_by                │
-│  • Full environment access and logging                                  │
-└─────────────────────────┬───────────────────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                  CRON JOB PROCESSING                                    │
-│  • src/cron/retry-pending-generations.ts                                │
-│  • processSpecificPage() - Targeted page generation                     │
-│  • ensureCandidatesForPageWithStrategy() - 'cron' strategy              │
-│  • 13-minute timeout with parallel processing                           │
-└─────────────────────────┬───────────────────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                  AI GENERATION LAYER                                    │
-│  • ensureCandidatesForPageWithStrategy() - Strategy-based generation    │
-│  • generateCandidatesInParallel() - Parallel processing                 │
-│  • AI model calls (Cerebras, Mistral, etc.)                             │
-│  • Database updates (pages, actions, destinations)                      │
-│  • Progress event storage (LRU cache)                                   │
-└─────────────────────────────────────────────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                  SSE PROGRESS UPDATES                                   │
-│  • pollForCandidateGeneration() - Polls database for completion         │
-│  • getActionProgressEvents() - Retrieves progress from cache            │
-│  • Real-time updates via SSE (event: progress, action_progress)         │
-│  • Exponential backoff polling (2s → 4s → 8s → 10s max)                 │
-└─────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────┐
+│                        FRONTEND READER CLIENT                          │
+│     (Twistloom-web: useReaderPageSession · books-api.ts)               │
+└───────────────────┬──────────────────────────────────▲─────────────────┘
+                    │ 1. Poll /candidates/status       │ 4. Read-only poll status
+                    │    (trigger=true on 1st contact) │    (with coalesce cache)
+                    ▼                                  │
+┌────────────────────────────────────────────────────────────────────────┐
+│                    API LAYER (Hono on Bun / Vercel)                    │
+│  • routes/books.ts: GET /candidates/status & GET /candidates (SSE)    │
+│  • Novel Mode Early Return: immediate response if destination exists   │
+│  • Coalesced Poll Cache: zero-DB short-circuit for read-only polling   │
+│  • CAS Watermark: atomic isGeneratingStartedAt lock                    │
+└───────────────────┬────────────────────────────────────────────────────┘
+                    │ 2. workflow_dispatch API
+                    │    (triggerCandidateGenerationWorkflow)
+                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                    GITHUB ACTIONS RUNNER WORKFLOW                      │
+│  • .github/workflows/retry-pending-generations.yml                     │
+│  • Bun runtime on ubuntu-latest (30-minute execution budget)           │
+│  • Runs: bun dist/cron/retry-pending-generations.js                    │
+│  • Targeted inputs: book_id, page_id, triggered_by, max_depth          │
+└───────────────────┬────────────────────────────────────────────────────┘
+                    │ 3. Execute targeted page generation
+                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│               CANDIDATE ORCHESTRATION & GENERATION LAYER               │
+│  • ensureCandidatesForPageWithStrategy() (strategy='cron', parallel)   │
+│  • Distributed Lock: advisory lock per page                            │
+│  • Post-lock destination re-check (prevents duplicate generation)      │
+│  • AI Pipeline: generateNextPages -> executePromptForJSON -> Waterfall │
+│  • Write-chain serialization for actions JSONB updates                 │
+└───────────────────┬──────────────────────────────────┬─────────────────┘
+                    │ Update destination               │ Upsert progress
+                    ▼                                  ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                    PERSISTENCE LAYER (Neon PostgreSQL)                 │
+│  • pages table: destinationPageIds[], isGeneratingStartedAt            │
+│  • action_progress table: persistent per-action progress               │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Key Components
+### Core Technologies
+- **API Runtime**: [Hono](https://hono.dev/) on Bun / Vercel serverless functions (TypeScript, native ESM).
+- **Background Worker**: GitHub Actions runner (`ubuntu-latest`, Bun runtime, 30-minute timeout ceiling) triggered via `workflow_dispatch`.
+- **Database**: Neon PostgreSQL accessed via [Drizzle ORM](https://orm.drizzle.team/) (`dbWrite` for mutations, `dbRead` for queries).
+- **Progress Tracking**: Persistent PostgreSQL table (`action_progress`), eliminating fragile in-memory caches.
+- **Client Protocol**: Lightweight HTTP polling with exponential backoff (`/candidates/status`) and optional Server-Sent Events (`/candidates`).
 
-### 1. GitHub Workflow Trigger (`src/utils/candidate-generation.ts`)
+---
 
-**Purpose**: Dispatches GitHub Actions workflow for on-demand candidate generation
+## 3. The Three-State Polling Machine
 
-**Key Features**:
-- **Idempotent**: Checks if generation is already in progress (isGeneratingStartedAt)
-- **Express.js Compatible**: Works with Express.js (no Next.js dependencies)
-- **Extended Timeout**: 30-minute timeout via GitHub Actions (vs 5-minute Vercel limit)
-- **State Management**: Sets isGeneratingStartedAt before triggering, resets on errors
-- **Error Handling**: Resets isGeneratingStartedAt on failures to allow retry
+The primary frontend entry point is `GET /api/books/:identifier/:pageId/candidates/status` (`src/routes/books.ts`). It operates as a deterministic three-state machine:
 
-**Configuration**:
+| `isGenerating` | `isDone` | System Behaviour |
+|:---:|:---:|---|
+| **`false`** | **`true`** | **Complete**: All required actions have `destinationPageIds`. Returns completed actions and destination IDs. Clears stale `action_progress` rows in the database. |
+| **`true`** | **`false`** | **In Progress**: Workflow is currently active (`isGeneratingStartedAt` is set and $< 30$ minutes old). Returns `isGenerating: true` with live per-action progress from the `action_progress` table. |
+| **`false`** | **`false`** | **Needs Generation**: Page has pending actions and no active worker. Dispatches GitHub Actions workflow via `triggerCandidateGenerationWorkflow`, sets `isGeneratingStartedAt` atomically, and transitions to `isGenerating: true`. |
+
+### Fast Read-Only Poll Coalescing
+To prevent database query storms from concurrent polling clients, `candidates/status` implements an in-memory short-circuit coalescing cache (`src/utils/poll-coalesce.ts`). Unauthenticated or read-only polling requests (`trigger=false`) within the coalescing window receive cached status responses with zero database queries. Requests with `?trigger=true` bypass the coalescing cache to ensure immediate workflow dispatch evaluation.
+
+---
+
+## 4. Multi-Layer Duplicate AI Generation Guardrails
+
+To eliminate duplicate AI generation leaks across API polling, background workers, and scheduled cron jobs, Twistloom enforces **8 strict defense-in-depth layers**:
+
+```mermaid
+flowchart TD
+    REQ[Incoming status poll / candidates request] --> L1{Layer 1: Status Route<br/>Novel Mode Early Return?}
+    L1 -- "Novel mode & destination in DB" --> RET1[Early Return: isDone=true<br/>0 workflow triggers · 0 AI calls]
+    L1 -- "Not novel or no destination" --> L2{Layer 2: Pre-Dispatch<br/>Novel Guard & CAS?}
+
+    L2 -- "Novel destination exists" --> RET2[Skip dispatch<br/>Clean isGeneratingStartedAt]
+    L2 -- "CAS locked / already running" --> RET3[alreadyInProgress: true<br/>Skip dispatch]
+    L2 -- "Acquired CAS lock" --> DISPATCH[Dispatch GitHub Workflow]
+
+    DISPATCH --> CRON[Worker: retry-pending-generations.ts]
+    CRON --> L3{Layer 3: Worker Entry Guard<br/>Novel destination in DB?}
+    L3 -- "Yes" --> RET4[Skip generation<br/>Clear lock]
+    L3 -- "No" --> L4{Layer 4: Pre-Execution Validation<br/>validateCandidateGeneration}
+
+    L4 -- "Novel destination exists" --> RET5[canGenerate: false<br/>Exit worker]
+    L4 -- "Valid" --> L5[Acquire Distributed Lock]
+
+    L5 --> L6{Layer 6: Post-Lock Re-Check<br/>Destination completed while waiting?}
+    L6 -- "Yes" --> RET6[Early return currentPage<br/>0 AI calls]
+    L6 -- "No" --> L7[Layer 7: Candidate Count Clamping<br/>clampCandidateCountForMode]
+
+    L7 --> AI[AI Pipeline Execution<br/>generateNextPages]
+    AI --> L8[Layer 8: Top-Up Clamp<br/>Math.max 0, modeLimit - existing]
+```
+
+---
+
+### Layer 1: Status Endpoint Novel Mode Early Return (`src/routes/books.ts`)
+**The Problem**: A reader visits a page in Novel mode where the destination was already created in the DB, but the frontend's local state does not yet possess `destinationPageIds`. The frontend sends `GET /candidates/status?trigger=true`. Without an early guard, the endpoint could initiate a background workflow or inline retry generation.
+
+**The Solution**:
 ```typescript
-// Environment variables required
-GITHUB_WORKFLOW_TOKEN=ghp_xxx  // GitHub personal access token
-GITHUB_REPO_OWNER=your-username
-GITHUB_REPO_NAME=your-repo
-GITHUB_DEFAULT_BRANCH=main
-```
+if (dbBook.mode === 'novel') {
+  const completedNovelAction = actions.find((a) => a.destinationPageIds?.length)
+    ?? dbPage.actions?.find((a) => a.destinationPageIds?.length);
+  if (completedNovelAction) {
+    if (dbPage.isGeneratingStartedAt) {
+      await dbWrite.update(pages).set({ isGeneratingStartedAt: null }).where(eq(pages.id, dbPage.id));
+      dbPage.isGeneratingStartedAt = null;
+    }
+    if (dbPage.actions.length > 1) {
+      await dbWrite.update(pages).set({ actions: [completedNovelAction] }).where(eq(pages.id, dbPage.id));
+    }
+    void clearActionProgressEvents(pageIdStr);
 
-**Usage Example**:
-```typescript
-const { triggerCandidateGenerationWorkflow } = await import('../utils/candidate-generation.js');
-
-const result = await triggerCandidateGenerationWorkflow({
-  bookId: 'book123',
-  pageId: 'page456',
-  userId: 'user789',
-  context: 'GET /candidates'
-});
-
-if (result.success) {
-  console.log('Workflow triggered successfully');
-} else if (result.alreadyInProgress) {
-  console.log('Generation already in progress');
-} else {
-  console.error('Failed to trigger workflow:', result.error);
+    const novelDoneResponse: CandidateGenerationStatus = {
+      isGenerating: false,
+      completedActions: 1,
+      totalActions: 1,
+      actions: [completedNovelAction],
+      actionProgress: [{
+        action: completedNovelAction.text,
+        status: 'completed',
+        timestamp: new Date().toISOString(),
+        destinationPageIds: completedNovelAction.destinationPageIds,
+        source: completedNovelAction.source,
+        customActionId: completedNovelAction.customActionId,
+      }],
+      startedAt: undefined,
+      lastUpdated: (dbPage.updatedAt ?? new Date()).toISOString(),
+    };
+    setCoalesced(`cand:${userId ?? "anon"}:${pageIdStr}`, novelDoneResponse);
+    return c.json(novelDoneResponse);
+  }
 }
 ```
+- **Bypasses workflow dispatch completely**, even with `?trigger=true`.
+- Clears lingering `isGeneratingStartedAt` locks.
+- Sanitizes multiple actions down to the 1 canon action with destination.
+- Cleans up `action_progress` table.
 
-**Idempotency Guarantee**:
-- Checks `isGeneratingStartedAt` before triggering
-- Sets `isGeneratingStartedAt = now()` before workflow dispatch
-- Returns `alreadyInProgress: true` if already generating
-- Resets `isGeneratingStartedAt = null` on errors
+---
 
-### 2. SSE Polling (`src/utils/sse.ts`)
+### Layer 2: Pre-Dispatch Novel Guard & Atomic CAS Lock (`src/utils/candidate-generation.ts`)
+Inside `triggerCandidateGenerationWorkflow`:
+1. **Novel check**: Re-queries `dbBook.mode` and checks `dbPage.actions` for existing destinations before touching the GitHub API. If found, clears `isGeneratingStartedAt` and returns `{ success: true, alreadyInProgress: false }`.
+2. **Compare-And-Set (CAS) Watermark**:
+   ```typescript
+   const updateResult = await dbWrite.update(pages)
+     .set({ isGeneratingStartedAt: new Date() })
+     .where(and(
+       eq(pages.id, pageId),
+       isNull(pages.isGeneratingStartedAt)
+     ));
 
-**Purpose**: Real-time progress updates via Server-Sent Events
+   if ((updateResult.rowCount ?? 0) === 0) {
+     return { success: true, alreadyInProgress: true };
+   }
+   ```
+   Ensures that only **one single caller** can claim generation rights on a page across concurrent requests.
+3. **Dispatch Rate Gate**: `tryAcquireWorkflowDispatchGate` rate-limits outbound GitHub API calls to prevent flooding during traffic spikes.
 
-**Key Features**:
-- **Exponential Backoff**: 2s → 4s → 8s → 10s max
-- **Client Disconnect Detection**: Stops polling if client disconnects
-- **Network Error Handling**: Retries on network failures
-- **Progress Event Streaming**: Real-time per-action progress
-- **LRU Cache Integration**: Retrieves progress from in-memory cache
+---
 
-**Configuration**:
-```typescript
-const SSE_POLLING_CONFIG: SSEPollingConfig = {
-  pollIntervalMs: 2000, // 2 seconds
-  maxAttempts: 150, // 5 minutes total
-  progressInterval: 5, // Every 5 polls = 10 seconds
-};
+### Layer 3: Background Worker Entry Guards (`src/cron/retry-pending-generations.ts`)
+When the GitHub Actions runner boots up:
+- In `processSpecificPage`: Checks `if (dbBook?.mode === 'novel' && dbPage.actions?.some(a => a.destinationPageIds?.length))` and exits immediately, clearing any stale `isGeneratingStartedAt`.
+- In `processPageGeneration`: Validates before candidate generation that novel pages with destinations are marked finished (`pendingAfter: 0`).
+
+---
+
+### Layer 4: Pre-Execution Validation Functions (`src/utils/candidate-generation.ts`)
+- **`validateCandidateGeneration`**:
+  ```typescript
+  if (currentBook.mode === 'novel' && page.actions.some(action => action.destinationPageIds?.length)) {
+    return {
+      canGenerate: false,
+      reason: 'Novel mode already has completed destination',
+      book: currentBook,
+      pendingActions: [],
+      currentDepth,
+      maxDepth
+    };
+  }
+  ```
+- **`validatePageForJobEnqueue`**: Returns `canEnqueue: false` if novel destination exists.
+- **`getPendingActionsCount` & `hasPendingCandidates`**: Returns `0` pending actions for completed novel pages.
+
+---
+
+### Layer 5: Distributed Locking & Post-Lock Re-Check (`src/utils/candidate-generation.ts`)
+In `ensureCandidatesForPageWithStrategy`:
+1. Acquires a PostgreSQL advisory/transaction lock on `pageId` (`withLock`).
+2. **Post-lock re-check**: While waiting for the lock, another worker or concurrent step may have completed the page. Re-checks:
+   ```typescript
+   if (currentBook.mode === 'novel' && initialDBActions.some(action => action.destinationPageIds?.length)) {
+     if (currentDBPage.isGeneratingStartedAt) {
+       await dbWrite.update(pages).set({ isGeneratingStartedAt: null }).where(eq(pages.id, page.id));
+     }
+     return currentPage; // Return without calling AI
+   }
+   ```
+
+---
+
+### Layer 6: Destination Limit & Top-Up Math Clamping (`src/utils/candidate-generation.ts`)
+When candidate pre-generation runs:
+- **Pre-generation clamping**: Requests are clamped via `clampCandidateCountForMode(mode, count)`:
+  - `novel`: max 1 destination
+  - `interactive`: max 1 destination per choice
+  - `multiverse`: up to `MAX_CANDIDATE_PAGE_PER_ACTION`
+- **Top-up calculation**: If an action already has some destinations and needs a top-up:
+  ```typescript
+  const modeLimit = clampCandidateCountForMode(currentBook.mode, limit);
+  const needed = Math.max(0, Math.min(limit - existing.length, modeLimit - existing.length));
+  ```
+  If `needed <= 0` (e.g., novel mode with `existing.length >= 1`), top-up generation is skipped completely.
+
+---
+
+### Layer 7: Page Enrichment Sanitization (`src/services/book.ts`)
+In `mapToEnrichedPage`:
+- Sanitizes `canonActions` for novel mode to exactly 1 action (preferring the completed action with destinations).
+- Sets `hasIncompleteActions = !canonActions[0]?.destinationPageIds?.length`.
+- Guarantees `originalActionsCount: 1`, preventing frontend hooks from erroneously believing additional actions are missing.
+
+---
+
+### Layer 8: Frontend Polling Lifecycle (`Twistloom-web/src/lib/hooks/reader/useReaderPageSession.ts`)
+- **Poll termination (`allActionsAvailable`)**: In novel mode, `currentActionsLength >= 1` halts polling immediately without waiting for extra actions.
+- **Retry loop suppression (`stillMissing`)**: In novel mode, `stillMissing = (succeededCount === 0)`. Having 1 resolved destination halts retries without triggering the 3-attempt retry loop.
+- **Tab visibility re-hydration**: Respects novel mode single-destination expectations when waking from background.
+
+---
+
+## 5. Persistent Progress Tracking
+
+Rather than using ephemeral in-memory caches (which fail across serverless instances and cold starts), progress is tracked via the **`action_progress`** PostgreSQL table (`src/db/schema.ts`):
+
+```sql
+CREATE TABLE action_progress (
+  id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  page_id              UUID NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+  action_text          TEXT NOT NULL,
+  status               TEXT NOT NULL DEFAULT 'started',
+  destination_page_ids TEXT[] NOT NULL DEFAULT ARRAY[]::text[],
+  error                TEXT,
+  started_at           TIMESTAMPTZ,
+  completed_at         TIMESTAMPTZ,
+  created_at           TIMESTAMPTZ DEFAULT now(),
+  updated_at           TIMESTAMPTZ DEFAULT now(),
+  CONSTRAINT action_progress_page_action_unique UNIQUE(page_id, action_text)
+);
 ```
 
-**Usage Example**:
-```typescript
-await pollForCandidateGeneration({
-  pageId,
-  userId,
-  req,
-  res,
-  initialMessage: 'Candidate generation started...',
-  getPageFromDB: (pid) => getPageFromDB(pid, { client: dbWrite }),
-  mapToUserStoryPage,
-  getActionProgressEvents,
-  clearActionProgressEvents,
-  config: SSE_POLLING_CONFIG,
-});
-```
+### Key Progress Operations (`src/utils/progress-tracking.ts`)
+1. **`storeActionProgressEvent(pageId, event)`**: Upserts status (`started`, `completed`, `failed`) and destination IDs for `(pageId, actionText)`.
+2. **`getActionProgressEvents(pageId)`**: Reads current progress events for all actions on the page.
+3. **`clearActionProgressEvents(pageId)`**: Deletes progress rows once all destinations are persisted and `isDone` is reached.
 
-### 3. Progress Tracking (`src/utils/progress-tracking.ts`)
+---
 
-**Purpose**: In-memory LRU cache for action progress events
+## 6. Execution Strategies & Concurrency
 
-**⚠️ Current Status**: Infrastructure exists but **not fully integrated**. The cache functions are defined but not connected to the generation callbacks.
+Orchestrated by `ensureCandidatesForPageWithStrategy`:
 
-**Key Features**:
-- **LRU Cache**: Max 100 entries, 5-minute TTL
-- **Per-Action Progress**: Tracks individual action generation status
-- **Redis Migration Path**: Clear path to Redis for multi-server deployments
-- **Automatic Cleanup**: Expired entries automatically removed
+| Strategy | Concurrency | Timeout | Context |
+|---|---|---|---|
+| **`cron`** | **Parallel** (`generateCandidatesInParallel`) | 13 minutes (`MAX_GENERATION_PARALLEL_DURATION_MS`) | GitHub Actions workflow runner (`retry-pending-generations.ts`) |
+| **`github-action`** | **Sequential** (per-action loop) | 30 minutes (`MAX_GENERATION_DURATION_MS`) | Batch cron-originals generation |
+| **`vercel`** | **Parallel** | $\le 240$ seconds | Legacy fallback for direct execution |
 
-**Configuration**:
-```typescript
-const PROGRESS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-const PROGRESS_CACHE_MAX_SIZE = 100; // Max entries
-```
+### Write-Chain Serialization
+When `generateCandidatesInParallel` completes candidates for multiple actions concurrently, simultaneous database writes to the page's JSONB `actions` column could result in lost updates. Candidate generation uses an in-memory sequential write chain (`onActionProgress`) that serializes database updates sequentially through a shared promise queue.
 
-**Intended Usage** (not yet implemented):
-```typescript
-// During generation, store progress events via callback
-const onProgress: ActionProgressCallback = async (action, status, result, error) => {
-  await storeActionProgressEvent(pageId, {
-    action: action.text,
-    status,
-    completed: status === 'completed' ? 1 : 0,
-    total: actions.length,
-    progress: status === 'completed' ? 100 : 0,
-    timestamp: new Date().toISOString(),
-    error: error ? getErrorMessage(error) : undefined
-  });
-};
+---
 
-// Retrieve progress events during SSE polling
-const events = await getActionProgressEvents(pageId);
+## 7. GitHub Actions Workflow Runner
 
-// Clear events after completion
-await clearActionProgressEvents(pageId);
-```
+The workflow runs on GitHub Actions under `.github/workflows/retry-pending-generations.yml`:
 
-**Integration Required**:
-- Connect `ActionProgressCallback` in `generateCandidatesInParallel()` to `storeActionProgressEvent()`
-- Pass callback from API routes through to generation functions
-- Test SSE polling with actual per-action progress updates
-
-### 4. Cron Job Processing (`src/cron/retry-pending-generations.ts`)
-
-**Purpose**: Processes GitHub workflow triggers and retries failed generations
-
-**Key Features**:
-- **Manual Trigger Support**: Accepts environment variables for targeted processing
-- **Strategy-Based Generation**: Uses 'cron' strategy with 13-minute timeout
-- **Parallel Processing**: Processes actions in parallel for efficiency
-- **Progress Event Storage**: Stores progress in LRU cache during generation
-- **Cleanup**: Resets isGeneratingStartedAt to null on completion/failure
-
-**Environment Variables** (for manual triggers):
-```bash
-TRIGGERED_BOOK_ID=book123
-TRIGGERED_PAGE_ID=page456
-TRIGGERED_BY_USER=user789
-```
-
-**Processing Flow**:
-1. Check for manual trigger environment variables
-2. If present, process specific page via processSpecificPage()
-3. Otherwise, process failed generations via retryFailedGenerations()
-4. Use 'cron' strategy with extended timeout
-5. Store progress events in LRU cache
-6. Reset isGeneratingStartedAt to null on completion
-
-### 5. API Endpoints (`src/routes/books.ts`)
-
-**GET /api/books/:identifier/:pageId/candidates**:
-- Validates page and user access
-- Triggers GitHub workflow if not already in progress
-- Polls for completion via SSE
-- Returns real-time progress updates
-
-**GET /api/books/:identifier/:pageId/candidates/status**:
-- Returns current generation status
-- Triggers GitHub workflow if actions incomplete
-- Returns progress events from cache
-- Fast JSON response (no SSE)
-
-**Common Validation**:
-- `validateAndRetrievePageForGeneration()`: Shared validation function
-- UUID validation for pageId
-- Page lookup from database
-- Stuck generation reset (10-minute max)
-- User page mapping
-
-## Performance Characteristics
-
-### Response Times
-- **API Response**: <1 second (workflow trigger only)
-- **Workflow Dispatch**: <500ms (GitHub API call)
-- **Generation Processing**: 2-10 minutes (GitHub Actions, no time pressure)
-- **SSE Polling**: 2-second intervals with exponential backoff
-- **Total UX Time**: ~30-120 seconds (user reads page, candidates ready)
-
-### Throughput
-- **Concurrent Workflows**: Limited by GitHub Actions concurrency limits
-- **Workflows per Hour**: ~60 (1 per minute per page)
-- **Scalability**: Horizontal via GitHub Actions parallelism
-- **Cost Efficiency**: Free tier includes 2000 minutes/month
-
-### Reliability
-- **Idempotency**: Single workflow per page (isGeneratingStartedAt check)
-- **Error Handling**: Automatic reset on failures
-- **Monitoring**: GitHub Actions workflow logs
-- **Recovery**: Manual retry via status endpoint
-
-## Configuration
-
-### Environment Variables
-```bash
-# GitHub workflow configuration
-GITHUB_WORKFLOW_TOKEN=ghp_xxx  # GitHub personal access token
-GITHUB_REPO_OWNER=your-username
-GITHUB_REPO_NAME=your-repo
-GITHUB_DEFAULT_BRANCH=main
-
-# Database (shared with app)
-DATABASE_URL=postgresql://...
-
-# Optional: Manual trigger for cron job
-TRIGGERED_BOOK_ID=book123
-TRIGGERED_PAGE_ID=page456
-TRIGGERED_BY_USER=user789
-```
-
-### GitHub Workflow Configuration (`.github/workflows/retry-pending-generations.yml`)
 ```yaml
-name: Retry Pending Generations
+name: Actions Candidate Generations
 
 on:
-  workflow_dispatch:
+  schedule:
+    - cron: '0 */12 * * *' # Every 12 hours routine cleanup
+  workflow_dispatch:      # On-demand dispatch from backend API
     inputs:
+      book_title:
+        description: 'Title of the book to retry generation for'
+        required: false
+        type: string
       book_id:
-        description: Book ID to process
-        required: true
+        description: 'ID of the book to retry generation for'
+        required: false
         type: string
       page_id:
-        description: Page ID to process
-        required: true
+        description: 'ID of the specific page to retry generation for'
+        required: false
         type: string
       triggered_by:
-        description: User who triggered the workflow
-        required: true
+        description: 'User ID who triggered the workflow'
+        required: false
         type: string
+      max_depth:
+        description: 'Maximum depth to pre-generate candidates'
+        required: false
+        type: number
 
 jobs:
-  process:
+  retry-pending-generations:
+    name: ${{ inputs.book_title != '' && format('Candidate Generations for {0}', inputs.book_title) || 'Routine Candidate Generations' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v3
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
         with:
-          node-version: '20'
-      - name: Install dependencies
-        run: pnpm install
-      - name: Run generation
-        run: pnpm tsx src/cron/retry-pending-generations.ts
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+      - run: bun dist/cron/retry-pending-generations.js
         env:
-          TRIGGERED_BOOK_ID: ${{ inputs.book_id }}
-          TRIGGERED_PAGE_ID: ${{ inputs.page_id }}
-          TRIGGERED_BY_USER: ${{ inputs.triggered_by }}
+          TRIGGERED_BOOK_ID: ${{ github.event.inputs.book_id || '' }}
+          TRIGGERED_PAGE_ID: ${{ github.event.inputs.page_id || '' }}
+          TRIGGERED_BY_USER: ${{ github.event.inputs.triggered_by || '' }}
+          TRIGGERED_MAX_DEPTH: ${{ github.event.inputs.max_depth || '' }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          NODE_ENV: production
 ```
 
-## Monitoring and Observability
+---
 
-### Generation Status
-```typescript
-// Check if generation is in progress
-const dbPage = await getPageFromDB(pageId, { client: dbWrite });
-const isGenerating = !!dbPage.isGeneratingStartedAt;
+## 8. Sequence Diagrams
 
-// Get progress events from cache
-const progressEvents = await getActionProgressEvents(pageId);
+### Standard Pre-Generation Flow
+```mermaid
+sequenceDiagram
+    participant R as Reader Client (Twistloom-web)
+    participant API as Backend API (Hono)
+    participant DB as Neon PostgreSQL
+    participant GHA as GitHub Actions Runner
+    participant AI as AI Provider Waterfall
+
+    R->>API: GET /candidates/status?trigger=true
+    API->>DB: Check page & actions
+    DB-->>API: Actions pending, isGeneratingStartedAt=null
+    API->>DB: Atomic CAS (set isGeneratingStartedAt)
+    API->>GHA: Dispatch workflow_dispatch (retry-pending-generations.yml)
+    API-->>R: isGenerating: true, completedActions: 0
+    GHA->>DB: Fetch page & lock
+    loop For each pending action (parallel)
+        GHA->>AI: generateNextPages()
+        AI-->>GHA: Generated page + stateDelta
+        GHA->>DB: persistPageWithState() + upsert action_progress
+    end
+    GHA->>DB: Set isGeneratingStartedAt=null
+    R->>API: GET /candidates/status (polling)
+    API->>DB: Check page
+    DB-->>API: All actions completed
+    API->>DB: clearActionProgressEvents()
+    API-->>R: isGenerating: false, isDone: true, actions ready
 ```
 
-### Logging Strategy
-- **Workflow Trigger**: `[context] 🚀 Triggering GitHub workflow for page {pageId}`
-- **Already In Progress**: `[context] ℹ️ Generation already in progress for page {pageId}`
-- **Workflow Success**: `[context] 🚀 GitHub workflow triggered successfully`
-- **Workflow Failure**: `[context] ❌ Failed to trigger GitHub workflow: {error}`
-- **Generation Start**: `[cron] Starting generation for page {pageId}`
-- **Generation Complete**: `[cron] ✅ Completed generation for page {pageId} in {duration}ms`
+### Novel Mode Early Return (Duplicate Generation Guard)
+```mermaid
+sequenceDiagram
+    participant R as Reader Client (Twistloom-web)
+    participant API as Backend API (Hono)
+    participant DB as Neon PostgreSQL
+    participant GHA as GitHub Actions Runner
 
-### Error Handling
-- **Validation Errors**: Non-retryable, reset isGeneratingStartedAt
-- **GitHub API Errors**: Reset isGeneratingStartedAt, return error message
-- **Network Errors**: Retry with exponential backoff in SSE polling
-- **Timeout Errors**: Reset isGeneratingStartedAt after 10 minutes
-
-## Testing Strategy
-
-### Manual Testing
-```bash
-# Test GitHub workflow trigger
-curl -X GET "https://your-app.com/api/books/book123/page456/candidates" \
-  -H "Content-Type: text/event-stream"
-
-# Check generation status
-curl -X GET "https://your-app.com/api/books/book123/page456/candidates/status"
-
-# Manual cron trigger (via GitHub Actions UI)
-# Navigate to: Actions > Retry Pending Generations > Run workflow
-# Input: book_id, page_id, triggered_by
+    Note over R,API: Frontend state lacks destination, sends trigger=true
+    R->>API: GET /candidates/status?trigger=true
+    API->>DB: Query page & book mode
+    DB-->>API: dbBook.mode === 'novel' & action has destinationPageIds
+    Note over API: Layer 1 Guard: Early Return Triggered!
+    opt isGeneratingStartedAt was lingering
+        API->>DB: Clear isGeneratingStartedAt
+    end
+    opt dbPage had extra actions
+        API->>DB: Sanitize dbPage.actions to single completed action
+    end
+    API->>DB: clearActionProgressEvents()
+    Note over API,GHA: ⛔ ZERO workflow dispatch · ZERO AI calls
+    API-->>R: isGenerating: false, isDone: true, completedActions: 1
+    Note over R: Reader immediately enables continue button
 ```
 
-### Integration Testing
-- End-to-end workflow dispatch
-- SSE polling with progress updates
-- isGeneratingStartedAt lifecycle
-- Error handling and reset logic
+---
 
-## Troubleshooting
+## 9. Key File Reference
 
-### Common Issues
-
-**Workflow Not Triggering**:
-- Check GITHUB_WORKFLOW_TOKEN configuration
-- Verify GitHub repo owner/name/branch
-- Review GitHub API rate limits
-- Check workflow file exists in `.github/workflows/`
-
-**Generation Stuck**:
-- Check isGeneratingStartedAt timestamp (should reset after 10 minutes)
-- Review GitHub Actions workflow logs
-- Verify cron job is running
-- Check for database connectivity issues
-
-**SSE Polling Failing**:
-- Verify SSE headers are set correctly
-- Check client disconnect handling
-- Review network error retry logic
-- Ensure progress cache is accessible
-
-### Debug Commands
-```typescript
-// Check generation status
-const dbPage = await getPageFromDB(pageId, { client: dbWrite });
-console.log('isGeneratingStartedAt:', dbPage.isGeneratingStartedAt);
-
-// Get progress events
-const events = await getActionProgressEvents(pageId);
-console.log('Progress events:', events);
-
-// Manual workflow trigger
-const result = await triggerCandidateGenerationWorkflow({
-  bookId: 'book123',
-  pageId: 'page456',
-  userId: 'user789',
-  context: 'manual-debug'
-});
-console.log('Result:', result);
-```
-
-## Future Improvements
-
-### Short Term
-- **Redis Migration**: Replace LRU cache with Redis for multi-server deployments
-- **Webhook Notifications**: Notify frontend when generation completes
-- **Retry Queue**: Automatic retry for failed generations
-
-### Long Term
-- **Distributed Locking**: Redis-based locks for better scalability
-- **Priority Queues**: Different priority levels for different generation types
-- **Metrics Dashboard**: Real-time monitoring of generation metrics
-
-## Cost Analysis
-
-### GitHub Actions Costs
-- **Free Tier**: 2000 minutes/month
-- **Public Repos**: Unlimited free minutes
-- **Private Repos**: 2000 free minutes/month
-- **Overage**: $0.008 per minute
-
-### Resource Efficiency
-- **Reduced Timeouts**: No Vercel timeout issues
-- **Better Utilization**: Process only when triggered
-- **Scalable Growth**: Linear cost scaling with usage
-- **Express.js Compatible**: No Vercel-specific dependencies
-
-## Conclusion
-
-The asynchronous candidate generation architecture using GitHub Actions workflows solves timeout limitations while improving reliability, scalability, and user experience. By leveraging GitHub Actions for background processing, the system provides:
-
-- **Immediate API responses** (<1 second)
-- **Extended timeout processing** (30 minutes via GitHub Actions)
-- **Express.js compatibility** (no Next.js dependencies)
-- **Built-in fault tolerance** (idempotency and error handling)
-- **Real-time progress updates** (SSE polling)
-- **Cost-effective scaling** (GitHub Actions free tier)
-
-The idempotency guarantee via `isGeneratingStartedAt` ensures single workflow per page, while the SSE polling provides real-time feedback to users. This architecture is production-ready for Express.js deployments.
+| Purpose | File | Key Functions / Entities |
+|---|---|---|
+| **Status Polling Route** | `src/routes/books.ts` | `GET /:identifier/:pageId/candidates/status`, novel mode early return, coalescing |
+| **SSE Candidates Route** | `src/routes/books.ts` | `GET /:identifier/:pageId/candidates`, early completion check |
+| **Workflow Dispatcher** | `src/utils/candidate-generation.ts` | `triggerCandidateGenerationWorkflow`, atomic CAS watermark |
+| **Candidate Orchestration** | `src/utils/candidate-generation.ts` | `ensureCandidatesForPageWithStrategy`, post-lock re-checks, mode enforcement |
+| **Validation Gates** | `src/utils/candidate-generation.ts` | `validateCandidateGeneration`, `validatePageForJobEnqueue`, `getPendingActionsCount` |
+| **Candidate Generation Core** | `src/utils/candidate-generation.ts` | `generateCandidatePages`, top-up clamping formula |
+| **Progress Tracking** | `src/utils/progress-tracking.ts` | `storeActionProgressEvent`, `getActionProgressEvents`, `clearActionProgressEvents` |
+| **Database Schema** | `src/db/schema.ts` | `pages.isGeneratingStartedAt`, `action_progress` table definition |
+| **Worker / Cron Runner** | `src/cron/retry-pending-generations.ts` | `processSpecificPage`, `processPageGeneration`, novel mode guardrails |
+| **GitHub Workflow Spec** | `.github/workflows/retry-pending-generations.yml` | Bun runtime, `workflow_dispatch` inputs, 30-minute ceiling |
+| **Frontend Reader Hook** | `Twistloom-web/.../useReaderPageSession.ts` | Polling loop, `allActionsAvailable`, `stillMissing` novel logic |

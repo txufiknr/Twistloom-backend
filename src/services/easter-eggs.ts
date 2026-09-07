@@ -17,12 +17,7 @@
 import { createHmac, timingSafeEqual } from "crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { dbRead, dbWrite } from "../db/client.js";
-import {
-  easterEggDiscoveries,
-  easterEggRollBudget,
-  userCounters,
-  userInventory,
-} from "../db/schema.js";
+import { easterEggDiscoveries, easterEggRollBudget, userCounters, userInventory, userPageProgress, userSessions } from "../db/schema.js";
 import { generateId } from "../utils/uuid.js";
 import { deductUserItem } from "./consumables.js";
 import { addCredits } from "./credits.js";
@@ -115,6 +110,43 @@ export async function checkEasterEgg(
 
   if (alreadyClaimed) {
     return { show: false };
+  }
+
+  // 1b. Check if page has already been actioned (completed ancestor)
+  const [alreadyActioned] = await dbRead
+    .select({ id: userPageProgress.id })
+    .from(userPageProgress)
+    .where(
+      and(
+        eq(userPageProgress.userId, userId),
+        eq(userPageProgress.bookId, bookId),
+        eq(userPageProgress.actionedPageId, pageId),
+      )
+    )
+    .limit(1);
+
+  if (alreadyActioned) {
+    return { show: false };
+  }
+
+  // 1c. Check if page is an ancestor behind the reader's active frontier
+  const [session] = await dbRead
+    .select({
+      frontierPageId: userSessions.frontierPageId,
+      frontierAncestorIds: userSessions.frontierAncestorIds,
+    })
+    .from(userSessions)
+    .where(and(eq(userSessions.userId, userId), eq(userSessions.bookId, bookId)))
+    .limit(1);
+
+  if (session) {
+    const isAncestor =
+      session.frontierPageId !== pageId &&
+      session.frontierAncestorIds?.includes(pageId);
+
+    if (isAncestor) {
+      return { show: false };
+    }
   }
 
   // 2. Anti-farm roll budget check

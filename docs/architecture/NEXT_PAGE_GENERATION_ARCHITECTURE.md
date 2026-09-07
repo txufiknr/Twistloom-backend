@@ -1,7 +1,7 @@
 # Next-Page Generation Architecture
 
-**Status:** Current, implementation-accurate (as of `cc0a174` working tree).
-**Supersedes:** [`PRE_GENERATION_FLOW.md`](./PRE_GENERATION_FLOW.md) and [`ASYNC_CANDIDATE_GENERATION_ARCHITECTURE.md`](./ASYNC_CANDIDATE_GENERATION_ARCHITECTURE.md) — those documents describe the system as it was designed and are now stale. Read this document for the current flow.
+**Companion document:** [`ASYNC_CANDIDATE_GENERATION_ARCHITECTURE.md`](./ASYNC_CANDIDATE_GENERATION_ARCHITECTURE.md) (deep-dive into the asynchronous candidate generation subsystem, polling machine, and multi-layer duplicate AI generation guardrails).  
+**Supersedes:** [`PRE_GENERATION_FLOW.md`](./PRE_GENERATION_FLOW.md) (stale historical design doc).
 
 ## Overview
 
@@ -283,8 +283,7 @@ Notes:
 
 ---
 
-## Divergences from the superseded docs
+## Related architecture documents
 
-- **`PRE_GENERATION_FLOW.md`** described "automatic pre-generation on page visit". Pre-generation **on visit is still true** (the frontend reader session auto-polls the status endpoint, which starts the workflow) — but the mechanism changed: it is no longer a synchronous, inline AI call inside the page request. It is now an **asynchronous GitHub-workflow/cron pipeline** with SSE/JSON polling progress, started lazily on first status contact (or explicitly via `/candidates`, the cron, or a custom action). The obsolete doc's Express/Next.js framing and 4.5-min inline "vercel" strategy details have been superseded.
-- **`ASYNC_CANDIDATE_GENERATION_ARCHITECTURE.md`** described progress via an **LRU in-memory cache (5-min TTL)** and Express/Next.js framing. Progress is now **DB-backed** (`actionProgress` table) via `progress-tracking.ts`, and the deployment is Hono on Bun/Vercel with three strategies (vercel / cron / github-action).
-- Both old docs lacked the **book-mode branching contract** (`novel`/`interactive`/`multiverse`), the **write-chain serialization** hazard, the **custom-action on-demand path**, and the **frontend-driven auto-trigger** — all now implemented.
+- **`ASYNC_CANDIDATE_GENERATION_ARCHITECTURE.md`** details the **asynchronous candidate generation subsystem**, the three-state polling status machine, fast read-only poll coalescing, DB-backed progress tracking (`action_progress` table), and the **8-layer duplicate AI generation guardrails** (with strict Novel Mode early returns).
+- **`PRE_GENERATION_FLOW.md`** is an obsolete historical document describing the early synchronous, inline pre-generation design. It has been superseded by this document and `ASYNC_CANDIDATE_GENERATION_ARCHITECTURE.md`.
