@@ -289,33 +289,35 @@ function pushListSection<T>(lines: string[], label: string, items: T[] | undefin
  * - Important events
  * - Character associations
  *
- * @param state - Current story state
+ * @param places - Dictionary of known places keyed by place ID
+ * @param currentPage - Current story page number (used for [CURRENT] marker)
+ * @param recalledEvents - Optional semantic memory recalls keyed by place ID
  * @returns Formatted string for prompt inclusion
  * 
  * @example
  * ```typescript
- * const placeText = formatPlacesForPrompt(state);
+ * const placeText = formatPlacesForPrompt(state.places, state.currentPage);
  * ```
  * 
  * • Old River (river) [CURRENT] - familiarity: 0.8 [ID: old_river]
  *   - Real name: Simatra River (revealed)
- *   - Visited 3 times (last visited: page 12, last mood: threatening, last weather: misty)
+ *   - Visited: 3x (last: page 12, mood: threatening, weather: misty)
  *   - Context: narrow river behind the school
- *   - Location: 500 meters south of the school
+ *   - Hints: downstream leads to marsh; foggy at twilight
  *   - Traits:
- *     → Smell: ...
+ *     → Smell of decaying vegetation
  *   - Key events:
  *     → Page 3: Body discovered
  *     → Page 14: First meeting with Lisa
  *   - Key objects:
- *     → 1x Large Mirror (in the corner of the room, color: black)
+ *     → 1x Large Mirror in corner of the boathouse (color: black)
  *   - Associated characters:
  *     → Lisa (first met here)
  *     → Tom (saved from drowning here)
  * 
  * • Abandoned Church (building) - familiarity: 0.6 [ID: abandoned_church] [Parent ID: oakhaven_city]
  *   - Real name: Project Lazarus Research Facility (hidden)
- *   - Visited 2 times (last visited: page 30)
+ *   - Visited: 2x (last: page 30)
  *   - Context: abandoned stone church outside town
  *   - Key events:
  *     → Page 24: Hidden tunnel discovered
@@ -323,7 +325,14 @@ function pushListSection<T>(lines: string[], label: string, items: T[] | undefin
  *   - Associated characters:
  *     → Marcus (first met here)
  *   - Known routes:
- *     → old_river: route-specific details (2 minutes walk, alley, open)
+ *     → old_river: 2 minutes walk, alley, obstacles: fallen timber
+ * 
+ * • Town Library (building) - familiarity: 0.9 [ID: town_library]
+ *   - Visited: 4x (last: page 18, mood: quiet)
+ *   - Context: two-story brick building on Main Street
+ *   - Traits:
+ *     → Smell of old paper
+ *     → Creaky wooden stairs
  */
 export function formatPlacesForPrompt(places: Record<string, PlaceMemory>, currentPage: number, recalledEvents?: Record<string, string>): string {
   const placeEntries = Object.entries(places);
@@ -352,9 +361,11 @@ export function formatPlacesForPrompt(places: Record<string, PlaceMemory>, curre
     const parentMarker = place.parentPlaceId ? ` [Parent ID: ${place.parentPlaceId}]` : '';
     lines.push(`• ${placeName} (${type})${currentMarker} - familiarity: ${place.familiarity.toFixed(1)} [ID: ${id}]${parentMarker}`);
 
-    // Real name and whether it's revealed to the MC (matches jsdoc example format)
-    lines.push(`  - Real name: ${realName} (${place.isRealNameKnown ? 'revealed' : 'hidden'})`);
-    lines.push(`  - Visited ${visitCount} time${visitCount > 1 ? 's' : ''} (last visited: page ${place.lastVisitedAtPage}${place.lastMood ? `, last mood: ${place.lastMood}`: ''}${place.lastWeather ? `, last weather: ${place.lastWeather}`: ''})`);
+    // Real name and whether it's revealed to the MC — omit if identical to knownName and already revealed
+    if (knownName !== realName || !isRealNameKnown) {
+      lines.push(`  - Real name: ${realName} (${isRealNameKnown ? 'revealed' : 'hidden'})`);
+    }
+    lines.push(`  - Visited: ${visitCount}x (last: page ${place.lastVisitedAtPage}${place.lastMood ? `, mood: ${place.lastMood}` : ''}${place.lastWeather ? `, weather: ${place.lastWeather}` : ''})`);
     lines.push(`  - Context: ${context}`);
 
     if (hints?.length) {

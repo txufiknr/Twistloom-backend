@@ -97,15 +97,13 @@ ${isLatePhase || isFinale ? `  - A sudden shift can heighten dread — but don't
   - If multiple scene types apply, choose the most important narrative function.
   - Use "transition" only when no stronger narrative function dominates the page.` },
   { fields: ['charactersPresent'], stage: 'page', text: `charactersPresent
-  - Side characters physically present in the scene besides MC.
-  - Only side characters, exclude MC. MC is central POV and always on the scene.
-  - Do not include characters who are only mentioned, remembered, referenced, contacted remotely, or discussed.
+  - Physically present side characters only (exclude MC and remote/remembered characters).
   - Every ID must match an existing known character${isFinale ? `.
   - Keep the cast minimal. Finale scenes should feel claustrophobic, not populated.`
 : isMultiTurn ? ` or, if this is a brand-new character appearing for the first time, a short unique lowercase-slug ID you invent now (based on their role or a distinguishing trait, e.g. "hollow-eyed-clerk") — use it consistently. A later stage introduces them formally in newCharacters using this EXACT ID, so do not reuse an ID already on the known-characters list.`
 : ` or a character introduced in newCharacters on this page.`}
   - sceneRole: ${sceneRoleValues}
-  - sceneFocus: between 0.0 to 1.0. Relative narrative importance in the current scene (highest = character to focus).` },
+  - sceneFocus: 0.0 to 1.0 (relative narrative focus in this scene).` },
   { fields: ['keyEvents'], stage: 'page', text: `keyEvents
   - ${KEY_EVENT_LENGTH}. Plot-level facts only — what objectively happened (situation/exact hard facts).
 ${isLatePhase || isFinale ? `  - At least one event should connect to or resolve a thread opened earlier in the story.` : ''}` },

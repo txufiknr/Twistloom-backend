@@ -272,7 +272,7 @@ export function processCharacterUpdates(
  * matching getMainCharacterInfo's own nesting depth -- its fields sit
  * directly at the top level, not nested one level under a place/character
  * header the way the sections in formatCharactersForPrompt / formatPlacesForPrompt
- * are. See pushListSection below for that (deeper-nested, "→"-bulleted) variant.
+ * are. See pushListSection below for that (nested list compaction) variant.
  */
 function pushIndentedListSection<T>(target: string[], label: string, items: T[] | undefined, formatItem: (item: T) => string): void {
   if (!items?.length) return;
@@ -361,16 +361,32 @@ export function getMainCharacterInfo(params: {
 }
 
 /**
- * Pushes a "  - Label:" header followed by one "    -> item" line per entry
- * (nothing if the list is empty/undefined). Same convention as the identically-
- * named helper in places.ts -- both formatters sit one level under an entity
- * header, so both use this 2-level shape. getMainCharacterInfo below sits at
- * the top level instead, hence its own pushIndentedListSection variant above.
+ * Pushes an indented bullet list section under a character header:
+ *   - Label:
+ *     - item 1
+ *     - item 2
+ *
+ * Used for multi-faceted, relational, or narrative-heavy fields (secrets,
+ * interactions, relationships, injuries, schedules) where structural separation
+ * is critical for LLM attention and AST predictability.
  */
 function pushListSection<T>(lines: string[], label: string, items: T[] | undefined, formatItem: (item: T) => string): void {
   if (!items?.length) return;
   lines.push(`  - ${label}:`);
-  items.forEach(item => lines.push(`    → ${formatItem(item)}`));
+  items.forEach(item => lines.push(`    - ${formatItem(item)}`));
+}
+
+/**
+ * Pushes a compact inline list section under a character header:
+ *   - Label: item 1; item 2
+ *
+ * Used for atomic descriptive tags (traits) where all items are short descriptors.
+ * Uniformly emitted as a single line across all characters to guarantee schema
+ * consistency without instance-by-instance AST drift.
+ */
+function pushInlineListSection<T>(lines: string[], label: string, items: T[] | undefined, formatItem: (item: T) => string, separator: string = '; '): void {
+  if (!items?.length) return;
+  lines.push(`  - ${label}: ${items.map(formatItem).join(separator)}`);
 }
 
 /**
@@ -381,6 +397,7 @@ function pushListSection<T>(lines: string[], label: string, items: T[] | undefin
  *
  * @param mc - Main character profile
  * @param characters - Record of character memories keyed by character ID
+ * @param recalledInteractions - Optional semantic memory recalls keyed by character ID
  * @returns Formatted string for prompt inclusion
  *
  * Note: the MC intentionally never gets an `[ID: ...]` tag here (see the
@@ -397,37 +414,35 @@ function pushListSection<T>(lines: string[], label: string, items: T[] | undefin
  *   - Bio: Shy librarian with hidden past and mysterious family connections
  *   - Known as: Sarah
  * 
- * · Tom Martinez (security guard, major) - male [trusting] - [ID: tom_m]
+ * · Tom (security guard, major) - male [trusting] - [ID: tom_m]
  *   - Real name: "Tom Martinez" (Recognition: full_name_known)
  *   - Bio: Former military medic
  *   - Visual description: Tall, muscular build with military haircut and tired eyes
  *   - Introduced at page: 5
  *   - Relationship to MC: (friend - trusting - full_name_known) protective, has secret knowledge
  *   - Recent interactions:
- *     → Page 12: Helped treat Sarah's arm injury
- *     → Page 8: Warned about basement dangers
+ *     - Page 12: Helped treat Sarah's arm injury
+ *     - Page 8: Warned about basement dangers
  *   - Relationships:
- *     → lisa_park: (rival - hostile - full_name_known) Doesn't trust her motives
- *   - Narrative mechanics: potential twist: none
- *   - Physical state: healthy, active
+ *     - lisa_park: (rival - hostile - full_name_known) Doesn't trust her motives
+ *   - Physical state: healthy
  *   - Schedules:
- *     → Available: night | Place: basement | If missed: Can't buy tickets
+ *     - Available: night | Place: basement | If missed: Can't buy tickets
  * 
- * · Lisa (teacher, supporting) - female [suspicious, has secret, missing] - [ID: lisa_park]
- *   - Real name: "Lisa Park" (Recognition: first_name_known)
+ * · The Whispering Girl (supporting) - female [suspicious, has secret, missing] - [ID: lisa_park]
+ *   - Real name: "Lisa Park" (Recognition: alias_known)
  *   - Bio: Quiet girl who knows more than she lets on
  *   - Visual description: Small frame, dark hair always in ponytail, avoids eye contact
  *   - Introduced at page: 5
- *   - Relationship to MC: (mentor - suspicious - first_name_known) childhood friend with hidden agenda
- *   - Secrets (spoiler, don't reveal too early):
- *     → She knows what happened in the basement 10 years ago
+ *   - Relationship to MC: (mentor - suspicious - alias_known) childhood friend with hidden agenda
+ *   - Secrets (spoiler):
+ *     - She knows what happened in the basement 10 years ago
  *   - Recent interactions:
- *     → Page 15: First meeting here, seemed nervous
- *   - Narrative mechanics: potential twist: identity
+ *     - Page 15: First meeting here, seemed nervous
+ *   - Potential twist: identity
  *   - Physical state: disappeared
- *   - Traits:
- *     → skills: teaching, gardening
- *     → favorite food: pizza
+ *   - Traits: skills: teaching, gardening; favorite food: pizza
+ * ```
  */
 export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string, CharacterMemory>, recalledInteractions?: Record<string, string>): string {
   const mcDetails = [];
@@ -464,10 +479,9 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
       } = character;
 
       const useDifferentReference = knownName !== realName;
-      const nameUnknown = useDifferentReference && ['never_seen', 'seen', 'alias_known'].includes(recognitionLevel);
 
       // 1. Resolve Physical Status (SSOT for narrative physical presence)
-      let physicalStatusDisplay = 'healthy, active';
+      let physicalStatusDisplay = 'healthy';
       if (status === 'dead') physicalStatusDisplay = 'deceased';
       else if (status === 'missing') physicalStatusDisplay = 'disappeared';
       else if (injuries?.filter(i => i.severity).length) physicalStatusDisplay = 'injured';
@@ -484,7 +498,7 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
       const details = [];
       
       // Basic information
-      if (useDifferentReference) details.push(`  - Real name: "${realName}" (Recognition: ${recognitionLevel}${nameUnknown ? ` - Don't spoil unless revealed` : ''})`);
+      if (useDifferentReference) details.push(`  - Real name: "${realName}" (Recognition: ${recognitionLevel})`);
       details.push(`  - Bio: ${bio}`);
       details.push(`  - Visual description: ${appearance}`);
       details.push(`  - Introduced at page: ${introducedAtPage}`);
@@ -494,7 +508,7 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
       details.push(`  - Relationship to MC: ${relationshipToMCStatus ? `(${relationshipToMCStatus}) ` : ''}${relationshipToMC.context}`);
 
       // Character secrets with nested bullets (spoiler for AI, not shown to player)
-      pushListSection(details, `Secrets (spoiler, don't reveal too early)`, secrets, secret => secret);
+      pushListSection(details, 'Secrets (spoiler)', secrets, secret => secret);
 
       // Recent interactions with nested bullets
       if (pastInteractions?.length) {
@@ -516,7 +530,7 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
       const recalled = recalledInteractions?.[id];
       if (recalled) {
         details.push(`  - Earlier interactions (recalled):`);
-        details.push(`    → ${recalled}`);
+        details.push(`    - ${recalled}`);
       }
       
       // Character relationships with nested bullets
@@ -551,8 +565,8 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
         return parts.join(' | ');
       });
 
-      // Traits with nested bullets
-      pushListSection(details, 'Traits', traits, trait => trait);
+      // Traits with compact inline formatting (semantic field uniformity across all characters)
+      pushInlineListSection(details, 'Traits', traits, trait => trait);
 
       return `${mainInfo}\n${details.join('\n')}`;
     })
@@ -630,17 +644,17 @@ function buildCharacterHeader(knownName: string, roleString: string, gender: str
  *
  * @example
  * ```
- * · Sarah Chen (major) - female - [ID: sarah_c]
+ * · The Librarian (major) - female - [ID: sarah_c]
  *   - Real name: "Sarah Chen"
  *   - Bio: Shy librarian with hidden past and mysterious family connections
  *   - Visual description: Tall, pale, messy black hair, hollow eyes
  *   - Planned introduction: At the library, when MC comes looking for answers
  *
  * · Tom Martinez (security guard, major) - male - [ID: tom_m]
- *   - Real name: "Tom Martinez"
  *   - Bio: Former military medic
  *   - Visual description: Tall, muscular build with military haircut and tired eyes
  *   - Planned introduction: During the blackout scene at the warehouse
+ * ```
  */
 export function formatPlannedCharactersForPrompt(characterPlans: CharacterPlan[]): string {
   if (!characterPlans.length) return 'No planned characters.';

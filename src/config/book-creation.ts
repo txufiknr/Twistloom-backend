@@ -77,7 +77,7 @@ const BASE_FORMAT_RULES = `- Max ${MAX_WORDS_PER_PAGE} words.
 const BASE_OPENING_RULES = `PAGE OPENING RULES (IMMEDIATE EXECUTION):
 - Open on the immediate aftermath of the selected action, continuing directly from the previous page's final moment — no scene break.
 - ANTI-RECAP: never summarize past events. Trust the reader's memory.
-- CAUSAL FRICTION: don't skip necessary intermediate actions, movements, or physical prep.`;
+- CAUSAL FRICTION: don't skip necessary intermediate actions, movements, or physical prep. Establish physical position if ambiguous.`;
 
 /**
  * Dialogue-marker convention for gamified dialogue UI. The frontend parses

@@ -1,6 +1,6 @@
 # Prompt Token Optimization Roadmap: The Omniscient Director Architecture
 
-**Status:** Proposed / Ready for Implementation  
+**Status:** In Progress (Phase 1 & Phase 2 Implemented & Verified — 10/16 targets complete)  
 **Created:** 2026-09-07  
 **Audit Status:** Post-audit refinement with full architectural enhancements — 16 changes classified across 4 files  
 **Audit Date:** 2026-09-07  
@@ -14,22 +14,22 @@
 | Status | ID | File | Target | Scope & Summary | Token Savings | Risk Level |
 |:---:|:---:|---|---|---|:---:|:---:|
 | ✅ Done | **C1** | `src/config/book-creation.ts` | `RULES_DIALOGUE_ATTRIBUTION` | Compact prefix-based dialogue markers; eliminates 4× repetition | ~15 | NONE (100%) |
-| ◻️ Ready | **C2** | `src/config/book-creation.ts` | `BASE_OPENING_RULES` | Preserves `ANTI-RECAP` & `CAUSAL FRICTION`; tightens wording | ~5 | LOW (95%) |
-| ◻️ Ready | **C3** | `src/config/book-creation.ts` | `BASE_ENDING_RULES` | Preserves labels & `sceneType` / `momentum` cross-references | ~0 | LOW (95%) |
-| ◻️ Ready | **C4** | `src/utils/places.ts` | Visit line formatting | `Visited: Xx (last: page Y, mood: Z)` cosmetic compaction | ~20 | NONE (100%) |
-| ◻️ Ready | **C5** | `src/utils/places.ts` | `pushListSection` (places) | Semicolon for simple items; line breaks without arrows for complex | ~60 | LOW (92%) |
-| ◻️ Ready | **C16** | `src/utils/places.ts` | Place name deduplication | Omit `Real name:` if identical to `knownName` and already revealed | ~35 | LOW (95%) |
-| ◻️ Ready | **C6** | `src/utils/characters.ts` | Secrets header | Compacts `Secrets (spoiler)` | ~5 | NONE (100%) |
-| ◻️ Ready | **C7** | `src/utils/characters.ts` | Recognition caveat | Removes redundant `Don't spoil unless revealed` (governed by level) | ~15 | LOW (95%) |
-| ◻️ Ready | **C8** | `src/utils/characters.ts` | Physical state declaration | Declare `let physicalStatusDisplay = 'healthy'` directly at line 470 | ~80 | LOW (95%) |
-| ◻️ Ready | **C15** | `src/utils/characters.ts` | `pushListSection` (characters) | Semicolon for simple traits/secrets; line breaks for relationships | ~45 | LOW (92%) |
+| ✅ Done | **C2** | `src/config/book-creation.ts` | `BASE_OPENING_RULES` | Preserves `ANTI-RECAP` & `CAUSAL FRICTION`; adds physical position baseline | ~5 | LOW (95%) |
+| ✅ Done | **C3** | `src/config/book-creation.ts` | `BASE_ENDING_RULES` | Preserves labels & `sceneType` / `momentum` cross-references | ~0 | LOW (95%) |
+| ✅ Done | **C4** | `src/utils/places.ts` | Visit line formatting | `Visited: Xx (last: page Y, mood: Z)` cosmetic compaction | ~20 | NONE (100%) |
+| ◻️ Ready | **C5** | `src/utils/places.ts` | List formatting (places) | Semantic Field Uniformity: Traits inline; events/routes bulleted | ~50 | LOW (95%) |
+| ✅ Done | **C16** | `src/utils/places.ts` | Place name deduplication | Omit `Real name:` if identical to `knownName` and already revealed | ~35 | LOW (95%) |
+| ✅ Done | **C6** | `src/utils/characters.ts` | Secrets header | Compacts `Secrets (spoiler)` | ~5 | NONE (100%) |
+| ✅ Done | **C7** | `src/utils/characters.ts` | Recognition caveat | Removes redundant `Don't spoil unless revealed` (governed by level) | ~15 | LOW (95%) |
+| ✅ Done | **C8** | `src/utils/characters.ts` | Physical state declaration | Declare `let physicalStatusDisplay = 'healthy'` directly at line 470 | ~80 | LOW (95%) |
+| ✅ Done | **C15** | `src/utils/characters.ts` | List formatting (characters) | Semantic Field Uniformity: Traits inline; relational/secrets bulleted | ~40 | LOW (95%) |
 | ◻️ Ready | **C9** | `src/utils/field-instructions.ts` | `text` field (Turn A) | Compact prose rules; retains pronoun resolution & physical baseline | ~100 | LOW (93%) |
 | ◻️ Ready | **C10** | `src/utils/field-instructions.ts` | `sceneType` field | Compacts dominant function rules; retains continuity analysis | ~40 | LOW (95%) |
-| ◻️ Ready | **C11** | `src/utils/field-instructions.ts` | `charactersPresent` field | Compacts side-character rules; preserves multi-turn slug ID logic | ~30 | NONE (100%) |
+| ✅ Done | **C11** | `src/utils/field-instructions.ts` | `charactersPresent` field | Compacts side-character rules; preserves multi-turn slug ID logic | ~30 | NONE (100%) |
 | ◻️ Ready | **C12** | `src/utils/field-instructions.ts` | `factUpdates` (Turn B) | Compacts 12-line block to 6; retains "objectively true" & dedup | ~160 | LOW (93%) |
 | ◻️ Ready | **C13** | `src/utils/field-instructions.ts` | `addPlotFlags` (Turn B) | Compacts pacing rules; retains negative pacing constraint | ~170 | LOW (92%) |
 | ◻️ Ready | **C14** | `src/utils/field-instructions.ts` | `familiarityCorrection` | Retains explicit `Do NOT use` prohibition; compacts condition triggers | ~50 | LOW (93%) |
-| **TOTAL** | — | **4 core files** | **16 discrete targets** | **All load-bearing directives & Omniscient Lore preserved** | **~815 tokens (-16%)** | **~95% avg** |
+| **TOTAL** | — | **4 core files** | **16 discrete targets** | **10 / 16 implemented (~250 tokens saved)** | **~815 tokens (-16%)** | **~95% avg** |
 
 > **Status Key:**  
 > ✅ **Done** — Implemented and verified in codebase  
@@ -123,19 +123,19 @@ Twistloom's story engine enforces a strict boundary between two layers of knowle
 
 | Status | Change ID | File | Target | Risk Level | Safety | Rationale |
 |:---:|:---:|---|---|:---:|:---:|-----------|
-| ✅ | C1 | `book-creation.ts` | `RULES_DIALOGUE_ATTRIBUTION` | NONE | 100% | Already applied — verified in codebase |
-| ◻️ | C2 | `book-creation.ts` | `BASE_OPENING_RULES` | LOW | 95% | Preserves named labels + concrete directives |
-| ◻️ | C3 | `book-creation.ts` | `BASE_ENDING_RULES` | LOW | 95% | Restores `sceneType` cross-reference |
-| ◻️ | C4 | `places.ts` | Visit line formatting | NONE | 100% | Pure cosmetic label abbreviation |
-| ◻️ | C5 | `places.ts` | `pushListSection` (places) | LOW | 92% | Conditional: simple → semicolon, complex → line-separated |
-| ◻️ | C16 | `places.ts` | Place name deduplication | LOW | 95% | Omit `Real name:` if identical to `knownName` and revealed |
-| ◻️ | C6 | `characters.ts` | Secrets header | NONE | 100% | Padding removal; `(spoiler)` carries full semantic weight |
-| ◻️ | C7 | `characters.ts` | Recognition caveat | LOW | 95% | Removes redundant reinforcement only |
-| ◻️ | C8 | `characters.ts` | Physical state declaration | LOW | 95% | Emits clean `healthy` directly at declaration site |
-| ◻️ | C15 | `characters.ts` | `pushListSection` (characters) | LOW | 92% | Conditional: simple traits/secrets → semicolon; complex → line-separated |
+| ✅ | C1 | `book-creation.ts` | `RULES_DIALOGUE_ATTRIBUTION` | NONE | 100% | Implemented & verified in codebase |
+| ✅ | C2 | `book-creation.ts` | `BASE_OPENING_RULES` | LOW | 95% | Implemented & verified (preserves labels + adds physical baseline) |
+| ✅ | C3 | `book-creation.ts` | `BASE_ENDING_RULES` | LOW | 95% | Verified in code (preserves sceneType + momentum cross-ref) |
+| ✅ | C4 | `places.ts` | Visit line formatting | NONE | 100% | Implemented & verified (`Visited: Xx`) |
+| ◻️ | C5 | `places.ts` | List formatting (places) | LOW | 95% | Semantic Field Uniformity: Traits inline; events/routes bulleted |
+| ✅ | C16 | `places.ts` | Place name deduplication | LOW | 95% | Implemented & verified (omits if identical to knownName and revealed) |
+| ✅ | C6 | `characters.ts` | Secrets header | NONE | 100% | Implemented & verified (`Secrets (spoiler)`) |
+| ✅ | C7 | `characters.ts` | Recognition caveat | LOW | 95% | Implemented & verified (removed redundant reinforcement) |
+| ✅ | C8 | `characters.ts` | Physical state declaration | LOW | 95% | Implemented & verified (emits clean `healthy` at source) |
+| ✅ | C15 | `characters.ts` | List formatting (characters) | LOW | 95% | Implemented & verified (Semantic Field Uniformity: Traits inline; relational bulleted) |
 | ◻️ | C9 | `field-instructions.ts` | `text` field (Turn A) | LOW | 93% | Restores pronoun resolution + physical establishment |
 | ◻️ | C10 | `field-instructions.ts` | `sceneType` field | LOW | 95% | Restores continuity-vs-transition guidance |
-| ◻️ | C11 | `field-instructions.ts` | `charactersPresent` | NONE | 100% | Minor compaction; all exclusions preserved |
+| ✅ | C11 | `field-instructions.ts` | `charactersPresent` | NONE | 100% | Implemented & verified (compacted exclusions and focus) |
 | ◻️ | C12 | `field-instructions.ts` | `factUpdates` (Turn B) | LOW | 93% | Restores "objectively true" + deduplication |
 | ◻️ | C13 | `field-instructions.ts` | `addPlotFlags` (Turn B) | LOW | 92% | Restores pacing as condensed bullets |
 | ◻️ | C14 | `field-instructions.ts` | `familiarityCorrection` | LOW | 93% | Restores "Do NOT use" prohibition |
@@ -173,7 +173,7 @@ Twistloom's story engine enforces a strict boundary between two layers of knowle
 +  UI markers only — never reference or explain them in the story.
 ```
 
-##### C2: `BASE_OPENING_RULES` — ◻️ READY (Preserves Named Labels)
+##### C2: `BASE_OPENING_RULES` — ✅ IMPLEMENTED (Preserves Named Labels)
 
 ```diff
  const BASE_OPENING_RULES = `PAGE OPENING RULES (IMMEDIATE EXECUTION):
@@ -189,7 +189,7 @@ Twistloom's story engine enforces a strict boundary between two layers of knowle
 
 **Savings:** ~5 tokens.
 
-##### C3: `BASE_ENDING_RULES` — ◻️ READY (Preserves sceneType Cross-Reference)
+##### C3: `BASE_ENDING_RULES` — ✅ VERIFIED IN CODE (Preserves sceneType Cross-Reference)
 
 ```diff
  const BASE_ENDING_RULES = `PAGE ENDING RULES (DYNAMIC TENSION):
@@ -218,7 +218,7 @@ Twistloom's story engine enforces a strict boundary between two layers of knowle
 
 #### Changes
 
-##### C4: Visit Line Formatting — ◻️ READY
+##### C4: Visit Line Formatting — ✅ IMPLEMENTED
 
 ```diff
 -    lines.push(`  - Visited ${visitCount} time${visitCount > 1 ? 's' : ''} (last visited: page ${place.lastVisitedAtPage}${place.lastMood ? `, last mood: ${place.lastMood}`: ''}${place.lastWeather ? `, last weather: ${place.lastWeather}`: ''})`);
@@ -227,30 +227,29 @@ Twistloom's story engine enforces a strict boundary between two layers of knowle
 
 **Savings:** ~20 tokens per page (assuming 4–5 active places).
 
-##### C5: `pushListSection` in places.ts (Conditional Flattening) — ◻️ READY
+##### C5: List Formatting in places.ts (Semantic Field Uniformity) — ◻️ READY
 
-> **Design Note:** The earlier draft used a blanket `join('; ')` that collapsed all items to single lines. This caused parsing ambiguity for complex items (routes with internal parentheses, multi-part key events). The refined version uses conditional logic: simple items get semicolon-joined single lines; complex items retain line separation without the Unicode arrow.
+> **Design Note (Semantic Field Uniformity):** Following the architectural refinement established in C15, `places.ts` avoids arbitrary string-length heuristics. Instead, formatting is fixed by field type across all places:  
+> * **`Traits` $\rightarrow$ Always inline:** Simple descriptors are flattened to a single line (`  - Traits: trait1; trait2`), matching `Hints` which is already inline.  
+> * **`Key events`, `Key objects`, `Associated characters`, `Known routes` $\rightarrow$ Always bulleted with `- `:** Multi-part items, route specs, and timestamps maintain clean line separation while dropping the multi-token Unicode arrow (`→`).
 
 ```diff
  function pushListSection<T>(lines: string[], label: string, items: T[] | undefined, formatItem: (item: T) => string): void {
    if (!items?.length) return;
--  lines.push(`  - ${label}:`);
+   lines.push(`  - ${label}:`);
 -  items.forEach(item => lines.push(`    → ${formatItem(item)}`));
-+  const rendered = items.map(formatItem);
-+  if (rendered.some(r => r.length > 60 || r.includes(':'))) {
-+    // Complex items (key events, routes, connections) — preserve line separation, drop Unicode arrow
-+    lines.push(`  - ${label}:`);
-+    rendered.forEach(r => lines.push(`    - ${r}`));
-+  } else {
-+    // Simple items (traits, associated characters) — collapse to single line
-+    lines.push(`  - ${label}: ${rendered.join('; ')}`);
-+  }
++  items.forEach(item => lines.push(`    - ${formatItem(item)}`));
  }
+
++function pushInlineListSection<T>(lines: string[], label: string, items: T[] | undefined, formatItem: (item: T) => string, separator: string = '; '): void {
++  if (!items?.length) return;
++  lines.push(`  - ${label}: ${items.map(formatItem).join(separator)}`);
++}
 ```
 
-**Savings:** ~60 tokens per page (assuming 4–5 active places with mixed simple/complex items).
+**Savings:** ~50 tokens per page (assuming 4–5 active places).
 
-##### C16: Place Name Deduplication (Alias Parity) — ◻️ READY
+##### C16: Place Name Deduplication (Alias Parity) — ✅ IMPLEMENTED
 
 > **Design Note:** In `src/utils/characters.ts:466`, the engine only emits `Real name:` when `knownName !== realName`. In `src/utils/places.ts:356`, `Real name:` is emitted unconditionally for every place. When `knownName === realName` and `isRealNameKnown: true`, printing `Real name: Abandoned Library (revealed)` directly after the header has already named it `• Abandoned Library (building)` is completely redundant. Gating this line on `knownName !== realName || !isRealNameKnown` deduplicates identical revealed names while strictly preserving all hidden lore and distinct aliases under the Omniscient Director rule.
 
@@ -277,7 +276,7 @@ Twistloom's story engine enforces a strict boundary between two layers of knowle
 
 #### Changes
 
-##### C7: Recognition Caveat Removal — ◻️ READY
+##### C7: Recognition Caveat Removal — ✅ IMPLEMENTED
 
 ```diff
 -      if (useDifferentReference) details.push(`  - Real name: "${realName}" (Recognition: ${recognitionLevel}${nameUnknown ? ` - Don't spoil unless revealed` : ''})`);
@@ -288,7 +287,7 @@ Twistloom's story engine enforces a strict boundary between two layers of knowle
 
 **Savings:** ~15 tokens per page (for characters with hidden names).
 
-##### C8: Physical State — Clean Declaration at Source — ◻️ READY
+##### C8: Physical State — Clean Declaration at Source — ✅ IMPLEMENTED
 
 > **Design Note:** Rather than emitting `healthy, active` (3 tokens) or omitting the line (which risks smaller models assuming an unknown status), emit `healthy` (1 token). Refinement A: update the base variable declaration directly at the source of truth (`src/utils/characters.ts:470`) rather than adding an inline ternary condition at the push site (`:545`).
 
@@ -303,7 +302,7 @@ Twistloom's story engine enforces a strict boundary between two layers of knowle
 
 **Savings:** ~80 tokens per page (for a standard cast of 5 healthy characters).
 
-##### C6: Secrets Header — ◻️ READY
+##### C6: Secrets Header — ✅ IMPLEMENTED
 
 ```diff
 -      pushListSection(details, `Secrets (spoiler, don't reveal too early)`, secrets, secret => secret);
@@ -312,28 +311,47 @@ Twistloom's story engine enforces a strict boundary between two layers of knowle
 
 **Savings:** ~5 tokens per character with secrets.
 
-##### C15: `pushListSection` in characters.ts (Conditional Flattening) — ◻️ READY
+##### C15: List Formatting in characters.ts (Semantic Field Uniformity) — ✅ IMPLEMENTED
 
-> **Design Note:** `pushListSection` is defined identically in `src/utils/characters.ts:370` as in `places.ts`. It renders character `Traits`, `Secrets`, and `Relationships` with deep `→` indentation and multi-line breaks. Applying the same conditional logic from C5 collapses simple traits and single-line items while preserving full line separation for complex items (e.g. recent interactions with page numbers, relationships with contexts, schedules).
+> **Architectural Decision (Semantic Field Uniformity vs. Dynamic Heuristic):**  
+> An earlier draft used a dynamic length-based heuristic (`rendered.some(r => r.length > 60 || r.includes(': '))`) to toggle between single-line and multiline lists. While saving tokens, this introduced **instance-level polymorphism** — where Character A could have inline traits while Character B had bulleted traits, or a single character could flip back and forth between turns as descriptions lengthened.  
+> 
+> Language models (especially smaller or quantized models in the waterfall like Mistral-7B and Llama-3.1-8B) rely on **consistent indentation and Abstract Syntax Tree (AST) predictability** to map entities without attention diffusion.  
+> 
+> **The Solution (Approach B):** Formatting is fixed **strictly by semantic field type** across all characters:
+> 1. **`Traits` $\rightarrow$ Always inline for every character:** Atomic descriptors are uniformly formatted on a single line (`  - Traits: tag1; tag2`).
+> 2. **`Secrets (spoiler)` $\rightarrow$ Always bulleted for every character:** Isolates sensitive lore on dedicated lines (`    - Secret`) to preserve narrative gravity and prevent semantic blur with normal biographical facts.
+> 3. **`Recent interactions`, `Relationships`, `Injuries`, `Schedules` $\rightarrow$ Always bulleted with `- `:** Complex relational and temporal structures maintain full line separation while removing multi-token Unicode arrows (`→`).
+> 
+> This guarantees 100% structural uniformity across all characters, preserves prompt-caching stability, and still captures ~40 tokens saved per page turn.
 
 ```diff
++/**
++ * Pushes an indented bullet list section under a character header.
++ * Used for multi-faceted, relational, or narrative-heavy fields (secrets,
++ * interactions, relationships, injuries, schedules) where structural separation
++ * is critical for LLM attention and AST predictability.
++ */
  function pushListSection<T>(lines: string[], label: string, items: T[] | undefined, formatItem: (item: T) => string): void {
    if (!items?.length) return;
--  lines.push(`  - ${label}:`);
+   lines.push(`  - ${label}:`);
 -  items.forEach(item => lines.push(`    → ${formatItem(item)}`));
-+  const rendered = items.map(formatItem);
-+  if (rendered.some(r => r.length > 60 || r.includes('\n') || r.includes(': '))) {
-+    // Complex items (interactions with pages, relationships, injuries) — preserve line separation, drop Unicode arrow
-+    lines.push(`  - ${label}:`);
-+    rendered.forEach(r => lines.push(`    - ${r}`));
-+  } else {
-+    // Simple items (traits, short secrets) — collapse to single line
-+    lines.push(`  - ${label}: ${rendered.join('; ')}`);
-+  }
++  items.forEach(item => lines.push(`    - ${formatItem(item)}`));
  }
+
++/**
++ * Pushes a compact inline list section under a character header.
++ * Used for atomic descriptive tags (traits) uniformly across all characters.
++ */
++function pushInlineListSection<T>(lines: string[], label: string, items: T[] | undefined, formatItem: (item: T) => string, separator: string = '; '): void {
++  if (!items?.length) return;
++  lines.push(`  - ${label}: ${items.map(formatItem).join(separator)}`);
++}
 ```
 
-**Savings:** ~45 tokens per page (for 4–5 active side characters with traits and secrets).
+**Savings:** ~40 tokens per page (for 4–5 active side characters).
+
+> **Phase 3 Note (C5 Parity):** Phase 3's place list compaction will apply this exact same Semantic Field Uniformity: `Traits` will be inline, while `Key events`, `Key objects`, `Associated characters`, and `Known routes` will maintain clean bullet separation with `- `.
 
 ---
 
@@ -404,7 +422,7 @@ Twistloom's story engine enforces a strict boundary between two layers of knowle
 
 **Savings:** ~40 tokens per page.
 
-###### C11: `charactersPresent` Field — ◻️ READY
+###### C11: `charactersPresent` Field — ✅ IMPLEMENTED
 
 ```diff
     { fields: ['charactersPresent'], stage: 'page', text: `charactersPresent
@@ -521,18 +539,18 @@ Twistloom's story engine enforces a strict boundary between two layers of knowle
 | Status | Change ID | Component | File | Baseline Tokens | Optimized Tokens | Savings | Safety |
 |:---:|:---------:|-----------|------|:---:|:---:|:---:|:---:|
 | ✅ | C1 | `RULES_DIALOGUE_ATTRIBUTION` | `book-creation.ts` | — | — | — | 100% |
-| ◻️ | C2 | `BASE_OPENING_RULES` | `book-creation.ts` | ~80 | ~75 | **~5** | 95% |
-| ◻️ | C3 | `BASE_ENDING_RULES` | `book-creation.ts` | ~90 | ~90 | **~0** | 95% |
-| ◻️ | C4 | Visit line formatting | `places.ts` | ~100 | ~80 | **~20** | 100% |
+| ✅ | C2 | `BASE_OPENING_RULES` | `book-creation.ts` | ~80 | ~75 | **~5** | 95% |
+| ✅ | C3 | `BASE_ENDING_RULES` | `book-creation.ts` | ~90 | ~90 | **~0** | 95% |
+| ✅ | C4 | Visit line formatting | `places.ts` | ~100 | ~80 | **~20** | 100% |
 | ◻️ | C5 | `pushListSection` (places) | `places.ts` | ~250 | ~190 | **~60** | 92% |
-| ◻️ | C16 | Place name deduplication | `places.ts` | ~120 | ~85 | **~35** | 95% |
-| ◻️ | C6 | Secrets header | `characters.ts` | ~40 | ~35 | **~5** | 100% |
-| ◻️ | C7 | Recognition caveat | `characters.ts` | ~60 | ~45 | **~15** | 95% |
-| ◻️ | C8 | Physical state declaration | `characters.ts` | ~800 | ~720 | **~80** | 95% |
-| ◻️ | C15 | `pushListSection` (characters) | `characters.ts` | ~220 | ~175 | **~45** | 92% |
+| ✅ | C16 | Place name deduplication | `places.ts` | ~120 | ~85 | **~35** | 95% |
+| ✅ | C6 | Secrets header | `characters.ts` | ~40 | ~35 | **~5** | 100% |
+| ✅ | C7 | Recognition caveat | `characters.ts` | ~60 | ~45 | **~15** | 95% |
+| ✅ | C8 | Physical state declaration | `characters.ts` | ~800 | ~720 | **~80** | 95% |
+| ✅ | C15 | List formatting (characters) | `characters.ts` | ~220 | ~180 | **~40** | 95% |
 | ◻️ | C9 | `text` field (Turn A) | `field-instructions.ts` | ~700 | ~600 | **~100** | 93% |
 | ◻️ | C10 | `sceneType` field | `field-instructions.ts` | ~200 | ~160 | **~40** | 95% |
-| ◻️ | C11 | `charactersPresent` field | `field-instructions.ts` | ~200 | ~170 | **~30** | 100% |
+| ✅ | C11 | `charactersPresent` field | `field-instructions.ts` | ~200 | ~170 | **~30** | 100% |
 | ◻️ | C12 | `factUpdates` (Turn B) | `field-instructions.ts` | ~600 | ~440 | **~160** | 93% |
 | ◻️ | C13 | `addPlotFlags` (Turn B) | `field-instructions.ts` | ~500 | ~330 | **~170** | 92% |
 | ◻️ | C14 | `familiarityCorrection` | `field-instructions.ts` | ~200 | ~150 | **~50** | 93% |
@@ -573,34 +591,34 @@ Twistloom's story engine enforces a strict boundary between two layers of knowle
 
 ### 5.2 Rollout Phases (Ordered by Quick-Wins Priority)
 
-#### Phase 1 — Zero-Risk Quick Wins (Safety: 100%, ~105 tokens saved)
-> No semantic changes. Pure cosmetic compaction and alias deduplication. Apply and ship immediately.
+#### Phase 1 — Zero-Risk Quick Wins (Safety: 100%, ~105 tokens saved) — ✅ COMPLETED
+> No semantic changes. Pure cosmetic compaction and alias deduplication. Implemented and verified.
 
 | Status | Change | File | What | Savings |
 |:---:|:------:|------|------|:---:|
-| ✅ | C1 | `book-creation.ts` | `RULES_DIALOGUE_ATTRIBUTION` | — *(already applied)* |
-| ◻️ | C4 | `places.ts` | Visit line formatting (`Visited: Xx` vs `Visited X times`) | ~20 |
-| ◻️ | C6 | `characters.ts` | Secrets header (`Secrets (spoiler)`) | ~5 |
-| ◻️ | C7 | `characters.ts` | Recognition caveat removal | ~15 |
-| ◻️ | C11 | `field-instructions.ts` | `charactersPresent` compaction | ~30 |
-| ◻️ | C16 | `places.ts` | Place name deduplication (omit if identical & revealed) | ~35 |
+| ✅ | C1 | `book-creation.ts` | `RULES_DIALOGUE_ATTRIBUTION` | ~15 |
+| ✅ | C4 | `places.ts` | Visit line formatting (`Visited: Xx` vs `Visited X times`) | ~20 |
+| ✅ | C6 | `characters.ts` | Secrets header (`Secrets (spoiler)`) | ~5 |
+| ✅ | C7 | `characters.ts` | Recognition caveat removal | ~15 |
+| ✅ | C11 | `field-instructions.ts` | `charactersPresent` compaction | ~30 |
+| ✅ | C16 | `places.ts` | Place name deduplication (omit if identical & revealed) | ~35 |
 
-#### Phase 2 — Low-Risk Character & Rule Compaction (Safety: 90-95%, ~130 tokens saved)
-> Preserves all named labels, negative constraints, and cross-references. Clean source-level variable declaration.
-
-| Status | Change | File | What | Savings |
-|:---:|:------:|------|------|:---:|
-| ◻️ | C2 | `book-creation.ts` | `BASE_OPENING_RULES` (preserve labels) | ~5 |
-| ◻️ | C3 | `book-creation.ts` | `BASE_ENDING_RULES` (preserve labels + sceneType) | ~0 |
-| ◻️ | C8 | `characters.ts` | Physical state clean declaration (`let physicalStatusDisplay = 'healthy'`) | ~80 |
-| ◻️ | C15 | `characters.ts` | `pushListSection` conditional flattening | ~45 |
-
-#### Phase 3 — Places List Compaction (Safety: 92%, ~60 tokens saved)
-> Conditional logic for list flattening in places. Requires testing with complex route strings.
+#### Phase 2 — Low-Risk Character & Rule Compaction (Safety: 90-95%, ~130 tokens saved) — ✅ COMPLETED
+> Preserves all named labels, negative constraints, and cross-references. Clean source-level variable declaration. Implemented and verified.
 
 | Status | Change | File | What | Savings |
 |:---:|:------:|------|------|:---:|
-| ◻️ | C5 | `places.ts` | `pushListSection` conditional flattening (places) | ~60 |
+| ✅ | C2 | `book-creation.ts` | `BASE_OPENING_RULES` (preserve labels + physical baseline) | ~5 |
+| ✅ | C3 | `book-creation.ts` | `BASE_ENDING_RULES` (preserve labels + sceneType) | ~0 |
+| ✅ | C8 | `characters.ts` | Physical state clean declaration (`let physicalStatusDisplay = 'healthy'`) | ~80 |
+| ✅ | C15 | `characters.ts` | List formatting (Semantic Field Uniformity: Traits inline; relational bulleted) | ~40 |
+
+#### Phase 3 — Places List Compaction (Safety: 95%, ~50 tokens saved)
+> Semantic Field Uniformity for places: Traits inline; Key events, Key objects, Associated characters, and Known routes uniformly bulleted with `- `.
+
+| Status | Change | File | What | Savings |
+|:---:|:------:|------|------|:---:|
+| ◻️ | C5 | `places.ts` | List formatting (Semantic Field Uniformity: Traits inline; events/routes bulleted) | ~50 |
 
 #### Phase 4 — Field Instructions (Safety: 92-95%, ~520 tokens saved)
 > Heaviest savings. All critical directives restored. Requires model compliance testing.
@@ -651,10 +669,10 @@ Twistloom's story engine enforces a strict boundary between two layers of knowle
 | Status | Phase | Task Description | Target Items |
 |:---:|---|---|---|
 | ✅ | **Phase 1** | Dialogue Attribution marker compaction (verified in code) | C1 |
-| ◻️ | **Phase 1** | Apply zero-risk quick wins (visit line, secrets header, recognition caveat, charactersPresent, place name deduplication) | C4, C6, C7, C11, C16 |
-| ◻️ | **Phase 1** | Run `bun x tsc --noEmit` and `bun run lint:imports` — verify zero regressions | Phase 1 gate |
-| ◻️ | **Phase 2** | Apply low-risk compaction (opening rules, ending rules, physical status declaration, characters list flattening) | C2, C3, C8, C15 |
-| ◻️ | **Phase 2** | Run `bun x tsc --noEmit` and `bun run lint:imports` — verify zero regressions | Phase 2 gate |
+| ✅ | **Phase 1** | Apply zero-risk quick wins (visit line, secrets header, recognition caveat, charactersPresent, place name deduplication) | C4, C6, C7, C11, C16 |
+| ✅ | **Phase 1** | Run `bun x tsc --noEmit` and `bun run lint:imports` — verify zero regressions | Phase 1 gate |
+| ✅ | **Phase 2** | Apply low-risk compaction (opening rules, ending rules, physical status declaration, characters list flattening) | C2, C3, C8, C15 |
+| ✅ | **Phase 2** | Run `bun x tsc --noEmit` and `bun run lint:imports` — verify zero regressions | Phase 2 gate |
 | ◻️ | **Phase 3** | Apply conditional list flattening in places | C5 |
 | ◻️ | **Phase 3** | Test with stories containing complex routes and multi-part key events | Phase 3 gate |
 | ◻️ | **Phase 4** | Apply field instructions optimizations | C9, C10, C12, C13, C14 |
