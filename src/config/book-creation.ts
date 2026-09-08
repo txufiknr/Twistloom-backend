@@ -113,8 +113,7 @@ export const RULES_DIALOGUE_ATTRIBUTION = `DIALOGUE ATTRIBUTION MARKERS:
 - Optional mood tag: [character_id|mood] "Dialogue text"
   - Available mood tags: ${DIALOGUE_MOODS.join(', ')}
   - Use a mood tag when the dialogue has a strong emotional register that differs from neutral speech.
-  - Omit the mood tag for normal/neutral dialogue — do NOT tag every line.
-  - NEVER invent mood tags outside the vocabulary above.
+  - Omit the mood tag for normal/neutral dialogue.
 - Keep marker and dialogue on the SAME line (never split across lines).
 - Never mark narration or internal thoughts.
 - UI markers only — never reference or explain them in the story.`;
