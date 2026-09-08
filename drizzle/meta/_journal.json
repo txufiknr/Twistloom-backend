@@ -568,6 +568,13 @@
       "when": 1788753269362,
       "tag": "0081_yielding_vanisher",
       "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1788826685102,
+      "tag": "0082_real_scarlet_spider",
+      "breakpoints": true
     }
   ]
 }

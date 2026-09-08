@@ -90,6 +90,7 @@ import { ACHIEVEMENT_REGISTRY } from '../config/achievements.js';
 import type { AppEnv } from "../hono/env.js";
 import { getClientIp } from "../hono/express-shim.js";
 import { getUserMindMatrix } from "../services/psychological-profile.js";
+import { normalizePrivacyPreferences } from '../services/privacy-preferences.js';
 
 const router = new Hono<AppEnv>();
 
@@ -569,6 +570,8 @@ router.post('/', requireAuth, async (c: Context<AppEnv>) => {
     await ensureDefaultEmailPreferences(userId);
     const { ensureDefaultInAppPreferences } = await import('../services/in-app-preferences.js');
     await ensureDefaultInAppPreferences(userId);
+    const { ensureDefaultPrivacyPreferences } = await import('../services/privacy-preferences.js');
+    await ensureDefaultPrivacyPreferences(userId);
 
     const { isEmailLocale } = await import('../types/email-locale.js');
     if (body.preferredLocale && isEmailLocale(body.preferredLocale)) {
@@ -953,6 +956,7 @@ router.get("/users/:identifier", optionalAuth, async (c: Context<AppEnv>) => {
       // cross-viewer data from the cache.
       formattedUser.isBanned = userData.isBanned;
       formattedUser.isBetaTester = userData.isBetaTester;
+      formattedUser.privacyPreferences = normalizePrivacyPreferences(userData.privacyPreferences);
 
       console.log(`[GET /users/${identifierStr}] ✅ Fetched user profile from DB:`, formattedUser);
       return {
@@ -2909,8 +2913,22 @@ router.get('/users/:identifier/testimonials/given', optionalAuth, async (c: Cont
 
     const viewerId = c.get('userId');
     const isOwner = viewerId === resolved.userId;
+
+    const [userRow] = await dbRead
+      .select({ privacyPreferences: users.privacyPreferences })
+      .from(users)
+      .where(eq(users.userId, resolved.userId))
+      .limit(1);
+
+    const isPublic = userRow?.privacyPreferences?.showReviewsOnProfile !== false;
     const { limit = DEFAULT_ITEMS_PER_PAGE, page = 1 } = extractPaginationParams(c.req.query());
     const offset = (page - 1) * limit;
+
+    if (!isOwner && !isPublic) {
+      const pagination = calculatePaginationMeta(page, limit, 0);
+      c.header('Cache-Control', 'private, no-cache');
+      return c.json({ testimonials: [], pagination, isPrivate: true });
+    }
 
     const conditions = [eq(bookTestimonials.userId, resolved.userId)];
     if (!isOwner) conditions.push(eq(bookTestimonials.status, 'approved'));
@@ -2948,10 +2966,87 @@ router.get('/users/:identifier/testimonials/given', optionalAuth, async (c: Cont
       .where(and(...conditions));
 
     const pagination = calculatePaginationMeta(page, limit, count);
-    c.header('Cache-Control', 'public, max-age=300, stale-while-revalidate=60');
-    return c.json({ testimonials: rows, pagination });
+    c.header('Cache-Control', 'private, no-cache');
+    return c.json({ testimonials: rows, pagination, isPrivate: !isPublic });
   } catch (error) {
     return cApiError(c, 'Failed to fetch user given testimonials', error);
+  }
+});
+
+/**
+ * GET /api/users/:identifier/comments
+ *
+ * Paginated comments written by the user across stories on Twistloom.
+ *
+ * - Profile owner (authenticated viewer === target user) can always see their comments.
+ * - Visitors can only view comments when target user's `showCommentsOnProfile` is true.
+ * - Non-owners only receive comments left on published stories.
+ */
+router.get('/users/:identifier/comments', optionalAuth, async (c: Context<AppEnv>) => {
+  try {
+    const resolved = await resolveProfileUserId(c);
+    if (!resolved) return cNotFoundError(c, 'User not found');
+
+    const [userRow] = await dbRead
+      .select({ privacyPreferences: users.privacyPreferences })
+      .from(users)
+      .where(eq(users.userId, resolved.userId))
+      .limit(1);
+
+    const viewerId = c.get('userId');
+    const isOwner = viewerId === resolved.userId;
+    const isPublic = userRow?.privacyPreferences?.showCommentsOnProfile === true;
+
+    const { limit = DEFAULT_ITEMS_PER_PAGE, page = 1 } = extractPaginationParams(c.req.query());
+    const offset = (page - 1) * limit;
+
+    if (!isOwner && !isPublic) {
+      const pagination = calculatePaginationMeta(page, limit, 0);
+      c.header('Cache-Control', 'private, no-cache');
+      return c.json({ comments: [], pagination, isPrivate: true });
+    }
+
+    const conditions = [eq(userComments.userId, resolved.userId)];
+    if (!isOwner) {
+      conditions.push(eq(books.status, 'active'), eq(books.visibility, 'public'));
+    }
+
+    const rows = await dbRead
+      .select({
+        id: userComments.id,
+        userId: userComments.userId,
+        bookId: userComments.bookId,
+        pageId: userComments.pageId,
+        paragraphNumber: userComments.paragraphNumber,
+        parentCommentId: userComments.parentCommentId,
+        content: userComments.content,
+        createdAt: userComments.createdAt,
+        updatedAt: userComments.updatedAt,
+        bookTitle: books.title,
+        bookSlug: books.slug,
+        bookImageUrl: uploadedImages.imageUrl,
+        pageNumber: pages.page,
+      })
+      .from(userComments)
+      .innerJoin(books, eq(userComments.bookId, books.id))
+      .leftJoin(pages, eq(userComments.pageId, pages.id))
+      .leftJoin(uploadedImages, eq(books.imageId, uploadedImages.imageId))
+      .where(and(...conditions))
+      .orderBy(desc(userComments.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    const [{ count }] = await dbRead
+      .select({ count: sql<number>`count(*)::int` })
+      .from(userComments)
+      .innerJoin(books, eq(userComments.bookId, books.id))
+      .where(and(...conditions));
+
+    const pagination = calculatePaginationMeta(page, limit, count);
+    c.header('Cache-Control', 'private, no-cache');
+    return c.json({ comments: rows, pagination, isPrivate: !isPublic });
+  } catch (error) {
+    return cApiError(c, 'Failed to fetch user comments', error);
   }
 });
 
@@ -3557,6 +3652,64 @@ router.patch('/in-app-preferences', requireAuth, async (c: Context<AppEnv>) => {
   } catch (error) {
     console.error('[PATCH /user/in-app-preferences] ❌', error);
     return cApiError(c, 'Failed to update in-app preferences', error);
+  }
+});
+
+// ===== PRIVACY PREFERENCES =====
+
+/**
+ * GET /user/privacy-preferences
+ *
+ * Returns the authenticated user's privacy settings.
+ * Defaults are normalized in-memory if not explicitly set.
+ */
+router.get('/privacy-preferences', requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get('userId')!;
+    const { getPrivacyPreferences } = await import('../services/privacy-preferences.js');
+
+    const prefs = await getPrivacyPreferences(userId);
+    if (!prefs) return cNotFoundError(c, 'User not found');
+
+    return c.json({ preferences: prefs });
+  } catch (error) {
+    console.error('[GET /user/privacy-preferences] ❌', error);
+    return cApiError(c, 'Failed to fetch privacy preferences', error);
+  }
+});
+
+/**
+ * PATCH /user/privacy-preferences
+ *
+ * Partial update of privacy flags. Unknown keys rejected.
+ */
+router.patch('/privacy-preferences', requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get('userId')!;
+    const body = c.get('body');
+    const {
+      sanitizePrivacyPreferencesUpdate,
+      updatePrivacyPreferences,
+    } = await import('../services/privacy-preferences.js');
+
+    const patch = sanitizePrivacyPreferencesUpdate(body);
+    if (!patch) {
+      return cValidationError(
+        c,
+        'Provide at least one valid privacy field to update',
+      );
+    }
+
+    const prefs = await updatePrivacyPreferences(userId, patch);
+    if (!prefs) return cNotFoundError(c, 'User not found');
+
+    // Invalidate user profile cache so public profile immediately reflects changes
+    await invalidateUserProfileCache(userId);
+
+    return c.json({ preferences: prefs });
+  } catch (error) {
+    console.error('[PATCH /user/privacy-preferences] ❌', error);
+    return cApiError(c, 'Failed to update privacy preferences', error);
   }
 });
 
@@ -4275,14 +4428,32 @@ router.post('/beta-duties/:dutyId/claim', requireAuth, async (c: Context<AppEnv>
  * GET /api/users/:identifier/mind-matrix
  *
  * Returns the public user's aggregate longitudinal Reader Mind Matrix across all completed stories.
+ * Privacy-gated by user's showMindMatrixOnProfile preference.
  */
 router.get('/users/:identifier/mind-matrix', optionalAuth, async (c: Context<AppEnv>) => {
   try {
     const resolved = await resolveProfileUserId(c);
     if (!resolved) return cNotFoundError(c, 'User not found');
 
+    const viewerId = c.get('userId');
+    const isOwner = viewerId === resolved.userId;
+
+    const [userRow] = await dbRead
+      .select({ privacyPreferences: users.privacyPreferences })
+      .from(users)
+      .where(eq(users.userId, resolved.userId))
+      .limit(1);
+
+    const isPublic = userRow?.privacyPreferences?.showMindMatrixOnProfile !== false;
+
+    if (!isOwner && !isPublic) {
+      c.header('Cache-Control', 'private, no-cache');
+      return c.json({ success: true, matrix: null, isPrivate: true });
+    }
+
     const matrix = await getUserMindMatrix(resolved.userId);
-    return c.json({ success: true, matrix });
+    c.header('Cache-Control', 'private, no-cache');
+    return c.json({ success: true, matrix, isPrivate: !isPublic });
   } catch (error) {
     console.error('[GET /users/:identifier/mind-matrix] ❌', error);
     return cApiError(c, 'Failed to get user mind matrix', error);

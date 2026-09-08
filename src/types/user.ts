@@ -1,3 +1,4 @@
+import type { PrivacyPreferences } from "./privacy-preferences.js";
 import type { AchievementTier } from "./achievements.js";
 
 /**
@@ -114,6 +115,8 @@ export interface User {
   isBanned?: boolean;
   /** Whether this user is a member of the beta tester program (one-time join + reward) */
   isBetaTester?: boolean;
+  /** User privacy preferences (showCommentsOnProfile) */
+  privacyPreferences?: PrivacyPreferences;
 }
 
 export type UserActivityType =

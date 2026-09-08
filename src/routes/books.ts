@@ -119,6 +119,7 @@ import { getBookAnalytics } from "../services/analytics.js";
 import { hasActiveVipSubscription } from "../services/subscription.js";
 import { getPreviewBookPage } from "../services/book-preview.js";
 import { shouldUseCache, getFreshPromptForUser, trackPromptView, savePromptToCache } from "../services/prompt-cache.js";
+import { normalizePrivacyPreferences } from "../services/privacy-preferences.js";
 import { streamCachedPrompt } from "../utils/prompt-stream.js";
 import { PROMPT_CACHE_CONFIG } from "../config/prompt-cache.js";
 import { pipeSSEStreamAndExtractText } from "../utils/ai-chat-stream.js";
@@ -2484,6 +2485,30 @@ router.get("/explore", optionalAuth, async (c) => {
     // Determine whether these are user's created books (can apply status filtering)
     const isCreations = bookSortBy === 'creations';
 
+    // Privacy preferences check for public profile views (reads, likes)
+    let isPrivateToVisitors = false;
+    if (profileUserId) {
+      const [targetUserRow] = await dbRead
+        .select({ privacyPreferences: users.privacyPreferences })
+        .from(users)
+        .where(eq(users.userId, profileUserId))
+        .limit(1);
+
+      const targetPrefs = normalizePrivacyPreferences(targetUserRow?.privacyPreferences);
+      if (bookSortBy === 'likes') {
+        isPrivateToVisitors = targetPrefs.showLikedOnProfile === false;
+      } else if (bookSortBy === 'reads') {
+        isPrivateToVisitors = targetPrefs.showReadsOnProfile === false;
+      }
+
+      if (profileUserId !== userId && isPrivateToVisitors) {
+        const emptyBooks: EnrichedBookData[] = [];
+        const pagination = calculatePaginationMeta(page, limit, 0);
+        c.header('Cache-Control', 'private, no-cache, no-store, must-revalidate');
+        return c.json({ ...createPaginatedResponse(emptyBooks, pagination, 'books'), isPrivate: true });
+      }
+    }
+
     // Determine whether these are the user's own in-progress Pen books.
     // Treated like "creations" for access control (owner-scoped, auth-required)
     // but the pen-draft predicate is applied inside applyBookSorting.
@@ -2505,11 +2530,12 @@ router.get("/explore", optionalAuth, async (c) => {
     // Determine base condition based on sort option.
     // When profileUserId is provided (from ?userId=X), we are viewing books
     // by/for a specific user:
-    //   - 'creations' → that user's own books (any status)
+    //   - 'creations'/'pen-drafts' (owner) → that user's own books (any status)
     //   - 'favorites'/'reads'/'likes' → public books, filtered by that user's list (handled in sort)
-    //   - other sorts → public books authored by that user
+    //   - other sorts or visitor viewing creations → public books authored by that user
     const targetUserId = profileUserId || userId;
-    const baseCondition: ReturnType<typeof sql> = isCreations || isPenDrafts
+    const isOwnerViewingSelf = Boolean(userId && targetUserId === userId);
+    const baseCondition: ReturnType<typeof sql> = (isCreations || isPenDrafts) && isOwnerViewingSelf
       ? statusFilter && isCreations
         ? and(eq(books.userId, targetUserId!), inArray(books.status, statusFilter))!
         : eq(books.userId, targetUserId!) // User's own books regardless of status
@@ -2685,11 +2711,15 @@ router.get("/explore", optionalAuth, async (c) => {
     const grandTotal = grandTotalFromQuery ?? result.pagination.totalCount ?? 0;
     result = { ...result, pagination: { ...result.pagination, grandTotal } };
 
-    // Add HTTP cache headers: public CDN caching ONLY for anonymous requests
-    if (shouldCache && !userId) {
+    if (profileUserId) {
+      result = { ...result, isPrivate: isPrivateToVisitors };
+    }
+
+    // Add HTTP cache headers: public CDN caching ONLY for anonymous requests without profileUserId
+    if (shouldCache && !userId && !profileUserId) {
       const httpCacheMaxAge = cacheTTL; // 5 min for trending, 30 min for newest
       c.header('Cache-Control', `public, max-age=${httpCacheMaxAge}, s-maxage=${httpCacheMaxAge}, stale-while-revalidate=${httpCacheMaxAge / 2}`);
-    } else if (userId) {
+    } else {
       c.header('Cache-Control', 'private, no-cache, no-store, must-revalidate');
     }
     

@@ -54,6 +54,7 @@ export type PaginatedResponse<T, K extends ResourceName = 'items'> = {
   [P in K]: T[];
 } & {
   pagination: PaginationMeta;
+  isPrivate?: boolean;
 };
 
 /**
@@ -173,5 +174,5 @@ export function createPaginatedResponse<T, K extends ResourceName = 'items'>(
   return {
     [key]: items,
     pagination,
-  } as PaginatedResponse<T, K>;
+  } as unknown as PaginatedResponse<T, K>;
 }

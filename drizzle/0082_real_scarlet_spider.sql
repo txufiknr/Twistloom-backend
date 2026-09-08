@@ -1,0 +1,2 @@
+ALTER TABLE "users" ADD COLUMN "privacy_preferences" jsonb;--> statement-breakpoint
+CREATE INDEX "user_comments_user_created_idx" ON "user_comments" USING btree ("user_id","created_at" DESC NULLS LAST);

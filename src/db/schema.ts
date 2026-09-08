@@ -27,6 +27,7 @@ import type { EnforcementAction, ViolationType, ViolationSeverity, RiskTier, Rep
 import { BOOK_MIN_PAGES } from "../config/story.js";
 import { FIRST_TIME_CREDITS } from "../config/credits.js";
 import type { WalletCurrency } from "../types/wallet.js";
+import type { PrivacyPreferences } from "../types/privacy-preferences.js";
 
 /** Pre-defined columns */
 // const id = () => uuid("id").primaryKey().$defaultFn(generateId);
@@ -387,6 +388,12 @@ export const users = pgTable(
       storyPublished: boolean;
       aiCompleted: boolean;
     }>(),
+    /**
+     * Optional privacy prefs (showCommentsOnProfile). Null until onboarding
+     * applies defaults — see DEFAULT_PRIVACY_PREFERENCES.
+     * Default: { showCommentsOnProfile: false } (private).
+     */
+    privacyPreferences: jsonb("privacy_preferences").$type<PrivacyPreferences>(),
     /**
      * Author's persisted Pen editor preferences (§6.5, Phase 0.c). Global per
      * user in v1 — no per-book override column. Default must match
@@ -962,6 +969,9 @@ export const userComments = pgTable(
 
     // Index for recent comments
     index("user_comments_created_idx").on(t.createdAt.desc()),
+
+    // Composite index for user profile comments list (WHERE user_id = ? ORDER BY created_at DESC)
+    index("user_comments_user_created_idx").on(t.userId, t.createdAt.desc()),
     
     // Index for book comment ordering
     index("user_comments_book_order_idx").on(t.bookId, t.createdAt.desc()),

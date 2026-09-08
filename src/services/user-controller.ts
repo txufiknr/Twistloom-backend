@@ -83,6 +83,7 @@ export function getEnrichedUserSelect() {
     isBanned: sql<boolean>`(${users.bannedAt} IS NOT NULL)`,
     // Beta tester program membership flag (one-time join + reward).
     isBetaTester: users.isBetaTester,
+    privacyPreferences: users.privacyPreferences,
     // Expose the rest of the `user_counters` columns as SSOT-backed fields.
     booksGenerated: sql<number>`COALESCE(${userCounters.booksGenerated},0)`,
     booksCompleted: sql<number>`COALESCE(${userCounters.booksCompleted},0)`,
