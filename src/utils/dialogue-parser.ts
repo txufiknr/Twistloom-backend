@@ -30,13 +30,16 @@ export type DialogueSegment = {
    * this module only parses structure, it never looks up names.
    */
   speakerId: string;
+  /** Emotional tone tag (e.g. 'scream', 'whisper', 'angry'). Null when the AI omitted a mood tag. */
+  mood: DialogueMood | null;
   text: string;
 };
 
 /**
  * Source pattern for a dialogue marker anchored to the start of a line:
  * `[character_id]` or `[???]`, optional whitespace, then the rest of the
- * line. Capture group 1 is the speaker ID; capture group 2 is the line's
+ * line. Capture group 1 is the speaker ID; capture group 2 is the optional
+ * mood tag (e.g. `scream`, `whisper`); capture group 3 is the line's
  * remaining text.
  *
  * Kept as a single string and compiled into two `RegExp`s below (one
@@ -49,7 +52,26 @@ export type DialogueSegment = {
  * matching open, a SyntaxError at import time). One source string makes
  * that class of drift impossible.
  */
-const DIALOGUE_MARKER_SOURCE = String.raw`^\[([\w_]+|\?\?\?)\]\s*(.*)$`;
+const DIALOGUE_MARKER_SOURCE = String.raw`^\[([\w_]+|\?\?\?)(?:\|(\w+))?\]\s*(.*)$`;
+
+/**
+ * Closed vocabulary of mood tags the AI may attach to dialogue markers.
+ *
+ * IMPORTANT: This array is duplicated in the frontend's
+ * src/lib/utils/dialogue-parser.ts. Both copies MUST stay in sync —
+ * add/remove mood tags in BOTH repos in the same PR. There is no shared
+ * package enforcing this; the JSDoc is the only guardrail.
+ */
+export const DIALOGUE_MOODS = [
+  'scream', 'angry', 'afraid', 'whisper', 'cry',
+  'laugh', 'sing', 'calm', 'desperate', 'cold',
+] as const;
+
+/** Union type of all valid dialogue mood tags. */
+export type DialogueMood = typeof DIALOGUE_MOODS[number];
+
+/** Set for O(1) membership checks — derived from the canonical array. */
+export const VALID_MOODS: ReadonlySet<DialogueMood> = new Set(DIALOGUE_MOODS);
 
 /** Per-line match (single line, no `g` flag) — used by parseDialogueMarkers/stripDialogueMarkers. */
 const DIALOGUE_MARKER_LINE_PATTERN = new RegExp(DIALOGUE_MARKER_SOURCE);
@@ -84,8 +106,10 @@ const DIALOGUE_MARKER_SCAN_PATTERN = new RegExp(DIALOGUE_MARKER_SOURCE, 'gm');
 export function normalizeDialogueMarkers(text: string): string {
   if (!text || typeof text !== 'string') return text;
   return text.replace(
-    /^\[([\w_]+|\?\?\?)\][^\S\r\n]*(?:\r?\n\s*)+(?!\[)(\S.*)$/gm,
-    '[$1] $2'
+    /^\[([\w_]+|\?\?\?)(?:\|(\w+))?\][^\S\r\n]*(?:\r?\n\s*)+(?!\[)(\S.*)$/gm,
+    (_, speaker: string, mood: string | undefined, dialogue: string) => mood
+      ? `[${speaker}|${mood}] ${dialogue}`
+      : `[${speaker}] ${dialogue}`
   );
 }
 
@@ -105,11 +129,12 @@ export function normalizeDialogueMarkers(text: string): string {
  * @returns Ordered array of prose and dialogue segments
  *
  * @example
- * parseDialogueMarkers('The hall was quiet.\n[mara] "Hello."\n[elias] "Hi."');
+ * parseDialogueMarkers('The hall was quiet.\n[mara] "Hello."\n[mara|scream] "Help!"\n[elias] "Hi."');
  * // [
  * //   { type: 'prose', text: 'The hall was quiet.' },
- * //   { type: 'dialogue', speakerId: 'mara', text: '"Hello."' },
- * //   { type: 'dialogue', speakerId: 'elias', text: '"Hi."' },
+ * //   { type: 'dialogue', speakerId: 'mara', mood: null, text: '"Hello."' },
+ * //   { type: 'dialogue', speakerId: 'mara', mood: 'scream', text: '"Help!"' },
+ * //   { type: 'dialogue', speakerId: 'elias', mood: null, text: '"Hi."' },
  * // ]
  */
 export function parseDialogueMarkers(text: string): DialogueSegment[] {
@@ -128,7 +153,7 @@ export function parseDialogueMarkers(text: string): DialogueSegment[] {
     const match = line.match(DIALOGUE_MARKER_LINE_PATTERN);
     if (match) {
       flushProse();
-      segments.push({ type: 'dialogue', speakerId: match[1], text: match[2].trim() });
+      segments.push({ type: 'dialogue', speakerId: match[1], mood: (match[2] as DialogueMood) ?? null, text: match[3].trim() });
     } else {
       currentProse.push(line);
     }
@@ -160,7 +185,7 @@ export function parseDialogueMarkers(text: string): DialogueSegment[] {
 export function stripDialogueMarkers(text: string): string {
   return normalizeDialogueMarkers(text)
     .split('\n')
-    .map(line => line.replace(DIALOGUE_MARKER_LINE_PATTERN, '$2'))
+    .map(line => line.replace(DIALOGUE_MARKER_LINE_PATTERN, '$3'))
     .join('\n');
 }
 

@@ -11,7 +11,7 @@
 
 import { MIN_CHARS_PER_PAGE, MIN_CHARS_PER_PAGE_IMPORTED } from "../config/story.js";
 import type { BookMode } from "../types/book.js";
-import { hasDialogueMarkers } from "./dialogue-parser.js";
+import { hasDialogueMarkers, VALID_MOODS } from "./dialogue-parser.js";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -151,6 +151,16 @@ export function checkDialogueMarkerCoverage(text: string, label?: string): void 
   const quotedLines = text.match(/"[^"]+"/g);
   if (quotedLines && quotedLines.length > DIALOGUE_MARKER_COVERAGE_QUOTE_THRESHOLD && !hasDialogueMarkers(text)) {
     console.warn(`⚠️ ${label ? `[${label}] ` : ''}Page has ${quotedLines.length} quoted lines but no dialogue-attribution markers`);
+  }
+
+  // Soft warning for unknown mood tags
+  const moodPattern = /\[([\w_]+|\?\?\?)\|(\w+)\]/g;
+  let moodMatch: RegExpExecArray | null;
+  while ((moodMatch = moodPattern.exec(text)) !== null) {
+    const mood = moodMatch[2];
+    if (!(VALID_MOODS as ReadonlySet<string>).has(mood)) {
+      console.warn(`⚠️ ${label ? `[${label}] ` : ''}Unknown dialogue mood tag: ${mood}`);
+    }
   }
 }
 

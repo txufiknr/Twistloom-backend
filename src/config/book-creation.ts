@@ -1,6 +1,7 @@
 import { MAX_WORDS_PER_PAGE } from "./story.js";
 import { blacklistedNames } from "./characters.js";
 import { formatOneOf } from "../utils/text-processing.js";
+import { DIALOGUE_MOODS } from "../utils/dialogue-parser.js";
 import type { WritingPreset } from "../types/book-creation.js";
 import type { ActionHintType, EndingPlanType, EndingType, ProfileShiftType } from "../types/story.js";
 
@@ -109,6 +110,11 @@ export const RULES_DIALOGUE_ATTRIBUTION = `DIALOGUE ATTRIBUTION MARKERS:
   - Side character: [character_id] "Dialogue text."
   - MC speaking aloud: [mc] "Dialogue text."
   - Unknown speaker: [???] "Dialogue text."
+- Optional mood tag: [character_id|mood] "Dialogue text"
+  - Available mood tags: ${DIALOGUE_MOODS.join(', ')}
+  - Use a mood tag when the dialogue has a strong emotional register that differs from neutral speech.
+  - Omit the mood tag for normal/neutral dialogue — do NOT tag every line.
+  - NEVER invent mood tags outside the vocabulary above.
 - Keep marker and dialogue on the SAME line (never split across lines).
 - Never mark narration or internal thoughts.
 - UI markers only — never reference or explain them in the story.`;
