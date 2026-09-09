@@ -117,6 +117,27 @@ export interface User {
   isBetaTester?: boolean;
   /** User privacy preferences (showCommentsOnProfile) */
   privacyPreferences?: PrivacyPreferences;
+  /** Profile metadata — typed columns for profile customization */
+  profileMetadata?: ProfileMetadata;
+}
+
+/** Profile metadata displayed on user profiles. */
+export interface ProfileMetadata {
+  pinnedStoryIds?: string[];
+  featuredStoryId?: string;
+  featuredStoryNote?: string;
+  socialLinks?: Record<string, string>;
+  favoriteStoryIds?: string[];
+  loreStatus?: LoreStatus;
+}
+
+/** Lore status capsule displayed as an ambient pill on the profile. */
+export interface LoreStatus {
+  text: string;
+  icon?: string;
+  storyId?: string;
+  updatedAt?: string;
+  expiresAt?: string;
 }
 
 export type UserActivityType =
@@ -207,7 +228,17 @@ export type UserAchievement = {
   isNotified: boolean;
 };
 
-export type EnrichedUserSelect = Omit<User, 'stats' | 'subscription' | 'isFollowing' | 'isBlocked' | 'hasReferrer'> & UserStats & UserSubscription & {
+export type EnrichedUserSelect = Omit<User, 'stats' | 'subscription' | 'isFollowing' | 'isBlocked' | 'hasReferrer' | 'profileMetadata'> & UserStats & UserSubscription & {
   hasReferrer: boolean;
   isBanned: boolean;
+  // Profile metadata — typed columns
+  pinnedStoryIds: string[] | null;
+  featuredStoryId: string | null;
+  featuredStoryNote: string | null;
+  favoriteStoryIds: string[] | null;
+  loreStatusText: string | null;
+  loreStatusIcon: string | null;
+  loreStatusStoryId: string | null;
+  loreStatusUpdatedAt: Date | null;
+  loreStatusExpiresAt: Date | null;
 };

@@ -575,6 +575,20 @@
       "when": 1788826685102,
       "tag": "0082_real_scarlet_spider",
       "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1788915371451,
+      "tag": "0083_friendly_magneto",
+      "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
+      "when": 1788916612259,
+      "tag": "0084_quiet_lizard",
+      "breakpoints": true
     }
   ]
 }

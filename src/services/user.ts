@@ -15,7 +15,7 @@ import type { Context } from "hono";
 import type { DBNewUser, DBNewUserActivityLog, DBUserActivityLog, DBUserForAuth } from "../types/schema.js";
 import { type AvatarFrame, avatarFrames, type CheckinClaimType, type CheckinPostResponse, type CheckinStatusResponse, type Gender } from "../types/user.js";
 import { type DBClient, dbRead, dbWrite } from "../db/client.js";
-import { users, books, userComments, userAuth, userCheckins, userActivityLogs } from "../db/schema.js";
+import { users, books, userComments, userAuth, userCheckins, userActivityLogs, userSocialLinks } from "../db/schema.js";
 import { eq, and, gt, ne, sql, desc, or, inArray } from "drizzle-orm";
 import { debounceAsync } from "../utils/debounce.js";
 import { sanitizeTextForDB, cleanSingleLineText, cleanMultilineText } from '../utils/text-processing.js';
@@ -1150,7 +1150,7 @@ function sanitizeFieldValue(
  */
 export async function sanitizeProfileUpdate(
   userId: string,
-  payload: Record<'name' | 'bio' | 'imageUrl' | 'gender' | 'username' | 'avatarFrame', unknown>,
+  payload: Record<'name' | 'bio' | 'imageUrl' | 'gender' | 'username' | 'avatarFrame' | 'pinnedStoryIds' | 'featuredStoryId' | 'featuredStoryNote' | 'favoriteStoryIds' | 'loreStatus', unknown>,
   res: Context
 ): Promise<Partial<DBNewUser> | null> {
   const updateData: Partial<DBNewUser> = {};
@@ -1174,6 +1174,66 @@ export async function sanitizeProfileUpdate(
       updateData.avatarFrame = null;
     } else if (typeof payload.avatarFrame === 'string' && avatarFrames.includes(payload.avatarFrame as AvatarFrame)) {
       updateData.avatarFrame = payload.avatarFrame as AvatarFrame;
+    }
+  }
+
+  // Profile metadata fields — typed columns
+  if ('pinnedStoryIds' in payload) {
+    if (payload.pinnedStoryIds === null || !Array.isArray(payload.pinnedStoryIds)) {
+      updateData.pinnedStoryIds = null;
+    } else {
+      // Max 3 pinned stories, validate UUIDs
+      const ids = (payload.pinnedStoryIds as unknown[])
+        .filter((id): id is string => typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))
+        .slice(0, 3);
+      updateData.pinnedStoryIds = ids.length > 0 ? ids : null;
+    }
+  }
+
+  if ('featuredStoryId' in payload) {
+    if (payload.featuredStoryId === null || typeof payload.featuredStoryId !== 'string') {
+      updateData.featuredStoryId = null;
+    } else if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(payload.featuredStoryId)) {
+      updateData.featuredStoryId = payload.featuredStoryId;
+    }
+  }
+
+  if ('featuredStoryNote' in payload) {
+    if (payload.featuredStoryNote === null || typeof payload.featuredStoryNote !== 'string') {
+      updateData.featuredStoryNote = null;
+    } else {
+      // Max 280 characters
+      const note = payload.featuredStoryNote.slice(0, 280);
+      updateData.featuredStoryNote = note;
+    }
+  }
+
+  if ('favoriteStoryIds' in payload) {
+    if (payload.favoriteStoryIds === null || !Array.isArray(payload.favoriteStoryIds)) {
+      updateData.favoriteStoryIds = null;
+    } else {
+      // Max 4 favorite stories, validate UUIDs
+      const ids = (payload.favoriteStoryIds as unknown[])
+        .filter((id): id is string => typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))
+        .slice(0, 4);
+      updateData.favoriteStoryIds = ids.length > 0 ? ids : null;
+    }
+  }
+
+  if ('loreStatus' in payload) {
+    if (payload.loreStatus === null || typeof payload.loreStatus !== 'object') {
+      updateData.loreStatusText = null;
+      updateData.loreStatusIcon = null;
+      updateData.loreStatusStoryId = null;
+      updateData.loreStatusUpdatedAt = null;
+      updateData.loreStatusExpiresAt = null;
+    } else {
+      const lore = payload.loreStatus as Record<string, unknown>;
+      updateData.loreStatusText = typeof lore.text === 'string' ? lore.text.slice(0, 80) : null;
+      updateData.loreStatusIcon = typeof lore.icon === 'string' ? lore.icon : null;
+      updateData.loreStatusStoryId = typeof lore.storyId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(lore.storyId) ? lore.storyId : null;
+      updateData.loreStatusUpdatedAt = new Date();
+      updateData.loreStatusExpiresAt = typeof lore.expiresAt === 'string' ? new Date(lore.expiresAt) : null;
     }
   }
 
@@ -1203,6 +1263,86 @@ export async function sanitizeProfileUpdate(
   }
 
   return updateData;
+}
+
+/**
+ * Supported social link platforms.
+ */
+export type SocialPlatform = 'discord' | 'patreon' | 'kofi' | 'substack' | 'bluesky' | 'twitter' | 'royalroad' | 'website';
+
+const SOCIAL_PLATFORMS: SocialPlatform[] = ['discord', 'patreon', 'kofi', 'substack', 'bluesky', 'twitter', 'royalroad', 'website'];
+
+/**
+ * Updates social links for a user in the user_social_links junction table.
+ *
+ * Deletes all existing social links for the user and inserts the new ones.
+ * Uses a single transaction for atomicity.
+ *
+ * @param userId - The user's ID
+ * @param socialLinks - Record of platform -> URL mappings, or null/undefined to clear all
+ */
+export async function updateSocialLinks(
+  userId: string,
+  socialLinks: Record<string, string> | null | undefined,
+): Promise<void> {
+  await dbWrite.transaction(async (tx) => {
+    // Clear all existing social links for this user
+    await tx
+      .delete(userSocialLinks)
+      .where(eq(userSocialLinks.userId, userId));
+
+    // If null/undefined, we're done (just clearing)
+    if (!socialLinks || typeof socialLinks !== 'object') return;
+
+    // Insert new social links
+    const entries: { userId: string; platform: SocialPlatform; url: string }[] = [];
+    for (const [platform, url] of Object.entries(socialLinks)) {
+      if (
+        SOCIAL_PLATFORMS.includes(platform as SocialPlatform) &&
+        typeof url === 'string' &&
+        url.trim().length > 0
+      ) {
+        const trimmedUrl = url.trim();
+        try {
+          new URL(trimmedUrl);
+        } catch {
+          continue; // skip invalid URLs
+        }
+        entries.push({
+          userId,
+          platform: platform as SocialPlatform,
+          url: trimmedUrl,
+        });
+      }
+    }
+
+    if (entries.length > 0) {
+      await tx
+        .insert(userSocialLinks)
+        .values(entries);
+    }
+  });
+}
+
+/**
+ * Fetches social links for a user from the user_social_links junction table.
+ *
+ * @param userId - The user's ID
+ * @returns Record of platform -> URL mappings
+ */
+export async function getSocialLinks(
+  userId: string,
+): Promise<Record<string, string>> {
+  const links = await dbRead
+    .select({ platform: userSocialLinks.platform, url: userSocialLinks.url })
+    .from(userSocialLinks)
+    .where(eq(userSocialLinks.userId, userId));
+
+  const result: Record<string, string> = {};
+  for (const link of links) {
+    result[link.platform] = link.url;
+  }
+  return result;
 }
 
 /**

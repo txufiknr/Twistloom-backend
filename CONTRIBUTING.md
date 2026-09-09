@@ -8,23 +8,98 @@ This document serves as a comprehensive guide for human developers and contribut
 
 ## 📑 Table of Contents
 
-1. [Project Overview & Architecture](#-project-overview--architecture)
-2. [Prerequisites & Tooling](#-prerequisites--tooling)
-3. [Local Development Setup](#-local-development-setup)
-4. [Environment Variables](#-environment-variables)
-5. [Database Management & Migrations](#-database-management--migrations)
-6. [Core Architectural Guidelines](#-core-architectural-guidelines)
-   - [6.1 Hono Framework & Route Conventions](#61-hono-framework--route-conventions)
-   - [6.2 Multi-Tier Caching (LRU + Redis + Database)](#62-multi-tier-caching-lru--redis--database)
-   - [6.3 Credits & Transactional Financial Integrity](#63-credits--transactional-financial-integrity)
-   - [6.4 Server-Sent Events (SSE) Streaming](#64-server-sent-events-sse-streaming)
-    - [6.5 AI Provider Orchestration & Fallback](#65-ai-provider-orchestration--fallback)
-    - [6.6 Hot-Path & Serialization Performance](#66-hot-path--serialization-performance)
-    - [6.7 Input Sanitization & Security Best Practices](#67-input-sanitization--security-best-practices)
-    - [6.8 Payment Gateway & Credits Best Practices](#68-payment-gateway--credits-best-practices)
-7. [Code Quality & Standards](#-code-quality--standards)
-8. [Testing & Debugging](#-testing--debugging)
-9. [Pull Request & Contribution Process](#-pull-request--contribution-process)
+1. [Architecture-First Principle](#-architecture-first-principle)
+2. [Project Overview & Architecture](#-project-overview--architecture)
+3. [Prerequisites & Tooling](#-prerequisites--tooling)
+4. [Local Development Setup](#-local-development-setup)
+5. [Environment Variables](#-environment-variables)
+6. [Database Management & Migrations](#-database-management--migrations)
+7. [Core Architectural Guidelines](#-core-architectural-guidelines)
+   - [7.1 Hono Framework & Route Conventions](#71-hono-framework--route-conventions)
+   - [7.2 Multi-Tier Caching (LRU + Redis + Database)](#72-multi-tier-caching-lru--redis--database)
+   - [7.3 Credits & Transactional Financial Integrity](#73-credits--transactional-financial-integrity)
+   - [7.4 Server-Sent Events (SSE) Streaming](#74-server-sent-events-sse-streaming)
+    - [7.5 AI Provider Orchestration & Fallback](#75-ai-provider-orchestration--fallback)
+    - [7.6 Hot-Path & Serialization Performance](#76-hot-path--serialization-performance)
+    - [7.7 Input Sanitization & Security Best Practices](#77-input-sanitization--security-best-practices)
+    - [7.8 Payment Gateway & Credits Best Practices](#78-payment-gateway--credits-best-practices)
+8. [Code Quality & Standards](#-code-quality--standards)
+9. [Testing & Debugging](#-testing--debugging)
+10. [Pull Request & Contribution Process](#-pull-request--contribution-process)
+
+---
+
+## 🧠 Architecture-First Principle
+
+> **"Always design as if Twistloom has 10M concurrent active users today."**
+
+Every code decision must be evaluated against massive scale. Here's what this means in practice:
+
+### 1. No "We'll Refactor Later" Thinking
+
+The refactor never happens. Technical debt compounds exponentially — the cost of fixing a bad decision after launch is 10-100x the cost of doing it right initially. Design the cleanest, most scalable architecture from the first commit.
+
+### 2. Design From Scratch, Not From Legacy
+
+When implementing a feature, ask yourself: "If I were building Twistloom from scratch today, what would the ideal architecture look like?" Implement that, not a compromise that creates future migration pain.
+
+### 3. Assume 10M Concurrent Users
+
+Every database schema decision, every API contract, every query must be evaluated against massive scale:
+
+- A query that works for 1K users will fail at 1M
+- A table scan that's fine with 100K rows will timeout at 10M
+- A JSONB field that's fine for 10K users becomes a nightmare at 1M
+
+**Design for the scale you'll have, not the scale you have now.**
+
+### 4. Type Safety is Non-Negotiable
+
+Never use `as` casts, `any` types, or runtime type assertions that bypass compile-time checks. Every boundary between systems (API ↔ database, service ↔ route) must have validated types. Schema drift between systems is a ticking time bomb.
+
+### 5. Database Schema Must Be Forward-Compatible
+
+When adding a new field, ask: "Will this field be queried? Filtered? Sorted? Indexed?"
+
+| If yes... | Then it belongs in... |
+|-----------|----------------------|
+| Queried frequently | A typed column with a B-tree index |
+| Queried occasionally | A typed column without an index |
+| Rarely queried server-side | JSONB with a GIN index |
+| Never queried server-side | JSONB without an index |
+
+### 6. API Contracts Are Permanent
+
+Design API responses as if they'll be consumed by 10 different clients for 5 years. Never leak implementation details. Never break backward compatibility without a versioned migration path.
+
+### 7. DRY is a Safety Principle
+
+Duplicated logic is a bug waiting to happen. When the same logic exists in two places, one will be updated and the other won't, causing silent data inconsistency. Extract shared utilities, services, and types proactively.
+
+### 8. Performance is a Feature
+
+Optimize for the 95th percentile latency, not the average. Profile before optimizing. Measure after changing. Never assume performance; always verify.
+
+### 9. Security is Architectural, Not Bolt-On
+
+Input validation, authentication, authorization, and data sanitization must be designed into the system from day one, not added as patches later.
+
+### 10. When in Doubt, Choose the Scalable Option
+
+If two approaches are roughly equal in complexity, choose the one that scales better. The "simpler" approach that doesn't scale will require a rewrite later, which is never simpler.
+
+### Quick Decision Matrix
+
+| Scenario | ❌ Short-term thinking | ✅ Architecture-first thinking |
+|----------|----------------------|-------------------------------|
+| New field that's rarely queried | Add to JSONB blob | Add as typed column with DEFAULT NULL |
+| Duplicated helper function | Copy-paste to new file | Extract to shared utility |
+| Type assertion needed | Use `as` cast | Create proper type guard |
+| API response shape | Leak internal schema | Design clean public contract |
+| Database query | Full table scan | Indexed query with EXPLAIN ANALYZE |
+| Rate limiting | In-memory counter | Upstash Redis atomic ops |
+| Credit deduction | Direct DB update | `executeWithCredits` with row lock |
+| SSE stream | Manual string concat | `pipeSSEStreamAndExtractText` |
 
 ---
 

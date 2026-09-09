@@ -135,6 +135,16 @@ export function getEnrichedUserSelect() {
       FROM transactions t
       WHERE t.user_id = ${users.userId} AND t.type = 'purchase'
     )`,
+    // Profile metadata — typed columns
+    pinnedStoryIds: users.pinnedStoryIds,
+    featuredStoryId: users.featuredStoryId,
+    featuredStoryNote: users.featuredStoryNote,
+    favoriteStoryIds: users.favoriteStoryIds,
+    loreStatusText: users.loreStatusText,
+    loreStatusIcon: users.loreStatusIcon,
+    loreStatusStoryId: users.loreStatusStoryId,
+    loreStatusUpdatedAt: users.loreStatusUpdatedAt,
+    loreStatusExpiresAt: users.loreStatusExpiresAt,
   } satisfies Record<keyof EnrichedUserSelect, SQL | PgColumn>;
 }
 

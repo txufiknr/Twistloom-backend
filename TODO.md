@@ -19,6 +19,8 @@
 [ ] multi-turn & pen propose DRY infer state delta: `PEN_STATE_PROPOSAL_vs_MULTI_TURN_TURND_DRY_ROADMAP.md`
 [ ] tackle new issues in `MULTI_TURN_PAGE_GENERATION_BUG_REPORT.md`
 
+[ ] docs\roadmap\PGVECTOR_SEMANTIC_MEMORY_SMARTER_RETRIEVAL_ROADMAP.md
+
 ---
 
 CRITICAL TONE & LOCALIZATION CONSTRAINTS:

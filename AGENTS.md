@@ -6,6 +6,45 @@ This document outlines the architecture, coding standards, established design pa
 
 ---
 
+## 🧠 Architecture-First Principle (CRITICAL)
+
+> **"Always design as if Twistloom has 10M concurrent active users today."**
+
+1. **No "we'll refactor later" thinking** — the refactor never happens. Design the cleanest, most scalable architecture from the first commit. Technical debt compounds exponentially; the cost of fixing a bad decision after launch is 10-100x the cost of doing it right initially.
+
+2. **Design from scratch, not from legacy** — when implementing a feature, ask: "If I were building Twistloom from scratch today, what would the ideal architecture look like?" Implement that, not a compromise that creates future migration pain.
+
+3. **Assume 10M concurrent users** — every database schema decision, every API contract, every query must be evaluated against massive scale. A query that works for 1K users will fail at 1M. A table scan that's fine with 100K rows will timeout at 10M. Design for the scale you'll have, not the scale you have now.
+
+4. **Type safety is non-negotiable** — never use `as` casts, `any` types, or runtime type assertions that bypass compile-time checks. Every boundary between systems (API ↔ database, service ↔ route) must have validated types. Schema drift between systems is a ticking time bomb.
+
+5. **Database schema must be forward-compatible** — when adding a new field, ask: "Will this field be queried? Filtered? Sorted? Indexed?" If yes, it belongs in a typed column, not JSONB. JSONB is for truly flexible, rarely-queried data only.
+
+6. **API contracts are permanent** — design API responses as if they'll be consumed by 10 different clients for 5 years. Never leak implementation details. Never break backward compatibility without a versioned migration path.
+
+7. **DRY is a safety principle, not just convenience** — duplicated logic is a bug waiting to happen. When the same logic exists in two places, one will be updated and the other won't, causing silent data inconsistency. Extract shared utilities, services, and types proactively.
+
+8. **Performance is a feature** — optimize for the 95th percentile latency, not the average. Profile before optimizing. Measure after changing. Never assume performance; always verify.
+
+9. **Security is architectural, not bolt-on** — input validation, authentication, authorization, and data sanitization must be designed into the system from day one, not added as patches later.
+
+10. **When in doubt, choose the scalable option** — if two approaches are roughly equal in complexity, choose the one that scales better. The "simpler" approach that doesn't scale will require a rewrite later, which is never simpler.
+
+### Quick Decision Matrix
+
+| Scenario | ❌ Short-term thinking | ✅ Architecture-first thinking |
+|----------|----------------------|-------------------------------|
+| New field that's rarely queried | Add to JSONB blob | Add as typed column with DEFAULT NULL |
+| Duplicated helper function | Copy-paste to new file | Extract to shared utility |
+| Type assertion needed | Use `as` cast | Create proper type guard |
+| API response shape | Leak internal schema | Design clean public contract |
+| Database query | Full table scan | Indexed query with EXPLAIN ANALYZE |
+| Rate limiting | In-memory counter | Upstash Redis atomic ops |
+| Credit deduction | Direct DB update | `executeWithCredits` with row lock |
+| SSE stream | Manual string concat | `pipeSSEStreamAndExtractText` |
+
+---
+
 ## 🛠️ Technology Stack & Runtime Architecture
 
 ### Core Technologies

@@ -69,7 +69,7 @@ import { getErrorMessage, cApiError, cNotFoundError, cConflictError, cValidation
 import { eq, and, desc, sql, gte } from "drizzle-orm";
 import { calculatePaginationMeta, extractPaginationParams } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
-import { updateUserLastActivity, getCheckInStatus, getCheckInStreaks, logUserActivity, sanitizeProfileUpdate, enrichActivityLogs } from "../services/user.js";
+import { updateUserLastActivity, getCheckInStatus, getCheckInStreaks, logUserActivity, sanitizeProfileUpdate, enrichActivityLogs, updateSocialLinks, getSocialLinks } from "../services/user.js";
 import { invalidateCachePattern } from "../utils/cache.js";
 import { invalidateExploreCache, invalidateUserBooksCache, invalidateUserProfileCache, withCache, CACHE_KEYS, CACHE_TTL } from "../services/cache.js";
 import { getEnrichedUser, getEnrichedUserById, setReferrerForNewUser, handleCheckIn, joinBetaTesterProgram } from "../services/user-controller.js";
@@ -697,6 +697,11 @@ router.put('/', requireAuth, async (c: Context<AppEnv>) => {
       .where(eq(users.userId, userId))
       .returning();
 
+    // 4. Update social links in junction table (if provided)
+    if ('socialLinks' in body) {
+      await updateSocialLinks(userId, body.socialLinks);
+    }
+
     await invalidateUserProfileCache(userId);
     await updateUserLastActivity(userId);
 
@@ -949,7 +954,28 @@ router.get("/users/:identifier", optionalAuth, async (c: Context<AppEnv>) => {
           maxCheckinStreak: userData.maxCheckinStreak,
           customActionsWritten: userData.customActionsWritten,
         } satisfies UserStats,
+
+        // Profile metadata — typed columns
+        profileMetadata: {
+          pinnedStoryIds: userData.pinnedStoryIds ?? undefined,
+          featuredStoryId: userData.featuredStoryId ?? undefined,
+          featuredStoryNote: userData.featuredStoryNote ?? undefined,
+          favoriteStoryIds: userData.favoriteStoryIds ?? undefined,
+          loreStatus: userData.loreStatusText ? {
+            text: userData.loreStatusText,
+            icon: userData.loreStatusIcon ?? undefined,
+            storyId: userData.loreStatusStoryId ?? undefined,
+            updatedAt: userData.loreStatusUpdatedAt?.toISOString() ?? undefined,
+            expiresAt: userData.loreStatusExpiresAt?.toISOString() ?? undefined,
+          } : undefined,
+        },
       };
+
+      // Fetch social links from junction table
+      const socialLinks = await getSocialLinks(userData.id);
+      if (Object.keys(socialLinks).length > 0) {
+        formattedUser.profileMetadata!.socialLinks = socialLinks;
+      }
 
       // Note: isFollowing and isBlocked are viewer-specific — they are computed
       // OUTSIDE the cached fetchUserProfile function to avoid serving stale

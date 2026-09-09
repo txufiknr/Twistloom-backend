@@ -400,6 +400,19 @@ export const users = pgTable(
      * `DEFAULT_EDITOR_PREFS` in `src/types/pen.ts`.
      */
     editorPrefs: jsonb("editor_prefs").$type<EditorPrefs>().notNull().default(sql`'{"background":"default","fontFamily":"serif","fontSize":17,"textColor":"default","lineHeight":1.7,"contentWidth":"medium"}'::jsonb`),
+    /**
+     * Profile metadata — typed columns for profile customization.
+     * All fields are nullable and optional.
+     */
+    pinnedStoryIds: uuid("pinned_story_ids").array(),
+    featuredStoryId: uuid("featured_story_id"),
+    featuredStoryNote: text("featured_story_note"),
+    favoriteStoryIds: uuid("favorite_story_ids").array(),
+    loreStatusText: text("lore_status_text"),
+    loreStatusIcon: text("lore_status_icon"),
+    loreStatusStoryId: uuid("lore_status_story_id"),
+    loreStatusUpdatedAt: timestamp("lore_status_updated_at", { withTimezone: true }),
+    loreStatusExpiresAt: timestamp("lore_status_expires_at", { withTimezone: true }),
     lastActive,
     createdAt,
     updatedAt,
@@ -411,6 +424,27 @@ export const users = pgTable(
     index("users_created_at_idx").on(t.createdAt),
     // Index for VIP expiration queries
     index("users_vip_expires_idx").on(t.vipExpiresAt).where(sql`${t.vipExpiresAt} IS NOT NULL`),
+    // Index for featured story queries
+    index("users_featured_story_id_idx").on(t.featuredStoryId).where(sql`${t.featuredStoryId} IS NOT NULL`),
+    // Index for lore status expiry queries
+    index("users_lore_status_expires_idx").on(t.loreStatusExpiresAt).where(sql`${t.loreStatusExpiresAt} IS NOT NULL`),
+  ]
+);
+
+/**
+ * Create user social links junction table
+ * @summary Stores social links for user profiles (Discord, Patreon, Ko-fi, etc.)
+ * Junction table: one user has many social links, one platform per user.
+ */
+export const userSocialLinks = pgTable(
+  "user_social_links",
+  {
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    platform: text("platform").notNull(),
+    url: text("url").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.platform] }),
   ]
 );
 

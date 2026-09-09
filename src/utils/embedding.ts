@@ -51,10 +51,21 @@ interface JinaEmbeddingResponse {
 }
 
 /**
- * In-memory cache with TTL and a simple insertion-order eviction. Avoids
- * redundant Jina calls when the same text gets embedded more than once
- * within a single generation cycle (e.g. the current-scene query embedding
- * reused across page/character/place/future-note retrieval calls).
+ * In-memory cache with TTL and insertion-order (FIFO) eviction.
+ *
+ * Why FIFO, not LRU? This cache is process-local with a 5-minute TTL.
+ * In Vercel's serverless runtime, each invocation is a fresh process —
+ * the cache starts empty and fills during one page generation, then the
+ * process dies. There is no "long-lived hot key" scenario where a
+ * frequently-accessed entry would be evicted prematurely. Within a
+ * single generation, the same text is embedded at most ~6 times (once
+ * for the scene query, shared across 5 retrieval calls). The cache
+ * holds 100 entries — far more than one generation cycle needs.
+ * LRU promotion-on-access adds complexity for zero practical benefit here.
+ *
+ * Avoids redundant Jina calls when the same text gets embedded more than
+ * once within a single generation cycle (e.g. the current-scene query
+ * embedding reused across page/character/place/future-note retrieval calls).
  *
  * Cache key includes model + task + text so a future model or task change
  * can never silently return a stale or wrong-shaped vector.
@@ -74,6 +85,10 @@ class EmbeddingCache {
 
   set(key: string, value: number[]): void {
     if (this.cache.size >= EMBEDDING_CACHE_MAX_SIZE) {
+      // FIFO eviction: drop the oldest entry by insertion time.
+      // Correct for this use case because the cache is short-lived
+      // (process-scoped, 5-min TTL) and there are no "hot" keys that
+      // outlive a single generation cycle. See class JSDoc for rationale.
       const oldestKey = this.cache.keys().next().value;
       if (oldestKey !== undefined) this.cache.delete(oldestKey);
     }
