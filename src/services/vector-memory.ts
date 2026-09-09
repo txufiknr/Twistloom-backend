@@ -33,8 +33,59 @@ import { dbWrite, dbRead } from '../db/client.js';
 import { pages, pageEmbeddings, characterEmbeddings, placeEmbeddings, futureNoteEmbeddings, clueEmbeddings } from '../db/schema.js';
 import { embedText } from '../utils/embedding.js';
 import { getErrorMessage } from '../utils/error.js';
-import { MAX_VECTOR_RESULTS_PER_QUERY, EMBEDDING_SIMILARITY_THRESHOLD, PGVECTOR_MEMORY_ENABLED } from '../config/embedding.js';
+import { MAX_VECTOR_RESULTS_PER_QUERY, EMBEDDING_SIMILARITY_THRESHOLDS, PGVECTOR_MEMORY_ENABLED } from '../config/embedding.js';
 import type { PersistedStoryPage, FutureNote } from '../types/story.js';
+
+// ============================================================================
+// READ — temporal diversity re-ranking
+// ============================================================================
+
+/**
+ * Re-ranks retrieval results to enforce temporal spread. Inspired by MMR
+ * (Maximal Marginal Relevance) but simplified for narrative context:
+ * iteratively picks the result with the highest similarity score,
+ * then penalizes results within ±maxGap pages of any already-selected
+ * result. This ensures the AI gets callbacks from different parts of
+ * the story, not 5 variations of the same scene cluster.
+ *
+ * @param results - Raw cosine-similarity results, already filtered by threshold
+ * @param maxGap - Minimum page gap between selected results (default: 15)
+ * @param maxResults - Maximum results to return after diversity filtering
+ * @param penaltyFactor - Similarity multiplier for nearby results (default: 0.5)
+ */
+export function diversifyByTemporalSpread<T extends { page: number; similarity: number }>(
+  results: T[],
+  maxGap: number = 15,
+  maxResults?: number,
+  penaltyFactor: number = 0.5,
+): T[] {
+  if (results.length <= 1) return results;
+
+  const limit = maxResults ?? results.length;
+  const selected: T[] = [];
+  const remaining = [...results];
+
+  while (selected.length < limit && remaining.length > 0) {
+    let bestIdx = 0;
+    let bestScore = -Infinity;
+
+    for (let i = 0; i < remaining.length; i++) {
+      const candidate = remaining[i]!;
+      const tooClose = selected.some(s => Math.abs(s.page - candidate.page) <= maxGap);
+      const adjustedScore = tooClose ? candidate.similarity * penaltyFactor : candidate.similarity;
+
+      if (adjustedScore > bestScore) {
+        bestScore = adjustedScore;
+        bestIdx = i;
+      }
+    }
+
+    selected.push(remaining[bestIdx]!);
+    remaining.splice(bestIdx, 1);
+  }
+
+  return selected;
+}
 
 // ============================================================================
 // WRITE — page embeddings
@@ -304,7 +355,7 @@ export interface SimilarPageResult {
  * Retrieves pages semantically similar to `query`, scoped to this book/
  * branch and strictly before `currentPage` — supplements (does not replace)
  * contextHistory's lossy running summary. Results below
- * EMBEDDING_SIMILARITY_THRESHOLD are filtered out so a "no good matches"
+ * EMBEDDING_SIMILARITY_THRESHOLDS.page are filtered out so a "no good matches"
  * scene doesn't inject noise into the prompt.
  *
  * @param options.prioritizeMajorEvents - Use Case 8 (finale callbacks):
@@ -345,7 +396,7 @@ export async function retrieveSimilarPages(
       .orderBy(sql`${isMajorEvent} DESC`, distance)
       .limit(limit);
 
-    return rows.filter(r => r.similarity >= EMBEDDING_SIMILARITY_THRESHOLD);
+    return diversifyByTemporalSpread(rows.filter(r => r.similarity >= EMBEDDING_SIMILARITY_THRESHOLDS.page), 15, limit);
   }
 
   const rows = await dbRead
@@ -359,7 +410,7 @@ export async function retrieveSimilarPages(
     .orderBy(distance)
     .limit(limit);
 
-  return rows.filter(r => r.similarity >= EMBEDDING_SIMILARITY_THRESHOLD);
+  return diversifyByTemporalSpread(rows.filter(r => r.similarity >= EMBEDDING_SIMILARITY_THRESHOLDS.page), 15, limit);
 }
 
 export interface SimilarInteractionResult {
@@ -400,7 +451,7 @@ export async function retrieveCharacterInteractions(
     .orderBy(distance)
     .limit(limit);
 
-  return rows.filter(r => r.similarity >= EMBEDDING_SIMILARITY_THRESHOLD);
+  return diversifyByTemporalSpread(rows.filter(r => r.similarity >= EMBEDDING_SIMILARITY_THRESHOLDS.character), 10, limit);
 }
 
 /**
@@ -434,7 +485,7 @@ export async function retrievePlaceEvents(
     .orderBy(distance)
     .limit(limit);
 
-  return rows.filter(r => r.similarity >= EMBEDDING_SIMILARITY_THRESHOLD);
+  return diversifyByTemporalSpread(rows.filter(r => r.similarity >= EMBEDDING_SIMILARITY_THRESHOLDS.place), 10, limit);
 }
 
 export interface RelevantFutureNoteResult {
@@ -474,7 +525,7 @@ export async function retrieveRelevantFutureNotes(
     .orderBy(distance)
     .limit(limit);
 
-  return rows.filter(r => r.similarity >= EMBEDDING_SIMILARITY_THRESHOLD);
+  return rows.filter(r => r.similarity >= EMBEDDING_SIMILARITY_THRESHOLDS.futureNote);
 }
 
 /**
@@ -510,7 +561,7 @@ export async function retrieveClues(
     .orderBy(distance)
     .limit(limit);
 
-  return rows.filter(r => r.similarity >= EMBEDDING_SIMILARITY_THRESHOLD);
+  return diversifyByTemporalSpread(rows.filter(r => r.similarity >= EMBEDDING_SIMILARITY_THRESHOLDS.clue), 10, limit);
 }
 
 export interface BookClueResult extends SimilarInteractionResult {
@@ -551,5 +602,5 @@ export async function retrieveBookCluesForQuery(
     .orderBy(distance)
     .limit(limit);
 
-  return rows.filter(r => r.similarity >= EMBEDDING_SIMILARITY_THRESHOLD);
+  return rows.filter(r => r.similarity >= EMBEDDING_SIMILARITY_THRESHOLDS.clue);
 }

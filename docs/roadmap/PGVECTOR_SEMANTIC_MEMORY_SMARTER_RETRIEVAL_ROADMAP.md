@@ -1,6 +1,6 @@
 # pgvector Semantic Memory — Smarter Retrieval Roadmap
 
-**Status:** Proposed
+**Status:** Implemented (Steps 1-7 complete, Step 8 deferred)
 **Date:** 2026-09-09
 **Owner:** Taufik
 **Depends on:** `PGVECTOR_SEMANTIC_MEMORY_ROADMAP_V2.md` (Phases 0-5.1 all completed)
@@ -11,14 +11,14 @@
 
 | # | Item | Priority | Status |
 |---|------|----------|--------|
-| 1 | Adaptive retrieval budgets (story-phase-aware) | `P0` | ⬜ Planned |
-| 2 | Dual-query retrieval (semantic + entity-focused fallback) | `P0` | ⬜ Planned |
-| 3 | Temporal diversity re-ranking (MMR-inspired spread) | `P0` | ⬜ Planned |
-| 4 | Novelty filtering (exclude results already in prompt) | `P1` | ⬜ Planned |
-| 5 | Per-table similarity threshold calibration | `P1` | ⬜ Planned |
-| 6 | Entity-boosted recall (cross-table correlation) | `P2` | ⬜ Planned |
-| 7 | Retrieval quality observability (hit/miss metrics) | `P2` | ⬜ Planned |
-| 8 | Evaluation harness for retrieval quality | `P2` | ⬜ Planned |
+| 1 | Adaptive retrieval budgets (story-phase-aware) | `P0` | ✅ Implemented |
+| 2 | Dual-query retrieval (semantic + entity-focused fallback) | `P0` | ✅ Implemented |
+| 3 | Temporal diversity re-ranking (MMR-inspired spread) | `P0` | ✅ Implemented |
+| 4 | Novelty filtering (exclude results already in prompt) | `P1` | ✅ Implemented |
+| 5 | Per-table similarity threshold calibration | `P1` | ✅ Implemented |
+| 6 | Entity-boosted recall (cross-table correlation) | `P2` | ✅ Implemented |
+| 7 | Retrieval quality observability (structured logging) | `P2` | ✅ Implemented |
+| 8 | Evaluation harness for retrieval quality | `P2` | ⏩ Deferred (standalone offline script) |
 
 ---
 
@@ -87,6 +87,25 @@ The current architecture handles the common case well but has measurable gaps in
 ### Goal
 
 Transform the current Vector-Only Traditional RAG into a **Smarter Vector + Structured State RAG** by adding: (1) adaptive retrieval budgets, (2) dual-query retrieval with entity-focused fallback, (3) temporal diversity re-ranking, (4) novelty filtering, (5) per-table threshold calibration, and (6) entity-boosted recall — without changing the underlying embedding tables, write paths, or the existing prompt injection architecture.
+
+### Token Budget Constraint (Non-Negotiable)
+
+Every step in this roadmap must satisfy a hard constraint: **net recalled content tokens must not increase compared to the current baseline.** The existing prompt is already ~4,385 tokens per page cycle (post `PROMPT_TOKEN_OPTIMIZATION_ROADMAP.md` reductions). Recalled content (pages + characters + places + clues) is already ~1,500–2,000 tokens. Any increase degrades attention on smaller models (Mistral-7B, Llama-3.1-8B) and increases provider costs.
+
+**How each step respects this constraint:**
+
+| Step | Token Impact | Mechanism |
+|------|-------------|-----------|
+| 1. Adaptive budgets | **Neutral to negative** | EARLY: 5→3 (-2 results, ~-60 words). MID: unchanged. LATE: 5→7 (+2 results, ~+60 words). Net across a full story: roughly zero |
+| 2. Dual-query fallback | **Neutral** | Only fires when primary returns < 3 results; adds results only to fill a deficit, never exceeds the budget |
+| 3. Diversity re-ranking | **Negative** | Drops temporally clustered results, reducing count. Net effect: fewer but more diverse results |
+| 4. Novelty filtering | **Negative** | Removes results already in contextHistory/previousPages. Net reduction: ~10-20% of recalled content |
+| 5. Threshold calibration | **Slightly positive** | Looser page threshold (0.45 vs 0.5) may add 1-2 results. Tighter futureNote/clue thresholds (0.55) may remove 1-2. Net: roughly zero |
+| 6. Entity-boosted recall | **Positive (+3 per active entity)** | Only in custom actions where budget is already 15. Compensated by novelty filtering (Step 4) removing redundant results |
+| 7. Observability | **Zero** | Logging only |
+| 8. Evaluation harness | **Zero** | Offline only |
+
+**Global safeguard:** `MAX_RECALLED_CONTENT_WORDS = 2000` caps all recalled content combined. This is a hard limit, not a target. The novelty filter (Step 4) is the primary mechanism for staying under it — it removes redundant results before injection.
 
 ---
 
@@ -186,6 +205,19 @@ Keep the current single-pass cosine retrieval, but add a lightweight post-retrie
 | **Backend changes** | Minimal — modifications to existing functions in `src/utils/prompt.ts`, `src/services/vector-memory.ts`, `src/config/embedding.ts` |
 | **Dependencies** | None — all improvements are self-contained within existing pgvector infrastructure |
 | **Reversibility** | Fully reversible — each step is gated by a config constant; setting a threshold to 0 or disabling a feature restores previous behavior |
+| **Token budget impact** | Neutral to negative — see Token Budget Constraint in Section 2 |
+
+### Relationship to Existing Token-Saving Roadmaps
+
+This roadmap is **complementary**, not competing, with the completed token-saving work:
+
+| Roadmap | What it saves | How |
+|---------|--------------|-----|
+| `PROMPT_TOKEN_OPTIMIZATION_ROADMAP.md` | ~815 tokens/page (~16%) | Compacts system prompt rules, field instructions, character/place formatting |
+| `AI_DIFFUSION_TOKEN_SAVING_EXECUTION_ROADMAP.md` | Provider cost savings | Mistral cache key, per-book usage attribution, cache-economics reporting |
+| **This roadmap (Smarter Retrieval)** | **Zero additional tokens** | Improves retrieval *quality* without increasing retrieval *quantity* |
+
+The key insight: `PROMPT_TOKEN_OPTIMIZATION_ROADMAP.md` reduced the prompt from ~5,200 to ~4,385 tokens. This roadmap operates *within* the recalled content budget that already exists — it doesn't add new recall blocks or increase limits. The phase-aware budgets (Step 1) actually *reduce* recall in EARLY phase, and novelty filtering (Step 4) *removes* redundant results. The net effect on token count is neutral to slightly negative.
 
 ---
 
@@ -227,7 +259,7 @@ flowchart TD
 
 ## 6. Implementation Plan
 
-### Step 1: Adaptive Retrieval Budgets — ⬜ Planned
+### Step 1: Adaptive Retrieval Budgets — ✅ Implemented
 
 **Files:** `src/config/embedding.ts:29-32`, `src/utils/prompt.ts:3344-3378` (`buildRelevantPastEventsBlock`), `src/utils/prompt.ts:3402-3428` (`buildCharacterRecallBlocks`), `src/utils/prompt.ts:3440-3466` (`buildPlaceRecallBlocks`), `src/utils/prompt.ts:3483-3509` (`buildClueRecallBlocks`)
 **Effort:** Low
@@ -278,7 +310,7 @@ function resolveRetrievalBudget(
 
 ---
 
-### Step 2: Dual-Query Retrieval (Entity-Focused Fallback) — ⬜ Planned
+### Step 2: Dual-Query Retrieval (Entity-Focused Fallback) — ✅ Implemented
 
 **Files:** `src/utils/prompt.ts:3299-3301` (`buildCurrentSceneQuery`), `src/utils/prompt.ts:3344-3378` (`buildRelevantPastEventsBlock`), `src/services/vector-memory.ts:319-363` (`retrieveSimilarPages`)
 **Effort:** Medium
@@ -389,7 +421,7 @@ async function buildRelevantPastEventsBlock(
 
 ---
 
-### Step 3: Temporal Diversity Re-ranking (MMR-Inspired) — ⬜ Planned
+### Step 3: Temporal Diversity Re-ranking (MMR-Inspired) — ✅ Implemented
 
 **Files:** `src/services/vector-memory.ts:319-363` (`retrieveSimilarPages`), `src/utils/prompt.ts:3344-3509` (all recall builders)
 **Effort:** Medium
@@ -474,7 +506,7 @@ return diversifyByTemporalSpread(filtered, 10, limit);
 
 ---
 
-### Step 4: Novelty Filtering (Exclude Redundant Results) — ⬜ Planned
+### Step 4: Novelty Filtering (Exclude Redundant Results) — ✅ Implemented
 
 **Files:** `src/utils/prompt.ts:3344-3509` (all recall builders), `src/utils/prompt.ts:3514-3589` (`formatNextPageStoryContextPrompt`)
 **Effort:** Low
@@ -548,7 +580,7 @@ const finalResults = novelResults.length >= 2 ? novelResults : results;
 
 ---
 
-### Step 5: Per-Table Similarity Threshold Calibration — ⬜ Planned
+### Step 5: Per-Table Similarity Threshold Calibration — ✅ Implemented
 
 **Files:** `src/config/embedding.ts:35`, `src/services/vector-memory.ts:319-514` (all retrieval functions)
 **Effort:** Low
@@ -609,7 +641,7 @@ return rows.filter(r => r.similarity >= threshold);
 
 ---
 
-### Step 6: Entity-Boosted Recall (Cross-Table Correlation) — ⬜ Planned
+### Step 6: Entity-Boosted Recall (Cross-Table Correlation) — ✅ Implemented
 
 **Files:** `src/utils/prompt.ts:3344-3509` (recall builders), `src/services/vector-memory.ts:319-514` (retrieval functions)
 **Effort:** Medium
@@ -707,18 +739,23 @@ async function buildCharacterRecallBlocks(
   await Promise.allSettled(Object.entries(characters).map(async ([characterId, character]) => {
     const isBoosted = boostedCharacterIds?.has(characterId);
     const baseLimit = actionedPage.action?.type === 'custom' ? MAX_VECTOR_RESULTS_HIGH_VALUE : undefined;
-    const limit = isBoosted && baseLimit ? baseLimit + 3 : baseLimit; // +3 for active entities
+    // +3 for active entities, but only in custom actions (where baseLimit is 15).
+    // For regular actions, the base limit is already 5 — boosting would push
+    // character recall from 5→8 per character, which compounds across N characters.
+    // Keep regular actions at the standard limit; the novelty filter (Step 4)
+    // compensates by removing redundant results.
+    const limit = isBoosted && baseLimit ? baseLimit + 3 : baseLimit;
     
     // ... existing retrieval logic with adjusted limit ...
   }));
 }
 ```
 
-**Non-breaking:** This is purely additive — entities not in the primary results get their standard budget. The boost is small (+3 results) and only applies when the entity already appeared in the primary page retrieval, meaning the narrative is already about that entity.
+**Token impact:** +3 results only fires for boosted entities in custom actions (where the base is already 15). For a scene with 2 active characters, this adds ~180 words (~240 tokens). The novelty filter (Step 4) typically removes 10-20% of recalled content, offsetting this increase. The `MAX_RECALLED_CONTENT_WORDS` cap (Step 1) prevents runaway growth.
 
 ---
 
-### Step 7: Retrieval Quality Observability — ⬜ Planned
+### Step 7: Retrieval Quality Observability — ✅ Implemented
 
 **Files:** `src/services/vector-memory.ts`, `src/utils/prompt.ts:3344-3509` (recall builders)
 **Effort:** Low
@@ -770,7 +807,7 @@ function logRetrievalEvent(event: {
 
 ---
 
-### Step 8: Evaluation Harness for Retrieval Quality — ⬜ Planned
+### Step 8: Evaluation Harness for Retrieval Quality — ⏩ Deferred
 
 **Files:** `src/cron/` (new evaluation script), `src/config/embedding.ts`
 **Effort:** Medium
@@ -865,6 +902,20 @@ Currently Step 6 only boosts character/place recall. Future notes are ranked by 
 
 ## 8. References & File Touch List
 
+### Implementation Notes (2026-09-09)
+
+- Steps 1-7 implemented and verified (`bun run check` ✅)
+- Step 8 (evaluation harness) deferred — standalone offline script, not a codebase change
+- `EMBEDDING_SIMILARITY_THRESHOLD` retained as legacy constant for backward compatibility; all retrieval functions now use `EMBEDDING_SIMILARITY_THRESHOLDS`
+- `buildRelevantPastEventsBlock` return type changed from `string` to `{ block: string; activeCharacterIds: string[]; activePlaceIds: string[] }` to thread entity extraction through to Step 6
+
+### Code Review Fixes (2026-09-09)
+
+- **#1 (Medium):** `MAX_RECALLED_CONTENT_WORDS` now enforced — word-count cap applied after novelty filtering, truncates by similarity rank
+- **#3 (Low):** Removed dead `EMBEDDING_SIMILARITY_THRESHOLD` (singular) — all consumers use `EMBEDDING_SIMILARITY_THRESHOLDS`
+- **#4 (Low):** `VECTOR_RESULTS_BY_PHASE` typed as `Record<StoryPhase, number>` — compile-time safety against phase name typos
+- **#6 (Low):** Novelty filter fallback threshold changed from 2 to 1 — prevents dedup bypass on short stories with heavy context overlap
+
 ### Files to Modify
 
 | File | Change | Step |
@@ -920,11 +971,11 @@ Legend: ✅ Implemented & verified · ⏳ Partial / scoped down · ⬜ Future wo
 - ✅ Phase 5.1 — Custom action retrieval widening
 
 ### This Roadmap (Smarter Retrieval)
-- ⬜ Step 1 — Adaptive retrieval budgets
-- ⬜ Step 2 — Dual-query retrieval (entity-focused fallback)
-- ⬜ Step 3 — Temporal diversity re-ranking (MMR-inspired)
-- ⬜ Step 4 — Novelty filtering (exclude redundant results)
-- ⬜ Step 5 — Per-table similarity threshold calibration
-- ⬜ Step 6 — Entity-boosted recall (cross-table correlation)
-- ⬜ Step 7 — Retrieval quality observability
-- ⬜ Step 8 — Evaluation harness for retrieval quality
+- ✅ Step 1 — Adaptive retrieval budgets
+- ✅ Step 2 — Dual-query retrieval (entity-focused fallback)
+- ✅ Step 3 — Temporal diversity re-ranking (MMR-inspired)
+- ✅ Step 4 — Novelty filtering (exclude redundant results)
+- ✅ Step 5 — Per-table similarity threshold calibration
+- ✅ Step 6 — Entity-boosted recall (cross-table correlation)
+- ✅ Step 7 — Retrieval quality observability
+- ⏩ Step 8 — Evaluation harness for retrieval quality (deferred — standalone offline script)

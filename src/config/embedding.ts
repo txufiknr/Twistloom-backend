@@ -14,6 +14,8 @@
  * task-string format as v3, so nothing downstream depends on this specific
  * model beyond this one constant.
  */
+import type { StoryPhase } from '../types/story.js';
+
 export const EMBEDDING_MODEL = 'jina-embeddings-v5-text-small';
 
 /**
@@ -31,8 +33,39 @@ export const MAX_VECTOR_RESULTS_PER_QUERY = 5;
 /** Wider retrieval budget for finale/ending/custom action generation, which can afford to pull more callbacks across the whole book. */
 export const MAX_VECTOR_RESULTS_HIGH_VALUE = 15;
 
-/** Minimum cosine similarity for a retrieved result to be considered relevant enough to surface in a prompt. */
-export const EMBEDDING_SIMILARITY_THRESHOLD = 0.5;
+/**
+ * Retrieval budgets by story phase. Keys match StoryPhase from types/story.ts.
+ * EARLY: 3 — Story is young; contextHistory is thin, fewer callbacks exist
+ * MID: 5 — Standard budget (matches MAX_VECTOR_RESULTS_PER_QUERY)
+ * LATE: 7 — Deep history; more callbacks needed for coherence
+ * FINALE: 15 — Already handled by MAX_VECTOR_RESULTS_HIGH_VALUE
+ */
+export const VECTOR_RESULTS_BY_PHASE: Record<StoryPhase, number> = {
+  EARLY: 3,
+  MID: MAX_VECTOR_RESULTS_PER_QUERY,
+  LATE: 7,
+  FINALE: MAX_VECTOR_RESULTS_HIGH_VALUE,
+};
+
+/**
+ * Per-table similarity thresholds. Each embedding table has different content
+ * characteristics (page text is ~60 words, character interactions are 1-2 sentences,
+ * future notes are 1 sentence). Shorter content produces higher cosine similarity
+ * baselines, so thresholds are calibrated per table to maintain consistent precision.
+ *
+ * page: 0.45 — Longer text → lower baseline similarity; slightly looser to avoid missing
+ *        narratively relevant pages that use different vocabulary.
+ * character/place: 0.50 — Short focused interactions; standard threshold.
+ * futureNote/clue: 0.55 — Very short text → higher scores; slightly tighter to reduce
+ *        noise from loosely related notes.
+ */
+export const EMBEDDING_SIMILARITY_THRESHOLDS = {
+  page: 0.45,
+  character: 0.50,
+  place: 0.50,
+  futureNote: 0.55,
+  clue: 0.55,
+} as const;
 
 /** pgvector index type used on every embedding table's HNSW index. Requires pgvector >= 0.8.2 (see db/extensions.ts). */
 export const VECTOR_INDEX_TYPE = 'hnsw';

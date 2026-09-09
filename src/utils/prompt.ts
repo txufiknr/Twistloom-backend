@@ -56,7 +56,7 @@ import { formatOneOf } from "./text-processing.js";
 import { sanitizePromptAppend } from "./prompt-security.js";
 import { applyAdvancedOptions, validateAIConfig } from "./ai-sampling.js";
 import { embedPersistedPage, embedStateDeltaEntities, retrieveSimilarPages, retrieveCharacterInteractions, retrievePlaceEvents, retrieveRelevantFutureNotes, retrieveClues } from "../services/vector-memory.js";
-import { MAX_VECTOR_RESULTS_HIGH_VALUE } from "../config/embedding.js";
+import { MAX_VECTOR_RESULTS_HIGH_VALUE, MAX_VECTOR_RESULTS_PER_QUERY, VECTOR_RESULTS_BY_PHASE } from "../config/embedding.js";
 
 // ============================================================================
 // SYSTEM PROMPT
@@ -3301,6 +3301,160 @@ function buildCurrentSceneQuery(actionedPage: CandidateGenerationPage): string {
 }
 
 /**
+ * Global cap for total recalled content across all use cases.
+ * 2000 words ≈ 2600 tokens. This prevents recalled content from
+ * dominating the prompt budget (MAX_WORDS_SUMMARIZED_CONTEXT = 500 for summary).
+ */
+export const MAX_RECALLED_CONTENT_WORDS = 2000;
+
+/**
+ * Resolves the retrieval budget based on the current story phase.
+ * EARLY phase gets fewer results (thin context, fewer callbacks exist).
+ * MID phase stays at the standard budget. LATE phase gets more results
+ * (deep history, more callbacks needed for coherence). Finale/custom
+ * actions get the high-value budget (unchanged from current behavior).
+ */
+function resolveRetrievalBudget(
+  state: StoryState,
+  actionType?: string,
+): number {
+  const { phase, isFinale, isLastPage } = getStoryStateInfo(state);
+  const isFinalePage = isFinale || isLastPage;
+  const isCustomAction = actionType === 'custom';
+
+  if (isFinalePage || isCustomAction) return MAX_VECTOR_RESULTS_HIGH_VALUE;
+
+  return VECTOR_RESULTS_BY_PHASE[phase] ?? MAX_VECTOR_RESULTS_PER_QUERY;
+}
+
+/**
+ * Checks whether a retrieved result is redundant with existing context.
+ * Uses two strategies:
+ * 1. Page number exclusion — if the result is from a page already in previousPages, skip it.
+ * 2. Long-phrase matching — if a 10+ word substring of the result appears in
+ *    the existing context, it's likely redundant (catches contextHistory summarizing
+ *    the same event).
+ *
+ * Word-level overlap is intentionally avoided — it produces false positives on
+ * narrative prose where different scenes share common vocabulary.
+ */
+function isRedundantWithExistingContext(
+  result: { page: number; sourceText?: string | null },
+  existingContext: string,
+  previousPageNumbers: Set<number>,
+): boolean {
+  // Strategy 1: page number exclusion (most robust)
+  if (previousPageNumbers.has(result.page)) return true;
+
+  // Strategy 2: long-phrase matching (catches contextHistory summarization)
+  if (!result.sourceText || !existingContext) return false;
+
+  const resultLower = result.sourceText.toLowerCase();
+  const contextLower = existingContext.toLowerCase();
+
+  // Check if any 10+ word phrase from the result appears in the context
+  const resultWords = resultLower.split(/\s+/);
+  if (resultWords.length < 10) return false;
+
+  for (let i = 0; i <= resultWords.length - 10; i++) {
+    const phrase = resultWords.slice(i, i + 10).join(' ');
+    if (contextLower.includes(phrase)) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Extracts character names and place name from the current scene to build
+ * a secondary entity-focused query. Falls back to the primary query when
+ * no entities are found.
+ *
+ * Uses actionedPage.charactersPresent (structured list) instead of string
+ * matching for reliable entity extraction. Resolves placeId to human-readable
+ * knownName via StoryState.places.
+ */
+function buildEntityFocusedQuery(
+  actionedPage: CandidateGenerationPage,
+  characters: Record<string, CharacterMemory> | undefined,
+  places: Record<string, PlaceMemory> | undefined,
+): string | null {
+  if (!characters && !places) return null;
+
+  // Use structured charactersPresent array (not string matching)
+  const mentionedCharacters = (actionedPage.charactersPresent ?? [])
+    .map(sc => characters?.[sc.characterId])
+    .filter((c): c is CharacterMemory => !!c)
+    .map(c => c.knownName || c.realName)
+    .filter(Boolean);
+
+  // Resolve placeId to human-readable name
+  let placeName: string | null = null;
+  if (actionedPage.placeId && places) {
+    const place = places[actionedPage.placeId];
+    placeName = place?.knownName || place?.realName || null;
+  }
+
+  if (!mentionedCharacters.length && !placeName) return null;
+
+  const parts: string[] = [];
+  if (mentionedCharacters.length) {
+    parts.push(`Characters: ${mentionedCharacters.join(', ')}`);
+  }
+  if (placeName) {
+    parts.push(`Location: ${placeName}`);
+  }
+  if (actionedPage.action?.text) {
+    parts.push(`Action: ${actionedPage.action.text}`);
+  }
+
+  return parts.join('\n');
+}
+
+/**
+ * Given primary page retrieval results, extract which characters and
+ * places appear in those pages. This identifies the "active entities"
+ * in the current narrative moment — characters and places that the
+ * primary retrieval already flagged as relevant.
+ *
+ * Character IDs are extracted from the sourceText of page_embeddings
+ * (which includes "Characters: char_id1, char_id2" from buildPageEmbeddingText).
+ * Place IDs are extracted by cross-referencing StoryState.places against
+ * the scene text (knownName/realName matching).
+ */
+function extractActiveEntities(
+  results: { page: number; sourceText?: string | null }[],
+  characters: Record<string, CharacterMemory>,
+  places: Record<string, PlaceMemory>,
+): { activeCharacterIds: string[]; activePlaceIds: string[] } {
+  const activeCharacterIds = new Set<string>();
+  const activePlaceIds = new Set<string>();
+
+  for (const r of results) {
+    if (!r.sourceText) continue;
+
+    // Characters line: "Characters: char_emma, char_gabriel"
+    const charMatch = r.sourceText.match(/Characters:\s*(.+)/i);
+    if (charMatch) {
+      charMatch[1]!.split(',').forEach(id => activeCharacterIds.add(id.trim()));
+    }
+
+    // Places: cross-reference known place names against the scene text
+    const sceneLower = r.sourceText.toLowerCase();
+    for (const [placeId, place] of Object.entries(places)) {
+      const placeName = place.knownName || place.realName;
+      if (placeName && sceneLower.includes(placeName.toLowerCase())) {
+        activePlaceIds.add(placeId);
+      }
+    }
+  }
+
+  return {
+    activeCharacterIds: [...activeCharacterIds].filter(id => id in characters),
+    activePlaceIds: [...activePlaceIds].filter(id => id in places),
+  };
+}
+
+/**
  * Builds the "RELEVANT PAST EVENTS" prompt block via pgvector semantic
  * retrieval — computed once per page generation (not once per prompt
  * function), since buildNextPagePrompt and buildNextPageEvaluatorPrompt
@@ -3341,25 +3495,72 @@ function buildCurrentSceneQuery(actionedPage: CandidateGenerationPage): string {
  * action naturally pulls in pages that mention it, the same way it would
  * for a preset action. This just widens how many results come back.
  */
-async function buildRelevantPastEventsBlock(actionedPage: CandidateGenerationPage, book: Book, state: StoryState): Promise<string> {
+async function buildRelevantPastEventsBlock(actionedPage: CandidateGenerationPage, book: Book, state: StoryState, previousPages?: PersistedStoryPage[]): Promise<{ block: string; activeCharacterIds: string[]; activePlaceIds: string[] }> {
   try {
     const { isFinale, isLastPage } = getStoryStateInfo(state);
     const isFinalePage = isFinale || isLastPage;
     const isCustomAction = actionedPage.action?.type === 'custom';
-    const isHighValueMoment = isFinalePage || isCustomAction;
+    const limit = resolveRetrievalBudget(state, actionedPage.action?.type);
 
     const query = buildCurrentSceneQuery(actionedPage);
     const branchId = actionedPage.branchId ?? 'main';
-    const results = await retrieveSimilarPages(
+    let results = await retrieveSimilarPages(
       query,
       book.id,
       branchId,
       actionedPage.page,
-      isHighValueMoment ? MAX_VECTOR_RESULTS_HIGH_VALUE : undefined,
+      limit,
       isFinalePage ? { prioritizeMajorEvents: true } : undefined // major-event boost stays finale-only
     );
 
-    if (!results.length) return '';
+    // Entity-focused fallback: fires when primary returns < 3 results
+    if (results.length < 3) {
+      const entityQuery = buildEntityFocusedQuery(actionedPage, state.characters, state.places);
+      if (entityQuery && entityQuery !== query) {
+        const fallbackResults = await retrieveSimilarPages(
+          entityQuery, book.id, branchId, actionedPage.page, limit,
+          isFinalePage ? { prioritizeMajorEvents: true } : undefined,
+        );
+        const seenPageIds = new Set(results.map(r => r.page));
+        const uniqueFallback = fallbackResults.filter(r => !seenPageIds.has(r.page));
+        results = [...results, ...uniqueFallback].slice(0, limit);
+      }
+    }
+
+    // Extract active entities from primary results (for entity-boosted recall)
+    const { activeCharacterIds, activePlaceIds } = extractActiveEntities(
+      results, state.characters, state.places,
+    );
+
+    if (!results.length) return { block: '', activeCharacterIds: [], activePlaceIds: [] };
+
+    // Novelty filtering: exclude results already visible in contextHistory or previousPages
+    const existingContext = [
+      state.contextHistory,
+      ...(previousPages ?? []).map(p => p.text),
+    ].join(' ');
+    const previousPageNumbers = new Set((previousPages ?? []).map(p => p.page));
+
+    const novelResults = results.filter(r =>
+      !isRedundantWithExistingContext(r, existingContext, previousPageNumbers)
+    );
+    // Fallback: if novelty filtering strips everything, keep at least 1 novel result
+    // (or all original results if zero novel). Threshold is 1, not 2, to avoid
+    // bypassing deduplication entirely on short stories with heavy context overlap.
+    const preTruncateResults = novelResults.length >= 1 ? novelResults : results;
+
+    // Enforce MAX_RECALLED_CONTENT_WORDS cap — truncate by similarity rank so
+    // the most relevant results survive. This is the hard limit promised by the
+    // constant; implicit limit via resolveRetrievalBudget keeps it safe on most
+    // paths, but this guarantees it even if future changes widen the budget.
+    let wordCount = 0;
+    const finalResults: typeof preTruncateResults = [];
+    for (const r of preTruncateResults) {
+      const words = r.sourceText?.split(/\s+/).length ?? 0;
+      if (wordCount + words > MAX_RECALLED_CONTENT_WORDS) break;
+      wordCount += words;
+      finalResults.push(r);
+    }
 
     const header = isFinalePage
       ? 'RELEVANT PAST EVENTS & EMOTIONAL CALLBACKS (semantic retrieval):'
@@ -3367,13 +3568,34 @@ async function buildRelevantPastEventsBlock(actionedPage: CandidateGenerationPag
         ? 'RELEVANT PAST EVENTS (semantic retrieval, expanded for custom action):'
         : 'RELEVANT PAST EVENTS (semantic retrieval):';
 
-    return [
-      header,
-      ...results.map(r => `- Page ${r.page} (similarity: ${r.similarity.toFixed(2)}): ${r.sourceText}`),
-    ].join('\n');
+    // Structured logging for retrieval observability (JSON lines for log aggregation)
+    console.log(JSON.stringify({
+      event: 'rag_retrieval',
+      useCase: 'page',
+      bookId: book.id.slice(0, 8),
+      page: actionedPage.page,
+      primaryCount: results.length,
+      finalCount: finalResults.length,
+      avgSimilarity: finalResults.length
+        ? +(finalResults.reduce((s, r) => s + r.similarity, 0) / finalResults.length).toFixed(3)
+        : null,
+      fallbackTriggered: results.length < 3,
+      wordCapEnforced: wordCount === MAX_RECALLED_CONTENT_WORDS && finalResults.length < preTruncateResults.length,
+      activeCharacters: activeCharacterIds.length,
+      activePlaces: activePlaceIds.length,
+    }));
+
+    return {
+      block: [
+        header,
+        ...finalResults.map(r => `- Page ${r.page} (similarity: ${r.similarity.toFixed(2)}): ${r.sourceText}`),
+      ].join('\n'),
+      activeCharacterIds,
+      activePlaceIds,
+    };
   } catch (error) {
     console.error(`[buildRelevantPastEventsBlock] ⚠️ Retrieval failed, continuing without it:`, getErrorMessage(error));
-    return '';
+    return { block: '', activeCharacterIds: [], activePlaceIds: [] };
   }
 }
 
@@ -3402,17 +3624,21 @@ async function buildRelevantPastEventsBlock(actionedPage: CandidateGenerationPag
 async function buildCharacterRecallBlocks(
   characters: Record<string, CharacterMemory> | undefined,
   actionedPage: CandidateGenerationPage,
-  book: Book
+  book: Book,
+  boostedCharacterIds?: Set<string>,
 ): Promise<Record<string, string>> {
   if (!characters || !Object.keys(characters).length) return {};
 
   const query = buildCurrentSceneQuery(actionedPage);
   const branchId = actionedPage.branchId ?? 'main';
-  const limit = actionedPage.action?.type === 'custom' ? MAX_VECTOR_RESULTS_HIGH_VALUE : undefined;
+  const baseLimit = actionedPage.action?.type === 'custom' ? MAX_VECTOR_RESULTS_HIGH_VALUE : undefined;
   const blocks: Record<string, string> = {};
 
   await Promise.allSettled(Object.entries(characters).map(async ([characterId, character]) => {
     try {
+      const isBoosted = boostedCharacterIds?.has(characterId);
+      // +3 for active entities, but only in custom actions (where baseLimit is 15)
+      const limit = isBoosted && baseLimit ? baseLimit + 3 : baseLimit;
       const pastPages = (character.pastInteractions ?? []).map((i: PastInteraction) => i.page);
       const oldestVisiblePage = pastPages.length ? Math.min(...pastPages) : actionedPage.page;
       const results = await retrieveCharacterInteractions(query, book.id, branchId, characterId, oldestVisiblePage, limit);
@@ -3440,17 +3666,20 @@ async function buildCharacterRecallBlocks(
 async function buildPlaceRecallBlocks(
   places: Record<string, PlaceMemory> | undefined,
   actionedPage: CandidateGenerationPage,
-  book: Book
+  book: Book,
+  boostedPlaceIds?: Set<string>,
 ): Promise<Record<string, string>> {
   if (!places || !Object.keys(places).length) return {};
 
   const query = buildCurrentSceneQuery(actionedPage);
   const branchId = actionedPage.branchId ?? 'main';
-  const limit = actionedPage.action?.type === 'custom' ? MAX_VECTOR_RESULTS_HIGH_VALUE : undefined;
+  const baseLimit = actionedPage.action?.type === 'custom' ? MAX_VECTOR_RESULTS_HIGH_VALUE : undefined;
   const blocks: Record<string, string> = {};
 
   await Promise.allSettled(Object.entries(places).map(async ([placeId, place]) => {
     try {
+      const isBoosted = boostedPlaceIds?.has(placeId);
+      const limit = isBoosted && baseLimit ? baseLimit + 3 : baseLimit;
       const pastPages = (place.keyEvents ?? []).map(e => e.page);
       const oldestVisiblePage = pastPages.length ? Math.min(...pastPages) : actionedPage.page;
       const results = await retrievePlaceEvents(query, book.id, branchId, placeId, oldestVisiblePage, limit);
@@ -5033,7 +5262,7 @@ async function prepareNextPageGenerationSetup(params: BuildNextPageParams, candi
   // a second Jina call for the identical query would be wasteful. Never
   // throws — see buildRelevantPastEventsBlock's own graceful-degradation
   // handling.
-  const relevantPastEventsBlock = await buildRelevantPastEventsBlock(actionedPage, book, advancedState);
+  const { block: relevantPastEventsBlock, activeCharacterIds, activePlaceIds } = await buildRelevantPastEventsBlock(actionedPage, book, advancedState, previousPages);
 
   // pgvector semantic memory (Use Case 3): rank the unscheduled future-notes
   // bucket by semantic similarity to the current scene query — the highest-
@@ -5104,8 +5333,8 @@ async function prepareNextPageGenerationSetup(params: BuildNextPageParams, candi
   // text above, so this doesn't trigger extra Jina calls for the query
   // embedding itself — only the per-character/per-place DB lookups are new.
   const [characterRecallBlocks, placeRecallBlocks] = await Promise.all([
-    buildCharacterRecallBlocks(advancedState.characters, actionedPage, book),
-    buildPlaceRecallBlocks(advancedState.places, actionedPage, book),
+    buildCharacterRecallBlocks(advancedState.characters, actionedPage, book, new Set(activeCharacterIds)),
+    buildPlaceRecallBlocks(advancedState.places, actionedPage, book, new Set(activePlaceIds)),
   ]);
   const bookMeta = await buildBookMetaDocuments(book, advancedState, {
     characters: characterRecallBlocks,
