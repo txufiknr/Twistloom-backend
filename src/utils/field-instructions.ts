@@ -335,27 +335,15 @@ export function buildStateDeltaFieldInstructions(state: StoryState, action: Acti
  * rather than leaked onto storefront/back-cover copy.
  */
 export const firstBookFieldInstructions: string = `Book Metadata:
-- title: ${BOOK_TITLE_LENGTH}. Must be visceral, punchy, memorable, and strictly SPOILER-FREE.
-  * Never give away the central mystery, culprit identity, secret motives, supernatural/psychological twist, or ending in the title.
-  * Avoid generic naming tropes and definite articles ("The ..."). Favor punchy, unsettling nouns and active verbs.
-  * If a title was suggested in the theme or input, use it ONLY if it does not spoil the plot; if it contains a spoiler, adapt it to preserve suspense.
-- alternativeTitles: array of creative, distinct alternative titles. Follow the same strict spoiler-free rules as title.
-- hook: ${HOOK_LENGTH}. Write a high-tension logline / tagline.
-  * Establish immediate psychological dread and a compelling, unanswered question.
-  * Pure teaser: do NOT answer the mystery or reveal any twists.
-- summary: ${SUMMARY_LENGTH}. Write a pure reader-facing back-cover blurb (PURE INTRIGUE).
-  * PURPOSE: This blurb is read by users BEFORE opening page 1. It must hook and entice them without spoiling what is to come.
-  * WHAT TO INCLUDE:
-    1. The protagonist's initial baseline situation and ordinary world.
-    2. The inciting incident or first disturbance (the strange arrival, the locked door, the missing person, the eerie anomaly).
-    3. The immediate personal dilemma and escalating psychological stakes.
-    4. A chilling, unresolved dramatic question that leaves the reader needing answers.
-  * STRICT ZERO-SPOILER RULE (CRITICAL):
-    - Even if the user's STORY THEME explicitly discloses who the killer/monster/traitor is, secret motives, hidden identities, supernatural/hallucinatory truths (e.g. "it was all in their head", "they are dead", "the house is an experiment"), major mid-story deaths, or the final climax:
-    - YOU MUST NOT REVEAL ANY OF THESE IN THE SUMMARY.
-    - Treat all twists, reveals, and endings in the theme as CONFIDENTIAL CANON reserved for future chapters, viableEnding, futureNotes, and character secrets.
-    - Keep the reader in the dark alongside the protagonist at story start. Tease the mystery; NEVER reveal the truth or the culprit.
-- keywords: ${KEYWORDS_COUNT} kebab-case tags for theme, genre, mood, and story categorization (keep each short, mood/theme-specific, not generic).
+- STRICT ZERO-SPOILER RULE (CRITICAL):
+  - Even if the user's STORY THEME explicitly discloses the secrets, twists, hidden truths, major mid-story deaths, or the final climax:
+  - YOU MUST NOT REVEAL ANY OF THESE IN THE SUMMARY, THE HOOK, OR THE TITLE (these are publicly visible BEFORE opening page 1).
+  - THEY'RE reserved for future chapters, viableEnding, futureNotes, plannedCharacters, character secrets/potentialTwist.
+  - Reader = MC. Keep them in the dark since the story begins.
+- title: ${BOOK_TITLE_LENGTH}. If provided in theme, you MUST use it exactly. Do NOT use generic naming tropes. Avoid starting with definite articles. Favor visceral, punchy nouns and active verbs that feel memorable and unsettling.
+- hook: ${HOOK_LENGTH}. Write a high-tension logline. Establish immediate psychological dread and a clear, unanswered question. ZERO SPOILERS.
+- summary: ${SUMMARY_LENGTH}. Write a suspenseful back-cover thriller blurb. Establish the terrifying premise and the stakes. ZERO SPOILERS. End on a chilling, unresolved hook.
+- keywords: ${KEYWORDS_COUNT} kebab-case tags for theme, genre, mood, and story categorization (keep each short, not generic).
 - totalPages: min ${BOOK_MIN_PAGES}, max ${BOOK_MAX_PAGES}. Avoid exact multiples of 10. Let theme complexity and MC arc influence the count. If user mention anything about total pages, respect it as long as it's within bounds.
 - language: language code (ISO 639-1). Every single user-facing text field above MUST be generated exclusively in this target language.
 
