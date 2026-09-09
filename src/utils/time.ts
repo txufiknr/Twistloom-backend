@@ -132,8 +132,20 @@ export function isDateToday(date: Date = new Date()): boolean {
 }
 
 /**
- * Normalizes fictional wildcard years like 20XX / 19?? into a concrete year
- * for relative date math while preserving the original in-fiction value.
+ * Normalizes a concealed year component for relative date arithmetic.
+ *
+ * Story dates may intentionally contain fictional placeholders such as `20XX`,
+ * `19??`, or `2xxx`. Those values are still valid for in-fiction display, but
+ * they are not valid for real calendar math. This helper swaps the concealed
+ * year digits with zeroes (for example `20XX-10-27` -> `2000-10-27`) so that
+ * comparisons remain deterministic without mutating the original story text.
+ *
+ * Unknown month/day placeholders remain intentionally unnormalized because they
+ * represent indeterminate time precision rather than a concrete date.
+ *
+ * @param date - Date-like value to normalize for arithmetic comparisons.
+ * @returns The original value when no concealed-year pattern is present; otherwise,
+ * a version with the year concealment converted to a concrete numeric year.
  */
 function normalizeDateForMath(date: Date | string): Date | string {
   if (typeof date !== 'string') {
@@ -145,13 +157,13 @@ function normalizeDateForMath(date: Date | string): Date | string {
     return date;
   }
 
-  const wildcardYearMatch = trimmed.match(/^([0-9Xx?]{4})(?:-(\d{1,2})-(\d{1,2}))?(?:[T\s].*)?$/);
+  const wildcardYearMatch = trimmed.match(/^([0-9Xx?*_█]{4})(?:-(\d{1,2})-(\d{1,2}))?(?:[T\s].*)?$/);
   if (!wildcardYearMatch) {
     return date;
   }
 
   const [, yearPart] = wildcardYearMatch;
-  const normalizedYear = yearPart.replace(/[Xx?]/g, '0');
+  const normalizedYear = yearPart.replace(/[Xx?*_█]/g, '0');
   const safeNormalizedYear = normalizedYear === '0000' ? '2000' : normalizedYear;
   if (!/^\d{4}$/.test(safeNormalizedYear)) {
     return date;
@@ -162,7 +174,59 @@ function normalizeDateForMath(date: Date | string): Date | string {
 }
 
 /**
- * Parse a date into a UTC midnight timestamp.
+ * Detects date strings whose precision is intentionally indeterminate.
+ *
+ * Some story dates intentionally hide information instead of specifying a full
+ * Gregorian date, such as `████`, `20XX-??-??`, `2030-??-??`, or `XXXX`.
+ * These are valid narrative placeholders but must not participate in real day-
+ * difference math because the missing fields would otherwise be guessed.
+ *
+ * Dates with a concealed year but concrete month/day remain valid for arithmetic
+ * because the year is recoverable enough to produce a stable relative timeline.
+ *
+ * @param date - Date-like value to inspect.
+ * @returns `true` when the date is structurally indeterminate enough that a
+ * synthetic elapsed-day calculation would be misleading or invalid.
+ */
+export function isIndeterminateDate(date: Date | string): boolean {
+  if (typeof date !== 'string') {
+    return false;
+  }
+
+  const trimmed = date.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  const match = trimmed.match(/^([0-9Xx?*_█]{4})(?:-([0-9Xx?*_█]{1,2}))?(?:-([0-9Xx?*_█]{1,2}))?(?:[T\s].*)?$/);
+  if (!match) {
+    return false;
+  }
+
+  const [, yearPart, monthPart, dayPart] = match;
+
+  const allYearConcealed = /^[Xx?*_█]{4}$/.test(yearPart);
+  if (allYearConcealed) {
+    return true;
+  }
+
+  return Boolean(
+    (monthPart && /[Xx?*_█]/.test(monthPart)) ||
+    (dayPart && /[Xx?*_█]/.test(dayPart))
+  );
+}
+
+/**
+ * Converts a date-like value into a UTC midnight timestamp.
+ *
+ * This helper is designed for day-difference math and therefore normalizes
+ * compatible wildcard date forms before parsing. It intentionally returns
+ * `NaN` for genuinely unparseable values so callers can decide whether to
+ * reject, skip, or fall back without introducing invalid database values.
+ *
+ * @param date - Date object, ISO-like string, or a story-placeholder date.
+ * @returns The UTC timestamp for the start of that day, or `NaN` if the value
+ * cannot be resolved to a valid calendar date.
  */
 export function toUtcMidnight(date: Date | string): number {
   if (typeof date === 'string') {
@@ -188,17 +252,27 @@ export function toUtcMidnight(date: Date | string): number {
 }
 
 /**
- * Calculate the whole calendar days between two dates.
- * Ignores time components and handles DST safely via UTC.
- * 
- * @param date1 - First date
- * @param date2 - Second date
- * @returns Number of days between dates (can be negative)
- * 
- * Example: daysBetween('2025-06-10', '2025-06-23') === 13
+ * Calculates the whole calendar-day delta between two dates using UTC midnight.
+ *
+ * The result ignores time-of-day precision and is intended to support stable,
+ * story-facing elapsed-day counters. For indeterminate placeholder dates
+ * (for example `2030-??-??` or `████`), this function intentionally returns
+ * `0` instead of guessing a timeline.
+ *
+ * @param startDate - Starting date for the comparison.
+ * @param endDate - Ending date for the comparison.
+ * @returns The difference in whole calendar days, or `0` when the precision is
+ * intentionally indeterminate.
+ *
+ * @example
+ * daysBetween('2025-06-10', '2025-06-23') === 13
  */
 export function daysBetween(startDate: Date | string, endDate: Date | string): number {
   if (startDate === endDate) {
+    return 0;
+  }
+
+  if (isIndeterminateDate(startDate) || isIndeterminateDate(endDate)) {
     return 0;
   }
 
