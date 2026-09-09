@@ -132,17 +132,58 @@ export function isDateToday(date: Date = new Date()): boolean {
 }
 
 /**
+ * Normalizes fictional wildcard years like 20XX / 19?? into a concrete year
+ * for relative date math while preserving the original in-fiction value.
+ */
+function normalizeDateForMath(date: Date | string): Date | string {
+  if (typeof date !== 'string') {
+    return date;
+  }
+
+  const trimmed = date.trim();
+  if (!trimmed) {
+    return date;
+  }
+
+  const wildcardYearMatch = trimmed.match(/^([0-9Xx?]{4})(?:-(\d{1,2})-(\d{1,2}))?(?:[T\s].*)?$/);
+  if (!wildcardYearMatch) {
+    return date;
+  }
+
+  const [, yearPart] = wildcardYearMatch;
+  const normalizedYear = yearPart.replace(/[Xx?]/g, '0');
+  const safeNormalizedYear = normalizedYear === '0000' ? '2000' : normalizedYear;
+  if (!/^\d{4}$/.test(safeNormalizedYear)) {
+    return date;
+  }
+
+  const remainder = trimmed.slice(yearPart.length);
+  return `${safeNormalizedYear}${remainder}`;
+}
+
+/**
  * Parse a date into a UTC midnight timestamp.
  */
 export function toUtcMidnight(date: Date | string): number {
-  // Fast path for strict YYYY-MM-DD format
-  if (typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
-    const [year, month, day] = date.split('-').map(Number);
-    return Date.UTC(year, month - 1, day);
+  if (typeof date === 'string') {
+    const normalized = normalizeDateForMath(date) as string;
+
+    if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+      const [year, month, day] = normalized.split('-').map(Number);
+      const utcTime = Date.UTC(year, month - 1, day);
+      return Number.isFinite(utcTime) ? utcTime : NaN;
+    }
+
+    if (normalized !== date) {
+      date = normalized;
+    }
   }
 
-  // Fallback for Date objects or complex strings (e.g., ISO with time)
   const d = new Date(date);
+  if (!Number.isFinite(d.getTime())) {
+    return NaN;
+  }
+
   return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
 }
 
@@ -157,12 +198,20 @@ export function toUtcMidnight(date: Date | string): number {
  * Example: daysBetween('2025-06-10', '2025-06-23') === 13
  */
 export function daysBetween(startDate: Date | string, endDate: Date | string): number {
+  if (startDate === endDate) {
+    return 0;
+  }
+
   const msPerDay = 24 * 60 * 60 * 1000; // 86400000
-  
+  const startUtc = toUtcMidnight(startDate);
+  const endUtc = toUtcMidnight(endDate);
+
+  if (!Number.isFinite(startUtc) || !Number.isFinite(endUtc)) {
+    return NaN;
+  }
+
   // Math.round purely as a safety net for any JS engine quirks
-  return Math.round(
-    (toUtcMidnight(endDate) - toUtcMidnight(startDate)) / msPerDay
-  );
+  return Math.round((endUtc - startUtc) / msPerDay);
 }
 
 /**

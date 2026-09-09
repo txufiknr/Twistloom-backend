@@ -403,7 +403,14 @@ export async function insertStoryPage(
     scoreAfter,
   } = aiResponseProvider;
 
-  const elapsedDays = storyStartDate && calendarDate ? daysBetween(storyStartDate, calendarDate) : undefined;
+  const computedElapsedDays = pageNumber === 1
+    ? 0
+    : (storyStartDate && calendarDate ? daysBetween(storyStartDate, calendarDate) : undefined);
+
+  const safeElapsedDays = typeof computedElapsedDays === 'number' && Number.isFinite(computedElapsedDays)
+    ? Math.max(0, computedElapsedDays)
+    : undefined;
+
   // Strip AI control markers (e.g. "[dialogue]") and normalize dialogue markers
   // onto single lines before narrative touches the database — ensuring speech
   // balloon UI rendering is never split or corrupted.
@@ -421,7 +428,7 @@ export async function insertStoryPage(
     imagePrompt: page.imagePrompt,
     imageImportance: page.imageImportance,
     calendarDate,
-    elapsedDays,
+    elapsedDays: safeElapsedDays,
     timeOfDay: page.timeOfDay,
     sceneType: page.sceneType,
     momentum: page.momentum,
