@@ -950,9 +950,9 @@ export const THEME_VALIDATION_SCHEMA: Record<keyof Omit<AIValidationResult, 'aiP
   },
   suggestion: { type: 'string', description: '1-sentence suggestion in detected language on how to fix the issue. Omit if theme is valid.' },
   comment: { type: 'string', description: 'Your complimentary comment in detected language (follow comment structure & example). Omit if theme is invalid.' },
-  titleIdea: { type: 'string', description: `${BOOK_TITLE_LENGTH} in detected language. Omit if theme is invalid.` },
-  hook: { type: 'string', description: `Immediate intrigue — ${HOOK_LENGTH} in detected language. Omit if theme is invalid.` },
-  summary: { type: 'string', description: `Sets up premise — ${SUMMARY_LENGTH} in detected language. No spoilers. Omit if theme is invalid.` },
+  titleIdea: { type: 'string', description: `${BOOK_TITLE_LENGTH} in detected language. Strictly spoiler-free. Omit if theme is invalid.` },
+  hook: { type: 'string', description: `Immediate intrigue — ${HOOK_LENGTH} in detected language. Zero spoilers. Omit if theme is invalid.` },
+  summary: { type: 'string', description: `Pure reader-facing blurb/intrigue — ${SUMMARY_LENGTH} in detected language. Sets up initial dilemma and atmosphere with zero spoilers. Omit if theme is invalid.` },
   mcCandidate: {
     ...MAIN_CHARACTER_SCHEMA,
     description: `${MAIN_CHARACTER_SCHEMA.description}. Omit if theme is invalid.`
@@ -977,12 +977,12 @@ export const INITIAL_STORY_PAGE_GENERATION_SCHEMA: Record<keyof InitialStoryPage
  * All helper functions reference this to avoid duplication.
  */
 export const BOOK_CREATION_SCHEMA_DEFINITION: Record<keyof BookCreationResponse, AIJsonProperty> = {
-  title: { type: 'string' },
-  alternativeTitles: { type: 'array', items: { type: 'string' } },
+  title: { type: 'string', description: `${BOOK_TITLE_LENGTH}. Ominous, evocative, and strictly SPOILER-FREE. Never reveal culprits, secret identities, twists, or endings.` },
+  alternativeTitles: { type: 'array', items: { type: 'string' }, description: 'Alternative evocative title ideas. Strictly spoiler-free.' },
   totalPages: { type: 'integer', description: `Between ${BOOK_MIN_PAGES} and ${BOOK_MAX_PAGES}` },
   language: { type: 'string', description: 'ISO 639-1 code' },
-  hook: { type: 'string', description: `${HOOK_LENGTH}. Immediate intrigue. Psychological tension.` },
-  summary: { type: 'string', description: `${SUMMARY_LENGTH}. Sets up premise without revealing the ending plan.` },
+  hook: { type: 'string', description: `${HOOK_LENGTH}. Immediate intrigue and psychological tension. Pure hook with zero spoilers.` },
+  summary: { type: 'string', description: `${SUMMARY_LENGTH}. Pure reader-facing blurb/intrigue. Sets up the initial premise and dilemma without revealing twists, culprit identities, secret motives, or endings from the theme.` },
   keywords: { type: 'array', items: { type: 'string' }, description: `${KEYWORDS_COUNT} kebab-case tags for theme, genre, mood, and story categorization (keep each short).` },
   firstPage: {
     type: 'object',

@@ -5,10 +5,10 @@ import type { StoryState, Action, PsychologicalFlags, PsychologicalProfile, Hidd
 import { moodValues, weatherValues, sceneTypeValues, sceneRoleValues, momentumValues, actionTypeValues, hintTypeValues, memoryIntegrityValues, difficultyValues, plotFlagTypeValues, injuryCategoryValues, threadPriorityValues, threadTruthValues, threadStatusValues, endingTypeValues, factTypeValues, phaseValues, stabilityLevelValues, healthConditionValues, canonicalPlaceTypeValues, accessibilityValues, recognitionLevelValues, genderValues, characterStatusValues, characterImportanceValues, relationshipTypeValues, relationshipStatusValues, twistTypeValues, psychologicalFlagTypeValues, flagLevelValues } from "../config/enums.js";
 import { createNonRetryableError } from "./retry.js";
 import { createCacheKey } from "./cache.js";
-import { TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_ACTIVE_THREADS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS, MAX_THREADS_CLUES, FUTURE_NOTE_LOOKAHEAD_DAYS } from "../config/story.js";
+import { TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, MAX_ACTIVE_THREADS, ACTION_TEXT_LENGTH, MAX_BRANCHING_PREGENERATION_DEPTH, RELATIONSHIP_TO_MC_LENGTH, MAX_CHARACTER_SECRETS, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS, MAX_THREADS_CLUES, FUTURE_NOTE_LOOKAHEAD_DAYS } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { getLocalizedStyleConstraints } from "./localized-style.js";
-import { buildNextPageFieldInstructions, buildStoryPageFieldInstructions, buildStateDeltaFieldInstructions } from "./field-instructions.js";
+import { buildNextPageFieldInstructions, buildStoryPageFieldInstructions, buildStateDeltaFieldInstructions, firstBookFieldInstructions } from "./field-instructions.js";
 import { aiPrompt, createAIOptionsWithSchema, resolveUseStringEvaluator, runEvaluationPass } from "./ai-chat.js";
 import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, applyStateDelta, advanceStoryState, calculatePsychologicalDeltas, mapFutureNoteWithKey, createStoryThread } from "./story.js";
 import { ensureCandidatesForPageWithStrategy, triggerCandidateGenerationWorkflow } from "./candidate-generation.js";
@@ -50,7 +50,7 @@ import type { AIChatStreamResult, ProgressCallback } from "../types/sse.js";
 import type { CandidateGenerationPage, CandidatePagesGeneration } from "../types/candidate-generation.js";
 import { ucfirst } from "./formatter.js";
 import { daysBetween, formatMinutes, toUtcMidnight } from "./time.js";
-import { BOOK_CREATION_PROMPT_MIN_CHARS, HINT_GUIDANCE_MAP, MAX_FINAL_COMMENT_LENGTH, PROMPT_SYSTEM_WRITING_STYLE, RULES_PAGE_TEXT_BY_PRESET } from "../config/book-creation.js";
+import { BOOK_CREATION_PROMPT_MIN_CHARS, HINT_GUIDANCE_MAP, PROMPT_SYSTEM_WRITING_STYLE, RULES_PAGE_TEXT_BY_PRESET } from "../config/book-creation.js";
 import type { WritingPreset } from "../types/book-creation.js";
 import { formatOneOf } from "./text-processing.js";
 import { sanitizePromptAppend } from "./prompt-security.js";
@@ -694,7 +694,9 @@ const buildFirstBookReviewChecklist = (language: string): string => {
 
 3. Metadata Quality
   □ Is the title generic (e.g., "The Dark Secret", "Shadow House")? → If YES: Rework. It must feel highly specific and ominous to this exact story.
-  □ Does the hook create intrigue without spoiling the ending type? → If NO: Obscure the trajectory. Raise questions, don't provide answers.
+  □ Does the title or alternativeTitles reveal any plot twist, secret culprit, or mystery resolution? → If YES: Rewrite to be evocative and strictly spoiler-free.
+  □ Does the hook create intrigue without spoiling the ending type or story twists? → If NO: Obscure the trajectory. Raise questions, don't provide answers.
+  □ Does the summary read as a pure reader-facing blurb (pure intrigue) without revealing twists, betrayals, or resolutions from the theme? → If NO: Strip all spoilers. Focus only on the initial dilemma, premise, and unanswered suspense.
   □ Are keywords mood/theme-specific rather than pure genre tags? → If NO: Replace generic tags with granular, visceral ones.
   □ Is the MC's name consistent across the title, summary, and hook? → If NO: Revise to ensure absolute consistency.
 
@@ -1976,6 +1978,7 @@ STEP 3 — CORRECT
 Only rewrite if total scoreBefore < 80, or if any single dimension scores below its threshold.
 Preserve the original creative direction. Fix the minimum necessary — do not over-correct.
 Do not introduce plot elements that contradict the theme or MC candidate.
+CRITICAL — ensure title, alternativeTitles, hook, and summary contain zero spoilers: if the generated title or summary leaks culprits, twists, betrayal turns, or secrets from the theme, rewrite them as pure intrigue back-cover copy while keeping those secrets safe in viableEnding/futureNotes/initialFacts.
 CRITICAL — preserve every paragraph break in any prose field ("\n" inside the corrected JSON is a real line break — re-emit it as "\n", never delete, merge, or reflow it) and every "**"/"*" emphasis marker exactly as written. Never "clean up" or normalize prose formatting during scoring or correction.
 
 STEP 4 — RE-SCORE (scoreAfter)
@@ -2045,14 +2048,14 @@ SCORING RUBRIC:
 
 6. METADATA QUALITY (0-10) — Threshold: 7
    Award points for:
-   - Title feels specific to this story — not a generic thriller title
+   - Title feels specific to this story, ominous, and strictly spoiler-free
    - Keywords are mood/theme-specific, not pure genre tags (e.g. "false-memory" not "horror")
-   - Summary sets up the premise without revealing the ending type
+   - Summary is a pure back-cover blurb: sets up the premise and dramatic stakes with pure intrigue without revealing any twists, culprit identities, secret motives, or ending
    - Language code correctly detected from theme input
    Deduct points for:
-   - Title that could apply to any thriller (e.g. "The Dark Secret", "Into the Shadow")
+   - Title that could apply to any thriller (e.g. "The Dark Secret", "Into the Shadow") or that spoils the mystery/culprit
    - Keywords that are all genre-level (e.g. ["horror", "thriller", "mystery"])
-   - Summary that reveals the viable ending or core twist
+   - Summary that reveals the viable ending, core twists, culprit identities, or secrets from the theme
 
 TOTAL: 100 — Minimum passing score: 80
 
@@ -4499,6 +4502,17 @@ MAIN CHARACTER IDEA:\n- Name: ${mcCandidate?.name || '-'}\n- Age: ${mcCandidate?
 
 AI COMMENTARY:\n${aiComment || '-'}
 
+SPOILER CONTAINMENT & METADATA RULES (CRITICAL):
+- The user's STORY THEME often describes the entire plot arc, including secret culprits, hidden motives, supernatural/psychological twists, betrayals, and the final climax.
+- You MUST strictly partition this information:
+  1. READER-FACING METADATA (title, alternativeTitles, hook, summary):
+     * Must be a pure blurb / intrigue teaser designed for readers BEFORE they open the book.
+     * ZERO SPOILERS: Never reveal the culprit, secret identities, twists, betrayals, or resolutions.
+     * Focus exclusively on the protagonist's opening dilemma, the inciting disturbance, and the stakes.
+     * If TITLE IDEA or SUMMARY IDEA contains spoilers from the theme, SANITIZE them into pure intrigue.
+  2. CONFIDENTIAL NARRATIVE CANON (viableEnding, futureNotes, initialFacts, initialCharacters.secrets):
+     * Store all secret reveals, culprits, twists, and planned climaxes here so future AI generation turns can pace and reveal them organically.
+
 STORY SETUP:
 - Establish unease immediately — not fear yet, but something subtly wrong.
 - Tension should feel personal to the MC, not generically atmospheric.
@@ -4525,108 +4539,6 @@ FIRST PAGE RULES:
 BRANCHING ACTIONS:
 ${getActionRulesText({ isFirstPage: true, mode: params.mode })}`;
 }
-
-const firstBookFieldInstructions: string = `Book Metadata:
-- title: ${BOOK_TITLE_LENGTH}. If provided in theme, you MUST use it exactly. Do NOT use generic naming tropes. Avoid starting with definite articles. Favor visceral, punchy nouns and active verbs that feel memorable and unsettling.
-- hook: ${HOOK_LENGTH}. Write a high-tension logline. Establish immediate psychological dread and a clear, unanswered question.
-- summary: ${SUMMARY_LENGTH}. Write a suspenseful back-cover thriller blurb. Establish the terrifying premise and the stakes. Do NOT reveal the twists, the viableEnding plan, or any spoilers. End on a chilling, unresolved hook.
-- keywords: ${KEYWORDS_COUNT} kebab-case tags for theme, genre, mood, and story categorization (keep each short).
-- totalPages: min ${BOOK_MIN_PAGES}, max ${BOOK_MAX_PAGES}. Avoid exact multiples of 10. Let theme complexity and MC arc influence the count. If user mention anything about total pages, respect it as long as it's within bounds.
-- language: language code (ISO 639-1). Every single user-facing text field above MUST be generated exclusively in this target language.
-
-mainCharacter:
-- Infer a character whose personality makes the theme more psychologically dangerous for them specifically.
-- name: if provided, strictly use it. If not provided, generate unusual (rare) but memorable name idea based on age and language context.
-- knownName: preferred alias or nick referred by other characters.
-- bio: if provided, enhance it. If not provided, infer from theme. Must include at least one psychological trait that will be used against them.
-- The MC should have a clear personal goal, fear, wound, or unresolved need that naturally supports the viableEnding.
-- Avoid making the MC merely an observer of the mystery.
-
-initialPlace:
-- familiarity: 0.0-1.0. A place the MC just arrived at = 0.1. Childhood home = 0.9.
-- context: ${PLACE_CONTEXT_LENGTH}. Evocative, not descriptive.
-- hints: any known clue about the place.
-
-initialCharacters:
-- It's meant for characters beside MC who are physically present in the scene. Don't include MC (the POV) here.
-- If MC is alone in this first page, then it should be an empty array.
-- Include only side characters who meaningfully exist at story start.
-- At least one should have a relationship that can be corrupted.
-- bio: must include one trait that could become a source of threat or betrayal.
-- potentialTwist: set to match behavior and twist setup.
-- traits: only story-relevant (e.g., skills, hobbies).
-- Every initial character should serve at least one purpose: deepen the MC, increase tension, introduce information, create conflict, or foreshadow future events.
-- Avoid background characters that have no narrative value.
-
-plannedCharacters:
-- Infer any side characters from the theme that have not yet appeared on this first page.
-- You may infer additional major characters if they naturally strengthen the premise.
-- Do not include background NPCs or disposable one-scene characters.
-- Each planned character should have a clear future narrative purpose.
-- plannedIntro: explain how this character planned to be introduced (when they are likely to appear, why they matter, how they connect to the MC or central mystery).
-- storyPurpose: why this character exists in the story and how they contribute to the MC's journey, central mystery, or ending (avoid describing specific future events).
-
-initialRelationships:
-- Only between side characters (excluding MC). If initial characters is less than two, omit it.
-- For relationship which targetting MC, put it in character's relationshipToMC.
-
-firstPage:
-- text: follow the rules in "WRITING STYLE:" and "PAGE FORMAT:" creatively (max ${MAX_WORDS_PER_PAGE} words).
-- Establish the MC's physical baseline (position, posture, what's within reach) early so the reader can orient immediately — then track the body continuously as the scene moves, never silently changing posture or location.
-- Keep the camera on the MC: show only what they can see/hear/infer. Anchor every pronoun and possessive marker in the target language to one unambiguous antecedent; name the owner before a body part acts.
-- keyEvents: ${KEY_EVENT_LENGTH}. Plot-level facts happened in this page.
-- charactersPresent: side characters in the scene besides MC. Must match characters in initialCharacters. sceneFocus: between 0.0 to 1.0 (highest = character to focus).
-- keyObjects: objects introduced or used this page that may have future narrative significance.
-- momentum: narrative pressure or urgency level in the first page. Thriller openings often start at "rising" or sometimes "critial", just saying.
-- imagePrompt: optional. ALWAYS write in ENGLISH regardless of target language — the one field exempt from the language rule above, since it feeds an image-generation model, not the reader. 1-2 sentences, concrete and filmable (character appearance/pose, setting, lighting, one key object), matching this story's psychological-horror tone. Omit if this page has nothing visually distinct.
-- imageImportance: optional, 0.0-1.0. How much this page rewards being illustrated (not the same as plot significance — see field-instructions.ts's fuller guidance for the same field on later pages). Omit whenever imagePrompt is omitted.
-
-initialState:
-- flags: set based on opening scene — not defaults.
-- difficulty: should reflect how hostile the world is to this MC at the start.
-- traumaTags: short evocative phrases for experiences that will haunt the MC later.
-- futureNotes: any important notes for future AI turns representing narrative obligations towards the viableEnding (future incidents, characters, place, etc), max ${MAX_FUTURE_NOTES} items.
-- plotFlags: significant plot development that affect the overall story trajectory (max 2 per page).
-- inventory: if any, what items MC brings, can include the amount, traits, and where is it located now (max ${MAX_INVENTORY_ITEM} item).
-- injuries: if any, injuries sustained by the MC in the first page.
-
-viableEnding:
-- Choose a thriller ending type and write a ${VIABLE_ENDING_LENGTH} plan describing the story's chilling destination.
-- Define the MC's ultimate fate and the final, inescapable state of the central conflict.
-- Major threads MUST reach a psychologically disturbing culmination. Do NOT write neat, moralizing, or hopeful resolutions.
-- Execute this climax through shocking revelation, tragic sacrifice, inescapable loops, or chilling ambiguity.
-- Preserve mystery specifically where it maximizes dread, tension, and horror impact.
-- If the user specifies a desired ending in the theme input, adapt it to fit the thriller genre and respect it whenever possible.
-
-initialThreads:
-- Represents major unanswered questions, mysteries, goals, or narrative conflicts that keep the reader engaged across multiple pages.
-- Every major mystery or long-term conflict introduced in the premise should become a thread.
-- Every thread should have a clear question the reader wants answered.
-- Prefer a few meaningful threads over many shallow ones.
-- Threads may represent mysteries, relationships, investigations, survival goals, conspiracies, or emotional conflicts.
-- question: should be something the reader naturally wonders after reading the opening.
-
-futureNotes:
-- Represents narrative reminders for future page generation about things that have not happened yet.
-- May describe future events, delayed consequences, planned introductions, environmental changes, pacing beats, recurring motifs, or other story obligations.
-- Notes may be major or minor depending on their narrative importance.
-- Include only information that future AI is unlikely to infer reliably from the current story state.
-- Avoid immediate next-page actions, redundant summaries, or information already represented elsewhere.
-- Max ${MAX_FUTURE_NOTES} items.
-
-initialFacts:
-- Represents long-term story memory, discoveries, or important established facts that influence future turns.
-- Only include durable story facts that important to remember 20+ pages later. If unsure, omit it.
-- key: consistent ${FACT_KEY_FORMAT}. Type can be either: ${formatOneOf(Object.keys(factTypes))}.
-- value: current state. Prefer concise value over long sentence (explanation can be added in reason).
-- reason: 1-sentence, why or how it hapenned.
-
-aiFinalComment:
-- Use creative thriller-themed wording in specified language.
-- Continue and conclude the previous AI commentary.
-- Express excitement for the generated book.
-- Briefly tease what happens on the first page without spoilers.
-- Max ${MAX_FINAL_COMMENT_LENGTH} chars.`;
 
 /**
  * Initializes a complete book with AI-generated content and database persistence

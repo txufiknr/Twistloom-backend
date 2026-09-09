@@ -17,7 +17,8 @@
  */
 
 import { characterImportances, characterStatuses, factTypes, sceneRoleValues, canonicalPlaceTypes, accessibilityValues } from "../config/enums.js";
-import { ACTION_TEXT_LENGTH, FACT_KEY_FORMAT, KEY_EVENT_LENGTH, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FINALE, MAX_CHARACTERS, MAX_FUTURE_NOTES, MAX_INVENTORY_ITEM, MAX_PLACES, MAX_TRAUMA_TAGS, MAX_WORDS_SUMMARIZED_CONTEXT, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, VIABLE_ENDING_LENGTH } from "../config/story.js";
+import { ACTION_TEXT_LENGTH, FACT_KEY_FORMAT, KEY_EVENT_LENGTH, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FINALE, MAX_CHARACTERS, MAX_FUTURE_NOTES, MAX_INVENTORY_ITEM, MAX_PLACES, MAX_TRAUMA_TAGS, MAX_WORDS_SUMMARIZED_CONTEXT, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, VIABLE_ENDING_LENGTH, BOOK_MIN_PAGES, BOOK_MAX_PAGES, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_WORDS_PER_PAGE } from "../config/story.js";
+import { MAX_FINAL_COMMENT_LENGTH } from "../config/book-creation.js";
 import { formatOneOf } from "./text-processing.js";
 import { getStoryStateInfo } from "./story.js";
 import type { StoryState, Action, SceneType, StoryGeneration } from "../types/story.js";
@@ -324,4 +325,131 @@ export function buildStateDeltaFieldInstructions(state: StoryState, action: Acti
     .map(s => s.text)
     .join('\n\n');
 }
+
+/**
+ * Prose field instructions for initial book creation (`initializeBook`).
+ *
+ * Enforces strict anti-spoiler boundaries for reader-facing metadata (title, hook,
+ * summary) so that twists, culprit identities, secret motives, and endings
+ * supplied in the user's theme input are treated as confidential narrative canon
+ * rather than leaked onto storefront/back-cover copy.
+ */
+export const firstBookFieldInstructions: string = `Book Metadata:
+- title: ${BOOK_TITLE_LENGTH}. Must be visceral, punchy, memorable, and strictly SPOILER-FREE.
+  * Never give away the central mystery, culprit identity, secret motives, supernatural/psychological twist, or ending in the title.
+  * Avoid generic naming tropes and definite articles ("The ..."). Favor punchy, unsettling nouns and active verbs.
+  * If a title was suggested in the theme or input, use it ONLY if it does not spoil the plot; if it contains a spoiler, adapt it to preserve suspense.
+- alternativeTitles: array of creative, distinct alternative titles. Follow the same strict spoiler-free rules as title.
+- hook: ${HOOK_LENGTH}. Write a high-tension logline / tagline.
+  * Establish immediate psychological dread and a compelling, unanswered question.
+  * Pure teaser: do NOT answer the mystery or reveal any twists.
+- summary: ${SUMMARY_LENGTH}. Write a pure reader-facing back-cover blurb (PURE INTRIGUE).
+  * PURPOSE: This blurb is read by users BEFORE opening page 1. It must hook and entice them without spoiling what is to come.
+  * WHAT TO INCLUDE:
+    1. The protagonist's initial baseline situation and ordinary world.
+    2. The inciting incident or first disturbance (the strange arrival, the locked door, the missing person, the eerie anomaly).
+    3. The immediate personal dilemma and escalating psychological stakes.
+    4. A chilling, unresolved dramatic question that leaves the reader needing answers.
+  * STRICT ZERO-SPOILER RULE (CRITICAL):
+    - Even if the user's STORY THEME explicitly discloses who the killer/monster/traitor is, secret motives, hidden identities, supernatural/hallucinatory truths (e.g. "it was all in their head", "they are dead", "the house is an experiment"), major mid-story deaths, or the final climax:
+    - YOU MUST NOT REVEAL ANY OF THESE IN THE SUMMARY.
+    - Treat all twists, reveals, and endings in the theme as CONFIDENTIAL CANON reserved for future chapters, viableEnding, futureNotes, and character secrets.
+    - Keep the reader in the dark alongside the protagonist at story start. Tease the mystery; NEVER reveal the truth or the culprit.
+- keywords: ${KEYWORDS_COUNT} kebab-case tags for theme, genre, mood, and story categorization (keep each short, mood/theme-specific, not generic).
+- totalPages: min ${BOOK_MIN_PAGES}, max ${BOOK_MAX_PAGES}. Avoid exact multiples of 10. Let theme complexity and MC arc influence the count. If user mention anything about total pages, respect it as long as it's within bounds.
+- language: language code (ISO 639-1). Every single user-facing text field above MUST be generated exclusively in this target language.
+
+mainCharacter:
+- Infer a character whose personality makes the theme more psychologically dangerous for them specifically.
+- name: if provided, strictly use it. If not provided, generate unusual (rare) but memorable name idea based on age and language context.
+- knownName: preferred alias or nick referred by other characters.
+- bio: if provided, enhance it. If not provided, infer from theme. Must include at least one psychological trait that will be used against them.
+- The MC should have a clear personal goal, fear, wound, or unresolved need that naturally supports the viableEnding.
+- Avoid making the MC merely an observer of the mystery.
+
+initialPlace:
+- familiarity: 0.0-1.0. A place the MC just arrived at = 0.1. Childhood home = 0.9.
+- context: ${PLACE_CONTEXT_LENGTH}. Evocative, not descriptive.
+- hints: any known clue about the place.
+
+initialCharacters:
+- It's meant for characters beside MC who are physically present in the scene. Don't include MC (the POV) here.
+- If MC is alone in this first page, then it should be an empty array.
+- Include only side characters who meaningfully exist at story start.
+- At least one should have a relationship that can be corrupted.
+- bio: must include one trait that could become a source of threat or betrayal.
+- potentialTwist: set to match behavior and twist setup.
+- traits: only story-relevant (e.g., skills, hobbies).
+- Every initial character should serve at least one purpose: deepen the MC, increase tension, introduce information, create conflict, or foreshadow future events.
+- Avoid background characters that have no narrative value.
+
+plannedCharacters:
+- Infer any side characters from the theme that have not yet appeared on this first page.
+- You may infer additional major characters if they naturally strengthen the premise.
+- Do not include background NPCs or disposable one-scene characters.
+- Each planned character should have a clear future narrative purpose.
+- plannedIntro: explain how this character planned to be introduced (when they are likely to appear, why they matter, how they connect to the MC or central mystery).
+- storyPurpose: why this character exists in the story and how they contribute to the MC's journey, central mystery, or ending (avoid describing specific future events).
+
+initialRelationships:
+- Only between side characters (excluding MC). If initial characters is less than two, omit it.
+- For relationship which targetting MC, put it in character's relationshipToMC.
+
+firstPage:
+- text: follow the rules in "WRITING STYLE:" and "PAGE FORMAT:" creatively (max ${MAX_WORDS_PER_PAGE} words).
+- Establish the MC's physical baseline (position, posture, what's within reach) early so the reader can orient immediately — then track the body continuously as the scene moves, never silently changing posture or location.
+- Keep the camera on the MC: show only what they can see/hear/infer. Anchor every pronoun and possessive marker in the target language to one unambiguous antecedent; name the owner before a body part acts.
+- keyEvents: ${KEY_EVENT_LENGTH}. Plot-level facts happened in this page.
+- charactersPresent: side characters in the scene besides MC. Must match characters in initialCharacters. sceneFocus: between 0.0 to 1.0 (highest = character to focus).
+- keyObjects: objects introduced or used this page that may have future narrative significance.
+- momentum: narrative pressure or urgency level in the first page. Thriller openings often start at "rising" or sometimes "critial", just saying.
+- imagePrompt: optional. ALWAYS write in ENGLISH regardless of target language — the one field exempt from the language rule above, since it feeds an image-generation model, not the reader. 1-2 sentences, concrete and filmable (character appearance/pose, setting, lighting, one key object), matching this story's psychological-horror tone. Omit if this page has nothing visually distinct.
+- imageImportance: optional, 0.0-1.0. How much this page rewards being illustrated (not the same as plot significance — see field-instructions.ts's fuller guidance for the same field on later pages). Omit whenever imagePrompt is omitted.
+
+initialState:
+- flags: set based on opening scene — not defaults.
+- difficulty: should reflect how hostile the world is to this MC at the start.
+- traumaTags: short evocative phrases for experiences that will haunt the MC later.
+- futureNotes: any important notes for future AI turns representing narrative obligations towards the viableEnding (future incidents, characters, place, etc), max ${MAX_FUTURE_NOTES} items.
+- plotFlags: significant plot development that affect the overall story trajectory (max 2 per page).
+- inventory: if any, what items MC brings, can include the amount, traits, and where is it located now (max ${MAX_INVENTORY_ITEM} item).
+- injuries: if any, injuries sustained by the MC in the first page.
+
+viableEnding:
+- Choose a thriller ending type and write a ${VIABLE_ENDING_LENGTH} plan describing the story's chilling destination.
+- Define the MC's ultimate fate and the final, inescapable state of the central conflict.
+- Major threads MUST reach a psychologically disturbing culmination. Do NOT write neat, moralizing, or hopeful resolutions.
+- Execute this climax through shocking revelation, tragic sacrifice, inescapable loops, or chilling ambiguity.
+- Preserve mystery specifically where it maximizes dread, tension, and horror impact.
+- If the user specifies a desired ending in the theme input, adapt it to fit the thriller genre and respect it whenever possible.
+
+initialThreads:
+- Represents major unanswered questions, mysteries, goals, or narrative conflicts that keep the reader engaged across multiple pages.
+- Every major mystery or long-term conflict introduced in the premise should become a thread.
+- Every thread should have a clear question the reader wants answered.
+- Prefer a few meaningful threads over many shallow ones.
+- Threads may represent mysteries, relationships, investigations, survival goals, conspiracies, or emotional conflicts.
+- question: should be something the reader naturally wonders after reading the opening.
+
+futureNotes:
+- Represents narrative reminders for future page generation about things that have not happened yet.
+- May describe future events, delayed consequences, planned introductions, environmental changes, pacing beats, recurring motifs, or other story obligations.
+- Notes may be major or minor depending on their narrative importance.
+- Include only information that future AI is unlikely to infer reliably from the current story state.
+- Avoid immediate next-page actions, redundant summaries, or information already represented elsewhere.
+- Max ${MAX_FUTURE_NOTES} items.
+
+initialFacts:
+- Represents long-term story memory, discoveries, or important established facts that influence future turns.
+- Only include durable story facts that important to remember 20+ pages later. If unsure, omit it.
+- key: consistent ${FACT_KEY_FORMAT}. Type can be either: ${formatOneOf(Object.keys(factTypes))}.
+- value: current state. Prefer concise value over long sentence (explanation can be added in reason).
+- reason: 1-sentence, why or how it hapenned.
+
+aiFinalComment:
+- Use creative thriller-themed wording in specified language.
+- Continue and conclude the previous AI commentary.
+- Express excitement for the generated book.
+- Briefly tease what happens on the first page without spoilers.
+- Max ${MAX_FINAL_COMMENT_LENGTH} chars.`;
 

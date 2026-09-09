@@ -239,9 +239,9 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
   - reason: explanation of why it's a violation
 - suggestion: 1-sentence in same natural language as the story theme (how to fix the issue, or empty string if theme is valid)
 - comment: max 250 chars (a complimentary comment about theme idea in same natural language as the story theme. If the theme is invalid, provide an empty string. Use exciting, suspenseful language that matches the thriller genre tone.)
-- titleIdea: book title idea for the story based on the theme (${BOOK_TITLE_LENGTH}). If the theme is invalid, provide an empty string. Else if provided in theme, use it.
-- hook: immediate intrigue — ${HOOK_LENGTH} in same natural language as the story theme. Derived from the theme and MC. Omit if theme is invalid.
-- summary: sets up premise without revealing the ending plan — ${SUMMARY_LENGTH} in same natural language as the story theme. Derived from the theme and MC. Omit if theme is invalid.
+- titleIdea: book title idea for the story based on the theme (${BOOK_TITLE_LENGTH}). Must be strictly spoiler-free (never reveal culprits, secret twists, or endings). If the theme is invalid, provide an empty string. If provided in theme, adapt if it gives away the mystery.
+- hook: immediate intrigue — ${HOOK_LENGTH} in same natural language as the story theme. Derived from the theme and MC. Zero spoilers. Omit if theme is invalid.
+- summary: pure reader-facing back-cover blurb (${SUMMARY_LENGTH}) in same natural language as the story theme. Focus strictly on the initial dilemma, premise, and atmosphere. Absolutely NO spoilers, twists, culprit reveals, or endings even if mentioned in the theme input. Omit if theme is invalid.
 - mcCandidate: infer a character whose personality makes the theme more psychologically dangerous for them specifically.
   - name: if MC's name provided in theme input, strictly use it. If not provided, generate unusual (rare) but memorable name idea based on age and language context.
   - knownName: Preferred alias or nick referred by other characters.
