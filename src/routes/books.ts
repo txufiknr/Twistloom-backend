@@ -183,6 +183,8 @@ import { validateCompanionQuestion } from "../utils/prompt-security.js";
 import { getCachedSuggestions, setCachedSuggestions, invalidateSuggestionsCache } from "../services/companion-cache.js";
 import { streamCompanionAnswerSSE, companionAnswerIsComplete } from "../utils/companion-stream.js";
 import { retrieveSimilarPages, retrieveBookCluesForQuery } from "../services/vector-memory.js";
+import { assembleBookPages, sanitizeDownloadFilename } from "../services/book-export.js";
+import { generateDocument } from "../services/document-generators/index.js";
 
 const router = new Hono<AppEnv>();
 
@@ -8138,6 +8140,70 @@ router.delete("/:identifier/testimonials/:id", requireAuth, async (c) => {
  *   }
  * }
  */
+/**
+ * @summary Export an author-owned story to EPUB, DOCX, or PDF
+ * @description Compiles the story pages into an in-memory document Buffer and streams with Content-Disposition.
+ * Strictly gated to the author (isMine === true).
+ */
+router.post("/:identifier/export", requireAuth, async (c) => {
+  try {
+    const { identifier } = c.req.param();
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+    const userId = c.get("userId")!;
+
+    // 1. Resolve book with caller's userId context
+    const enrichedBook = await getEnrichedBook(bookIdentifier, userId, c.get("headerLanguage"));
+    if (!enrichedBook) return cNotFoundError(c, "Book not found");
+
+    // 2. Strict Ownership Gate: Only the story author can export manuscripts
+    if (!enrichedBook.isMine && enrichedBook.userId !== userId) {
+      return cForbiddenError(c, "Only the author can export manuscripts for this story.");
+    }
+
+    const body = (await c.req.json().catch(() => ({}))) as {
+      format?: "epub" | "docx" | "pdf";
+      branchId?: string;
+    };
+
+    const format = body.format || "epub";
+    if (!["epub", "docx", "pdf"].includes(format)) {
+      return cValidationError(c, "Invalid format. Supported formats: epub, docx, pdf");
+    }
+
+    // 3. Assemble pages via indexed single query (O(1) database execution)
+    const branchId = body.branchId || "main";
+    const pages = await assembleBookPages(enrichedBook.id, branchId);
+    if (pages.length === 0) {
+      return cValidationError(c, "No story pages found to export for this branch.");
+    }
+
+    // 4. Generate document buffer in memory
+    const { buffer, contentType, ext } = await generateDocument(
+      {
+        title: enrichedBook.title || "Untitled Story",
+        authorName: enrichedBook.author?.name || "Twistloom Creator",
+        summary: enrichedBook.summary,
+        coverImageUrl: enrichedBook.imageUrl,
+        language: enrichedBook.language,
+      },
+      pages,
+      format,
+    );
+
+    // 5. Stream response with RFC 5987 headers
+    const sanitizedTitle = sanitizeDownloadFilename(enrichedBook.title || "untitled");
+    const encodedFilename = encodeURIComponent(`${sanitizedTitle}.${ext}`);
+
+    return c.newResponse(new Uint8Array(buffer), 200, {
+      "Content-Type": contentType,
+      "Content-Disposition": `attachment; filename="${sanitizedTitle}.${ext}"; filename*=UTF-8''${encodedFilename}`,
+      "Cache-Control": "no-cache, no-store, must-revalidate",
+    });
+  } catch (error) {
+    return cApiError(c, "Failed to export book manuscript", error);
+  }
+});
+
 router.get("/:identifier", optionalAuth, async (c) => {
   try {
     const { identifier } = c.req.param();

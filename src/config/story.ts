@@ -2,8 +2,8 @@ import type { ActionHintType, ActionType, AIActionConfig, Archetype, CharacterSc
 import type { ThreadPriority } from "../types/story-thread.js";
 import type { StoryMC } from "../types/character.js";
 
-export const BOOK_MIN_PAGES = 80;
-export const BOOK_MAX_PAGES = 200;
+export const BOOK_MIN_PAGES = 60;
+export const BOOK_MAX_PAGES = 150;
 export const MIN_CHARS_PER_PAGE = 200;
 /** Relaxed minimum character floor for imported stories (M.B1). */
 export const MIN_CHARS_PER_PAGE_IMPORTED = 10;
@@ -33,7 +33,6 @@ export const MAX_BRANCHING_PREGENERATION_LIMIT = 3; // How many pages to process
 export const MAX_TRAVERSAL_DEPTH_SHALLOW = 3;
 
 export const FREE_ACTION_SELECTION_UNTIL_PAGE = 1;
-export const FREE_GUEST_SELECT_ACTION_UNTIL_PAGE = 5;
 
 export const ACTION_TEXT_LENGTH = '1 short sentence';
 export const KEY_EVENT_LENGTH = '1-4 short phrases';
@@ -533,7 +532,7 @@ export const PEN_AUTHORING_POVS: readonly string[] = ["first", "second", "third"
 export const PEN_SESSION_STATUSES: readonly string[] = ["active", "paused", "closed"];
 /**
  * Editable "target length" bounds for Pen books (Decision R, §10). Unlike the
- * reader-facing engine bound `BOOK_MAX_PAGES` (200), this is a **soft** pacing
+ * reader-facing engine bound `BOOK_MAX_PAGES` (150), this is a **soft** pacing
  * estimate the author sets anytime and that never blocks: publishing past it
  * auto-grows `maxPage = max(target, publishedCount)`. 10000 gives open-ended
  * novels headroom while still bounding the phase denominator input.
