@@ -36,6 +36,7 @@
  * - PUT /api/books/:id/cover-image - Upload/replace book cover image (requires auth)
  * - PUT /api/books/:id/character-image - Upload/replace main character avatar image (requires auth)
  * - PATCH /api/books/:id/visibility - Update book visibility level (requires auth)
+ * - PATCH /api/books/:id/title - Update book title only (requires auth)
  * - PATCH /api/books/:id/archive - Archive or unarchive a book (requires auth)
  * - DELETE /api/books/:id - Delete a book and queue image for deletion (requires auth)
  * - GET /api/books/:id/similar - Get similar books by keyword Jaccard similarity (optional auth)
@@ -2072,6 +2073,70 @@ router.patch("/:id/visibility", requireAuth, async (c) => {
     });
   } catch (error) {
     return cApiError(c, "Failed to update book visibility", error);
+  }
+});
+
+/**
+ * PATCH /api/books/:id/title
+ * 
+ * Lightweight endpoint to update only the book title.
+ * Validates length (2–120 chars), sanitizes XSS, and returns the updated book.
+ * 
+ * **Authentication:** Required (via `requireAuth`)
+ * 
+ * @param id - Book ID to update
+ * @body {string} title - New book title (2–120 chars, trimmed)
+ * @returns Updated book with new title
+ * 
+ * @example
+ * PATCH /api/books/book123/title
+ * Body: { "title": "The New Title" }
+ * 
+ * Response (200):
+ * {
+ *   "book": { ... }
+ * }
+ */
+router.patch("/:id/title", requireAuth, async (c) => {
+  try {
+    const { id } = c.req.param();
+    const userId = c.get("userId")!;
+    const { title } = c.get("body");
+
+    if (!title || typeof title !== 'string') {
+      return cValidationError(c, "title is required");
+    }
+
+    const trimmed = title.trim();
+    if (trimmed.length < PEN_TITLE_MIN_LENGTH) {
+      return cValidationError(c, `title must be at least ${PEN_TITLE_MIN_LENGTH} characters`);
+    }
+    if (trimmed.length > PEN_TITLE_MAX_LENGTH) {
+      return cValidationError(c, `title must be at most ${PEN_TITLE_MAX_LENGTH} characters`);
+    }
+
+    const sanitized = sanitizeBookTextField('title', trimmed);
+    if (sanitized === undefined) {
+      return cValidationError(c, "title cannot be empty");
+    }
+
+    // Verify book ownership
+    const [book] = await dbRead
+      .select({ id: books.id, userId: books.userId, title: books.title })
+      .from(books)
+      .where(eq(books.id, id as string))
+      .limit(1);
+
+    if (!book) return cNotFoundError(c, "Book not found");
+    if (book.userId !== userId) return cForbiddenError(c, "You can only update your own books");
+
+    const updatedBook = await updateBook(id as string, { title: sanitized });
+
+    await invalidateUserBooksCache(userId);
+
+    return c.json({ book: mapBookFromDb(updatedBook) });
+  } catch (error) {
+    return cApiError(c, "Failed to update book title", error);
   }
 });
 
