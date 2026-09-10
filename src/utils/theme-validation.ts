@@ -226,7 +226,8 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
           logPrompts: true,
         },
       },
-      fieldInstructions: `CRITICAL RULE: ALL TEXT FIELDS (suggestion, comment, titleIdea, hook, summary, mcCandidate.name, mcCandidate.bio) MUST be written in same natural language as the story theme. If language is "en" then use English. No exceptions.
+      fieldInstructions: `LANGUAGE CRITICAL RULE: ALL TEXT FIELDS (suggestion, comment, titleIdea, hook, summary, mcCandidate.name, mcCandidate.bio) MUST be written in same natural language as the story theme. If language is "en" then use English. No exceptions.
+STRICT ZERO-SPOILER RULE: ALL METADATA FIELDS (titleIdea, hook, summary, mcCandidate.bio) MUST be absolutely spoiler-free. Never reveal culprits, secret twists, or endings even if mentioned in the theme input. They belongs to futureNotes.
 
 - language: story theme language (ISO 639-1 code). CRITICAL: Determine this FIRST before generating any other text field. This language is your anchor — ALL text fields below MUST be written in this exact language.
 - isViolating: boolean (true if any violation detected)
@@ -239,16 +240,13 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
   - reason: explanation of why it's a violation
 - suggestion: 1-sentence in same natural language as the story theme (how to fix the issue, or empty string if theme is valid)
 - comment: max 250 chars (a complimentary comment about theme idea in same natural language as the story theme. If the theme is invalid, provide an empty string. Use exciting, suspenseful language that matches the thriller genre tone.)
-- titleIdea: book title idea for the story based on the theme (${BOOK_TITLE_LENGTH}). Must be strictly spoiler-free (never reveal culprits, secret twists, or endings). If the theme is invalid, provide an empty string. If provided in theme, adapt if it gives away the mystery.
-- hook: immediate intrigue — ${HOOK_LENGTH} in same natural language as the story theme. Derived from the theme and MC. Zero spoilers. Omit if theme is invalid.
-- summary: pure reader-facing back-cover blurb (${SUMMARY_LENGTH}) in same natural language as the story theme. Focus strictly on the initial dilemma, premise, and atmosphere. Absolutely NO spoilers, twists, culprit reveals, or endings even if mentioned in the theme input. Omit if theme is invalid.
+- titleIdea: book title idea for the story based on the theme (${BOOK_TITLE_LENGTH}). ZERO SPOILERS. If the theme is invalid, provide an empty string. If provided in theme, adapt if it gives away the mystery.
+- hook: immediate intrigue — ${HOOK_LENGTH} in same natural language as the story theme. Derived from the theme and MC. ZERO SPOILERS. Omit if theme is invalid.
+- summary: pure reader-facing back-cover blurb (${SUMMARY_LENGTH}) in same natural language as the story theme. Focus strictly on the initial dilemma, premise, and atmosphere. ZERO SPOILERS. Omit if theme is invalid.
 - mcCandidate: infer a character whose personality makes the theme more psychologically dangerous for them specifically.
   - name: if MC's name provided in theme input, strictly use it. If not provided, generate unusual (rare) but memorable name idea based on age and language context.
   - knownName: Preferred alias or nick referred by other characters.
   - bio: infer from theme if provided. Must include at least one psychological trait that will be used against them.
-- futureNotes: add only if theme input is valid and provide any forward-looking narrative obligation. Don't invent.
-- characters: add only if theme input is valid and provide any side characters information (beside MC). Don't invent.
-- characters.relationships: only between side characters (excluding MC). Empty if characters is less than two.
 
 Comment structure (only if theme is valid):
 - Write in the SAME LANGUAGE as the detected language field above — never another language

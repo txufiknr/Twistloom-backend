@@ -336,7 +336,7 @@ export function buildStateDeltaFieldInstructions(state: StoryState, action: Acti
  */
 export const firstBookFieldInstructions: string = `Book Metadata:
 - STRICT ZERO-SPOILER RULE (CRITICAL):
-  - Even if the user's STORY THEME explicitly discloses the secrets, twists, hidden truths, major mid-story deaths, or the final climax:
+  - Even if the user's STORY THEME explicitly discloses the culprits, secrets, twists, hidden truths, major mid-story deaths, or the final climax:
   - YOU MUST NOT REVEAL ANY OF THESE IN THE SUMMARY, THE HOOK, OR THE TITLE (these are publicly visible BEFORE opening page 1).
   - THEY'RE reserved for future chapters, viableEnding, futureNotes, plannedCharacters, character secrets/potentialTwist.
   - Reader = MC. Keep them in the dark since the story begins.
