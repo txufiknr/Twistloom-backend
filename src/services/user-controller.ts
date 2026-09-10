@@ -101,6 +101,9 @@ export function getEnrichedUserSelect() {
     // Comments the user wrote (top-level, parent_comment_id IS NULL) — SSOT-backed
     // by the `user_comments_user_count_trigger` (see triggers.ts).
     commentsCount: sql<number>`COALESCE(${userCounters.commentsCount},0)`,
+    wallNotesPosted: sql<number>`COALESCE(${userCounters.wallNotesPosted},0)`,
+    wallNoteLikesReceived: sql<number>`COALESCE(${userCounters.wallNoteLikesReceived},0)`,
+    endingsSharedToWall: sql<number>`COALESCE(${userCounters.endingsSharedToWall},0)`,
     // NOTE: check-in streaks are date-sensitive — the trigger-maintained
     // user_counters values can go stale when a day is skipped. These columns are
     // kept only to satisfy the EnrichedUserSelect shape; every consumer must

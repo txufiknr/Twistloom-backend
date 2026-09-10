@@ -64,6 +64,7 @@ export const reportTargetTypes = [
   'comment',
   'testimonial',
   'custom_action',
+  'post',
 ] as const;
 
 export type ReportTargetType = (typeof reportTargetTypes)[number];

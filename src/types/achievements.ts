@@ -11,7 +11,10 @@ export type AchievementMetric =
   | 'maxCheckinStreak'
   | 'customActionsWritten'
   | 'easterEggsFound'
-  | 'creatorsSupported';
+  | 'creatorsSupported'
+  | 'wallNotesPosted'
+  | 'wallNoteLikesReceived'
+  | 'endingsSharedToWall';
 
 export interface AchievementRule {
   id: string;

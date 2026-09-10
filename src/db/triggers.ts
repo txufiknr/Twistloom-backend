@@ -1632,6 +1632,217 @@ async function ensureUploadedUserImageTrigger(): Promise<void> {
  * - Uses DROP IF EXISTS for existing triggers
  * - Preserves existing functionality while updating logic
  */
+/**
+ * Creates idempotent Wall denormalization triggers.
+ *
+ * These triggers keep post reaction/reply/save counters and the three Wall
+ * user metrics synchronized across insert, swap, delete, soft-delete, and
+ * restore transitions. The application remains responsible for authorization;
+ * the database owns counter correctness.
+ */
+export async function ensureWallTriggers(): Promise<void> {
+  try {
+    console.log("⚙️ Ensuring Wall DB triggers...");
+
+    await dbWrite.execute(`
+      CREATE OR REPLACE FUNCTION update_wall_post_reactions() RETURNS TRIGGER AS $$
+      DECLARE
+        reaction_key TEXT;
+      BEGIN
+        IF TG_OP IN ('UPDATE', 'DELETE') AND OLD.target_type = 'post' THEN
+          reaction_key := COALESCE(OLD.reaction, 'heart');
+          UPDATE posts
+          SET likes_count = GREATEST(0, likes_count - 1),
+              reaction_counts = jsonb_set(
+                reaction_counts,
+                ARRAY[reaction_key],
+                to_jsonb(GREATEST(0, COALESCE((reaction_counts ->> reaction_key)::int, 0) - 1)),
+                true
+              ),
+              updated_at = NOW()
+          WHERE id = OLD.target_id;
+
+          UPDATE user_counters AS counters
+          SET wall_note_likes_received = GREATEST(0, counters.wall_note_likes_received - 1),
+              updated_at = NOW()
+          FROM posts AS post
+          WHERE post.id = OLD.target_id
+            AND counters.user_id = post.user_id
+            AND post.wall_user_id IS NULL
+            AND post.channel_id IS NULL
+            AND post.deleted_at IS NULL;
+        END IF;
+
+        IF TG_OP IN ('INSERT', 'UPDATE') AND NEW.target_type = 'post' THEN
+          reaction_key := COALESCE(NEW.reaction, 'heart');
+          UPDATE posts
+          SET likes_count = likes_count + 1,
+              reaction_counts = jsonb_set(
+                reaction_counts,
+                ARRAY[reaction_key],
+                to_jsonb(COALESCE((reaction_counts ->> reaction_key)::int, 0) + 1),
+                true
+              ),
+              updated_at = NOW()
+          WHERE id = NEW.target_id;
+
+          INSERT INTO user_counters (user_id, wall_note_likes_received, updated_at)
+          SELECT post.user_id, 1, NOW()
+          FROM posts AS post
+          WHERE post.id = NEW.target_id
+            AND post.wall_user_id IS NULL
+            AND post.channel_id IS NULL
+            AND post.deleted_at IS NULL
+          ON CONFLICT (user_id) DO UPDATE SET
+            wall_note_likes_received = user_counters.wall_note_likes_received + 1,
+            updated_at = NOW();
+        END IF;
+
+        RETURN COALESCE(NEW, OLD);
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    await dbWrite.execute(`DROP TRIGGER IF EXISTS user_likes_wall_reactions_trigger ON user_likes;`);
+    await dbWrite.execute(`
+      CREATE TRIGGER user_likes_wall_reactions_trigger
+        AFTER INSERT OR UPDATE OR DELETE ON user_likes
+        FOR EACH ROW EXECUTE FUNCTION update_wall_post_reactions();
+    `);
+
+    await dbWrite.execute(`
+      CREATE OR REPLACE FUNCTION update_wall_post_comments_count() RETURNS TRIGGER AS $$
+      BEGIN
+        IF TG_OP = 'INSERT' AND NEW.deleted_at IS NULL THEN
+          UPDATE posts
+          SET comments_count = comments_count + 1, updated_at = NOW()
+          WHERE id = NEW.post_id;
+        ELSIF TG_OP = 'UPDATE' THEN
+          IF OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL THEN
+            UPDATE posts
+            SET comments_count = GREATEST(0, comments_count - 1), updated_at = NOW()
+            WHERE id = OLD.post_id;
+          ELSIF OLD.deleted_at IS NOT NULL AND NEW.deleted_at IS NULL THEN
+            UPDATE posts
+            SET comments_count = comments_count + 1, updated_at = NOW()
+            WHERE id = NEW.post_id;
+          END IF;
+        ELSIF TG_OP = 'DELETE' AND OLD.deleted_at IS NULL THEN
+          UPDATE posts
+          SET comments_count = GREATEST(0, comments_count - 1), updated_at = NOW()
+          WHERE id = OLD.post_id;
+        END IF;
+        RETURN COALESCE(NEW, OLD);
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    await dbWrite.execute(`DROP TRIGGER IF EXISTS post_comments_count_trigger ON post_comments;`);
+    await dbWrite.execute(`
+      CREATE TRIGGER post_comments_count_trigger
+        AFTER INSERT OR UPDATE OR DELETE ON post_comments
+        FOR EACH ROW EXECUTE FUNCTION update_wall_post_comments_count();
+    `);
+
+    await dbWrite.execute(`
+      CREATE OR REPLACE FUNCTION update_wall_post_saves_count() RETURNS TRIGGER AS $$
+      BEGIN
+        IF TG_OP = 'INSERT' THEN
+          UPDATE posts
+          SET saves_count = saves_count + 1, updated_at = NOW()
+          WHERE id = NEW.post_id;
+          RETURN NEW;
+        ELSIF TG_OP = 'DELETE' THEN
+          UPDATE posts
+          SET saves_count = GREATEST(0, saves_count - 1), updated_at = NOW()
+          WHERE id = OLD.post_id;
+          RETURN OLD;
+        END IF;
+        RETURN NULL;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    await dbWrite.execute(`DROP TRIGGER IF EXISTS user_saved_posts_count_trigger ON user_saved_posts;`);
+    await dbWrite.execute(`
+      CREATE TRIGGER user_saved_posts_count_trigger
+        AFTER INSERT OR DELETE ON user_saved_posts
+        FOR EACH ROW EXECUTE FUNCTION update_wall_post_saves_count();
+    `);
+
+    await dbWrite.execute(`
+      CREATE OR REPLACE FUNCTION update_user_wall_post_metrics() RETURNS TRIGGER AS $$
+      DECLARE
+        old_is_personal BOOLEAN := false;
+        new_is_personal BOOLEAN := false;
+      BEGIN
+        IF TG_OP IN ('UPDATE', 'DELETE') THEN
+          old_is_personal := OLD.wall_user_id IS NULL
+            AND OLD.channel_id IS NULL
+            AND OLD.deleted_at IS NULL;
+        END IF;
+        IF TG_OP IN ('INSERT', 'UPDATE') THEN
+          new_is_personal := NEW.wall_user_id IS NULL
+            AND NEW.channel_id IS NULL
+            AND NEW.deleted_at IS NULL;
+        END IF;
+
+        IF old_is_personal AND NOT new_is_personal THEN
+          UPDATE user_counters
+          SET wall_notes_posted = GREATEST(0, wall_notes_posted - 1),
+              wall_note_likes_received = GREATEST(0, wall_note_likes_received - OLD.likes_count),
+              endings_shared_to_wall = GREATEST(
+                0,
+                endings_shared_to_wall - CASE WHEN OLD.type = 'ending_share' THEN 1 ELSE 0 END
+              ),
+              updated_at = NOW()
+          WHERE user_id = OLD.user_id;
+        ELSIF NOT old_is_personal AND new_is_personal THEN
+          INSERT INTO user_counters (
+            user_id,
+            wall_notes_posted,
+            wall_note_likes_received,
+            endings_shared_to_wall,
+            updated_at
+          ) VALUES (
+            NEW.user_id,
+            1,
+            NEW.likes_count,
+            CASE WHEN NEW.type = 'ending_share' THEN 1 ELSE 0 END,
+            NOW()
+          )
+          ON CONFLICT (user_id) DO UPDATE SET
+            wall_notes_posted = user_counters.wall_notes_posted + 1,
+            wall_note_likes_received = user_counters.wall_note_likes_received + EXCLUDED.wall_note_likes_received,
+            endings_shared_to_wall = user_counters.endings_shared_to_wall + EXCLUDED.endings_shared_to_wall,
+            updated_at = NOW();
+        ELSIF old_is_personal AND new_is_personal AND OLD.type IS DISTINCT FROM NEW.type THEN
+          UPDATE user_counters
+          SET endings_shared_to_wall = GREATEST(
+                0,
+                endings_shared_to_wall
+                  - CASE WHEN OLD.type = 'ending_share' THEN 1 ELSE 0 END
+                  + CASE WHEN NEW.type = 'ending_share' THEN 1 ELSE 0 END
+              ),
+              updated_at = NOW()
+          WHERE user_id = NEW.user_id;
+        END IF;
+
+        RETURN COALESCE(NEW, OLD);
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    await dbWrite.execute(`DROP TRIGGER IF EXISTS posts_user_metrics_trigger ON posts;`);
+    await dbWrite.execute(`
+      CREATE TRIGGER posts_user_metrics_trigger
+        AFTER INSERT OR UPDATE OR DELETE ON posts
+        FOR EACH ROW EXECUTE FUNCTION update_user_wall_post_metrics();
+    `);
+
+    console.log("✅ Wall DB triggers created successfully.");
+  } catch (error) {
+    console.error("❌ Failed to create Wall DB triggers:", getErrorMessage(error));
+    throw error;
+  }
+}
+
 export async function ensureTriggers(): Promise<void> {
   console.log("\nCreating database triggers...");
 
@@ -1654,6 +1865,9 @@ export async function ensureTriggers(): Promise<void> {
 
     // Create user_counters synchronization triggers
     await ensureUserCountersTriggers();
+
+    // Create Wall denormalization and achievement-counter triggers
+    await ensureWallTriggers();
 
     // Create user favorites cleanup trigger
     await ensureUserFavoritesCleanupTrigger();

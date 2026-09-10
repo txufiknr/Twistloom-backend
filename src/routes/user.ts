@@ -62,7 +62,7 @@ import { feedbackCategories, sources } from "../types/user.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { requireAuth, optionalAuth } from "../middleware/nextauth.js";
 import { requireNotSuspended, requireNotMuted } from "../middleware/trust-safety.js";
-import { users, books, userAuth, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, userSessions, userCompletedBooks, userComments, transactions, userProviders, userFeedbacks, bookTestimonials, uploadedImages, userReports, moderationReports, moderationAppeals, userEnforcementActions, userBlocks, platformTestimonials, pages, userInventory } from "../db/schema.js";
+import { users, books, userAuth, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, userSessions, userCompletedBooks, userComments, transactions, userProviders, userFeedbacks, bookTestimonials, uploadedImages, userReports, moderationReports, moderationAppeals, userEnforcementActions, userBlocks, platformTestimonials, pages, userInventory, posts } from "../db/schema.js";
 import type { ReportTargetType, ReportType } from "../types/trust-safety.js";
 import { getOrFetchUserEnforcementStatus, getOrCreateUserTrustProfile } from "../services/trust-safety.js";
 import { getErrorMessage, cApiError, cNotFoundError, cConflictError, cValidationError, cUnauthorizedError, cForbiddenError } from "../utils/error.js";
@@ -226,6 +226,9 @@ router.get('/', requireAuth, async (c: Context<AppEnv>) => {
       followersCount: user.followersCount,
       followingCount: user.followingCount,
       commentsCount: user.commentsCount,
+      wallNotesPosted: user.wallNotesPosted,
+      wallNoteLikesReceived: user.wallNoteLikesReceived,
+      endingsSharedToWall: user.endingsSharedToWall,
       activeCheckinStreak: streaks.activeStreak,
       maxCheckinStreak: streaks.longestStreak,
       customActionsWritten: user.customActionsWritten,
@@ -950,6 +953,9 @@ router.get("/users/:identifier", optionalAuth, async (c: Context<AppEnv>) => {
           followersCount: userData.followersCount,
           followingCount: userData.followingCount,
           commentsCount: userData.commentsCount,
+          wallNotesPosted: userData.wallNotesPosted,
+          wallNoteLikesReceived: userData.wallNoteLikesReceived,
+          endingsSharedToWall: userData.endingsSharedToWall,
           activeCheckinStreak: userData.activeCheckinStreak,
           maxCheckinStreak: userData.maxCheckinStreak,
           customActionsWritten: userData.customActionsWritten,
@@ -3111,7 +3117,7 @@ router.post('/users/:identifier/report', requireAuth, async (c: Context<AppEnv>)
       return cValidationError(c, `reportType must be one of: ${validTypes.join(', ')}`);
     }
 
-    const validTargetTypes: ReportTargetType[] = ['user', 'book', 'page', 'comment', 'testimonial', 'custom_action'];
+    const validTargetTypes: ReportTargetType[] = ['user', 'book', 'page', 'comment', 'testimonial', 'custom_action', 'post'];
     if (targetType && !validTargetTypes.includes(targetType)) {
       return cValidationError(c, `targetType must be one of: ${validTargetTypes.join(', ')}`);
     }
@@ -3122,6 +3128,17 @@ router.post('/users/:identifier/report', requireAuth, async (c: Context<AppEnv>)
     }
 
     const effectiveTargetId = (typeof targetId === 'string' && isValidUuid(targetId)) ? targetId : resolved.userId;
+    if (targetType === 'post') {
+      const [postRow] = await dbRead
+        .select({ userId: posts.userId })
+        .from(posts)
+        .where(eq(posts.id, effectiveTargetId))
+        .limit(1);
+      if (!postRow) return cNotFoundError(c, 'Post not found');
+      if (postRow.userId !== resolved.userId) {
+        return cValidationError(c, 'Post author does not match the reported profile');
+      }
+    }
 
     // 1. Insert into polymorphic moderation_reports
     const [modReport] = await dbWrite
@@ -3181,8 +3198,8 @@ router.post('/reports', requireAuth, async (c: Context<AppEnv>) => {
       message?: string;
     };
 
-    if (!targetType || !['user', 'book', 'page', 'comment', 'testimonial', 'custom_action'].includes(targetType)) {
-      return cValidationError(c, "Valid targetType is required ('user', 'book', 'page', 'comment', 'testimonial', 'custom_action')");
+    if (!targetType || !['user', 'book', 'page', 'comment', 'testimonial', 'custom_action', 'post'].includes(targetType)) {
+      return cValidationError(c, "Valid targetType is required ('user', 'book', 'page', 'comment', 'testimonial', 'custom_action', 'post')");
     }
     if (!targetId || !isValidUuid(targetId)) {
       return cValidationError(c, 'Valid UUID targetId is required');
@@ -3210,6 +3227,10 @@ router.post('/reports', requireAuth, async (c: Context<AppEnv>) => {
     } else if (targetType === 'comment') {
       const [commentRow] = await dbRead.select({ userId: userComments.userId }).from(userComments).where(eq(userComments.id, targetId)).limit(1);
       reportedUserId = commentRow?.userId ?? null;
+    } else if (targetType === 'post') {
+      const [postRow] = await dbRead.select({ userId: posts.userId }).from(posts).where(eq(posts.id, targetId)).limit(1);
+      if (!postRow) return cNotFoundError(c, 'Post not found');
+      reportedUserId = postRow.userId;
     }
 
     if (reportedUserId && reportedUserId === reporterId) {

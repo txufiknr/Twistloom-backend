@@ -16,6 +16,7 @@ import thanksRouter from "./thanks.js";
 import walletRouter from "./wallet.js";
 import easterEggsRouter from "./easter-eggs.js";
 import helpRouter from "./help.js";
+import wallRouter from "./wall.js";
 import { APP_NAME, VERSION } from "../config/constants.js";
 import type { AppEnv } from "../hono/env.js";
 
@@ -39,6 +40,7 @@ router.get("/", (c) => {
       "/blog": "Public portal blog posts (published only)",
       "/easter-eggs": "Easter egg discovery, claim, and reward cracking",
       "/help": "Help center article feedback (votes, stats)",
+      "/wall": "Wall Notes social feed, profile Walls, and Reading Vault",
     },
   });
 });
@@ -61,5 +63,6 @@ router.route("/thanks", thanksRouter);
 router.route("/wallet", walletRouter);
 router.route("/easter-eggs", easterEggsRouter);
 router.route("/help", helpRouter);
+router.route("/wall", wallRouter);
 
 export default router;

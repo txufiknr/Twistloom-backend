@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer, unique, uniqueIndex, type UpdateDeleteAction, boolean, vector } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer, unique, uniqueIndex, foreignKey, type UpdateDeleteAction, boolean, vector } from "drizzle-orm/pg-core";
 import type { AvatarFrame, CheckinClaimType, FeedbackAdminStatus, FeedbackCategory, FeedbackStatus, Gender, Source, UserActivityType, UserTier } from "../types/user.js";
 import type { LikeTargetType } from "../types/user.js";
 import type { CharacterMemoryTranslation, CharacterPlan, HealthStatus, InjuryTranslation, InventoryItem, InventoryItemTranslation, StoryMC, StoryMCCandidate, StoryMCTranslation } from "../types/character.js";
@@ -28,6 +28,7 @@ import { BOOK_MIN_PAGES } from "../config/story.js";
 import { FIRST_TIME_CREDITS } from "../config/credits.js";
 import type { WalletCurrency } from "../types/wallet.js";
 import type { PrivacyPreferences } from "../types/privacy-preferences.js";
+import type { WallAttachmentSnapshot, WallPostFlair, WallPostType, WallReactionCounts, WallReactionType } from "../types/wall.js";
 
 /** Pre-defined columns */
 // const id = () => uuid("id").primaryKey().$defaultFn(generateId);
@@ -905,6 +906,7 @@ export const userLikes = pgTable(
     userId: userId().references(() => users.userId, { onDelete: "cascade" }), // Cascade delete when user is deleted
     targetType: text("target_type").$type<LikeTargetType>().notNull(), // "book" | "comment" | "user"
     targetId: uuid("target_id").notNull(), // ID of the liked item
+    reaction: text("reaction").$type<WallReactionType>(), // Wall only; non-post likes remain NULL
     createdAt,
   },
   (t) => [
@@ -1009,6 +1011,103 @@ export const userComments = pgTable(
     
     // Index for book comment ordering
     index("user_comments_book_order_idx").on(t.bookId, t.createdAt.desc()),
+  ]
+);
+
+/**
+ * First-class Wall Notes domain.
+ *
+ * Personal Notes have no wall target. Incoming Notes set `wallUserId` and are
+ * shown only on that target profile. `channelId` is reserved for the future
+ * Communities domain and must remain NULL in V1 application writes.
+ */
+export const posts = pgTable(
+  "posts",
+  {
+    id: id(),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    clientRequestId: uuid("client_request_id"),
+    wallUserId: uuid("wall_user_id").references(() => users.userId, { onDelete: "cascade" }),
+    channelId: uuid("channel_id"),
+    type: text("type").$type<WallPostType>().notNull().default("text"),
+    content: text("content").notNull(),
+    flair: text("flair").$type<WallPostFlair>(),
+    bookId: uuid("book_id").references(() => books.id, { onDelete: "set null" }),
+    pageId: uuid("page_id").references(() => pages.id, { onDelete: "set null" }),
+    achievementId: text("achievement_id"),
+    attachmentSnapshot: jsonb("attachment_snapshot").$type<WallAttachmentSnapshot>(),
+    isSpoiler: boolean("is_spoiler").notNull().default(false),
+    isLocked: boolean("is_locked").notNull().default(false),
+    pinnedAt: timestamp("pinned_at", { withTimezone: true }),
+    pinnedByUserId: uuid("pinned_by_user_id").references(() => users.userId, { onDelete: "set null" }),
+    hiddenByWallOwnerAt: timestamp("hidden_by_wall_owner_at", { withTimezone: true }),
+    likesCount: integer("likes_count").notNull().default(0),
+    commentsCount: integer("comments_count").notNull().default(0),
+    savesCount: integer("saves_count").notNull().default(0),
+    reactionCounts: jsonb("reaction_counts").$type<WallReactionCounts>().notNull().default(sql`'{"heart":0,"candle":0,"mind":0,"magnifier":0,"broken_heart":0}'::jsonb`),
+    createdAt,
+    updatedAt,
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("posts_user_feed_idx")
+      .on(t.userId, t.createdAt.desc(), t.id.desc())
+      .where(sql`${t.wallUserId} IS NULL AND ${t.channelId} IS NULL AND ${t.deletedAt} IS NULL`),
+    index("posts_discover_idx")
+      .on(t.createdAt.desc(), t.id.desc())
+      .where(sql`${t.wallUserId} IS NULL AND ${t.channelId} IS NULL AND ${t.deletedAt} IS NULL`),
+    index("posts_profile_wall_idx")
+      .on(t.wallUserId, t.createdAt.desc(), t.id.desc())
+      .where(sql`${t.wallUserId} IS NOT NULL AND ${t.channelId} IS NULL AND ${t.deletedAt} IS NULL AND ${t.hiddenByWallOwnerAt} IS NULL`),
+    index("posts_book_idx").on(t.bookId).where(sql`${t.bookId} IS NOT NULL`),
+    index("posts_flair_created_idx").on(t.flair, t.createdAt.desc(), t.id.desc()).where(sql`${t.deletedAt} IS NULL`),
+    uniqueIndex("posts_user_client_request_unique")
+      .on(t.userId, t.clientRequestId)
+      .where(sql`${t.clientRequestId} IS NOT NULL`),
+    uniqueIndex("posts_profile_pinned_unique")
+      .on(sql`COALESCE(${t.wallUserId}, ${t.userId})`)
+      .where(sql`${t.pinnedAt} IS NOT NULL AND ${t.deletedAt} IS NULL AND ${t.hiddenByWallOwnerAt} IS NULL`),
+  ]
+);
+
+/** Flat V1 replies to Wall Notes; `parentId` is reserved for future threading. */
+export const postComments = pgTable(
+  "post_comments",
+  {
+    id: id(),
+    postId: uuid("post_id").notNull().references(() => posts.id, { onDelete: "cascade" }),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    parentId: uuid("parent_id"),
+    content: text("content").notNull(),
+    createdAt,
+    updatedAt,
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  },
+  (t) => [
+    foreignKey({
+      name: "post_comments_parent_fk",
+      columns: [t.parentId],
+      foreignColumns: [t.id],
+    }).onDelete("cascade"),
+    index("post_comments_post_created_idx")
+      .on(t.postId, t.createdAt, t.id)
+      .where(sql`${t.deletedAt} IS NULL`),
+    index("post_comments_user_created_idx").on(t.userId, t.createdAt.desc()),
+  ]
+);
+
+/** Private one-list Reading Vault for Wall Notes. */
+export const userSavedPosts = pgTable(
+  "user_saved_posts",
+  {
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    postId: uuid("post_id").notNull().references(() => posts.id, { onDelete: "cascade" }),
+    createdAt,
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.postId] }),
+    index("user_saved_posts_user_created_idx").on(t.userId, t.createdAt.desc(), t.postId.desc()),
+    index("user_saved_posts_post_idx").on(t.postId),
   ]
 );
 
@@ -1582,6 +1681,9 @@ export const userCounters = pgTable(
     followersCount: integer("followers_count").notNull().default(0),
     followingCount: integer("following_count").notNull().default(0),
     commentsCount: integer("comments_count").notNull().default(0),
+    wallNotesPosted: integer("wall_notes_posted").notNull().default(0),
+    wallNoteLikesReceived: integer("wall_note_likes_received").notNull().default(0),
+    endingsSharedToWall: integer("endings_shared_to_wall").notNull().default(0),
 
     // Custom actions authored (outcome = 'allow' in custom_actions table)
     customActionsWritten: integer("custom_actions_written").notNull().default(0),

@@ -35,6 +35,10 @@ export function normalizePrivacyPreferences(
       raw?.showCommentsOnProfile ?? DEFAULT_PRIVACY_PREFERENCES.showCommentsOnProfile,
     showMindMatrixOnProfile:
       raw?.showMindMatrixOnProfile ?? DEFAULT_PRIVACY_PREFERENCES.showMindMatrixOnProfile,
+    showWallOnProfile:
+      raw?.showWallOnProfile ?? DEFAULT_PRIVACY_PREFERENCES.showWallOnProfile,
+    allowWallNotesFromOthers:
+      raw?.allowWallNotesFromOthers ?? DEFAULT_PRIVACY_PREFERENCES.allowWallNotesFromOthers,
   };
 }
 

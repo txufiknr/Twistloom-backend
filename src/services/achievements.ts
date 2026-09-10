@@ -67,6 +67,9 @@ export async function getUserMetrics(userId: string) {
     customActionsWritten: stats?.customActionsWritten ?? 0,
     easterEggsFound: stats?.easterEggsFound ?? 0,
     creatorsSupported: stats?.creatorsSupported ?? 0,
+    wallNotesPosted: stats?.wallNotesPosted ?? 0,
+    wallNoteLikesReceived: stats?.wallNoteLikesReceived ?? 0,
+    endingsSharedToWall: stats?.endingsSharedToWall ?? 0,
   } satisfies Record<AchievementMetric, number>;
 }
 

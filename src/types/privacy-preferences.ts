@@ -24,6 +24,10 @@ export interface PrivacyPreferences {
   showCommentsOnProfile: boolean;
   /** Show reader Mind Matrix psychological profile on their public profile (default: true). */
   showMindMatrixOnProfile: boolean;
+  /** Show the Wall tab to profile visitors (default: true). */
+  showWallOnProfile: boolean;
+  /** Allow eligible visitors to publish incoming Notes to this wall (default: true). */
+  allowWallNotesFromOthers: boolean;
 }
 
 /** Partial update payload for PATCH /user/privacy-preferences */
@@ -36,6 +40,8 @@ export const DEFAULT_PRIVACY_PREFERENCES: PrivacyPreferences = {
   showReviewsOnProfile: true,
   showCommentsOnProfile: false,
   showMindMatrixOnProfile: true,
+  showWallOnProfile: true,
+  allowWallNotesFromOthers: true,
 };
 
 /** Boolean toggle keys */
@@ -45,6 +51,8 @@ export const PRIVACY_PREFERENCE_BOOL_KEYS = [
   'showReviewsOnProfile',
   'showCommentsOnProfile',
   'showMindMatrixOnProfile',
+  'showWallOnProfile',
+  'allowWallNotesFromOthers',
 ] as const satisfies readonly (keyof PrivacyPreferences)[];
 
 export type PrivacyPreferenceBoolKey = (typeof PRIVACY_PREFERENCE_BOOL_KEYS)[number];

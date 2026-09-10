@@ -394,4 +394,22 @@ export const ACHIEVEMENT_REGISTRY: AchievementRule[] = [
     threshold: 50,
     badgeImageUrl: 'badge_thanks_platinum', tier: 'platinum',
   },
+
+  // ── PERSONAL WALL NOTES POSTED ───────────────────────────────────────────
+  { id: 'wall_10', title: 'Margin Scribe', description: 'Pinned 10 public dispatches to the Wall before the ink went cold', metric: 'wallNotesPosted', threshold: 10, badgeImageUrl: 'badge_wall_bronze', tier: 'bronze' },
+  { id: 'wall_50', title: 'Town Crier', description: 'Carved 50 notes into the public square. Travelers have begun to stop and read.', metric: 'wallNotesPosted', threshold: 50, badgeImageUrl: 'badge_wall_silver', tier: 'silver' },
+  { id: 'wall_200', title: 'Echo Chamber', description: '200 public dispatches. The dark corridors of the Loom resonate with your voice.', metric: 'wallNotesPosted', threshold: 200, badgeImageUrl: 'badge_wall_gold', tier: 'gold' },
+  { id: 'wall_500', title: 'The Living Chronicle', description: '500 public notes. You are woven into the very mortar and masonry of the Loom.', metric: 'wallNotesPosted', threshold: 500, badgeImageUrl: 'badge_wall_platinum', tier: 'platinum' },
+
+  // ── PERSONAL WALL NOTE REACTIONS RECEIVED ────────────────────────────────
+  { id: 'wall_like_25', title: 'Resonant Voice', description: 'Your notes struck a quiet, unsettling chord in 25 passing readers', metric: 'wallNoteLikesReceived', threshold: 25, badgeImageUrl: 'badge_wall_like_bronze', tier: 'bronze' },
+  { id: 'wall_like_100', title: 'Crowd Favorite', description: '100 souls found truth in your margins. They keep coming back for more.', metric: 'wallNoteLikesReceived', threshold: 100, badgeImageUrl: 'badge_wall_like_silver', tier: 'silver' },
+  { id: 'wall_like_500', title: 'The Magnet', description: '500 readers stopped and pressed their hearts against your words', metric: 'wallNoteLikesReceived', threshold: 500, badgeImageUrl: 'badge_wall_like_gold', tier: 'gold' },
+  { id: 'wall_like_2500', title: 'Oracle of the Corkboard', description: '2,500 reactions. When you post a note, the town square falls quiet to listen.', metric: 'wallNoteLikesReceived', threshold: 2500, badgeImageUrl: 'badge_wall_like_platinum', tier: 'platinum' },
+
+  // ── PERSONAL ENDINGS SHARED TO WALL ─────────────────────────────────────
+  { id: 'share_end_1', title: 'First Revelation', description: 'Exposed the secret of your first discovered ending to the Wall', metric: 'endingsSharedToWall', threshold: 1, badgeImageUrl: 'badge_share_end_bronze', tier: 'bronze' },
+  { id: 'share_end_10', title: 'The Informant', description: 'Broadcasted 10 divergent fates to warn fellow wanderers of what lies ahead', metric: 'endingsSharedToWall', threshold: 10, badgeImageUrl: 'badge_share_end_silver', tier: 'silver' },
+  { id: 'share_end_50', title: 'Cartographer of Doom', description: '50 endings exposed to the light. The maze is rapidly running out of secrets.', metric: 'endingsSharedToWall', threshold: 50, badgeImageUrl: 'badge_share_end_gold', tier: 'gold' },
+  { id: 'share_end_100', title: 'Unveiler of the Multiverse', description: '100 endings charted. You have catalogued every nightmare the Loom can conjure.', metric: 'endingsSharedToWall', threshold: 100, badgeImageUrl: 'badge_share_end_platinum', tier: 'platinum' },
 ];

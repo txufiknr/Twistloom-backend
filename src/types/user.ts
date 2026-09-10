@@ -37,7 +37,7 @@ export type FeedbackAdminStatus = typeof feedbackAdminStatuses[number];
  * 
  * Used for user likes system to type-safe target identification.
  */
-export const likeTargetTypes = [ 'book', 'page', 'comment', 'user' ] as const;
+export const likeTargetTypes = [ 'book', 'page', 'comment', 'user', 'post' ] as const;
 export type LikeTargetType = typeof likeTargetTypes[number];
 
 /**
@@ -65,6 +65,9 @@ export interface UserStats {
   followersCount: number;
   followingCount: number;
   commentsCount: number;
+  wallNotesPosted: number;
+  wallNoteLikesReceived: number;
+  endingsSharedToWall: number;
   customActionsWritten: number;
   activeCheckinStreak: number;
   maxCheckinStreak: number;
@@ -164,7 +167,9 @@ export type UserActivityType =
   'time_travel_commit' |
   'page_reacted' |
   'book_completed' |
-  'testimonial_created';
+  'testimonial_created' |
+  'wall_post_created' |
+  'wall_post_liked';
 
 export type CheckinClaimType = 'regular' | 'vip_2x';
 
