@@ -395,6 +395,22 @@ export function formatPlacesForPrompt(places: Record<string, PlaceMemory>, curre
 
     pushListSection(lines, 'Associated characters', knownCharacters, character => character);
 
+    if (place.spatial) {
+      const { features, exits } = place.spatial;
+      const featureEntries = features ? Object.entries(features) : [];
+      const exitEntries = exits ? Object.entries(exits) : [];
+      if (featureEntries.length || exitEntries.length) {
+        const parts: string[] = [];
+        if (featureEntries.length) {
+          parts.push(`features: ${featureEntries.map(([d, f]) => `${d} = "${f}"`).join('; ')}`);
+        }
+        if (exitEntries.length) {
+          parts.push(`exits: ${exitEntries.map(([d, e]) => `${d} → ${e.to}${e.via ? ` (via "${e.via}")` : ''}`).join('; ')}`);
+        }
+        lines.push(`  - Spatial: ${parts.join('. ')}`);
+      }
+    }
+
     pushListSection(lines, 'Known routes', place.knownConnections, conn => {
       const parts = [conn.travelTime, conn.routeType, conn.accessibility].filter(Boolean);
       const details = parts.length ? `(${parts.join(', ')})` : '';

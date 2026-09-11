@@ -75,22 +75,60 @@ export const placeWeathers = [
  */
 export type PlaceWeather = typeof placeWeathers[number];
 
-// /**
-//  * Sensory details for immersive place descriptions
-//  * 
-//  * These optional details help the AI create consistent
-//  * atmospheric descriptions across multiple visits.
-//  */
-// export type SensoryDetails = {
-//   /** Smell characteristics of the place */
-//   smell?: string;
-//   /** Sound environment of the place */
-//   sound?: string;
-//   /** Visual appearance and lighting */
-//   visual?: string;
-//   /** Physical sensations (temperature, texture) */
-//   feeling?: string;
-// };
+// ── Spatial Memory ────────────────────────────────────────────────────────
+
+/**
+ * Six canonical spatial directions for intra-place layout.
+ *
+ * Covers cardinal axes plus vertical for multi-level locations (basements,
+ * attics, stairs). Intentionally excludes intercardinal directions (NE, SW)
+ * — they add little narrative value relative to the complexity they introduce.
+ */
+export const spatialDirections = ['north', 'east', 'south', 'west', 'up', 'down'] as const;
+export type SpatialDirection = typeof spatialDirections[number];
+
+/** Opposite-direction lookup for bidirectional validation. */
+export const OPPOSITE_DIRECTION: Record<SpatialDirection, SpatialDirection> = {
+  north: 'south',
+  south: 'north',
+  east: 'west',
+  west: 'east',
+  up: 'down',
+  down: 'up',
+};
+
+/** A traversable exit from a place in a given direction. */
+export type PlaceExitTarget = {
+  /** Target place ID. */
+  to: string;
+  /** Feature the exit goes through (e.g., "oak door", "stairs"). Optional. */
+  via?: string;
+};
+
+/**
+ * Stable intra-place spatial layout.
+ *
+ * Stores the physical geometry of a place: what features exist on each
+ * wall/surface, and which directions contain traversable exits. This is
+ * **stable geography** — it does not change when a door is locked or a
+ * passage collapses (those belong in `PlaceConnection.obstacles` or
+ * `factUpdates`).
+ *
+ * `Partial<Record<...>>` means only directions with meaningful data are
+ * stored. A forest clearing with one exit south stores
+ * `{ exits: { south: { to: 'forest-path' } } }`, not four empty strings.
+ *
+ * Directions are canonical hidden world coordinates. The AI does NOT need
+ * to use compass directions in prose — write naturally.
+ */
+export type PlaceSpatialMemory = {
+  /** Physical features on each wall or surface (e.g., "oak door", "window overlooking yard", "bed"). */
+  features?: Partial<Record<SpatialDirection, string>>;
+  /** Traversable exits from this place, keyed by direction. */
+  exits?: Partial<Record<SpatialDirection, PlaceExitTarget>>;
+};
+
+// ── Place Memory ──────────────────────────────────────────────────────────
 
 /**
  * Complete place memory structure for narrative consistency
@@ -135,6 +173,8 @@ export type PlaceMemory = {
   parentPlaceId?: string;
   /** Place connections to build a spatial graph */
   knownConnections: PlaceConnection[];
+  /** Stable intra-place spatial layout (features, exits). Optional until populated by AI. */
+  spatial?: PlaceSpatialMemory;
 };
 
 export const placeAccessibilities = ['open', 'blocked', 'dangerous', 'restricted', 'unknown', 'destroyed'];

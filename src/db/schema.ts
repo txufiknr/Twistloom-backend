@@ -7,7 +7,7 @@ import type { BookGenerationStatus, StoryGenerationStep, BookStatus, BookVisibil
 import type { AdvancedOptionsConfig } from "../types/book-creation.js";
 import type { SessionStatus } from "../types/session.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
-import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryIntegrity, Difficulty, Action, StateDelta, Ending, PlotFlag, ActionTranslation, StoryStateSource, FutureNote, FactHistory, SelectedAction, StoryState, StoryPage, StoryPageGeneration, SceneType, Mood, StoryMomentum, SceneCharacter, SanityState } from "../types/story.js";
+import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryIntegrity, Difficulty, Action, StateDelta, Ending, PlotFlag, ActionTranslation, StoryStateSource, FutureNote, FactHistory, SelectedAction, StoryState, StoryPage, StoryPageGeneration, SceneType, Mood, StoryMomentum, SceneCharacter, SanityState, SceneAnchor } from "../types/story.js";
 import type { CharacterMemory, Injury } from "../types/character.js";
 import type { PlaceMemory, PlaceMemoryTranslation, PlaceWeather } from "../types/places.js";
 import type { ActionProgressStatus } from "../types/candidate-generation.js";
@@ -270,6 +270,7 @@ export const storyStates = pgTable(
     contextHistory: text("context_history").notNull().default(""), // AI-summarized story context from page 1 to current
     isMajorEvent: boolean("is_major_event").notNull().default(false),
     source: text("source").$type<StoryStateSource>().notNull().default("original"),
+    sceneAnchor: jsonb("scene_anchor").$type<SceneAnchor>(),
     createdAt,
     updatedAt,
   } satisfies Record<keyof StoryState | 'bookId' | 'source' | ResourceTimestamp, unknown>,
@@ -632,6 +633,8 @@ export const books = pgTable(
     canonVersion: integer("canon_version").notNull().default(0),
     advancedOptions: jsonb("advanced_options").$type<AdvancedOptionsConfig>(),
     ending: jsonb("ending").$type<Ending>(),
+    /** Writer-controlled kill switch: when false, readers hear no BGM for this book. */
+    bgmEnabled: boolean("bgm_enabled").notNull().default(true),
     createdAt,
     updatedAt,
   } satisfies Record<keyof Omit<Book, 'stats' | 'imageUrl'> | keyof BookStats | ResourceTimestamp, unknown>,
@@ -3212,6 +3215,14 @@ export const loreEntries = pgTable(
     linkedPlaceId: uuid("linked_place_id"),
     /** Optional avatar image for character entities (references `uploaded_images.image_id`). */
     imageId: text("image_id").references(() => uploadedImages.imageId, { onDelete: "set null" }),
+    /** BGM primary track — FK to user_audio_library (place entries only). */
+    bgmPrimaryLibraryId: uuid("bgm_primary_library_id"),
+    bgmPrimaryUrl: text("bgm_primary_url"),
+    bgmPrimaryFileId: text("bgm_primary_file_id"),
+    /** BGM variant track — optional tension variant (place entries only). */
+    bgmVariantLibraryId: uuid("bgm_variant_library_id"),
+    bgmVariantUrl: text("bgm_variant_url"),
+    bgmVariantFileId: text("bgm_variant_file_id"),
     userId: userId().references(() => users.userId, { onDelete: "cascade" }),
     createdAt,
     updatedAt,
@@ -3603,5 +3614,54 @@ export const helpArticleFeedback = pgTable(
     index("help_article_feedback_article_idx").on(t.articleId),
     index("help_article_feedback_user_idx").on(t.userId),
     index("help_article_feedback_vote_idx").on(t.vote),
+  ]
+);
+
+/**
+ * User audio library — reusable per-user media vault.
+ *
+ * Uploaded tracks live here permanently. Deleting a lore entry or
+ * `book_place_bgm` row does NOT delete the library item — it's the
+ * user's media vault, analogous to a WordPress media gallery.
+ */
+export const userAudioLibrary = pgTable(
+  "user_audio_library",
+  {
+    id: id(),
+    userId: uuid("user_id").notNull().references(() => users.userId, { onDelete: "cascade" }),
+    fileUrl: text("file_url").notNull(),           // ImageKit CDN URL
+    fileId: text("file_id").notNull(),              // ImageKit file ID for deletion
+    fileName: text("file_name"),                    // original filename for display
+    fileSize: integer("file_size"),                 // bytes
+    durationSec: real("duration_sec"),              // audio duration in seconds
+    mimeType: text("mime_type"),                    // audio/mpeg, audio/ogg, etc.
+    createdAt,
+  },
+  (t) => [
+    index("user_audio_library_user_idx").on(t.userId),
+  ]
+);
+
+/**
+ * Denormalized per-book place BGM overrides (public-readable).
+ *
+ * Lore bible is `requireAuth`, but reader pages are public. This table
+ * surfaces custom audio to readers without leaking the whole bible or
+ * bloating the page snapshot. Keyed by (book_id, place_id).
+ */
+export const bookPlaceBgm = pgTable(
+  "book_place_bgm",
+  {
+    bookId: uuid("book_id").notNull().references(() => books.id, { onDelete: "cascade" }),
+    placeId: text("place_id").notNull(),            // story_states place id
+    primaryUrl: text("primary_url"),
+    primaryFileId: text("primary_file_id"),          // ImageKit id for deletion (library item ref)
+    variantUrl: text("variant_url"),
+    variantFileId: text("variant_file_id"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.bookId, t.placeId] }),
+    index("book_place_bgm_book_idx").on(t.bookId),
   ]
 );

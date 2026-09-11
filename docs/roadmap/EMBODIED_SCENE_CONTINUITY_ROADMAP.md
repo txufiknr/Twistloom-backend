@@ -1,6 +1,8 @@
 # Embodied Scene Continuity — Twistloom Implementation Roadmap
 
-**Status:** ✅ Phase 1 complete (tasks 1.0–1.5 landed in `cc0a174` working tree); Phases 2–4 remain backlog
+> **Superseded by:** [`PLACE_SPATIAL_MEMORY_ROADMAP.md`](./PLACE_SPATIAL_MEMORY_ROADMAP.md) for intra-place spatial layout (features + exits). This roadmap remains the canonical reference for **scene-level physical staging** (posture, orientation, camera rules, evaluator dimensions).
+
+**Status:** ✅ Phase 1 complete (tasks 1.0–1.5 landed in `cc0a174` working tree); ✅ Phase 3 tasks 3.0–3.1 complete (sceneAnchor persistence + context injection); Phase 2–4 remain backlog
 **Scope:** Fix spatial-continuity defects in AI-generated `page.text` — POV posture/position breaks, teleported camera, impossible physical sequences, ambiguous pronominal references — across the **generation + evaluation** pipeline.
 **Pattern source / grounded against (files actually reviewed):**
 `src/utils/prompt.ts`, `src/utils/ai-chat.ts`, `src/utils/story.ts`, `src/types/story.ts`, `src/schema/story.ts`, `src/config/book-creation.ts`, `docs/roadmap/` conventions.
@@ -31,15 +33,15 @@
 | 1.4 | **Evaluator Option A** — strengthen COHERENCE + STEP 1.5 scene reconstruction + hard-fail triggers | ✅ | 1 | 1–2 h | 1.0 | Prompt-only |
 | 1.5 | **First-book evaluator** FIRST PAGE QUALITY spatial bullets | ✅ | 1 | 0.5 h | 1.2 | Prompt-only |
 | 2.0 | **Evaluator Option B** — dedicated 7th dimension `Scene & POV Continuity (0-10)` + weight rebalance | ⚪ | 2 | 1–2 h | 1.4 ✅ | Prompt-only (breakdown is free-form string array — no schema change) |
-| 3.0 | **Persisted `sceneAnchor`** — AI-authored structured physical snapshot stored on page `stateDelta` | ⚪ | 3 | 6–10 h | 2.0 ✅ | Types + schema + `extractStateDelta`/`applyStateDelta` + prompt context injection (no DB migration) |
-| 3.1 | **CURRENT SCENE ANCHOR context injection** — feed previous page's anchor forward | ⚪ | 3 | 2–3 h | 3.0 | Prompt context rendering |
+| 3.0 | **Persisted `sceneAnchor`** — AI-authored structured physical snapshot stored on page `stateDelta` + dedicated DB column | ✅ | 3 | 6–10 h | — | Types + schema + `extractStateDelta`/`applyStateDelta` + DB column + prompt context injection |
+| 3.1 | **CURRENT SCENE ANCHOR context injection** — feed previous page's anchor forward via `formatPreviousPageEntry` | ✅ | 3 | 2–3 h | 3.0 | Prompt context rendering |
 | 3.2 | **Evaluator verifies prose against anchors** (prev + new) | ⚪ | 3 | 2–3 h | 3.0 | Evaluator prompt |
 | 4.0 | **Validation & measurement** — golden-sample corpus, per-dimension eval logging, regression pass | ⚪ | 4 | 2–4 h | 1.x ✅ + chosen later | Test harness + logging |
 
 **Phase map:**
 - **Phase 1 (✅)** — Prompt-only fix, zero schema/type/DB changes. Safe, reversible, shippable immediately. **Completed.** Rules are **language-agnostic** — expressed as universal grammatical classifications (pronoun/possessive/person-marked inflection) rather than language-specific lexemes, since the pipeline supports any target language.
 - **Phase 2 (⚪)** — Dedicated evaluator dimension (stronger gate, needs §7 decision on Option A→B). **Deferred** — no residual leak observed in the completed Phase-1 implementation to motivate Option B yet.
-- **Phase 3 (⚪)** — Structured, persistent physical scene state (`sceneAnchor`).
+- **Phase 3 (✅/⚪)** — Structured, persistent physical scene state (`sceneAnchor`). **Tasks 3.0–3.1 complete:** types, schema, extraction/application, dedicated DB column, `insertStoryState`/`mapStoryStateFromDb` persistence, and `formatPreviousPageEntry` context injection all landed. Task 3.2 (evaluator anchor verification) remains open.
 - **Phase 4 (⚪)** — Proving it works: sample corpus + failure-rate telemetry.
 
 ---
@@ -234,50 +236,58 @@ Proposed weights (`buildNextPageEvaluatorPrompt` scoring rubric, prompt.ts:1302-
 
 ## 5. Phase 3 — Persisted `sceneAnchor` (Structured Scene State)
 
-- **Status:** ⚪ (bigger win; schema + types + state-delta work)
+- **Status:** ✅ Tasks 3.0–3.1 complete; ⚪ Task 3.2 (evaluator verification) remains
 - **Goal:** stop *implying* physical state and start *carrying* it, matching Twistloom's state-driven architecture (the "SCENE STATE → GENERATION → PROSE → RECONSTRUCTION → EVALUATOR" loop from the design).
 
 ### 5.1 Task 3.0 — AI-authored `sceneAnchor` (end-of-page physical snapshot)
 
+- **Status:** ✅ Complete
+
+**Implemented type** (`src/types/story.ts`):
+
 ```typescript
-interface SceneAnchor {
-  location: string;          // placeId ("unknown" if ambiguous)
-  mcPosture: string;         // standing | sitting | lying | kneeling | crouching | moving
-  mcOrientation?: string;    // facing whom/what
-  characters?: { characterId: string; position: string; posture: string }[];
-  objects?: { name: string; position: string }[];   // only plot-relevant
-}
+type SceneAnchor = {
+  locationId: string;  // placeId ("unknown" if ambiguous)
+  mc: {
+    posture: SceneAnchorPosture;   // standing | sitting | lying | kneeling | crouching | moving
+    anchor: string;                // body support/contact phrase in target language
+    facing: string;                // direction/person/object the MC faces
+    constraints: string[];         // physical constraints affecting next action
+  };
+  targets: SceneAnchorTarget[];   // relevant people, objects, exits, obstacles
+};
 ```
 
-**Touch points:**
-| File | Change |
-|---|---|
-| `types/story.ts` | new `SceneAnchor` type; optional on `StoryPageGeneration` (1321) |
-| `schema/story.ts` | `sceneAnchor` property in `STORY_PAGE_GENERATION_SCHEMA` (675); candidates inherit automatically (690) |
-| `utils/prompt.ts` | `nextPageOutputFormat` (627) + field instruction for `sceneAnchor` |
+**Touch points landed:**
+| File | Change | Status |
+|---|---|---|
+| `types/story.ts` | `SceneAnchor`, `SceneAnchorPosture`, `SceneAnchorAccess`, `SceneAnchorTarget` types; optional on `StoryState` | ✅ |
+| `schema/story.ts` | `SCENE_ANCHOR_SCHEMA` in `STORY_PAGE_GENERATION_SCHEMA`; field instructions for `sceneAnchor` | ✅ |
+| `utils/story.ts` | `extractStateDelta` extracts `sceneAnchor`; `applyStateDelta` deep-clones it onto `StoryState` | ✅ |
+| `utils/field-instructions.ts` | `sceneAnchor` field instruction + action affordance rules | ✅ |
+| `utils/prompt.ts` | `RULES_EMBODIED_SCENE_CONTINUITY` + `RULES_ACTIONS` end-frame affordance hard gate | ✅ |
 
-**Persistence — no DB migration:** store the full snapshot on each page's existing `stateDelta` jsonb, same full-snapshot contract as `sanityState`:
-| File | Change |
-|---|---|
-| `utils/story.ts` `extractStateDelta` (284) | add `sceneAnchor: generation.sceneAnchor` |
-| `utils/story.ts` `applyStateDelta` | apply `sceneAnchor` onto `StoryState` |
-| `types/story.ts` `StateDelta` | optional `sceneAnchor` |
-| `types/story.ts` `StoryState` (1493) | optional `sceneAnchor` (carried baseline for future pages) |
+**Persistence — dedicated DB column** (deviation from original Q2 recommendation):
+| File | Change | Status |
+|---|---|---|
+| `db/schema.ts` | `sceneAnchor: jsonb("scene_anchor").$type<SceneAnchor>()` on `story_states` | ✅ |
+| `services/story.ts` `insertStoryState` | Persists `sceneAnchor` in INSERT + ON CONFLICT UPDATE | ✅ |
+| `services/story.ts` `mapStoryStateFromDb` | Maps `sceneAnchor` from DB row back to `StoryState` | ✅ |
 
-> Recovery path is automatic: `reconstructStoryState` / delta-chain replay reads `stateDelta.sceneAnchor` exactly like the other delta fields.
+> **Design note:** Original Q2 recommended stateDelta-only persistence (no DB column). We added a dedicated column because the fast path (`getStoryState` → DB lookup) needs `sceneAnchor` without delta reconstruction. All three reconstruction paths (fast, shallow parent-chain, branch-aware) now handle `sceneAnchor` correctly.
 
 ### 5.2 Task 3.1 — CURRENT SCENE ANCHOR context injection
 
-- **Insertion:** `formatPreviousPageEntry` (prompt.ts:1643) renders `previousPage.stateDelta.sceneAnchor` as:
+- **Status:** ✅ Complete
+- **Insertion:** `formatPreviousPageEntry` (`src/utils/prompt.ts`) renders `sceneAnchor` from the previous page's `stateDelta`:
 
 ```text
-  → Scene anchor: standing, adrift behind Ibu Ratih (facing away); soup bowl on table at MC's left
+  → Scene anchor: MC posture: sitting, facing: Ibu Ratih, anchor: back pressed against door. Targets: soup_bowl (touching behind), door (across the room ahead)
 ```
-
-- And `formatNextPageStoryContextPrompt` (prompt.ts:2898) gets a "CURRENT SCENE ANCHOR" block so the writer starts from an explicit physical baseline instead of inferring it from prose.
 
 ### 5.3 Task 3.2 — Evaluator verifies against anchors
 
+- **Status:** ⚪ (remaining)
 - In STEP 1.5 (from Task 1.4), replace "reconstruct from text alone" with **"reconcile the prose against the PREVIOUS page's known anchor"** — no unstated movement allowed except the current page's written transitions. Optionally cross-check the newly generated `sceneAnchor` self-consistency (does the page actually end where the anchor says it does?).
 
 ### 5.4 Phase 3 risks
@@ -310,7 +320,7 @@ The evaluation result is already logged with `scoreBefore`/`scoreAfter` breakdow
 
 ## 7. Open Questions — Need Your Decision
 
-> Each question: context → options → **my recommendation**. Phase-1 scope decisions are now **decided** (✅) — the recommendations below were followed during implementation. Phase 2–3 questions remain open for future phases.
+> Each question: context → options → **my recommendation**. Phase-1 scope decisions are now **decided** (✅) — the recommendations below were followed during implementation. Phase 2–3 questions: Q2 resolved (hybrid approach), Q3 deferred, Q4/Q5/Q7 decided, Q6 open.
 
 ### Q1. Evaluator gate: Option A (strengthen COHERENCE) vs Option B (dedicated dimension) — now vs later?
 
@@ -324,10 +334,13 @@ The evaluation result is already logged with `scoreBefore`/`scoreAfter` breakdow
 
 ### Q2. Phase 3 persistence: full-snapshot on `stateDelta` vs first-class `StoryState` column?
 
+- **Decision: ✅ Hybrid approach adopted** — dedicated DB column + delta persistence.
+- **Context:** Original recommendation was stateDelta-only (Option 1) for zero-migration. However, the fast path (`getStoryState` → DB lookup) returns a state without `sceneAnchor` when it's not in the `story_states` table, breaking action affordance for the next page.
 - **Options:**
   1. Full snapshot on existing `stateDelta` jsonb (like `sanityState`) — no migration, reconstruction contract proven.
   2. New dedicated DB column / table — queryable, but migration + populate path for every book.
-- **Recommendation:** **Option 1.** Zero-migration, reuses the exact reconstruction pattern `sanityState` already uses (see StateDelta JSDoc, types/story.ts:1221). Queryability isn't needed for this feature.
+  3. **Hybrid:** dedicated nullable jsonb column for fast-path reads + delta persistence for reconstruction.
+- **Resolution:** **Option 3.** Added `sceneAnchor: jsonb("scene_anchor")` to `story_states` (nullable, no backfill needed — older pages reconstruct from deltas). All three reconstruction paths (fast, shallow parent-chain, branch-aware) now handle `sceneAnchor`.
 
 ### Q3. `sceneAnchor` detail level — minimal vs full blocking?
 
@@ -373,15 +386,18 @@ The evaluation result is already logged with `scoreBefore`/`scoreAfter` breakdow
 
 | File | Tasks | Notes |
 |---|---|---|
-| `src/utils/prompt.ts` | 1.0 ✅, 1.1 ✅, 1.2 ✅, 1.3 ✅, 1.4 ✅, 1.5 ✅; 2.0, 3.0/3.1/3.2 (formatting) | Bulk of the work |
+| `src/utils/prompt.ts` | 1.0 ✅, 1.1 ✅, 1.2 ✅, 1.3 ✅, 1.4 ✅, 1.5 ✅, 3.1 ✅; 2.0, 3.2 | Bulk of the work |
 | `src/utils/ai-chat.ts` | none (verification only) | evaluator reuses `systemPrompt` at :1055, logs breakdowns at :1082, fallback at :1116-1119 |
-| `src/utils/story.ts` | 3.0 (`extractStateDelta`, `applyStateDelta`) | Phase 3 only |
-| `src/types/story.ts` | 3.0 (`SceneAnchor`, `StateDelta`, `StoryState`) | Phase 3 only |
-| `src/schema/story.ts` | 3.0 (`STORY_PAGE_GENERATION_SCHEMA`) | Phase 3 only |
+| `src/utils/story.ts` | 3.0 ✅ (`extractStateDelta`, `applyStateDelta`) | Phase 3 complete |
+| `src/types/story.ts` | 3.0 ✅ (`SceneAnchor`, `SceneAnchorPosture`, `SceneAnchorAccess`, `SceneAnchorTarget`, `StateDelta`, `StoryState`) | Phase 3 complete |
+| `src/schema/story.ts` | 3.0 ✅ (`SCENE_ANCHOR_SCHEMA`, `STORY_PAGE_GENERATION_SCHEMA`) | Phase 3 complete |
+| `src/db/schema.ts` | 3.0 ✅ (`sceneAnchor` column on `story_states`) | Phase 3 complete |
+| `src/services/story.ts` | 3.0 ✅ (`insertStoryState`, `mapStoryStateFromDb`) | Phase 3 complete |
+| `src/utils/field-instructions.ts` | 3.0 ✅ (`sceneAnchor` field instruction + action affordance) | Phase 3 complete |
 | `src/config/book-creation.ts` | none | reference only (preset distortion carve-out) |
 | `src/services/pen.ts` | 6.0 (verify) | Q6 — still open |
 
-**Deliberately NOT changed:** DB schema (no migrations), evaluation schema (`buildEvaluationSchemaDefinition` — breakdown is free-form), AI provider/fallback code.
+**Deliberately NOT changed:** evaluation schema (`buildEvaluationSchemaDefinition` — breakdown is free-form), AI provider/fallback code.
 
 ---
 
@@ -399,16 +415,18 @@ The evaluation result is already logged with `scoreBefore`/`scoreAfter` breakdow
 ## 10. Suggested Execution Order
 
 ```text
-[x] Q decisions (§7)  ── resolved: Q1 (Option A), Q4 (Option 1), Q5 (mandatory), Q7 (full parity); Q2/Q3 deferred to Phase 3; Q6 open
+[x] Q decisions (§7)  ── resolved: Q1 (Option A), Q2 (hybrid), Q4 (Option 1), Q5 (mandatory), Q7 (full parity); Q3 deferred; Q6 open
 [x] 1.0  static system rule            (0.5-1 h)   ✅ done
 [x] 1.1  next-text field instructions  (0.5-1 h)   ✅ done
 [x] 1.2  first-page field instructions (0.5 h)     ✅ done
 [x] 1.3  checklist HARD GATE section   (1-2 h)     ✅ done (real enforcement)
 [x] 1.4  evaluator STEP 1.5 + COHERENCE (1-2 h)   ✅ done
 [x] 1.5  first-book evaluator bullets  (0.5 h)     ✅ done
-[ ] Phase 1 exit tests (§3.7) + Q6 pen-engine check   ← next step
+[ ] Phase 1 exit tests (§3.7) + Q6 pen-engine check
 [ ] 2.0  Option B dimension (only if leaks)     (1-2 h)
-[ ] 3.0-3.2  sceneAnchor persistence + context  (6-10+ h)
+[x] 3.0  sceneAnchor types + schema + DB column + persistence  ✅ done
+[x] 3.1  sceneAnchor context injection via formatPreviousPageEntry  ✅ done
+[ ] 3.2  evaluator anchor verification          (2-3 h)
 [ ] 4.0  golden corpus + telemetry drill        (2-4 h)
 ```
 
@@ -416,8 +434,10 @@ The evaluation result is already logged with `scoreBefore`/`scoreAfter` breakdow
 
 ## 11. Conclusion
 
-Twistloom already treats narrative consistency as **structured state**, not prose history — `placeId`, time, weather, composure, trauma tags, future-note scheduling. "Where is everyone, physically, right now?" is the one axis the state model doesn't yet carry, and it's exactly the axis that generates the immersion-breaking failures readers notice most.
+Twistloom already treats narrative consistency as **structured state**, not prose history — `placeId`, time, weather, composure, trauma tags, future-note scheduling. "Where is everyone, physically, right now?" is the one axis the state model didn't yet carry, and it's exactly the axis that generates the immersion-breaking failures readers notice most.
 
-**Phase 1 is complete.** The fix shipped through prompt engineering alone (system rule → field instructions → checklist gate → strict evaluator), reversible and safe, and was **language-agnosticized** so every target language benefits from the same universal grammatical rules. Phases 2-3 harden it first into a dedicated scored dimension, then into persisted per-page physical state with an explicit forward-fed anchor and evaluator verification against it. Phase 4 proves the improvement with a golden corpus and per-dimension failure telemetry.
+**Phase 1 is complete.** The fix shipped through prompt engineering alone (system rule → field instructions → checklist gate → strict evaluator), reversible and safe, and was **language-agnosticized** so every target language benefits from the same universal grammatical rules. **Phase 3 tasks 3.0–3.1 are complete** — `sceneAnchor` is now a typed, persisted, reconstructed field on `StoryState` with a dedicated DB column, and the previous page's anchor is injected into the generation prompt via `formatPreviousPageEntry`. Phase 2 (dedicated evaluator dimension) and Phase 3.2 (evaluator anchor verification) remain as future hardening. Phase 4 proves the improvement with a golden corpus and per-dimension failure telemetry.
+
+For **intra-place spatial layout** (features on walls, exits in cardinal directions), see [`PLACE_SPATIAL_MEMORY_ROADMAP.md`](./PLACE_SPATIAL_MEMORY_ROADMAP.md) — it extends the place memory system with stable room geometry that complements `sceneAnchor`'s dynamic physical snapshot.
 
 The moment a reader stops asking "wait… where is the character?" is the moment this roadmap is done.

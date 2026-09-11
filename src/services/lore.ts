@@ -11,7 +11,7 @@
  */
 
 import { eq, getTableColumns, sql } from "drizzle-orm";
-import { loreEntries, books, uploadedImages } from "../db/schema.js";
+import { loreEntries, books, uploadedImages, bookPlaceBgm } from "../db/schema.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { getBookFromDB, invalidateCharacterImageCache } from "./book.js";
 import {
@@ -54,6 +54,12 @@ function toEntry(row: DBLoreEntry & { imageUrl?: string | null }): LoreEntry {
     linkedPlaceId: row.linkedPlaceId,
     imageId: row.imageId,
     imageUrl: row.imageUrl ?? null,
+    bgmPrimaryLibraryId: row.bgmPrimaryLibraryId ?? null,
+    bgmPrimaryUrl: row.bgmPrimaryUrl ?? null,
+    bgmPrimaryFileId: row.bgmPrimaryFileId ?? null,
+    bgmVariantLibraryId: row.bgmVariantLibraryId ?? null,
+    bgmVariantUrl: row.bgmVariantUrl ?? null,
+    bgmVariantFileId: row.bgmVariantFileId ?? null,
     createdByUserId: row.userId,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -157,6 +163,12 @@ export async function createLoreEntry(
     linkedCharacterId: input.linkedCharacterId ?? null,
     linkedPlaceId: input.linkedPlaceId ?? null,
     imageId: newImageId,
+    bgmPrimaryLibraryId: input.bgmPrimaryLibraryId ?? null,
+    bgmPrimaryUrl: input.bgmPrimaryUrl ?? null,
+    bgmPrimaryFileId: input.bgmPrimaryFileId ?? null,
+    bgmVariantLibraryId: input.bgmVariantLibraryId ?? null,
+    bgmVariantUrl: input.bgmVariantUrl ?? null,
+    bgmVariantFileId: input.bgmVariantFileId ?? null,
     userId,
   };
 
@@ -177,6 +189,31 @@ export async function createLoreEntry(
         .update(books)
         .set({ canonVersion: sql`${books.canonVersion} + 1`, updatedAt: new Date() })
         .where(eq(books.id, bookId));
+
+      // Upsert book_place_bgm when this is a place entry with a linked place and BGM data
+      if (input.entryType === "place" && input.linkedPlaceId && input.bgmPrimaryUrl) {
+        await tx
+          .insert(bookPlaceBgm)
+          .values({
+            bookId,
+            placeId: input.linkedPlaceId,
+            primaryUrl: input.bgmPrimaryUrl,
+            primaryFileId: input.bgmPrimaryFileId ?? null,
+            variantUrl: input.bgmVariantUrl ?? null,
+            variantFileId: input.bgmVariantFileId ?? null,
+          })
+          .onConflictDoUpdate({
+            target: [bookPlaceBgm.bookId, bookPlaceBgm.placeId],
+            set: {
+              primaryUrl: input.bgmPrimaryUrl,
+              primaryFileId: input.bgmPrimaryFileId ?? null,
+              variantUrl: input.bgmVariantUrl ?? null,
+              variantFileId: input.bgmVariantFileId ?? null,
+              updatedAt: new Date(),
+            },
+          });
+      }
+
       return created;
     });
 
@@ -224,6 +261,14 @@ export async function updateLoreEntry(
   if (update.triggerKeywords !== undefined) patch.triggerKeywords = cleanKeywords(update.triggerKeywords, PEN_LORE_TRIGGER_MAX_LENGTH, PEN_LORE_MAX_TRIGGERS);
   if (update.linkedCharacterId !== undefined) patch.linkedCharacterId = update.linkedCharacterId ?? null;
   if (update.linkedPlaceId !== undefined) patch.linkedPlaceId = update.linkedPlaceId ?? null;
+
+  // BGM fields
+  if (update.bgmPrimaryLibraryId !== undefined) patch.bgmPrimaryLibraryId = update.bgmPrimaryLibraryId ?? null;
+  if (update.bgmPrimaryUrl !== undefined) patch.bgmPrimaryUrl = update.bgmPrimaryUrl ?? null;
+  if (update.bgmPrimaryFileId !== undefined) patch.bgmPrimaryFileId = update.bgmPrimaryFileId ?? null;
+  if (update.bgmVariantLibraryId !== undefined) patch.bgmVariantLibraryId = update.bgmVariantLibraryId ?? null;
+  if (update.bgmVariantUrl !== undefined) patch.bgmVariantUrl = update.bgmVariantUrl ?? null;
+  if (update.bgmVariantFileId !== undefined) patch.bgmVariantFileId = update.bgmVariantFileId ?? null;
 
   let newImageId: string | null = null;
   let newImageUrl: string | null = null;
@@ -282,6 +327,43 @@ export async function updateLoreEntry(
         .update(books)
         .set({ canonVersion: sql`${books.canonVersion} + 1`, updatedAt: new Date() })
         .where(eq(books.id, existing.bookId));
+
+      // Handle book_place_bgm upsert/clear for place entries
+      const effectiveEntryType = update.entryType ?? existing.entryType;
+      const effectiveLinkedPlaceId = update.linkedPlaceId !== undefined ? update.linkedPlaceId : existing.linkedPlaceId;
+      const effectivePrimaryUrl = update.bgmPrimaryUrl !== undefined ? update.bgmPrimaryUrl : existing.bgmPrimaryUrl;
+
+      if (effectiveEntryType === "place" && effectiveLinkedPlaceId) {
+        if (effectivePrimaryUrl) {
+          // Upsert book_place_bgm
+          await tx
+            .insert(bookPlaceBgm)
+            .values({
+              bookId: existing.bookId,
+              placeId: effectiveLinkedPlaceId,
+              primaryUrl: effectivePrimaryUrl,
+              primaryFileId: (update.bgmPrimaryFileId !== undefined ? update.bgmPrimaryFileId : existing.bgmPrimaryFileId) ?? null,
+              variantUrl: (update.bgmVariantUrl !== undefined ? update.bgmVariantUrl : existing.bgmVariantUrl) ?? null,
+              variantFileId: (update.bgmVariantFileId !== undefined ? update.bgmVariantFileId : existing.bgmVariantFileId) ?? null,
+            })
+            .onConflictDoUpdate({
+              target: [bookPlaceBgm.bookId, bookPlaceBgm.placeId],
+              set: {
+                primaryUrl: effectivePrimaryUrl,
+                primaryFileId: (update.bgmPrimaryFileId !== undefined ? update.bgmPrimaryFileId : existing.bgmPrimaryFileId) ?? null,
+                variantUrl: (update.bgmVariantUrl !== undefined ? update.bgmVariantUrl : existing.bgmVariantUrl) ?? null,
+                variantFileId: (update.bgmVariantFileId !== undefined ? update.bgmVariantFileId : existing.bgmVariantFileId) ?? null,
+                updatedAt: new Date(),
+              },
+            });
+        } else if (existing.bgmPrimaryUrl) {
+          // BGM cleared — delete book_place_bgm row (library items preserved)
+          await tx
+            .delete(bookPlaceBgm)
+            .where(eq(bookPlaceBgm.bookId, existing.bookId));
+        }
+      }
+
       return updated;
     });
 
@@ -325,6 +407,13 @@ export async function deleteLoreEntry(userId: string, entryId: string): Promise<
       .update(books)
       .set({ canonVersion: sql`${books.canonVersion} + 1`, updatedAt: new Date() })
       .where(eq(books.id, existing.bookId));
+
+    // Delete book_place_bgm if this was a place entry with a linked place
+    if (existing.entryType === "place" && existing.linkedPlaceId) {
+      await tx
+        .delete(bookPlaceBgm)
+        .where(eq(bookPlaceBgm.bookId, existing.bookId));
+    }
   });
 
   // Invalidate character image cache when a linked character entry is deleted.

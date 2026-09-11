@@ -70,6 +70,8 @@ import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraftCharacter, PenDraf
 import { penBlockActions } from "../types/pen.js";
 import { characterSceneRoles } from "../types/story.js";
 import type { CharacterSceneRole } from "../types/story.js";
+import { audioUploadMiddleware } from "../middleware/upload.js";
+import { uploadUserAudio, listAudioLibrary, deleteAudioLibraryItem } from "../services/audio.js";
 
 const router = new Hono<AppEnv>();
 
@@ -1397,6 +1399,89 @@ router.delete("/notes/:id", requireAuth, async (c) => {
     if (error instanceof PenNoteNotFoundError) return cNotFoundError(c, error.message);
     if (error instanceof PenBookOwnershipError) return cApiError(c, error.message, undefined, 403);
     return cApiError(c, "Failed to delete pen note", error);
+  }
+});
+
+// ── Audio Library ────────────────────────────────────────────────────────────
+
+/**
+ * POST /api/pen/audio
+ * Upload an audio file to the user's library.
+ * Body: multipart/form-data with field `audioFile`.
+ */
+router.post("/audio", requireAuth, audioUploadMiddleware("audioFile"), async (c) => {
+  try {
+    const userId = c.get("userId");
+    if (!userId) return cApiError(c, "Authentication required", undefined, 401);
+
+    const file = c.get("file");
+    if (!file) return cApiError(c, "Audio file is required", undefined, 400);
+
+    const result = await uploadUserAudio(
+      { buffer: file.buffer, originalname: file.originalname, mimetype: file.mimetype },
+      userId,
+      file.originalname || 'audio',
+      file.mimetype,
+      file.size,
+    );
+
+    if (!result) return cApiError(c, "Failed to upload audio", undefined, 500);
+
+    return c.json({
+      id: result.id,
+      fileUrl: result.fileUrl,
+      fileId: result.fileId,
+      fileName: file.originalname,
+      fileSize: file.size,
+      mimeType: file.mimetype,
+    }, 201);
+  } catch (error) {
+    return cApiError(c, "Failed to upload audio", error);
+  }
+});
+
+/**
+ * GET /api/pen/audio/library
+ * List the current user's uploaded audio tracks.
+ */
+router.get("/audio/library", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId");
+    if (!userId) return cApiError(c, "Authentication required", undefined, 401);
+
+    const items = await listAudioLibrary(userId);
+    return c.json({ items });
+  } catch (error) {
+    return cApiError(c, "Failed to list audio library", error);
+  }
+});
+
+/**
+ * DELETE /api/pen/audio/:libraryId
+ * Delete a library item. Only allowed if not referenced by any book_place_bgm.
+ */
+router.delete("/audio/:libraryId", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId");
+    if (!userId) return cApiError(c, "Authentication required", undefined, 401);
+
+    const libraryId = c.req.param("libraryId");
+    const result = await deleteAudioLibraryItem(userId, libraryId);
+
+    if (!result.ok) {
+      if (result.reason === 'not_found') return cNotFoundError(c, "Audio library item not found");
+      if (result.reason === 'in_use') {
+        return c.json({
+          error: `This track is used in ${result.refCount} book(s) and cannot be deleted.`,
+          code: 'library_in_use',
+          refCount: result.refCount,
+        }, 409);
+      }
+    }
+
+    return c.json({ success: true });
+  } catch (error) {
+    return cApiError(c, "Failed to delete audio library item", error);
   }
 });
 

@@ -16,10 +16,10 @@
 - [ ] search jaccard similarity (by book keywords & title)
 - [ ] need change to cursor pagination?
 
-[ ] multi-turn & pen propose DRY infer state delta: `PEN_STATE_PROPOSAL_vs_MULTI_TURN_TURND_DRY_ROADMAP.md`
+[ ] multi-turn & pen propose DRY: `PEN_STATE_PROPOSAL_vs_MULTI_TURN_TURND_DRY_ROADMAP.md`
 [ ] tackle new issues in `MULTI_TURN_PAGE_GENERATION_BUG_REPORT.md`
 
-[ ] docs\roadmap\PGVECTOR_SEMANTIC_MEMORY_SMARTER_RETRIEVAL_ROADMAP.md
+[ ] docs\roadmap\EMBODIED_SCENE_CONTINUITY_ROADMAP.md + TODO-place-spatial-chatgpt.md
 
 ---
 

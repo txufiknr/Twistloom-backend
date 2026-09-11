@@ -170,6 +170,15 @@ ${!isLatePhase && charactersSlot > 0 ? `  - Add new planned character candidates
   - Base changes on what actually happened in the scene.
 ${isEarlyPhase ? `  - Changes should be subtle — small shifts, not dramatic swings.` : ''}
 ${isLatePhase || isFinale ? `  - Flags should reflect escalation. Fear and guilt especially should be peaking.` : ''}` },
+  { fields: ['sceneAnchor'], stage: 'page', text: `sceneAnchor (REQUIRED — internal end-of-page physical snapshot)
+  - Reconstruct the exact final instant AFTER the last sentence of text and BEFORE any choice begins.
+  - This is the starting frame shared by every action. Never describe an earlier or merely representative moment.
+  - locationId: same canonical place ID as placeId, or "unknown" only when genuinely unclear.
+  - mc.posture uses the language-neutral enum. Write mc.anchor, mc.facing, mc.constraints, and target relation strings naturally in the story's target language.
+  - mc.anchor must preserve bodily support/contact that constrains movement (back against a door, hand gripping a rail, pinned under weight). Use the target-language equivalent of "unanchored" when there is none.
+  - targets: only people, objects, exits, and obstacles relevant to plausible next actions. access is language-neutral: within_reach / requires_repositioning / requires_approach / blocked / unknown.
+  - Preserve uncertainty. If distance, direction, path, or reachability was not established by the prose, use "unknown" instead of inventing room geometry.
+  - Keep it compact: normally 1-6 targets.` },
   { fields: ['actions'], stage: 'page', text: `actions
 ${isLastPage ? `  - This is the last page, just provide a single action that concludes the story.` : `  - text: first-person action or dialogue (${ACTION_TEXT_LENGTH}). No explicit subject pronoun — lead directly with the target language's verb form or a short saying (e.g. Pretend not to hear, "Yes, of course.").
   - hint.text: what will happen as a consequence — written as a story beat, not a label. Invisible to the player.
@@ -180,7 +189,12 @@ ${isLastPage ? `  - This is the last page, just provide a single action that con
 ${isEarlyPhase ? `  - Choices should feel open and curious — stakes are present but not yet dire.` : ''}
 ${isMidPhase ? `  - Choices should reflect the player's established decision patterns. Make the trap feel tailored.` : ''}
 ${isLatePhase ? `  - Every choice should carry visible weight. No option should feel consequence-free.` : ''}
-${isFinale ? `  - Both choices should feel like loss. The difference is only in what kind.` : ''}`}` },
+${isFinale ? `  - Both choices should feel like loss. The difference is only in what kind.` : ''}`}
+  - END-FRAME AFFORDANCE HARD GATE: every action starts from sceneAnchor exactly; never silently change the MC's posture, orientation, body contact, or location between text and choice.
+  - The first physical verb must be executable from that frozen frame. Contact verbs may target only something within_reach; otherwise include the necessary release, turn, rise, approach, or crossing movement in the visible action text.
+  - Directional movement must respect the MC's facing, support/contact, obstacles, and mobility constraints. Do not invent an unestablished direction, distance, or clear path.
+  - If a target is reachable but its setup would make the choice clumsy, use a natural goal-level action that does not falsely imply immediate contact. If access is blocked or unknown, choose a different action or explicitly address that uncertainty.
+  - These rules are semantic in every language: account for implicit subjects, verb morphology, deixis, and contact/direction meanings rather than matching English words.` },
   { fields: ['branchNames'], stage: 'delta', text: `branchNames
   - Suggest 3 creative, distinct names for this page as a timeline/branch — evocative, spoiler-free (e.g., "The Locked Door", "Trust No One").
   - Always suggest regardless of whether this page's actions actually fork the story — the system decides whether a name is used.` },
@@ -232,6 +246,12 @@ ${placesSlot === 0 ? `  - Can't introduce new places (${MAX_PLACES} limit). Upda
   - For updates: only on revisit or significant event. Include only changed fields.
   - familiarityCorrection: 0 unless place fundamentally shifts (secret wing found, illusion broken, memory loss). Do NOT use for ordinary visits, repeated exposure, or gradual learning — handled automatically.
 ${isLatePhase || isFinale ? `  - High-familiarity places revisited now should feel distorted.` : ''}` },
+  { fields: ['newPlaces', 'updatedPlaces'], stage: 'delta', text: `newPlaces/updatedPlaces.spatial
+  - Stable intra-place layout (features + exits). Use full replacement — output all known directions, not just changed ones.
+  - features: physical object on each wall or surface (e.g., "oak door", "window overlooking yard"). Only include walls with meaningful, visible features.
+  - exits: traversable passage in a direction. { to: target_place_id, via?: "feature name" }.
+  - directions: north/east/south/west/up/down. Compass directions are hidden world coordinates — the AI writes prose naturally; these encode spatial relationships.
+  - Do NOT include a direction with no known feature or exit. Partial records only.` },
   { fields: ['placeConnections'], stage: 'delta', text: `placeConnections
   - Add new if visiting/adding a new place or when a place is first connected.
   - Only update existing if route conditions meaningfully change on revisit.
@@ -359,6 +379,7 @@ initialPlace:
 - familiarity: 0.0-1.0. A place the MC just arrived at = 0.1. Childhood home = 0.9.
 - context: ${PLACE_CONTEXT_LENGTH}. Evocative, not descriptive.
 - hints: any known clue about the place.
+- spatial: stable intra-place layout. features: physical object on each wall or surface (only known walls). exits: traversable passage with { to: target_place_id, via?: "feature" }. directions: north/east/south/west/up/down (hidden world coordinates — write prose naturally). Only include directions with meaningful data.
 
 initialCharacters:
 - It's meant for characters beside MC who are physically present in the scene. Don't include MC (the POV) here.
@@ -387,6 +408,8 @@ firstPage:
 - text: follow the rules in "WRITING STYLE:" and "PAGE FORMAT:" creatively (max ${MAX_WORDS_PER_PAGE} words).
 - Establish the MC's physical baseline (position, posture, what's within reach) early so the reader can orient immediately — then track the body continuously as the scene moves, never silently changing posture or location.
 - Keep the camera on the MC: show only what they can see/hear/infer. Anchor every pronoun and possessive marker in the target language to one unambiguous antecedent; name the owner before a body part acts.
+- sceneAnchor: REQUIRED compact snapshot of the exact final instant after the last sentence. Use language-neutral posture/access enum keys, but write anchor/facing/constraint/relation descriptions naturally in the story's target language. Preserve bodily contact and unknown geometry; include only next-choice-relevant targets.
+- actions: generate every choice from sceneAnchor. Its first physical verb must be executable from that frame; if the target is not within reach, include the necessary repositioning/approach or use a natural goal-level action. Never invent direction, distance, or a clear path. Apply this semantically in the target language, including languages with implicit subjects or inflected verbs.
 - keyEvents: ${KEY_EVENT_LENGTH}. Plot-level facts happened in this page.
 - charactersPresent: side characters in the scene besides MC. Must match characters in initialCharacters. sceneFocus: between 0.0 to 1.0 (highest = character to focus).
 - keyObjects: objects introduced or used this page that may have future narrative significance.

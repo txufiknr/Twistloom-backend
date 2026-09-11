@@ -1022,6 +1022,66 @@ export type PsychologicalProfileTraits = {
   denial: number;
 };
 
+/**
+ * Language-neutral physical states used by the end-of-page scene anchor.
+ * Free-text descriptions around these enum values are written in the story's
+ * target language so the same contract works for every locale.
+ */
+export const sceneAnchorPostures = [
+  'standing',
+  'sitting',
+  'lying',
+  'kneeling',
+  'crouching',
+  'moving',
+  'unknown',
+] as const;
+
+export type SceneAnchorPosture = typeof sceneAnchorPostures[number];
+
+/** How immediately the MC can physically interact with a scene target. */
+export const sceneAnchorAccesses = [
+  'within_reach',
+  'requires_repositioning',
+  'requires_approach',
+  'blocked',
+  'unknown',
+] as const;
+
+export type SceneAnchorAccess = typeof sceneAnchorAccesses[number];
+
+export type SceneAnchorTarget = {
+  /** Stable character/place ID when one exists; otherwise a concise target-language noun phrase. */
+  ref: string;
+  /** Target-language relative topology, e.g. "touching behind" or "across the room ahead". */
+  relation: string;
+  /** Whether the MC can act on this target from the frozen end frame. */
+  access: SceneAnchorAccess;
+};
+
+/**
+ * Compact physical snapshot of the final instant of a generated page.
+ *
+ * This is deliberately relative rather than coordinate-based. It preserves
+ * the embodied facts choice generation actually needs: posture, support/body
+ * contact, facing, movement constraints, and reachability of relevant targets.
+ */
+export type SceneAnchor = {
+  /** Same canonical place ID as the page, or "unknown" when genuinely unclear. */
+  locationId: string;
+  mc: {
+    posture: SceneAnchorPosture;
+    /** Target-language support/contact phrase, e.g. "back pressed against bedroom door"; use "unanchored" if none. */
+    anchor: string;
+    /** Target-language direction/object the MC faces; use "unknown" when unstated. */
+    facing: string;
+    /** Target-language constraints that affect the first beat of a choice; empty when none. */
+    constraints: string[];
+  };
+  /** Only people, objects, exits, and obstacles relevant to likely next actions. */
+  targets: SceneAnchorTarget[];
+};
+
 export type StoryScene = {
   /** Current emotional atmosphere */
   mood?: Mood;
@@ -1337,6 +1397,8 @@ export type StateDelta = {
   injuries?: Injury[];
   /** AI-authored minutes elapsed for this scene (fallback to heuristic if omitted) */
   minutesPassed?: number;
+  /** Full end-of-page physical snapshot for delta-only state reconstruction. */
+  sceneAnchor?: SceneAnchor;
 
   // ── Engine-owned psychological layer (see PsychologicalStateDelta) ─────────
   /** Partial psychological profile after this page's engine advance. */
@@ -1384,11 +1446,14 @@ export type PsychologicalStateDelta = Pick<StateDelta, 'psychologicalProfileUpda
  * AI-output shape of a state delta — excludes engine-owned psych fields
  * (`PsychologicalStateDelta`) and server-assigned future-note keys.
  */
-export type StateDeltaGeneration = Omit<StateDelta, keyof PsychologicalStateDelta | 'isMajorEvent'> & {
+export type StateDeltaGeneration = Omit<StateDelta, keyof PsychologicalStateDelta | 'isMajorEvent' | 'sceneAnchor'> & {
   /** Future notes to add (server assigns keys) */
   futureNoteAdd?: FutureNoteGeneration[];
 };
-export type StoryPageGeneration = Omit<StoryPage, ResourceAIProvider | 'stateDelta' | 'momentum' | 'elapsedDays'>;
+export type StoryPageGeneration = Omit<StoryPage, ResourceAIProvider | 'stateDelta' | 'momentum' | 'elapsedDays'> & {
+  /** AI-authored snapshot of the final physical frame, generated before choices. */
+  sceneAnchor?: SceneAnchor;
+};
 export type StoryGeneration = StoryPageGeneration & StateDeltaGeneration & {
   /** AI-suggested human-readable names for this branch (3 alternatives). Insertion is gated by TypeScript's branchId logic — AI always suggests, TS decides. */
   branchNames?: string[];
@@ -1540,7 +1605,7 @@ export type EnrichedStoryPageContext = {
  * `StoryText`) must use `names` over `name`, so tooltips never reveal an
  * identity the recognition gate has not yet revealed.
  */
-export type EnrichedStoryPagePlace = Pick<PlaceMemory, 'type' | 'category' | 'context'> & { placeId: string; name: string; names: string[]; traits?: { key: string; value: string }[]; lastVisitedAtPage: number };
+export type EnrichedStoryPagePlace = Pick<PlaceMemory, 'type' | 'category' | 'context'> & { placeId: string; name: string; names: string[]; traits?: { key: string; value: string }[]; lastVisitedAtPage: number; bgmPrimaryUrl?: string; bgmVariantUrl?: string };
 export type EnrichedStoryPageCharacter = Pick<CharacterMemory, 'gender' | 'role' | 'bio' | 'appearance'> & { characterId: string; name: string; names: string[]; traits?: { key: string; value: string }[]; lastInteractionAtPage: number; imageUrl?: string };
 
 /**
@@ -1796,6 +1861,9 @@ export type StoryState = {
 
   /** Narrative reminders for future AI generations */
   futureNotes: FutureNote[];
+
+  /** Most recent end-of-page physical frame, carried forward across pages. */
+  sceneAnchor?: SceneAnchor;
 } & StoryMCState;
 
 export type StoryMCState = {

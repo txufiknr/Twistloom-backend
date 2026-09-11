@@ -366,6 +366,7 @@ export async function insertStoryState(
         sanityState: state.sanityState ?? undefined,
         contextHistory: state.contextHistory,
         isMajorEvent: state.isMajorEvent,
+        sceneAnchor: state.sceneAnchor ?? undefined,
         source,
       })
       .onConflictDoUpdate({
@@ -394,6 +395,7 @@ export async function insertStoryState(
           sanityState: state.sanityState ?? undefined,
           contextHistory: state.contextHistory,
           isMajorEvent: state.isMajorEvent,
+          sceneAnchor: state.sceneAnchor ?? undefined,
           updatedAt: new Date(),
         }
       });
@@ -930,6 +932,7 @@ export function mapStoryStateFromDb(dbStoryState: DBStoryState): StoryState {
     injuries: dbStoryState.injuries,
     healthStatus: dbStoryState.healthStatus ?? undefined,
     sanityState: dbStoryState.sanityState || undefined,
+    sceneAnchor: dbStoryState.sceneAnchor ?? undefined,
   };
 }
 

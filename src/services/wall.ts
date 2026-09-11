@@ -4,6 +4,7 @@ import {
   desc,
   eq,
   gt,
+  ilike,
   isNull,
   or,
   sql,
@@ -26,6 +27,7 @@ import type {
   WallCursor,
   WallErrorCode,
   WallFeedTab,
+  WallMentionSuggestion,
   WallPageDto,
   WallPostCommentDto,
   WallPostDto,
@@ -82,6 +84,51 @@ export interface WallCountSinceParams {
   tab: WallFeedTab;
   since: string;
   flair?: WallPostFlair;
+}
+
+/** Returns a small public, block-aware username suggestion set for composer mentions. */
+export async function suggestWallUsers(
+  query: string,
+  viewerId: string | null,
+): Promise<WallMentionSuggestion[]> {
+  const normalized = query.trim().replace(/^@/, '').slice(0, 32);
+  if (normalized.length < 2) return [];
+
+  const conditions: SQL[] = [
+    isNull(users.bannedAt),
+    combineOr(
+      ilike(users.username, `${normalized}%`),
+      ilike(users.name, `%${normalized}%`),
+    ),
+  ];
+  if (viewerId) {
+    conditions.push(sql`NOT EXISTS (
+      SELECT 1 FROM ${userBlocks}
+      WHERE (
+        ${userBlocks.userId} = ${viewerId}
+        AND ${userBlocks.blockedUserId} = ${users.userId}
+      ) OR (
+        ${userBlocks.userId} = ${users.userId}
+        AND ${userBlocks.blockedUserId} = ${viewerId}
+      )
+    )`);
+  }
+
+  return dbRead
+    .select({
+      id: users.userId,
+      username: users.username,
+      name: users.name,
+      imageUrl: users.imageUrl,
+      avatarFrame: users.avatarFrame,
+    })
+    .from(users)
+    .where(and(...conditions))
+    .orderBy(
+      sql`CASE WHEN lower(${users.username}) LIKE lower(${`${normalized}%`}) THEN 0 ELSE 1 END`,
+      asc(users.username),
+    )
+    .limit(8);
 }
 
 interface WallPostRow {

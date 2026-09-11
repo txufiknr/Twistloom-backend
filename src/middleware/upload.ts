@@ -103,3 +103,52 @@ export function imageUploadMiddleware(fieldName = "imageFile") {
     await next();
   });
 }
+
+/** Maximum audio upload size: 10 MB. */
+const MAX_AUDIO_UPLOAD_SIZE = 10 * 1024 * 1024;
+
+/** Accepted audio MIME types. */
+const ALLOWED_AUDIO_MIMES = new Set(["audio/mpeg", "audio/ogg", "audio/wav"]);
+
+/**
+ * Builds a single-file audio upload middleware for the given multipart field name.
+ * Validates MIME type (audio/mpeg|ogg|wav) and size (≤ 10 MB).
+ *
+ * @param fieldName - The form field that carries the file (default: "audioFile")
+ * @returns Hono middleware that populates `c.get("file")`
+ */
+export function audioUploadMiddleware(fieldName = "audioFile") {
+  return createMiddleware<AppEnv>(async (c, next) => {
+    let body: Record<string, unknown>;
+    try {
+      body = await c.req.parseBody({ all: true });
+    } catch {
+      throw new HTTPException(400, { message: "Invalid multipart form data" });
+    }
+
+    const file = body[fieldName];
+
+    if (!(file instanceof File)) {
+      throw new HTTPException(400, { message: "Audio file is required" });
+    }
+
+    if (!ALLOWED_AUDIO_MIMES.has(file.type)) {
+      throw new HTTPException(400, { message: "Accepted formats: MP3, OGG, WAV." });
+    }
+
+    if (file.size > MAX_AUDIO_UPLOAD_SIZE) {
+      throw new HTTPException(413, { message: "File exceeds 10 MB limit. Use a compressed MP3." });
+    }
+
+    const buffer = new Uint8Array(await file.arrayBuffer());
+
+    c.set("file", {
+      originalname: file.name,
+      mimetype: file.type,
+      size: file.size,
+      buffer,
+    });
+
+    await next();
+  });
+}

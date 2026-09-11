@@ -313,10 +313,11 @@ export function extractStateDelta(params: {
     addPlotFlags: generation.addPlotFlags,
     minutesPassed: generation.minutesPassed,
     addPlannedCharacters: generation.addPlannedCharacters,
+    sceneAnchor: generation.sceneAnchor,
     // Tag with current place for context
     inventory: generation.inventory?.map(inventory => inventory.pageAcquired === expectedPageNumber ? ({ ...inventory, placeId }) : inventory),
     injuries: generation.injuries?.map(injury => injury.pageAcquired === expectedPageNumber ? ({ ...injury, placeId }) : injury),
-  } satisfies Record<keyof StateDeltaGeneration | 'isMajorEvent', unknown>;
+  } satisfies Record<keyof StateDeltaGeneration | 'isMajorEvent' | 'sceneAnchor', unknown>;
   // } satisfies StateDelta;
 
   return stateDelta;
@@ -525,6 +526,7 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, s
     memoryIntegrity,
     difficulty,
     sanityState: sanityStateDelta,
+    sceneAnchor,
   } = stateDelta;
 
   // Explicitly copy every mutable array/object field so that
@@ -554,6 +556,21 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, s
     hiddenState: hiddenStateUpdates ? { ...baseState.hiddenState, ...hiddenStateUpdates } : baseState.hiddenState,
     memoryIntegrity: memoryIntegrity ?? baseState.memoryIntegrity,
     difficulty: difficulty ?? baseState.difficulty,
+    // AI-authored end-frame snapshot: replace atomically so later page
+    // generation never merges incompatible body positions from two scenes.
+    sceneAnchor: sceneAnchor
+      ? {
+          ...sceneAnchor,
+          mc: { ...sceneAnchor.mc, constraints: [...sceneAnchor.mc.constraints] },
+          targets: sceneAnchor.targets.map(target => ({ ...target })),
+        }
+      : baseState.sceneAnchor
+        ? {
+            ...baseState.sceneAnchor,
+            mc: { ...baseState.sceneAnchor.mc, constraints: [...baseState.sceneAnchor.mc.constraints] },
+            targets: baseState.sceneAnchor.targets.map(target => ({ ...target })),
+          }
+        : undefined,
     // Engine-owned composure: replace with full snapshot when the delta carries
     // one (live generation + reconstruction). Otherwise preserve base / defaults.
     // Never re-run updateSanity here — reconstruction must stay pure apply-only.

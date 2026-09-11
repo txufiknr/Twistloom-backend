@@ -12,7 +12,7 @@
  */
 
 import { type DBClient, dbRead, dbWrite, isTransaction } from "../db/client.js";
-import { pages, books, branches, users, userPageProgress, userCompletedBooks, userActionHints, customActions, bookGenerations, userComments, canonValidations, loreEntries, uploadedImages } from "../db/schema.js";
+import { pages, books, branches, users, userPageProgress, userCompletedBooks, userActionHints, customActions, bookGenerations, userComments, canonValidations, loreEntries, uploadedImages, bookPlaceBgm } from "../db/schema.js";
 import type { ImageKitUploadResponse } from "../types/image.js";
 import { and, eq, asc, or, desc, ne, sql, isNull, lt, countDistinct } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
@@ -2200,6 +2200,15 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
     // Character avatar images (book-level LRU cache — avoids per-page DB query).
     const characterImageMap = await getCharacterImageMap(dbPage.bookId);
 
+    // Book-level BGM overrides for places (denormalized from lore bible).
+    const placeBgmRows = await dbRead
+      .select()
+      .from(bookPlaceBgm)
+      .where(eq(bookPlaceBgm.bookId, dbPage.bookId));
+    const placeBgmMap = new Map(
+      placeBgmRows.map(row => [row.placeId, { primaryUrl: row.primaryUrl, variantUrl: row.variantUrl }])
+    );
+
     // Reader-safe composure slice (omit decayRate — engine-only)
     const enrichedSanity = sanityState
       ? {
@@ -2227,16 +2236,21 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
       ending: viableEnding,
       maxPage: storyState.maxPage,
       // Filter only necessary fields for frontend
-      places: Object.entries(places).map(([placeId, place]) => ({
-        placeId,
-        name: resolvePlaceDisplayName(place),
-        type: place.type,
-        category: place.category,
-        context: place.context,
-        traits: place.traits?.map(parseTrait),
-        names: resolvePlaceLoreNames(place),
-        lastVisitedAtPage: place.lastVisitedAtPage,
-      }) satisfies Record<keyof EnrichedStoryPagePlace, unknown>),
+      places: Object.entries(places).map(([placeId, place]) => {
+        const bgm = placeBgmMap.get(placeId);
+        return {
+          placeId,
+          name: resolvePlaceDisplayName(place),
+          type: place.type,
+          category: place.category,
+          context: place.context,
+          traits: place.traits?.map(parseTrait),
+          names: resolvePlaceLoreNames(place),
+          lastVisitedAtPage: place.lastVisitedAtPage,
+          bgmPrimaryUrl: bgm?.primaryUrl ?? undefined,
+          bgmVariantUrl: bgm?.variantUrl ?? undefined,
+        } satisfies Record<keyof EnrichedStoryPagePlace, unknown>;
+      }),
       characters: Object.entries(characters).map(([characterId, character]) => ({
         characterId,
         name: resolveCharacterDisplayName(character),
@@ -2590,6 +2604,7 @@ export function mapBookFromDb(dbBook: DBBook): Book {
     canonVersion: dbBook.canonVersion ?? 0,
     advancedOptions: dbBook.advancedOptions || undefined,
     ending: dbBook.ending || undefined,
+    bgmEnabled: dbBook.bgmEnabled ?? true,
     createdAt: dbBook.createdAt,
     updatedAt: dbBook.updatedAt,
   } satisfies Record<keyof Omit<Book, 'stats' | 'imageUrl'>, unknown>;

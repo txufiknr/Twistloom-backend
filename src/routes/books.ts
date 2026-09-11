@@ -1590,7 +1590,7 @@ router.put("/:id", requireAuth, async (c) => {
   try {
     const { id } = c.req.param();
     const userId = c.get("userId")!;
-    const { title, hook, summary, keywords, visibility, status: newStatus, mc, ending, totalPages, slug } = c.get("body");
+    const { title, hook, summary, keywords, visibility, status: newStatus, mc, ending, totalPages, slug, bgmEnabled } = c.get("body");
 
     // Verify book ownership
     const [book] = await dbRead.select({ 
@@ -1681,6 +1681,10 @@ router.put("/:id", requireAuth, async (c) => {
         );
       }
       updateData.totalPages = target;
+    }
+
+    if (bgmEnabled !== undefined && typeof bgmEnabled === 'boolean') {
+      updateData.bgmEnabled = bgmEnabled;
     }
 
     const updatedBook = await updateBook(book.id, updateData);

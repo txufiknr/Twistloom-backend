@@ -2,9 +2,9 @@ import { FACT_KEY_FORMAT, HOOK_LENGTH, SUMMARY_LENGTH, MAX_CHARACTER_SECRETS, MA
 import { characterImportances, characterRecognitionLevels, characterStatuses, healthConditions, injuryCategories, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
 import type { RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter, CharacterRelationshipContext, CharacterUpdate, CharacterSchedule, StoryMCGeneration } from "../types/character.js";
 import { canonicalPlaceTypes, type NewPlace, type PlaceUpdate, placeWeathers, type PlaceConnectionUpdate, placeAccessibilities } from "../types/places.js";
-import { actionHintTypes, actionTypes, characterSceneRoles, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, sceneTypes, difficulties, endingTypes, storyMomentums, stabilityLevels, storyPhaseKeys, futureNoteTriggerTypes, memoryIntegrities } from "../types/story.js";
+import { actionHintTypes, actionTypes, characterSceneRoles, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, sceneTypes, difficulties, endingTypes, storyMomentums, stabilityLevels, storyPhaseKeys, futureNoteTriggerTypes, memoryIntegrities, sceneAnchorAccesses, sceneAnchorPostures } from "../types/story.js";
 import type { AIJsonActionFlag, AIJsonEvaluation, AIJsonEvaluationFix, AIJsonEvaluationIssue, AIJsonIntegrityFlag, AIJsonProperty, AIJsonScoreAfter, AIJsonScoreBefore, AIJsonScoreBreakdown, AIPromptOptions } from "../types/ai-chat.js";
-import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, FactUpdate, StateDeltaGeneration, StateDeltaGenerationWithBranch, ActionGeneration, FutureNoteGeneration, FlagUpdate, PlotFlagType, InitialPlotFlag, SceneCharacter, SanityState } from "../types/story.js";
+import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, FactUpdate, StateDeltaGeneration, StateDeltaGenerationWithBranch, ActionGeneration, FutureNoteGeneration, FlagUpdate, PlotFlagType, InitialPlotFlag, SceneCharacter, SanityState, SceneAnchor, SceneAnchorTarget } from "../types/story.js";
 import { threadPriorities, threadStatuses, threadTruths, type UpdateThread, type NewThread, type AddThreadClue, type InitialThreadClue } from "../types/story-thread.js";
 import type { CandidatePagesGeneration } from "../types/candidate-generation.js";
 import { genders } from "../types/user.js";
@@ -20,7 +20,7 @@ import { MAX_FINAL_COMMENT_LENGTH } from "../config/book-creation.js";
 export const STORY_ACTION_SCHEMA: AIJsonProperty = { type: 'array', items: {
   type: 'object',
   properties: {
-    text: { type: 'string', description: 'Text of the action as presented to the player' },
+    text: { type: 'string', description: 'Target-language action shown to the player. It starts from the page sceneAnchor exactly: the first physical verb must already be executable, or the text must include the necessary repositioning/approach.' },
     type: { type: 'string', description: 'Type of the action', enum: Object.keys(actionTypes) },
     hint: {
       type: 'object',
@@ -35,6 +35,41 @@ export const STORY_ACTION_SCHEMA: AIJsonProperty = { type: 'array', items: {
   required: ['text', 'type', 'hint'] satisfies (keyof ActionGeneration)[],
   additionalProperties: false
 } };
+
+export const SCENE_ANCHOR_SCHEMA: AIJsonProperty = {
+  type: 'object',
+  description: 'Language-agnostic structure describing the exact final physical frame of the page. Descriptive strings use the story target language; enum values remain the listed stable keys.',
+  properties: {
+    locationId: { type: 'string', description: 'Same canonical place ID as the page, or "unknown".' },
+    mc: {
+      type: 'object',
+      properties: {
+        posture: { type: 'string', enum: [...sceneAnchorPostures] },
+        anchor: { type: 'string', description: 'Target-language body support/contact phrase (for example, back pressed against the door); use the target-language equivalent of "unanchored" when none.' },
+        facing: { type: 'string', description: 'Target-language direction, person, or object the MC faces; use "unknown" when unstated.' },
+        constraints: { type: 'array', items: { type: 'string' }, description: 'Target-language physical constraints affecting the first beat of a choice; empty array when none.' },
+      },
+      required: ['posture', 'anchor', 'facing', 'constraints'],
+      additionalProperties: false,
+    },
+    targets: {
+      type: 'array',
+      description: 'Only people, objects, exits, or obstacles relevant to plausible next actions.',
+      items: {
+        type: 'object',
+        properties: {
+          ref: { type: 'string', description: 'Stable ID when available; otherwise a concise target-language noun phrase.' },
+          relation: { type: 'string', description: 'Target-language position relative to the MC in the final frame.' },
+          access: { type: 'string', enum: [...sceneAnchorAccesses], description: 'Immediate physical accessibility from the final frame.' },
+        } satisfies Record<keyof SceneAnchorTarget, AIJsonProperty>,
+        required: ['ref', 'relation', 'access'] satisfies (keyof SceneAnchorTarget)[],
+        additionalProperties: false,
+      },
+    },
+  } satisfies Record<keyof SceneAnchor, AIJsonProperty>,
+  required: ['locationId', 'mc', 'targets'] satisfies (keyof SceneAnchor)[],
+  additionalProperties: false,
+};
 
 export const INITIAL_INVENTORY_ITEM_PROPERTIES: Record<keyof InitialInventoryItem, AIJsonProperty> = {
   name: { type: 'string', description: 'Name of the inventory item' },
@@ -128,6 +163,43 @@ export function buildTraitItemSchema(_params?: {
   return { type: 'string', description: 'Key-value pair formatted as "key: value"' };
 }
 
+/**
+ * Schema for intra-place spatial layout (features + exits).
+ * Used in both INITIAL and UPDATE place schemas.
+ */
+export const SPATIAL_SCHEMA: AIJsonProperty = {
+  type: 'object',
+  description: 'Stable intra-place spatial layout. Only include directions with meaningful data.',
+  properties: {
+    features: {
+      type: 'object',
+      description: 'Physical features on each wall or surface (e.g., "oak door", "window overlooking yard"). Only known walls.',
+      properties: Object.fromEntries(
+        ['north', 'east', 'south', 'west', 'up', 'down'].map(d => [d, { type: 'string', description: `Feature on the ${d} wall or surface` }])
+      ),
+      additionalProperties: false,
+    },
+    exits: {
+      type: 'object',
+      description: 'Traversable exits from this place. Only include known exits.',
+      properties: Object.fromEntries(
+        ['north', 'east', 'south', 'west', 'up', 'down'].map(d => [d, {
+          type: 'object',
+          description: `Exit to the ${d}`,
+          properties: {
+            to: { type: 'string', description: 'Target place ID' },
+            via: { type: 'string', description: 'Feature the exit goes through (e.g., "oak door", "stairs"). Optional.' },
+          },
+          required: ['to'],
+          additionalProperties: false,
+        }])
+      ),
+      additionalProperties: false,
+    },
+  },
+  additionalProperties: false,
+};
+
 export const INITIAL_PLACE_PROPERTIES: Record<keyof NewPlace, AIJsonProperty> = {
   placeId: { type: 'string', description: 'Lowercase slug identifier (e.g., "abandoned_hotel")' },
   parentPlaceId: { type: 'string', description: `If it's a sub-place (e.g., 'canteen' in a 'school')` },
@@ -160,6 +232,7 @@ export const INITIAL_PLACE_PROPERTIES: Record<keyof NewPlace, AIJsonProperty> = 
     })
   },
   category: { type: 'string', enum: [...canonicalPlaceTypes], description: 'Canonical place type for BGM mapping' },
+  spatial: SPATIAL_SCHEMA,
 };
 
 const { keyEvents: placeEvents, familiarity: _f, realName: _n, ...placeUpdateProperties } = INITIAL_PLACE_PROPERTIES;
@@ -511,6 +584,7 @@ export const STORY_PAGE_GENERATION_SCHEMA: Record<keyof StoryPageGeneration, AIJ
   },
   keyEvents: { type: 'array', items: { type: 'string' }, description: 'Key events that occurred in this page in detected language' },
   keyObjects: { type: 'array', items: { type: 'string' }, description: 'Important objects in this page in detected language' },
+  sceneAnchor: SCENE_ANCHOR_SCHEMA,
   actions: STORY_ACTION_SCHEMA
 };
 
@@ -682,7 +756,7 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
 
 /** Turn A (StoryPage) schema — sent to the AI instead of STORY_GENERATION_SCHEMA_DEFINITION when USE_MULTI_TURN_GENERATION is on. Identical fields to STORY_PAGE_GENERATION_SCHEMA above; exported under the turn-oriented name for call sites in prompt.ts's stage runner. */
 export const STORY_PAGE_SCHEMA_DEFINITION: Record<keyof StoryPageGeneration, AIJsonProperty> = STORY_PAGE_GENERATION_SCHEMA;
-export const STORY_PAGE_REQUIRED_FIELDS = ['text', 'actions', 'calendarDate'] satisfies (keyof StoryPageGeneration)[];
+export const STORY_PAGE_REQUIRED_FIELDS = ['text', 'sceneAnchor', 'actions', 'calendarDate'] satisfies (keyof StoryPageGeneration)[];
 
 /** Turn B (StateDelta) schema, WITHOUT branchNames — sent to the AI instead of STORY_GENERATION_SCHEMA_DEFINITION when USE_MULTI_TURN_GENERATION is on. No required fields: every delta field is optional (a page with zero state changes — e.g. a purely reflective beat — is a valid StateDelta). Prefer STATE_DELTA_WITH_BRANCH_SCHEMA_DEFINITION below at actual call sites; this bare form exists for callers that place branchNames elsewhere (see Part 5 decision log). */
 export const STATE_DELTA_SCHEMA_DEFINITION: Record<keyof StateDeltaGeneration, AIJsonProperty> = STORY_STATE_GENERATION_SCHEMA;
@@ -738,7 +812,7 @@ export const STORY_GENERATION_SCHEMA_DEFINITION = {
   },
 } satisfies Record<keyof StoryGeneration, AIJsonProperty>;
 
-export const STORY_GENERATION_REQUIRED_FIELDS = ['text', 'actions', 'calendarDate'] satisfies Array<keyof StoryGeneration>;
+export const STORY_GENERATION_REQUIRED_FIELDS = ['text', 'sceneAnchor', 'actions', 'calendarDate'] satisfies Array<keyof StoryGeneration>;
 
 /**
  * Schema definition for PageTranslation type

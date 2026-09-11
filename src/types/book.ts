@@ -197,6 +197,8 @@ export type Book = {
   advancedOptions?: AdvancedOptionsConfig;
   /** Author-edited ending text/outline for the story (overrides derived ending) */
   ending?: Ending;
+  /** Writer-controlled kill switch: when false, readers hear no BGM for this book */
+  bgmEnabled: boolean;
   /** When the book was created */
   createdAt: Date;
   /** When the book was last updated */

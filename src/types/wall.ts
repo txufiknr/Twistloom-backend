@@ -115,6 +115,15 @@ export interface WallPostAuthor {
   tier: UserTier | null;
 }
 
+/** Minimal public account projection used by composer mention suggestions. */
+export interface WallMentionSuggestion {
+  id: string;
+  username: string;
+  name: string;
+  imageUrl: string | null;
+  avatarFrame: AvatarFrame | null;
+}
+
 /** Server-authorized actions for the current viewer. */
 export interface WallViewerActions {
   canEdit: boolean;

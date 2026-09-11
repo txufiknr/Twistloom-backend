@@ -307,6 +307,14 @@ export type LoreEntry = {
   imageId?: string | null;
   /** ImageKit CDN URL for character avatar. */
   imageUrl?: string | null;
+  /** BGM primary track — FK to user_audio_library (place entries only). */
+  bgmPrimaryLibraryId?: string | null;
+  bgmPrimaryUrl?: string | null;
+  bgmPrimaryFileId?: string | null;
+  /** BGM variant track — optional tension variant (place entries only). */
+  bgmVariantLibraryId?: string | null;
+  bgmVariantUrl?: string | null;
+  bgmVariantFileId?: string | null;
   createdByUserId: string;
   createdAt: Date;
   updatedAt: Date;
@@ -324,6 +332,14 @@ export type LoreEntryInput = {
   /** ImageKit file ID or base64 data URL for avatar image. */
   imageId?: string | null;
   imageUrl?: string | null;
+  /** BGM primary track — FK to user_audio_library (place entries only). */
+  bgmPrimaryLibraryId?: string | null;
+  bgmPrimaryUrl?: string | null;
+  bgmPrimaryFileId?: string | null;
+  /** BGM variant track — optional tension variant (place entries only). */
+  bgmVariantLibraryId?: string | null;
+  bgmVariantUrl?: string | null;
+  bgmVariantFileId?: string | null;
 };
 
 /** Update shape for a story-bible entry (PATCH /lore/:entryId). */

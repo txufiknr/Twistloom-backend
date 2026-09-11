@@ -15,7 +15,7 @@ import type { Context } from "hono";
 import type { DBNewUser, DBNewUserActivityLog, DBUserActivityLog, DBUserForAuth } from "../types/schema.js";
 import { type AvatarFrame, avatarFrames, type CheckinClaimType, type CheckinPostResponse, type CheckinStatusResponse, type Gender } from "../types/user.js";
 import { type DBClient, dbRead, dbWrite } from "../db/client.js";
-import { users, books, userComments, userAuth, userCheckins, userActivityLogs, userSocialLinks } from "../db/schema.js";
+import { users, books, posts, userComments, userAuth, userCheckins, userActivityLogs, userSocialLinks } from "../db/schema.js";
 import { eq, and, gt, ne, sql, desc, or, inArray } from "drizzle-orm";
 import { debounceAsync } from "../utils/debounce.js";
 import { sanitizeTextForDB, cleanSingleLineText, cleanMultilineText } from '../utils/text-processing.js';
@@ -1417,16 +1417,18 @@ export async function enrichActivityLogs(
   const bookIds = new Set<string>();
   const userIds = new Set<string>();
   const commentIds = new Set<string>();
+  const postIds = new Set<string>();
 
   for (const log of logs) {
     if (!log.targetType || !log.targetId) continue;
     if (log.targetType === 'book') bookIds.add(log.targetId);
     else if (log.targetType === 'user') userIds.add(log.targetId);
     else if (log.targetType === 'comment') commentIds.add(log.targetId);
+    else if (log.targetType === 'post') postIds.add(log.targetId);
   }
 
   // Batch fetch all referenced entities
-  const [bookRows, userRows, commentRows] = await Promise.all([
+  const [bookRows, userRows, commentRows, postRows] = await Promise.all([
     bookIds.size > 0
       ? dbRead
           .select({ id: books.id, title: books.title, hook: books.hook, summary: books.summary, originalThemeInput: books.originalThemeInput })
@@ -1445,12 +1447,19 @@ export async function enrichActivityLogs(
           .from(userComments)
           .where(inArray(userComments.id, [...commentIds]))
       : Promise.resolve([]),
+    postIds.size > 0
+      ? dbRead
+          .select({ id: posts.id, content: posts.content, type: posts.type })
+          .from(posts)
+          .where(inArray(posts.id, [...postIds]))
+      : Promise.resolve([]),
   ]);
 
   // Build lookup maps
   const bookMap = new Map(bookRows.map(b => [b.id, b]));
   const userMap = new Map(userRows.map(u => [u.userId, u]));
   const commentMap = new Map(commentRows.map(c => [c.id, c]));
+  const postMap = new Map(postRows.map(post => [post.id, post]));
 
   // Also fetch book titles for comment parents if needed
   const commentBookIds = new Set<string>();
@@ -1523,6 +1532,12 @@ export async function enrichActivityLogs(
         enriched.title = user.name || user.username || 'Unknown user';
         enriched.detail = (user.bio || '').slice(0, 150);
       }
+    } else if (log.targetType === 'post') {
+      const post = postMap.get(log.targetId);
+      enriched.title = log.activityType === 'wall_post_liked'
+        ? 'Reacted to a Wall Note'
+        : 'Created a Wall Note';
+      if (post?.content) enriched.detail = post.content.slice(0, 150);
     } else if (log.targetType === 'comment') {
       const comment = commentMap.get(log.targetId);
       const meta = (log.metadata as Record<string, unknown>) || {};
@@ -1572,6 +1587,8 @@ function humanizeActivityType(type: string): string {
     page_reacted: 'Page Reacted',
     book_completed: 'Book Completed',
     testimonial_created: 'Testimonial Created',
+    wall_post_created: 'Created a Wall Note',
+    wall_post_liked: 'Reacted to a Wall Note',
   };
   return map[type] || type;
 }

@@ -27,13 +27,39 @@ import {
   getWallPost,
   getWallPostComments,
   getWallUserPosts,
+  suggestWallUsers,
   WallServiceError,
 } from '../services/wall.js';
 import type { WallFeedTab, WallPostFlair } from '../types/wall.js';
 import { isWallPostFlair } from '../types/wall.js';
 import { cApiError } from '../utils/error.js';
+import { WALL_ENABLED, WALL_OBSERVABILITY_SAMPLE_RATE } from '../config/wall.js';
+import { logger } from '../utils/logger.js';
 
 const router = new Hono<AppEnv>();
+
+router.use('*', async (c, next) => {
+  if (!WALL_ENABLED) {
+    return c.json({
+      success: false,
+      error: 'The Wall is temporarily unavailable',
+      code: 'WALL_POST_UNAVAILABLE',
+    }, 503);
+  }
+
+  const startedAt = Date.now();
+  await next();
+  const status = c.res.status;
+  if (status >= 500 || Math.random() < WALL_OBSERVABILITY_SAMPLE_RATE) {
+    logger[status >= 500 ? 'error' : 'info']('wall_request', {
+      method: c.req.method,
+      route: normalizeWallRoutePath(c.req.path),
+      status,
+      durationMs: Date.now() - startedAt,
+      authenticated: Boolean(c.get('userId')),
+    });
+  }
+});
 
 const feedReadLimit = rateLimit(
   { maxRequests: 60, windowSeconds: 60, prefix: 'wall-feed' },
@@ -173,6 +199,17 @@ router.get('/posts/:id', optionalAuth, detailReadLimit, async (c) => {
     return c.json({ post });
   } catch (error) {
     return wallRouteError(c, error, 'Failed to retrieve Note');
+  }
+});
+
+/** GET /api/wall/users/suggest — bounded, block-aware composer mention suggestions. */
+router.get('/users/suggest', optionalAuth, profileReadLimit, async (c) => {
+  try {
+    const items = await suggestWallUsers(c.req.query('q') ?? '', c.get('userId') ?? null);
+    c.header('Cache-Control', 'private, max-age=30');
+    return c.json({ items });
+  } catch (error) {
+    return wallRouteError(c, error, 'Failed to suggest Wall mentions');
   }
 });
 
@@ -420,6 +457,13 @@ function parseFeedTab(value: string | undefined): WallFeedTab {
   const tab = value ?? 'discover';
   if (tab === 'following' || tab === 'discover') return tab;
   throw new WallServiceError('WALL_INVALID_TAB', 400, 'Unsupported Wall feed tab');
+}
+
+function normalizeWallRoutePath(path: string): string {
+  return path
+    .replace(/\/users\/[^/]+\/posts$/u, '/users/:identifier/posts')
+    .replace(/\/posts\/[^/]+/u, '/posts/:id')
+    .replace(/\/comments\/[^/]+$/u, '/comments/:id');
 }
 
 function parseFlair(value: string | undefined): WallPostFlair | undefined {

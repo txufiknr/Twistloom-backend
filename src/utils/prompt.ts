@@ -156,6 +156,8 @@ export const RULES_EMBODIED_SCENE_CONTINUITY = `EMBODIED SCENE CONTINUITY (CAMER
 - Never change the POV character's location, posture, or orientation silently. Every change needs a written physical transition performed by the character (e.g. rising, stepping back) — never skip the intermediate action.
 - Never teleport the narrative camera: do not describe what the POV character cannot see, hear, or infer from their fixed vantage (e.g., an expression on a face they can't see, a reaction they couldn't observe).
 - Anchor every pronoun, possessive marker, and person-marked inflection in the target language (subject/object forms, possessive suffixes or clitics, verb agreement) to one unambiguous antecedent in the same or previous sentence. Re-name the owner before a body part acts; a body part always belongs to a named person, never to a nearby noun or location.
+- After the page text, freeze its exact final physical frame as sceneAnchor. Generate every choice from that frame: its first physical verb must already be executable, or the visible choice must include the necessary release, turn, rise, approach, or crossing movement. Never invent direction, distance, reachability, or a clear path.
+- Apply action feasibility semantically in the target language, including implicit subjects, inflected verbs, deixis, contact verbs, and culturally natural phrasing. This is not an English keyword-matching rule.
 - Reality distortion is intentional in this story — but it applies to WHAT is perceived, not to how the prose stages space. Even a hallucination must be physically self-consistent within its own frame. Break logic deliberately, never accidentally.`;
 
 /**
@@ -259,6 +261,12 @@ export const RULES_PLANNED_CHARACTERS = `PLANNED CHARACTERS RULES:
  */
 export const RULES_ACTIONS = `BRANCHING STORY RULES:
 No choice should feel truly safe — exploit the gap between what the MC knows and what the reader suspects.
+
+END-FRAME ACTION AFFORDANCE (HARD GATE):
+- Treat sceneAnchor as the frozen physical starting frame shared by every choice.
+- The first physical verb must be executable from that frame. A contact verb may target only something within_reach; otherwise include the required repositioning/approach or use a natural goal-level action.
+- Directional movement must respect facing, body support/contact, obstacles, and constraints. If geometry is unknown, avoid inventing a direction or distance.
+- Apply these semantic checks in the story's target language, including languages with implicit subjects or inflected verbs.
 
 ACTION TYPES:
 ${formatKeyValueList(Object.fromEntries(Object.entries(actionTypes).filter(([key]) => key !== 'custom')))}
@@ -2207,6 +2215,19 @@ function formatPreviousPageEntry(page: ActionedStoryPage | CandidateGenerationPa
     if (action.hint.text) {
       const hintText = `"${action.hint.text}"`;
       entry += `\n  → Hint for page ${page.page + 1}: ${hintText} (type: ${action.hint.type})`;
+    }
+  }
+
+  // Render sceneAnchor from stateDelta for physical continuity
+  const delta = 'stateDelta' in page ? page.stateDelta : undefined;
+  const anchor = delta?.sceneAnchor;
+  if (anchor) {
+    const mcParts = [`posture: ${anchor.mc.posture}`, `facing: ${anchor.mc.facing}`];
+    if (anchor.mc.anchor && anchor.mc.anchor !== 'unanchored') mcParts.push(`anchor: ${anchor.mc.anchor}`);
+    if (anchor.mc.constraints.length) mcParts.push(`constraints: ${anchor.mc.constraints.join(', ')}`);
+    entry += `\n  → Scene anchor: MC ${mcParts.join(', ')}`;
+    if (anchor.targets.length) {
+      entry += `. Targets: ${anchor.targets.map(t => `${t.ref} (${t.relation})`).join(', ')}`;
     }
   }
   

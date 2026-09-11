@@ -854,7 +854,7 @@ async function notifyWallReaction(
     ))
     .limit(1);
 
-  const data = { postId, actorId, reaction, href: `/wall?post=${postId}` };
+  const data = { postId, actorId, actorName: name, reaction, href: `/wall?post=${postId}` };
   if (existing) {
     await dbWrite
       .update(userNotifications)
@@ -887,7 +887,7 @@ async function notifyWallReply(
     type: 'wall_post_reply',
     title: 'New reply to your Note',
     message: `${name} replied to your Note`,
-    data: { postId, commentId, actorId, href: `/wall?post=${postId}` },
+    data: { postId, commentId, actorId, actorName: name, href: `/wall?post=${postId}` },
     read: false,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -906,7 +906,7 @@ async function notifyIncomingWallPost(
     type: 'wall_post_incoming',
     title: 'A new Note appeared on your Wall',
     message: `${name} left a Note on your Wall`,
-    data: { postId, actorId, href: `/wall?post=${postId}` },
+    data: { postId, actorId, actorName: name, href: `/wall?post=${postId}` },
     read: false,
     createdAt: new Date(),
     updatedAt: new Date(),
