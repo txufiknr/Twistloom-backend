@@ -3,7 +3,7 @@ import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer
 import type { AvatarFrame, CheckinClaimType, FeedbackAdminStatus, FeedbackCategory, FeedbackStatus, Gender, Source, UserActivityType, UserTier } from "../types/user.js";
 import type { LikeTargetType } from "../types/user.js";
 import type { CharacterMemoryTranslation, CharacterPlan, HealthStatus, InjuryTranslation, InventoryItem, InventoryItemTranslation, StoryMC, StoryMCCandidate, StoryMCTranslation } from "../types/character.js";
-import type { BookGenerationStatus, StoryGenerationStep, BookStatus, BookVisibility, Book, BookStats, UploadedImageType, BookMode } from "../types/book.js";
+import type { BookGenerationStatus, StoryGenerationStep, BookStatus, BookVisibility, Book, BookStats, UploadedImageType, BookMode, BookFrontMatter } from "../types/book.js";
 import type { AdvancedOptionsConfig } from "../types/book-creation.js";
 import type { SessionStatus } from "../types/session.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
@@ -635,6 +635,8 @@ export const books = pgTable(
     ending: jsonb("ending").$type<Ending>(),
     /** Writer-controlled kill switch: when false, readers hear no BGM for this book. */
     bgmEnabled: boolean("bgm_enabled").notNull().default(true),
+    /** Optional front matter — one rich-text page shown before Page 1. */
+    frontMatter: jsonb("front_matter").$type<BookFrontMatter>(),
     createdAt,
     updatedAt,
   } satisfies Record<keyof Omit<Book, 'stats' | 'imageUrl'> | keyof BookStats | ResourceTimestamp, unknown>,
@@ -1174,6 +1176,8 @@ export const userSessions = pgTable(
     frontierPageId: uuid("frontier_page_id").references(() => pages.id, { onDelete: "set null" }), // Active-tip page id (branch-aware frontier)
     frontierPageNumber: integer("frontier_page_number").notNull().default(1), // Display hint only — NOT used for gating
     frontierAncestorIds: uuid("frontier_ancestor_ids").array().notNull().default(sql`ARRAY[]::uuid[]`), // frontier page id + its actionsHistory pageIds
+    /** Whether the reader has seen the front matter page (cross-device sync). */
+    frontMatterSeen: boolean("front_matter_seen").notNull().default(false),
     status: text("status").$type<SessionStatus>().notNull().default("active"),
     createdAt,
     updatedAt,

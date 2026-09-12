@@ -156,6 +156,8 @@ import { recordViolationEvent } from "../services/trust-safety.js";
 import { loadOwnCustomActions, mapCustomActionRowToAction } from "../services/book.js";
 import { customActions } from "../db/schema.js";
 import { getStoryStateFromPage, getStoryState, computeEndingStats, touchReadingSession } from "../services/story.js";
+import type { SelectedAction } from "../types/story.js";
+import { actionTypes, actionHintTypes } from "../types/story.js";
 import { getStoryStateWithBranch } from "../services/story-branch.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 import { notifyForumOfBookChange, notifyForumStoryArchived } from "../services/forum-queue.js";
@@ -1722,6 +1724,181 @@ router.put("/:id", requireAuth, async (c) => {
     });
   } catch (error) {
     return cApiError(c, "Failed to update book", error);
+  }
+});
+
+/**
+ * GET /api/books/:id/frontmatter
+ *
+ * Returns the front matter content and CTA label for a book. Public endpoint —
+ * no authentication required. Used by the /read route to decide whether to
+ * render the front matter screen or redirect to Page 1.
+ */
+router.get("/:id/frontmatter", optionalAuth, async (c) => {
+  try {
+    const { id } = c.req.param();
+
+    const [book] = await dbRead
+      .select({
+        id: books.id,
+        frontMatter: books.frontMatter,
+      })
+      .from(books)
+      .where(eq(books.id, id as string))
+      .limit(1);
+
+    if (!book) return cNotFoundError(c, "Book not found");
+
+    return c.json({
+      frontMatter: book.frontMatter ?? null,
+    });
+  } catch (error) {
+    return cApiError(c, "Failed to retrieve front matter", error);
+  }
+});
+
+/**
+ * PATCH /api/books/:id/frontmatter
+ *
+ * Updates front matter content and/or CTA label. Pass `{ content: null }` to
+ * remove front matter entirely. Requires authentication and book ownership.
+ *
+ * @param content - HTML string, TipTap JSONContent, or null to remove
+ * @param beginLabel - Custom CTA label (max 48 chars), or null to use localized default
+ */
+router.patch("/:id/frontmatter", requireAuth, async (c) => {
+  try {
+    const { id } = c.req.param();
+    const userId = c.get("userId")!;
+    const { content, beginLabel } = c.get("body");
+
+    // Verify book ownership
+    const [book] = await dbRead
+      .select({
+        id: books.id,
+        userId: books.userId,
+        frontMatter: books.frontMatter,
+      })
+      .from(books)
+      .where(and(
+        eq(books.id, id as string),
+        eq(books.userId, userId),
+      ))
+      .limit(1);
+
+    if (!book) return cNotFoundError(c, "Book not found");
+
+    // Build the updated front matter object
+    const current = book.frontMatter ?? null;
+
+    if (content === null) {
+      // Remove front matter entirely
+      const updatedBook = await updateBook(book.id, { frontMatter: null, updatedAt: new Date() });
+      await invalidateUserBooksCache(userId);
+      return c.json({ book: { id: updatedBook.id, frontMatter: null } });
+    }
+
+    const updatedContent = content !== undefined ? content : current?.content;
+    const updatedBeginLabel = beginLabel !== undefined ? beginLabel : current?.beginLabel ?? null;
+
+    if (updatedContent === undefined || updatedContent === null) {
+      return cValidationError(c, "Front matter content is required. Send content (HTML string or TipTap JSONContent) or content: null to remove.");
+    }
+
+    const updatedBook = await updateBook(book.id, {
+      frontMatter: { content: updatedContent, beginLabel: updatedBeginLabel },
+      updatedAt: new Date(),
+    });
+
+    await invalidateUserBooksCache(userId);
+
+    return c.json({
+      book: {
+        id: updatedBook.id,
+        frontMatter: updatedBook.frontMatter ?? null,
+      },
+    });
+  } catch (error) {
+    return cApiError(c, "Failed to update front matter", error);
+  }
+});
+
+/**
+ * POST /api/books/:id/frontmatter/images
+ *
+ * Uploads an image for use inside front matter rich-text content. Accepts
+ * multipart file upload (imageFile), URL string, or base64-encoded image data.
+ * Returns the uploaded image URL for embedding in the ProseEditor content.
+ * Requires authentication and book ownership.
+ */
+router.post("/:id/frontmatter/images", requireAuth, imageUploadMiddleware(), async (c) => {
+  try {
+    const { id } = c.req.param();
+    const userId = c.get("userId")!;
+    const { imageUrl } = c.get("body");
+
+    // Verify book ownership
+    const [book] = await dbRead
+      .select({
+        id: books.id,
+        userId: books.userId,
+        slug: books.slug,
+        title: books.title,
+        keywords: books.keywords,
+      })
+      .from(books)
+      .where(and(
+        eq(books.id, id as string),
+        eq(books.userId, userId),
+      ))
+      .limit(1);
+
+    if (!book) return cNotFoundError(c, "Book not found");
+
+    // Handle image upload from different sources
+    let imageSource: ImageUploadSource | undefined;
+
+    if (c.get("file")) {
+      imageSource = c.get("file");
+    } else if (imageUrl) {
+      imageSource = imageUrl;
+    }
+
+    if (!imageSource) {
+      return cValidationError(c, "No image provided. Send imageFile (multipart) or imageUrl (URL/base64).");
+    }
+
+    // Reuse the cover image upload logic (uploads to ImageKit, returns URL)
+    const uploadResult = await uploadBookCoverImage(
+      {
+        id: book.id,
+        slug: book.slug ?? undefined,
+        title: book.title,
+        keywords: book.keywords,
+      },
+      imageSource,
+    );
+
+    if (!uploadResult?.url) {
+      return c.json({ error: "Failed to upload image" }, 400);
+    }
+
+    // Persist the uploaded image record
+    if (uploadResult.fileId) {
+      await persistUploadedImage({
+        imageId: uploadResult.fileId,
+        imageUrl: uploadResult.url,
+        type: 'cover',
+        userId,
+      });
+    }
+
+    return c.json({
+      imageUrl: uploadResult.url,
+      imageId: uploadResult.fileId,
+    });
+  } catch (error) {
+    return cApiError(c, "Failed to upload front matter image", error);
   }
 });
 
@@ -6716,6 +6893,192 @@ router.post("/:identifier/:pageId/touch", requireAuth, async (c) => {
   });
 
   return c.json({ success: true, lastReadAt: session?.updatedAt ?? now });
+});
+
+// ── Guest Progress Migration ────────────────────────────────────────────────
+
+/**
+ * Migrate a guest's locally-cached reading progress to the database after
+ * signup. Accepts selectedActions (from sessionStorage) and an optional
+ * reading session (from IndexedDB), upserting both user_page_progress and
+ * user_sessions in a single atomic transaction.
+ *
+ * POST /api/books/:identifier/migrate-guest-progress
+ * Authorization: requireAuth
+ *
+ * @see docs/roadmap/GUEST_SELECTED_ACTIONS_MIGRATION_ROADMAP.md
+ */
+router.post("/:identifier/migrate-guest-progress", requireAuth, async (c) => {
+  const { identifier } = c.req.param();
+  const userId = c.get("userId")!;
+  const identifierStr = Array.isArray(identifier) ? identifier[0] : identifier;
+
+  // ── 1. Resolve book (slug or UUID) → bookId ────────────────────────────
+  const [bookRow] = await dbRead
+    .select({ id: books.id })
+    .from(books)
+    .where(
+      isValidUuid(identifierStr)
+        ? eq(books.id, identifierStr)
+        : eq(books.slug, identifierStr),
+    )
+    .limit(1);
+
+  if (!bookRow) return cNotFoundError(c, "Book not found");
+  const bookId = bookRow.id;
+
+  // ── 2. Parse & validate body ───────────────────────────────────────────
+  const body = await c.req.json<{
+    actions?: Array<{
+      actionedPageId: string;
+      nextPageId: string;
+      action: { text: string; type: string; hint: { text: string; type: string }; source?: string; pageId: string; page: number; nextPageId: string };
+    }>;
+    session?: {
+      pageId: string;
+      frontierPageId: string;
+      frontierPageNumber: number;
+      frontierAncestorIds: string[];
+    };
+  }>().catch(() => null);
+
+  if (!body || (typeof body !== "object")) {
+    return cValidationError(c, "Invalid request body");
+  }
+
+  const actions = Array.isArray(body.actions) ? body.actions : [];
+  const session = body.session && typeof body.session === "object" ? body.session : null;
+
+  // Validate actions array (max 50 — covers 10 pages × ~3 actions + buffer)
+  if (actions.length > 50) {
+    return cValidationError(c, "Too many actions (max 50)");
+  }
+
+  // Validate each action
+  const validActionTypes = new Set<string>(Object.keys(actionTypes));
+  const validHintTypes = new Set<string>(actionHintTypes);
+  for (let i = 0; i < actions.length; i++) {
+    const a = actions[i];
+    if (!a || typeof a !== "object") return cValidationError(c, `Invalid action at index ${i}`);
+    if (!isValidUuid(a.actionedPageId)) return cValidationError(c, `Invalid actionedPageId at index ${i}`);
+    if (!isValidUuid(a.nextPageId)) return cValidationError(c, `Invalid nextPageId at index ${i}`);
+    if (!a.action || typeof a.action !== "object") return cValidationError(c, `Invalid action payload at index ${i}`);
+    if (typeof a.action.text !== "string") return cValidationError(c, `Invalid action.text at index ${i}`);
+    if (!validActionTypes.has(a.action.type)) return cValidationError(c, `Invalid action.type at index ${i}`);
+    if (!a.action.hint || typeof a.action.hint !== "object") return cValidationError(c, `Invalid action.hint at index ${i}`);
+    if (typeof a.action.hint.text !== "string") return cValidationError(c, `Invalid action.hint.text at index ${i}`);
+    if (!validHintTypes.has(a.action.hint.type)) return cValidationError(c, `Invalid action.hint.type at index ${i}`);
+  }
+
+  // Validate session if present
+  if (session) {
+    if (!isValidUuid(session.pageId)) return cValidationError(c, "Invalid session.pageId");
+    if (!isValidUuid(session.frontierPageId)) return cValidationError(c, "Invalid session.frontierPageId");
+    if (typeof session.frontierPageNumber !== "number" || session.frontierPageNumber < 1) {
+      return cValidationError(c, "Invalid session.frontierPageNumber");
+    }
+    if (!Array.isArray(session.frontierAncestorIds)) {
+      return cValidationError(c, "Invalid session.frontierAncestorIds");
+    }
+  }
+
+  // ── 3. Batch-validate page existence (skip references to deleted pages) ──
+  // Collect all page IDs from actions AND session into a single set for one query.
+  const allPageIds = new Set<string>();
+  for (const a of actions) {
+    allPageIds.add(a.actionedPageId);
+    allPageIds.add(a.nextPageId);
+  }
+  if (session) {
+    allPageIds.add(session.pageId);
+  }
+
+  let validActions = actions;
+  let validSession = session;
+
+  if (allPageIds.size > 0) {
+    const pageIdArr = Array.from(allPageIds);
+    const existingResult = await dbRead.execute(
+      sql`SELECT id FROM pages WHERE id = ANY(${pageIdArr}::uuid[])`,
+    );
+    const existingIds = new Set<string>(
+      (existingResult.rows as Array<{ id: string }>).map((r) => r.id),
+    );
+
+    // Filter actions to only those whose page references still exist
+    validActions = actions.filter(
+      (a) => existingIds.has(a.actionedPageId) && existingIds.has(a.nextPageId),
+    );
+
+    // Validate session page existence from the same result
+    if (session && !existingIds.has(session.pageId)) {
+      validSession = null; // session page deleted, skip session migration
+    }
+  }
+
+  // Nothing to migrate
+  if (validActions.length === 0 && !validSession) {
+    return c.json({ actionsMigrated: 0, sessionMigrated: false });
+  }
+
+  // ── 4. Atomic transaction: upsert user_page_progress + user_sessions ───
+  const result = await dbWrite.transaction(async (tx) => {
+    let actionsMigrated = 0;
+
+    // Upsert each action — onConflictDoUpdate keeps the last write
+    for (const a of validActions) {
+      const selectedAction: SelectedAction = {
+        text: a.action.text,
+        type: a.action.type as SelectedAction['type'],
+        hint: a.action.hint as SelectedAction['hint'],
+        source: (a.action.source ?? 'ai') as SelectedAction['source'],
+        pageId: a.action.pageId,
+        page: a.action.page,
+        nextPageId: a.action.nextPageId,
+      };
+      await tx
+        .insert(userPageProgress)
+        .values({
+          userId,
+          bookId,
+          actionedPageId: a.actionedPageId,
+          nextPageId: a.nextPageId,
+          action: selectedAction,
+        })
+        .onConflictDoUpdate({
+          target: [userPageProgress.userId, userPageProgress.bookId, userPageProgress.actionedPageId],
+          set: {
+            action: selectedAction,
+            updatedAt: new Date(),
+          },
+        });
+      actionsMigrated++;
+    }
+
+    // Upsert session (only if no existing row — avoid overwriting newer server state)
+    // Uses onConflictDoNothing to avoid TOCTOU race on the (userId, bookId) unique constraint.
+    let sessionMigrated = false;
+    if (validSession) {
+      const [inserted] = await tx
+        .insert(userSessions)
+        .values({
+          userId,
+          bookId,
+          pageId: validSession.pageId,
+          frontierPageId: validSession.frontierPageId,
+          frontierPageNumber: validSession.frontierPageNumber,
+          frontierAncestorIds: validSession.frontierAncestorIds,
+          status: "active",
+        })
+        .onConflictDoNothing()
+        .returning({ id: userSessions.id });
+      sessionMigrated = !!inserted;
+    }
+
+    return { actionsMigrated, sessionMigrated };
+  });
+
+  return c.json(result);
 });
 
 /**

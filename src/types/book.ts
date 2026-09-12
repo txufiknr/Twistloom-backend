@@ -199,10 +199,17 @@ export type Book = {
   ending?: Ending;
   /** Writer-controlled kill switch: when false, readers hear no BGM for this book */
   bgmEnabled: boolean;
+  /** Optional front matter — one rich-text page shown before Page 1 */
+  frontMatter: BookFrontMatter | null;
   /** When the book was created */
   createdAt: Date;
   /** When the book was last updated */
   updatedAt: Date;
+};
+
+export type BookFrontMatter = {
+  content: string | Record<string, unknown>;
+  beginLabel: string | null;
 };
 
 /**

@@ -2605,6 +2605,7 @@ export function mapBookFromDb(dbBook: DBBook): Book {
     advancedOptions: dbBook.advancedOptions || undefined,
     ending: dbBook.ending || undefined,
     bgmEnabled: dbBook.bgmEnabled ?? true,
+    frontMatter: dbBook.frontMatter ?? null,
     createdAt: dbBook.createdAt,
     updatedAt: dbBook.updatedAt,
   } satisfies Record<keyof Omit<Book, 'stats' | 'imageUrl'>, unknown>;
