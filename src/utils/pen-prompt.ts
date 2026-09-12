@@ -51,6 +51,7 @@ import { formatLanguage } from "./translation.js";
 import { PEN_CONTINUE_WORDS } from "../config/story.js";
 import type { PenContinueLength } from "../config/story.js";
 import { injuryCategories } from "../types/character.js";
+import { DIALOGUE_MOODS } from "./dialogue-parser.js";
 
 /** Number of prior pages of context included in a `/continue` prompt. */
 export const PEN_CONTEXT_PAGES = 2;
@@ -1525,6 +1526,160 @@ export function buildPenCastDetectPrompt(params: {
       `SCENE ROLE OPTIONS: ${characterSceneRoles.join(", ")}`,
       `CURRENT DRAFT PROSE TO ANALYZE:\n${draftText.trim()}`,
       "Analyze the CURRENT DRAFT PROSE and identify all characters present in the scene with their role, focus weight, and entity status.",
+    ].join("\n\n"),
+  };
+}
+
+// ── Dialogue Marker Auto-Detection prompt builder ─────────────────────────
+
+/**
+ * Static system prompt for dialogue marker auto-detection during finalize.
+ * Stable prefix for provider-side caching. Volatile sections in user prompt.
+ *
+ * The AI analyzes the author's assembled draft prose, identifies unmarked
+ * dialogue lines (spoken dialogue without the required `[speaker_id|mood]`
+ * marker prefix), and proposes appropriate markers for each line.
+ *
+ * Free (0 credits) — part of the publish quality pipeline. Gated by a cheap
+ * regex check (`hasUnmarkedDialogue`) so the AI call is skipped entirely when
+ * the draft already has proper markers.
+ */
+export const PEN_DIALOGUE_MARKER_SYSTEM = `You are an expert literary dialogue analyst for a story author.
+Your task is to analyze the author's CURRENT DRAFT PROSE and identify ALL lines of spoken dialogue that are missing the required dialogue marker prefix.
+
+DIALOGUE MARKER FORMAT:
+- Every line of spoken dialogue MUST begin with a marker: [speaker_id|mood] "dialogue text"
+- [speaker_id|mood] — the character ID of the speaker. Use 'mc' for the main character. Valid mood tags: ${DIALOGUE_MOODS.join(', ')}
+- [???|whisper] — use '???' when the speaker cannot be determined from context. Mood is still assigned even when speaker is unknown.
+
+WHAT COUNTS AS SPOKEN DIALOGUE:
+- Lines enclosed in quotation marks (double "..." or single '...')
+- Direct speech attributed to a character
+- Lines starting with dialogue tags (e.g. "Hello," she said)
+
+WHAT IS NOT DIALOGUE:
+- Internal thoughts (no quotation marks, not spoken aloud)
+- Narration or description
+- Quoted text used as epigraph or literary device (not character speech)
+
+RULES:
+1. Analyze EVERY line of the draft. Do not skip any dialogue.
+2. For each unmarked dialogue line, propose:
+   - 'speakerId': The character ID. Use 'mc' for the main character, existing character IDs from KNOWN CHARACTERS, or '???' if truly unknown.
+   - 'mood': One of the 10 valid mood tags, inferred from context (punctuation, surrounding text, emotional tone). Use 'calm' as default when no strong emotional signal is present.
+3. Return ONLY the structured JSON matching the schema.
+4. The 'mood' field MUST be exactly one of: scream, angry, afraid, whisper, cry, laugh, sing, calm, desperate, cold. No other values are allowed.
+
+${RULES_STORY_CONSISTENCY}
+
+${RULES_LANGUAGE_LOCALIZATION}`;
+
+export type PenDialogueMarkerAIOutput = {
+  markers: Array<{
+    /** The original unmarked dialogue line text (exact substring from the draft). */
+    originalText: string;
+    /** Proposed speaker character ID. */
+    speakerId: string;
+    /** One of exactly 10 valid mood tags. */
+    mood: string;
+  }>;
+};
+
+export const PEN_DIALOGUE_MARKER_SCHEMA: Record<keyof PenDialogueMarkerAIOutput, AIJsonProperty> = {
+  markers: {
+    type: "array",
+    description: "All unmarked dialogue lines found in the draft, with proposed speaker and mood.",
+    items: {
+      type: "object",
+      properties: {
+        originalText: {
+          type: "string",
+          description: "The exact original dialogue line text from the draft (for matching).",
+        },
+        speakerId: {
+          type: "string",
+          description: "Proposed speaker character ID: 'mc' for main character, existing character ID, or '???' if unknown.",
+        },
+        mood: {
+          type: "string",
+          enum: ["scream", "angry", "afraid", "whisper", "cry", "laugh", "sing", "calm", "desperate", "cold"],
+          description: "Emotional mood tag for the dialogue.",
+        },
+      },
+      required: ["originalText", "speakerId", "mood"],
+    },
+  },
+};
+
+export const PEN_DIALOGUE_MARKER_REQUIRED_FIELDS: (keyof PenDialogueMarkerAIOutput)[] = ["markers"];
+
+export type PenDialogueMarkerPrompt = {
+  systemPrompt: string;
+  userPrompt: string;
+};
+
+/**
+ * Builds the dialogue marker auto-detection prompt for `finalizePenDraft`.
+ *
+ * @param draftText — the assembled draft prose from `assembleDraft`
+ * @param mcName — the main character's name
+ * @param knownCharacters — book cast (characterId + name pairs)
+ * @param state — current story state for context
+ * @param context — additional pen context (persona, lore, pages, etc.)
+ */
+export function buildPenDialogueMarkerPrompt(params: {
+  draftText: string;
+  mcName: string;
+  knownCharacters?: Array<{ id: string; name: string; role?: string; bio?: string }>;
+  state?: StoryState | null;
+  persona?: CoWritingPersona;
+  lore?: LoreEntry[];
+  pageTexts: string[];
+  language: string;
+  bookSummary?: string | null;
+  storyStartDate?: string | null;
+  momentum?: string | null;
+  sceneType?: string | null;
+  essentials?: PenDraftSceneEssentials | null;
+}): PenDialogueMarkerPrompt {
+  const {
+    draftText,
+    mcName,
+    knownCharacters = [],
+    state,
+    persona,
+    lore,
+    language,
+    bookSummary,
+  } = params;
+
+  const narrativeStyleInstructions = state ? createNarrativeStyle(state).instructions : undefined;
+
+  const stableSections = buildStablePenSections({
+    persona,
+    bookSummary,
+    lore,
+    narrativeStyle: narrativeStyleInstructions,
+    language,
+  });
+
+  const knownCharsList = [
+    mcName ? `- [Main Character] ID: 'mc', Name: "${mcName}"` : "",
+    ...knownCharacters.map(
+      (c) => `- ID: '${c.id}', Name: "${c.name}"${c.role ? ` (${c.role})` : ""}${c.bio ? `: ${c.bio}` : ""}`
+    ),
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return {
+    systemPrompt: PEN_DIALOGUE_MARKER_SYSTEM,
+    userPrompt: [
+      ...stableSections,
+      `KNOWN CHARACTERS IN STORY / LORE:\n${knownCharsList || "(No known secondary characters yet)"}`,
+      `VALID MOOD TAGS: scream, angry, afraid, whisper, cry, laugh, sing, calm, desperate, cold`,
+      `CURRENT DRAFT PROSE TO ANALYZE:\n${draftText.trim()}`,
+      "Analyze the CURRENT DRAFT PROSE. Identify ALL spoken dialogue lines that are missing the required [speaker_id|mood] marker prefix. Return each unmarked line with its proposed speaker ID and mood tag.",
     ].join("\n\n"),
   };
 }

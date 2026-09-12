@@ -14,7 +14,7 @@ import { dbRead, dbWrite, type DBClient } from "../db/client.js";
 import { getBookFromDB, getBookPages, deleteStoryPage, updateBook } from "./book.js";
 import { getTriggeredLoreEntries, listLoreEntries } from "./lore.js";
 import type { DBBook, DBPenSession, DBPenDraft } from "../types/schema.js";
-import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraft, PenDraftCharacter, PenDraftSceneEssentials, PenDraftSummary, PenDraftUpdates, PenEdit, PenSessionStatus, FinalizeViolation, CanonAmendment, PenEditType, PenOutlineData, PenOutlinePage, PenAuthorPage, AuthorshipOrigin, PenTransformInput, PenTransformResult, PenNote, PenNoteInput, PenNoteUpdate, LoreEntry, PenLatentBranch, DetectedCastCharacter, PenCastDetectInput, PenCastDetectResult, PenStateProposalPlotFlag, PenStateProposalFact } from "../types/pen.js";
+import type { AuthoringMode, AuthoringPov, CoWritingPersona, DraftSpan, PenDraft, PenDraftCharacter, PenDraftSceneEssentials, PenDraftSummary, PenDraftUpdates, PenEdit, PenSessionStatus, FinalizeViolation, CanonAmendment, PenEditType, PenOutlineData, PenOutlinePage, PenAuthorPage, AuthorshipOrigin, PenTransformInput, PenTransformResult, PenNote, PenNoteInput, PenNoteUpdate, LoreEntry, PenLatentBranch, DetectedCastCharacter, PenCastDetectInput, PenCastDetectResult, PenStateProposalPlotFlag, PenStateProposalFact } from "../types/pen.js";
 import type { BookMode } from "../types/book.js";
 import type { StoryState, Action, StoryGeneration, PersistedStoryPage, SceneCharacter, CharacterSceneRole, Mood, ActionType, ActionHint, ActionHintType, Ending, StoryOutline, EndingType, PlotFlagType, FactType } from "../types/story.js";
 import { moods, actionTypes, actionHintTypes, characterSceneRoles, plotFlagTypes, factTypes } from "../types/story.js";
@@ -28,8 +28,8 @@ import type { Gender } from "../types/user.js";
 import { getBranchPath } from "../utils/branch-traversal.js";
 import { processCharacterUpdates, isMainCharacterValid } from "../utils/characters.js";
 import { getStoryStateWithBranch } from "./story-branch.js";
-import { buildPenContinuePrompt, PEN_CONTINUE_SCHEMA, PEN_CONTINUE_REQUIRED_FIELDS, buildPenEssentialsAutofillPrompt, PEN_ESSENTIALS_SCHEMA, PEN_ESSENTIALS_REQUIRED_FIELDS, PEN_ESSENTIALS_REVIEW_SCHEMA, buildPenStateProposalPrompt, PEN_STATE_PROPOSAL_SCHEMA, PEN_STATE_PROPOSAL_REQUIRED_FIELDS, buildPenTransformPrompt, PEN_TRANSFORM_SCHEMA, PEN_TRANSFORM_REQUIRED_FIELDS, buildPenCastDetectPrompt, PEN_CAST_DETECT_SCHEMA, PEN_CAST_DETECT_REQUIRED_FIELDS, PEN_CONTEXT_PAGES, type PenContinueCommonParams } from "../utils/pen-prompt.js";
-import type { PenContinueResult as PenContinueAIOutput, PenEssentialsAutofillResult as PenEssentialsAIOutput, PenStateProposalResult as PenStateProposalAIOutput, PenStateProposalOutlineBeat, PenTransformResult as PenTransformAIOutput, PenCastDetectAIOutput } from "../utils/pen-prompt.js";
+import { buildPenContinuePrompt, PEN_CONTINUE_SCHEMA, PEN_CONTINUE_REQUIRED_FIELDS, buildPenEssentialsAutofillPrompt, PEN_ESSENTIALS_SCHEMA, PEN_ESSENTIALS_REQUIRED_FIELDS, PEN_ESSENTIALS_REVIEW_SCHEMA, buildPenStateProposalPrompt, PEN_STATE_PROPOSAL_SCHEMA, PEN_STATE_PROPOSAL_REQUIRED_FIELDS, buildPenTransformPrompt, PEN_TRANSFORM_SCHEMA, PEN_TRANSFORM_REQUIRED_FIELDS, buildPenCastDetectPrompt, PEN_CAST_DETECT_SCHEMA, PEN_CAST_DETECT_REQUIRED_FIELDS, buildPenDialogueMarkerPrompt, PEN_DIALOGUE_MARKER_SCHEMA, PEN_DIALOGUE_MARKER_REQUIRED_FIELDS, PEN_CONTEXT_PAGES, type PenContinueCommonParams } from "../utils/pen-prompt.js";
+import type { PenContinueResult as PenContinueAIOutput, PenEssentialsAutofillResult as PenEssentialsAIOutput, PenStateProposalResult as PenStateProposalAIOutput, PenStateProposalOutlineBeat, PenTransformResult as PenTransformAIOutput, PenCastDetectAIOutput, PenDialogueMarkerAIOutput } from "../utils/pen-prompt.js";
 import { aiPrompt, createAIOptionsWithSchema } from "../utils/ai-chat.js";
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
@@ -2697,6 +2697,171 @@ function runFinalizeDeltaGate(session: { draftBuffer: DraftSpan[] }, canonVersio
   }];
 }
 
+// ── Dialogue marker auto-detection (finalize quality gate) ────────────────
+
+/**
+ * Cheap pre-check: does the draft contain ANY lines that look like unmarked
+ * spoken dialogue? Used to skip the AI call entirely when the author has
+ * already marked all dialogue properly.
+ *
+ * Returns `false` if there are zero dialogue-like lines (nothing to mark)
+ * OR if every dialogue-like line already has a `[speaker_id]` marker prefix.
+ *
+ * @param text — assembled draft text from `assembleDraft`
+ */
+function hasUnmarkedDialogue(text: string): boolean {
+  if (!text) return false;
+  const lines = text.split("\n");
+  const markerRe = /^\[([\w_]+|\?\?\?)(?:\|(\w+))?\]\s*/;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    // Does this line look like spoken dialogue (starts with a quote)?
+    if (/^\s*(?:"|["'\u201C\u201D])/.test(trimmed)) {
+      // Is it missing a marker prefix?
+      if (!markerRe.test(trimmed)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Builds the list of known characters (MC + book cast) for the AI prompt.
+ */
+function buildKnownCharactersForMarkers(
+  book: DBBook,
+  state: StoryState | null,
+): Array<{ id: string; name: string; role?: string; bio?: string }> {
+  const chars: Array<{ id: string; name: string; role?: string; bio?: string }> = [];
+  if (book.mc?.name) {
+    chars.push({ id: "mc", name: book.mc.name, role: "protagonist", bio: book.mc.bio });
+  }
+  if (state?.characters) {
+    for (const [id, mem] of Object.entries(state.characters)) {
+      if (id === "mc") continue;
+      chars.push({ id, name: mem.knownName || id, role: mem.role, bio: mem.bio });
+    }
+  }
+  return chars;
+}
+
+/**
+ * Calls the AI to detect and prefix unmarked dialogue lines with
+ * `[speaker_id|mood]` markers during the finalize flow.
+ *
+ * Free (0 credits) — gated by the cheap `hasUnmarkedDialogue` regex check.
+ * On AI failure, returns the original text unchanged (never blocks publish).
+ *
+ * @returns The draft text with dialogue markers applied, or the original text
+ *   if no unmarked dialogue was found or the AI call failed.
+ */
+async function autoPrefixDialogueMarkers(
+  draftText: string,
+  book: DBBook,
+  state: StoryState | null,
+  pageTexts: string[],
+  currentPageId: string | null,
+  persona?: CoWritingPersona | null,
+  lore?: LoreEntry[],
+  essentials?: PenDraftSceneEssentials | null,
+): Promise<string> {
+  if (!hasUnmarkedDialogue(draftText)) return draftText;
+
+  try {
+    // Lazy-load context data only when the AI call is actually needed.
+    let currentState = state;
+    let currentPageTexts = pageTexts;
+    let currentLore = lore;
+
+    if (!currentState && currentPageId) {
+      currentState = await getStoryStateWithBranch(book.id, currentPageId);
+    }
+    if (currentPageTexts.length === 0 && book.id) {
+      const pages = await getBookPages(book.id);
+      currentPageTexts = pages.map((p) => p.text ?? "").filter(Boolean);
+    }
+    if ((!currentLore || currentLore.length === 0) && book.id) {
+      const haystack = [draftText, ...currentPageTexts].join("\n");
+      currentLore = await getTriggeredLoreEntries(book.id, haystack);
+    }
+
+    const knownCharacters = buildKnownCharactersForMarkers(book, currentState);
+    const mcName = book.mc?.name ?? "MC";
+
+    const prompt = buildPenDialogueMarkerPrompt({
+      draftText,
+      mcName,
+      knownCharacters,
+      state: currentState,
+      persona: persona ?? undefined,
+      lore: currentLore,
+      pageTexts: currentPageTexts,
+      language: book.language ?? "en",
+      bookSummary: book.summary,
+      storyStartDate: book.storyStartDate ?? null,
+      momentum: null,
+      sceneType: null,
+      essentials,
+    });
+
+    const promptConfig: AIPromptForJson<PenDialogueMarkerAIOutput> = {
+      schema: PEN_DIALOGUE_MARKER_SCHEMA,
+      requiredFields: PEN_DIALOGUE_MARKER_REQUIRED_FIELDS,
+      fallbackField: "markers",
+      baseOptions: {
+        modelSelection: AI_CHAT_MODELS_WRITING,
+        context: "pen-dialogue-marker",
+        systemPrompt: prompt.systemPrompt,
+        config: { ...AI_CHAT_CONFIG_DEFAULT, maxOutputToken: 1024 },
+      },
+    };
+
+    // Free (0 credits) — no need for executeWithCredits wrapper.
+    const aiResponse = await aiPrompt<PenDialogueMarkerAIOutput>(
+      prompt.userPrompt,
+      createAIOptionsWithSchema(promptConfig),
+    );
+    const result = aiResponse.result;
+
+    if (!result || !Array.isArray(result.markers) || result.markers.length === 0) {
+      return draftText;
+    }
+
+    // Apply markers: for each AI-identified unmarked line, prefix it with
+    // [speaker_id|mood]. We do a line-by-line replacement, matching on
+    // normalized trimmed text to be resilient to whitespace variations.
+    let markedText = draftText;
+    for (const marker of result.markers) {
+      if (!marker.originalText || !marker.speakerId) continue;
+      const mood = marker.mood || "calm";
+      const speakerId = marker.speakerId;
+      // Build the marker prefix
+      const prefix = `[${speakerId}|${mood}]`;
+      // Find the original line in the text and prepend the marker.
+      // The leading quote is optional: the AI may return originalText with or
+      // without the opening quote character, so we must handle both cases.
+      const escapedOriginal = marker.originalText
+        .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const linePattern = new RegExp(
+        `^([ \\t]*)(?:(?:"|["'\\u201C\\u201D])${escapedOriginal}|${escapedOriginal})`,
+        "gm",
+      );
+      markedText = markedText.replace(linePattern, (match, leading) => {
+        // Only prefix if not already marked
+        if (/^\[/.test(match.trim())) return match;
+        return `${leading}${prefix} ${match.trim()}`;
+      });
+    }
+
+    return markedText;
+  } catch (err) {
+    console.warn(`[autoPrefixDialogueMarkers] AI call failed, using original text:`, err);
+    return draftText;
+  }
+}
+
 /**
  * Publishes the session's draft as the next story page (Phase 1.c, Decision M).
  *
@@ -2787,6 +2952,25 @@ export async function finalizePenDraft(
     }
   }
 
+  // ── Dialogue marker auto-detection (quality gate, non-blocking) ──────────
+  // Auto-prefix unmarked dialogue lines with [speaker_id|mood] markers.
+  // Free (0 credits), gated by cheap regex. On AI failure, uses original text.
+  let finalDraftText = draftText;
+  try {
+    finalDraftText = await autoPrefixDialogueMarkers(
+      draftText,
+      book,
+      null, // state loaded lazily inside if needed
+      [],   // pageTexts loaded lazily inside if needed
+      session.currentPageId ?? null,
+      null, // persona
+      [],   // lore loaded lazily inside if needed
+      draft.draftSceneEssentials,
+    );
+  } catch (err) {
+    console.warn(`[finalizePenDraft] dialogue marker auto-detection skipped:`, err);
+  }
+
   // ── Phase A: delta gate (advisory, never blocks) ─────────────────────────
   const violations = runFinalizeDeltaGate(session, book.canonVersion);
   const highFindings = violations.filter((v) => v.severity === "high");
@@ -2799,7 +2983,7 @@ export async function finalizePenDraft(
 
   // Action text is optional and falls back to first 30 chars of page with ellipsis suffix.
   const rawActionText = draft.actionText?.trim();
-  const fallbackActionText = draftText ? `${draftText.slice(0, 30)}...` : undefined;
+  const fallbackActionText = finalDraftText ? `${finalDraftText.slice(0, 30)}...` : undefined;
   const writerActionText = rawActionText || fallbackActionText;
 
   // Carries the incoming action's text/type/hint to Phase C's reverse-edge
@@ -2844,7 +3028,7 @@ export async function finalizePenDraft(
       });
 
       const generatedStoryPage: StoryGeneration = {
-        text: draftText,
+        text: finalDraftText,
         actions,
         mood: sceneEssentials.mood,
         placeId: draft.draftSceneEssentials?.placeId ?? currentPage.placeId,
@@ -3070,7 +3254,7 @@ export async function finalizePenDraft(
       const firstPageEssentials = applySceneEssentials(draft.draftSceneEssentials, {});
 
       const pageToInsert = {
-        ...generatedFirstPage(draftText, actions, castPresent, castNewCharacters),
+        ...generatedFirstPage(finalDraftText, actions, castPresent, castNewCharacters),
         ...(draft.draftSceneEssentials?.placeId ? { placeId: draft.draftSceneEssentials.placeId } : {}),
         ...(firstPageEssentials.mood ? { mood: firstPageEssentials.mood } : {}),
         ...(firstPageEssentials.weather ? { weather: firstPageEssentials.weather } : {}),

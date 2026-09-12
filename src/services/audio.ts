@@ -5,10 +5,10 @@
  * library listing, and deletion with in-use checks against book_place_bgm.
  */
 
-import { dbRead, dbWrite } from "../db/client.js";
+import { dbRead, dbWrite, type DBClient } from "../db/client.js";
 import { userAudioLibrary, bookPlaceBgm } from "../db/schema.js";
-import { eq, and, count } from "drizzle-orm";
-import { uploadImageKit, deleteFileFromImageKit, persistUploadedImage } from "./image.js";
+import { eq, and, or, count } from "drizzle-orm";
+import { uploadImageKit, deleteFileFromImageKit } from "./image.js";
 import type { ImageUploadSource } from "../types/image.js";
 
 export type UserAudioLibraryItem = {
@@ -67,54 +67,59 @@ export async function listAudioLibrary(userId: string): Promise<UserAudioLibrary
 }
 
 /**
- * Check how many book_place_bgm rows reference a library item.
+ * Check how many book_place_bgm rows reference a library item's fileId.
+ *
+ * @param client - Database client to use; pass `tx` inside a transaction to
+ *   avoid TOCTOU races between the ref-count check and the subsequent delete.
  */
-async function getLibraryItemRefCount(libraryId: string): Promise<number> {
-  const [{ cnt }] = await dbRead
+async function getLibraryItemRefCount(fileId: string, client: DBClient = dbRead): Promise<number> {
+  const [{ cnt }] = await client
     .select({ cnt: count() })
     .from(bookPlaceBgm)
-    .where(
-      and(
-        eq(bookPlaceBgm.primaryFileId, libraryId),
-      )
-    );
-  // Also check variant references
-  const [{ cnt: variantCnt }] = await dbRead
-    .select({ cnt: count() })
-    .from(bookPlaceBgm)
-    .where(eq(bookPlaceBgm.variantFileId, libraryId));
-  return cnt + variantCnt;
+    .where(or(
+      eq(bookPlaceBgm.primaryFileId, fileId),
+      eq(bookPlaceBgm.variantFileId, fileId),
+    ));
+  return cnt;
 }
 
 /**
  * Delete a library item. Rejects (409) if referenced by any book_place_bgm.
+ * The check-then-delete is wrapped in a transaction to prevent TOCTOU races.
  */
 export async function deleteAudioLibraryItem(
   userId: string,
   libraryId: string,
 ): Promise<{ ok: true } | { ok: false; reason: 'not_found' | 'in_use'; refCount?: number }> {
-  const [row] = await dbRead
-    .select()
-    .from(userAudioLibrary)
-    .where(and(
-      eq(userAudioLibrary.id, libraryId),
-      eq(userAudioLibrary.userId, userId),
-    ))
-    .limit(1);
+  return dbWrite.transaction(async (tx) => {
+    const [row] = await tx
+      .select()
+      .from(userAudioLibrary)
+      .where(and(
+        eq(userAudioLibrary.id, libraryId),
+        eq(userAudioLibrary.userId, userId),
+      ))
+      .limit(1)
+      .for("update");
 
-  if (!row) return { ok: false, reason: 'not_found' };
+    if (!row) return { ok: false, reason: 'not_found' };
 
-  // Check if any book_place_bgm references this library item's fileId
-  const refCount = await getLibraryItemRefCount(row.fileId);
-  if (refCount > 0) return { ok: false, reason: 'in_use', refCount };
+    // Check if any book_place_bgm references this library item's fileId.
+    // Must use tx (not dbRead) to avoid TOCTOU races within the transaction.
+    const refCount = await getLibraryItemRefCount(row.fileId, tx);
+    if (refCount > 0) return { ok: false, reason: 'in_use', refCount };
 
-  // Delete from ImageKit (best-effort)
-  await deleteFileFromImageKit(row.fileId);
+    // Delete from ImageKit (best-effort — outside tx is fine, soft delete)
+    await deleteFileFromImageKit(row.fileId);
 
-  // Delete from DB
-  await dbWrite
-    .delete(userAudioLibrary)
-    .where(eq(userAudioLibrary.id, libraryId));
+    // Delete from DB within the same transaction
+    await tx
+      .delete(userAudioLibrary)
+      .where(and(
+        eq(userAudioLibrary.id, libraryId),
+        eq(userAudioLibrary.userId, userId),
+      ));
 
-  return { ok: true };
+    return { ok: true };
+  });
 }

@@ -10,16 +10,11 @@
  * @see docs/roadmap/AI_CO_WRITING_PEN_ROADMAP.md §6.3, Phase 5
  */
 
-import { eq, getTableColumns, sql } from "drizzle-orm";
+import { eq, and, getTableColumns, sql } from "drizzle-orm";
 import { loreEntries, books, uploadedImages, bookPlaceBgm } from "../db/schema.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { getBookFromDB, invalidateCharacterImageCache } from "./book.js";
-import {
-  uploadLoreCharacterImage,
-  persistUploadedImage,
-  deleteFileFromImageKit,
-  isBase64Upload,
-} from "./image.js";
+import { uploadLoreCharacterImage, persistUploadedImage, deleteFileFromImageKit, isBase64Upload } from "./image.js";
 import { cleanSingleLineText, cleanMultilineText, cleanKeywords } from "../utils/text-processing.js";
 import { PEN_LORE_NAME_MAX_LENGTH, PEN_LORE_DESCRIPTION_MAX_LENGTH, PEN_LORE_TRIGGER_MAX_LENGTH, PEN_LORE_MAX_TRIGGERS } from "../config/story.js";
 import type { DBLoreEntry, DBNewLoreEntry, DBBook } from "../types/schema.js";
@@ -191,13 +186,13 @@ export async function createLoreEntry(
         .where(eq(books.id, bookId));
 
       // Upsert book_place_bgm when this is a place entry with a linked place and BGM data
-      if (input.entryType === "place" && input.linkedPlaceId && input.bgmPrimaryUrl) {
+      if (input.entryType === "place" && input.linkedPlaceId && (input.bgmPrimaryUrl || input.bgmVariantUrl)) {
         await tx
           .insert(bookPlaceBgm)
           .values({
             bookId,
             placeId: input.linkedPlaceId,
-            primaryUrl: input.bgmPrimaryUrl,
+            primaryUrl: input.bgmPrimaryUrl ?? null,
             primaryFileId: input.bgmPrimaryFileId ?? null,
             variantUrl: input.bgmVariantUrl ?? null,
             variantFileId: input.bgmVariantFileId ?? null,
@@ -205,7 +200,7 @@ export async function createLoreEntry(
           .onConflictDoUpdate({
             target: [bookPlaceBgm.bookId, bookPlaceBgm.placeId],
             set: {
-              primaryUrl: input.bgmPrimaryUrl,
+              primaryUrl: input.bgmPrimaryUrl ?? null,
               primaryFileId: input.bgmPrimaryFileId ?? null,
               variantUrl: input.bgmVariantUrl ?? null,
               variantFileId: input.bgmVariantFileId ?? null,
@@ -334,6 +329,19 @@ export async function updateLoreEntry(
       const effectivePrimaryUrl = update.bgmPrimaryUrl !== undefined ? update.bgmPrimaryUrl : existing.bgmPrimaryUrl;
 
       if (effectiveEntryType === "place" && effectiveLinkedPlaceId) {
+        // When linkedPlaceId changes, delete the old BGM row to prevent orphans.
+        const oldPlaceId = existing.linkedPlaceId;
+        const placeIdChanged = oldPlaceId
+          && effectiveLinkedPlaceId !== oldPlaceId;
+        if (placeIdChanged) {
+          await tx
+            .delete(bookPlaceBgm)
+            .where(and(
+              eq(bookPlaceBgm.bookId, existing.bookId),
+              eq(bookPlaceBgm.placeId, oldPlaceId),
+            ));
+        }
+
         if (effectivePrimaryUrl) {
           // Upsert book_place_bgm
           await tx
@@ -357,10 +365,13 @@ export async function updateLoreEntry(
               },
             });
         } else if (existing.bgmPrimaryUrl) {
-          // BGM cleared — delete book_place_bgm row (library items preserved)
+          // BGM cleared — delete book_place_bgm row for this specific place (library items preserved)
           await tx
             .delete(bookPlaceBgm)
-            .where(eq(bookPlaceBgm.bookId, existing.bookId));
+            .where(and(
+              eq(bookPlaceBgm.bookId, existing.bookId),
+              eq(bookPlaceBgm.placeId, effectiveLinkedPlaceId),
+            ));
         }
       }
 
@@ -412,7 +423,10 @@ export async function deleteLoreEntry(userId: string, entryId: string): Promise<
     if (existing.entryType === "place" && existing.linkedPlaceId) {
       await tx
         .delete(bookPlaceBgm)
-        .where(eq(bookPlaceBgm.bookId, existing.bookId));
+        .where(and(
+          eq(bookPlaceBgm.bookId, existing.bookId),
+          eq(bookPlaceBgm.placeId, existing.linkedPlaceId),
+        ));
     }
   });
 
