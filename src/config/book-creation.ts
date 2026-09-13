@@ -79,7 +79,8 @@ const BASE_FORMAT_RULES = `- Max ${MAX_WORDS_PER_PAGE} words.
   - _underline_ for subtle emphasis or technical terms
   - ~strikethrough~ for corrections, self-edits, or fading memories
   - \`monospace\` for code, computer text, or robotic phrases
-- Do not overuse formatting — most prose should be plain text. Reserve markers for moments that genuinely benefit from visual distinction.`;
+- Do not overuse formatting — most prose should be plain text. Reserve markers for moments that genuinely benefit from visual distinction.
+- Use *** (three asterisks on their own line) for scene breaks within a page when there is a significant time jump or location shift. Use sparingly — most pages should not contain scene breaks.`;
 
 const BASE_OPENING_RULES = `PAGE OPENING RULES (IMMEDIATE EXECUTION):
 - Open on the immediate aftermath of the selected action, continuing directly from the previous page's final moment — no scene break.
