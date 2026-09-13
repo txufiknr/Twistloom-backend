@@ -13,7 +13,7 @@ import { createPaginatedResponse, calculatePaginationMeta } from "../utils/pagin
 import { requireAuth, optionalAuth } from "../middleware/nextauth.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { users, transactions, webhookDeliveries, subscriptions } from "../db/schema.js";
-import { CREDIT_PACKS, type CreditCostKey, CREDIT_COSTS } from "../config/credits.js";
+import { CREDIT_PACKS, type CreditCostKey, CREDIT_COSTS, CREDIT_COSTS_BASE, BOOK_MODE_CREDIT_COSTS } from "../config/credits.js";
 import type { TransactionType } from "../types/credits.js";
 import { getErrorMessage, cApiError, cConflictError, cNotFoundError, cValidationError, cRateLimitError } from "../utils/error.js";
 import { checkRateLimit, checkIdempotency, storeIdempotencyResult, constructSafeUrl, setIdempotencyProcessing } from "../utils/redis.js";
@@ -203,6 +203,23 @@ router.get("/credit-packs", async (c) => {
   } catch (error) {
     return cApiError(c, "Failed to fetch credit packs", error);
   }
+});
+
+/**
+ * GET /credit-costs
+ *
+ * Returns the current credit cost configuration. This allows the frontend to
+ * stay in sync with backend costs without requiring a coordinated deploy.
+ * No auth required — these are public pricing constants.
+ *
+ * @route GET /api/payments/credit-costs
+ * @returns Credit cost maps (base costs + per-mode generation costs)
+ */
+router.get("/credit-costs", async (c) => {
+  return c.json({
+    creditCosts: CREDIT_COSTS_BASE,
+    bookModeCosts: BOOK_MODE_CREDIT_COSTS,
+  });
 });
 
 /**

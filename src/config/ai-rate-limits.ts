@@ -304,6 +304,20 @@ export const BROADCAST_SUBMIT_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
 );
 
 /**
+ * POST /api/broadcasts/system — submit a system broadcast (milestone-triggered).
+ *
+ * No Megaphone consumption, no cooldown, but still a user-initiated endpoint
+ * that writes to the broadcast queue. Rate limiting bounds a user from flooding
+ * the queue with valid-length system messages.
+ *
+ * why: no credit charge but writes to a scarce global queue — 10/min mirrors
+ * the regular submit limit.
+ */
+export const BROADCAST_SYSTEM_SUBMIT_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
+  "BROADCAST_SYSTEM_SUBMIT", 10, 60, "broadcast-system-submit"
+);
+
+/**
  * POST /api/consumables/purchase — buy a consumable item with credits.
  *
  * Credit-gated purchase (registry-defined price via `executeWithCredits`); this

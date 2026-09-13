@@ -100,3 +100,13 @@ export interface BroadcastSubmitResponse {
   expiresAt: string;
   megaphonesRemaining: number;
 }
+
+/** Response after a successful system broadcast (no megaphone consumed). */
+export interface SystemBroadcastSubmitResponse {
+  id: string;
+  message: string;
+  source: BroadcastSource;
+  queuePosition: number;
+  startsAt: string;
+  expiresAt: string;
+}

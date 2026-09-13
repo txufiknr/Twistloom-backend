@@ -37,12 +37,14 @@ import {
   getOwnerBroadcastState,
   previewBroadcast,
   submitBroadcast,
+  submitSystemBroadcast,
   reportBroadcast,
   BroadcastSubmitError,
 } from "../services/broadcast.js";
 import {
   BROADCAST_PREVIEW_RATE_LIMIT,
   BROADCAST_SUBMIT_RATE_LIMIT,
+  BROADCAST_SYSTEM_SUBMIT_RATE_LIMIT,
 } from "../config/ai-rate-limits.js";
 import { BROADCAST_DISPLAY_SECONDS } from "../config/broadcast.js";
 
@@ -178,6 +180,36 @@ router.post("/", requireAuth, rateLimit(BROADCAST_SUBMIT_RATE_LIMIT), async (c) 
     }
     console.error("[POST /api/broadcasts] ❌ Error:", error);
     return cApiError(c, "Failed to submit broadcast", error);
+  }
+});
+
+/**
+ * POST /api/broadcasts/system
+ *
+ * Submit a system broadcast (auto-triggered milestone events like first-visitor
+ * ending discovery). No Megaphone consumption, no cooldown, no AI moderation.
+ * Auth required — the user triggering the milestone must be logged in.
+ *
+ * @route POST /api/broadcasts/system
+ * @auth Required
+ * @body {string} message - Localized broadcast text (≤140 chars)
+ * @body {boolean} [containsSpoiler] - Always false for system broadcasts
+ * @returns {@link SystemBroadcastSubmitResponse} on success (201)
+ */
+router.post("/system", requireAuth, rateLimit(BROADCAST_SYSTEM_SUBMIT_RATE_LIMIT), async (c) => {
+  try {
+    const userId = c.get("userId")!;
+    const { message } = c.get("body") as { message?: string };
+
+    const result = await submitSystemBroadcast(userId, message ?? "");
+    c.status(201);
+    return c.json(result);
+  } catch (error) {
+    if (error instanceof BroadcastSubmitError) {
+      return mapSubmitError(c, error);
+    }
+    console.error("[POST /api/broadcasts/system] ❌ Error:", error);
+    return cApiError(c, "Failed to submit system broadcast", error);
   }
 });
 

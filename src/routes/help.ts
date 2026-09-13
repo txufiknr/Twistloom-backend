@@ -16,6 +16,37 @@ function isHelpVote(value: unknown): value is HelpVote {
 }
 
 /**
+ * GET /help/articles/my-votes
+ *
+ * Returns all votes the authenticated user has cast across all articles.
+ * Single call avoids N per-article requests on the Help Center page.
+ *
+ * @returns { votes: Record<string, "helpful" | "not_helpful"> }
+ */
+router.get("/articles/my-votes", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId")!;
+
+    const rows = await dbRead
+      .select({
+        articleId: helpArticleFeedback.articleId,
+        vote: helpArticleFeedback.vote,
+      })
+      .from(helpArticleFeedback)
+      .where(eq(helpArticleFeedback.userId, userId));
+
+    const votes: Record<string, HelpVote> = {};
+    for (const row of rows) {
+      votes[row.articleId] = row.vote;
+    }
+
+    return c.json({ votes });
+  } catch (error) {
+    return cApiError(c, "Failed to get votes", error);
+  }
+});
+
+/**
  * POST /help/articles/:articleId/vote
  *
  * Records or updates a reader's helpfulness vote on a help center article.
