@@ -169,7 +169,26 @@ export type UserActivityType =
   'book_completed' |
   'testimonial_created' |
   'wall_post_created' |
-  'wall_post_liked';
+  'wall_post_liked' |
+  // Security audit events — sensitive mutations that need forensics trail
+  'security_email_changed' |
+  'security_password_changed' |
+  'security_username_changed' |
+  'security_google_linked' |
+  'security_google_unlinked' |
+  'security_credentials_linked' |
+  'security_credentials_unlinked' |
+  'security_logout_all_devices' |
+  'security_account_deleted' |
+  'security_gdpr_export_requested' |
+  'security_credit_topup' |
+  'security_credit_consumed' |
+  'security_voucher_redeemed' |
+  'security_subscription_created' |
+  'security_subscription_cancelled' |
+  'security_subscription_renewed' |
+  'security_trial_started' |
+  'security_profile_updated';
 
 export type CheckinClaimType = 'regular' | 'vip_2x';
 

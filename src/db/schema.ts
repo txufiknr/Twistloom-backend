@@ -618,6 +618,7 @@ export const books = pgTable(
     ratingCount: integer("rating_count"), // Count of approved testimonials carrying a rating (maintained by trigger)
     completeCount: integer("complete_count").notNull().default(0), // Total unique users who completed the book (maintained by trigger)
     completionRate: real("completion_rate"), // Completed/started percentage (maintained by trigger)
+    endingsFound: integer("endings_found").notNull().default(0), // Total unique endings discovered by all users (maintained by trigger)
     topPick: timestamp("top_pick", { withTimezone: true }), // Editor's pick
     creditsPrice: integer("credits_price"),
     originalThemeInput: text("original_theme_input"),

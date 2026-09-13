@@ -61,6 +61,7 @@ import type { FeedbackCategory, LikeTargetType, Source, User, UserAchievement, U
 import { feedbackCategories, sources } from "../types/user.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { requireAuth, optionalAuth } from "../middleware/nextauth.js";
+import { logAuditEvent } from "../utils/audit-log.js";
 import { requireNotSuspended, requireNotMuted } from "../middleware/trust-safety.js";
 import { users, books, userAuth, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, userSessions, userCompletedBooks, userComments, transactions, userProviders, userFeedbacks, bookTestimonials, uploadedImages, userReports, moderationReports, moderationAppeals, userEnforcementActions, userBlocks, platformTestimonials, pages, userInventory, posts } from "../db/schema.js";
 import type { ReportTargetType, ReportType } from "../types/trust-safety.js";
@@ -437,6 +438,7 @@ router.get('/export', requireAuth, async (c: Context<AppEnv>) => {
     const profile = profileResult[0] ?? null;
     const auth = authResult[0] ?? null;
 
+    await logAuditEvent(c, 'security_gdpr_export_requested', 'user');
     return c.json({
       exportedAt: new Date().toISOString(),
       profile,
@@ -712,6 +714,7 @@ router.put('/', requireAuth, async (c: Context<AppEnv>) => {
     // Normalize: move tier into subscription sub-object (consistent with GET /api/user)
     // Expose hasReferrer (boolean SSOT); never leak raw referrerId UUID to clients
     const { userId: id, tier: putTier, referrerId, ...putRest } = user;
+    await logAuditEvent(c, 'security_profile_updated', 'user');
     return c.json({
       success: true,
       user: {
@@ -1172,6 +1175,7 @@ router.delete("/", requireAuth, async (c: Context<AppEnv>) => {
     // - userAuth, userPageProgress
     // - userFollows, userCompletedBooks, userActivityLogs, transactions
     // - userNotifications, userCheckins, userLikes, userFavorites, userComments, userSessions
+    await logAuditEvent(c, 'security_account_deleted', 'user');
     await dbWrite.delete(users).where(eq(users.userId, userId));
 
     if (userRow?.email) {

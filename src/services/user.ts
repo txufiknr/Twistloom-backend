@@ -1538,6 +1538,11 @@ export async function enrichActivityLogs(
         ? 'Reacted to a Wall Note'
         : 'Created a Wall Note';
       if (post?.content) enriched.detail = post.content.slice(0, 150);
+    } else if (log.targetType === 'auth' || log.targetType === 'credits' || log.targetType === 'subscription') {
+      enriched.title = humanizeActivityType(log.activityType);
+      const meta = (log.metadata as Record<string, unknown>) || {};
+      if (typeof meta.context === 'string') enriched.detail = meta.context;
+      else if (typeof meta.email === 'string') enriched.detail = meta.email;
     } else if (log.targetType === 'comment') {
       const comment = commentMap.get(log.targetId);
       const meta = (log.metadata as Record<string, unknown>) || {};
@@ -1589,6 +1594,21 @@ function humanizeActivityType(type: string): string {
     testimonial_created: 'Testimonial Created',
     wall_post_created: 'Created a Wall Note',
     wall_post_liked: 'Reacted to a Wall Note',
+    security_email_changed: 'Email Changed',
+    security_email_verified: 'Email Verified',
+    security_password_changed: 'Password Changed',
+    security_profile_updated: 'Profile Updated',
+    security_avatar_changed: 'Avatar Changed',
+    security_2fa_enabled: 'Two-Factor Authentication Enabled',
+    security_2fa_disabled: 'Two-Factor Authentication Disabled',
+    security_api_key_created: 'API Key Created',
+    security_api_key_revoked: 'API Key Revoked',
+    security_login: 'Logged In',
+    security_logout: 'Logged Out',
+    security_account_deleted: 'Account Deleted',
+    security_account_deletion_requested: 'Account Deletion Requested',
+    security_subscription_changed: 'Subscription Changed',
+    security_credits_added: 'Credits Added',
   };
   return map[type] || type;
 }

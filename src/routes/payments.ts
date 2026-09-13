@@ -11,6 +11,7 @@ import type Stripe from "stripe";
 import { eq, sql, and, desc, inArray } from "drizzle-orm";
 import { createPaginatedResponse, calculatePaginationMeta } from "../utils/pagination.js";
 import { requireAuth, optionalAuth } from "../middleware/nextauth.js";
+import { logAuditEvent } from "../utils/audit-log.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { users, transactions, webhookDeliveries, subscriptions } from "../db/schema.js";
 import { CREDIT_PACKS, type CreditCostKey, CREDIT_COSTS, CREDIT_COSTS_BASE, BOOK_MODE_CREDIT_COSTS } from "../config/credits.js";
@@ -276,6 +277,7 @@ router.post("/create-checkout-session", requireAuth, async (c) => {
       cancelUrl,
     });
 
+    await logAuditEvent(c, 'security_credit_topup', 'credits', pack.id);
     return c.json({ url: result.url, sessionId: result.sessionId, gateway });
   } catch (error) {
     return cApiError(c, "Failed to create checkout session", error);
@@ -343,6 +345,7 @@ router.post("/create-subscription-checkout", requireAuth, async (c) => {
       await dbWrite.update(users).set({ customerId: result.customerId }).where(eq(users.userId, userId));
     }
 
+    await logAuditEvent(c, 'security_subscription_created', 'subscription');
     return c.json({ url: result.url, sessionId: result.sessionId, gateway });
   } catch (error) {
     return cApiError(c, "Failed to create subscription checkout session", error);
@@ -452,6 +455,7 @@ router.post("/create-trial-checkout-session", requireAuth, async (c) => {
       await dbWrite.update(users).set({ customerId: result.customerId }).where(eq(users.userId, userId));
     }
 
+    await logAuditEvent(c, 'security_trial_started', 'subscription');
     return c.json({ url: result.url, sessionId: result.sessionId });
   } catch (error) {
     return cApiError(c, "Failed to create trial checkout session", error);
@@ -820,6 +824,7 @@ router.post("/consume-credits", requireAuth, async (c) => {
         );
       }
       if (processingCleanup) await processingCleanup();
+      await logAuditEvent(c, 'security_credit_consumed', 'credits', costKey);
       return c.json({ success: true, creditsConsumed: getCreditCost(costKey as CreditCostKey), remainingCredits: creditResult.remainingCredits });
     } catch (error) {
       if (processingCleanup) await processingCleanup();
@@ -1028,6 +1033,7 @@ router.post("/subscription/cancel", requireAuth, async (c) => {
     const adapter = getGatewayAdapter(sub.gateway);
     await adapter.cancelSubscription(sub.providerSubscriptionId);
     await dbWrite.update(subscriptions).set({ cancelAtPeriodEnd: true }).where(eq(subscriptions.id, sub.id));
+    await logAuditEvent(c, 'security_subscription_cancelled', 'subscription', sub.id);
     return c.json({ success: true, message: "Subscription will be canceled at period end" });
   } catch (error) {
     return cApiError(c, "Failed to cancel subscription", error);
@@ -1120,6 +1126,7 @@ router.post("/vouchers/redeem", requireAuth, async (c) => {
 
     const { redeemVoucher } = await import("../services/voucher.js");
     const result = await redeemVoucher(userId, body.code, body.idempotencyKey);
+    await logAuditEvent(c, 'security_voucher_redeemed', 'credits', body.code);
     return c.json(result);
   } catch (error: unknown) {
     const err = error as { code?: string; message?: string };

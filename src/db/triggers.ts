@@ -804,6 +804,62 @@ async function ensureBookCompleteCountTrigger(): Promise<void> {
 }
 
 /**
+ * Creates trigger to update book endings found count when users discover endings.
+ *
+ * This trigger fires AFTER INSERT on user_completed_books table:
+ * 1. When a user completes a unique ending for a book (reaches a terminal page)
+ * 2. Updates endings_found to count distinct page_ids (endings) discovered
+ * 3. Ensures denormalized count stays synchronized
+ *
+ * Note: Each row in user_completed_books represents one unique ending per user
+ * (unique constraint on user_id + book_id + page_id). COUNT(DISTINCT page_id)
+ * gives the total distinct endings found across all readers.
+ *
+ * Idempotency:
+ * - Uses CREATE OR REPLACE FUNCTION
+ * - Safe to run multiple times without errors
+ */
+async function ensureBookEndingsFoundTrigger(): Promise<void> {
+  try {
+    await dbWrite.execute(`
+      CREATE OR REPLACE FUNCTION update_book_endings_found()
+      RETURNS TRIGGER AS $$
+      DECLARE
+        v_endings_found INT;
+      BEGIN
+        SELECT COUNT(DISTINCT page_id) INTO v_endings_found
+        FROM user_completed_books
+        WHERE book_id = NEW.book_id;
+
+        UPDATE books
+        SET endings_found = v_endings_found,
+            updated_at = NOW()
+        WHERE id = NEW.book_id;
+
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+
+    await dbWrite.execute(`
+      DROP TRIGGER IF EXISTS user_completed_books_endings_trigger ON user_completed_books;
+    `);
+
+    await dbWrite.execute(`
+      CREATE TRIGGER user_completed_books_endings_trigger
+        AFTER INSERT ON user_completed_books
+        FOR EACH ROW
+        EXECUTE FUNCTION update_book_endings_found();
+    `);
+
+    console.log("✅ Book endings found trigger created successfully!");
+  } catch (error) {
+    console.error("❌ Failed to create book endings found trigger:", getErrorMessage(error));
+    throw error;
+  }
+}
+
+/**
  * Creates trigger to maintain the denormalized `books.ai_contribution_percent`
  * column as the average of `pages.ai_contribution_percent` across all pages
  * in a book.
@@ -1843,6 +1899,43 @@ export async function ensureWallTriggers(): Promise<void> {
   }
 }
 
+/**
+ * Idempotent database trigger initialization — run once via `bun db:triggers`.
+ *
+ * Drops every existing trigger in the `public` schema first (via
+ * {@link dropAllTriggers}) then recreates the full set. Each sub-function uses
+ * `CREATE OR REPLACE FUNCTION` and `DROP TRIGGER IF EXISTS` internally, so
+ * calling this more than once is safe — subsequent runs replace existing
+ * triggers with identical definitions.
+ *
+ * **Execution model**
+ * - Invoked as a standalone CLI script (`bun --env-file=.env.local src/db/triggers.ts`)
+ * - NOT called during normal app startup — the application reads denormalized
+ *   columns that triggers keep in sync; it never calls this function itself.
+ *
+ * **Trigger inventory**
+ *
+ * | Trigger | Table | Event | Purpose |
+ * |---------|-------|-------|---------|
+ * | `user_session_exclusivity` | `user_sessions` | BEFORE INSERT OR UPDATE | Deactivates all other active sessions for the same user when a session becomes active |
+ * | `book_read_count` | `user_sessions` | AFTER INSERT | Increments `books.read_count` on new session |
+ * | `book_branches_increment` | `pages` | AFTER INSERT | Increments `books.branches_count` for new pages with `aiContributionPercent < 100` |
+ * | `book_branches_decrement` | `pages` | AFTER DELETE | Decrements `books.branches_count` for deleted human-authored pages |
+ * | `page_visit_count` | `page_visits` | AFTER INSERT | Increments `pages.visit_count` |
+ * | `book_comments_count` | `comments` | AFTER INSERT OR DELETE | Recomputes `books.comments_count` (parent comments only) |
+ * | `book_testimonials_count` | `testimonials` | AFTER INSERT OR DELETE | Recomputes `books.testimonials_count`, `rating`, and `ratingCount` |
+ * | `book_complete_count` | `user_completed_books` | AFTER INSERT | Recomputes `books.complete_count` and `completion_rate` |
+ * | `book_endings_found` | `user_completed_books` | AFTER INSERT | Recomputes `books.endings_found` (distinct endings discovered) |
+ * | `book_ai_contribution` | `pages` | AFTER INSERT OR UPDATE OR DELETE | Recomcomputes `books.ai_contribution_percent` as average across pages |
+ * | `user_counters_*` | `user_counters` | AFTER INSERT OR UPDATE | Synchronizes denormalized user counters |
+ * | `wall_*` | `wall_posts` / `wall_comments` | AFTER INSERT OR DELETE | Denormalizes wall counts and achievement counters |
+ * | `user_favorites_cleanup` | `user_favorites` | AFTER DELETE | Cleans up orphaned favorites |
+ * | `uploaded_user_image` | `uploads` | AFTER INSERT | Updates user profile image when upload type is 'user' |
+ * | `destination_page_ids_cleanup` | `pages` | AFTER DELETE | Removes deleted page ID from actions' `destinationPageIds` arrays |
+ *
+ * **Backfill note** — existing rows in `books` are NOT updated by this call.
+ * Run the corresponding SQL migration to backfill denormalized columns.
+ */
 export async function ensureTriggers(): Promise<void> {
   console.log("\nCreating database triggers...");
 
@@ -1861,6 +1954,7 @@ export async function ensureTriggers(): Promise<void> {
     await ensureBookCommentsCountTrigger();
     await ensureBookTestimonialsCountTrigger();
     await ensureBookCompleteCountTrigger();
+    await ensureBookEndingsFoundTrigger();
     await ensureBookAiContributionTrigger();
 
     // Create user_counters synchronization triggers

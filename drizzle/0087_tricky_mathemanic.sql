@@ -1,0 +1,1 @@
+ALTER TABLE "books" ADD COLUMN "endings_found" integer DEFAULT 0 NOT NULL;

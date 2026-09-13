@@ -53,6 +53,7 @@ import { createOrUpdateOAuthUser, setReferrerForNewUser, tryAwardReferralBonus }
 import { validateUsername } from '../utils/username.js';
 import { isTemp as isTemporaryEmail } from 'tempmail-checker';
 import { requireAuth, invalidateCurrentSessionVerifyCache } from '../middleware/nextauth.js';
+import { logAuditEvent } from '../utils/audit-log.js';
 import { createSession, getUserSessions, logoutFromSpecificDevice, logoutFromAllOtherDevices, logoutFromAllDevices, deleteSessionById } from '../services/session-manager.js';
 import { sanitizeUserData, getUserForAuth, getUserIdByEmail } from '../services/user.js';
 import type { AppEnv } from '../hono/env.js';
@@ -896,6 +897,7 @@ router.post('/logout-all', requireAuth, async (c) => {
 
     const deletedCount = await logoutFromAllOtherDevices(userId, currentSessionId);
 
+    await logAuditEvent(c, 'security_logout_all_devices', 'auth');
     return c.json({
       message: `Logged out from ${deletedCount} other device(s)`,
       deletedCount,
@@ -942,6 +944,7 @@ router.post('/logout-all-devices', requireAuth, async (c) => {
     const userId = c.get("userId")!;
     const deletedCount = await logoutFromAllDevices(userId);
 
+    await logAuditEvent(c, 'security_logout_all_devices', 'auth');
     return c.json({
       message: `Logged out from ${deletedCount} device(s) — all sessions revoked`,
       deletedCount,
@@ -1178,6 +1181,7 @@ router.put('/email', requireAuth, async (c) => {
       return sendVerificationEmail(sanitizedEmail, verificationUrl, verificationToken, { userId });
     });
 
+    await logAuditEvent(c, 'security_email_changed', 'auth');
     return c.json({ message: 'Email updated successfully' });
   } catch (error) {
     console.error('[PUT /api/auth/email] ❌', error);
@@ -1277,6 +1281,7 @@ router.put('/password', requireAuth, async (c) => {
       );
     }
 
+    await logAuditEvent(c, 'security_password_changed', 'auth');
     return c.json({ message: 'Password updated successfully' });
   } catch (error) {
     console.error('[PUT /api/auth/password] ❌', error);
@@ -1344,6 +1349,7 @@ router.put('/username', requireAuth, async (c) => {
       .set({ username: sanitized, updatedAt: now })
       .where(eq(users.userId, userId));
 
+    await logAuditEvent(c, 'security_username_changed', 'auth');
     return c.json({ message: 'Username updated successfully' });
   } catch (error) {
     console.error('[PUT /api/auth/username] ❌', error);
@@ -1420,6 +1426,7 @@ router.post('/link/google', requireAuth, async (c) => {
       .from(userProviders)
       .where(eq(userProviders.userId, userId));
 
+    await logAuditEvent(c, 'security_google_linked', 'auth');
     return c.json({
       message: 'Google account linked',
       linkedMethods: providers.map(p => p.provider),
@@ -1475,6 +1482,7 @@ router.post('/unlink/google', requireAuth, async (c) => {
 
     const remaining = providers.filter(p => p.provider !== 'google').map(p => p.provider);
 
+    await logAuditEvent(c, 'security_google_unlinked', 'auth');
     return c.json({
       message: 'Google account unlinked',
       linkedMethods: remaining,
@@ -1555,6 +1563,7 @@ router.post('/link/credentials', requireAuth, async (c) => {
       .from(userProviders)
       .where(eq(userProviders.userId, userId));
 
+    await logAuditEvent(c, 'security_credentials_linked', 'auth');
     return c.json({
       message: 'Password set, credentials method linked',
       linkedMethods: providers.map(p => p.provider),
@@ -1639,6 +1648,7 @@ router.post('/unlink/credentials', requireAuth, async (c) => {
 
     const remaining = providers.filter(p => p.provider !== 'credentials').map(p => p.provider);
 
+    await logAuditEvent(c, 'security_credentials_unlinked', 'auth');
     return c.json({
       message: 'Credentials method unlinked',
       linkedMethods: remaining,

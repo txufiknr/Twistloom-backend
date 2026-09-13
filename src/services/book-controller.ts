@@ -128,6 +128,7 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
       branchesCount: books.branchesCount,
       completeCount: books.completeCount,
       completionRate: books.completionRate,
+      endingsFound: books.endingsFound,
     } satisfies Record<keyof BookStats, unknown>,
 
     // User-specific flags (Index-only scans via PK/Unique EXISTS constraints)

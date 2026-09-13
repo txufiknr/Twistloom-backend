@@ -130,6 +130,8 @@ export interface BookStats {
   completionRate: number | null;
   /** Total unique branches (maintained by database triggers) */
   branchesCount: number;
+  /** Total unique endings discovered by all users (maintained by database trigger) */
+  endingsFound: number;
 }
 
 export type BookAuthor = { id: string } & Pick<User, 'email' | 'username' | 'name' | 'imageUrl' | 'avatarFrame' | 'bio'>;
