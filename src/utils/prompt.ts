@@ -1,7 +1,7 @@
 import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_CREATIVE, DEFAULT_MAX_OUTPUT_TOKEN, STORY_PAGE_MAX_OUTPUT_TOKEN, STATE_DELTA_MAX_OUTPUT_TOKEN, USE_MULTI_TURN_GENERATION } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING, AI_CHAT_MODELS_EVALUATION } from "../config/ai-clients.js";
 import { actionTypes, archetypes, stabilityLevels, manipulationAffinities, truthLevels, threatProximities, realityStabilities, endingTypes, finalePhases, factTypes, sceneTypes, storyMomentums } from "../config/enums.js";
-import type { StoryState, Action, PsychologicalFlags, PsychologicalProfile, HiddenState, PersistedStoryPage, ActionHintType, AIActionConfig, StabilityLevel } from "../types/story.js";
+import type { StoryState, Action, PsychologicalFlags, PsychologicalProfile, HiddenState, PersistedStoryPage, ActionHintType, AIActionConfig, StabilityLevel, SceneAnchor } from "../types/story.js";
 import { moodValues, weatherValues, sceneTypeValues, sceneRoleValues, momentumValues, actionTypeValues, hintTypeValues, memoryIntegrityValues, difficultyValues, plotFlagTypeValues, injuryCategoryValues, threadPriorityValues, threadTruthValues, threadStatusValues, endingTypeValues, factTypeValues, phaseValues, stabilityLevelValues, healthConditionValues, canonicalPlaceTypeValues, accessibilityValues, recognitionLevelValues, genderValues, characterStatusValues, characterImportanceValues, relationshipTypeValues, relationshipStatusValues, twistTypeValues, psychologicalFlagTypeValues, flagLevelValues } from "../config/enums.js";
 import { createNonRetryableError } from "./retry.js";
 import { createCacheKey } from "./cache.js";
@@ -2191,6 +2191,47 @@ function getActionRulesText(stateInfo: Partial<StoryStateInfo> & { mode?: BookMo
  *   → Selected action: Examine the map closely (type: investigate)
  *   → Hint for page 5: The map shows a hidden passage beneath the school (type: discovery)
  */
+function formatSceneAnchorTargets(targets: unknown): string {
+  if (!Array.isArray(targets) || targets.length === 0) return '';
+  const parts = targets
+    .filter((t): t is { ref: string; relation: string } => (
+      typeof t === 'object' && t !== null && typeof (t as Record<string, unknown>).ref === 'string' && typeof (t as Record<string, unknown>).relation === 'string'
+    ))
+    .map(t => `${t.ref} (${t.relation})`);
+  return parts.length ? `. Targets: ${parts.join(', ')}` : '';
+}
+
+/**
+ * Formats a {@link SceneAnchor} into a compact, prompt-safe string for
+ * inclusion in previous-page context. All field accesses are guarded
+ * against malformed or partial AI output — never throws.
+ *
+ * @returns Formatted string starting with `→ Scene anchor: MC ...` or
+ *          empty string when the anchor is unusable.
+ */
+function formatSceneAnchor(anchor: SceneAnchor | undefined | null): string {
+  if (!anchor || typeof anchor !== 'object') return '';
+  const mc = anchor.mc;
+  if (!mc || typeof mc !== 'object') return '';
+
+  const posture = typeof mc.posture === 'string' ? mc.posture : 'unknown';
+  const facing = typeof mc.facing === 'string' ? mc.facing : 'unknown';
+  const mcParts = [`posture: ${posture}`, `facing: ${facing}`];
+
+  if (typeof mc.anchor === 'string' && mc.anchor && mc.anchor !== 'unanchored') {
+    mcParts.push(`anchor: ${mc.anchor}`);
+  }
+
+  const constraints = Array.isArray(mc.constraints)
+    ? mc.constraints.filter((c): c is string => typeof c === 'string').join(', ')
+    : typeof mc.constraints === 'string' ? mc.constraints : '';
+  if (constraints.length) mcParts.push(`constraints: ${constraints}`);
+
+  let result = `→ Scene anchor: MC ${mcParts.join(', ')}`;
+  result += formatSceneAnchorTargets(anchor.targets);
+  return result;
+}
+
 function formatPreviousPageEntry(page: ActionedStoryPage | CandidateGenerationPage, plotFlags?: PlotFlag[]): string {
   const pageText = formatPageTextForPrompt(page.text);
   const sceneInfo = [
@@ -2220,16 +2261,8 @@ function formatPreviousPageEntry(page: ActionedStoryPage | CandidateGenerationPa
 
   // Render sceneAnchor from stateDelta for physical continuity
   const delta = 'stateDelta' in page ? page.stateDelta : undefined;
-  const anchor = delta?.sceneAnchor;
-  if (anchor) {
-    const mcParts = [`posture: ${anchor.mc.posture}`, `facing: ${anchor.mc.facing}`];
-    if (anchor.mc.anchor && anchor.mc.anchor !== 'unanchored') mcParts.push(`anchor: ${anchor.mc.anchor}`);
-    if (anchor.mc.constraints.length) mcParts.push(`constraints: ${anchor.mc.constraints.join(', ')}`);
-    entry += `\n  → Scene anchor: MC ${mcParts.join(', ')}`;
-    if (anchor.targets.length) {
-      entry += `. Targets: ${anchor.targets.map(t => `${t.ref} (${t.relation})`).join(', ')}`;
-    }
-  }
+  const anchorFormatted = formatSceneAnchor(delta?.sceneAnchor);
+  if (anchorFormatted) entry += `\n  ${anchorFormatted}`;
   
   return entry;
 }
