@@ -73,7 +73,13 @@ const BASE_THRILLER_SYNTAX = `- Open sentences with native conjunctions to creat
 
 const BASE_FORMAT_RULES = `- Max ${MAX_WORDS_PER_PAGE} words.
 - Write in the target language.
-- No markdown except optional *italic* emphasis.`;
+- Use these text formatting markers sparingly for emphasis:
+  - *italic* for internal thoughts, emphasis, and emotional weight
+  - **bold** for key terms, names, or critical plot details
+  - _underline_ for subtle emphasis or technical terms
+  - ~strikethrough~ for corrections, self-edits, or fading memories
+  - \`monospace\` for code, computer text, or robotic phrases
+- Do not overuse formatting — most prose should be plain text. Reserve markers for moments that genuinely benefit from visual distinction.`;
 
 const BASE_OPENING_RULES = `PAGE OPENING RULES (IMMEDIATE EXECUTION):
 - Open on the immediate aftermath of the selected action, continuing directly from the previous page's final moment — no scene break.
@@ -121,6 +127,10 @@ export const RULES_DIALOGUE_ATTRIBUTION = `DIALOGUE ATTRIBUTION MARKERS:
 const BASE_DIALOGUE_RULES = `DIALOGUE FORMATTING:
 - Every spoken line — even a single word, even with a dialogue tag — MUST use quotation marks.
 - Silent thought = no quotation marks, emphasize with *italic* — *I need to run.*
+- MC's internal monologue: always *italic*, never quotation marks.
+- Spoken dialogue with emphasis: use **bold** inside quotes — "That's **impossible**."
+- Fading or corrected speech: use ~strikethrough~ inside quotes — "I saw ~nothing~ something."
+- Precise or technical terms in dialogue: use \`monospace\` inside quotes — "Type \`exit\` to quit."
 
 ${RULES_DIALOGUE_ATTRIBUTION}`;
 

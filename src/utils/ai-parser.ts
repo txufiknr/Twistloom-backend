@@ -57,6 +57,7 @@ import { jsonRepair as isdkRepair, SchemaWalker, RepairParser } from '@isdk/json
 import { repairTokenCorruption } from './ai-token-repair.js';
 import type { AIResponse, AIJsonProperty } from '../types/ai-chat.js';
 import { convertSingleToDoubleQuotes } from './quote.js';
+import { MIN_CHARS_PER_PAGE } from './page-validation.js';
 
 // ─── @isdk/json-repair escape-stripping patch ─────────────────────────────────
 // Defuse a bug in RepairParser.consumeString where backslashes are stripped
@@ -999,6 +1000,9 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
  * @returns Cleaned string
  */
 function cleanAIStringArtifact(s: string): string {
+  // Only strip markdown bold from short strings (likely enum/tag values).
+  // Long strings (e.g., page narrative text) preserve intentional **bold** markers.
+  if (s.length >= MIN_CHARS_PER_PAGE) return s.replace(/^\.(.+)\.$/, '$1');
   return s
     .replace(/^\*\*(.+)\*\*$/, '$1')
     .replace(/^\.(.+)\.$/, '$1');

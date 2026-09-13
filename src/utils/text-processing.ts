@@ -658,3 +658,8 @@ export function htmlToPlainText(html: string): string {
     .replace(/\s+/g, ' ')
     .trim();
 }
+
+/** Converts a snake_case activity type to camelCase for translation keys (fallback only) */
+export function camelCase(type: string): string {
+  return type.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+}

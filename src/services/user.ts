@@ -18,7 +18,7 @@ import { type DBClient, dbRead, dbWrite } from "../db/client.js";
 import { users, books, posts, userComments, userAuth, userCheckins, userActivityLogs, userSocialLinks } from "../db/schema.js";
 import { eq, and, gt, ne, sql, desc, or, inArray } from "drizzle-orm";
 import { debounceAsync } from "../utils/debounce.js";
-import { sanitizeTextForDB, cleanSingleLineText, cleanMultilineText } from '../utils/text-processing.js';
+import { sanitizeTextForDB, cleanSingleLineText, cleanMultilineText, camelCase } from '../utils/text-processing.js';
 import { getErrorMessage, cConflictError, cValidationError } from "../utils/error.js";
 import { DAILY_CHECKIN_BONUS, DAILY_CHECKIN_DAYS, DAILY_CHECKIN_BIG_BONUS } from "../config/credits.js";
 import { getCurrentUTCDay } from "../utils/time.js";
@@ -1653,11 +1653,6 @@ const ACTIVITY_TITLE_KEY: Record<string, string> = {
   credits_added: 'securityCreditTopup',
   quest_reward_claimed: 'workflowTriggered',
 };
-
-/** Converts a snake_case activity type to camelCase for translation keys (fallback only) */
-function camelCase(type: string): string {
-  return type.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
-}
 
 /** Converts an activity type enum to a human-readable label (used as title fallback) */
 function humanizeActivityType(type: string): string {
