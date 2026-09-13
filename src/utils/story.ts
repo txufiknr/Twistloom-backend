@@ -1,4 +1,4 @@
-import { ARCHETYPE_ACTION_AFFINITY, DANGEROUS_ACTIONS, DEFAULT_SCENE_URGENCY, MAJOR_EVENT_CLIMAX_FLOOR, MANIPULATION_HINT_AFFINITY, MAX_ACTION_HISTORY, MAX_CHARACTERS, MAX_DOMINANT_TRAITS, MAX_FUTURE_NOTES, MAX_PLACES, MAX_TRAUMA_TAGS, MEMORY_INTEGRITY_EARLY_PHASE_FLOOR, MEMORY_INTEGRITY_MID_PHASE_FLOOR, MOMENTUM_BASELINE_SCORE, MOMENTUM_PERSISTENCE, MOMENTUM_RECENCY_WINDOW, MOMENTUM_THRESHOLDS, MOMENTUM_WEIGHTS, REALITY_STABILITY_EARLY_PHASE_FLOOR, REALITY_STABILITY_MID_PHASE_FLOOR, RESOLVING_DROP_THRESHOLD, SAFE_ACTIONS, SCENE_ROLE_DANGER, SCENE_TYPE_URGENCY, TENDENCY_RECENCY_WINDOW, THREAD_PRIORITY_WEIGHT, THREAT_PROXIMITY_SCORE, SANITY_DEFAULT_DECAY_RATE, SANITY_DEFAULT_MAX_COMPOSURE, SANITY_EARLY_PHASE_FLOOR, SANITY_MID_PHASE_EARNED_CRASH_TRAUMA, SANITY_MID_PHASE_FLOOR, SANITY_MIN_MAX_COMPOSURE, SANITY_PHASE_DECAY_MULTIPLIER, SANITY_REALITY_RESIST_COST, SANITY_RESOLUTION_RECOVERY, SANITY_TRAUMA_MAX_PENALTY } from "../config/story.js";
+import { ARCHETYPE_ACTION_AFFINITY, DANGEROUS_ACTIONS, DEFAULT_SCENE_URGENCY, MAJOR_EVENT_CLIMAX_FLOOR, MANIPULATION_HINT_AFFINITY, MAX_ACTION_HISTORY, MAX_CHARACTERS, MAX_DOMINANT_TRAITS, MAX_FUTURE_NOTES, MAX_PLACES, MAX_TRAUMA_TAGS, MEMORY_INTEGRITY_EARLY_PHASE_FLOOR, MEMORY_INTEGRITY_MID_PHASE_FLOOR, MOMENTUM_BASELINE_SCORE, MOMENTUM_PERSISTENCE, MOMENTUM_RECENCY_WINDOW, MOMENTUM_THRESHOLDS, MOMENTUM_WEIGHTS, REALITY_STABILITY_EARLY_PHASE_FLOOR, REALITY_STABILITY_MID_PHASE_FLOOR, RESOLVING_DROP_THRESHOLD, SAFE_ACTIONS, SCENE_ROLE_DANGER, SCENE_TYPE_URGENCY, TENDENCY_RECENCY_WINDOW, THREAD_PRIORITY_WEIGHT, THREAT_PROXIMITY_SCORE, SANITY_DEFAULT_DECAY_RATE, SANITY_DEFAULT_MAX_COMPOSURE, SANITY_EARLY_PHASE_FLOOR, SANITY_MID_PHASE_EARNED_CRASH_TRAUMA, SANITY_MID_PHASE_FLOOR, SANITY_MIN_MAX_COMPOSURE, SANITY_PHASE_DECAY_MULTIPLIER, SANITY_REALITY_RESIST_COST, SANITY_RESOLUTION_RECOVERY, SANITY_TRAUMA_MAX_PENALTY, PHASE_EARLY_CEILING, PHASE_LATE_FLOOR, PHASE_FINALE_FLOOR, PHASE_FINALE_MID_FLOOR, PHASE_FINALE_END_FLOOR } from "../config/story.js";
 import { HIDDEN_STATE_DEFAULTS, STORY_STATE_DEFAULTS, SANITY_STATE_DEFAULTS } from "../schema/story.js";
 import { storyPhases, plotFlagTypes } from "../types/story.js";
 import { calculateHealthStatus, processCharacterUpdates } from "./characters.js";
@@ -2458,16 +2458,16 @@ export function getStoryStateInfo(state: StoryState): StoryStateInfo {
   const pageProgress = currentPage / totalPages;
 
   /**
-   * Phase boundaries:
+   * Phase boundaries (see PHASE_* constants in config/story.ts):
    * Early — first ~25% of pages: mystery seeding, character establishment, unreliability introduction
    * Mid — 25–70%: tension rhythm, thread weaving, psychological profiling exploitation
    * Late — 70–90%: thread convergence, payoff setup, reality fracture escalation
    * Finale — final ~10%: collapse, no new threads, ending delivery
    */
-  const isEarlyPhase = pageProgress <= 0.25;
-  const isLatePhase = pageProgress >= 0.70;
+  const isEarlyPhase = pageProgress <= PHASE_EARLY_CEILING;
+  const isLatePhase = pageProgress >= PHASE_LATE_FLOOR;
   const isMidPhase = !isEarlyPhase && !isLatePhase;
-  const isFinale = pageProgress >= 0.90;
+  const isFinale = pageProgress >= PHASE_FINALE_FLOOR;
   const isFirstPage = currentPage === 1;
   const isLastPage = currentPage === totalPages;
   const phase: StoryPhase = isFinale ? 'FINALE' : isLatePhase ? 'LATE' : isMidPhase ? 'MID' : 'EARLY';
@@ -2475,7 +2475,7 @@ export function getStoryStateInfo(state: StoryState): StoryStateInfo {
 
   // Determine finale phase only when story is in finale
   const finalePhase: FinalePhase | undefined = isFinale ? (
-    pageProgress >= 0.97 ? 'END' : pageProgress >= 0.94 ? 'MID' : 'EARLY'
+    pageProgress >= PHASE_FINALE_END_FLOOR ? 'END' : pageProgress >= PHASE_FINALE_MID_FLOOR ? 'MID' : 'EARLY'
   ) : undefined;
 
   const charactersSlot = MAX_CHARACTERS - Object.keys(characters).length;

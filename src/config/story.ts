@@ -180,6 +180,29 @@ export const MEMORY_INTEGRITY_MID_PHASE_FLOOR = 0.2;
 export const REALITY_STABILITY_EARLY_PHASE_FLOOR = 0.4;
 export const REALITY_STABILITY_MID_PHASE_FLOOR = 0.2;
 
+/**
+ * Phase boundary thresholds — pageProgress = currentPage / totalPages.
+ *
+ * Every phase-computation site (getStoryStateInfo, book-controller SQL/TS)
+ * must use these constants to prevent drift.  The SQL CASE in
+ * book-controller.ts interpolates them via Drizzle's sql`` template, so
+ * changing a value here automatically propagates to both the in-memory
+ * and database layers.
+ *
+ * Semantics:
+ *   EARLY  — pageProgress <= PHASE_EARLY_CEILING
+ *   MID    — between EARLY ceiling and LATE floor
+ *   LATE   — pageProgress >= PHASE_LATE_FLOOR
+ *   FINALE — pageProgress >= PHASE_FINALE_FLOOR
+ */
+export const PHASE_EARLY_CEILING = 0.25;
+export const PHASE_LATE_FLOOR = 0.70;
+export const PHASE_FINALE_FLOOR = 0.90;
+
+/** Sub-phase boundaries inside FINALE (see FinalePhase in types/story.ts). */
+export const PHASE_FINALE_MID_FLOOR = 0.94;
+export const PHASE_FINALE_END_FLOOR = 0.97;
+
 export const MAX_FUTURE_NOTES = 10;
 
 /**

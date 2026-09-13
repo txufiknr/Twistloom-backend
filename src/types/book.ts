@@ -1,6 +1,6 @@
 import type { CharacterMemoryTranslation, CharacterPlan, InjuryTranslation, InventoryItemTranslation, NewCharacter, RelationshipUpdate, StoryMC, StoryMCTranslation } from "./character.js";
 import type { NewPlace, PlaceMemoryTranslation } from "./places.js";
-import type { ActionTranslation, PersistedStoryPage, StoryPage, StoryState, InitialStoryState, InitialFact, SelectedAction, InitialStoryPageGeneration, StoryPlan, Ending, InitialEnding, FutureNoteGeneration } from "./story.js";
+import type { ActionTranslation, PersistedStoryPage, StoryPage, StoryState, StoryPhase, InitialStoryState, InitialFact, SelectedAction, InitialStoryPageGeneration, StoryPlan, Ending, InitialEnding, FutureNoteGeneration } from "./story.js";
 import type { DBBook, DBPage, DBUserSession } from "./schema.js";
 import type { User } from "./user.js";
 import type { DBTransaction } from "../db/client.js";
@@ -320,6 +320,8 @@ export type EnrichedBookSession = {
   frontierAncestorIds: string[];
   /** AI-summarized story context from page 1 to frontier page */
   contextHistory: string;
+  /** Computed story phase derived from page / maxPage ratio */
+  phase: StoryPhase;
 };
 export type EnrichedBookGeneration = {
   generationStatus?: BookGenerationStatus;

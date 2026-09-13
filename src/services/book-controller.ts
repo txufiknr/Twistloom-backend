@@ -29,9 +29,9 @@ import { getEnrichedBook, getPageActionsFromDB, getPageFromDB } from "./book.js"
 import { cNotFoundError, cForbiddenError } from "../utils/error.js";
 import { getClientIp } from "../hono/express-shim.js";
 import { computeVisitStats, mapActionToSelectedAction, markPageVisited } from "./story.js";
-import { FREE_ACTION_SELECTION_UNTIL_PAGE } from "../config/story.js";
+import { FREE_ACTION_SELECTION_UNTIL_PAGE, PHASE_EARLY_CEILING, PHASE_LATE_FLOOR, PHASE_FINALE_FLOOR } from "../config/story.js";
 import type { BookAuthor, BookMode, BookPageVisit, BookSortOption, BookStats, BookTranslation, EnrichedBookData, EnrichedBookFirstPage, EnrichedBookGeneration, EnrichedBookSession, VisitBookPageParams, VisitBookPageResult } from "../types/book.js";
-import type { Action, Ending, SelectedAction } from "../types/story.js";
+import type { Action, Ending, SelectedAction, StoryPhase } from "../types/story.js";
 
 /**
  * Builds an enriched book select object with all required fields
@@ -159,7 +159,13 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
             'frontierPageId', us.frontier_page_id,
             'frontierPageNumber', us.frontier_page_number,
             'frontierAncestorIds', us.frontier_ancestor_ids,
-            'contextHistory', COALESCE(ss.context_history, '')
+            'contextHistory', COALESCE(ss.context_history, ''),
+            'phase', CASE
+              WHEN ss.page::float / NULLIF(ss.max_page, 0) >= ${PHASE_FINALE_FLOOR} THEN 'FINALE'
+              WHEN ss.page::float / NULLIF(ss.max_page, 0) >= ${PHASE_LATE_FLOOR} THEN 'LATE'
+              WHEN ss.page::float / NULLIF(ss.max_page, 0) > ${PHASE_EARLY_CEILING} THEN 'MID'
+              ELSE 'EARLY'
+            END
           )
           FROM user_sessions us
           LEFT JOIN pages p ON p.id = us.page_id
@@ -570,6 +576,8 @@ export async function enrichBooksWithUserData(
         frontierPageNumber: userSessions.frontierPageNumber,
         frontierAncestorIds: userSessions.frontierAncestorIds,
         contextHistory: sql<string>`COALESCE(${storyStates.contextHistory}, '')`,
+        ssPage: storyStates.page,
+        ssMaxPage: storyStates.maxPage,
       })
       .from(userSessions)
       .leftJoin(pages, eq(pages.id, userSessions.pageId))
@@ -603,18 +611,24 @@ export async function enrichBooksWithUserData(
   const likedSet = new Set(likes.map((l) => l.targetId));
   const favoriteMap = new Map(favorites.map((f) => [f.bookId, f.collection]));
   const sessionMap = new Map(
-    sessions.map((s) => [
-      s.bookId,
-      {
-        lastReadAt: s.lastReadAt,
-        lastPageId: s.lastPageId,
-        lastPageNumber: s.lastPageNumber ?? null,
-        frontierPageId: s.frontierPageId ?? null,
-        frontierPageNumber: s.frontierPageNumber ?? 1,
-        frontierAncestorIds: s.frontierAncestorIds ?? [],
-        contextHistory: s.contextHistory || "",
-      } as EnrichedBookSession,
-    ])
+    sessions.map((s) => {
+      const maxPage = s.ssMaxPage ?? 0;
+      const progress = maxPage > 0 ? (s.ssPage ?? 0) / maxPage : 0;
+      const phase: StoryPhase = progress >= PHASE_FINALE_FLOOR ? 'FINALE' : progress >= PHASE_LATE_FLOOR ? 'LATE' : progress > PHASE_EARLY_CEILING ? 'MID' : 'EARLY';
+      return [
+        s.bookId,
+        {
+          lastReadAt: s.lastReadAt,
+          lastPageId: s.lastPageId,
+          lastPageNumber: s.lastPageNumber ?? null,
+          frontierPageId: s.frontierPageId ?? null,
+          frontierPageNumber: s.frontierPageNumber ?? 1,
+          frontierAncestorIds: s.frontierAncestorIds ?? [],
+          contextHistory: s.contextHistory || "",
+          phase,
+        } as EnrichedBookSession,
+      ];
+    })
   );
   const completedSet = new Set(completed.map((c) => c.bookId));
   const purchasedSet = new Set(purchased.map((p) => p.bookId));
