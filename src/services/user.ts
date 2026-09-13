@@ -1408,9 +1408,17 @@ export async function findUniqueUsername(
  * - credits_consumed (how much & what for)
  * - session_updated (what book title)
  */
+type EnrichedActivityLog = DBUserActivityLog & {
+  title?: string;
+  detail?: string;
+  titleKey?: string;
+  detailKey?: string;
+  detailParams?: Record<string, string | number>;
+};
+
 export async function enrichActivityLogs(
   logs: DBUserActivityLog[],
-): Promise<(DBUserActivityLog & { title?: string; detail?: string })[]> {
+): Promise<EnrichedActivityLog[]> {
   if (logs.length === 0) return logs;
 
   // Collect distinct target references (type + id)
@@ -1476,11 +1484,12 @@ export async function enrichActivityLogs(
 
   // Enrich each log
   return logs.map((log) => {
-    const enriched: DBUserActivityLog & { title?: string; detail?: string } = { ...log };
+    const enriched: EnrichedActivityLog = { ...log };
 
     if (!log.targetType || !log.targetId) {
       // No target — derive from activity type or metadata
       enriched.title = humanizeActivityType(log.activityType);
+      enriched.titleKey = `dashboard.activities.types.${ACTIVITY_TITLE_KEY[log.activityType] ?? camelCase(log.activityType)}`;
       if (log.metadata && typeof log.metadata === 'object') {
         const meta = log.metadata as Record<string, unknown>;
         if (typeof meta.context === 'string') enriched.detail = meta.context;
@@ -1497,6 +1506,7 @@ export async function enrichActivityLogs(
       } else {
         enriched.title = humanizeActivityType(log.activityType);
       }
+      enriched.titleKey = `dashboard.activities.types.${ACTIVITY_TITLE_KEY[log.activityType] ?? camelCase(log.activityType)}`;
 
       const meta = (log.metadata as Record<string, unknown>) || {};
 
@@ -1507,17 +1517,27 @@ export async function enrichActivityLogs(
         enriched.detail = pageNum
           ? `Reacted ${glyph} on Page ${pageNum}`.trim()
           : `Reacted ${glyph}`.trim();
+        enriched.detailKey = pageNum
+          ? 'dashboard.activities.details.reactedOnPage'
+          : 'dashboard.activities.details.reacted';
+        enriched.detailParams = { glyph, ...(pageNum != null ? { pageNum } : {}) };
       } else if (log.activityType === 'book_completed') {
         enriched.title = book ? book.title : 'Book Completed';
         const pageNum = meta.pageNumber as number | undefined;
         enriched.detail = pageNum
           ? `Completed story at Page ${pageNum}`
           : (book?.hook || book?.summary || 'Completed the story');
+        enriched.detailKey = pageNum
+          ? 'dashboard.activities.details.completedAtPage'
+          : 'dashboard.activities.details.completed';
+        enriched.detailParams = pageNum != null ? { pageNum } : undefined;
       } else if (log.activityType === 'testimonial_created') {
         enriched.title = book ? book.title : 'Book Testimonial';
         const rating = meta.rating ? `★ ${meta.rating}/5 — ` : '';
         const snippet = (meta.contentSnippet as string) || (book ? (book.hook || book.summary || '') : '');
         enriched.detail = `${rating}${snippet}`.slice(0, 150);
+        enriched.detailKey = 'dashboard.activities.details.testimonialReview';
+        enriched.detailParams = { rating: (meta.rating as number) ?? 0, snippet: snippet.slice(0, 100) };
       } else if (!enriched.detail && log.activityType === 'book_creation_started') {
         // Fallback for book_creation_started: use book.originalThemeInput as detail when hook/summary is unavailable
         if (book && book.originalThemeInput) {
@@ -1532,14 +1552,19 @@ export async function enrichActivityLogs(
         enriched.title = user.name || user.username || 'Unknown user';
         enriched.detail = (user.bio || '').slice(0, 150);
       }
+      enriched.titleKey = `dashboard.activities.types.${ACTIVITY_TITLE_KEY[log.activityType] ?? camelCase(log.activityType)}`;
     } else if (log.targetType === 'post') {
       const post = postMap.get(log.targetId);
       enriched.title = log.activityType === 'wall_post_liked'
         ? 'Reacted to a Wall Note'
         : 'Created a Wall Note';
+      enriched.titleKey = log.activityType === 'wall_post_liked'
+        ? 'dashboard.activities.types.wallPostLiked'
+        : 'dashboard.activities.types.wallPostCreated';
       if (post?.content) enriched.detail = post.content.slice(0, 150);
     } else if (log.targetType === 'auth' || log.targetType === 'credits' || log.targetType === 'subscription') {
       enriched.title = humanizeActivityType(log.activityType);
+      enriched.titleKey = `dashboard.activities.types.${ACTIVITY_TITLE_KEY[log.activityType] ?? camelCase(log.activityType)}`;
       const meta = (log.metadata as Record<string, unknown>) || {};
       if (typeof meta.context === 'string') enriched.detail = meta.context;
       else if (typeof meta.email === 'string') enriched.detail = meta.email;
@@ -1548,6 +1573,8 @@ export async function enrichActivityLogs(
       const meta = (log.metadata as Record<string, unknown>) || {};
       const metaPNum = meta.paragraphNumber as number | undefined;
       const metaBookTitle = meta.bookTitle as string | undefined;
+
+      enriched.titleKey = 'dashboard.activities.types.commented';
 
       if (comment) {
         const bookTitle = comment.bookId ? commentBookMap.get(comment.bookId) : metaBookTitle;
@@ -1573,11 +1600,70 @@ export async function enrichActivityLogs(
   });
 }
 
-/** Converts an activity type enum to a human-readable label */
+/** Maps activity types to their frontend translation keys (dashboard.activities.types.*) */
+const ACTIVITY_TITLE_KEY: Record<string, string> = {
+  session_updated: 'readBook',
+  book_creation_started: 'createBook',
+  book_created: 'bookCreated',
+  liked: 'liked',
+  favorited: 'favorited',
+  commented: 'commented',
+  followed: 'followed',
+  workflow_triggered: 'workflowTriggered',
+  page_reacted: 'pageReacted',
+  book_completed: 'bookCompleted',
+  testimonial_created: 'testimonialCreated',
+  shared_ending: 'sharedEnding',
+  onboarding_complete: 'onboardingComplete',
+  referrer_set: 'referrerSet',
+  wall_post_created: 'wallPostCreated',
+  wall_post_liked: 'wallPostLiked',
+  time_travel_preview: 'timeTravelPreview',
+  time_travel_commit: 'timeTravelCommit',
+  security_email_changed: 'securityEmailChanged',
+  security_email_verified: 'securityEmailVerified',
+  security_password_changed: 'securityPasswordChanged',
+  security_username_changed: 'securityUsernameChanged',
+  security_profile_updated: 'securityProfileUpdated',
+  security_avatar_changed: 'securityAvatarChanged',
+  security_2fa_enabled: 'security2faEnabled',
+  security_2fa_disabled: 'security2faDisabled',
+  security_api_key_created: 'securityApiKeyCreated',
+  security_api_key_revoked: 'securityApiKeyRevoked',
+  security_login: 'securityLogin',
+  security_logout: 'securityLogout',
+  security_logout_all_devices: 'securityLogoutAllDevices',
+  security_account_deleted: 'securityAccountDeleted',
+  security_account_deletion_requested: 'securityAccountDeletionRequested',
+  security_gdpr_export_requested: 'securityGdprExportRequested',
+  security_google_linked: 'securityGoogleLinked',
+  security_google_unlinked: 'securityGoogleUnlinked',
+  security_credentials_linked: 'securityCredentialsLinked',
+  security_credentials_unlinked: 'securityCredentialsUnlinked',
+  security_credit_topup: 'securityCreditTopup',
+  security_credit_consumed: 'securityCreditConsumed',
+  security_voucher_redeemed: 'securityVoucherRedeemed',
+  security_subscription_created: 'securitySubscriptionCreated',
+  security_subscription_cancelled: 'securitySubscriptionCancelled',
+  security_subscription_renewed: 'securitySubscriptionRenewed',
+  security_subscription_changed: 'securitySubscriptionChanged',
+  security_trial_started: 'securityTrialStarted',
+  security_credits_added: 'securityCreditTopup',
+  credits_consumed: 'securityCreditConsumed',
+  credits_added: 'securityCreditTopup',
+  quest_reward_claimed: 'workflowTriggered',
+};
+
+/** Converts a snake_case activity type to camelCase for translation keys (fallback only) */
+function camelCase(type: string): string {
+  return type.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+}
+
+/** Converts an activity type enum to a human-readable label (used as title fallback) */
 function humanizeActivityType(type: string): string {
-  const map: Record<string, string> = {
+const map: Record<string, string> = {
     workflow_triggered: 'Workflow Triggered',
-    book_creation_started: 'Book Creation Started',
+    book_creation_started: 'Create Book',
     book_created: 'Book Created',
     liked: 'Liked',
     favorited: 'Favorited',
@@ -1585,18 +1671,22 @@ function humanizeActivityType(type: string): string {
     followed: 'Followed',
     credits_consumed: 'Credits Used',
     credits_added: 'Credits Added',
-    session_updated: 'Session Updated',
+    session_updated: 'Read Book',
     onboarding_complete: 'Onboarding Complete',
     referrer_set: 'Referrer Set',
     quest_reward_claimed: 'Quest Reward Claimed',
     page_reacted: 'Page Reacted',
     book_completed: 'Book Completed',
     testimonial_created: 'Testimonial Created',
+    shared_ending: 'Shared Ending',
     wall_post_created: 'Created a Wall Note',
     wall_post_liked: 'Reacted to a Wall Note',
+    time_travel_preview: 'Time Travel Preview',
+    time_travel_commit: 'Time Travel Commit',
     security_email_changed: 'Email Changed',
     security_email_verified: 'Email Verified',
     security_password_changed: 'Password Changed',
+    security_username_changed: 'Username Changed',
     security_profile_updated: 'Profile Updated',
     security_avatar_changed: 'Avatar Changed',
     security_2fa_enabled: 'Two-Factor Authentication Enabled',
@@ -1605,10 +1695,23 @@ function humanizeActivityType(type: string): string {
     security_api_key_revoked: 'API Key Revoked',
     security_login: 'Logged In',
     security_logout: 'Logged Out',
+    security_logout_all_devices: 'Logged Out All Devices',
     security_account_deleted: 'Account Deleted',
     security_account_deletion_requested: 'Account Deletion Requested',
+    security_gdpr_export_requested: 'GDPR Export Requested',
+    security_google_linked: 'Google Linked',
+    security_google_unlinked: 'Google Unlinked',
+    security_credentials_linked: 'Credentials Linked',
+    security_credentials_unlinked: 'Credentials Unlinked',
+    security_credit_topup: 'Credits Added',
+    security_credit_consumed: 'Credits Consumed',
+    security_voucher_redeemed: 'Voucher Redeemed',
+    security_subscription_created: 'Subscription Created',
+    security_subscription_cancelled: 'Subscription Cancelled',
+    security_subscription_renewed: 'Subscription Renewed',
     security_subscription_changed: 'Subscription Changed',
+    security_trial_started: 'Trial Started',
     security_credits_added: 'Credits Added',
   };
-  return map[type] || type;
+  return map[type] || type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }

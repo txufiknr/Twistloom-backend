@@ -2608,7 +2608,7 @@ router.get("/activity-logs", optionalAuth, async (c: Context<AppEnv>) => {
     // Build base query conditions
     const baseConditions = [
       eq(userActivityLogs.userId, userId),
-      sql`${userActivityLogs.activityType} NOT IN ('credits_consumed', 'credits_added', 'page_dwell')`,
+      sql`${userActivityLogs.activityType} NOT IN ('credits_consumed', 'credits_added', 'page_dwell', 'time_travel_preview')`,
     ];
 
     // Add activity type filter if provided
