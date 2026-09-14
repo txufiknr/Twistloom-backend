@@ -947,6 +947,30 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
       ? ((rawStreak - 1) % DAILY_CHECKIN_DAYS)
       : (rawStreak % DAILY_CHECKIN_DAYS);
 
+    // ── Reading Rhythm (Step 7) ─────────────────────────────────────────
+    // Compute weekly progress from the most recent Mon–Sun window.
+    const now = new Date();
+    const dayOfWeek = now.getUTCDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+    const weekStart = new Date(Date.UTC(
+      now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - dayOfWeek,
+    ));
+    const weekStartStr = weekStart.toISOString().slice(0, 10);
+
+    const weeklyCheckins = checkInHistory.filter(r => r.checkInDate >= weekStartStr);
+    const weeklyProgress = weeklyCheckins.length;
+    const weeklyGoal = 5; // default — will be user-configurable later
+
+    const daysElapsed = dayOfWeek; // days since Sunday (0-6)
+    const missedDays = Math.max(0, daysElapsed - weeklyProgress);
+    const GRACE_DAYS_PER_WEEK = 1;
+    const graceDaysUsed = Math.min(missedDays, GRACE_DAYS_PER_WEEK);
+    const graceDaysRemaining = Math.max(0, GRACE_DAYS_PER_WEEK - graceDaysUsed);
+
+    const rhythmRating =
+      weeklyProgress >= weeklyGoal ? 'excellent' :
+      weeklyProgress >= weeklyGoal - 1 ? 'good' :
+      'missed';
+
     const statusResult: CheckinStatusResponse = {
       canCheckIn: effectiveCanCheckIn,
       lastCheckInDate: canCheckInStatus.lastCheckInDate,
@@ -960,6 +984,10 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
       regularClaimAmount,
       vipClaimAmount,
       claimedRewards,
+      weeklyProgress,
+      weeklyGoal,
+      graceDaysRemaining,
+      rhythmRating,
     };
 
     console.log(`[getCheckInStatus] ${effectiveCanCheckIn ? '🌟' : 'ℹ️'} User ${userId} check-in status retrieved:`, statusResult);

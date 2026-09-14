@@ -5,6 +5,32 @@ import { ACHIEVEMENT_REGISTRY } from '../config/achievements.js';
 import type { AchievementMetric } from '../types/achievements.js';
 import type { UserAchievement } from '../types/user.js';
 
+// ── Reader Mastery Types ────────────────────────────────────────────────────
+
+export type MasteryArchetype =
+  | 'explorer'    // branch points explored
+  | 'seeker'      // secrets and rare endings found
+  | 'survivor'    // stories completed, especially under tension
+  | 'worldwalker' // multiverse exploration breadth
+  | 'storyteller' // custom actions, wall posts, community contribution
+  | 'chronicler'; // threads resolved, narrative depth
+
+export interface ReaderMasteryScores {
+  explorer: number;
+  seeker: number;
+  survivor: number;
+  worldwalker: number;
+  storyteller: number;
+  chronicler: number;
+}
+
+export interface ReaderMastery {
+  primary: MasteryArchetype;
+  secondary: MasteryArchetype;
+  tertiary: MasteryArchetype;
+  scores: ReaderMasteryScores;
+}
+
 export async function getUserAchievements(userId: string): Promise<UserAchievement[]> {
   // 1. Evaluate metrics right before serving, instantly triggering retroactive syncs
   await checkAndAwardAchievements(userId);
@@ -30,8 +56,8 @@ export async function getUserAchievements(userId: string): Promise<UserAchieveme
       id: rule.id,
       title: rule.title,
       description: rule.description,
-      badgeImageUrl: rule.badgeImageUrl,
       tier: rule.tier,
+      category: rule.category,
       currentProgress: currentValue,
       threshold: rule.threshold,
       progressPercent,
@@ -110,4 +136,49 @@ export async function checkAndAwardAchievements(userId: string): Promise<string[
   }
 
   return newlyUnlocked;
+}
+
+// ── Reader Mastery ─────────────────────────────────────────────────────────
+
+/**
+ * Normalize a metric value to a 0–100 score.
+ */
+function normalizeMetric(value: number, maxThreshold: number): number {
+  return Math.min(100, Math.round((value / maxThreshold) * 100));
+}
+
+/**
+ * Compute a user's Reader Mastery — a multidimensional identity derived
+ * from existing achievement metrics. No new tables needed; this is a
+ * computed view of `user_counters` data.
+ *
+ * Each archetype maps to a combination of metrics:
+ *  - explorer:    branchesOpened
+ *  - seeker:      easterEggsFound + endingsSharedToWall
+ *  - survivor:    booksCompleted
+ *  - worldwalker: branchesOpened + endingsSharedToWall (breadth)
+ *  - storyteller: customActionsWritten + wallNotesPosted
+ *  - chronicler:  wallNoteLikesReceived (narrative resonance)
+ */
+export async function computeReaderMastery(userId: string): Promise<ReaderMastery> {
+  const metrics = await getUserMetrics(userId);
+
+  const scores: ReaderMasteryScores = {
+    explorer: normalizeMetric(metrics.branchesOpened, 100),
+    seeker: normalizeMetric(metrics.easterEggsFound + metrics.endingsSharedToWall, 50),
+    survivor: normalizeMetric(metrics.booksCompleted, 50),
+    worldwalker: normalizeMetric(metrics.endingsSharedToWall + metrics.branchesOpened, 100),
+    storyteller: normalizeMetric(metrics.customActionsWritten + metrics.wallNotesPosted, 50),
+    chronicler: normalizeMetric(metrics.wallNoteLikesReceived, 100),
+  };
+
+  const sorted = (Object.entries(scores) as [MasteryArchetype, number][])
+    .sort(([, a], [, b]) => b - a);
+
+  return {
+    primary: sorted[0][0],
+    secondary: sorted[1][0],
+    tertiary: sorted[2][0],
+    scores,
+  };
 }

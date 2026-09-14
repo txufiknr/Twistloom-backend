@@ -1,5 +1,5 @@
 import type { PrivacyPreferences } from "./privacy-preferences.js";
-import type { AchievementTier } from "./achievements.js";
+import type { AchievementCategory, AchievementTier } from "./achievements.js";
 
 /**
  * Union type of all possible gender values
@@ -221,6 +221,14 @@ export interface CheckinStatusResponse {
   regularClaimAmount: number;
   vipClaimAmount: number;
   claimedRewards: CheckinClaimType[];
+  /** Reading Rhythm: days checked in this Mon–Sun week. */
+  weeklyProgress: number;
+  /** Reading Rhythm: user's chosen weekly target (default 5). */
+  weeklyGoal: number;
+  /** Reading Rhythm: grace days remaining this week (0–1). */
+  graceDaysRemaining: number;
+  /** Reading Rhythm: 'excellent' (≥goal), 'good' (≥goal-1), or 'missed'. */
+  rhythmRating: 'excellent' | 'good' | 'missed';
 }
 
 export type UserComment = {
@@ -242,8 +250,8 @@ export type UserAchievement = {
   id: string;
   title: string;
   description: string;
-  badgeImageUrl: string;
   tier: AchievementTier;
+  category: AchievementCategory;
   currentProgress: number;
   threshold: number;
   progressPercent: number;

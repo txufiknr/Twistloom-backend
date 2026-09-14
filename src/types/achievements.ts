@@ -1,4 +1,18 @@
 export type AchievementTier = 'bronze' | 'silver' | 'gold' | 'platinum';
+
+export type AchievementCategory =
+  | 'multiverse'
+  | 'explorer'
+  | 'archetypes'
+  | 'peril'
+  | 'seeker'
+  | 'investigator'
+  | 'survivor'
+  | 'chronicler'
+  | 'causality'
+  | 'subterranean'
+  | 'legacy';
+
 export type AchievementMetric = 
   | 'booksGenerated'
   | 'booksCompleted'
@@ -22,6 +36,6 @@ export interface AchievementRule {
   description: string;
   metric: AchievementMetric;
   threshold: number;
-  badgeImageUrl: string;
   tier: AchievementTier;
+  category: AchievementCategory;
 }

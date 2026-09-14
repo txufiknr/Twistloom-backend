@@ -2820,6 +2820,28 @@ router.get('/users/:id/achievements', async (c: Context<AppEnv>) => {
 });
 
 /**
+ * GET /api/users/:id/mastery
+ * Returns a user's Reader Mastery — a multidimensional identity derived from
+ * achievement metrics. Unauthenticated — any visitor can see another user's
+ * mastery archetype on their public profile.
+ *
+ * Response: { primary, secondary, tertiary, scores }
+ */
+router.get('/users/:id/mastery', async (c: Context<AppEnv>) => {
+  try {
+    const { id } = c.req.param();
+    const userIdStr = Array.isArray(id) ? id[0] : id;
+
+    const { computeReaderMastery } = await import('../services/achievements.js');
+    const mastery = await computeReaderMastery(userIdStr);
+
+    return c.json({ success: true, ...mastery });
+  } catch (error) {
+    return cApiError(c, 'Failed to fetch reader mastery', error);
+  }
+});
+
+/**
  * Shared helper: resolve a user by UUID or username to their userId.
  *
  * Mirrors the `/users/:identifier` profile route's identifier handling so the
@@ -3370,8 +3392,8 @@ router.get('/achievements/unnotified', requireAuth, async (c: Context<AppEnv>) =
         id: rule.id,
         title: rule.title,
         description: rule.description,
-        badgeImageUrl: rule.badgeImageUrl,
         tier: rule.tier,
+        category: rule.category,
         currentProgress: currentValue,
         threshold: rule.threshold,
         progressPercent,

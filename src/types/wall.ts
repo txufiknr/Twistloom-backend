@@ -95,7 +95,6 @@ export interface WallAchievementAttachmentSnapshot {
   achievementId: string;
   title: string;
   description: string;
-  badgeImageUrl: string;
   tier: AchievementTier;
 }
 

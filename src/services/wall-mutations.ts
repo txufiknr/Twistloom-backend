@@ -476,7 +476,6 @@ async function createTrustedAttachment(
       achievementId: rule.id,
       title: rule.title,
       description: rule.description,
-      badgeImageUrl: rule.badgeImageUrl,
       tier: rule.tier,
     };
   }
