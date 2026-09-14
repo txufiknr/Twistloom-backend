@@ -1218,6 +1218,45 @@ export async function computeEndingStats(
   };
 }
 
+export async function computeBatchEndingStats(
+  bookId: string,
+  endingPageIds: string[],
+  client: DBClient = dbRead
+): Promise<Array<{ pageId: string; endingReaders: number; endingPercentage: number }>> {
+  if (endingPageIds.length === 0) return [];
+
+  const [{ completedReaders }] = await client
+    .select({ completedReaders: books.completeCount })
+    .from(books)
+    .where(eq(books.id, bookId))
+    .limit(1);
+
+  const rows = await client
+    .select({
+      pageId: userCompletedBooks.pageId,
+      endingReaders: countDistinct(userCompletedBooks.userId),
+    })
+    .from(userCompletedBooks)
+    .where(
+      and(
+        eq(userCompletedBooks.bookId, bookId),
+        sql`${userCompletedBooks.pageId} IN ${endingPageIds}`
+      )
+    )
+    .groupBy(userCompletedBooks.pageId);
+
+  const statsMap = new Map(rows.map((r) => [r.pageId, r.endingReaders]));
+
+  return endingPageIds.map((pageId) => {
+    const endingReaders = statsMap.get(pageId) ?? 0;
+    return {
+      pageId,
+      endingReaders,
+      endingPercentage: completedReaders === 0 ? 0 : Math.round((endingReaders / completedReaders) * 100),
+    };
+  });
+}
+
 export function mapActionToSelectedAction(action: Action, actionedPageId: string, actionedPageNumber: number, nextPageId: string): SelectedAction {
   return {
     text: action.text,

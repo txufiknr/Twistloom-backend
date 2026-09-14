@@ -73,25 +73,6 @@ export async function getUserMetrics(userId: string) {
   } satisfies Record<AchievementMetric, number>;
 }
 
-// /**
-//  * Call this inside your book-generation routes or branch navigation logic
-//  * e.g., await incrementUserMetric(req.userId, 'pagesRead');
-//  * 
-//  * @deprecated Replaced by automatic db triggers instead of manual increment
-//  */
-// export async function incrementUserMetric(userId: string, metric: AchievementMetric, amount = 1) {
-//   await dbWrite
-//     .insert(userCounters)
-//     .values({ userId, [metric]: amount })
-//     .onConflictDoUpdate({
-//       target: userCounters.userId,
-//       set: {
-//         [metric]: sql`${userCounters[metric]} + ${amount}`,
-//         updatedAt: new Date(),
-//       },
-//     });
-// }
-
 /**
  * Evaluates real-time stats against rules. Automatically calculates retroactively
  * if new rules are deployed to the registry code file.
@@ -105,24 +86,27 @@ export async function checkAndAwardAchievements(userId: string): Promise<string[
 
   const unlockedIdsSet = new Set(unlockedBadges.map((b) => b.achievementId));
   const newlyUnlocked: string[] = [];
+  const toInsert: Array<{ userId: string; achievementId: string; isNotified: boolean }> = [];
 
   for (const rule of ACHIEVEMENT_REGISTRY) {
     if (unlockedIdsSet.has(rule.id)) continue; // Already awarded
 
     const userValue = metrics[rule.metric];
     if (userValue >= rule.threshold) {
-      // User qualifies for a badge! Save it
-      await dbWrite
-        .insert(userAchievements)
-        .values({
-          userId,
-          achievementId: rule.id,
-          isNotified: false, // Flagged for frontend celebratory animation
-        })
-        .onConflictDoNothing();
-
+      toInsert.push({
+        userId,
+        achievementId: rule.id,
+        isNotified: false, // Flagged for frontend celebratory animation
+      });
       newlyUnlocked.push(rule.id);
     }
+  }
+
+  if (toInsert.length > 0) {
+    await dbWrite
+      .insert(userAchievements)
+      .values(toInsert)
+      .onConflictDoNothing();
   }
 
   return newlyUnlocked;

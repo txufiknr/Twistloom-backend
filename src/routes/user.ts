@@ -81,6 +81,7 @@ import { checkAndAwardAchievements, getUserAchievements, getUserMetrics } from '
 import { getUserQuests, summarizeQuests, recheckQuests, claimQuestRewardAndInvalidate, claimAllQuestRewardsAndInvalidate } from '../services/quests.js';
 import { getUserBetaDuties, summarizeBetaDuties, recheckBetaDuties, claimBetaDutyRewardAndInvalidate, claimAllBetaDutyRewardsAndInvalidate } from '../services/beta-duties.js';
 import { sanitizeText, cleanMultilineText } from "../utils/text-processing.js";
+import { getUserBookEndings } from "../services/book.js";
 import { verifyPassword } from "../utils/password.js";
 import { USER_REPORT_MESSAGE_MAX_LENGTH } from "../config/user.js";
 import { FEEDBACK_MESSAGE_MAX_LENGTH } from "../config/feedback.js";
@@ -4635,6 +4636,19 @@ router.post('/user/appeals', requireAuth, async (c: Context<AppEnv>) => {
   } catch (error) {
     console.error('[POST /user/appeals] ❌', error);
     return cApiError(c, 'Failed to submit appeal', error);
+  }
+});
+
+router.get('/books/:bookId/endings', requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get('userId')!;
+    const { bookId } = c.req.param();
+    const rawCursor = c.req.query('cursor');
+    const cursor = rawCursor && rawCursor !== 'null' ? rawCursor : null;
+    const result = await getUserBookEndings(userId, bookId, cursor);
+    return c.json(result);
+  } catch (error) {
+    return cApiError(c, 'Failed to fetch book endings', error);
   }
 });
 

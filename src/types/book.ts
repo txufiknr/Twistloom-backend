@@ -601,3 +601,35 @@ export type BookEndingStats = {
   /** Minutes, approximate — wall-clock time between the reader's first and last recorded action on this book. */
   readingTimeMinutes?: number;
 };
+
+export type UserBookEnding = {
+  pageId: string;
+  branchId: string;
+  completedAt: string;
+  endingText: string | null;
+  endingType: string | null;
+  illustrationUrl: string | null;
+  pageNumber: number;
+  rarity: {
+    endingReaders: number;
+    endingPercentage: number;
+  };
+};
+
+export type UserBookEndingsResponse = {
+  discovered: UserBookEnding[];
+  endingsFound: number;
+};
+
+export type BookEndingSummary = {
+  pageId: string;
+  pageNumber: number;
+  endingText: string | null;
+  illustrationUrl: string | null;
+  endingReaders: number;
+};
+
+export type BookEndingsResponse = {
+  endings: BookEndingSummary[];
+  nextCursor: string | null;
+};

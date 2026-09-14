@@ -115,7 +115,7 @@ import { coalescePoll, getCoalesced, setCoalesced, POLL_RETRY_AFTER_SECONDS } fr
 import { eq, and, desc, asc, sql, ne, inArray, arrayOverlaps } from "drizzle-orm";
 import { hashSHA256 } from "../utils/hash.js";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
-import { getBook, getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage, tryAcquireWorkflowDispatchGate } from "../services/book.js";
+import { getBook, getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage, tryAcquireWorkflowDispatchGate, getAllBookEndings } from "../services/book.js";
 import { getBookAnalytics } from "../services/analytics.js";
 import { hasActiveVipSubscription } from "../services/subscription.js";
 import { getPreviewBookPage } from "../services/book-preview.js";
@@ -8686,6 +8686,24 @@ router.get("/:identifier", optionalAuth, async (c) => {
     return c.json({ book: enrichedBook });
   } catch (error) {
     return cApiError(c, "Failed to retrieve book", error);
+  }
+});
+
+router.get('/:identifier/endings', optionalAuth, async (c) => {
+  try {
+    const { identifier } = c.req.param();
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+
+    const book = await getBookFromDB(bookIdentifier);
+    if (!book) return cNotFoundError(c, 'Book not found');
+    if (book.visibility !== 'public') return cForbiddenError(c, 'Endings are only available for public books');
+
+    const rawCursor = c.req.query('cursor');
+    const cursor = rawCursor && rawCursor !== 'null' ? rawCursor : null;
+    const result = await getAllBookEndings(book.id, cursor);
+    return c.json(result);
+  } catch (error) {
+    return cApiError(c, 'Failed to fetch book endings', error);
   }
 });
 

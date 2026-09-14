@@ -23,11 +23,11 @@ import { isPublicActiveBook, notifyForumBranchAdded } from "./forum-queue.js";
 import { notifyFollowersOfPublishedBook } from "./book-publish-notification.js";
 import { getEnrichedBookSelect } from "./book-controller.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage, DBUpdateBook } from "../types/schema.js";
-import type { Book, BookSlugGenerationResult, BookStatus, BookVisibility, EnrichedBookData, EnrichedPageOptions, PublicStats } from "../types/book.js";
+import type { Book, BookSlugGenerationResult, BookStatus, BookVisibility, EnrichedBookData, EnrichedPageOptions, PublicStats, UserBookEnding, UserBookEndingsResponse, BookEndingSummary, BookEndingsResponse } from "../types/book.js";
 import { bookVisibilities } from "../types/book.js";
 import { actionTypes, endingTypes, type StoryPage, type PersistedStoryPage, type UserStoryPage, type StoryState, type StoryPageMeta, type EnrichedStoryPage, type StateDelta, type StoryGeneration, type SelectedAction, type Action, type EnrichedStoryPageContext, type TranslatedStoryPage, type EnrichedStoryPagePlace, type EnrichedStoryPageCharacter, type ActionType, type ActionHintType, type Ending, type EndingType, type StoryOutline } from "../types/story.js";
 import type { CanonValidationSummary } from "../types/canon-validation.js";
-import { getStoryStateFromPage, insertStoryState } from "./story.js";
+import { getStoryStateFromPage, insertStoryState, computeBatchEndingStats } from "./story.js";
 import { formatPlacesForPrompt, resolvePlaceDisplayName, resolvePlaceLoreNames } from "../utils/places.js";
 import { buildCustomActionAction, deriveActionRisk } from "../utils/custom-action.js";
 import { formatBookMetaForPrompt } from "../utils/books.js";
@@ -3303,4 +3303,119 @@ export async function tryAcquireWorkflowDispatchGate(bookId: string): Promise<Wo
  */
 export function keywordsToTextArray(keywords: string[]) {
   return sql`ARRAY[${sql.join(keywords.map(v => sql`${v}`), sql`, `)}]::text[]`;
+}
+
+export async function getUserBookEndings(
+  userId: string,
+  bookId: string,
+  cursor: string | null,
+  limit: number = 20,
+  client: DBClient = dbRead
+): Promise<UserBookEndingsResponse> {
+  const whereConditions = and(
+    eq(userCompletedBooks.userId, userId),
+    eq(userCompletedBooks.bookId, bookId),
+  );
+
+  const [{ total }] = await client
+    .select({ total: countDistinct(userCompletedBooks.pageId) })
+    .from(userCompletedBooks)
+    .where(whereConditions);
+
+  const endingPages = await client
+    .select({
+      pageId: userCompletedBooks.pageId,
+      branchId: userCompletedBooks.branchId,
+      completedAt: userCompletedBooks.completedAt,
+      endingText: pages.text,
+      endingType: pages.sceneType,
+      illustrationUrl: pages.imageUrl,
+      pageNumber: pages.page,
+    })
+    .from(userCompletedBooks)
+    .innerJoin(pages, eq(userCompletedBooks.pageId, pages.id))
+    .where(
+      and(
+        whereConditions,
+        cursor ? sql`(${userCompletedBooks.completedAt}, ${userCompletedBooks.pageId}) < (${new Date(cursor.split('|')[0])}, ${cursor.split('|')[1] ?? ''})` : undefined,
+      )
+    )
+    .orderBy(desc(userCompletedBooks.completedAt), desc(userCompletedBooks.pageId))
+    .limit(limit + 1);
+
+  const hasMore = endingPages.length > limit;
+  const results = hasMore ? endingPages.slice(0, limit) : endingPages;
+
+  const endingPageIds = results.map((e) => e.pageId);
+  const stats = await computeBatchEndingStats(bookId, endingPageIds);
+
+  const statsMap = new Map(stats.map((s) => [s.pageId, s]));
+
+  const discovered: UserBookEnding[] = results.map((row) => {
+    const s = statsMap.get(row.pageId);
+    return {
+      pageId: row.pageId,
+      branchId: row.branchId,
+      completedAt: row.completedAt.toISOString(),
+      endingText: row.endingText,
+      endingType: row.endingType,
+      illustrationUrl: row.illustrationUrl,
+      pageNumber: row.pageNumber,
+      rarity: {
+        endingReaders: s?.endingReaders ?? 0,
+        endingPercentage: s?.endingPercentage ?? 0,
+      },
+    };
+  });
+
+  return {
+    discovered,
+    endingsFound: total ?? 0,
+  };
+}
+
+export async function getAllBookEndings(
+  bookId: string,
+  cursor: string | null,
+  limit: number = 20,
+  client: DBClient = dbRead
+): Promise<BookEndingsResponse> {
+  const endingPages = await client
+    .select({
+      pageId: pages.id,
+      pageNumber: pages.page,
+      endingText: pages.text,
+      illustrationUrl: pages.imageUrl,
+      completedAt: userCompletedBooks.completedAt,
+    })
+    .from(userCompletedBooks)
+    .innerJoin(pages, eq(userCompletedBooks.pageId, pages.id))
+    .where(
+      and(
+        eq(userCompletedBooks.bookId, bookId),
+        cursor ? sql`(${userCompletedBooks.completedAt}, ${userCompletedBooks.pageId}) < (${new Date(cursor.split('|')[0])}, ${cursor.split('|')[1] ?? ''})` : undefined,
+      )
+    )
+    .orderBy(desc(userCompletedBooks.completedAt), desc(userCompletedBooks.pageId))
+    .limit(limit + 1);
+
+  const hasMore = endingPages.length > limit;
+  const results = hasMore ? endingPages.slice(0, limit) : endingPages;
+  const nextCursor = hasMore && results.length > 0
+    ? `${results[results.length - 1].completedAt.toISOString()}|${results[results.length - 1].pageId}`
+    : null;
+
+  const endingPageIds = results.map((e) => e.pageId);
+  const stats = await computeBatchEndingStats(bookId, endingPageIds);
+  const statsMap = new Map(stats.map((s) => [s.pageId, s]));
+
+  const endings: BookEndingSummary[] = results.map((row) => ({
+    pageId: row.pageId,
+    pageNumber: row.pageNumber,
+    endingText: row.endingText,
+    illustrationUrl: row.illustrationUrl,
+    endingReaders: statsMap.get(row.pageId)?.endingReaders ?? 0,
+  }));
+
+  return { endings, nextCursor };
 }
