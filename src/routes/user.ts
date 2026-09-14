@@ -4648,6 +4648,7 @@ router.get('/books/:bookId/endings', requireAuth, async (c: Context<AppEnv>) => 
     const result = await getUserBookEndings(userId, bookId, cursor);
     return c.json(result);
   } catch (error) {
+    console.error('[GET /user/books/:bookId/endings] ❌ Error:', error);
     return cApiError(c, 'Failed to fetch book endings', error);
   }
 });

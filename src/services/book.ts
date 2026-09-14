@@ -3322,6 +3322,19 @@ export async function getUserBookEndings(
     .from(userCompletedBooks)
     .where(whereConditions);
 
+  let cursorDate: Date | null = null;
+  let cursorPageId: string | null = null;
+  if (cursor) {
+    const parts = cursor.split('|');
+    if (parts.length === 2 && parts[0] && parts[1]) {
+      const parsed = new Date(parts[0]);
+      if (!isNaN(parsed.getTime())) {
+        cursorDate = parsed;
+        cursorPageId = parts[1];
+      }
+    }
+  }
+
   const endingPages = await client
     .select({
       pageId: userCompletedBooks.pageId,
@@ -3337,7 +3350,7 @@ export async function getUserBookEndings(
     .where(
       and(
         whereConditions,
-        cursor ? sql`(${userCompletedBooks.completedAt}, ${userCompletedBooks.pageId}) < (${new Date(cursor.split('|')[0])}, ${cursor.split('|')[1] ?? ''})` : undefined,
+        cursorDate && cursorPageId ? sql`(${userCompletedBooks.completedAt}, ${userCompletedBooks.pageId}) < (${cursorDate}, ${cursorPageId}::uuid)` : undefined,
       )
     )
     .orderBy(desc(userCompletedBooks.completedAt), desc(userCompletedBooks.pageId))
@@ -3345,6 +3358,10 @@ export async function getUserBookEndings(
 
   const hasMore = endingPages.length > limit;
   const results = hasMore ? endingPages.slice(0, limit) : endingPages;
+
+  const nextCursor = hasMore && results.length > 0
+    ? `${results[results.length - 1].completedAt.toISOString()}|${results[results.length - 1].pageId}`
+    : null;
 
   const endingPageIds = results.map((e) => e.pageId);
   const stats = await computeBatchEndingStats(bookId, endingPageIds);
@@ -3371,6 +3388,7 @@ export async function getUserBookEndings(
   return {
     discovered,
     endingsFound: total ?? 0,
+    nextCursor,
   };
 }
 
@@ -3380,6 +3398,19 @@ export async function getAllBookEndings(
   limit: number = 20,
   client: DBClient = dbRead
 ): Promise<BookEndingsResponse> {
+  let cursorDate: Date | null = null;
+  let cursorPageId: string | null = null;
+  if (cursor) {
+    const parts = cursor.split('|');
+    if (parts.length === 2 && parts[0] && parts[1]) {
+      const parsed = new Date(parts[0]);
+      if (!isNaN(parsed.getTime())) {
+        cursorDate = parsed;
+        cursorPageId = parts[1];
+      }
+    }
+  }
+
   const endingPages = await client
     .select({
       pageId: pages.id,
@@ -3393,7 +3424,7 @@ export async function getAllBookEndings(
     .where(
       and(
         eq(userCompletedBooks.bookId, bookId),
-        cursor ? sql`(${userCompletedBooks.completedAt}, ${userCompletedBooks.pageId}) < (${new Date(cursor.split('|')[0])}, ${cursor.split('|')[1] ?? ''})` : undefined,
+        cursorDate && cursorPageId ? sql`(${userCompletedBooks.completedAt}, ${userCompletedBooks.pageId}) < (${cursorDate}, ${cursorPageId}::uuid)` : undefined,
       )
     )
     .orderBy(desc(userCompletedBooks.completedAt), desc(userCompletedBooks.pageId))

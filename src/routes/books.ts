@@ -8703,6 +8703,7 @@ router.get('/:identifier/endings', optionalAuth, async (c) => {
     const result = await getAllBookEndings(book.id, cursor);
     return c.json(result);
   } catch (error) {
+    console.error('[GET /books/:identifier/endings] ❌ Error:', error);
     return cApiError(c, 'Failed to fetch book endings', error);
   }
 });

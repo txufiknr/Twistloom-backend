@@ -619,6 +619,7 @@ export type UserBookEnding = {
 export type UserBookEndingsResponse = {
   discovered: UserBookEnding[];
   endingsFound: number;
+  nextCursor: string | null;
 };
 
 export type BookEndingSummary = {

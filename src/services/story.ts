@@ -1225,11 +1225,13 @@ export async function computeBatchEndingStats(
 ): Promise<Array<{ pageId: string; endingReaders: number; endingPercentage: number }>> {
   if (endingPageIds.length === 0) return [];
 
-  const [{ completedReaders }] = await client
+  const bookRow = await client
     .select({ completedReaders: books.completeCount })
     .from(books)
     .where(eq(books.id, bookId))
     .limit(1);
+
+  const completedReaders = bookRow[0]?.completedReaders ?? 0;
 
   const rows = await client
     .select({
