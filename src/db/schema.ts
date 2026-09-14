@@ -76,6 +76,7 @@ export const pages = pgTable(
     weather: text("weather").$type<PlaceWeather>(), // Current weather conditions at the place
     imagePrompt: text("image_prompt"), // AI-written, English-only text-to-image description of this page's most visually striking moment (optional — future-proofing for selective illustration, see StoryScene JSDoc in types/story.ts)
     imageImportance: real("image_importance"), // 0.0-1.0, how much this page rewards being illustrated (optional; travels with imagePrompt)
+    imageUrl: text("image_url"), // AI-generated illustration URL (nullable — null means no illustration)
     calendarDate: text("calendar_date"), // Current in-world date (e.g., "2026-07-26")
     elapsedDays: integer("elapsed_days"), // Days elapsed since the story begin
     timeOfDay: text("time_of_day"), // Current time mark (e.g., time range, 'night', 'HH:mm', 'unknown')
@@ -145,6 +146,10 @@ export const pages = pgTable(
     index("pages_is_generating_started_active_idx")
       .on(t.isGeneratingStartedAt)
       .where(sql`${t.isGeneratingStartedAt} IS NOT NULL`),
+    // Partial index for illustration queries: only pages with an imageUrl
+    index("pages_image_url_idx")
+      .on(t.imageUrl)
+      .where(sql`${t.imageUrl} IS NOT NULL`),
   ]
 );
 
@@ -2300,12 +2305,14 @@ export const uploadedImages = pgTable(
     imageId: text("image_id").notNull(), // ImageKit file ID for deletion
     imageUrl: text("image_url").notNull(), // ImageKit URL
     type: text("type").$type<UploadedImageType>().notNull(),
+    entityId: uuid("entity_id"), // FK-like reference to page ID or draft ID (nullable for legacy rows)
     createdAt,
     updatedAt,
   },
   (t) => [
     index("uploaded_images_user_idx").on(t.userId),
     index("uploaded_images_type_idx").on(t.type),
+    index("uploaded_images_entity_idx").on(t.type, t.entityId).where(sql`${t.entityId} IS NOT NULL`),
     unique("uploaded_images_image_id_unique").on(t.imageId),
   ]
 );
@@ -3086,6 +3093,8 @@ export const penDrafts = pgTable(
     draftSceneEssentials: jsonb("draft_scene_essentials").$type<PenDraftSceneEssentials | null>().default(null),
     /** Author-marked terminal branch / story conclusion. */
     isEnding: boolean("is_ending").notNull().default(false),
+    /** Author-uploaded page hero image URL (nullable). On /finalize, copied to pages.image_url. */
+    imageUrl: text("image_url"),
     createdAt,
     updatedAt,
   },

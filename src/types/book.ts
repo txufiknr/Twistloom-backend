@@ -583,7 +583,8 @@ export type UploadedImageType =
   | 'user'  // Profile picture
   | 'feedback' // Feedback screenshot
   | 'pen' // Pen draft inline image
-  | 'lore_character'; // Story bible character avatar
+  | 'lore_character' // Story bible character avatar
+  | 'page_illustration'; // AI-generated page illustration
 
 export type PageVisitStats = {
   nthVisit: number;

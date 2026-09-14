@@ -3066,6 +3066,23 @@ router.delete("/:id", requireAuth, async (c) => {
         });
     }
 
+    // Queue page illustration ImageKit files for deletion before book cascade
+    const illustrationImages = await dbRead
+      .select({ imageId: uploadedImages.imageId })
+      .from(uploadedImages)
+      .innerJoin(pages, eq(uploadedImages.entityId, pages.id))
+      .where(and(
+        eq(uploadedImages.type, 'page_illustration'),
+        eq(pages.bookId, id as string),
+      ));
+
+    for (const img of illustrationImages) {
+      await dbWrite.insert(deletedImages).values({
+        fileId: img.imageId,
+        createdAt: new Date(),
+      });
+    }
+
     // Delete the book (cascade will handle related records)
     await dbWrite
       .delete(books)
@@ -7452,6 +7469,7 @@ router.get("/share/:username/:bookSlug/:pageId", async (c) => {
         text: page?.text ?? null,
         percentage: endingStats.endingPercentage,
       },
+      pageIllustrationUrl: page?.imageUrl ?? null,
       profile: profileResult ? {
         archetype: profileResult.archetype,
         archetypeKey: profileResult.archetypeKey,

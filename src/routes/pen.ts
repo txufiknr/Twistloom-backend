@@ -15,7 +15,7 @@ import { rateLimit } from "../middleware/rate-limit.js";
 import { PEN_CONTINUE_RATE_LIMIT, PEN_ESSENTIALS_RATE_LIMIT, PEN_FINALIZE_PROPOSE_RATE_LIMIT, PEN_TRANSFORM_RATE_LIMIT, PEN_CAST_DETECT_RATE_LIMIT } from "../config/ai-rate-limits.js";
 import { cApiError, cNotFoundError, cValidationError } from "../utils/error.js";
 import { dbWrite } from "../db/client.js";
-import { isBase64Upload } from "../services/image.js";
+import { isBase64Upload, uploadImageKit, persistUploadedImage } from "../services/image.js";
 import { PEN_ASSISTANCE_LEVEL_MAX, PEN_ASSISTANCE_LEVEL_MIN, PEN_AUTHORING_MODES, PEN_AUTHORING_POVS, PEN_DRAFT_BUFFER_MAX_CHARS, PEN_DRAFT_CAST_LIMIT, PEN_DRAFT_HTML_MAX_LENGTH, PEN_DRAFT_IMAGE_MAX_BYTES, PEN_DRAFT_SPAN_MAX_LENGTH, PEN_DRAFT_TEXT_MAX_LENGTH, PEN_DIRECTION_HINT_MAX_LENGTH, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_MAX_ACTIONS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_SCENE_FOCUS_MAX, PEN_SCENE_FOCUS_MIN, PEN_SESSION_STATUSES, PEN_CONTINUE_PROSE_MAX_LENGTH, PEN_DRAFT_LABEL_MAX_LENGTH, PEN_DRAFT_ACTION_TEXT_MAX_LENGTH, PEN_DRAFT_ACTION_HINT_MAX_LENGTH, PEN_TRANSFORM_SELECTION_MAX_LENGTH, PEN_ENDING_OUTLINE_MAX_ITEMS } from "../config/story.js";
 import { moods } from "../types/story.js";
 import { actionTypes, actionHintTypes } from "../types/story.js";
@@ -646,7 +646,7 @@ router.patch("/sessions/:id/drafts/:draftId", requireAuth, async (c) => {
     if (!body || typeof body !== "object") {
       return cValidationError(c, "Request body must be a JSON object");
     }
-    const { label, actionText, draftBuffer, draftHtml, draftCharactersPresent, draftSceneEssentials, isEnding, draftUpdatedAt } = body as {
+    const { label, actionText, draftBuffer, draftHtml, draftCharactersPresent, draftSceneEssentials, isEnding, imageUrl, draftUpdatedAt } = body as {
       label?: unknown;
       actionText?: unknown;
       draftBuffer?: unknown;
@@ -654,6 +654,7 @@ router.patch("/sessions/:id/drafts/:draftId", requireAuth, async (c) => {
       draftCharactersPresent?: unknown;
       draftSceneEssentials?: unknown;
       isEnding?: unknown;
+      imageUrl?: unknown;
       draftUpdatedAt?: unknown;
     };
 
@@ -698,6 +699,9 @@ router.patch("/sessions/:id/drafts/:draftId", requireAuth, async (c) => {
     if (draftUpdatedAt !== undefined && (typeof draftUpdatedAt !== "string" || Number.isNaN(Date.parse(draftUpdatedAt)))) {
       return cValidationError(c, "draftUpdatedAt must be a valid date string");
     }
+    if (imageUrl !== undefined && imageUrl !== null && typeof imageUrl !== "string") {
+      return cValidationError(c, "imageUrl must be a string or null");
+    }
 
     const draft = await updateSessionDraft(userId, sessionId, draftId, {
       label: typeof label === "string" ? label : undefined,
@@ -707,6 +711,7 @@ router.patch("/sessions/:id/drafts/:draftId", requireAuth, async (c) => {
       draftCharactersPresent: draftCharactersPresent as PenDraftCharacter[] | undefined,
       draftSceneEssentials: draftSceneEssentials as PenDraftSceneEssentials | null | undefined,
       isEnding: typeof isEnding === "boolean" ? isEnding : undefined,
+      imageUrl: imageUrl === null ? null : typeof imageUrl === "string" ? imageUrl : undefined,
       draftUpdatedAt: typeof draftUpdatedAt === "string" ? draftUpdatedAt : undefined,
     });
     return c.json({ draft });
@@ -1270,9 +1275,12 @@ router.post("/sessions/:id/images", requireAuth, async (c) => {
     if (!body || typeof body !== "object") {
       return cValidationError(c, "Request body must be a JSON object");
     }
-    const { imageBase64 } = body as { imageBase64?: unknown };
+    const { imageBase64, draftId } = body as { imageBase64?: unknown; draftId?: unknown };
     if (!isBase64Upload(imageBase64)) {
       return cValidationError(c, "imageBase64 must be a valid base64 image (data URL or raw base64)");
+    }
+    if (draftId !== undefined && draftId !== null && typeof draftId !== "string") {
+      return cValidationError(c, "draftId must be a string");
     }
 
     // BE6: reject oversized payloads before they are decoded into memory and
@@ -1286,6 +1294,48 @@ router.post("/sessions/:id/images", requireAuth, async (c) => {
       return cValidationError(c, `imageBase64 must decode to at most ${PEN_DRAFT_IMAGE_MAX_BYTES} bytes`);
     }
 
+    // When draftId is provided, this is a page illustration upload — persist
+    // as 'page_illustration' with entityId and write to pen_drafts.image_url
+    // immediately so the URL survives without waiting for the autosave heartbeat.
+    if (typeof draftId === "string" && draftId) {
+      await getPenSessionById(userId, sessionId);
+
+      const uploadResult = await uploadImageKit(imageBase64, draftId, {
+        folder: "page-illustrations",
+        tags: ["page-illustration", `session-id:${sessionId}`, `draft-id:${draftId}`],
+        filenamePrefix: "illustration",
+      });
+
+      if (!uploadResult || !uploadResult.url) {
+        return cApiError(c, "Image upload failed", undefined, 400);
+      }
+
+      try {
+        await persistUploadedImage({
+          imageId: uploadResult.fileId,
+          imageUrl: uploadResult.url,
+          type: "page_illustration",
+          userId,
+          entityId: draftId,
+        });
+
+        const { penDrafts } = await import("../db/schema.js");
+        const { eq, and: drizzleAnd } = await import("drizzle-orm");
+        await dbWrite
+          .update(penDrafts)
+          .set({ imageUrl: uploadResult.url, updatedAt: new Date() })
+          .where(drizzleAnd(eq(penDrafts.id, draftId), eq(penDrafts.sessionId, sessionId)));
+      } catch (dbError) {
+        // Best-effort rollback — delete the ImageKit file if DB persist fails.
+        const { deleteFileFromImageKit } = await import("../services/image.js");
+        await deleteFileFromImageKit(uploadResult.fileId);
+        throw dbError;
+      }
+
+      return c.json({ imageUrl: uploadResult.url });
+    }
+
+    // Default: inline draft image — persist as 'pen', no draft linkage.
     const result = await uploadPenDraftImage(userId, sessionId, imageBase64);
     return c.json(result);
   } catch (error) {

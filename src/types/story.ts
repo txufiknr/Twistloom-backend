@@ -1129,6 +1129,8 @@ export type StoryScene = {
    * field still needs outside the generation contract.
    */
   imageImportance?: number;
+  /** AI-generated illustration URL (nullable — null means no illustration yet). */
+  imageUrl?: string | null;
 };
 
 /**
@@ -1450,7 +1452,7 @@ export type StateDeltaGeneration = Omit<StateDelta, keyof PsychologicalStateDelt
   /** Future notes to add (server assigns keys) */
   futureNoteAdd?: FutureNoteGeneration[];
 };
-export type StoryPageGeneration = Omit<StoryPage, ResourceAIProvider | 'stateDelta' | 'momentum' | 'elapsedDays'> & {
+export type StoryPageGeneration = Omit<StoryPage, ResourceAIProvider | 'stateDelta' | 'momentum' | 'elapsedDays' | 'imageUrl'> & {
   /** AI-authored snapshot of the final physical frame, generated before choices. */
   sceneAnchor?: SceneAnchor;
 };

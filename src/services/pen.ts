@@ -9,7 +9,7 @@
  */
 
 import { eq, and, desc, isNull, sql } from "drizzle-orm";
-import { penSessions, penEdits, penDrafts, penNotes, branches, pages, books, storyStates } from "../db/schema.js";
+import { penSessions, penEdits, penDrafts, penNotes, branches, pages, books, storyStates, uploadedImages } from "../db/schema.js";
 import { dbRead, dbWrite, type DBClient } from "../db/client.js";
 import { getBookFromDB, getBookPages, deleteStoryPage, updateBook } from "./book.js";
 import { getTriggeredLoreEntries, listLoreEntries } from "./lore.js";
@@ -46,7 +46,7 @@ import { sanitizeActionsForMode, validatePageActionsForMode, maxDestinationsPerA
 import { validateGeneratedPage } from "../utils/page-validation.js";
 import { runGate1 } from "./custom-actions.js";
 import { calculateHealthStatus } from "../utils/characters.js";
-import { uploadPenDraftImage as uploadPenDraftImageToKit, persistUploadedImage, deleteFileFromImageKit } from "./image.js";
+import { uploadPenDraftImage as uploadPenDraftImageToKit, persistUploadedImage, deleteFileFromImageKit, queueImageForDeletion } from "./image.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { htmlToPlainText } from "../utils/text-processing.js";
 import { normalizeDialogueMarkers } from "../utils/dialogue-parser.js";
@@ -757,6 +757,7 @@ export async function updateSessionDraft(
     label?: string | null;
     actionText?: string | null;
     isEnding?: boolean;
+    imageUrl?: string | null;
   } = {};
 
   if (updates.label !== undefined) {
@@ -773,6 +774,9 @@ export async function updateSessionDraft(
   }
   if (updates.isEnding !== undefined) {
     values.isEnding = updates.isEnding;
+  }
+  if (updates.imageUrl !== undefined) {
+    values.imageUrl = updates.imageUrl;
   }
 
   // Buffer/html: last-write-wins against the client's keystroke timestamp.
@@ -817,6 +821,33 @@ export async function updateSessionDraft(
 export async function discardSessionDraft(userId: string, sessionId: string, draftId: string): Promise<PenSessionPayload> {
   const session = await getPenSessionById(userId, sessionId, { client: dbWrite });
   await getSessionDraftRow(sessionId, draftId, dbWrite);
+
+  // Clean up uploaded illustration before hard-deleting the draft.
+  // Look up the draft's imageUrl; if it's an ImageKit URL, delete the
+  // corresponding uploaded_images row and queue the ImageKit file for deletion.
+  const [draftRow] = await dbRead
+    .select({ imageUrl: penDrafts.imageUrl, imageId: uploadedImages.imageId })
+    .from(penDrafts)
+    .leftJoin(uploadedImages, and(
+      eq(uploadedImages.type, 'page_illustration'),
+      eq(uploadedImages.entityId, draftId),
+    ))
+    .where(and(eq(penDrafts.id, draftId), eq(penDrafts.sessionId, sessionId)))
+    .limit(1);
+
+  if (draftRow?.imageUrl && draftRow.imageUrl.startsWith('http')) {
+    // Delete the uploaded_images row by (type, entity_id)
+    await dbWrite
+      .delete(uploadedImages)
+      .where(and(
+        eq(uploadedImages.type, 'page_illustration'),
+        eq(uploadedImages.entityId, draftId),
+      ));
+    // Queue the ImageKit file for deletion
+    if (draftRow.imageId) {
+      await queueImageForDeletion(draftRow.imageId);
+    }
+  }
 
   await dbWrite
     .delete(penDrafts)
@@ -3161,6 +3192,25 @@ export async function finalizePenDraft(
       void embedPersistedPage(newPage);
       void embedStateDeltaEntities(newPage);
 
+      // Copy author-uploaded illustration from draft to published page.
+      // If the author provided an illustration (via §6.5 upload endpoint),
+      // it takes precedence over any AI-generated illustration.
+      //
+      // KNOWN LIMITATION (author vs. cron race): Between Phase B (page insert
+      // above, where imageUrl defaults to null) and this copy step, the cron
+      // job could see imageUrl=null and generate an AI illustration. This copy
+      // then overwrites it, orphaning the cron-generated ImageKit file. The
+      // window is narrow (cron runs every 6h, this transaction is fast) and
+      // the orphaned file is harmless (cleaned up by deleted_images queue if
+      // the page is ever regenerated). If this becomes a problem, mitigation:
+      // set a sentinel value on the page row during Phase B to skip cron.
+      if (draft.imageUrl && draft.imageUrl.startsWith('http')) {
+        await dbWrite
+          .update(pages)
+          .set({ imageUrl: draft.imageUrl, updatedAt: new Date() })
+          .where(eq(pages.id, newPage.id));
+      }
+
         // B6 (finalize promotion): for a Text Adventure continuation in a
         // MULTIVERSE book, promote the draft's latent sibling branches into real
         // book branches — parallel timelines reachable from the SAME command.
@@ -3458,7 +3508,7 @@ export async function finalizePenDraft(
     // auto-creates a fresh slot under the new page on the next keystroke.
     await tx
       .update(penDrafts)
-      .set({ draftBuffer: [], draftHtml: null, draftCharactersPresent: [], draftSceneEssentials: null, actionText: null, isEnding: false, updatedAt: new Date() })
+      .set({ draftBuffer: [], draftHtml: null, draftCharactersPresent: [], draftSceneEssentials: null, actionText: null, isEnding: false, imageUrl: null, updatedAt: new Date() })
       .where(and(eq(penDrafts.id, draftId), eq(penDrafts.sessionId, sessionId)));
 
     // §6.6 reverse-edge (B3/E3/E4, D-4 core): record this child as the

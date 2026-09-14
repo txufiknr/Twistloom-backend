@@ -187,6 +187,8 @@ export type PenDraft = {
   draftSceneEssentials?: PenDraftSceneEssentials | null;
   /** Author-marked terminal branch / story conclusion. */
   isEnding?: boolean;
+  /** Author-uploaded page hero image URL (nullable). */
+  imageUrl?: string | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -229,6 +231,7 @@ export type PenDraftUpdates = {
   draftCharactersPresent?: PenDraftCharacter[];
   draftSceneEssentials?: PenDraftSceneEssentials | null;
   isEnding?: boolean;
+  imageUrl?: string | null;
   /** Client wall-clock (ms epoch, ISO string) of the most recent keystroke — last-write-wins key. */
   draftUpdatedAt?: string;
 };

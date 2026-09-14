@@ -1286,6 +1286,7 @@ export async function persistUploadedImage(params: {
   imageUrl: string;
   type: UploadedImageType;
   userId: string;
+  entityId?: string | null;
   client?: DBClient;
 }): Promise<void> {
   const db = params.client ?? dbWrite;
@@ -1295,6 +1296,7 @@ export async function persistUploadedImage(params: {
       imageUrl: params.imageUrl,
       type: params.type,
       userId: params.userId,
+      entityId: params.entityId ?? null,
     });
   } catch (error) {
     console.error(`[persistUploadedImage] ❌ Failed to persist uploaded image ${params.imageId}:`, getErrorMessage(error));

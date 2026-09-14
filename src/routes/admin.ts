@@ -3256,4 +3256,128 @@ router.delete("/help-feedbacks/:articleId/:userId",
   }
 );
 
+// ── Page Illustration Admin Endpoints ────────────────────────────────────────
+
+/**
+ * GET /admin/books/:bookId/illustrations
+ * Returns illustration status for all pages in a book.
+ */
+router.get(
+  "/books/:bookId/illustrations",
+  requireAuth,
+  requirePermission("books"),
+  async (c) => {
+    try {
+      const { bookId } = c.req.param();
+      const { ILLUSTRATION_IMPORTANCE_THRESHOLD } = await import("../config/page-illustrations.js");
+
+      const [book] = await dbRead
+        .select({ id: books.id })
+        .from(books)
+        .where(eq(books.id, bookId))
+        .limit(1);
+      if (!book) return cNotFoundError(c, "Book not found");
+
+      const allPages = await dbRead
+        .select({
+          pageId: pages.id,
+          page: pages.page,
+          imageImportance: pages.imageImportance,
+          imageUrl: pages.imageUrl,
+        })
+        .from(pages)
+        .where(eq(pages.bookId, bookId))
+        .orderBy(pages.page);
+
+      const illustrated = allPages.filter((p) => p.imageUrl).length;
+      const pending = allPages.filter((p) => !p.imageUrl && (p.imageImportance ?? 0) > ILLUSTRATION_IMPORTANCE_THRESHOLD).length;
+
+      return c.json({
+        total: allPages.length,
+        illustrated,
+        pending,
+        threshold: ILLUSTRATION_IMPORTANCE_THRESHOLD,
+        pages: allPages.map((p) => ({
+          pageId: p.pageId,
+          page: p.page,
+          imageImportance: p.imageImportance,
+          hasIllustration: !!p.imageUrl,
+        })),
+      });
+    } catch (error) {
+      return cApiError(c, "Failed to get illustration status", error);
+    }
+  }
+);
+
+/**
+ * POST /admin/books/:bookId/illustrations/regenerate
+ * Regenerates illustration for a specific page or all qualifying pages.
+ * Body: { pageId?: string }
+ */
+router.post(
+  "/books/:bookId/illustrations/regenerate",
+  requireAuth,
+  requirePermission("books"),
+  async (c) => {
+    try {
+      const { bookId } = c.req.param();
+      const { uploadedImages } = await import("../db/schema.js");
+      const { generatePageIllustration, generateBookIllustrations } = await import("../services/page-illustration.js");
+      const { queueImageForDeletion } = await import("../services/image.js");
+
+      const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+      const pageId = typeof body?.pageId === "string" ? body.pageId : undefined;
+
+      if (pageId) {
+        // Regenerate for a specific page
+        const [targetPage] = await dbRead
+          .select({ id: pages.id, imagePrompt: pages.imagePrompt, imageUrl: pages.imageUrl })
+          .from(pages)
+          .where(and(eq(pages.id, pageId), eq(pages.bookId, bookId)))
+          .limit(1);
+        if (!targetPage) return cNotFoundError(c, "Page not found");
+        if (!targetPage.imagePrompt) return cValidationError(c, "Page has no imagePrompt");
+
+        // Clean up any existing illustration (even if imageUrl is null —
+        // orphaned uploaded_images rows from failed generations must be cleared)
+        const [oldImage] = await dbRead
+          .select({ imageId: uploadedImages.imageId })
+          .from(uploadedImages)
+          .where(and(
+            eq(uploadedImages.type, 'page_illustration'),
+            eq(uploadedImages.entityId, pageId),
+          ))
+          .limit(1);
+        if (oldImage) {
+          await dbWrite.delete(uploadedImages).where(and(
+            eq(uploadedImages.type, 'page_illustration'),
+            eq(uploadedImages.entityId, pageId),
+          ));
+          await queueImageForDeletion(oldImage.imageId);
+        }
+        // Clear the page's imageUrl so generatePageIllustration can set a new one
+        if (targetPage.imageUrl) {
+          await dbWrite.update(pages).set({ imageUrl: null }).where(eq(pages.id, pageId));
+        }
+
+        const [bookOwner] = await dbRead
+          .select({ userId: books.userId })
+          .from(books)
+          .where(eq(books.id, bookId))
+          .limit(1);
+
+        const result = await generatePageIllustration(pageId, targetPage.imagePrompt, bookId, bookOwner?.userId ?? null);
+        return c.json({ regenerated: !!result, imageUrl: result });
+      } else {
+        // Regenerate for all qualifying pages in the book
+        const stats = await generateBookIllustrations(bookId, 50);
+        return c.json(stats);
+      }
+    } catch (error) {
+      return cApiError(c, "Failed to regenerate illustrations", error);
+    }
+  }
+);
+
 export default router;
