@@ -1,5 +1,5 @@
 import type { PrivacyPreferences } from "./privacy-preferences.js";
-import type { AchievementCategory, AchievementTier } from "./achievements.js";
+import type { AchievementCategory, AchievementMetric, AchievementTier } from "./achievements.js";
 
 /**
  * Union type of all possible gender values
@@ -251,6 +251,7 @@ export type UserAchievement = {
   id: string;
   title: string;
   description: string;
+  metric: AchievementMetric;
   tier: AchievementTier;
   category: AchievementCategory;
   currentProgress: number;

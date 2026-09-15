@@ -438,61 +438,61 @@ export const ACHIEVEMENT_REGISTRY: AchievementRule[] = [
 
   // ── NARRATIVE: STORIES COMPLETED ─────────────────────────────────────────
   { id: 'stories_done_1', title: 'The First Tapestry', description: 'Completed your first full branching narrative', metric: 'storiesCompleted', threshold: 1, tier: 'bronze', category: 'multiverse' },
-  { id: 'stories_done_5', title: 'Weaver of Tales', description: 'Guided 5 complete stories to resolution', metric: 'storiesCompleted', threshold: 5, tier: 'silver', category: 'multiverse' },
-  { id: 'stories_done_15', title: 'Master of Destinies', description: 'Guided 15 complete stories to resolution', metric: 'storiesCompleted', threshold: 15, tier: 'gold', category: 'multiverse' },
-  { id: 'stories_done_30', title: 'Grand Archivist', description: 'Completed 30 distinct story worlds across the Loom', metric: 'storiesCompleted', threshold: 30, tier: 'platinum', category: 'multiverse' },
+  { id: 'stories_done_10', title: 'Weaver of Tales', description: 'Guided 10 complete stories to resolution', metric: 'storiesCompleted', threshold: 10, tier: 'silver', category: 'multiverse' },
+  { id: 'stories_done_50', title: 'Master of Destinies', description: 'Guided 50 complete stories to resolution', metric: 'storiesCompleted', threshold: 50, tier: 'gold', category: 'multiverse' },
+  { id: 'stories_done_150', title: 'Grand Archivist', description: 'Completed 150 distinct story worlds across the Loom', metric: 'storiesCompleted', threshold: 150, tier: 'platinum', category: 'multiverse' },
 
   // ── NARRATIVE: ALTERNATE ENDINGS DISCOVERED ─────────────────────────────
-  { id: 'alt_ending_1', title: 'Parallel Thread', description: 'Discovered a second ending in a previously completed story', metric: 'alternateEndingsDiscovered', threshold: 1, tier: 'bronze', category: 'multiverse' },
-  { id: 'alt_ending_5', title: 'Timeline Drifter', description: 'Uncovered 5 alternate realities across the multiverse', metric: 'alternateEndingsDiscovered', threshold: 5, tier: 'silver', category: 'multiverse' },
-  { id: 'alt_ending_15', title: 'Quantum Wanderer', description: 'Diverged into 15 divergent timelines', metric: 'alternateEndingsDiscovered', threshold: 15, tier: 'gold', category: 'multiverse' },
-  { id: 'alt_ending_30', title: 'Multiverse Weaver', description: 'Mastered 30 alternate fates across parallel worlds', metric: 'alternateEndingsDiscovered', threshold: 30, tier: 'platinum', category: 'multiverse' },
+  { id: 'alt_ending_3', title: 'Parallel Thread', description: 'Discovered 3 alternate endings in previously completed stories', metric: 'alternateEndingsDiscovered', threshold: 3, tier: 'bronze', category: 'multiverse' },
+  { id: 'alt_ending_15', title: 'Timeline Drifter', description: 'Uncovered 15 alternate realities across the multiverse', metric: 'alternateEndingsDiscovered', threshold: 15, tier: 'silver', category: 'multiverse' },
+  { id: 'alt_ending_50', title: 'Quantum Wanderer', description: 'Diverged into 50 divergent timelines', metric: 'alternateEndingsDiscovered', threshold: 50, tier: 'gold', category: 'multiverse' },
+  { id: 'alt_ending_150', title: 'Multiverse Weaver', description: 'Mastered 150 alternate fates across parallel worlds', metric: 'alternateEndingsDiscovered', threshold: 150, tier: 'platinum', category: 'multiverse' },
 
   // ── NARRATIVE: DEEP BRANCH COMPLETIONS ──────────────────────────────────
-  { id: 'deep_branch_1', title: 'Divergent Path', description: 'Completed a branch 15+ pages deep into alternate realities', metric: 'deepBranchCompletions', threshold: 1, tier: 'bronze', category: 'explorer' },
-  { id: 'deep_branch_5', title: 'Subterranean Guide', description: 'Completed 5 deep divergent branches', metric: 'deepBranchCompletions', threshold: 5, tier: 'silver', category: 'explorer' },
-  { id: 'deep_branch_15', title: 'Abyssal Navigator', description: 'Completed 15 deep divergent branches', metric: 'deepBranchCompletions', threshold: 15, tier: 'gold', category: 'explorer' },
-  { id: 'deep_branch_30', title: 'Void Walker', description: 'Completed 30 deep divergent realities far from the canonical trunk', metric: 'deepBranchCompletions', threshold: 30, tier: 'platinum', category: 'explorer' },
+  { id: 'deep_branch_3', title: 'Divergent Path', description: 'Completed 3 branches 15+ pages deep into alternate realities', metric: 'deepBranchCompletions', threshold: 3, tier: 'bronze', category: 'explorer' },
+  { id: 'deep_branch_15', title: 'Subterranean Guide', description: 'Completed 15 deep divergent branches', metric: 'deepBranchCompletions', threshold: 15, tier: 'silver', category: 'explorer' },
+  { id: 'deep_branch_50', title: 'Abyssal Navigator', description: 'Completed 50 deep divergent branches', metric: 'deepBranchCompletions', threshold: 50, tier: 'gold', category: 'explorer' },
+  { id: 'deep_branch_120', title: 'Void Walker', description: 'Completed 120 deep divergent realities far from the canonical trunk', metric: 'deepBranchCompletions', threshold: 120, tier: 'platinum', category: 'explorer' },
 
   // ── NARRATIVE: DISTINCT ENDING TYPES REACHED ─────────────────────────────
-  { id: 'ending_type_3', title: 'Taste of the Macabre', description: 'Experienced 3 distinct psychological ending archetypes across the Loom', metric: 'distinctEndingTypesReached', threshold: 3, tier: 'bronze', category: 'multiverse' },
-  { id: 'ending_type_6', title: 'Student of Madness', description: 'Experienced 6 distinct psychological ending archetypes', metric: 'distinctEndingTypesReached', threshold: 6, tier: 'silver', category: 'multiverse' },
-  { id: 'ending_type_12', title: 'Anatomy of Despair', description: 'Experienced 12 distinct psychological ending archetypes', metric: 'distinctEndingTypesReached', threshold: 12, tier: 'gold', category: 'multiverse' },
+  { id: 'ending_type_2', title: 'Taste of the Macabre', description: 'Experienced 2 distinct psychological ending archetypes across the Loom', metric: 'distinctEndingTypesReached', threshold: 2, tier: 'bronze', category: 'multiverse' },
+  { id: 'ending_type_5', title: 'Student of Madness', description: 'Experienced 5 distinct psychological ending archetypes', metric: 'distinctEndingTypesReached', threshold: 5, tier: 'silver', category: 'multiverse' },
+  { id: 'ending_type_10', title: 'Anatomy of Despair', description: 'Experienced 10 distinct psychological ending archetypes', metric: 'distinctEndingTypesReached', threshold: 10, tier: 'gold', category: 'multiverse' },
   { id: 'ending_type_18', title: 'Human Tapestry', description: 'Omniscient Dread: Uncovered all 18 psychological ending archetypes', metric: 'distinctEndingTypesReached', threshold: 18, tier: 'platinum', category: 'multiverse' },
 
   // ── NARRATIVE: RARE ENDINGS FOUND ────────────────────────────────────────
   { id: 'rare_end_1', title: 'Hidden Corridor', description: 'Discovered an elusive ending found by fewer than 20% of readers', metric: 'rareEndingsFound', threshold: 1, tier: 'bronze', category: 'seeker' },
-  { id: 'rare_end_3', title: 'Shadow Realities', description: 'Discovered 3 rare endings that few readers ever uncover', metric: 'rareEndingsFound', threshold: 3, tier: 'silver', category: 'seeker' },
-  { id: 'rare_end_7', title: 'Rare Reality', description: 'Discovered 7 rare endings across divergent narrative corridors', metric: 'rareEndingsFound', threshold: 7, tier: 'gold', category: 'seeker' },
-  { id: 'rare_end_15', title: 'Secret Keeper', description: 'Mastered 15 legendary rare endings hidden in the deep dark', metric: 'rareEndingsFound', threshold: 15, tier: 'platinum', category: 'seeker' },
+  { id: 'rare_end_5', title: 'Shadow Realities', description: 'Discovered 5 rare endings that few readers ever uncover', metric: 'rareEndingsFound', threshold: 5, tier: 'silver', category: 'seeker' },
+  { id: 'rare_end_15', title: 'Rare Reality', description: 'Discovered 15 rare endings across divergent narrative corridors', metric: 'rareEndingsFound', threshold: 15, tier: 'gold', category: 'seeker' },
+  { id: 'rare_end_40', title: 'Secret Keeper', description: 'Mastered 40 legendary rare endings hidden in the deep dark', metric: 'rareEndingsFound', threshold: 40, tier: 'platinum', category: 'seeker' },
 
   // ── NARRATIVE: CLUES UNCOVERED ───────────────────────────────────────────
-  { id: 'clues_found_3', title: 'Keen Eye', description: 'Uncovered 3 narrative clues hidden across mystery plots', metric: 'cluesUncovered', threshold: 3, tier: 'bronze', category: 'seeker' },
-  { id: 'clues_found_10', title: 'Forensic Gaze', description: 'Uncovered 10 narrative clues buried deep within the prose', metric: 'cluesUncovered', threshold: 10, tier: 'silver', category: 'seeker' },
-  { id: 'clues_found_25', title: 'Unraveler of Lies', description: 'Uncovered 25 clues, piecing together the fractured truth', metric: 'cluesUncovered', threshold: 25, tier: 'gold', category: 'seeker' },
-  { id: 'clues_found_50', title: 'Truth Unmasked', description: 'Grand Inquisitor: Uncovered 50 hidden narrative clues', metric: 'cluesUncovered', threshold: 50, tier: 'platinum', category: 'seeker' },
+  { id: 'clues_found_10', title: 'Keen Eye', description: 'Uncovered 10 narrative clues hidden across mystery plots', metric: 'cluesUncovered', threshold: 10, tier: 'bronze', category: 'seeker' },
+  { id: 'clues_found_40', title: 'Forensic Gaze', description: 'Uncovered 40 narrative clues buried deep within the prose', metric: 'cluesUncovered', threshold: 40, tier: 'silver', category: 'seeker' },
+  { id: 'clues_found_120', title: 'Unraveler of Lies', description: 'Uncovered 120 clues, piecing together the fractured truth', metric: 'cluesUncovered', threshold: 120, tier: 'gold', category: 'seeker' },
+  { id: 'clues_found_300', title: 'Truth Unmasked', description: 'Grand Inquisitor: Uncovered 300 hidden narrative clues', metric: 'cluesUncovered', threshold: 300, tier: 'platinum', category: 'seeker' },
 
   // ── NARRATIVE: BRANCH POINTS EXPLORED ────────────────────────────────────
-  { id: 'branch_fork_5', title: 'The Road Not Taken', description: 'Explored 5 branching decision points away from the trunk', metric: 'branchPointsExplored', threshold: 5, tier: 'bronze', category: 'explorer' },
-  { id: 'branch_fork_20', title: 'Wayfarer of Forks', description: 'Explored 20 branching decision points across divergent storylines', metric: 'branchPointsExplored', threshold: 20, tier: 'silver', category: 'explorer' },
-  { id: 'branch_fork_50', title: 'Pathfinder', description: 'Explored 50 branching decision points across the Loom', metric: 'branchPointsExplored', threshold: 50, tier: 'gold', category: 'explorer' },
-  { id: 'branch_fork_100', title: 'Cartographer of Possibility', description: 'Charted 100 branching decision points into the unknown', metric: 'branchPointsExplored', threshold: 100, tier: 'platinum', category: 'explorer' },
+  { id: 'branch_fork_25', title: 'The Road Not Taken', description: 'Explored 25 branching decision points away from the trunk', metric: 'branchPointsExplored', threshold: 25, tier: 'bronze', category: 'explorer' },
+  { id: 'branch_fork_100', title: 'Wayfarer of Forks', description: 'Explored 100 branching decision points across divergent storylines', metric: 'branchPointsExplored', threshold: 100, tier: 'silver', category: 'explorer' },
+  { id: 'branch_fork_350', title: 'Pathfinder', description: 'Explored 350 branching decision points across the Loom', metric: 'branchPointsExplored', threshold: 350, tier: 'gold', category: 'explorer' },
+  { id: 'branch_fork_800', title: 'Cartographer of Possibility', description: 'Charted 800 branching decision points into the unknown', metric: 'branchPointsExplored', threshold: 800, tier: 'platinum', category: 'explorer' },
 
   // ── NARRATIVE: HIGH-RISK CHOICES TAKEN ───────────────────────────────────
-  { id: 'risk_choice_3', title: 'Playing with Fire', description: 'Made 3 high-peril choices in the face of imminent danger', metric: 'highRiskChoicesTaken', threshold: 3, tier: 'bronze', category: 'survivor' },
-  { id: 'risk_choice_10', title: 'Edge of the Precipice', description: 'Made 10 high-peril choices without flinching', metric: 'highRiskChoicesTaken', threshold: 10, tier: 'silver', category: 'survivor' },
-  { id: 'risk_choice_25', title: 'Tempting the Abyss', description: 'Made 25 high-peril choices against overwhelming odds', metric: 'highRiskChoicesTaken', threshold: 25, tier: 'gold', category: 'survivor' },
-  { id: 'risk_choice_50', title: 'Iron Will', description: 'Architect of Ruin: Made 50 high-peril choices and survived', metric: 'highRiskChoicesTaken', threshold: 50, tier: 'platinum', category: 'survivor' },
+  { id: 'risk_choice_15', title: 'Playing with Fire', description: 'Made 15 high-peril choices in the face of imminent danger', metric: 'highRiskChoicesTaken', threshold: 15, tier: 'bronze', category: 'survivor' },
+  { id: 'risk_choice_60', title: 'Edge of the Precipice', description: 'Made 60 high-peril choices without flinching', metric: 'highRiskChoicesTaken', threshold: 60, tier: 'silver', category: 'survivor' },
+  { id: 'risk_choice_180', title: 'Tempting the Abyss', description: 'Made 180 high-peril choices against overwhelming odds', metric: 'highRiskChoicesTaken', threshold: 180, tier: 'gold', category: 'survivor' },
+  { id: 'risk_choice_400', title: 'Iron Will', description: 'Architect of Ruin: Made 400 high-peril choices and survived', metric: 'highRiskChoicesTaken', threshold: 400, tier: 'platinum', category: 'survivor' },
 
   // ── NARRATIVE: DELAYED CONSEQUENCES EXPERIENCED ──────────────────────────
-  { id: 'consequence_1', title: 'I Remember You', description: 'Reached a page echoing consequences from an earlier decision', metric: 'consequenceExperienced', threshold: 1, tier: 'bronze', category: 'survivor' },
-  { id: 'consequence_5', title: 'Echoes of the Past', description: 'Experienced 5 narrative consequences shaped by your choices', metric: 'consequenceExperienced', threshold: 5, tier: 'silver', category: 'survivor' },
-  { id: 'consequence_15', title: 'Long Shadows', description: 'Experienced 15 delayed consequences echoing forward through time', metric: 'consequenceExperienced', threshold: 15, tier: 'gold', category: 'survivor' },
-  { id: 'consequence_30', title: 'Fate Defier', description: 'Unbreakable Causality: Navigated 30 long-term narrative consequences', metric: 'consequenceExperienced', threshold: 30, tier: 'platinum', category: 'survivor' },
+  { id: 'consequence_5', title: 'I Remember You', description: 'Reached 5 pages echoing consequences from an earlier decision', metric: 'consequenceExperienced', threshold: 5, tier: 'bronze', category: 'survivor' },
+  { id: 'consequence_25', title: 'Echoes of the Past', description: 'Experienced 25 narrative consequences shaped by your choices', metric: 'consequenceExperienced', threshold: 25, tier: 'silver', category: 'survivor' },
+  { id: 'consequence_80', title: 'Long Shadows', description: 'Experienced 80 delayed consequences echoing forward through time', metric: 'consequenceExperienced', threshold: 80, tier: 'gold', category: 'survivor' },
+  { id: 'consequence_200', title: 'Fate Defier', description: 'Unbreakable Causality: Navigated 200 long-term narrative consequences', metric: 'consequenceExperienced', threshold: 200, tier: 'platinum', category: 'survivor' },
 
   // ── NARRATIVE: THREADS RESOLVED ──────────────────────────────────────────
-  { id: 'thread_res_1', title: 'Loose Ends', description: 'Brought an ongoing narrative plot thread to resolution', metric: 'threadsResolved', threshold: 1, tier: 'bronze', category: 'chronicler' },
-  { id: 'thread_res_5', title: 'Untangled Knot', description: 'Resolved 5 ongoing narrative threads across complex mysteries', metric: 'threadsResolved', threshold: 5, tier: 'silver', category: 'chronicler' },
-  { id: 'thread_res_15', title: 'No Loose Threads', description: 'Resolved 15 ongoing narrative threads across the Loom', metric: 'threadsResolved', threshold: 15, tier: 'gold', category: 'chronicler' },
-  { id: 'thread_res_30', title: 'Master Chronicler', description: 'The Loom\'s Weaver: Resolved 30 complex story threads to ultimate closure', metric: 'threadsResolved', threshold: 30, tier: 'platinum', category: 'chronicler' },
+  { id: 'thread_res_3', title: 'Loose Ends', description: 'Brought 3 ongoing narrative plot threads to resolution', metric: 'threadsResolved', threshold: 3, tier: 'bronze', category: 'chronicler' },
+  { id: 'thread_res_15', title: 'Untangled Knot', description: 'Resolved 15 ongoing narrative threads across complex mysteries', metric: 'threadsResolved', threshold: 15, tier: 'silver', category: 'chronicler' },
+  { id: 'thread_res_50', title: 'No Loose Threads', description: 'Resolved 50 ongoing narrative threads across the Loom', metric: 'threadsResolved', threshold: 50, tier: 'gold', category: 'chronicler' },
+  { id: 'thread_res_150', title: 'Master Chronicler', description: 'The Loom\'s Weaver: Resolved 150 complex story threads to ultimate closure', metric: 'threadsResolved', threshold: 150, tier: 'platinum', category: 'chronicler' },
 ];

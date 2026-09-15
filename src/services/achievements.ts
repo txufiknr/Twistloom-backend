@@ -56,6 +56,7 @@ export async function getUserAchievements(userId: string): Promise<UserAchieveme
       id: rule.id,
       title: rule.title,
       description: rule.description,
+      metric: rule.metric,
       tier: rule.tier,
       category: rule.category,
       currentProgress: currentValue,
