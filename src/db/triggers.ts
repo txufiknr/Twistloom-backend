@@ -1090,14 +1090,69 @@ export async function ensureUserCountersTriggers(): Promise<void> {
     console.log("✅ Trigger created: Pages Generated (Lifetime)");
 
     // ==========================================
-    // 4. BOOKS COMPLETED (Type A: Lifetime)
+    // 4. BOOKS COMPLETED & NARRATIVE COMPLETIONS (Type A: Lifetime)
     // ==========================================
     await dbWrite.execute(`
       CREATE OR REPLACE FUNCTION update_user_books_completed() RETURNS TRIGGER AS $$
+      DECLARE
+        v_prior_completions INT;
+        v_page_num INT;
+        v_branch_id TEXT;
+        v_distinct_types INT;
+        v_rare_count INT;
       BEGIN
         IF TG_OP = 'INSERT' THEN
+          -- 1. Base books_completed (total unique endings reached lifetime)
           INSERT INTO user_counters (user_id, books_completed, updated_at) VALUES (NEW.user_id, 1, NOW())
           ON CONFLICT (user_id) DO UPDATE SET books_completed = user_counters.books_completed + 1, updated_at = NOW();
+
+          -- 2. Stories Completed vs. Alternate Endings Discovered
+          SELECT COUNT(*) INTO v_prior_completions
+          FROM user_completed_books
+          WHERE user_id = NEW.user_id AND book_id = NEW.book_id AND id != NEW.id;
+
+          IF v_prior_completions = 0 THEN
+            UPDATE user_counters
+            SET stories_completed = COALESCE(user_counters.stories_completed, 0) + 1,
+                updated_at = NOW()
+            WHERE user_id = NEW.user_id;
+          ELSE
+            UPDATE user_counters
+            SET alternate_endings_discovered = COALESCE(user_counters.alternate_endings_discovered, 0) + 1,
+                updated_at = NOW()
+            WHERE user_id = NEW.user_id;
+          END IF;
+
+          -- 3. Deep Branch Completions (15+ pages deep on divergent branch)
+          SELECT page, branch_id INTO v_page_num, v_branch_id
+          FROM pages WHERE id = NEW.page_id;
+
+          IF v_page_num >= 15 AND v_branch_id != 'main' THEN
+            UPDATE user_counters
+            SET deep_branch_completions = COALESCE(user_counters.deep_branch_completions, 0) + 1,
+                updated_at = NOW()
+            WHERE user_id = NEW.user_id;
+          END IF;
+
+          -- 4. Distinct Psychological Ending Archetypes Reached
+          SELECT COUNT(DISTINCT (p.delta->'viableEnding'->>'type'))
+          INTO v_distinct_types
+          FROM user_completed_books ucb
+          JOIN pages p ON p.id = ucb.page_id
+          WHERE ucb.user_id = NEW.user_id AND p.delta->'viableEnding'->>'type' IS NOT NULL;
+
+          -- 5. Rare Endings Found (<= 5 readers or < 20% discovery rate)
+          SELECT COUNT(*)
+          INTO v_rare_count
+          FROM user_completed_books ucb
+          JOIN books b ON b.id = ucb.book_id
+          WHERE ucb.user_id = NEW.user_id AND (b.complete_count <= 5 OR b.completion_rate < 20);
+
+          UPDATE user_counters
+          SET distinct_ending_types_reached = v_distinct_types,
+              rare_endings_found = v_rare_count,
+              updated_at = NOW()
+          WHERE user_id = NEW.user_id;
         END IF;
         RETURN NEW;
       END;
@@ -1109,7 +1164,7 @@ export async function ensureUserCountersTriggers(): Promise<void> {
         AFTER INSERT ON user_completed_books
         FOR EACH ROW EXECUTE FUNCTION update_user_books_completed();
     `);
-    console.log("✅ Trigger created: Books Completed (Lifetime)");
+    console.log("✅ Trigger created: Books Completed & Narrative Completions (Lifetime)");
 
     // ==========================================
     // 5. FOLLOWERS COUNT (Type B: Current State)

@@ -9,6 +9,7 @@ export type AchievementCategory =
   | 'legacy';
 
 export type AchievementMetric = 
+  // --- Existing 15 Vanity / Platform Metrics ---
   | 'booksGenerated'
   | 'booksCompleted'
   | 'pagesRead'
@@ -23,7 +24,18 @@ export type AchievementMetric =
   | 'creatorsSupported'
   | 'wallNotesPosted'
   | 'wallNoteLikesReceived'
-  | 'endingsSharedToWall';
+  | 'endingsSharedToWall'
+  // --- Narrative-Native Exploration Metrics ---
+  | 'storiesCompleted'
+  | 'alternateEndingsDiscovered'
+  | 'deepBranchCompletions'
+  | 'distinctEndingTypesReached'
+  | 'rareEndingsFound'
+  | 'branchPointsExplored'
+  | 'highRiskChoicesTaken'
+  | 'cluesUncovered'
+  | 'threadsResolved'
+  | 'consequenceExperienced';
 
 export interface AchievementRule {
   id: string;

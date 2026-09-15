@@ -416,4 +416,22 @@ export const ACHIEVEMENT_REGISTRY: AchievementRule[] = [
   { id: 'share_end_10', title: 'The Informant', description: 'Broadcasted 10 divergent fates to warn fellow wanderers of what lies ahead', metric: 'endingsSharedToWall', threshold: 10, tier: 'silver', category: 'multiverse' },
   { id: 'share_end_50', title: 'Cartographer of Doom', description: '50 endings exposed to the light. The maze is rapidly running out of secrets.', metric: 'endingsSharedToWall', threshold: 50, tier: 'gold', category: 'multiverse' },
   { id: 'share_end_100', title: 'Unveiler of the Multiverse', description: '100 endings charted. You have catalogued every nightmare the Loom can conjure.', metric: 'endingsSharedToWall', threshold: 100, tier: 'platinum', category: 'multiverse' },
+
+  // ── NARRATIVE: STORIES COMPLETED ─────────────────────────────────────────
+  { id: 'stories_done_1', title: 'The First Tapestry', description: 'Completed your first full branching narrative', metric: 'storiesCompleted', threshold: 1, tier: 'bronze', category: 'multiverse' },
+  { id: 'stories_done_5', title: 'Weaver of Tales', description: 'Guided 5 complete stories to resolution', metric: 'storiesCompleted', threshold: 5, tier: 'silver', category: 'multiverse' },
+  { id: 'stories_done_15', title: 'Master of Destinies', description: 'Guided 15 complete stories to resolution', metric: 'storiesCompleted', threshold: 15, tier: 'gold', category: 'multiverse' },
+  { id: 'stories_done_30', title: 'Grand Archivist', description: 'Completed 30 distinct story worlds across the Loom', metric: 'storiesCompleted', threshold: 30, tier: 'platinum', category: 'multiverse' },
+
+  // ── NARRATIVE: ALTERNATE ENDINGS DISCOVERED ─────────────────────────────
+  { id: 'alt_ending_1', title: 'Parallel Thread', description: 'Discovered a second ending in a previously completed story', metric: 'alternateEndingsDiscovered', threshold: 1, tier: 'bronze', category: 'multiverse' },
+  { id: 'alt_ending_5', title: 'Timeline Drifter', description: 'Uncovered 5 alternate realities across the multiverse', metric: 'alternateEndingsDiscovered', threshold: 5, tier: 'silver', category: 'multiverse' },
+  { id: 'alt_ending_15', title: 'Quantum Wanderer', description: 'Diverged into 15 divergent timelines', metric: 'alternateEndingsDiscovered', threshold: 15, tier: 'gold', category: 'multiverse' },
+  { id: 'alt_ending_30', title: 'Multiverse Weaver', description: 'Mastered 30 alternate fates across parallel worlds', metric: 'alternateEndingsDiscovered', threshold: 30, tier: 'platinum', category: 'multiverse' },
+
+  // ── NARRATIVE: DEEP BRANCH COMPLETIONS ──────────────────────────────────
+  { id: 'deep_branch_1', title: 'Divergent Path', description: 'Completed a branch 15+ pages deep into alternate realities', metric: 'deepBranchCompletions', threshold: 1, tier: 'bronze', category: 'explorer' },
+  { id: 'deep_branch_5', title: 'Subterranean Guide', description: 'Completed 5 deep divergent branches', metric: 'deepBranchCompletions', threshold: 5, tier: 'silver', category: 'explorer' },
+  { id: 'deep_branch_15', title: 'Abyssal Navigator', description: 'Completed 15 deep divergent branches', metric: 'deepBranchCompletions', threshold: 15, tier: 'gold', category: 'explorer' },
+  { id: 'deep_branch_30', title: 'Void Walker', description: 'Completed 30 deep divergent realities far from the canonical trunk', metric: 'deepBranchCompletions', threshold: 30, tier: 'platinum', category: 'explorer' },
 ];

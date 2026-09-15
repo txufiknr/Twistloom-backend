@@ -617,6 +617,13 @@
       "when": 1789353306573,
       "tag": "0088_sharp_killmonger",
       "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1789441476411,
+      "tag": "0089_lucky_abomination",
+      "breakpoints": true
     }
   ]
 }

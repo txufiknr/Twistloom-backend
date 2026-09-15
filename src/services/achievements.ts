@@ -96,6 +96,17 @@ export async function getUserMetrics(userId: string) {
     wallNotesPosted: stats?.wallNotesPosted ?? 0,
     wallNoteLikesReceived: stats?.wallNoteLikesReceived ?? 0,
     endingsSharedToWall: stats?.endingsSharedToWall ?? 0,
+    // Narrative metrics
+    storiesCompleted: stats?.storiesCompleted ?? 0,
+    alternateEndingsDiscovered: stats?.alternateEndingsDiscovered ?? 0,
+    deepBranchCompletions: stats?.deepBranchCompletions ?? 0,
+    distinctEndingTypesReached: stats?.distinctEndingTypesReached ?? 0,
+    rareEndingsFound: stats?.rareEndingsFound ?? 0,
+    branchPointsExplored: stats?.branchPointsExplored ?? 0,
+    highRiskChoicesTaken: stats?.highRiskChoicesTaken ?? 0,
+    cluesUncovered: stats?.cluesUncovered ?? 0,
+    threadsResolved: stats?.threadsResolved ?? 0,
+    consequenceExperienced: stats?.consequenceExperienced ?? 0,
   } satisfies Record<AchievementMetric, number>;
 }
 

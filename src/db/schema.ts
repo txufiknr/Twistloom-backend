@@ -1711,6 +1711,18 @@ export const userCounters = pgTable(
     activeCheckinStreak: integer("active_checkin_streak").notNull().default(0),
     maxCheckinStreak: integer("max_checkin_streak").notNull().default(0),
 
+    // Narrative exploration & story accomplishment metrics
+    storiesCompleted: integer("stories_completed").notNull().default(0),
+    alternateEndingsDiscovered: integer("alternate_endings_discovered").notNull().default(0),
+    deepBranchCompletions: integer("deep_branch_completions").notNull().default(0),
+    distinctEndingTypesReached: integer("distinct_ending_types_reached").notNull().default(0),
+    rareEndingsFound: integer("rare_endings_found").notNull().default(0),
+    branchPointsExplored: integer("branch_points_explored").notNull().default(0),
+    highRiskChoicesTaken: integer("high_risk_choices_taken").notNull().default(0),
+    cluesUncovered: integer("clues_uncovered").notNull().default(0),
+    threadsResolved: integer("threads_resolved").notNull().default(0),
+    consequenceExperienced: integer("consequence_experienced").notNull().default(0),
+
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull().$onUpdate(() => new Date()),
   }
 );
