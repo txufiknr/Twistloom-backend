@@ -234,6 +234,7 @@ router.get('/', requireAuth, async (c: Context<AppEnv>) => {
       activeCheckinStreak: streaks.activeStreak,
       maxCheckinStreak: streaks.longestStreak,
       customActionsWritten: user.customActionsWritten,
+      alternateEndingsDiscovered: user.alternateEndingsDiscovered,
     };
 
     return c.json({
@@ -963,6 +964,7 @@ router.get("/users/:identifier", optionalAuth, async (c: Context<AppEnv>) => {
           activeCheckinStreak: userData.activeCheckinStreak,
           maxCheckinStreak: userData.maxCheckinStreak,
           customActionsWritten: userData.customActionsWritten,
+          alternateEndingsDiscovered: userData.alternateEndingsDiscovered,
         } satisfies UserStats,
 
         // Profile metadata — typed columns
@@ -4036,6 +4038,16 @@ router.post('/quests/:questId/claim', requireAuth, async (c: Context<AppEnv>) =>
     }
     if (result.status === 'already_claimed') {
       return cConflictError(c, 'Quest reward already claimed');
+    }
+    if (result.status === 'vip_required') {
+      return c.json({
+        success: false,
+        questId,
+        status: 'vip_required',
+        message: 'VIP membership required to claim this quest reward',
+        creditsAwarded: 0,
+        newBalance: result.newBalance,
+      }, 403);
     }
 
     return c.json({

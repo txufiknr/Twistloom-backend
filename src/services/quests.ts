@@ -1,4 +1,4 @@
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and, sql, inArray } from 'drizzle-orm';
 import { dbRead, dbWrite, type DBTransaction } from '../db/client.js';
 import {
   userCounters,
@@ -16,8 +16,10 @@ import {
   penSessions,
   penEdits,
   canonValidations,
+  userAchievements,
 } from '../db/schema.js';
 import { QUEST_REGISTRY } from '../config/quests.js';
+import { ACHIEVEMENT_REGISTRY } from '../config/achievements.js';
 import { addCredits } from './credits.js';
 import { logUserActivity } from './user.js';
 import { invalidateUserProfileCache } from './cache.js';
@@ -50,6 +52,11 @@ interface QuestMetricSnapshot {
   authorPages: number;
   publishedBook: boolean;
   canonValidations: number;
+  achievementsUnlocked: number;
+  achievementCategories: number;
+  goldOrPlatinumAchievements: number;
+  platinumAchievements: number;
+  isVip: boolean;
 }
 
 /**
@@ -83,6 +90,7 @@ async function loadQuestMetrics(userId: string): Promise<QuestMetricSnapshot> {
     authorPageRows,
     publishedRows,
     canonRows,
+    achievementsRows,
   ] = await Promise.all([
     dbRead.select().from(userCounters).where(eq(userCounters.userId, userId)).limit(1),
 
@@ -93,6 +101,8 @@ async function loadQuestMetrics(userId: string): Promise<QuestMetricSnapshot> {
         bio: users.bio,
         imageUrl: users.imageUrl,
         gender: users.gender,
+        tier: users.tier,
+        vipExpiresAt: users.vipExpiresAt,
       })
       .from(users)
       .where(eq(users.userId, userId))
@@ -200,11 +210,35 @@ async function loadQuestMetrics(userId: string): Promise<QuestMetricSnapshot> {
       .from(canonValidations)
       .innerJoin(books, eq(canonValidations.bookId, books.id))
       .where(eq(books.userId, userId)),
+
+    dbRead
+      .select({ achievementId: userAchievements.achievementId })
+      .from(userAchievements)
+      .where(eq(userAchievements.userId, userId)),
   ]);
 
   const counters = countersRows[0] ?? {};
   const profile = profileRows[0];
   const modeMap = new Map(modeRows.map((r) => [r.mode, r.value ?? 0]));
+
+  const achievementMap = new Map(ACHIEVEMENT_REGISTRY.map((r) => [r.id, r]));
+  const unlockedCategories = new Set<string>();
+  let goldOrPlatinumAchievements = 0;
+  let platinumAchievements = 0;
+  for (const row of achievementsRows) {
+    const rule = achievementMap.get(row.achievementId);
+    if (rule) {
+      if (rule.category) unlockedCategories.add(rule.category);
+      if (rule.tier === 'gold' || rule.tier === 'platinum') {
+        goldOrPlatinumAchievements++;
+      }
+      if (rule.tier === 'platinum') {
+        platinumAchievements++;
+      }
+    }
+  }
+
+  const isVip = profile?.tier === 'vip' && (!profile.vipExpiresAt || profile.vipExpiresAt.getTime() > Date.now());
 
   return {
     counters: {
@@ -225,6 +259,7 @@ async function loadQuestMetrics(userId: string): Promise<QuestMetricSnapshot> {
       cluesUncovered: counters.cluesUncovered ?? 0,
       distinctEndingTypesReached: counters.distinctEndingTypesReached ?? 0,
       consequenceExperienced: counters.consequenceExperienced ?? 0,
+      maxCheckinStreak: counters.maxCheckinStreak ?? 0,
     },
     profileComplete: !!profile && profile.isNewUser === false && !!profile.name &&
       (!!profile.bio || !!profile.imageUrl || !!profile.gender),
@@ -246,6 +281,11 @@ async function loadQuestMetrics(userId: string): Promise<QuestMetricSnapshot> {
     authorPages: authorPageRows[0]?.value ?? 0,
     publishedBook: (publishedRows[0]?.value ?? 0) > 0,
     canonValidations: canonRows[0]?.value ?? 0,
+    achievementsUnlocked: achievementsRows.length,
+    achievementCategories: unlockedCategories.size,
+    goldOrPlatinumAchievements,
+    platinumAchievements,
+    isVip,
   };
 }
 
@@ -338,6 +378,22 @@ export function evaluateDetector(
     case 'canonValidations':
       threshold = detector.threshold;
       current = m.canonValidations;
+      break;
+    case 'achievementsUnlocked':
+      threshold = detector.threshold;
+      current = m.achievementsUnlocked;
+      break;
+    case 'achievementCategories':
+      threshold = detector.threshold;
+      current = m.achievementCategories;
+      break;
+    case 'achievementTier':
+      threshold = detector.threshold;
+      current = detector.tier === 'platinum' ? m.platinumAchievements : m.goldOrPlatinumAchievements;
+      break;
+    case 'vipStatus':
+      threshold = 1;
+      current = m.isVip ? 1 : 0;
       break;
   }
 
@@ -439,6 +495,7 @@ export async function getUserQuests(userId: string): Promise<UserQuestState[]> {
         completedAt: state?.completedAt ? state.completedAt.toISOString() : null,
         claimedAt: state?.claimedAt ? state.claimedAt.toISOString() : null,
         enabled: rule.enabled,
+        isVipOnly: rule.isVipOnly,
       };
     });
 }
@@ -481,7 +538,7 @@ export async function claimQuestReward(
   userId: string,
   questId: string,
 ): Promise<{
-  status: 'claimed' | 'already_claimed' | 'not_completed' | 'not_found';
+  status: 'claimed' | 'already_claimed' | 'not_completed' | 'not_found' | 'vip_required';
   creditsAwarded: number;
   newBalance: number;
 }> {
@@ -491,6 +548,20 @@ export async function claimQuestReward(
   }
 
   return dbWrite.transaction(async (tx: DBTransaction) => {
+    // If the quest is VIP-only (or Chapter VII), verify active VIP membership or trial.
+    if (rule.isVipOnly || rule.chapterId === 'ch7') {
+      const [user] = await tx
+        .select({ tier: users.tier, vipExpiresAt: users.vipExpiresAt, credits: users.credits })
+        .from(users)
+        .where(eq(users.userId, userId))
+        .limit(1);
+
+      const isVip = user?.tier === 'vip' && (!user.vipExpiresAt || user.vipExpiresAt.getTime() > Date.now());
+      if (!isVip) {
+        return { status: 'vip_required', creditsAwarded: 0, newBalance: user?.credits ?? 0 };
+      }
+    }
+
     const [claimed] = await tx
       .update(userQuests)
       .set({ status: 'claimed', claimedAt: new Date(), updatedAt: new Date() })
@@ -567,6 +638,10 @@ export type { QuestMetricSnapshot };
  * it out and one activity log records the batch. Safely idempotent: with zero
  * claimable quests it returns `none_claimable` with no writes.
  *
+ * For non-VIP users, VIP-exclusive quests (Chapter VII or `isVipOnly`) are
+ * automatically filtered out so non-VIPs can claim all free chapters cleanly
+ * without being blocked.
+ *
  * @param userId - Claiming user
  * @returns claimedCount / creditsAwarded / newBalance plus a status flag
  */
@@ -579,28 +654,44 @@ export async function claimAllQuestRewards(
   newBalance: number;
 }> {
   return dbWrite.transaction(async (tx: DBTransaction) => {
+    const [user] = await tx
+      .select({ tier: users.tier, vipExpiresAt: users.vipExpiresAt, credits: users.credits })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1);
+
+    const isVip = user?.tier === 'vip' && (!user.vipExpiresAt || user.vipExpiresAt.getTime() > Date.now());
+
     const claimable = await tx
       .select({ questId: userQuests.questId })
       .from(userQuests)
       .where(and(eq(userQuests.userId, userId), eq(userQuests.status, 'completed')));
 
-    if (claimable.length === 0) {
-      const [user] = await tx
-        .select({ credits: users.credits })
-        .from(users)
-        .where(eq(users.userId, userId))
-        .limit(1);
+    const vipQuestIds = new Set(
+      QUEST_REGISTRY.filter((r) => r.isVipOnly || r.chapterId === 'ch7').map((r) => r.id),
+    );
+    const eligibleClaimable = isVip
+      ? claimable
+      : claimable.filter((r) => !vipQuestIds.has(r.questId));
+
+    if (eligibleClaimable.length === 0) {
       return { status: 'none_claimable', claimedCount: 0, creditsAwarded: 0, newBalance: user?.credits ?? 0 };
     }
 
-    const questIds = claimable.map((r) => r.questId);
+    const questIds = eligibleClaimable.map((r) => r.questId);
     const rewardByQuestId = new Map(QUEST_REGISTRY.map((r) => [r.id, r.rewardCredits]));
     const totalReward = questIds.reduce((sum, id) => sum + (rewardByQuestId.get(id) ?? 0), 0);
 
     await tx
       .update(userQuests)
       .set({ status: 'claimed', claimedAt: new Date(), updatedAt: new Date() })
-      .where(and(eq(userQuests.userId, userId), eq(userQuests.status, 'completed')));
+      .where(
+        and(
+          eq(userQuests.userId, userId),
+          eq(userQuests.status, 'completed'),
+          inArray(userQuests.questId, questIds),
+        ),
+      );
 
     const newBalance = await addCredits(userId, totalReward, {
       context: 'quest_reward',

@@ -111,6 +111,7 @@ export function getEnrichedUserSelect() {
     activeCheckinStreak: sql<number>`COALESCE(${userCounters.activeCheckinStreak},0)`,
     maxCheckinStreak: sql<number>`COALESCE(${userCounters.maxCheckinStreak},0)`,
     customActionsWritten: sql<number>`COALESCE(${userCounters.customActionsWritten},0)`,
+    alternateEndingsDiscovered: sql<number>`COALESCE(${userCounters.alternateEndingsDiscovered},0)`,
 
     // Consolidated counters: prefer values from `user_counters` (SSOT).
     // Keep fallbacks for metrics not yet tracked in the counters table.

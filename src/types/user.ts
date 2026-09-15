@@ -69,6 +69,7 @@ export interface UserStats {
   wallNoteLikesReceived: number;
   endingsSharedToWall: number;
   customActionsWritten: number;
+  alternateEndingsDiscovered: number;
   activeCheckinStreak: number;
   maxCheckinStreak: number;
 }

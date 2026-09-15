@@ -36,7 +36,8 @@ export type QuestCounterMetric =
   | 'deepBranchCompletions'
   | 'cluesUncovered'
   | 'distinctEndingTypesReached'
-  | 'consequenceExperienced';
+  | 'consequenceExperienced'
+  | 'maxCheckinStreak';
 
 /**
  * Discriminated union describing *how* a quest's goal is detected.
@@ -83,7 +84,15 @@ export type QuestDetector =
   /** Binary: the user has a `published` book (`status = 'active'`, `visibility != 'private'`). */
   | { kind: 'publishedBook' }
   /** Count of `canon_validations` for books authored by the user. */
-  | { kind: 'canonValidations'; threshold: number };
+  | { kind: 'canonValidations'; threshold: number }
+  /** Count of unlocked achievement badges in `user_achievements`. */
+  | { kind: 'achievementsUnlocked'; threshold: number }
+  /** Count of distinct achievement categories with at least 1 unlocked badge. */
+  | { kind: 'achievementCategories'; threshold: number }
+  /** Count of unlocked badges of a specific tier ('gold' | 'platinum'). */
+  | { kind: 'achievementTier'; tier: 'gold' | 'platinum'; threshold: number }
+  /** Binary: the user holds active VIP subscription or trial status. */
+  | { kind: 'vipStatus' };
 
 /** Presentational + structural metadata for one quest (SSOT in `config/quests.ts`). */
 export interface QuestRule {
@@ -103,6 +112,8 @@ export interface QuestRule {
   enabled: boolean;
   /** Optional dependency tag (e.g. 'pen-v2') explaining why a quest is gated. */
   dependsOn?: string;
+  /** Whether claiming this quest requires active VIP membership. */
+  isVipOnly?: boolean;
 }
 
 /**
@@ -124,6 +135,7 @@ export interface UserQuestState {
   completedAt: string | null;
   claimedAt: string | null;
   enabled: boolean;
+  isVipOnly?: boolean;
 }
 
 /** Aggregated summary of the quest log (used to derive the nav badge). */

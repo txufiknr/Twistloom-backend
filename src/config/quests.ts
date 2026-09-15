@@ -3,7 +3,7 @@ import type { QuestRule } from "../types/quests.js";
 /** Minimum credit reward across all quests in the registry (economy floor). */
 export const QUEST_REWARD_MIN = 5;
 /** Maximum credit reward across all quests in the registry (economy ceiling). */
-export const QUEST_REWARD_MAX = 30;
+export const QUEST_REWARD_MAX = 50;
 
 /**
  * Single Source of Truth (SSOT) for Twistloom's Quest System ("The Prologue").
@@ -33,12 +33,16 @@ export const QUEST_REWARD_MAX = 30;
  *  authorPages               pages                (human_author_user_id = me)
  *  publishedBook             books                (status='active', visibility != 'private')
  *  canonValidations          canon_validations    (books authored by me)
+ *  achievementsUnlocked      user_achievements    (unlocked badges count)
+ *  achievementCategories     user_achievements    (distinct categories count)
+ *  achievementTier           user_achievements    (gold/platinum tier count)
+ *  vipStatus                 users                (tier = 'vip' or active trial)
  *
  * Quests whose detectors depend on data shapes that are not finalised yet
  * (Pen lore/character/AI flows) ship with `enabled: false` and a `dependsOn`
  * tag so the UI never shows them — flipping one flag activates them later.
  *
- * Reward ladder: 5–30 credits; Chapters I–VI totals 560 credits across 45 quests.
+ * Reward ladder: 5–50 credits; Chapters I–VIII totals 880 credits across 55 quests.
  */
 export const QUEST_REGISTRY: QuestRule[] = [
   // ── CHAPTER I · First Steps (75 credits) ──────────────────────────────────
@@ -444,6 +448,95 @@ export const QUEST_REGISTRY: QuestRule[] = [
     description: 'Experience 3 distinct psychological ending archetypes (e.g. loop, betrayal, false reality).',
     rewardCredits: 25,
     detector: { kind: 'counter', metric: 'distinctEndingTypesReached', threshold: 3 },
+    enabled: true,
+  },
+
+  // ── CHAPTER VII · The Inner Circle (185 credits, VIP Exclusive) ──────────
+  {
+    id: 'qs_07_1', chapterId: 'ch7',
+    title: "The Master's Key",
+    description: 'Attain VIP membership status or activate your 30-day Free Trial to unlock the Inner Circle.',
+    rewardCredits: 50,
+    detector: { kind: 'vipStatus' },
+    enabled: true,
+    isVipOnly: true,
+  },
+  {
+    id: 'qs_07_2', chapterId: 'ch7',
+    title: 'Patron of the Loom',
+    description: 'Support 3 distinct creators via Thanks gifts to nurture the community of storytellers.',
+    rewardCredits: 30,
+    detector: { kind: 'counter', metric: 'creatorsSupported', threshold: 3 },
+    enabled: true,
+    isVipOnly: true,
+  },
+  {
+    id: 'qs_07_3', chapterId: 'ch7',
+    title: 'Architect of Realities',
+    description: 'Venture deep into the labyrinth by reaching an ending on a deep branch (15+ pages divergence).',
+    rewardCredits: 35,
+    detector: { kind: 'counter', metric: 'deepBranchCompletions', threshold: 1 },
+    enabled: true,
+    isVipOnly: true,
+  },
+  {
+    id: 'qs_07_4', chapterId: 'ch7',
+    title: 'Resolute Rhythm',
+    description: 'Maintain an unbroken daily check-in streak of 14 consecutive days.',
+    rewardCredits: 40,
+    detector: { kind: 'counter', metric: 'maxCheckinStreak', threshold: 14 },
+    enabled: true,
+    isVipOnly: true,
+  },
+  {
+    id: 'qs_07_5', chapterId: 'ch7',
+    title: 'Echo Across Worlds',
+    description: 'Broadcast a discovered ending to the public Wall to share the truth with fellow readers.',
+    rewardCredits: 30,
+    detector: { kind: 'counter', metric: 'endingsSharedToWall', threshold: 1 },
+    enabled: true,
+    isVipOnly: true,
+  },
+
+  // ── CHAPTER VIII · The Hall of Honors (135 credits, Meta-Progression) ────
+  {
+    id: 'qs_08_1', chapterId: 'ch8',
+    title: 'First Accolades',
+    description: 'Unlock your first 3 achievement badges across any narrative or platform categories.',
+    rewardCredits: 15,
+    detector: { kind: 'achievementsUnlocked', threshold: 3 },
+    enabled: true,
+  },
+  {
+    id: 'qs_08_2', chapterId: 'ch8',
+    title: 'The Broad Explorer',
+    description: 'Unlock badges across at least 4 distinct achievement categories to prove versatile mastery.',
+    rewardCredits: 20,
+    detector: { kind: 'achievementCategories', threshold: 4 },
+    enabled: true,
+  },
+  {
+    id: 'qs_08_3', chapterId: 'ch8',
+    title: 'Medallion Collector',
+    description: 'Amass a collection of 10 unlocked achievement badges in your Hall of Honors.',
+    rewardCredits: 25,
+    detector: { kind: 'achievementsUnlocked', threshold: 10 },
+    enabled: true,
+  },
+  {
+    id: 'qs_08_4', chapterId: 'ch8',
+    title: 'Orichalcum Standard',
+    description: 'Achieve mastery in any single metric by unlocking at least 1 Gold or Platinum achievement badge.',
+    rewardCredits: 30,
+    detector: { kind: 'achievementTier', tier: 'gold', threshold: 1 },
+    enabled: true,
+  },
+  {
+    id: 'qs_08_5', chapterId: 'ch8',
+    title: "Loom Master's Mantle",
+    description: 'Ascend to true legendary status by unlocking 25 achievement badges across the multiverse.',
+    rewardCredits: 45,
+    detector: { kind: 'achievementsUnlocked', threshold: 25 },
     enabled: true,
   },
 ];
