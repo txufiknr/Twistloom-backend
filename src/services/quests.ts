@@ -21,7 +21,7 @@ import { QUEST_REGISTRY } from '../config/quests.js';
 import { addCredits } from './credits.js';
 import { logUserActivity } from './user.js';
 import { invalidateUserProfileCache } from './cache.js';
-import type { QuestDetector, QuestStatus, UserQuestState } from '../types/quests.js';
+import type { QuestCounterMetric, QuestDetector, QuestStatus, UserQuestState } from '../types/quests.js';
 
 /**
  * Aggregate snapshot of every value a detector can read. Computed once per
@@ -30,7 +30,7 @@ import type { QuestDetector, QuestStatus, UserQuestState } from '../types/quests
  * per quest.
  */
 interface QuestMetricSnapshot {
-  counters: Partial<Record<'booksGenerated' | 'booksCompleted' | 'pagesRead' | 'pagesGenerated' | 'branchesOpened' | 'followersCount' | 'customActionsWritten', number>>;
+  counters: Partial<Record<QuestCounterMetric, number>>;
   profileComplete: boolean;
   likes: number;
   favorites: number;
@@ -215,6 +215,16 @@ async function loadQuestMetrics(userId: string): Promise<QuestMetricSnapshot> {
       branchesOpened: counters.branchesOpened ?? 0,
       followersCount: counters.followersCount ?? 0,
       customActionsWritten: counters.customActionsWritten ?? 0,
+      easterEggsFound: counters.easterEggsFound ?? 0,
+      creatorsSupported: counters.creatorsSupported ?? 0,
+      endingsSharedToWall: counters.endingsSharedToWall ?? 0,
+      alternateEndingsDiscovered: counters.alternateEndingsDiscovered ?? 0,
+      rareEndingsFound: counters.rareEndingsFound ?? 0,
+      highRiskChoicesTaken: counters.highRiskChoicesTaken ?? 0,
+      deepBranchCompletions: counters.deepBranchCompletions ?? 0,
+      cluesUncovered: counters.cluesUncovered ?? 0,
+      distinctEndingTypesReached: counters.distinctEndingTypesReached ?? 0,
+      consequenceExperienced: counters.consequenceExperienced ?? 0,
     },
     profileComplete: !!profile && profile.isNewUser === false && !!profile.name &&
       (!!profile.bio || !!profile.imageUrl || !!profile.gender),

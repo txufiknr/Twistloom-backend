@@ -38,10 +38,10 @@ export const QUEST_REWARD_MAX = 30;
  * (Pen lore/character/AI flows) ship with `enabled: false` and a `dependsOn`
  * tag so the UI never shows them — flipping one flag activates them later.
  *
- * Reward ladder: 5–30 credits; Chapter I–V totals 385 credits.
+ * Reward ladder: 5–30 credits; Chapters I–VI totals 560 credits across 45 quests.
  */
 export const QUEST_REGISTRY: QuestRule[] = [
-  // ── CHAPTER I · First Steps (65 credits) ──────────────────────────────────
+  // ── CHAPTER I · First Steps (75 credits) ──────────────────────────────────
   {
     id: 'qs_01_1', chapterId: 'ch1',
     title: 'Complete your profile',
@@ -98,8 +98,16 @@ export const QUEST_REGISTRY: QuestRule[] = [
     detector: { kind: 'distinctBooks', threshold: 2 },
     enabled: true,
   },
+  {
+    id: 'qs_01_8', chapterId: 'ch1',
+    title: 'Find the Hidden Thread',
+    description: 'Discover and crack your first secret in-story Easter Egg.',
+    rewardCredits: 10,
+    detector: { kind: 'counter', metric: 'easterEggsFound', threshold: 1 },
+    enabled: true,
+  },
 
-  // ── CHAPTER II · Discover the Multiverse (80 credits) ────────────────────
+  // ── CHAPTER II · Discover the Multiverse (115 credits) ───────────────────
   {
     id: 'qs_02_1', chapterId: 'ch2',
     title: 'Generate a story from just one sentence',
@@ -154,6 +162,22 @@ export const QUEST_REGISTRY: QuestRule[] = [
     description: 'Second chances exist — if you dare.',
     rewardCredits: 10,
     detector: { kind: 'resumedSession', threshold: 1 },
+    enabled: true,
+  },
+  {
+    id: 'qs_02_8', chapterId: 'ch2',
+    title: 'Bend the Narrative',
+    description: 'Write your own custom action to steer the story off its authored track.',
+    rewardCredits: 15,
+    detector: { kind: 'counter', metric: 'customActionsWritten', threshold: 1 },
+    enabled: true,
+  },
+  {
+    id: 'qs_02_9', chapterId: 'ch2',
+    title: 'Divergent Fates',
+    description: 'Discover two different endings within the same story to see how reality splits.',
+    rewardCredits: 20,
+    detector: { kind: 'counter', metric: 'alternateEndingsDiscovered', threshold: 1 },
     enabled: true,
   },
 
@@ -299,7 +323,7 @@ export const QUEST_REGISTRY: QuestRule[] = [
     enabled: true,
   },
 
-  // ── CHAPTER V · The Reader Journey (65 credits) ───────────────────────────
+  // ── CHAPTER V · The Reader Journey (85 credits) ───────────────────────────
   {
     id: 'qs_05_1', chapterId: 'ch5',
     title: 'Read ten pages',
@@ -354,6 +378,72 @@ export const QUEST_REGISTRY: QuestRule[] = [
     description: 'Follow the voices you trust.',
     rewardCredits: 5,
     detector: { kind: 'follows', threshold: 1 },
+    enabled: true,
+  },
+  {
+    id: 'qs_05_8', chapterId: 'ch5',
+    title: 'Patron of Words',
+    description: 'Send Thanks to a writer whose branching worlds gripped your mind.',
+    rewardCredits: 10,
+    detector: { kind: 'counter', metric: 'creatorsSupported', threshold: 1 },
+    enabled: true,
+  },
+  {
+    id: 'qs_05_9', chapterId: 'ch5',
+    title: 'Carve It Into the Wall',
+    description: 'Broadcast a discovered ending to the public Wall to warn or inspire fellow readers.',
+    rewardCredits: 10,
+    detector: { kind: 'counter', metric: 'endingsSharedToWall', threshold: 1 },
+    enabled: true,
+  },
+
+  // ── CHAPTER VI · The Web of Fates (110 credits) ──────────────────────────
+  {
+    id: 'qs_06_1', chapterId: 'ch6',
+    title: 'The Obscure Corridor',
+    description: 'Reach an elusive ending discovered by fewer than 20% of all readers.',
+    rewardCredits: 20,
+    detector: { kind: 'counter', metric: 'rareEndingsFound', threshold: 1 },
+    enabled: true,
+  },
+  {
+    id: 'qs_06_2', chapterId: 'ch6',
+    title: 'Playing with Fire',
+    description: 'Select a choice evaluated as High or Extreme Risk and face the psychological aftermath.',
+    rewardCredits: 10,
+    detector: { kind: 'counter', metric: 'highRiskChoicesTaken', threshold: 1 },
+    enabled: true,
+  },
+  {
+    id: 'qs_06_3', chapterId: 'ch6',
+    title: 'Subterranean Divergence',
+    description: 'Reach an ending on an alternate branch that diverged 15+ pages into another reality.',
+    rewardCredits: 20,
+    detector: { kind: 'counter', metric: 'deepBranchCompletions', threshold: 1 },
+    enabled: true,
+  },
+  {
+    id: 'qs_06_4', chapterId: 'ch6',
+    title: 'Fragments of Truth',
+    description: 'Uncover 5 narrative clues or hidden facts across your investigative journeys.',
+    rewardCredits: 15,
+    detector: { kind: 'counter', metric: 'cluesUncovered', threshold: 5 },
+    enabled: true,
+  },
+  {
+    id: 'qs_06_5', chapterId: 'ch6',
+    title: 'The Echo Arrives',
+    description: 'Experience a delayed narrative consequence triggered by a decision made 20+ pages earlier.',
+    rewardCredits: 20,
+    detector: { kind: 'counter', metric: 'consequenceExperienced', threshold: 1 },
+    enabled: true,
+  },
+  {
+    id: 'qs_06_6', chapterId: 'ch6',
+    title: 'Architect of Outcomes',
+    description: 'Experience 3 distinct psychological ending archetypes (e.g. loop, betrayal, false reality).',
+    rewardCredits: 25,
+    detector: { kind: 'counter', metric: 'distinctEndingTypesReached', threshold: 3 },
     enabled: true,
   },
 ];

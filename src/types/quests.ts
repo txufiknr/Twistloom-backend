@@ -26,7 +26,17 @@ export type QuestCounterMetric =
   | 'pagesGenerated'
   | 'branchesOpened'
   | 'followersCount'
-  | 'customActionsWritten';
+  | 'customActionsWritten'
+  | 'easterEggsFound'
+  | 'creatorsSupported'
+  | 'endingsSharedToWall'
+  | 'alternateEndingsDiscovered'
+  | 'rareEndingsFound'
+  | 'highRiskChoicesTaken'
+  | 'deepBranchCompletions'
+  | 'cluesUncovered'
+  | 'distinctEndingTypesReached'
+  | 'consequenceExperienced';
 
 /**
  * Discriminated union describing *how* a quest's goal is detected.
