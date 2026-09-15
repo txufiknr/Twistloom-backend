@@ -159,29 +159,27 @@ function normalizeMetric(value: number, maxThreshold: number): number {
 }
 
 /**
- * Mastery archetype normalization caps.
+ * Mastery archetype normalization caps & formula specifications.
  *
  * These balance the score distribution so no single metric dominates.
  * A value of 100 means "100% mastery" at that cap — not the achievement
  * registry's maximum threshold. The caps are deliberately lower than
  * the highest achievement tier to prevent score inflation.
+ * 
+ * Phase 2 Narrative-Native Caps & Formulas:
+ * 
+ * | Archetype   | Cap | Narrative Formula (with legacy fallback)                   |
+ * |-------------|-----|------------------------------------------------------------|
+ * | explorer    | 100 | branchPointsExplored + (deepBranchCompletions * 2)          |
+ * | seeker      | 50  | (rareEndingsFound * 2) + cluesUncovered                    |
+ * | survivor    | 50  | highRiskChoicesTaken + (consequenceExperienced * 2)        |
+ * | worldwalker | 100 | (storiesCompleted * 2) + (alternateEndingsDiscovered * 2)  |
+ * | storyteller | 50  | customActionsWritten + (distinctEndingTypesReached * 2)    |
+ * | chronicler  | 100 | (threadsResolved * 2) + endingsSharedToWall                |
  *
- * | Archetype     | Cap | Rationale |
- * |---------------|-----|-----------|
- * | explorer      | 100 | branchesOpened — high-volume, needs wide range |
- * | seeker        | 50  | easterEggsFound + endingsSharedToWall — compound, lower cap |
- * | survivor      | 50  | booksCompleted — slow metric, 50 books = max mastery |
- * | worldwalker   | 100 | endingsSharedToWall + branchesOpened — breadth, wide range |
- * | storyteller   | 50  | customActionsWritten + wallNotesPosted — compound, lower cap |
- * Phase 1 Decoupled Caps (using existing user_counters):
- * | Archetype   | Cap | Metric / Formula Description |
- * |-------------|-----|-------------------------------------------------------|
- * | explorer    | 100 | branchesOpened — deep branching exploration           |
- * | seeker      | 50  | easterEggsFound — secret discovery                   |
- * | survivor    | 50  | booksCompleted — completion endurance                 |
- * | worldwalker | 100 | (booksCompleted * 2) + endingsSharedToWall — breadth  |
- * | storyteller | 50  | customActionsWritten — creative authoring             |
- * | chronicler  | 100 | (endingsSharedToWall * 2) + wallNoteLikesReceived    |
+ * Each score computes Math.max(narrativeScore, legacyScore) to provide seamless
+ * zero-regression continuity for existing accounts while immediately rewarding
+ * narrative-native choices and exploration.
  */
 const MASTERY_CAPS: Record<MasteryArchetype, number> = {
   explorer: 100,
@@ -194,27 +192,35 @@ const MASTERY_CAPS: Record<MasteryArchetype, number> = {
 
 /**
  * Compute a user's Reader Mastery — a multidimensional identity derived
- * from existing achievement metrics. No new tables needed; this is a
+ * from narrative exploration metrics. No new tables needed; this is a
  * computed view of `user_counters` data.
  *
- * Phase 1 decoupled formula mapping:
- *  - explorer:    branchesOpened (branching depth)
- *  - seeker:      easterEggsFound (hidden discoveries)
- *  - survivor:    booksCompleted (story endurance)
- *  - worldwalker: (booksCompleted * 2) + endingsSharedToWall (multiverse breadth)
- *  - storyteller: customActionsWritten (creative authorship)
- *  - chronicler:  (endingsSharedToWall * 2) + wallNoteLikesReceived (social curation)
+ * Phase 2 narrative-native formula mapping (with legacy fallback for zero regression):
+ *  - explorer:    branchPointsExplored + (deepBranchCompletions * 2) [fallback: branchesOpened]
+ *  - seeker:      (rareEndingsFound * 2) + cluesUncovered [fallback: easterEggsFound]
+ *  - survivor:    highRiskChoicesTaken + (consequenceExperienced * 2) [fallback: booksCompleted]
+ *  - worldwalker: (storiesCompleted * 2) + (alternateEndingsDiscovered * 2) [fallback: (booksCompleted * 2) + endingsSharedToWall]
+ *  - storyteller: customActionsWritten + (distinctEndingTypesReached * 2)
+ *  - chronicler:  (threadsResolved * 2) + endingsSharedToWall [fallback: (endingsSharedToWall * 2) + wallNoteLikesReceived]
  */
 export async function computeReaderMastery(userId: string): Promise<ReaderMastery> {
   const metrics = await getUserMetrics(userId);
 
+  // Phase 2 narrative calculations with zero-regression legacy fallbacks
+  const explorerNarrative = metrics.branchPointsExplored + (metrics.deepBranchCompletions * 2);
+  const seekerNarrative = (metrics.rareEndingsFound * 2) + metrics.cluesUncovered;
+  const survivorNarrative = metrics.highRiskChoicesTaken + (metrics.consequenceExperienced * 2);
+  const worldwalkerNarrative = (metrics.storiesCompleted * 2) + (metrics.alternateEndingsDiscovered * 2);
+  const storytellerNarrative = metrics.customActionsWritten + (metrics.distinctEndingTypesReached * 2);
+  const chroniclerNarrative = (metrics.threadsResolved * 2) + metrics.endingsSharedToWall;
+
   const scores: ReaderMasteryScores = {
-    explorer: normalizeMetric(metrics.branchesOpened, MASTERY_CAPS.explorer),
-    seeker: normalizeMetric(metrics.easterEggsFound, MASTERY_CAPS.seeker),
-    survivor: normalizeMetric(metrics.booksCompleted, MASTERY_CAPS.survivor),
-    worldwalker: normalizeMetric((metrics.booksCompleted * 2) + metrics.endingsSharedToWall, MASTERY_CAPS.worldwalker),
-    storyteller: normalizeMetric(metrics.customActionsWritten, MASTERY_CAPS.storyteller),
-    chronicler: normalizeMetric((metrics.endingsSharedToWall * 2) + metrics.wallNoteLikesReceived, MASTERY_CAPS.chronicler),
+    explorer: normalizeMetric(Math.max(explorerNarrative, metrics.branchesOpened), MASTERY_CAPS.explorer),
+    seeker: normalizeMetric(Math.max(seekerNarrative, metrics.easterEggsFound), MASTERY_CAPS.seeker),
+    survivor: normalizeMetric(Math.max(survivorNarrative, metrics.booksCompleted), MASTERY_CAPS.survivor),
+    worldwalker: normalizeMetric(Math.max(worldwalkerNarrative, (metrics.booksCompleted * 2) + metrics.endingsSharedToWall), MASTERY_CAPS.worldwalker),
+    storyteller: normalizeMetric(storytellerNarrative, MASTERY_CAPS.storyteller),
+    chronicler: normalizeMetric(Math.max(chroniclerNarrative, (metrics.endingsSharedToWall * 2) + metrics.wallNoteLikesReceived), MASTERY_CAPS.chronicler),
   };
 
   // Cold start: if user has 0 across all scores, do not arbitrarily designate an archetype

@@ -1,7 +1,8 @@
 # Place Spatial Memory Roadmap
 
-> **Status:** In Progress
+> **Status:** Done (Smoke test pending)
 > **Date:** 2026-09-11
+> **Completed:** 2026-09-15
 > **Owner:** Twistloom Backend
 
 ---
@@ -149,7 +150,7 @@ flowchart TD
 
 ## 6. Implementation Plan
 
-### Step 1: Define spatial types — ⬜ Planned
+### Step 1: Define spatial types — ✅ Done
 
 **Files:** `src/types/places.ts:101-193`
 **Effort:** Low
@@ -208,7 +209,7 @@ export type PlaceMemory = {
 
 ---
 
-### Step 2: Add AI JSON schemas — ⬜ Planned
+### Step 2: Add AI JSON schemas — ✅ Done
 
 **Files:** `src/schema/story.ts:166-209`, `src/schema/story.ts:366-396`
 **Effort:** Low
@@ -275,7 +276,7 @@ export const UPDATE_PLACE_SCHEMA: AIJsonProperty = {
 
 ---
 
-### Step 3: Add field instruction for spatial — ⬜ Planned
+### Step 3: Add field instruction for spatial — ✅ Done
 
 **Files:** `src/utils/field-instructions.ts:231-248`
 **Effort:** Low
@@ -297,7 +298,7 @@ Add a spatial sub-section inside the existing `newPlaces/updatedPlaces` field in
 
 ---
 
-### Step 4: Render spatial block in `formatPlacesForPrompt` — ⬜ Planned
+### Step 4: Render spatial block in `formatPlacesForPrompt` — ✅ Done
 
 **Files:** `src/utils/places.ts:336-407`
 **Effort:** Low
@@ -344,29 +345,35 @@ Resulting prompt format:
 
 ---
 
-### Step 5: Inject previous page spatial context — ⬜ Planned
+### Step 5: Inject previous page spatial context — ✅ Done (covered by `formatSceneAnchor`)
 
 **Files:** `src/utils/prompt.ts` (formatPreviousPageEntry area)
-**Effort:** Medium
+**Effort:** Medium → Low (covered by existing sceneAnchor)
 
-When rendering the previous page entry for next-page generation, include the previous page's place spatial layout if available. This gives the next-page writer explicit room geometry:
+When rendering the previous page entry for next-page generation, `formatPreviousPageEntry` calls `formatSceneAnchor` which outputs the MC's physical state:
 
 ```
-→ Scene anchor: standing, facing north (toward oak door → Corridor)
-Spatial (Bedroom): N: door → Corridor | S: window | W: bed
+→ Scene anchor: MC posture: standing, facing: north, anchor: back pressed against door. Targets: oak_door (north, exit to corridor, requires_repositioning), window (south, behind MC, requires_approach)
 ```
 
-This replaces the current pattern where the AI must infer "what is the MC facing?" from prose alone. Combined with `SceneAnchor.facing`, the writer knows:
+This already provides:
 
-- MC posture and orientation (from SceneAnchor)
-- What is in each direction (from PlaceSpatialMemory)
-- Which direction leads where (from PlaceSpatialMemory exits)
+- **MC posture and orientation** (posture, facing, anchor, constraints)
+- **Relevant targets with directional info** (exit north → corridor, window south)
+- **Access levels** (within_reach / requires_repositioning / requires_approach / blocked)
+
+The original goal of "inject spatial room layout" was to give the next-page writer:
+- MC posture and orientation → ✅ fully covered by sceneAnchor
+- What is in each direction → ✅ partially covered by sceneAnchor targets (action-relevant objects only)
+- Which direction leads where → ✅ partially covered by sceneAnchor targets (exits only)
+
+**Known limitation:** `formatSceneAnchor` targets only include objects relevant to the next action (exits, obstacles, nearby interactive objects). Broader room geometry — objects on non-actionable walls (e.g., "bed to the west" when MC is facing north toward a door) — is not injected into the previous page entry. The AI must rely on prose context for non-actionable spatial awareness. See §10 Future Enhancements for a potential follow-up.
 
 **Non-breaking:** Only rendered when previous page's place has spatial data.
 
 ---
 
-### Step 6: Update first-book field instructions — ⬜ Planned
+### Step 6: Update first-book field instructions — ✅ Done
 
 **Files:** `src/utils/field-instructions.ts` (firstBookFieldInstructions, line 351)
 **Effort:** Low
@@ -486,12 +493,43 @@ Legend: ✅ Implemented & verified · ⏳ Partial / scoped down · ⬜ Future wo
 
 ### Completed
 - ✅ Design analysis — alternatives evaluated, recommendation selected (this document)
+- ✅ Step 1: Define spatial types (`SpatialDirection`, `PlaceExitTarget`, `PlaceSpatialMemory`)
+- ✅ Step 2: Add AI JSON schemas (`SPATIAL_SCHEMA`, `INITIAL_PLACE_PROPERTIES`, `UPDATE_PLACE_SCHEMA`)
+- ✅ Step 3: Add field instruction for spatial (`newPlaces/updatedPlaces.spatial`)
+- ✅ Step 4: Render spatial block in `formatPlacesForPrompt`
+- ✅ Step 5: Inject previous page spatial context — covered by `formatSceneAnchor` targets (posture, facing, directional targets with access levels)
+- ✅ Step 6: Update first-book field instructions (`firstBookFieldInstructions.initialPlace.spatial`)
+
+### Partial / Scoped Down
+- ⏳ Step 5 broader room geometry — `formatSceneAnchor` injects action-relevant targets (exits, obstacles, nearby objects) but not non-actionable wall features. See §10 Future Enhancements.
 
 ### Future / Deferred
-- ⬜ Step 1: Define spatial types
-- ⬜ Step 2: Add AI JSON schemas
-- ⬜ Step 3: Add field instruction
-- ⬜ Step 4: Render spatial in `formatPlacesForPrompt`
-- ⬜ Step 5: Inject spatial context in previous page entry
-- ⬜ Step 6: Update first-book field instructions
-- ⬜ Step 7: Smoke test generation
+- ⬜ Step 7: Smoke test generation (manual verification)
+
+---
+
+## 10. Future Enhancements
+
+### FE-1: Broader Room Geometry in Previous Page Entry
+
+**Status:** Deferred — low priority, high token cost relative to value.
+
+**Problem:** `formatSceneAnchor` targets include only objects relevant to the next action (exits, obstacles, nearby interactive objects). Non-actionable spatial features — e.g., "bed to the west" when MC is facing north toward a door, or "painting on the south wall" — are not injected into the previous page entry. The AI must rely on prose context for non-actionable spatial awareness, which can lead to:
+
+- Minor continuity drift on non-actionable features (painting description changes between pages)
+- Reduced ability to use environmental details for atmospheric prose when the MC turns around
+
+**Current coverage is sufficient because:**
+- The primary use case — action affordance and movement consistency — is fully covered by sceneAnchor targets with directional info and access levels.
+- Non-actionable features are low-stakes for narrative consistency; the reader won't notice if a painting on a non-interactive wall shifts slightly.
+- Adding full spatial layout to every previous page entry would cost ~5-8 tokens per place per page, which compounds across 20-50 page stories.
+
+**If pursued, options:**
+
+| Option | Approach | Token cost | Risk |
+|--------|----------|------------|------|
+| A | Append full spatial layout line after sceneAnchor | +5-8 tokens/page | Token overhead on every generation |
+| B | Append spatial only when MC's facing changes (turn/reorient) | +5-8 tokens on ~30% of pages | Conditional logic complexity |
+| C | Append spatial only for places with ≤4 directions (small rooms) | +5-8 tokens on ~60% of pages | Inconsistent coverage |
+
+**Recommendation:** Defer until smoke testing (Step 7) reveals whether non-actionable spatial drift is a real problem in practice. If AI models maintain non-actionable feature consistency via prose context alone, no change is needed.

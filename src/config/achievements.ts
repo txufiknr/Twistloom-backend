@@ -7,17 +7,36 @@ import type { AchievementRule } from "../types/achievements.js";
  * Evaluated server-side against `user_counters` on every counter increment.
  *
  * Metric → Source table / event
- *  booksGenerated       books                 (INSERT / DELETE)
- *  booksCompleted       user_completed_books  (INSERT / DELETE)
- *  pagesRead            user_page_progress    (INSERT / DELETE)
- *  branchesOpened       pages                 (INSERT, distinct branch_id)
- *  topupCredits         transactions          (INSERT, type = 'purchase')
- *  referredUsers        users                 (UPDATE, referral_rewarded_at NULL→set — payout time; see REFERRAL_REWARDS_ARCHITECTURE.md)
- *  followersCount       user_follows          (INSERT / DELETE, tracks following_id)
- *  maxCheckinStreak     user_checkins         (INSERT, consecutive-day logic)
- *  customActionsWritten custom_actions        (INSERT, outcome = 'allow')  ← NEW
- *  easterEggsFound     easter_egg_discoveries (INSERT/UPDATE, claimed = true)
+ *  ── Platform & Social Metrics (15 metrics, 60 badges) ──
+ *  booksGenerated             books                  (INSERT / DELETE)
+ *  booksCompleted             user_completed_books   (INSERT)
+ *  pagesRead                  user_page_progress     (INSERT / DELETE)
+ *  pagesGenerated             pages                  (INSERT)
+ *  branchesOpened             pages                  (INSERT, distinct branch_id)
+ *  topupCredits               transactions           (INSERT, type = 'purchase')
+ *  referredUsers              users                  (UPDATE, referral_rewarded_at)
+ *  followersCount             user_follows           (INSERT / DELETE)
+ *  maxCheckinStreak           user_checkins          (INSERT / UPDATE / DELETE)
+ *  customActionsWritten       custom_actions         (INSERT / UPDATE, outcome = 'allow')
+ *  easterEggsFound            easter_egg_discoveries (INSERT, claimed = true)
+ *  creatorsSupported          creator_earnings       (INSERT / UPDATE, status = 'completed')
+ *  wallNotesPosted            posts                  (INSERT / DELETE)
+ *  wallNoteLikesReceived      user_likes             (INSERT / DELETE)
+ *  endingsSharedToWall        posts                  (INSERT / DELETE)
  *
+ *  ── Narrative Exploration Metrics (10 metrics, 40 badges) ──
+ *  storiesCompleted           user_completed_books   (INSERT, first completion per book)
+ *  alternateEndingsDiscovered user_completed_books   (INSERT, subsequent completions per book)
+ *  deepBranchCompletions      user_completed_books   (INSERT, page >= 15 & non-main branch)
+ *  distinctEndingTypesReached user_completed_books   (INSERT, distinct canonical viableEnding types)
+ *  rareEndingsFound           user_completed_books   (INSERT, book complete_count <= 5 or rate < 20%)
+ *  branchPointsExplored       user_page_progress     (INSERT / DELETE, non-main branch next_page)
+ *  highRiskChoicesTaken       user_page_progress     (INSERT / DELETE, peril choice selected)
+ *  consequenceExperienced     user_page_progress     (INSERT / DELETE, consequence action selected)
+ *  cluesUncovered             user_completed_books   (INSERT, story_states clues discovered)
+ *  threadsResolved            user_completed_books   (INSERT, story_states closed threads)
+ *
+ * Total Registry: 100 Badges across 25 metrics (4 tiers each: bronze -> silver -> gold -> platinum).
  * Badge images are resolved client-side via `getAchievementImageUrl(id)` in
  * `src/lib/config/achievements.ts`, which checks a hardcoded set of known
  * asset IDs against `/images/achievements/{id}.png`. No backend field needed.
@@ -434,4 +453,46 @@ export const ACHIEVEMENT_REGISTRY: AchievementRule[] = [
   { id: 'deep_branch_5', title: 'Subterranean Guide', description: 'Completed 5 deep divergent branches', metric: 'deepBranchCompletions', threshold: 5, tier: 'silver', category: 'explorer' },
   { id: 'deep_branch_15', title: 'Abyssal Navigator', description: 'Completed 15 deep divergent branches', metric: 'deepBranchCompletions', threshold: 15, tier: 'gold', category: 'explorer' },
   { id: 'deep_branch_30', title: 'Void Walker', description: 'Completed 30 deep divergent realities far from the canonical trunk', metric: 'deepBranchCompletions', threshold: 30, tier: 'platinum', category: 'explorer' },
+
+  // ── NARRATIVE: DISTINCT ENDING TYPES REACHED ─────────────────────────────
+  { id: 'ending_type_3', title: 'Taste of the Macabre', description: 'Experienced 3 distinct psychological ending archetypes across the Loom', metric: 'distinctEndingTypesReached', threshold: 3, tier: 'bronze', category: 'multiverse' },
+  { id: 'ending_type_6', title: 'Student of Madness', description: 'Experienced 6 distinct psychological ending archetypes', metric: 'distinctEndingTypesReached', threshold: 6, tier: 'silver', category: 'multiverse' },
+  { id: 'ending_type_12', title: 'Anatomy of Despair', description: 'Experienced 12 distinct psychological ending archetypes', metric: 'distinctEndingTypesReached', threshold: 12, tier: 'gold', category: 'multiverse' },
+  { id: 'ending_type_18', title: 'Human Tapestry', description: 'Omniscient Dread: Uncovered all 18 psychological ending archetypes', metric: 'distinctEndingTypesReached', threshold: 18, tier: 'platinum', category: 'multiverse' },
+
+  // ── NARRATIVE: RARE ENDINGS FOUND ────────────────────────────────────────
+  { id: 'rare_end_1', title: 'Hidden Corridor', description: 'Discovered an elusive ending found by fewer than 20% of readers', metric: 'rareEndingsFound', threshold: 1, tier: 'bronze', category: 'seeker' },
+  { id: 'rare_end_3', title: 'Shadow Realities', description: 'Discovered 3 rare endings that few readers ever uncover', metric: 'rareEndingsFound', threshold: 3, tier: 'silver', category: 'seeker' },
+  { id: 'rare_end_7', title: 'Rare Reality', description: 'Discovered 7 rare endings across divergent narrative corridors', metric: 'rareEndingsFound', threshold: 7, tier: 'gold', category: 'seeker' },
+  { id: 'rare_end_15', title: 'Secret Keeper', description: 'Mastered 15 legendary rare endings hidden in the deep dark', metric: 'rareEndingsFound', threshold: 15, tier: 'platinum', category: 'seeker' },
+
+  // ── NARRATIVE: CLUES UNCOVERED ───────────────────────────────────────────
+  { id: 'clues_found_3', title: 'Keen Eye', description: 'Uncovered 3 narrative clues hidden across mystery plots', metric: 'cluesUncovered', threshold: 3, tier: 'bronze', category: 'seeker' },
+  { id: 'clues_found_10', title: 'Forensic Gaze', description: 'Uncovered 10 narrative clues buried deep within the prose', metric: 'cluesUncovered', threshold: 10, tier: 'silver', category: 'seeker' },
+  { id: 'clues_found_25', title: 'Unraveler of Lies', description: 'Uncovered 25 clues, piecing together the fractured truth', metric: 'cluesUncovered', threshold: 25, tier: 'gold', category: 'seeker' },
+  { id: 'clues_found_50', title: 'Truth Unmasked', description: 'Grand Inquisitor: Uncovered 50 hidden narrative clues', metric: 'cluesUncovered', threshold: 50, tier: 'platinum', category: 'seeker' },
+
+  // ── NARRATIVE: BRANCH POINTS EXPLORED ────────────────────────────────────
+  { id: 'branch_fork_5', title: 'The Road Not Taken', description: 'Explored 5 branching decision points away from the trunk', metric: 'branchPointsExplored', threshold: 5, tier: 'bronze', category: 'explorer' },
+  { id: 'branch_fork_20', title: 'Wayfarer of Forks', description: 'Explored 20 branching decision points across divergent storylines', metric: 'branchPointsExplored', threshold: 20, tier: 'silver', category: 'explorer' },
+  { id: 'branch_fork_50', title: 'Pathfinder', description: 'Explored 50 branching decision points across the Loom', metric: 'branchPointsExplored', threshold: 50, tier: 'gold', category: 'explorer' },
+  { id: 'branch_fork_100', title: 'Cartographer of Possibility', description: 'Charted 100 branching decision points into the unknown', metric: 'branchPointsExplored', threshold: 100, tier: 'platinum', category: 'explorer' },
+
+  // ── NARRATIVE: HIGH-RISK CHOICES TAKEN ───────────────────────────────────
+  { id: 'risk_choice_3', title: 'Playing with Fire', description: 'Made 3 high-peril choices in the face of imminent danger', metric: 'highRiskChoicesTaken', threshold: 3, tier: 'bronze', category: 'survivor' },
+  { id: 'risk_choice_10', title: 'Edge of the Precipice', description: 'Made 10 high-peril choices without flinching', metric: 'highRiskChoicesTaken', threshold: 10, tier: 'silver', category: 'survivor' },
+  { id: 'risk_choice_25', title: 'Tempting the Abyss', description: 'Made 25 high-peril choices against overwhelming odds', metric: 'highRiskChoicesTaken', threshold: 25, tier: 'gold', category: 'survivor' },
+  { id: 'risk_choice_50', title: 'Iron Will', description: 'Architect of Ruin: Made 50 high-peril choices and survived', metric: 'highRiskChoicesTaken', threshold: 50, tier: 'platinum', category: 'survivor' },
+
+  // ── NARRATIVE: DELAYED CONSEQUENCES EXPERIENCED ──────────────────────────
+  { id: 'consequence_1', title: 'I Remember You', description: 'Reached a page echoing consequences from an earlier decision', metric: 'consequenceExperienced', threshold: 1, tier: 'bronze', category: 'survivor' },
+  { id: 'consequence_5', title: 'Echoes of the Past', description: 'Experienced 5 narrative consequences shaped by your choices', metric: 'consequenceExperienced', threshold: 5, tier: 'silver', category: 'survivor' },
+  { id: 'consequence_15', title: 'Long Shadows', description: 'Experienced 15 delayed consequences echoing forward through time', metric: 'consequenceExperienced', threshold: 15, tier: 'gold', category: 'survivor' },
+  { id: 'consequence_30', title: 'Fate Defier', description: 'Unbreakable Causality: Navigated 30 long-term narrative consequences', metric: 'consequenceExperienced', threshold: 30, tier: 'platinum', category: 'survivor' },
+
+  // ── NARRATIVE: THREADS RESOLVED ──────────────────────────────────────────
+  { id: 'thread_res_1', title: 'Loose Ends', description: 'Brought an ongoing narrative plot thread to resolution', metric: 'threadsResolved', threshold: 1, tier: 'bronze', category: 'chronicler' },
+  { id: 'thread_res_5', title: 'Untangled Knot', description: 'Resolved 5 ongoing narrative threads across complex mysteries', metric: 'threadsResolved', threshold: 5, tier: 'silver', category: 'chronicler' },
+  { id: 'thread_res_15', title: 'No Loose Threads', description: 'Resolved 15 ongoing narrative threads across the Loom', metric: 'threadsResolved', threshold: 15, tier: 'gold', category: 'chronicler' },
+  { id: 'thread_res_30', title: 'Master Chronicler', description: 'The Loom\'s Weaver: Resolved 30 complex story threads to ultimate closure', metric: 'threadsResolved', threshold: 30, tier: 'platinum', category: 'chronicler' },
 ];

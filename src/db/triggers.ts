@@ -1014,22 +1014,98 @@ export async function ensureUserCountersTriggers(): Promise<void> {
     console.log("⚙️ Ensuring user_counters DB triggers...");
 
     // ==========================================
-    // 1. PAGES READ (Type B: Current State)
+    // 1. PAGES READ & CHOICE METRICS (Type B: Current State + Narrative Choices)
     // ==========================================
     // O(1) tracking. The unique constraint on user_page_progress guarantees
     // each insert is a uniquely read page for that book/user combo.
+    // Also captures choice peril, consequence echoes, and divergent branch forks.
     await dbWrite.execute(`
       CREATE OR REPLACE FUNCTION update_user_pages_read() RETURNS TRIGGER AS $$
+      DECLARE
+        v_is_high_risk BOOLEAN;
+        v_is_consequence BOOLEAN;
+        v_is_branch_fork BOOLEAN;
       BEGIN
         IF TG_OP = 'INSERT' THEN
+          v_is_high_risk := FALSE;
+          v_is_consequence := FALSE;
+          v_is_branch_fork := FALSE;
+
           INSERT INTO user_counters (user_id, pages_read, updated_at)
           VALUES (NEW.user_id, 1, NOW())
           ON CONFLICT (user_id) DO UPDATE SET
             pages_read = user_counters.pages_read + 1,
             updated_at = NOW();
+
+          -- Check for High Risk Choice
+          IF (NEW.action->>'type' IN ('attack', 'risk', 'escape', 'deceive')) OR
+             (NEW.action->'risk'->>'severity' IN ('high', 'extreme')) OR
+             (COALESCE((NEW.action->'risk'->>'isHighRisk')::boolean, false) = true) THEN
+            v_is_high_risk := TRUE;
+          END IF;
+
+          -- Check for Consequence Experienced
+          IF (NEW.action->>'type' = 'consequence') OR
+             (NEW.action->>'source' = 'consequence') OR
+             (NEW.action->'hint'->>'type' IN ('betrayal', 'confrontation')) THEN
+            v_is_consequence := TRUE;
+          END IF;
+
+          -- Check for Branch Point Explored (choice branched away from main trunk)
+          IF EXISTS (
+            SELECT 1 FROM pages
+            WHERE id = NEW.next_page_id AND branch_id IS NOT NULL AND branch_id != 'main'
+          ) THEN
+            v_is_branch_fork := TRUE;
+          END IF;
+
+          -- Update narrative choice counters if any triggered
+          IF v_is_high_risk OR v_is_consequence OR v_is_branch_fork THEN
+            UPDATE user_counters
+            SET
+              high_risk_choices_taken = user_counters.high_risk_choices_taken + (CASE WHEN v_is_high_risk THEN 1 ELSE 0 END),
+              consequence_experienced = user_counters.consequence_experienced + (CASE WHEN v_is_consequence THEN 1 ELSE 0 END),
+              branch_points_explored = user_counters.branch_points_explored + (CASE WHEN v_is_branch_fork THEN 1 ELSE 0 END),
+              updated_at = NOW()
+            WHERE user_id = NEW.user_id;
+          END IF;
+
           RETURN NEW;
         ELSIF TG_OP = 'DELETE' THEN
-          UPDATE user_counters SET pages_read = GREATEST(0, pages_read - 1), updated_at = NOW() WHERE user_id = OLD.user_id;
+          v_is_high_risk := FALSE;
+          v_is_consequence := FALSE;
+          v_is_branch_fork := FALSE;
+
+          -- Re-evaluate the deleted row's action metadata to correctly decrement narrative counters
+          IF (OLD.action->>'type' IN ('attack', 'risk', 'escape', 'deceive')) OR
+             (OLD.action->'risk'->>'severity' IN ('high', 'extreme')) OR
+             (COALESCE((OLD.action->'risk'->>'isHighRisk')::boolean, false) = true) THEN
+            v_is_high_risk := TRUE;
+          END IF;
+
+          IF (OLD.action->>'type' = 'consequence') OR
+             (OLD.action->>'source' = 'consequence') OR
+             (OLD.action->'hint'->>'type' IN ('betrayal', 'confrontation')) THEN
+            v_is_consequence := TRUE;
+          END IF;
+
+          IF EXISTS (
+            SELECT 1 FROM pages
+            WHERE id = OLD.next_page_id AND branch_id IS NOT NULL AND branch_id != 'main'
+          ) THEN
+            v_is_branch_fork := TRUE;
+          END IF;
+
+          -- Atomically decrement pages_read and any matching narrative counters in a single statement
+          UPDATE user_counters
+          SET
+            pages_read = GREATEST(0, pages_read - 1),
+            high_risk_choices_taken = GREATEST(0, user_counters.high_risk_choices_taken - (CASE WHEN v_is_high_risk THEN 1 ELSE 0 END)),
+            consequence_experienced = GREATEST(0, user_counters.consequence_experienced - (CASE WHEN v_is_consequence THEN 1 ELSE 0 END)),
+            branch_points_explored = GREATEST(0, user_counters.branch_points_explored - (CASE WHEN v_is_branch_fork THEN 1 ELSE 0 END)),
+            updated_at = NOW()
+          WHERE user_id = OLD.user_id;
+
           RETURN OLD;
         END IF;
         RETURN NULL;
@@ -1100,6 +1176,8 @@ export async function ensureUserCountersTriggers(): Promise<void> {
         v_branch_id TEXT;
         v_distinct_types INT;
         v_rare_count INT;
+        v_resolved_threads INT := 0;
+        v_clues_count INT := 0;
       BEGIN
         IF TG_OP = 'INSERT' THEN
           -- 1. Base books_completed (total unique endings reached lifetime)
@@ -1148,9 +1226,27 @@ export async function ensureUserCountersTriggers(): Promise<void> {
           JOIN books b ON b.id = ucb.book_id
           WHERE ucb.user_id = NEW.user_id AND (b.complete_count <= 5 OR b.completion_rate < 20);
 
+          -- 6. Narrative Threads Resolved & Clues Uncovered from terminal story_state
+          SELECT
+            COALESCE((
+              SELECT COUNT(*)
+              FROM jsonb_array_elements(CASE WHEN jsonb_typeof(threads) = 'array' THEN threads ELSE '[]'::jsonb END) t
+              WHERE t->>'status' = 'closed'
+            ), 0),
+            COALESCE((
+              SELECT COUNT(*)
+              FROM jsonb_array_elements(CASE WHEN jsonb_typeof(threads) = 'array' THEN threads ELSE '[]'::jsonb END) t,
+                   jsonb_array_elements(CASE WHEN jsonb_typeof(t->'clues') = 'array' THEN t->'clues' ELSE '[]'::jsonb END) c
+            ), 0)
+          INTO v_resolved_threads, v_clues_count
+          FROM story_states
+          WHERE page_id = NEW.page_id;
+
           UPDATE user_counters
           SET distinct_ending_types_reached = v_distinct_types,
               rare_endings_found = v_rare_count,
+              threads_resolved = COALESCE(user_counters.threads_resolved, 0) + v_resolved_threads,
+              clues_uncovered = COALESCE(user_counters.clues_uncovered, 0) + v_clues_count,
               updated_at = NOW()
           WHERE user_id = NEW.user_id;
         END IF;
