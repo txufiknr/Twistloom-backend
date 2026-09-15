@@ -25,7 +25,6 @@ import { getEnrichedBookSelect } from "./book-controller.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage, DBUpdateBook } from "../types/schema.js";
 import type { Book, BookSlugGenerationResult, BookStatus, BookVisibility, EnrichedBookData, EnrichedPageOptions, PublicStats, UserBookEnding, UserBookEndingsResponse, BookEndingSummary, BookEndingsResponse } from "../types/book.js";
 import { bookVisibilities } from "../types/book.js";
-import type { RarityTier } from "../types/rarity.js";
 import { classifyRarity } from "../types/rarity.js";
 import { actionTypes, endingTypes, type StoryPage, type PersistedStoryPage, type UserStoryPage, type StoryState, type StoryPageMeta, type EnrichedStoryPage, type StateDelta, type StoryGeneration, type SelectedAction, type Action, type EnrichedStoryPageContext, type TranslatedStoryPage, type EnrichedStoryPagePlace, type EnrichedStoryPageCharacter, type ActionType, type ActionHintType, type Ending, type EndingType, type StoryOutline } from "../types/story.js";
 import type { CanonValidationSummary } from "../types/canon-validation.js";

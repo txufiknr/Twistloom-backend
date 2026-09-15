@@ -601,14 +601,22 @@ export async function getCheckInStreaks(userId: string): Promise<{
   const dateSet = new Set(dates.map(d => d.checkInDate));
   const isCheckedInToday = dateSet.has(todayIso);
 
-  // Active streak: walk consecutive days backwards from today (if checked in
-  // today) or from yesterday (streak alive but today not yet claimed). A gap
-  // at the very first step means the streak was broken — activeStreak stays 0.
+  // Active streak: walk days backwards from today (if checked in today) or
+  // from yesterday (today not yet claimed). A 1-day grace period (streak freeze)
+  // preserves the streak if a single day is skipped within the rolling window.
   let activeStreak = 0;
   const startOffset = isCheckedInToday ? 0 : 1;
+  let graceDaysRemaining = 1; // 1 free streak freeze per rolling window
   for (let i = startOffset; i <= 366; i++) {
-    if (dateSet.has(shiftIsoDate(todayIso, -i))) activeStreak++;
-    else break;
+    const targetDate = shiftIsoDate(todayIso, -i);
+    if (dateSet.has(targetDate)) {
+      activeStreak++;
+    } else if (graceDaysRemaining > 0) {
+      // Grace day bridges this single gap; streak continues across the skipped day
+      graceDaysRemaining--;
+    } else {
+      break;
+    }
   }
 
   // Longest streak: scan the full history ascending, counting consecutive runs.
@@ -779,11 +787,18 @@ export async function performDailyCheckIn(userId: string, claimType: CheckinClai
       const dateSet = new Set(recent.map(r => r.checkInDate));
       const utcToday = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()));
       let prevStreak = 0;
+      let graceLeft = 1;
       for (let i = 1; i <= 366; i++) {
         const d = new Date(utcToday);
         d.setUTCDate(d.getUTCDate() - i);
         const iso = d.toISOString().slice(0, 10);
-        if (dateSet.has(iso)) prevStreak++; else break;
+        if (dateSet.has(iso)) {
+          prevStreak++;
+        } else if (graceLeft > 0) {
+          graceLeft--;
+        } else {
+          break;
+        }
       }
 
       const nextIndex = (prevStreak % DAILY_CHECKIN_DAYS) + 1;
@@ -970,7 +985,7 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
     const rhythmRating =
       weeklyProgress >= weeklyGoal ? 'excellent' :
       weeklyProgress >= weeklyGoal - 1 ? 'good' :
-      daysSinceMonday > 0 && graceDaysRemaining > 0 ? 'good' :
+      daysSinceMonday <= 1 || graceDaysRemaining > 0 ? 'good' :
       'missed';
 
     const statusResult: CheckinStatusResponse = {

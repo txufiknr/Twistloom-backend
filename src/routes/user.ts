@@ -2830,9 +2830,22 @@ router.get('/users/:id/achievements', async (c: Context<AppEnv>) => {
 router.get('/users/:id/mastery', async (c: Context<AppEnv>) => {
   try {
     const { id } = c.req.param();
-    const userIdStr = Array.isArray(id) ? id[0] : id;
+    const identifierStr = Array.isArray(id) ? id[0] : id;
 
-    const mastery = await computeReaderMastery(userIdStr);
+    const isUuid = isValidUuid(identifierStr);
+    const whereCondition = isUuid ? eq(users.userId, identifierStr) : eq(users.username, identifierStr);
+
+    const [userRow] = await dbRead
+      .select({ userId: users.userId })
+      .from(users)
+      .where(whereCondition)
+      .limit(1);
+
+    if (!userRow) {
+      return cNotFoundError(c, 'User not found');
+    }
+
+    const mastery = await computeReaderMastery(userRow.userId);
 
     return c.json({ success: true, ...mastery });
   } catch (error) {

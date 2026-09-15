@@ -25,9 +25,9 @@ export interface ReaderMasteryScores {
 }
 
 export interface ReaderMastery {
-  primary: MasteryArchetype;
-  secondary: MasteryArchetype;
-  tertiary: MasteryArchetype;
+  primary: MasteryArchetype | null;
+  secondary: MasteryArchetype | null;
+  tertiary: MasteryArchetype | null;
   scores: ReaderMasteryScores;
 }
 
@@ -162,7 +162,15 @@ function normalizeMetric(value: number, maxThreshold: number): number {
  * | survivor      | 50  | booksCompleted — slow metric, 50 books = max mastery |
  * | worldwalker   | 100 | endingsSharedToWall + branchesOpened — breadth, wide range |
  * | storyteller   | 50  | customActionsWritten + wallNotesPosted — compound, lower cap |
- * | chronicler    | 100 | wallNoteLikesReceived — high-volume, needs wide range |
+ * Phase 1 Decoupled Caps (using existing user_counters):
+ * | Archetype   | Cap | Metric / Formula Description |
+ * |-------------|-----|-------------------------------------------------------|
+ * | explorer    | 100 | branchesOpened — deep branching exploration           |
+ * | seeker      | 50  | easterEggsFound — secret discovery                   |
+ * | survivor    | 50  | booksCompleted — completion endurance                 |
+ * | worldwalker | 100 | (booksCompleted * 2) + endingsSharedToWall — breadth  |
+ * | storyteller | 50  | customActionsWritten — creative authoring             |
+ * | chronicler  | 100 | (endingsSharedToWall * 2) + wallNoteLikesReceived    |
  */
 const MASTERY_CAPS: Record<MasteryArchetype, number> = {
   explorer: 100,
@@ -178,25 +186,36 @@ const MASTERY_CAPS: Record<MasteryArchetype, number> = {
  * from existing achievement metrics. No new tables needed; this is a
  * computed view of `user_counters` data.
  *
- * Each archetype maps to a combination of metrics:
- *  - explorer:    branchesOpened
- *  - seeker:      easterEggsFound + endingsSharedToWall
- *  - survivor:    booksCompleted
- *  - worldwalker: branchesOpened + endingsSharedToWall (breadth)
- *  - storyteller: customActionsWritten + wallNotesPosted
- *  - chronicler:  wallNoteLikesReceived (narrative resonance)
+ * Phase 1 decoupled formula mapping:
+ *  - explorer:    branchesOpened (branching depth)
+ *  - seeker:      easterEggsFound (hidden discoveries)
+ *  - survivor:    booksCompleted (story endurance)
+ *  - worldwalker: (booksCompleted * 2) + endingsSharedToWall (multiverse breadth)
+ *  - storyteller: customActionsWritten (creative authorship)
+ *  - chronicler:  (endingsSharedToWall * 2) + wallNoteLikesReceived (social curation)
  */
 export async function computeReaderMastery(userId: string): Promise<ReaderMastery> {
   const metrics = await getUserMetrics(userId);
 
   const scores: ReaderMasteryScores = {
     explorer: normalizeMetric(metrics.branchesOpened, MASTERY_CAPS.explorer),
-    seeker: normalizeMetric(metrics.easterEggsFound + metrics.endingsSharedToWall, MASTERY_CAPS.seeker),
+    seeker: normalizeMetric(metrics.easterEggsFound, MASTERY_CAPS.seeker),
     survivor: normalizeMetric(metrics.booksCompleted, MASTERY_CAPS.survivor),
-    worldwalker: normalizeMetric(metrics.endingsSharedToWall + metrics.branchesOpened, MASTERY_CAPS.worldwalker),
-    storyteller: normalizeMetric(metrics.customActionsWritten + metrics.wallNotesPosted, MASTERY_CAPS.storyteller),
-    chronicler: normalizeMetric(metrics.wallNoteLikesReceived, MASTERY_CAPS.chronicler),
+    worldwalker: normalizeMetric((metrics.booksCompleted * 2) + metrics.endingsSharedToWall, MASTERY_CAPS.worldwalker),
+    storyteller: normalizeMetric(metrics.customActionsWritten, MASTERY_CAPS.storyteller),
+    chronicler: normalizeMetric((metrics.endingsSharedToWall * 2) + metrics.wallNoteLikesReceived, MASTERY_CAPS.chronicler),
   };
+
+  // Cold start: if user has 0 across all scores, do not arbitrarily designate an archetype
+  const maxScore = Math.max(...Object.values(scores));
+  if (maxScore === 0) {
+    return {
+      primary: null,
+      secondary: null,
+      tertiary: null,
+      scores,
+    };
+  }
 
   // Stable sort: primary by score desc, secondary by name asc for deterministic ties.
   const sorted = (Object.entries(scores) as [MasteryArchetype, number][])
