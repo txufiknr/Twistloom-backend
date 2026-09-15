@@ -148,6 +148,32 @@ function normalizeMetric(value: number, maxThreshold: number): number {
 }
 
 /**
+ * Mastery archetype normalization caps.
+ *
+ * These balance the score distribution so no single metric dominates.
+ * A value of 100 means "100% mastery" at that cap — not the achievement
+ * registry's maximum threshold. The caps are deliberately lower than
+ * the highest achievement tier to prevent score inflation.
+ *
+ * | Archetype     | Cap | Rationale |
+ * |---------------|-----|-----------|
+ * | explorer      | 100 | branchesOpened — high-volume, needs wide range |
+ * | seeker        | 50  | easterEggsFound + endingsSharedToWall — compound, lower cap |
+ * | survivor      | 50  | booksCompleted — slow metric, 50 books = max mastery |
+ * | worldwalker   | 100 | endingsSharedToWall + branchesOpened — breadth, wide range |
+ * | storyteller   | 50  | customActionsWritten + wallNotesPosted — compound, lower cap |
+ * | chronicler    | 100 | wallNoteLikesReceived — high-volume, needs wide range |
+ */
+const MASTERY_CAPS: Record<MasteryArchetype, number> = {
+  explorer: 100,
+  seeker: 50,
+  survivor: 50,
+  worldwalker: 100,
+  storyteller: 50,
+  chronicler: 100,
+};
+
+/**
  * Compute a user's Reader Mastery — a multidimensional identity derived
  * from existing achievement metrics. No new tables needed; this is a
  * computed view of `user_counters` data.
@@ -164,16 +190,17 @@ export async function computeReaderMastery(userId: string): Promise<ReaderMaster
   const metrics = await getUserMetrics(userId);
 
   const scores: ReaderMasteryScores = {
-    explorer: normalizeMetric(metrics.branchesOpened, 100),
-    seeker: normalizeMetric(metrics.easterEggsFound + metrics.endingsSharedToWall, 50),
-    survivor: normalizeMetric(metrics.booksCompleted, 50),
-    worldwalker: normalizeMetric(metrics.endingsSharedToWall + metrics.branchesOpened, 100),
-    storyteller: normalizeMetric(metrics.customActionsWritten + metrics.wallNotesPosted, 50),
-    chronicler: normalizeMetric(metrics.wallNoteLikesReceived, 100),
+    explorer: normalizeMetric(metrics.branchesOpened, MASTERY_CAPS.explorer),
+    seeker: normalizeMetric(metrics.easterEggsFound + metrics.endingsSharedToWall, MASTERY_CAPS.seeker),
+    survivor: normalizeMetric(metrics.booksCompleted, MASTERY_CAPS.survivor),
+    worldwalker: normalizeMetric(metrics.endingsSharedToWall + metrics.branchesOpened, MASTERY_CAPS.worldwalker),
+    storyteller: normalizeMetric(metrics.customActionsWritten + metrics.wallNotesPosted, MASTERY_CAPS.storyteller),
+    chronicler: normalizeMetric(metrics.wallNoteLikesReceived, MASTERY_CAPS.chronicler),
   };
 
+  // Stable sort: primary by score desc, secondary by name asc for deterministic ties.
   const sorted = (Object.entries(scores) as [MasteryArchetype, number][])
-    .sort(([, a], [, b]) => b - a);
+    .sort(([aKey, a], [bKey, b]) => b - a || aKey.localeCompare(bKey));
 
   return {
     primary: sorted[0][0],

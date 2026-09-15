@@ -7,7 +7,7 @@ import type { DBTransaction } from "../db/client.js";
 import type { AIResponse } from "./ai-chat.js";
 import type { NewThread, StoryThreadTranslation } from "./story-thread.js";
 import type { AdvancedOptionsConfig } from "./book-creation.js";
-import type { RarityTier } from "../services/book.js";
+import type { RarityTier } from "./rarity.js";
 
 export const bookStatuses = ['active', 'archived', 'draft'] as const;
 export type BookStatus = typeof bookStatuses[number];

@@ -1222,8 +1222,8 @@ export async function computeBatchEndingStats(
   bookId: string,
   endingPageIds: string[],
   client: DBClient = dbRead
-): Promise<Array<{ pageId: string; endingReaders: number; endingPercentage: number }>> {
-  if (endingPageIds.length === 0) return [];
+): Promise<{ stats: Array<{ pageId: string; endingReaders: number; endingPercentage: number }>; completedReaders: number }> {
+  if (endingPageIds.length === 0) return { stats: [], completedReaders: 0 };
 
   const bookRow = await client
     .select({ completedReaders: books.completeCount })
@@ -1249,7 +1249,7 @@ export async function computeBatchEndingStats(
 
   const statsMap = new Map(rows.map((r) => [r.pageId, r.endingReaders]));
 
-  return endingPageIds.map((pageId) => {
+  const stats = endingPageIds.map((pageId) => {
     const endingReaders = statsMap.get(pageId) ?? 0;
     return {
       pageId,
@@ -1257,6 +1257,8 @@ export async function computeBatchEndingStats(
       endingPercentage: completedReaders === 0 ? 0 : Math.round((endingReaders / completedReaders) * 100),
     };
   });
+
+  return { stats, completedReaders };
 }
 
 export function mapActionToSelectedAction(action: Action, actionedPageId: string, actionedPageNumber: number, nextPageId: string): SelectedAction {

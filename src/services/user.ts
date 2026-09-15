@@ -951,8 +951,10 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
     // Compute weekly progress from the most recent Mon–Sun window.
     const now = new Date();
     const dayOfWeek = now.getUTCDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+    // Mon=0, Tue=1, ..., Sun=6
+    const daysSinceMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
     const weekStart = new Date(Date.UTC(
-      now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - dayOfWeek,
+      now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - daysSinceMonday,
     ));
     const weekStartStr = weekStart.toISOString().slice(0, 10);
 
@@ -960,8 +962,7 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
     const weeklyProgress = weeklyCheckins.length;
     const weeklyGoal = 5; // default — will be user-configurable later
 
-    const daysElapsed = dayOfWeek; // days since Sunday (0-6)
-    const missedDays = Math.max(0, daysElapsed - weeklyProgress);
+    const missedDays = Math.max(0, daysSinceMonday - weeklyProgress);
     const GRACE_DAYS_PER_WEEK = 1;
     const graceDaysUsed = Math.min(missedDays, GRACE_DAYS_PER_WEEK);
     const graceDaysRemaining = Math.max(0, GRACE_DAYS_PER_WEEK - graceDaysUsed);
@@ -969,6 +970,7 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
     const rhythmRating =
       weeklyProgress >= weeklyGoal ? 'excellent' :
       weeklyProgress >= weeklyGoal - 1 ? 'good' :
+      daysSinceMonday > 0 && graceDaysRemaining > 0 ? 'good' :
       'missed';
 
     const statusResult: CheckinStatusResponse = {

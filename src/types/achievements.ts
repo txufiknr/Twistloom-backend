@@ -3,14 +3,9 @@ export type AchievementTier = 'bronze' | 'silver' | 'gold' | 'platinum';
 export type AchievementCategory =
   | 'multiverse'
   | 'explorer'
-  | 'archetypes'
-  | 'peril'
   | 'seeker'
-  | 'investigator'
   | 'survivor'
   | 'chronicler'
-  | 'causality'
-  | 'subterranean'
   | 'legacy';
 
 export type AchievementMetric = 

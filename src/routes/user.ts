@@ -77,7 +77,7 @@ import { getEnrichedUser, getEnrichedUserById, setReferrerForNewUser, handleChec
 import { uploadUserImage, uploadFeedbackScreenshot, persistUploadedImage } from "../services/image.js";
 import { isValidUuid } from "../utils/uuid.js";
 import { getStoryProgressWithBranch } from '../services/story-branch.js';
-import { checkAndAwardAchievements, getUserAchievements, getUserMetrics } from '../services/achievements.js';
+import { checkAndAwardAchievements, getUserAchievements, getUserMetrics, computeReaderMastery } from '../services/achievements.js';
 import { getUserQuests, summarizeQuests, recheckQuests, claimQuestRewardAndInvalidate, claimAllQuestRewardsAndInvalidate } from '../services/quests.js';
 import { getUserBetaDuties, summarizeBetaDuties, recheckBetaDuties, claimBetaDutyRewardAndInvalidate, claimAllBetaDutyRewardsAndInvalidate } from '../services/beta-duties.js';
 import { sanitizeText, cleanMultilineText } from "../utils/text-processing.js";
@@ -2832,7 +2832,6 @@ router.get('/users/:id/mastery', async (c: Context<AppEnv>) => {
     const { id } = c.req.param();
     const userIdStr = Array.isArray(id) ? id[0] : id;
 
-    const { computeReaderMastery } = await import('../services/achievements.js');
     const mastery = await computeReaderMastery(userIdStr);
 
     return c.json({ success: true, ...mastery });

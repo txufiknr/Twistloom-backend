@@ -25,6 +25,8 @@ import { getEnrichedBookSelect } from "./book-controller.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage, DBUpdateBook } from "../types/schema.js";
 import type { Book, BookSlugGenerationResult, BookStatus, BookVisibility, EnrichedBookData, EnrichedPageOptions, PublicStats, UserBookEnding, UserBookEndingsResponse, BookEndingSummary, BookEndingsResponse } from "../types/book.js";
 import { bookVisibilities } from "../types/book.js";
+import type { RarityTier } from "../types/rarity.js";
+import { classifyRarity } from "../types/rarity.js";
 import { actionTypes, endingTypes, type StoryPage, type PersistedStoryPage, type UserStoryPage, type StoryState, type StoryPageMeta, type EnrichedStoryPage, type StateDelta, type StoryGeneration, type SelectedAction, type Action, type EnrichedStoryPageContext, type TranslatedStoryPage, type EnrichedStoryPagePlace, type EnrichedStoryPageCharacter, type ActionType, type ActionHintType, type Ending, type EndingType, type StoryOutline } from "../types/story.js";
 import type { CanonValidationSummary } from "../types/canon-validation.js";
 import { getStoryStateFromPage, insertStoryState, computeBatchEndingStats } from "./story.js";
@@ -3305,57 +3307,6 @@ export function keywordsToTextArray(keywords: string[]) {
   return sql`ARRAY[${sql.join(keywords.map(v => sql`${v}`), sql`, `)}]::text[]`;
 }
 
-// ── Ending Rarity Classification ────────────────────────────────────────────
-
-export type RarityTier = 'legendary' | 'very_rare' | 'rare' | 'uncommon' | 'common';
-
-/**
- * Rarity tier thresholds — the upper bound (inclusive) for each tier.
- * Evaluated top-down: first match wins.
- *
- * Must mirror frontend `src/lib/config/ending-rarity.ts` exactly.
- *
- * | Tier       | Threshold  | Design Rationale |
- * |------------|------------|------------------|
- * | Legendary  | ≤1%        | Genuinely extraordinary — <1 in 100 readers. |
- * | Very Rare  | ≤5%        | Elite path — 1 in 20. |
- * | Rare       | ≤15%       | Uncommon enough to feel special — 1 in ~7. |
- * | Uncommon   | ≤40%       | Noticeable minority — up to 2 in 5. |
- * | Common     | >40%       | The majority path. |
- */
-const RARITY_THRESHOLDS: { tier: RarityTier; maxPercentage: number }[] = [
-  { tier: 'legendary', maxPercentage: 1 },
-  { tier: 'very_rare', maxPercentage: 5 },
-  { tier: 'rare',      maxPercentage: 15 },
-  { tier: 'uncommon',  maxPercentage: 40 },
-  { tier: 'common',    maxPercentage: Infinity },
-];
-
-/**
- * Classify an ending's rarity based on percentage and sample size.
- *
- * Sample-size guards prevent misleading labels on tiny pools:
- * - 1 reader ever → "legendary" (they ARE the first)
- * - <5 total readers → "uncommon" (percentage too volatile to trust)
- *
- * After guards pass, the percentage is matched against RARITY_THRESHOLDS.
- *
- * Must produce identical output to the frontend's `classifyRarity()` in
- * `src/lib/config/ending-rarity.ts`.
- */
-export function classifyRarity(
-  percentage: number,
-  totalReaders: number,
-  endingReaders: number,
-): RarityTier {
-  if (endingReaders <= 1) return 'legendary';
-  if (totalReaders < 5) return 'uncommon';
-  for (const { tier, maxPercentage } of RARITY_THRESHOLDS) {
-    if (percentage <= maxPercentage) return tier;
-  }
-  return 'common';
-}
-
 export async function getUserBookEndings(
   userId: string,
   bookId: string,
@@ -3415,15 +3366,7 @@ export async function getUserBookEndings(
     : null;
 
   const endingPageIds = results.map((e) => e.pageId);
-  const stats = await computeBatchEndingStats(bookId, endingPageIds);
-
-  // Get total completed readers for rarity classification
-  const [bookRow] = await client
-    .select({ completeCount: books.completeCount })
-    .from(books)
-    .where(eq(books.id, bookId))
-    .limit(1);
-  const completedReaders = bookRow?.completeCount ?? 0;
+  const { stats, completedReaders } = await computeBatchEndingStats(bookId, endingPageIds);
 
   const statsMap = new Map(stats.map((s) => [s.pageId, s]));
 
@@ -3499,7 +3442,7 @@ export async function getAllBookEndings(
     : null;
 
   const endingPageIds = results.map((e) => e.pageId);
-  const stats = await computeBatchEndingStats(bookId, endingPageIds);
+  const { stats } = await computeBatchEndingStats(bookId, endingPageIds);
   const statsMap = new Map(stats.map((s) => [s.pageId, s]));
 
   const endings: BookEndingSummary[] = results.map((row) => ({
