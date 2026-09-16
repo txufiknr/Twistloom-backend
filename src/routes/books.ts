@@ -5310,98 +5310,6 @@ router.delete("/:identifier/time-travel/saved/:savedPathId", requireAuth, async 
   }
 });
 
-router.get("/:identifier/:pageId", optionalAuth, async (c) => {
-  try {
-    const headerLanguage = c.get("headerLanguage");
-    const { identifier, pageId } = c.req.param();
-    const { prefetch, translate: shouldTranslate, credits, actioning, preview } = c.req.query();
-    const userId = c.get("userId");
-    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier; // Book slug or id (uuid v7)
-    const skipVisit = !userId || prefetch === 'true' || c.req.method === 'HEAD'; // Skip for non-actual user navigation
-    const translate = shouldTranslate === 'true'; // Should translate to Accept-Language header
-    const consumeCredits = credits === 'true'; // Should consume credits
-    const takeAction = !!userId && actioning === 'true'; // Should insert to user page progress
-
-    // ── Pen Live Preview mode (`?preview=1` / `?preview=true`, roadmap Phase 0) ─
-    //
-    // Owner-only, stable, side-effect-free payload for an in-progress pen draft
-    // book. Bypasses the normal reader access-control + visit machinery entirely:
-    // ownership is enforced inside `getPreviewBookPage` (non-owners → 404, no
-    // leak), visits/credits/actioning are never applied, and the response is
-    // `no-store` (draft state changes every keystroke). The web client currently
-    // sends `preview=true`; `1` is accepted for parity with the roadmap doc.
-    if (preview === '1' || preview === 'true') {
-      if (!userId) return cUnauthorizedError(c, "Authentication required to preview this book");
-
-      const result = await getPreviewBookPage({
-        userId,
-        bookIdentifier,
-        pageId: pageId as string,
-        translate,
-        headerLanguage,
-      });
-
-      if (!result) return cNotFoundError(c, "Book or page not found");
-
-      c.header('Cache-Control', 'no-store');
-      return c.json({ page: result.page, book: result.book });
-    }
-
-    const { visitDetails, book, dbPage, sourceAction, isUserTakeAction } = await visitBookPage({
-      userId,
-      pageId: pageId as string,
-      bookIdentifier,
-      skipVisit,
-      takeAction,
-      consumeCredits,
-      language: headerLanguage
-    }, { c });
-
-    // Response already sent by `visitBookPage` internally
-    if (!dbPage || !book) return;
-
-    // Access control: reject if book is archived or private and user is not the owner
-    if ((book.status === 'archived' || book.visibility === 'private') && (!c.get("userId") || c.get("userId") !== book.userId)) {
-      if (!c.get("userId")) return cUnauthorizedError(c, "Authentication required to view this book");
-      return cForbiddenError(c, "You do not have access to this book");
-    }
-
-    // Return enriched page with only frontend-relevant fields
-    // Handle translation if Accept-Language header is provided and differs from book language
-    const page = await mapToEnrichedPage(dbPage, {
-      userId,
-      book,
-      headerLanguage,
-      translate,
-      sourceAction,
-      isUserTakeAction
-    });
-
-    if (!page) return cApiError(c, "Failed to get enriched page");
-
-    // Generate ETag from page updatedAt + userId + translation params (different content per user/language)
-    const lastModified = dbPage.updatedAt;
-    const etagInput = `${lastModified.getTime()}-${userId}-${translate}-${headerLanguage || 'en'}`;
-    const etag = `"${etagInput}"`;
-
-    // Check If-None-Match header (ETag includes translation params)
-    if (c.req.header('If-None-Match') === etag) return c.body(null, 304);
-
-    // Set caching headers
-    c.header('Last-Modified', lastModified.toUTCString());
-    c.header('ETag', etag);
-    c.header('Cache-Control', 'public, max-age=60'); // 1 minute (pages update more frequently)
-
-    return c.json({
-      page,
-      book,
-      visitDetails
-    });
-  } catch (error) {
-    return cApiError(c, "Failed to retrieve page", error);
-  }
-});
-
 /**
  * POST /api/books/:identifier/:pageId/confirm-visit
  *
@@ -7809,6 +7717,98 @@ router.get("/:identifier/locked-paths", requireAuth, async (c) => {
   } catch (error) {
     console.error("[GET /locked-paths] ❌ Error:", error);
     cApiError(c, "Failed to get locked paths", error);
+  }
+});
+
+router.get("/:identifier/:pageId", optionalAuth, async (c) => {
+  try {
+    const headerLanguage = c.get("headerLanguage");
+    const { identifier, pageId } = c.req.param();
+    const { prefetch, translate: shouldTranslate, credits, actioning, preview } = c.req.query();
+    const userId = c.get("userId");
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier; // Book slug or id (uuid v7)
+    const skipVisit = !userId || prefetch === 'true' || c.req.method === 'HEAD'; // Skip for non-actual user navigation
+    const translate = shouldTranslate === 'true'; // Should translate to Accept-Language header
+    const consumeCredits = credits === 'true'; // Should consume credits
+    const takeAction = !!userId && actioning === 'true'; // Should insert to user page progress
+
+    // ── Pen Live Preview mode (`?preview=1` / `?preview=true`, roadmap Phase 0) ─
+    //
+    // Owner-only, stable, side-effect-free payload for an in-progress pen draft
+    // book. Bypasses the normal reader access-control + visit machinery entirely:
+    // ownership is enforced inside `getPreviewBookPage` (non-owners → 404, no
+    // leak), visits/credits/actioning are never applied, and the response is
+    // `no-store` (draft state changes every keystroke). The web client currently
+    // sends `preview=true`; `1` is accepted for parity with the roadmap doc.
+    if (preview === '1' || preview === 'true') {
+      if (!userId) return cUnauthorizedError(c, "Authentication required to preview this book");
+
+      const result = await getPreviewBookPage({
+        userId,
+        bookIdentifier,
+        pageId: pageId as string,
+        translate,
+        headerLanguage,
+      });
+
+      if (!result) return cNotFoundError(c, "Book or page not found");
+
+      c.header('Cache-Control', 'no-store');
+      return c.json({ page: result.page, book: result.book });
+    }
+
+    const { visitDetails, book, dbPage, sourceAction, isUserTakeAction } = await visitBookPage({
+      userId,
+      pageId: pageId as string,
+      bookIdentifier,
+      skipVisit,
+      takeAction,
+      consumeCredits,
+      language: headerLanguage
+    }, { c });
+
+    // Response already sent by `visitBookPage` internally
+    if (!dbPage || !book) return;
+
+    // Access control: reject if book is archived or private and user is not the owner
+    if ((book.status === 'archived' || book.visibility === 'private') && (!c.get("userId") || c.get("userId") !== book.userId)) {
+      if (!c.get("userId")) return cUnauthorizedError(c, "Authentication required to view this book");
+      return cForbiddenError(c, "You do not have access to this book");
+    }
+
+    // Return enriched page with only frontend-relevant fields
+    // Handle translation if Accept-Language header is provided and differs from book language
+    const page = await mapToEnrichedPage(dbPage, {
+      userId,
+      book,
+      headerLanguage,
+      translate,
+      sourceAction,
+      isUserTakeAction
+    });
+
+    if (!page) return cApiError(c, "Failed to get enriched page");
+
+    // Generate ETag from page updatedAt + userId + translation params (different content per user/language)
+    const lastModified = dbPage.updatedAt;
+    const etagInput = `${lastModified.getTime()}-${userId}-${translate}-${headerLanguage || 'en'}`;
+    const etag = `"${etagInput}"`;
+
+    // Check If-None-Match header (ETag includes translation params)
+    if (c.req.header('If-None-Match') === etag) return c.body(null, 304);
+
+    // Set caching headers
+    c.header('Last-Modified', lastModified.toUTCString());
+    c.header('ETag', etag);
+    c.header('Cache-Control', 'public, max-age=60'); // 1 minute (pages update more frequently)
+
+    return c.json({
+      page,
+      book,
+      visitDetails
+    });
+  } catch (error) {
+    return cApiError(c, "Failed to retrieve page", error);
   }
 });
 

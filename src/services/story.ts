@@ -1194,20 +1194,30 @@ export async function computeEndingStats(
     .where(eq(userCompletedBooks.bookId, bookId));
 
   // Calculate reading time from first to last page progress for this user+book
-  const [{ minTs, maxTs }] = await client
-    .select({
-      minTs: sql<Date>`min(${userPageProgress.createdAt})`,
-      maxTs: sql<Date>`max(${userPageProgress.createdAt})`,
-    })
-    .from(userPageProgress)
-    .where(and(
-      eq(userPageProgress.bookId, bookId),
-      eq(userPageProgress.userId, userId),
-    ));
+  // PostgreSQL min()/max() aggregates may return ISO strings, not Date objects —
+  // wrap with new Date() to safely call .getTime().
+  let readingTimeMinutes: number | undefined;
+  try {
+    const [{ minTs, maxTs }] = await client
+      .select({
+        minTs: sql`min(${userPageProgress.createdAt})`,
+        maxTs: sql`max(${userPageProgress.createdAt})`,
+      })
+      .from(userPageProgress)
+      .where(and(
+        eq(userPageProgress.bookId, bookId),
+        eq(userPageProgress.userId, userId),
+      ));
 
-  const readingTimeMinutes = minTs && maxTs
-    ? Math.max(1, Math.round((maxTs.getTime() - minTs.getTime()) / 60000))
-    : undefined;
+    if (minTs && maxTs) {
+      const minDate = new Date(minTs as unknown as string);
+      const maxDate = new Date(maxTs as unknown as string);
+      readingTimeMinutes = Math.max(1, Math.round((maxDate.getTime() - minDate.getTime()) / 60000));
+    }
+  } catch (readingTimeError) {
+    console.warn(`[computeEndingStats] ⚠️ Failed to compute reading time:`, getErrorMessage(readingTimeError));
+    readingTimeMinutes = undefined;
+  }
 
   return {
     completedReaders,
