@@ -17,6 +17,9 @@ import {
   initiatePayout,
   getCreatorPayouts,
   savePayoutMethod,
+  validateBankAccount,
+  getCreatorPayoutMethods,
+  getCreatorKycStatus,
   convertBalanceToCredits,
 } from "../services/wallet.js";
 import { cApiError, cValidationError, getErrorMessage } from "../utils/error.js";
@@ -198,26 +201,136 @@ router.get("/payouts", requireAuth, async (c) => {
   }
 });
 
+// ── POST /wallet/payout-method/validate ──────────────────────────────────────
+
+/**
+ * Validates a bank account number against the switch (Xendit) and creator name.
+ */
+router.post("/payout-method/validate", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId")!;
+    const { bankCode, accountNumber } = c.get("body");
+
+    if (!bankCode || !accountNumber) {
+      return cValidationError(c, "bankCode and accountNumber are required");
+    }
+
+    const cleanAccount = String(accountNumber).replace(/[\s-]/g, "").trim();
+    if (cleanAccount.length < 4 || cleanAccount.length > 34) {
+      return cValidationError(c, "Invalid account number length (must be between 4 and 34 characters)");
+    }
+
+    const result = await validateBankAccount(userId, bankCode, cleanAccount);
+    return c.json({ success: true, ...result });
+  } catch (error) {
+    return cApiError(c, "Failed to validate bank account", error);
+  }
+});
+
+// ── GET /wallet/payout-methods ───────────────────────────────────────────────
+
+/**
+ * Lists the creator's saved payout methods with masked account numbers.
+ */
+router.get("/payout-methods", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId")!;
+    const payoutMethods = await getCreatorPayoutMethods(userId);
+    return c.json({ payoutMethods });
+  } catch (error) {
+    return cApiError(c, "Failed to fetch payout methods", error);
+  }
+});
+
+// ── GET /wallet/kyc/status ───────────────────────────────────────────────────
+
+/**
+ * Returns the latest KYC & bank account verification status for the creator.
+ */
+router.get("/kyc/status", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId")!;
+    const kyc = await getCreatorKycStatus(userId);
+    return c.json({ kyc });
+  } catch (error) {
+    return cApiError(c, "Failed to fetch KYC status", error);
+  }
+});
+
 // ── POST /wallet/payout-method ───────────────────────────────────────────────
 
 /**
  * Saves or updates the creator's payout method (bank account).
+ * Runs field-level AES-256 encryption, blind index Sybil detection,
+ * and KYC name verification.
  */
 router.post("/payout-method", requireAuth, async (c) => {
   try {
     const userId = c.get("userId")!;
-    const { methodType, bankName, accountNumber, accountName, currency, bankCode } = c.get("body");
+    const {
+      methodType,
+      bankName,
+      accountNumber,
+      accountName,
+      currency,
+      bankCode,
+      routingNumber,
+      swiftBic,
+      countryCode,
+    } = c.get("body");
 
     if (!methodType || !bankName || !accountNumber || !accountName) {
       return cValidationError(c, "All fields are required: methodType, bankName, accountNumber, accountName");
     }
 
+    const cleanAccount = String(accountNumber).replace(/[\s-]/g, "").trim();
+    if (cleanAccount.length < 4 || cleanAccount.length > 34) {
+      return cValidationError(c, "Invalid account number length (must be between 4 and 34 characters)");
+    }
+
     const validMethod = methodType === "e_wallet" || methodType === "stripe_connect" ? methodType : "bank_transfer";
     const validCurrency = currency === "USD" ? "USD" : "IDR";
 
-    await savePayoutMethod(userId, validMethod, bankName, accountNumber, accountName, validCurrency, bankCode);
-    return c.json({ success: true, message: "Payout method saved" });
-  } catch (error) {
+    const result = await savePayoutMethod(
+      userId,
+      validMethod,
+      bankName,
+      cleanAccount,
+      accountName,
+      validCurrency,
+      bankCode,
+      routingNumber,
+      swiftBic,
+      countryCode,
+    );
+
+    return c.json({
+      success: true,
+      message: "Payout method saved successfully",
+      ...result,
+    });
+  } catch (error: unknown) {
+    const msg = getErrorMessage(error);
+    if (msg === "ACCOUNT_ALREADY_REGISTERED_BY_ANOTHER_CREATOR") {
+      return c.json(
+        {
+          success: false,
+          error: "This bank account is already registered to another creator account.",
+          code: "ACCOUNT_ALREADY_REGISTERED_BY_ANOTHER_CREATOR",
+        },
+        409
+      );
+    }
+    if (msg === "INVALID_BANK_ACCOUNT") {
+      return c.json(
+        {
+          success: false,
+          error: "The bank account number could not be verified by the banking switch.",
+          code: "INVALID_BANK_ACCOUNT",
+        },
+        422
+      );
+    }
     return cApiError(c, "Failed to save payout method", error);
   }
 });

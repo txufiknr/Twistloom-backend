@@ -26,7 +26,13 @@ import type { ResourceAIProvider, ResourceAIScore, ResourceTimestamp, ResourceTr
 import type { EnforcementAction, ViolationType, ViolationSeverity, RiskTier, ReportTargetType, ReportType, ReportStatus, AppealStatus, ViolationEventSource } from "../types/trust-safety.js";
 import { BOOK_MIN_PAGES } from "../config/story.js";
 import { FIRST_TIME_CREDITS } from "../config/credits.js";
-import type { WalletCurrency } from "../types/wallet.js";
+import type {
+  WalletCurrency,
+  PayoutMethodType,
+  KycVerificationType,
+  KycVerificationStatus,
+  VerificationConfidence,
+} from "../types/wallet.js";
 import type { PrivacyPreferences } from "../types/privacy-preferences.js";
 import type { WallAttachmentSnapshot, WallPostFlair, WallPostType, WallReactionCounts, WallReactionType } from "../types/wall.js";
 
@@ -3631,11 +3637,16 @@ export const creatorPayoutMethods = pgTable(
     id: id(),
     creatorId: uuid("creator_id").notNull().references(() => users.userId, { onDelete: "cascade" }),
     methodType: text("method_type").notNull()
-      .$type<"bank_transfer" | "e_wallet" | "stripe_connect">(),
+      .$type<PayoutMethodType>(),
     bankName: text("bank_name"),
     bankCode: text("bank_code"),
     accountNumberEncrypted: text("account_number_encrypted"),
+    accountLast4: text("account_last4"),
+    accountNumberBlindIndex: text("account_number_blind_index"),
     accountName: text("account_name"),
+    routingNumber: text("routing_number"),
+    swiftBic: text("swift_bic"),
+    countryCode: text("country_code").notNull().default("ID"),
     currency: text("currency").notNull().default("IDR")
       .$type<WalletCurrency>(),
     isDefault: boolean("is_default").notNull().default(true),
@@ -3646,6 +3657,39 @@ export const creatorPayoutMethods = pgTable(
   },
   (t) => [
     index("creator_payout_methods_creator_idx").on(t.creatorId),
+    index("creator_payout_methods_blind_idx").on(t.accountNumberBlindIndex),
+  ]
+);
+
+/**
+ * Creator KYC & Bank Account Verification Records.
+ * Tracks identity verification, bank account inquiry responses,
+ * fuzzy name match scores, and Sybil/duplicate detection flags.
+ */
+export const creatorKycVerifications = pgTable(
+  "creator_kyc_verifications",
+  {
+    id: id(),
+    creatorId: uuid("creator_id").notNull().references(() => users.userId, { onDelete: "cascade" }),
+    payoutMethodId: uuid("payout_method_id").references(() => creatorPayoutMethods.id, { onDelete: "set null" }),
+    verificationType: text("verification_type").notNull()
+      .$type<KycVerificationType>(),
+    status: text("status").notNull().default("pending")
+      .$type<KycVerificationStatus>(),
+    inquiryHolderName: text("inquiry_holder_name"),
+    registeredName: text("registered_name"),
+    nameMatchScore: real("name_match_score"),
+    confidence: text("confidence").$type<VerificationConfidence>(),
+    failureReason: text("failure_reason"),
+    externalReferenceId: text("external_reference_id"),
+    metadata: jsonb("metadata"),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    index("creator_kyc_creator_idx").on(t.creatorId),
+    index("creator_kyc_status_idx").on(t.status),
   ]
 );
 

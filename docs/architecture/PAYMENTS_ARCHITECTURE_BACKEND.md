@@ -1048,4 +1048,71 @@ Full plan: `docs/roadmap/STRIPE_AND_XENDIT_GATEWAY_AGNOSTIC_ROADMAP.md`
 
 ---
 
-*Last updated: September 2026 (gateway-agnostic architecture complete; DB migration + deploy applied; 15 bug fixes applied, 2 deferred items resolved, 4 remaining items tracked. Companion to frontend doc: `PAYMENTS_ARCHITECTURE_FRONTEND.md`*
+## 17. Creator Payout Verification & Bank Account Validation (Phase 1 & 2)
+
+As detailed in `CREATOR_PAYOUT_VERIFICATION_KYC_ROADMAP.md`, Twistloom implements an enterprise-grade bank verification and KYC identity validation pipeline prior to initiating creator disbursements.
+
+### 17.1 Security Architecture: AES-256-GCM Encryption & Blind Indexing
+
+Bank account numbers constitute sensitive Personal Identifiable Information (PII) and financial credentials. In accordance with PCI-DSS guidelines and global privacy standards, Twistloom enforces strict data protection invariants:
+
+1. **At-Rest Field-Level Encryption (`encryptPII` / `decryptPII`):**
+   - **Algorithm:** AES-256-GCM (Authenticated Encryption with Associated Data).
+   - **Format:** `ivHex:authTagHex:ciphertextHex` using a 96-bit cryptographically random IV generated per write.
+   - **Key derivation:** Derived from `PII_ENCRYPTION_KEY_HEX` (64 hex characters) or SHA-256 hash of `AUTH_SECRET` for local development.
+   - **Raw account numbers are NEVER stored in plaintext in the database.**
+
+2. **Sybil & Multi-Account Deduplication (`generateBlindIndex`):**
+   - Exact-match queries cannot run directly against AES-256-GCM ciphertexts because each encryption operation yields unique random IVs.
+   - We generate a deterministic blind index hash using HMAC-SHA256 with a high-entropy salt (`PII_BLIND_INDEX_SALT`):
+     $$\text{blindIndex} = \text{HMAC-SHA256}(\text{salt}, \text{normalizedAccountNo})$$
+   - Column: `creator_payout_methods.account_number_blind_index` (indexed with B-tree).
+   - Prevents Sybil attacks: A creator attempting to link an account number already attached to another creator account is rejected immediately (`ACCOUNT_ALREADY_REGISTERED_BY_ANOTHER_CREATOR`).
+
+3. **Masked Presentation (`maskAccountNumber` / `extractLast4`):**
+   - Database stores `account_last4` explicitly for non-decrypting UI lookups.
+   - Frontend and API responses display masked account numbers: `••••${last4}`.
+
+### 17.2 Fuzzy Name Matching Engine (`src/utils/fuzzy-name.ts`)
+
+Banking switches return account holder names formatted according to bank conventions (e.g. `DOE/JOHN MR`, `SANTOSO BUDI`, uppercase, omitting middle names, or with titles). A naive exact string comparison causes catastrophic false rejection rates for legitimate creators.
+
+Twistloom uses a composite string similarity engine combining:
+1. **Unicode normalization & cleansing:** Strips diacritics, removes non-alphanumerics, and normalizes casing.
+2. **Jaro-Winkler distance:** Measures transposition and edit distance with prefix scaling ($p = 0.1$).
+3. **Token intersection (Jaccard similarity):** Tokenizes names into word sets to account for reversed names (e.g. "Budi Santoso" vs "Santoso Budi").
+4. **Verification Thresholds:**
+   - $\ge 0.85$ (High Confidence): Auto-verified instantly.
+   - $0.70 - 0.84$ (Medium Confidence): Accepted with verified status.
+   - $< 0.70$ (Low Confidence): Flagged as `requires_manual_review` or rejected.
+
+### 17.3 Xendit Account Inquiry Switch & Local Dev Fallback
+
+For Indonesian bank accounts (IDR), the backend interfaces with Xendit's interbank switch inquiry API:
+- **API Endpoint:** `POST https://api.xendit.co/bank_account_data_requests`
+- **Payload:** `{ bank_code: string, account_number: string }`
+- **Output:** Returns verified account holder name registered at the beneficiary bank.
+
+#### Local Development Simulation Fallback
+
+To enable frictionless local development and offline automated testing without requiring active live bank switch credentials or incurring inquiry transaction costs:
+- When `!isXenditConfigured()` or in `NODE_ENV === "development"` with placeholder/mock keys:
+  - Account numbers starting with `0000` simulate non-existent accounts: returns `{ status: "INVALID_ACCOUNT_NO" }`.
+  - All other account numbers simulate bank switch success: returns `{ status: "SUCCESS", bank_account_holder_name: fallbackName.toUpperCase() }`.
+  - If a live API call fails due to network outage in development, the system logs a warning and gracefully falls back to simulated response.
+
+### 17.4 Audit Trail Schema
+
+All verification attempts write immutable audit records to `creator_kyc_verifications`:
+- `creator_id` (UUID foreign key)
+- `payout_method_id` (UUID foreign key)
+- `verification_type` (`bank_account_inquiry`, `identity_document`, `tin_tax_form`)
+- `status` (`pending`, `verified`, `rejected`, `requires_manual_review`)
+- `inquiry_holder_name`, `registered_name`, `name_match_score`, `confidence`
+- `external_reference_id` (Xendit inquiry request ID)
+- `verified_at` (Timestamp of successful verification)
+
+---
+
+*Last updated: September 2026 (Phase 1 & 2 Creator Payout Verification, AES-256 encryption, blind index Sybil prevention, Xendit local dev fallback, and KYC audit ledger complete. Companion to frontend doc: `PAYMENTS_ARCHITECTURE_FRONTEND.md`)*
+

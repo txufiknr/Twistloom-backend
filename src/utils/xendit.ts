@@ -403,3 +403,119 @@ export async function createXenditInvoice(
 
   return payload;
 }
+
+const XENDIT_BANK_INQUIRY_API = "https://api.xendit.co/bank_account_data_requests";
+
+export interface XenditBankAccountInquiryResult {
+  id?: string;
+  bank_code: string;
+  account_number: string;
+  bank_account_holder_name?: string;
+  status: "SUCCESS" | "INVALID_ACCOUNT_NO" | "FAILED" | "PENDING";
+}
+
+/**
+ * Performs a bank account inquiry through Xendit (or local dev fallback).
+ * Identifies the registered holder name for KYC validation.
+ */
+export async function inquireXenditBankAccount(
+  bankCode: string,
+  accountNumber: string,
+  fallbackName?: string
+): Promise<XenditBankAccountInquiryResult> {
+  const cleanAccount = accountNumber.replace(/[\s-]/g, "").trim();
+
+  // Local development / test / unconfigured fallback
+  if (!isXenditConfigured() || (process.env.NODE_ENV !== "production" && (!XENDIT_CONFIG.secretKey || XENDIT_CONFIG.secretKey.startsWith("xnd_development_mock")))) {
+    // If account number starts with 0000, simulate invalid account
+    if (cleanAccount.startsWith("0000")) {
+      return {
+        id: `mock_inq_${Date.now()}`,
+        bank_code: bankCode,
+        account_number: cleanAccount,
+        bank_account_holder_name: "",
+        status: "INVALID_ACCOUNT_NO",
+      };
+    }
+
+    const mockHolderName = fallbackName ? fallbackName.toUpperCase() : "TWISTLOOM CREATOR";
+    return {
+      id: `mock_inq_${Date.now()}`,
+      bank_code: bankCode,
+      account_number: cleanAccount,
+      bank_account_holder_name: mockHolderName,
+      status: "SUCCESS",
+    };
+  }
+
+  try {
+    const response = await fetch(XENDIT_BANK_INQUIRY_API, {
+      method: "POST",
+      headers: getXenditHeaders(),
+      body: JSON.stringify({
+        bank_code: bankCode,
+        account_number: cleanAccount,
+      }),
+    });
+
+    const data = (await response.json()) as {
+      id?: string;
+      bank_code?: string;
+      account_number?: string;
+      bank_account_holder_name?: string;
+      status?: "SUCCESS" | "INVALID_ACCOUNT_NO" | "FAILED" | "PENDING";
+      message?: string;
+    };
+
+    if (!response.ok) {
+      if (response.status === 404 || data.status === "INVALID_ACCOUNT_NO") {
+        return {
+          id: data.id,
+          bank_code: bankCode,
+          account_number: cleanAccount,
+          bank_account_holder_name: "",
+          status: "INVALID_ACCOUNT_NO",
+        };
+      }
+      // If live API returns error in non-prod, fallback with warning
+      if (process.env.NODE_ENV !== "production") {
+        console.warn(`[Xendit] Live inquiry failed (${response.status}: ${data.message}), falling back to dev simulation.`);
+        return {
+          id: `mock_inq_${Date.now()}`,
+          bank_code: bankCode,
+          account_number: cleanAccount,
+          bank_account_holder_name: fallbackName ? fallbackName.toUpperCase() : "DEV VERIFIED HOLDER",
+          status: "SUCCESS",
+        };
+      }
+      return {
+        id: data.id,
+        bank_code: bankCode,
+        account_number: cleanAccount,
+        bank_account_holder_name: "",
+        status: "FAILED",
+      };
+    }
+
+    return {
+      id: data.id,
+      bank_code: data.bank_code || bankCode,
+      account_number: data.account_number || cleanAccount,
+      bank_account_holder_name: data.bank_account_holder_name || "",
+      status: data.status || "SUCCESS",
+    };
+  } catch (error) {
+    if (process.env.NODE_ENV !== "production") {
+      console.warn("[Xendit] Live inquiry threw network error, falling back to dev simulation.", error);
+      return {
+        id: `mock_inq_${Date.now()}`,
+        bank_code: bankCode,
+        account_number: cleanAccount,
+        bank_account_holder_name: fallbackName ? fallbackName.toUpperCase() : "DEV VERIFIED HOLDER",
+        status: "SUCCESS",
+      };
+    }
+    throw error;
+  }
+}
+

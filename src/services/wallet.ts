@@ -18,15 +18,30 @@ import {
   creatorWallets,
   creatorPayouts,
   creatorPayoutMethods,
+  creatorKycVerifications,
   users,
   books,
   transactions,
   userNotifications,
 } from "../db/schema.js";
+import { encryptPII, generateBlindIndex, extractLast4, maskAccountNumber } from "../utils/crypto.js";
+import { calculateNameMatchScore } from "../utils/fuzzy-name.js";
+import { inquireXenditBankAccount } from "../utils/xendit.js";
 import { THANKS_CONFIG } from "../config/thanks.js";
 import { getXenditPackPriceIdr } from "../config/xendit.js";
 import { CREDIT_PACKS } from "../config/credits.js";
-import type { CreatorWallet, CreatorEarning, CreatorPayout, ConvertToCreditsResult, EarningSource, WalletCurrency } from "../types/wallet.js";
+import type {
+  CreatorWallet,
+  CreatorEarning,
+  CreatorPayout,
+  CreatorPayoutMethod,
+  CreatorKycVerification,
+  BankAccountValidationResult,
+  KycVerificationStatus,
+  ConvertToCreditsResult,
+  EarningSource,
+  WalletCurrency,
+} from "../types/wallet.js";
 
 // ── Balance ──────────────────────────────────────────────────────────────────
 
@@ -385,7 +400,115 @@ export async function getCreatorPayouts(
 }
 
 /**
- * Saves or updates a creator's payout method (bank account or provider account).
+ * Validates a bank account via switch inquiry and fuzzy name matching.
+ * Does not mutate wallet or payout method records.
+ */
+export async function validateBankAccount(
+  creatorId: string,
+  bankCode: string,
+  accountNumber: string
+): Promise<BankAccountValidationResult> {
+  const cleanAcc = accountNumber.replace(/[\s-]/g, "").trim();
+  const masked = maskAccountNumber(cleanAcc);
+
+  // Fetch creator's registered profile name
+  const [user] = await dbRead
+    .select({ name: users.name })
+    .from(users)
+    .where(eq(users.userId, creatorId))
+    .limit(1);
+
+  const registeredName = user?.name || "Creator";
+  const inquiry = await inquireXenditBankAccount(bankCode, cleanAcc, registeredName);
+
+  if (inquiry.status === "INVALID_ACCOUNT_NO" || inquiry.status === "FAILED") {
+    return {
+      bankCode,
+      accountNumberMasked: masked,
+      accountHolderName: inquiry.bank_account_holder_name || "",
+      nameMatchScore: 0,
+      confidence: "low",
+      isMatch: false,
+      status: inquiry.status,
+      rawStatus: inquiry.status,
+    };
+  }
+
+  const holderName = inquiry.bank_account_holder_name || "";
+  const match = calculateNameMatchScore(registeredName, holderName);
+
+  return {
+    bankCode,
+    accountNumberMasked: masked,
+    accountHolderName: holderName,
+    nameMatchScore: match.score,
+    confidence: match.confidence,
+    isMatch: match.isMatch,
+    status: "SUCCESS",
+    rawStatus: inquiry.status,
+  };
+}
+
+/**
+ * Gets a creator's registered payout methods with masked account numbers.
+ */
+export async function getCreatorPayoutMethods(creatorId: string): Promise<CreatorPayoutMethod[]> {
+  const rows = await dbRead
+    .select()
+    .from(creatorPayoutMethods)
+    .where(eq(creatorPayoutMethods.creatorId, creatorId))
+    .orderBy(desc(creatorPayoutMethods.isDefault), desc(creatorPayoutMethods.createdAt));
+
+  return rows.map((r) => ({
+    id: r.id,
+    creatorId: r.creatorId,
+    methodType: r.methodType,
+    bankName: r.bankName,
+    bankCode: r.bankCode,
+    accountLast4: r.accountLast4,
+    accountName: r.accountName,
+    currency: r.currency,
+    isDefault: r.isDefault,
+    isVerified: r.isVerified,
+    createdAt: r.createdAt,
+  }));
+}
+
+/**
+ * Gets the latest KYC verification record for a creator.
+ */
+export async function getCreatorKycStatus(creatorId: string): Promise<CreatorKycVerification | null> {
+  const [row] = await dbRead
+    .select()
+    .from(creatorKycVerifications)
+    .where(eq(creatorKycVerifications.creatorId, creatorId))
+    .orderBy(desc(creatorKycVerifications.createdAt))
+    .limit(1);
+
+  if (!row) return null;
+
+  return {
+    id: row.id,
+    creatorId: row.creatorId,
+    payoutMethodId: row.payoutMethodId,
+    verificationType: row.verificationType,
+    status: row.status,
+    inquiryHolderName: row.inquiryHolderName,
+    registeredName: row.registeredName,
+    nameMatchScore: row.nameMatchScore,
+    confidence: row.confidence,
+    failureReason: row.failureReason,
+    verifiedAt: row.verifiedAt,
+    createdAt: row.createdAt,
+  };
+}
+
+/**
+ * Saves or updates a creator's payout method with:
+ * - AES-256-GCM encryption of the raw account number
+ * - HMAC-SHA256 blind indexing for Sybil / duplicate account prevention
+ * - Xendit account inquiry and fuzzy name matching for KYC verification
+ * - Recording verification event in creator_kyc_verifications
  */
 export async function savePayoutMethod(
   creatorId: string,
@@ -395,31 +518,133 @@ export async function savePayoutMethod(
   accountName: string,
   currency: WalletCurrency = "IDR",
   bankCode?: string,
-): Promise<void> {
-  await dbWrite.transaction(async (tx) => {
-    // Mark payout as verified (inside transaction for atomicity)
-    await tx
-      .update(creatorWallets)
-      .set({ payoutVerified: true, updatedAt: new Date() })
-      .where(eq(creatorWallets.creatorId, creatorId));
+  routingNumber?: string,
+  swiftBic?: string,
+  countryCode: string = "ID",
+): Promise<{ payoutMethodId: string; isVerified: boolean; kycStatus: KycVerificationStatus; holderName: string }> {
+  const cleanAcc = accountNumber.replace(/[\s-]/g, "").trim();
+  const accountLast4 = extractLast4(cleanAcc);
+  const blindIndex = await generateBlindIndex(cleanAcc);
+  const encryptedAcc = await encryptPII(cleanAcc);
 
-    // Upsert payout method (set all others as non-default)
+  // 1. Fetch user's registered name outside of transaction
+  const [user] = await dbRead
+    .select({ name: users.name })
+    .from(users)
+    .where(eq(users.userId, creatorId))
+    .limit(1);
+
+  const registeredName = user?.name || accountName;
+  let verifiedHolderName = accountName;
+  let kycStatus: KycVerificationStatus;
+  let matchScore: number | null = null;
+  let confidence: "high" | "medium" | "low" | null = null;
+  let externalRef: string | null = null;
+
+  // 2. If Indonesian bank transfer / bankCode provided, inquire bank switch (EXTERNAL API CALL - KEPT OUTSIDE TX)
+  if (bankCode) {
+    const inquiry = await inquireXenditBankAccount(bankCode, cleanAcc, registeredName);
+    if (inquiry.status === "INVALID_ACCOUNT_NO") {
+      throw new Error("INVALID_BANK_ACCOUNT");
+    }
+
+    if (inquiry.status === "SUCCESS") {
+      verifiedHolderName = inquiry.bank_account_holder_name || accountName;
+      externalRef = inquiry.id || null;
+      const match = calculateNameMatchScore(registeredName, verifiedHolderName);
+      matchScore = match.score;
+      confidence = match.confidence;
+
+      if (match.score >= 0.7) {
+        kycStatus = "verified";
+      } else {
+        kycStatus = "requires_manual_review";
+      }
+    } else {
+      kycStatus = "requires_manual_review";
+    }
+  } else {
+    // For provider accounts (e.g. Stripe Connect) or without bank inquiry
+    kycStatus = "verified";
+  }
+
+  const isVerified = kycStatus === "verified";
+
+  // 3. Atomically perform Sybil check and persist to DB
+  return await dbWrite.transaction(async (tx) => {
+    // Sybil check: verify that this bank account is not registered by another creator
+    if (blindIndex) {
+      const [existingMethod] = await tx
+        .select({ id: creatorPayoutMethods.id, creatorId: creatorPayoutMethods.creatorId })
+        .from(creatorPayoutMethods)
+        .where(
+          and(
+            eq(creatorPayoutMethods.accountNumberBlindIndex, blindIndex),
+            sql`${creatorPayoutMethods.creatorId} != ${creatorId}`
+          )
+        )
+        .limit(1);
+
+      if (existingMethod) {
+        throw new Error("ACCOUNT_ALREADY_REGISTERED_BY_ANOTHER_CREATOR");
+      }
+    }
+
+    // 4. Update creator wallet payout verification status if verified
+    if (isVerified) {
+      await tx
+        .update(creatorWallets)
+        .set({ payoutVerified: true, updatedAt: new Date() })
+        .where(eq(creatorWallets.creatorId, creatorId));
+    }
+
+    // 5. Demote existing default payout methods for this creator
     await tx
       .update(creatorPayoutMethods)
-      .set({ isDefault: false })
+      .set({ isDefault: false, updatedAt: new Date() })
       .where(eq(creatorPayoutMethods.creatorId, creatorId));
 
-    await tx.insert(creatorPayoutMethods).values({
+    // 6. Insert new encrypted payout method
+    const [newMethod] = await tx
+      .insert(creatorPayoutMethods)
+      .values({
+        creatorId,
+        methodType,
+        bankName,
+        bankCode: bankCode || null,
+        accountNumberEncrypted: encryptedAcc,
+        accountLast4,
+        accountNumberBlindIndex: blindIndex,
+        accountName: verifiedHolderName,
+        routingNumber: routingNumber || null,
+        swiftBic: swiftBic || null,
+        countryCode: countryCode || "ID",
+        currency,
+        isDefault: true,
+        isVerified,
+      })
+      .returning({ id: creatorPayoutMethods.id });
+
+    // 7. Insert KYC verification audit record
+    await tx.insert(creatorKycVerifications).values({
       creatorId,
-      methodType,
-      bankName,
-      bankCode: bankCode || null,
-      accountNumberEncrypted: accountNumber, // Stored encrypted in prod
-      accountName,
-      currency,
-      isDefault: true,
-      isVerified: true,
+      payoutMethodId: newMethod.id,
+      verificationType: "bank_account_inquiry",
+      status: kycStatus,
+      inquiryHolderName: verifiedHolderName,
+      registeredName,
+      nameMatchScore: matchScore,
+      confidence,
+      externalReferenceId: externalRef,
+      verifiedAt: isVerified ? new Date() : null,
     });
+
+    return {
+      payoutMethodId: newMethod.id,
+      isVerified,
+      kycStatus,
+      holderName: verifiedHolderName,
+    };
   });
 }
 
