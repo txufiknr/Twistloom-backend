@@ -484,6 +484,9 @@ export type BookPageVisit = {
   visitorPercentage: number;
   readerUserId?: string;
   endingStats?: BookEndingStats;
+  /** True when the user reached the terminal page AND this is their first
+   *  completion of this book (insertUserCompletedBook returned a record). */
+  isNewCompletion?: boolean;
 }
 
 export type VisitBookPageParams = {

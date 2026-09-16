@@ -2246,6 +2246,10 @@ export const broadcasts = pgTable(
     source: text("source").$type<BroadcastSource>().notNull().default("user"),
     type: text("type").$type<BroadcastType>().notNull().default("message"),
     message: text("message").notNull(),
+    /** i18n key for structured system broadcasts (e.g. "broadcast.system.firstEasterEgg"). */
+    messageKey: text("message_key"),
+    /** JSONB params passed to the i18n key at render time (e.g. { username, endingName }). */
+    messageParams: jsonb("message_params").$type<Record<string, string>>(),
     status: text("status").$type<BroadcastStatus>().notNull().default("queued"),
     moderationResult: jsonb("moderation_result").$type<BroadcastModerationResult>(),
     rejectionReason: text("rejection_reason").$type<BroadcastRejectReason>(),

@@ -772,12 +772,18 @@ export async function getCurrentBroadcast(): Promise<PublicBroadcast | null> {
 
   const now = new Date();
 
+  // NOTE: No index on `message_key` — deliberate choice. This query filters by
+  // (status, startsAt, expiresAt) which are already indexed. `messageKey` is
+  // selected but never used as a filter. If future queries need to filter by key,
+  // an index can be added later.
   const [live] = await dbRead
     .select({
       id: broadcasts.id,
       userId: broadcasts.userId,
       username: users.username,
       message: broadcasts.message,
+      messageKey: broadcasts.messageKey,
+      messageParams: broadcasts.messageParams,
       source: broadcasts.source,
       containsSpoiler: broadcasts.containsSpoiler,
       startsAt: broadcasts.startsAt,
@@ -801,6 +807,8 @@ export async function getCurrentBroadcast(): Promise<PublicBroadcast | null> {
         userId: live.userId,
         username: live.username,
         message: live.message,
+        messageKey: live.messageKey ?? null,
+        messageParams: (live.messageParams as Record<string, string> | null) ?? null,
         source: live.source as BroadcastSource,
         containsSpoiler: live.containsSpoiler,
         startsAt: live.startsAt.toISOString(),
@@ -844,35 +852,70 @@ export async function getOwnerBroadcastState(userId: string): Promise<{
 }
 
 /**
+ * Structured i18n payload for system broadcasts. Instead of a pre-localized
+ * English string, the caller provides an i18n key + params so the frontend
+ * can translate into the viewer's locale.
+ */
+export interface SystemBroadcastI18nPayload {
+  key: string;
+  params: Record<string, string>;
+  /** English fallback stored in `message` for backwards compatibility / debug. */
+  fallback: string;
+}
+
+/**
  * Sends a system-originated broadcast (e.g. Easter Egg discovery / jackpot).
  * System broadcasts bypass Megaphone item deduction and user cooldown gates.
  *
+ * **Design decisions (by-design, not bugs):**
+ * - **Fire-and-forget:** Errors are logged but never propagate to callers.
+ *   No retry mechanism — broadcast failure for rare events (Easter Egg / ending
+ *   discovery) is tolerable. The page visit completes normally regardless.
+ * - **No validation on `key` field:** The `key` is controlled by backend code
+ *   (easter-eggs.ts, book-controller.ts), not user input. Only
+ *   `submitSystemBroadcast` (authenticated endpoint) runs `validateBroadcastInput`.
+ * - **`message` stores rendered English (fallback):** For structured payloads, the
+ *   `fallback` field is stored in the `message` column (NOT NULL). This provides
+ *   moderator-friendly text and a last-resort display if the frontend can't
+ *   resolve the i18n key.
+ * - **`type` parameter preserved:** Existing callers that don't pass `type` get
+ *   the default `"message"`, maintaining backward compatibility.
+ *
  * @param userId - Initiating user ID (for attribution / join)
- * @param message - The broadcast message to display
+ * @param messageOrPayload - Either a plain English string (legacy) or a
+ *   `SystemBroadcastI18nPayload` for locale-aware broadcasts.
  * @param type - Message type (defaults to 'message')
  * @returns Broadcast ID on success, null if skipped due to full queue
  */
 export async function sendSystemBroadcast(
   userId: string,
-  message: string,
+  messageOrPayload: string | SystemBroadcastI18nPayload,
   type: BroadcastType = "message",
 ): Promise<string | null> {
   try {
     const queueFull = await isBroadcastQueueFull();
     if (queueFull) {
-      console.warn("[sendSystemBroadcast] ⚠️ Queue full, skipping system broadcast:", message);
+      console.warn("[sendSystemBroadcast] ⚠️ Queue full, skipping system broadcast");
       return null;
     }
 
+    const isStructured = typeof messageOrPayload !== "string";
+    const fallbackMessage = isStructured
+      ? cleanSingleLineText(messageOrPayload.fallback, BROADCAST_MAX_LENGTH)
+      : cleanSingleLineText(messageOrPayload, BROADCAST_MAX_LENGTH);
+
     const broadcastId = generateId();
     const result = await dbWrite.transaction(async (tx) => {
+      await reapStaleQueuedBroadcasts(tx);
       const schedule = await computeSchedule(tx);
       await tx.insert(broadcasts).values({
         id: broadcastId,
         userId,
         source: "system" as BroadcastSource,
         type,
-        message: cleanSingleLineText(message, BROADCAST_MAX_LENGTH),
+        message: fallbackMessage,
+        messageKey: isStructured ? messageOrPayload.key : null,
+        messageParams: isStructured ? messageOrPayload.params : null,
         status: "queued" as BroadcastStatus,
         moderationResult: {
           outcome: "approve",
@@ -887,6 +930,7 @@ export async function sendSystemBroadcast(
       return broadcastId;
     });
 
+    await invalidateCurrentBroadcastCache();
     return result;
   } catch (error) {
     console.error("[sendSystemBroadcast] ❌ Error sending system broadcast:", error);

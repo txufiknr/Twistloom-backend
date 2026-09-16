@@ -468,9 +468,11 @@ async function markPageVisitedWithClient(params: {
 
   // Insert completion record if user reached the last page
   let endingStats: BookEndingStats | undefined;
+  let isNewCompletion = false;
   if (pageNumber === totalPages) {
     const completion = await insertUserCompletedBook(userId, bookId, pageId, branchId, client);
     if (completion) {
+      isNewCompletion = true;
       console.log(`[markPageVisited] 🎉 User ${userId} completed book ${bookId} (page ${pageNumber}/${totalPages})`);
     }
     // Compute ending stats whenever this is the terminal page, whether or not
@@ -493,7 +495,7 @@ async function markPageVisitedWithClient(params: {
     }, { client });
   }
 
-  return { session, nthVisit, visitorPercentage, readerUserId: userId, endingStats };
+  return { session, nthVisit, visitorPercentage, readerUserId: userId, endingStats, isNewCompletion };
 }
 
 /**

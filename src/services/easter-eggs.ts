@@ -325,7 +325,11 @@ export async function claimEasterEgg(
     if (easterEggsFound === 1) {
       sendSystemBroadcast(
         userId,
-        "🥚 A secret was uncovered. A reader found their first Easter Egg in the Loom.",
+        {
+          key: "broadcast.system.firstEasterEgg",
+          params: {},
+          fallback: "🥚 A first Easter Egg was uncovered in the Loom!",
+        },
       ).catch(() => {});
     }
 
@@ -452,7 +456,11 @@ export async function crackEasterEgg(userId: string): Promise<EasterEggCrackResu
       // Broadcast jackpot announcement
       sendSystemBroadcast(
         userId,
-        "✨ A mystery Easter Egg cracked open to reveal a rare 250 Credit Jackpot!",
+        {
+          key: "broadcast.system.jackpotCrack",
+          params: {},
+          fallback: "✨ An Easter Egg cracked open to reveal a rare 250 Credit Jackpot!",
+        },
       ).catch(() => {});
     }
 

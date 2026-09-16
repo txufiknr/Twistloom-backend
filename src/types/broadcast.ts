@@ -61,6 +61,10 @@ export interface PublicBroadcast {
   username: string;
   message: string;
   source: BroadcastSource;
+  /** i18n key for structured system broadcasts (e.g. "broadcast.system.firstEasterEgg"). */
+  messageKey?: string | null;
+  /** JSONB params passed to the i18n key at render time. */
+  messageParams?: Record<string, string> | null;
   containsSpoiler: boolean;
   startsAt: string;
   expiresAt: string;

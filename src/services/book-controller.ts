@@ -29,6 +29,7 @@ import { getEnrichedBook, getPageActionsFromDB, getPageFromDB } from "./book.js"
 import { cNotFoundError, cForbiddenError } from "../utils/error.js";
 import { getClientIp } from "../hono/express-shim.js";
 import { computeVisitStats, mapActionToSelectedAction, markPageVisited } from "./story.js";
+import { sendSystemBroadcast, type SystemBroadcastI18nPayload } from "./broadcast.js";
 import { FREE_ACTION_SELECTION_UNTIL_PAGE, PHASE_EARLY_CEILING, PHASE_LATE_FLOOR, PHASE_FINALE_FLOOR } from "../config/story.js";
 import { buildCustomActionAction } from "../utils/custom-action.js";
 import type { BookAuthor, BookMode, BookPageVisit, BookSortOption, BookStats, BookTranslation, EnrichedBookData, EnrichedBookFirstPage, EnrichedBookGeneration, EnrichedBookSession, VisitBookPageParams, VisitBookPageResult } from "../types/book.js";
@@ -1274,5 +1275,57 @@ export async function visitBookPage(
     };
   }
 
+  // Fire system broadcast when this is the first user to complete this book.
+  // Fire-and-forget; non-critical path so errors are silently swallowed.
+  if (visitDetails.isNewCompletion && book.visibility === "public" && userId) {
+    void fireFirstEndingBroadcast(userId, book, pageId);
+  }
+
   return { dbPage, book, visitDetails, sourceAction: selectedAction, isUserTakeAction };
+}
+
+/**
+ * Fires a locale-aware system broadcast when the first reader completes a book.
+ * Uses the book's ending text (author-edited) for the broadcast.
+ *
+ * **Design decisions (by-design, not bugs):**
+ * - **No `username` in `messageParams`:** The `BroadcastBanner` always renders
+ *   `@{broadcast.username}` as a separate span. Translation strings don't include
+ *   `@{username}` to avoid duplication (e.g., `@john 👁️ @john just discovered...`).
+ * - **Race condition:** Two users finishing simultaneously can both see
+ *   `isNewCompletion: true` (narrow window between stats query and completion
+ *   insert). At most one duplicate system message — acceptable for rare events.
+ *   `insertUserCompletedBook` uses `onConflictDoNothing` for idempotency.
+ * - **`_endingPageId` unused:** Retained for potential future use (e.g., looking
+ *   up story state for ending name if `book.ending?.text` is unavailable).
+ */
+async function fireFirstEndingBroadcast(
+  userId: string,
+  book: Pick<EnrichedBookData, "id" | "title" | "ending">,
+  _endingPageId: string,
+): Promise<void> {
+  try {
+    const endingText = book.ending?.text;
+
+    const payload: SystemBroadcastI18nPayload = endingText
+      ? {
+          key: "broadcast.system.firstEnding",
+          params: {
+            endingName: endingText,
+            bookTitle: book.title,
+          },
+          fallback: `📖 ${book.title} just had its first ending reached: "${endingText}". The story thickens!`,
+        }
+      : {
+          key: "broadcast.system.firstEndingNoName",
+          params: {
+            bookTitle: book.title,
+          },
+          fallback: `📖 ${book.title} just had its first ending reached. The story thickens!`,
+        };
+
+    await sendSystemBroadcast(userId, payload);
+  } catch (error) {
+    console.error("[fireFirstEndingBroadcast] ❌ Failed:", error);
+  }
 }
