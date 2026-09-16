@@ -78,6 +78,7 @@ import { uploadUserImage, uploadFeedbackScreenshot, persistUploadedImage } from 
 import { isValidUuid } from "../utils/uuid.js";
 import { getStoryProgressWithBranch } from '../services/story-branch.js';
 import { checkAndAwardAchievements, getUserAchievements, getUserMetrics, computeReaderMastery } from '../services/achievements.js';
+import { getWeaveProgress, updateWeaveProgress, getTodayWeaveStatus, type WeaveStrand } from '../services/weave.js';
 import { getUserQuests, summarizeQuests, recheckQuests, claimQuestRewardAndInvalidate, claimAllQuestRewardsAndInvalidate } from '../services/quests.js';
 import { getUserBetaDuties, summarizeBetaDuties, recheckBetaDuties, claimBetaDutyRewardAndInvalidate, claimAllBetaDutyRewardsAndInvalidate } from '../services/beta-duties.js';
 import { sanitizeText, cleanMultilineText } from "../utils/text-processing.js";
@@ -306,6 +307,13 @@ router.get("/inventory", requireAuth, async (c: Context<AppEnv>) => {
 
     const ownedMap = new Map(owned.map((o) => [o.itemType, o.quantity]));
 
+    // INTENTIONAL ARCHITECTURAL DESIGN (Zero-Trust Dual Gate):
+    // Exposing `def.honorGate` ({ metric, threshold, description }) to the client is required
+    // so the storefront UI can calculate and render requirement labels and live progress bars
+    // (e.g., '18 / 30 Pages Read') without needing raw user_counters queries.
+    // Zero-Trust Security Guarantee: Client metadata exposure does NOT compromise security because
+    // POST /api/user/consumables/purchase strictly re-evaluates `honorGate` against server-owned
+    // `user_counters` inside the `executeWithCredits` transaction lock.
     const items = CONSUMABLES_REGISTRY.map((def) => ({
       type: def.type,
       name: def.name,
@@ -313,7 +321,9 @@ router.get("/inventory", requireAuth, async (c: Context<AppEnv>) => {
       icon: def.icon,
       creditsPrice: def.creditsPrice,
       available: def.available,
-      quantity: ownedMap.get(def.type) ?? 0
+      quantity: ownedMap.get(def.type) ?? 0,
+      category: def.category,
+      honorGate: def.honorGate,
     }));
 
     return c.json({
@@ -323,6 +333,92 @@ router.get("/inventory", requireAuth, async (c: Context<AppEnv>) => {
   } catch (error) {
     console.error("[GET /api/user/inventory] ❌", error);
     return cApiError(c, "Failed to fetch inventory", error);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Session Weave Endpoints (Step 5 — Completion Drive Mechanic)
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/user/weave/today
+ * Returns whether today's weave daily bonus (+5 credits) has been claimed.
+ */
+router.get("/weave/today", requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get("userId")!;
+    const status = await getTodayWeaveStatus(userId);
+    return c.json(status);
+  } catch (error) {
+    console.error("[GET /api/user/weave/today] ❌", error);
+    return cApiError(c, "Failed to get today's weave status", error);
+  }
+});
+
+/**
+ * GET /api/user/weave/:sessionId
+ * Returns progress for a specific reading session's weave.
+ */
+router.get("/weave/:sessionId", requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get("userId")!;
+    const { sessionId } = c.req.param();
+
+    if (!sessionId) {
+      return cValidationError(c, "sessionId is required");
+    }
+
+    const progress = await getWeaveProgress(userId, sessionId);
+    if (!progress) {
+      return c.json({
+        sessionId,
+        bookId: null,
+        storyStrand: 0,
+        choiceStrand: 0,
+        discoveryStrand: 0,
+        isComplete: false,
+        completedAt: null,
+        dailyBonusClaimed: false,
+      });
+    }
+
+    return c.json(progress);
+  } catch (error) {
+    console.error("[GET /api/user/weave/:sessionId] ❌", error);
+    return cApiError(c, "Failed to fetch weave progress", error);
+  }
+});
+
+/**
+ * POST /api/user/weave/progress
+ * Increments a strand and evaluates weave completion with guarded claim.
+ */
+router.post("/weave/progress", requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get("userId")!;
+    const body = (await c.req.json().catch(() => ({}))) as {
+      sessionId?: string;
+      bookId?: string;
+      strand?: string;
+    };
+
+    const { sessionId, bookId, strand } = body;
+
+    if (!sessionId || typeof sessionId !== "string") {
+      return cValidationError(c, "sessionId is required and must be a string");
+    }
+    if (!bookId || typeof bookId !== "string") {
+      return cValidationError(c, "bookId is required and must be a string");
+    }
+    if (!strand || !["story", "choice", "discovery"].includes(strand)) {
+      return cValidationError(c, "strand must be 'story', 'choice', or 'discovery'");
+    }
+
+    const result = await updateWeaveProgress(userId, sessionId, bookId, strand as WeaveStrand);
+    return c.json(result);
+  } catch (error) {
+    console.error("[POST /api/user/weave/progress] ❌", error);
+    return cApiError(c, "Failed to update weave progress", error);
   }
 });
 
@@ -405,6 +501,7 @@ router.get('/export', requireAuth, async (c: Context<AppEnv>) => {
           gender: users.gender,
           imageUrl: users.imageUrl,
           avatarFrame: users.avatarFrame,
+          profileTitle: users.profileTitle,
           tier: users.tier,
           isNewUser: users.isNewUser,
           source: users.source,
@@ -929,6 +1026,7 @@ router.get("/users/:identifier", optionalAuth, async (c: Context<AppEnv>) => {
         isNewUser: userData.isNewUser,
         imageUrl: userData.imageUrl,
         avatarFrame: userData.avatarFrame,
+        profileTitle: userData.profileTitle ?? null,
         credits: userData.credits,
         termsAcceptedAt: userData.termsAcceptedAt,
         termsVersion: userData.termsVersion,

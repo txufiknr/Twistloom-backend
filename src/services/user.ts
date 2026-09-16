@@ -13,7 +13,7 @@
 
 import type { Context } from "hono";
 import type { DBNewUser, DBNewUserActivityLog, DBUserActivityLog, DBUserForAuth } from "../types/schema.js";
-import { type AvatarFrame, avatarFrames, type CheckinClaimType, type CheckinPostResponse, type CheckinStatusResponse, type Gender } from "../types/user.js";
+import { type AvatarFrame, avatarFrames, PROFILE_TITLES, type ProfileTitle, type CheckinClaimType, type CheckinPostResponse, type CheckinStatusResponse, type Gender } from "../types/user.js";
 import { type DBClient, dbRead, dbWrite } from "../db/client.js";
 import { users, books, posts, userComments, userAuth, userCheckins, userActivityLogs, userSocialLinks } from "../db/schema.js";
 import { eq, and, gt, ne, sql, desc, or, inArray } from "drizzle-orm";
@@ -1195,7 +1195,7 @@ function sanitizeFieldValue(
  */
 export async function sanitizeProfileUpdate(
   userId: string,
-  payload: Record<'name' | 'bio' | 'imageUrl' | 'gender' | 'username' | 'avatarFrame' | 'pinnedStoryIds' | 'featuredStoryId' | 'featuredStoryNote' | 'favoriteStoryIds' | 'loreStatus', unknown>,
+  payload: Record<'name' | 'bio' | 'imageUrl' | 'gender' | 'username' | 'avatarFrame' | 'profileTitle' | 'pinnedStoryIds' | 'featuredStoryId' | 'featuredStoryNote' | 'favoriteStoryIds' | 'loreStatus', unknown>,
   res: Context
 ): Promise<Partial<DBNewUser> | null> {
   const updateData: Partial<DBNewUser> = {};
@@ -1219,6 +1219,14 @@ export async function sanitizeProfileUpdate(
       updateData.avatarFrame = null;
     } else if (typeof payload.avatarFrame === 'string' && avatarFrames.includes(payload.avatarFrame as AvatarFrame)) {
       updateData.avatarFrame = payload.avatarFrame as AvatarFrame;
+    }
+  }
+
+  if ('profileTitle' in payload) {
+    if (payload.profileTitle === null || payload.profileTitle === '') {
+      updateData.profileTitle = null;
+    } else if (typeof payload.profileTitle === 'string' && PROFILE_TITLES.includes(payload.profileTitle as ProfileTitle)) {
+      updateData.profileTitle = payload.profileTitle;
     }
   }
 

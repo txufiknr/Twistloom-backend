@@ -11,8 +11,51 @@ export const genders = [ 'male', 'female', 'unknown' ] as const;
 export type Gender = typeof genders[number];
 export type KnownGender = Exclude<Gender, 'unknown'>;
 
-export const avatarFrames = ['bronze', 'silver', 'gold', 'platinum'] as const;
+export const avatarFrames = [
+  // ── Achievement Tier Frames (4) ──
+  'bronze',
+  'silver',
+  'gold',
+  'platinum',
+  // ── Archetype Resonance Frames (6) ──
+  'worldwalker',
+  'seeker',
+  'survivor',
+  'chronicler',
+  'storyteller',
+  'explorer',
+  // ── Legendary Feat Frames (2) ──
+  'singularity',
+  'loom_touched',
+  // ── Scribe Vault Dual-Gated Frames (4) ──
+  'cyber_grid',
+  'gothic_bramble',
+  'astral_void',
+  'ancient_runes',
+] as const;
 export type AvatarFrame = typeof avatarFrames[number];
+
+/**
+ * Canonical titles that can be earned and equipped on user profiles.
+ * Reflects reader mastery archetypes and milestone feats.
+ */
+export const PROFILE_TITLES = [
+  // Archetype Mastery Titles (Step 9 synergy)
+  'The Worldwalker',
+  'The Seeker',
+  'The Survivor',
+  'The Chronicler',
+  'The Storyteller',
+  'The Explorer',
+  // Narrative Feat Titles
+  'Thread Walker',
+  'Fate Defier',
+  'Architect of Ruin',
+  'Truth Unmasked',
+  'Singularity Seeker',
+] as const;
+export type ProfileTitle = typeof PROFILE_TITLES[number];
+
 
 /**
  * Union type of all possible user source values
@@ -88,6 +131,8 @@ export interface User {
   bio: string | null;
   imageUrl: string | null;
   avatarFrame: string | null;
+  /** Equipped narrative profile title (e.g. "The Worldwalker", "Thread Walker") */
+  profileTitle?: string | null;
   gender: Gender | null;
   source: Source | null;
   lastActive: Date;

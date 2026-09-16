@@ -21,6 +21,7 @@ export type { ConsumableItemDefinition };
  * display priority. Add new items here (and to {@link InventoryItemType}).
  */
 export const CONSUMABLES_REGISTRY: ConsumableItemDefinition[] = [
+  // ── Broadcast & Core Utilities ──
   {
     type: "megaphone",
     name: "📣 Megaphone",
@@ -30,6 +31,7 @@ export const CONSUMABLES_REGISTRY: ConsumableItemDefinition[] = [
     available: true,
     accountBound: false,
     icon: "📣",
+    category: "broadcast",
   },
   {
     type: "easter_egg",
@@ -40,6 +42,123 @@ export const CONSUMABLES_REGISTRY: ConsumableItemDefinition[] = [
     available: false,
     accountBound: true,
     icon: "🥚",
+    category: "exploration",
+  },
+
+  // ── Narrative Exploration Utilities (Step 10 Pillar 1) ──
+  {
+    type: "item_divergence_compass",
+    name: "🧭 Divergence Compass",
+    description:
+      "A delicate brass astrolabe that senses shifting probabilities. Highlights whether upcoming choices lead to unexplored vs visited timelines.",
+    creditsPrice: 40,
+    available: true,
+    accountBound: false,
+    icon: "🧭",
+    category: "exploration",
+  },
+  {
+    type: "item_memory_anchor",
+    name: "⚓ Memory Anchor",
+    description:
+      "Crystallized temporal quartz. Anchors your consciousness to a decision fork, allowing instant returns without re-reading from chapter start.",
+    creditsPrice: 60,
+    available: true,
+    accountBound: false,
+    icon: "⚓",
+    category: "exploration",
+  },
+  {
+    type: "item_resonance_prism",
+    name: "🔮 Resonance Prism",
+    description:
+      "An amethyst prism tuned to the multiverse. Increases Easter Egg and thread fragment discovery rates (+50%) for your next 15 pages.",
+    creditsPrice: 35,
+    available: true,
+    accountBound: false,
+    icon: "🔮",
+    category: "exploration",
+  },
+  {
+    type: "item_curator_quill",
+    name: "✒️ Curator's Quill",
+    description:
+      "Gilded scribe feather. Endorses an author on the Wall with a radiant golden calligraphy glow and tips 35 credits to their wallet.",
+    creditsPrice: 50,
+    available: true,
+    accountBound: false,
+    icon: "✒️",
+    category: "tribute",
+  },
+
+  // ── Scribe's Vault: Dual-Gated Avatar Frames (Step 10 Pillar 3) ──
+  {
+    type: "cyber_grid",
+    name: "Cyber Grid Frame",
+    description:
+      "A pulsing cyan neon circuitry frame for readers who walk the bleeding edge of synthetic realities.",
+    creditsPrice: 150,
+    available: true,
+    accountBound: true,
+    maxPerUser: 1,
+    icon: "⚡",
+    category: "vault",
+    honorGate: {
+      metric: "pagesRead",
+      threshold: 30,
+      description: "Read at least 30 chapters or pages across the Loom.",
+    },
+  },
+  {
+    type: "gothic_bramble",
+    name: "Gothic Bramble Frame",
+    description:
+      "Entwined thorned iron vines studded with dark crimson blood-roses. Borne only by those who flirt with disaster.",
+    creditsPrice: 200,
+    available: true,
+    accountBound: true,
+    maxPerUser: 1,
+    icon: "🥀",
+    category: "vault",
+    honorGate: {
+      metric: "highRiskChoicesTaken",
+      threshold: 3,
+      description: "Survive at least 3 high-risk perilous decisions.",
+    },
+  },
+  {
+    type: "astral_void",
+    name: "Astral Void Frame",
+    description:
+      "A deep indigo cosmic event-horizon with shimmering constellation lines, reflecting mastery over alternate truths.",
+    creditsPrice: 250,
+    available: true,
+    accountBound: true,
+    maxPerUser: 1,
+    icon: "🌌",
+    category: "vault",
+    honorGate: {
+      metric: "alternateEndingsDiscovered",
+      threshold: 3,
+      description: "Discover at least 3 alternate endings in completed stories.",
+    },
+  },
+  {
+    type: "ancient_runes",
+    name: "Ancient Runes Frame",
+    description:
+      "Weathered granite glyphs inscribed with radiant ancient runes, granted to chroniclers who untangle intricate conspiracies.",
+    creditsPrice: 300,
+    available: true,
+    accountBound: true,
+    maxPerUser: 1,
+    icon: "ᚱ",
+    category: "vault",
+    honorGate: {
+      metric: "threadsResolved",
+      threshold: 5,
+      description: "Bring at least 5 complex narrative threads to ultimate closure.",
+    },
   },
 ];
 

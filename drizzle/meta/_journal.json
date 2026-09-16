@@ -624,6 +624,13 @@
       "when": 1789441476411,
       "tag": "0089_lucky_abomination",
       "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "7",
+      "when": 1789530717506,
+      "tag": "0090_black_goblin_queen",
+      "breakpoints": true
     }
   ]
 }

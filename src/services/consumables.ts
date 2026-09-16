@@ -15,7 +15,7 @@
 
 import { and, eq, sql } from "drizzle-orm";
 import { dbRead, type DBTransaction } from "../db/client.js";
-import { userInventory } from "../db/schema.js";
+import { userCounters, userInventory } from "../db/schema.js";
 import { getConsumable } from "../config/consumables.js";
 import { executeWithCredits } from "./credits.js";
 import type { InventoryItemType } from "../types/consumable.js";
@@ -43,11 +43,38 @@ export async function getUserMegaphoneCount(userId: string): Promise<number> {
 }
 
 /**
+ * Verifies that a user has met the narrative feat requirement for dual-gated vault items.
+ */
+async function verifyHonorGate(
+  userId: string,
+  honorGate?: { metric: string; threshold: number; description: string },
+  client: DBTransaction | typeof dbRead = dbRead,
+): Promise<void> {
+  if (!honorGate) return;
+
+  const [counters] = await client
+    .select()
+    .from(userCounters)
+    .where(eq(userCounters.userId, userId))
+    .limit(1);
+
+  const rawCounters = (counters ?? {}) as Record<string, unknown>;
+  const val = rawCounters[honorGate.metric];
+  const current = typeof val === "number" ? val : 0;
+
+  if (current < honorGate.threshold) {
+    throw new Error(
+      `Honor Gate Locked: ${honorGate.description} (Progress: ${current}/${honorGate.threshold})`,
+    );
+  }
+}
+
+/**
  * Purchases one unit of a consumable item.
  * Charges the registry-defined credit price atomically via `executeWithCredits`
  * and increments the user's `user_inventory` in the same Postgres transaction.
  *
- * Enforces availability and `maxPerUser` inside the transaction lock.
+ * Enforces availability, honorGate, and `maxPerUser` inside the transaction lock.
  *
  * @param userId - Buyer
  * @param itemType - Registry item to buy (defaults to 📣 Megaphone)
@@ -66,6 +93,9 @@ export async function purchaseConsumable(
     userId,
     def.creditsPrice,
     async (tx) => {
+      // Dual-Gate Principle: Enforce narrative honor gate inside the transaction lock
+      await verifyHonorGate(userId, def.honorGate, tx);
+
       // Re-check per-user cap inside the transaction if defined
       if (def.maxPerUser !== undefined) {
         const [existing] = await tx
@@ -130,6 +160,9 @@ export async function purchaseConsumableBatch(
   if (!def.available) {
     throw new Error(`${def.name} is not available for purchase`);
   }
+
+  // Dual-Gate Principle: Enforce narrative honor gate before debiting credits
+  await verifyHonorGate(userId, def.honorGate);
 
   const totalCost = def.creditsPrice * quantity;
 

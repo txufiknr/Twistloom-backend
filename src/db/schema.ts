@@ -321,7 +321,8 @@ export const users = pgTable(
     bio: text("bio"), // User bio/description
     gender,
     imageUrl: text("image_url"),
-    avatarFrame: text("avatar_frame").$type<AvatarFrame>(), // References an achievement tier
+    avatarFrame: text("avatar_frame").$type<AvatarFrame>(), // References an achievement tier, mastery archetype, or vault frame
+    profileTitle: text("profile_title"), // Equipped narrative title (e.g. "The Worldwalker", "Thread Walker")
     tier: text("tier").$type<UserTier>(),
     isNewUser: boolean("is_new_user").notNull().default(true), // For user onboarding
     referrerId: uuid("referrer_id"),
@@ -2158,6 +2159,37 @@ export const easterEggDiscoveries = pgTable(
     index("easter_egg_discoveries_book_idx").on(t.bookId),
   ]
 );
+
+/**
+ * Session Weave completion drive mechanic ledger (SSOT).
+ * @summary Tracks reading progress across 3 strands (story, choice, discovery)
+ *   per reading session. When all 3 thresholds are met, the weave completes,
+ *   awarding +5 credits (subject to the server-enforced daily cap of 1 per UTC day).
+ * @see docs/architecture/SESSION_WEAVE_SYSTEM_ARCHITECTURE.md
+ */
+export const sessionWeave = pgTable(
+  "session_weave",
+  {
+    id: id(),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    sessionId: text("session_id").notNull(),
+    bookId: uuid("book_id").notNull().references(() => books.id, { onDelete: "cascade" }),
+    storyStrand: integer("story_strand").notNull().default(0),
+    choiceStrand: integer("choice_strand").notNull().default(0),
+    discoveryStrand: integer("discovery_strand").notNull().default(0),
+    isComplete: boolean("is_complete").notNull().default(false),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    dailyBonusClaimed: boolean("daily_bonus_claimed").notNull().default(false),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    unique("session_weave_user_session_unique").on(t.userId, t.sessionId),
+    index("session_weave_user_idx").on(t.userId),
+    index("session_weave_completed_idx").on(t.userId, t.completedAt),
+  ]
+);
+
 
 /**
  * Anti-farm rate limit & daily roll budget ledger for Easter Egg runtime checks.

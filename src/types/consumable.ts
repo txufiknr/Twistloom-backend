@@ -10,7 +10,38 @@
  * Extensible union — add new purchasable item keys here AND in the registry
  * (`src/config/consumables.ts`).
  */
-export type InventoryItemType = "megaphone" | "easter_egg";
+export type InventoryItemType =
+  | "megaphone"
+  | "easter_egg"
+  // Exploration Consumables (Step 10 Pillar 1)
+  | "item_divergence_compass"
+  | "item_memory_anchor"
+  | "item_resonance_prism"
+  | "item_curator_quill"
+  // Scribe Vault Dual-Gated Frames (Step 10 Pillar 3)
+  | "cyber_grid"
+  | "gothic_bramble"
+  | "astral_void"
+  | "ancient_runes";
+
+export type ConsumableCategory = "broadcast" | "exploration" | "vault" | "tribute";
+
+/**
+ * Defines narrative milestone criteria required before a user is permitted
+ * to purchase a Scribe's Vault item (Dual-Gate Architecture).
+ *
+ * NOTE (Client-Facing by Design): This interface is serialized in public
+ * catalog payloads to enable storefront progress indicators (`18/30 Pages Read`).
+ * Security is enforced server-side inside `purchaseConsumable` with row locks.
+ */
+export interface ConsumableHonorGate {
+  /** Metric key in user_counters (e.g. 'pagesRead', 'highRiskChoicesTaken') */
+  metric: string;
+  /** Minimum threshold needed to unlock purchase */
+  threshold: number;
+  /** User-facing explanation of the honor requirement */
+  description: string;
+}
 
 /**
  * A consumable definition in the registry (SSOT).
@@ -32,6 +63,10 @@ export interface ConsumableItemDefinition {
   icon?: string;
   /** Optional purchase cap per user (undefined = unlimited). */
   maxPerUser?: number;
+  /** Catalog category for storefront tab organization */
+  category?: ConsumableCategory;
+  /** Dual-gate honor requirement: buyer must meet this feat to purchase */
+  honorGate?: ConsumableHonorGate;
 }
 
 /**
