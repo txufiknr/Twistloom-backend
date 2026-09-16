@@ -21,7 +21,7 @@
 
 import { sql, and, or, eq, desc, inArray, arrayOverlaps, isNotNull } from "drizzle-orm";
 import type { Context } from "hono";
-import { books, users, userLikes, userFavorites, userSessions, userCompletedBooks, userPurchasedBooks, pages, storyStates, bookTranslations, userFollows } from '../db/schema.js';
+import { books, users, userLikes, userFavorites, userSessions, userCompletedBooks, userPurchasedBooks, pages, storyStates, bookTranslations, userFollows, customActions } from '../db/schema.js';
 
 import { dbRead } from "../db/client.js";
 import { createRelevanceExpression } from "../utils/search.js";
@@ -30,8 +30,9 @@ import { cNotFoundError, cForbiddenError } from "../utils/error.js";
 import { getClientIp } from "../hono/express-shim.js";
 import { computeVisitStats, mapActionToSelectedAction, markPageVisited } from "./story.js";
 import { FREE_ACTION_SELECTION_UNTIL_PAGE, PHASE_EARLY_CEILING, PHASE_LATE_FLOOR, PHASE_FINALE_FLOOR } from "../config/story.js";
+import { buildCustomActionAction } from "../utils/custom-action.js";
 import type { BookAuthor, BookMode, BookPageVisit, BookSortOption, BookStats, BookTranslation, EnrichedBookData, EnrichedBookFirstPage, EnrichedBookGeneration, EnrichedBookSession, VisitBookPageParams, VisitBookPageResult } from "../types/book.js";
-import type { Action, Ending, SelectedAction, StoryPhase } from "../types/story.js";
+import type { Action, ActionHintType, ActionType, Ending, SelectedAction, StoryPhase } from "../types/story.js";
 
 /**
  * Builds an enriched book select object with all required fields
@@ -1190,6 +1191,36 @@ export async function visitBookPage(
     }
 
     action = parentDbPage.actions.filter(a => a.destinationPageIds?.some(p => p === pageId))[0];
+
+    // Custom action pages live in the custom_actions table, not in the
+    // parent page's canonical actions[].  When the canonical lookup fails,
+    // fall back to querying the custom_actions row that generated this page.
+    if (!action) {
+      const [customRow] = await dbRead
+        .select()
+        .from(customActions)
+        .where(
+          and(
+            eq(customActions.pageId, parentPageId!),
+            eq(customActions.nextPageId, pageId),
+            eq(customActions.userId, userId)
+          )
+        )
+        .limit(1);
+
+      if (customRow) {
+        action = buildCustomActionAction({
+          originalText: customRow.originalText,
+          interpretedIntent: customRow.canonicalIntent ?? '',
+          hintText: customRow.hintText ?? '',
+          hintType: (customRow.hintType || 'custom') as ActionHintType,
+          actionType: (customRow.actionType || 'custom') as ActionType,
+          nextPageId: customRow.nextPageId,
+          customActionId: customRow.id,
+        });
+      }
+    }
+
     if (!action) {
       console.error(`[visit] ❌ Action for this page not found in the parent page:`, parentPageId);
       cNotFoundError(res, `Action for this page not found in the parent page`);
