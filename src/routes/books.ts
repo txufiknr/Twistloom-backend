@@ -112,10 +112,10 @@ import { getErrorMessage, cApiError, cForbiddenError, cNotFoundError, cRateLimit
 import { sanitizeKeywords, cleanMultilineText } from '../utils/text-processing.js';
 import { stripHtml } from '../utils/sanitize-html.js';
 import { coalescePoll, getCoalesced, setCoalesced, POLL_RETRY_AFTER_SECONDS } from "../utils/poll-coalesce.js";
-import { eq, and, desc, asc, sql, ne, inArray, arrayOverlaps } from "drizzle-orm";
+import { eq, and, or, desc, asc, sql, ne, inArray, arrayOverlaps, isNull } from "drizzle-orm";
 import { hashSHA256 } from "../utils/hash.js";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
-import { getBook, getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage, tryAcquireWorkflowDispatchGate, getAllBookEndings } from "../services/book.js";
+import { getBook, getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage, tryAcquireWorkflowDispatchGate, getAllBookEndings, insertUserCompletedBook } from "../services/book.js";
 import { getBookAnalytics } from "../services/analytics.js";
 import { hasActiveVipSubscription } from "../services/subscription.js";
 import { getPreviewBookPage } from "../services/book-preview.js";
@@ -2519,6 +2519,11 @@ router.get("/:id/similar", optionalAuth, async (c) => {
           ne(books.id, book.id),
           // Only include active books
           eq(books.status, 'active'),
+          // Only include public books (or user's own books if authenticated)
+          or(
+            eq(books.visibility, 'public'),
+            ...(currentUserId ? [eq(books.userId, currentUserId)] : [])
+          ),
           // Overlap check (safe now that targetKeywords is guaranteed to have >= 1 item)
           arrayOverlaps(books.keywords, targetKeywords)
         )
@@ -7362,6 +7367,66 @@ router.post("/:identifier/:pageId/share", requireAuth, async (c) => {
 });
 
 /**
+ * POST /api/books/:identifier/close-session
+ *
+ * Concludes the reading session by setting userSessions.status = 'past'.
+ * This removes the book from active "Continue Reading" shelves.
+ * If the current or target page is a genuine terminal ending page (page >= totalPages
+ * or terminal branch with no further actions), it records the completion in userCompletedBooks.
+ */
+router.post("/:identifier/close-session", requireAuth, async (c) => {
+  try {
+    const bookIdentifier = c.req.param().identifier as string;
+    const userId = c.get("userId")!;
+
+    const book = await resolveBook(bookIdentifier);
+    if (!book) {
+      return cNotFoundError(c, "Book not found");
+    }
+
+    // Optional pageId from request body if client provides explicit terminal page
+    const body = await c.req.json<{ pageId?: string }>().catch(() => ({} as { pageId?: string }));
+
+    // Terminate active reading session by marking status as 'past'
+    await dbWrite
+      .update(userSessions)
+      .set({ status: 'past', updatedAt: new Date() })
+      .where(and(eq(userSessions.userId, userId), eq(userSessions.bookId, book.id)));
+
+    // Look up session page to verify if it is genuinely a terminal ending page
+    const [session] = await dbRead
+      .select({ pageId: userSessions.pageId, frontierPageId: userSessions.frontierPageId })
+      .from(userSessions)
+      .where(and(eq(userSessions.userId, userId), eq(userSessions.bookId, book.id)))
+      .limit(1);
+
+    const targetPageId = body?.pageId || session?.pageId || session?.frontierPageId;
+    if (targetPageId) {
+      const page = await getPageFromDB(targetPageId, { bookIdentifier: book.id });
+      if (page) {
+        // A page is terminal if its page number reached or exceeded totalPages,
+        // or if it has no branching actions (terminal ending branch).
+        const isTerminal =
+          page.page >= book.totalPages ||
+          (Array.isArray(page.actions) && page.actions.length === 0 && page.page > 1);
+
+        if (isTerminal) {
+          await insertUserCompletedBook(userId, book.id, targetPageId, page.branchId, dbWrite);
+        }
+      }
+    }
+
+    invalidateBookCache(book.id);
+    invalidateEnrichedBookCache(book.id);
+
+    return c.json({ ok: true, status: 'past' });
+  } catch (error) {
+    console.error('[POST /:identifier/close-session] ❌ Error:', error);
+    return cApiError(c, 'Failed to close reading session', error);
+  }
+});
+
+/**
  * GET /share/:username/:bookSlug/:pageId
  *
  * Public endpoint for viewing a shared ending page.
@@ -8010,6 +8075,32 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit
       return cValidationError(c, "Custom actions are only available from page 2 onwards.");
     }
 
+    // Concurrency guard: check if user already has an active, unfulfilled custom action on this page
+    const [existingActiveCustom] = await dbRead
+      .select({ id: customActions.id })
+      .from(customActions)
+      .where(and(
+        eq(customActions.bookId, book.id),
+        eq(customActions.pageId, pageId),
+        eq(customActions.userId, userId),
+        isNull(customActions.nextPageId),
+        ne(customActions.outcome, 'reject')
+      ))
+      .limit(1);
+
+    if (existingActiveCustom) {
+      return c.json({
+        error: 'Generation already in progress',
+        message: 'A custom action is already being generated for this page. Please wait for it to complete.',
+        customActionId: existingActiveCustom.id,
+        pollingInfo: {
+          pollingUrl: `/books/${bookIdentifier}/${pageId}/candidates/status`,
+          pollingIntervalMs: 2000,
+          maxPollingTimeMs: 80000,
+        },
+      }, 409);
+    }
+
     // Gate 0 — Eligibility with credit check
     const gate0Result = runGate0(storyState, userId, book.id, pageId);
     if (!gate0Result.passed) {
@@ -8094,12 +8185,12 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit
     const canonicalAction = buildCanonicalAction(text, result);
 
     // Charge credits and persist action in a transaction
+    const auditId = generateId();
     await executeWithCredits(
       userId,
       creditsCost,
       async (tx) => {
         // Persist audit record
-        const auditId = generateId();
         await tx.insert(customActions).values({
           id: auditId,
           bookId: book.id,
@@ -8148,6 +8239,18 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit
       },
     }, { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } });
 
+    // Proactively dispatch generation workflow so the user doesn't have to wait for cron or polling
+    triggerCandidateGenerationWorkflow({
+      bookTitle: book.title,
+      bookId: book.id,
+      pageId,
+      userId,
+      maxDepth: 1, // Single-depth pre-generation: custom actions only require immediate next page
+      context: 'POST /custom-actions/submit',
+    }).catch((err) => {
+      console.error('[POST /custom-actions/submit] ❌ Failed to dispatch candidate generation workflow:', err);
+    });
+
     // Return success with generation info
     // The frontend polls for the next page using the existing
     // /books/{identifier}/{pageId}/candidates/status endpoint. The URL is
@@ -8157,6 +8260,7 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit
 
     return c.json({
       message: 'Custom action submitted successfully. Page generation in progress.',
+      customActionId: auditId,
       pollingInfo: {
         pollingUrl,
         pollingIntervalMs: 2000,
@@ -8217,6 +8321,7 @@ router.get("/testimonials", requireAuth, async (c) => {
     .select({
       ...testimonialWithAuthorSelect,
       bookTitle: books.title,
+      bookSlug: books.slug,
       bookImageUrl: uploadedImages.imageUrl,
     })
     .from(bookTestimonials)
@@ -8234,10 +8339,11 @@ router.get("/testimonials", requireAuth, async (c) => {
     .leftJoin(books, eq(bookTestimonials.bookId, books.id))
     .where(and(...conditions));
 
-  const testimonials = rows.map(({ bookTitle, bookImageUrl, ...testimonial }) => ({
+  const testimonials = rows.map(({ bookTitle, bookSlug, bookImageUrl, ...testimonial }) => ({
     ...testimonial,
     book: {
       title: bookTitle,
+      slug: bookSlug,
       imageUrl: bookImageUrl,
     },
   }));

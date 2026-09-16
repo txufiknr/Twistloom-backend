@@ -4,10 +4,12 @@ import type { DBPage } from "../types/schema.js";
 import type { CustomActionSecurityResult, CustomActionValidationResult, CustomActionRejectionCategory } from "../types/custom-action.js";
 import { getStoryStateInfo } from "../utils/story.js";
 import { normalizeText } from "../utils/text-processing.js";
-import { eq } from "drizzle-orm";
+import { eq, and, isNull } from "drizzle-orm";
 import { dbRead, dbWrite } from "../db/client.js";
 import { customActions } from "../db/schema.js";
 import { getErrorMessage } from "../utils/error.js";
+import { refundCreditsIdempotent } from "./credits.js";
+import { logUserActivity } from "./user.js";
 import { getPageFromDB, mapToUserStoryPage, getBookFromDB, mapBookFromDb } from "./book.js";
 import { getStoryStateFromPage } from "./story.js";
 import { generateNextPages } from "../utils/prompt.js";
@@ -525,12 +527,12 @@ export const CUSTOM_ACTION_VALIDATION_REQUIRED_FIELDS: (keyof CustomActionValida
 /**
  * After how long a `generationStartedAt` timestamp is considered stale (i.e. the
  * previous attempt likely died) and generation may be retried. A single
- * custom-action page takes ~1–4 min, so 10 minutes is a safe ceiling.
+ * custom-action page takes ~30–50s, so 3 minutes is a safe ceiling.
  */
-export const CUSTOM_ACTION_GENERATION_STALE_MS = 10 * 60_000;
+export const CUSTOM_ACTION_GENERATION_STALE_MS = 3 * 60_000;
 
 /** Distributed-lock TTL for a single custom-action page generation (seconds). */
-const CUSTOM_ACTION_GENERATION_LOCK_TTL_S = 10 * 60;
+const CUSTOM_ACTION_GENERATION_LOCK_TTL_S = 5 * 60; // 5 minutes provides safety headroom for slow LLM spikes, released immediately on completion
 
 /**
  * Generates the next story page for a reader's OWN custom action and backfills
@@ -573,6 +575,50 @@ export async function generatePageForCustomAction(params: {
     return { status: 'in_progress' }; // another generation is already running
   }
 
+  let actionRow: typeof customActions.$inferSelect | undefined;
+
+  const refundIfCharged = async (failureReason: string) => {
+    if (actionRow && actionRow.creditsCharged > 0) {
+      try {
+        await refundCreditsIdempotent(userId, actionRow.creditsCharged, customActionId, {
+          context: 'custom_action_generation_failure',
+          metadata: {
+            bookId,
+            pageId,
+            customActionId,
+            reason: failureReason,
+          },
+        });
+        await dbWrite
+          .update(customActions)
+          .set({
+            outcome: 'reject',
+            creditsCharged: 0,
+            updatedAt: new Date(),
+          })
+          .where(eq(customActions.id, customActionId));
+
+        await logUserActivity({
+          userId,
+          activityType: 'credits_added',
+          targetType: 'page',
+          targetId: pageId,
+          metadata: {
+            reason: 'custom_action_generation_failure',
+            customActionId,
+            bookId,
+            creditsRefunded: actionRow.creditsCharged,
+            failureReason,
+          },
+        });
+
+        console.log(`[generatePageForCustomAction] 💰 Refunded ${actionRow.creditsCharged} credits for failed custom action ${customActionId}`);
+      } catch (refundErr) {
+        console.error(`[generatePageForCustomAction] ⚠️ Failed to refund credits for custom action ${customActionId}:`, refundErr);
+      }
+    }
+  };
+
   try {
     // 1. Re-read the row inside the lock (authoritative idempotency check).
     const [row] = await dbRead
@@ -583,6 +629,8 @@ export async function generatePageForCustomAction(params: {
     if (!row || row.outcome === 'reject') {
       return { status: 'not_found' };
     }
+    actionRow = row;
+
     if (row.nextPageId) {
       return { status: 'done', nextPageId: row.nextPageId };
     }
@@ -593,11 +641,13 @@ export async function generatePageForCustomAction(params: {
     // 2. Current page + story state (progression base for the new page).
     const dbPage = await getPageFromDB(pageId);
     if (!dbPage) {
+      await refundIfCharged('Page not found');
       return { status: 'failed', error: 'Page not found' };
     }
     const userPage = await mapToUserStoryPage(dbPage, userId);
     const storyState = await getStoryStateFromPage(dbPage);
     if (!storyState) {
+      await refundIfCharged('Story state not found for page');
       return { status: 'failed', error: 'Story state not found for page' };
     }
 
@@ -632,6 +682,7 @@ export async function generatePageForCustomAction(params: {
     };
     const book: Book | null = await resolveBookForGeneration(bookId);
     if (!book) {
+      await refundIfCharged('Book not found');
       return { status: 'failed', error: 'Book not found' };
     }
 
@@ -645,20 +696,22 @@ export async function generatePageForCustomAction(params: {
     });
     const newPage = newPages[0];
     if (!newPage) {
+      await refundIfCharged('Generation returned no page');
       return { status: 'failed', error: 'Generation returned no page' };
     }
 
-    // 6. Backfill the generated destination on the audit row.
+    // 6. Backfill the generated destination on the audit row (atomic first-writer-wins).
     await dbWrite
       .update(customActions)
       .set({ nextPageId: newPage.id })
-      .where(eq(customActions.id, customActionId));
+      .where(and(eq(customActions.id, customActionId), isNull(customActions.nextPageId)));
 
     console.log(`[generatePageForCustomAction] ✅ Custom action "${row.originalText}" → page ${newPage.id}`);
     return { status: 'done', nextPageId: newPage.id };
   } catch (error) {
     const message = getErrorMessage(error);
     console.error(`[generatePageForCustomAction] ❌ Failed for custom action ${customActionId}:`, message);
+    await refundIfCharged(message);
     return { status: 'failed', error: message };
   } finally {
     await releaseLock(lockKey);

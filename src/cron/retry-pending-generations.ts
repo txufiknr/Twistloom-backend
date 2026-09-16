@@ -165,6 +165,59 @@ export async function retryPendingGenerations(): Promise<string[]> {
       // Continue with next page - don't fail entire batch
     }
   }
+
+  // Batch recovery for orphaned/stale custom actions across public books
+  try {
+    const { customActions } = await import("../db/schema.js");
+    const { isNull, ne, lt, or } = await import("drizzle-orm");
+    const { generatePageForCustomAction, CUSTOM_ACTION_GENERATION_STALE_MS } = await import("../services/custom-actions.js");
+
+    const now = Date.now();
+    const staleHeartbeatThreshold = new Date(now - CUSTOM_ACTION_GENERATION_STALE_MS);
+    const unstartedThreshold = new Date(now - 30_000); // Allow 30s for on-demand worker to pick up
+
+    const pendingCustomActions = await dbRead
+      .select({
+        id: customActions.id,
+        userId: customActions.userId,
+        bookId: customActions.bookId,
+        pageId: customActions.pageId,
+        originalText: customActions.originalText,
+      })
+      .from(customActions)
+      .innerJoin(books, eq(customActions.bookId, books.id))
+      .where(and(
+        eq(books.isPenBook, false),
+        eq(books.visibility, 'public'),
+        isNull(customActions.nextPageId),
+        ne(customActions.outcome, 'reject'),
+        or(
+          // 1. Unstarted rows at least 30s old (gives targeted on-demand runner time to execute)
+          and(isNull(customActions.generationStartedAt), lt(customActions.createdAt, unstartedThreshold)),
+          // 2. Started rows whose heartbeat is older than the stale threshold (crashed / orphaned worker)
+          lt(customActions.generationStartedAt, staleHeartbeatThreshold)
+        )
+      ))
+      .limit(MAX_BRANCHING_PREGENERATION_LIMIT);
+
+    if (pendingCustomActions.length > 0) {
+      console.log(`[retryPendingGenerations] 🎨 Found ${pendingCustomActions.length} pending custom actions to retry`);
+      for (const customRow of pendingCustomActions) {
+        try {
+          await generatePageForCustomAction({
+            userId: customRow.userId,
+            bookId: customRow.bookId,
+            pageId: customRow.pageId,
+            customActionId: customRow.id,
+          });
+        } catch (customErr) {
+          console.error(`[retryPendingGenerations] ❌ Failed to generate custom action ${customRow.id}:`, getErrorMessage(customErr));
+        }
+      }
+    }
+  } catch (batchCustomError) {
+    console.warn("[retryPendingGenerations] ⚠️ Custom actions batch sweep failed (non-fatal):", getErrorMessage(batchCustomError));
+  }
   
   const durationMs = Date.now() - startedAt;
   console.log(`[retryPendingGenerations] ✅ Retry completed in ${durationMs}ms:`, {
@@ -218,15 +271,71 @@ async function processSpecificPage(bookId: string, pageId: string, triggeredBy?:
     const pageForGeneration = await mapToUserStoryPage(dbPage, systemUserId, []);
     const pendingBefore = dbPage.pendingGenerationCount;
 
-    // Force candidate generation for manual trigger (always generate, even if no pending actions)
-    const generationResult = await processPageGeneration({
-      dbPage,
-      pageForGeneration,
-      hasNoPendingActions: false, // Always generate for manual trigger
-      context: 'on-demand',
-      maxDepth,
-      allowDeeperLevel: true // Allow deeper level pre-generation for single specific page
-    });
+    // 1. Process pending custom actions for this page FIRST (user-blocking operation)
+    try {
+      const { dbRead } = await import("../db/client.js");
+      const { customActions } = await import("../db/schema.js");
+      const { and, eq, isNull, ne } = await import("drizzle-orm");
+      const { generatePageForCustomAction } = await import("../services/custom-actions.js");
+
+      // Query all pending, unfulfilled custom actions for this page
+      const pendingCustomRows = await dbRead
+        .select({
+          id: customActions.id,
+          userId: customActions.userId,
+          originalText: customActions.originalText,
+        })
+        .from(customActions)
+        .where(and(
+          eq(customActions.bookId, bookId),
+          eq(customActions.pageId, pageId),
+          isNull(customActions.nextPageId),
+          ne(customActions.outcome, 'reject')
+        ));
+
+      if (pendingCustomRows.length > 0) {
+        console.log(`[processSpecificPage] 🎨 Found ${pendingCustomRows.length} pending custom action(s) for page ${pageId}`);
+        // Prioritize the triggeredBy user's action first if provided, followed by others
+        const sortedCustomRows = triggeredBy && triggeredBy !== systemUserId
+          ? [
+              ...pendingCustomRows.filter((r) => r.userId === triggeredBy),
+              ...pendingCustomRows.filter((r) => r.userId !== triggeredBy),
+            ]
+          : pendingCustomRows;
+
+        for (const customRow of sortedCustomRows) {
+          try {
+            console.log(`[processSpecificPage] 🎨 Generating custom action "${customRow.originalText}" (${customRow.id}) for user ${customRow.userId}`);
+            const customGenResult = await generatePageForCustomAction({
+              userId: customRow.userId,
+              bookId,
+              pageId,
+              customActionId: customRow.id,
+            });
+            console.log(`[processSpecificPage] 🎨 Custom action generation status: ${customGenResult.status}`);
+          } catch (customErr) {
+            console.error(`[processSpecificPage] ❌ Custom action ${customRow.id} failed:`, getErrorMessage(customErr));
+          }
+        }
+      }
+    } catch (customError) {
+      console.warn(`[processSpecificPage] ⚠️ Failed checking custom actions for page ${pageId} (non-fatal):`, getErrorMessage(customError));
+    }
+
+    // 2. Pre-generate canon candidates for manual trigger (non-blocking for custom actions)
+    let generationResult = { successCount: 0, pendingAfter: pendingBefore };
+    try {
+      generationResult = await processPageGeneration({
+        dbPage,
+        pageForGeneration,
+        hasNoPendingActions: false, // Always generate for manual trigger
+        context: 'on-demand',
+        maxDepth,
+        allowDeeperLevel: true // Allow deeper level pre-generation for single specific page
+      });
+    } catch (canonGenError) {
+      console.error(`[processSpecificPage] ❌ Canon candidate generation failed for page ${pageId} (non-fatal):`, getErrorMessage(canonGenError));
+    }
 
     const durationMs = Date.now() - startedAt;
 

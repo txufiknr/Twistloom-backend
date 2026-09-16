@@ -97,6 +97,7 @@ export interface CustomActionPreviewResponse {
  */
 export interface CustomActionSubmitResponse {
   nextPageId?: string;
+  customActionId?: string;
   pollingInfo?: {
     pollingUrl: string;
     pollingIntervalMs: number;

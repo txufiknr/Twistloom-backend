@@ -119,8 +119,9 @@ export const RULES_DIALOGUE_ATTRIBUTION = `DIALOGUE ATTRIBUTION MARKERS:
   - Unknown speaker: [???] "Dialogue text."
 - Optional mood tag: [character_id|mood] "Dialogue text"
   - Available mood tags: ${DIALOGUE_MOODS.join(', ')}
+  - Character signature mood: When a character profile specifies a signature or preferred dialogue mood (e.g. 'cold' or 'whisper'), prioritize that mood tag for their standard dialogue. Use their stress mood during acute crisis, high peril, or panic.
   - Use a mood tag when the dialogue has a strong emotional register that differs from neutral speech.
-  - Omit the mood tag for normal/neutral dialogue.
+  - Omit the mood tag for normal/neutral dialogue if the character has no signature mood.
 - Keep marker and dialogue on the SAME line (never split across lines).
 - Never mark narration or internal thoughts.
 - UI markers only — never reference or explain them in the story.`;

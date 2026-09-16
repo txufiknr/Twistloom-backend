@@ -1057,6 +1057,7 @@ export function mapCastToLoreEntry(cast: CastTemplateRule): LoreEntryInput {
     `**Speech & Slang:** ${cast.distinctCharacteristics.languageStyle} — Slang: *${cast.distinctCharacteristics.slangAndCatchphrases.join(', ')}*.`,
     `**Hobbies & Quirks:** ${cast.distinctCharacteristics.hobbiesAndQuirks.join('; ')}`,
     `**Voice Directives:**\n${cast.voice.styleDirectives.map((d) => `- ${d}`).join('\n')}`,
+    `**Signature Dialogue Mood:** [${cast.voice.preferredMood.defaultMood}] (Crisis/Stress: [${cast.voice.preferredMood.stressMood}])`,
     `**Trauma & Secret:** ${cast.psychologicalProfile.trauma} Secret: ${cast.psychologicalProfile.secret}`,
   ];
 
@@ -1091,8 +1092,9 @@ export function mapCastToStoryMC(cast: CastTemplateRule): StoryMC {
 /**
  * Maps a CastTemplateRule into a live Story NPC (NewCharacter).
  *
- * Packs the template's speech style, slang, quirks, and high-value status
- * into compact, token-efficient traits and secrets for formatCharactersForPrompt.
+ * Packs the template's speech style, slang, quirks, high-value status,
+ * and signature dialogue moods into compact, token-efficient traits and secrets
+ * for formatCharactersForPrompt.
  *
  * @param cast - The static CastTemplateRule from config/cast.ts
  * @param options - Optional placement and initial relationship context
@@ -1134,6 +1136,8 @@ export function mapCastToNewCharacter(
       `slang: ${cast.distinctCharacteristics.slangAndCatchphrases.slice(0, 3).join(', ')}`,
       `hobby: ${cast.distinctCharacteristics.hobbiesAndQuirks[0]}`,
       `high_value: ${cast.highValueMetrics.valueSummary}`,
+      `default_mood: ${cast.voice.preferredMood.defaultMood}`,
+      `stress_mood: ${cast.voice.preferredMood.stressMood}`,
     ],
   };
 }

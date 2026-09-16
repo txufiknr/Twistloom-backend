@@ -1,4 +1,5 @@
 import type { KnownGender } from "./user.js";
+import type { DialogueMood } from "../utils/dialogue-parser.js";
 
 /**
  * Star Tier rating for collected narrative characters.
@@ -69,6 +70,24 @@ export interface CastDistinctCharacteristics {
 }
 
 /**
+ * Declares the character's signature baseline dialogue mood and stress reaction mood.
+ *
+ * Relevant to DIALOGUE_MOOD_SYSTEM_ARCHITECTURE.md:
+ * - defaultMood: The signature tone the character naturally adopts (e.g. 'cold' for a stoic mastermind,
+ *   'whisper' for an intimate oracle, 'laugh' for an irreverent rogue). The AI prioritizes this tag
+ *   during normal scene generation.
+ * - stressMood: The telltale mood the character slips into under acute danger, trauma trigger, or when
+ *   scene tension exceeds 75%. Dramatic contrast signals a major psychological turning point to the reader
+ *   (the "Broken Baseline" effect).
+ */
+export interface CastPreferredMood {
+  /** Baseline conversational aura under normal conditions (e.g., 'cold', 'whisper', 'calm', 'laugh'). */
+  defaultMood: DialogueMood;
+  /** Telltale mood when pushed past their psychological boundary or into acute crisis (e.g., 'desperate', 'angry', 'afraid'). */
+  stressMood: DialogueMood;
+}
+
+/**
  * Voice guidelines and authentic dialogue samples for the AI prose engine.
  */
 export interface CastVoice {
@@ -78,6 +97,11 @@ export interface CastVoice {
   styleDirectives: string[];
   /** Illustrative dialogue lines demonstrating voice, slang, and perspective. */
   exampleLines: string[];
+  /**
+   * Signature dialogue moods tying into the Dialogue Mood Tag System ([character_id|mood]).
+   * Implements the "Broken Baseline" effect for rich dramatic contrast and visual balloon styling.
+   */
+  preferredMood: CastPreferredMood;
 }
 
 /**

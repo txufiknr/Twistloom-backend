@@ -467,28 +467,28 @@ export const ACHIEVEMENT_REGISTRY: AchievementRule[] = [
   { id: 'rare_end_40', title: 'Secret Keeper', description: 'Mastered 40 legendary rare endings hidden in the deep dark', metric: 'rareEndingsFound', threshold: 40, tier: 'platinum', category: 'seeker' },
 
   // ── NARRATIVE: CLUES UNCOVERED ───────────────────────────────────────────
-  { id: 'clues_found_10', title: 'Keen Eye', description: 'Uncovered 10 narrative clues hidden across mystery plots', metric: 'cluesUncovered', threshold: 10, tier: 'bronze', category: 'seeker' },
-  { id: 'clues_found_40', title: 'Forensic Gaze', description: 'Uncovered 40 narrative clues buried deep within the prose', metric: 'cluesUncovered', threshold: 40, tier: 'silver', category: 'seeker' },
-  { id: 'clues_found_120', title: 'Unraveler of Lies', description: 'Uncovered 120 clues, piecing together the fractured truth', metric: 'cluesUncovered', threshold: 120, tier: 'gold', category: 'seeker' },
-  { id: 'clues_found_300', title: 'Truth Unmasked', description: 'Grand Inquisitor: Uncovered 300 hidden narrative clues', metric: 'cluesUncovered', threshold: 300, tier: 'platinum', category: 'seeker' },
+  { id: 'clues_found_30', title: 'Keen Eye', description: 'Uncovered 30 narrative clues hidden across mystery plots', metric: 'cluesUncovered', threshold: 30, tier: 'bronze', category: 'seeker' },
+  { id: 'clues_found_120', title: 'Forensic Gaze', description: 'Uncovered 120 narrative clues buried deep within the prose', metric: 'cluesUncovered', threshold: 120, tier: 'silver', category: 'seeker' },
+  { id: 'clues_found_400', title: 'Unraveler of Lies', description: 'Uncovered 400 clues, piecing together the fractured truth', metric: 'cluesUncovered', threshold: 400, tier: 'gold', category: 'seeker' },
+  { id: 'clues_found_1000', title: 'Truth Unmasked', description: 'Grand Inquisitor: Uncovered 1,000 hidden narrative clues', metric: 'cluesUncovered', threshold: 1000, tier: 'platinum', category: 'seeker' },
 
   // ── NARRATIVE: BRANCH POINTS EXPLORED ────────────────────────────────────
-  { id: 'branch_fork_25', title: 'The Road Not Taken', description: 'Explored 25 branching decision points away from the trunk', metric: 'branchPointsExplored', threshold: 25, tier: 'bronze', category: 'explorer' },
-  { id: 'branch_fork_100', title: 'Wayfarer of Forks', description: 'Explored 100 branching decision points across divergent storylines', metric: 'branchPointsExplored', threshold: 100, tier: 'silver', category: 'explorer' },
-  { id: 'branch_fork_350', title: 'Pathfinder', description: 'Explored 350 branching decision points across the Loom', metric: 'branchPointsExplored', threshold: 350, tier: 'gold', category: 'explorer' },
-  { id: 'branch_fork_800', title: 'Cartographer of Possibility', description: 'Charted 800 branching decision points into the unknown', metric: 'branchPointsExplored', threshold: 800, tier: 'platinum', category: 'explorer' },
+  { id: 'branch_fork_75', title: 'The Road Not Taken', description: 'Explored 75 branching decision points away from the trunk', metric: 'branchPointsExplored', threshold: 75, tier: 'bronze', category: 'explorer' },
+  { id: 'branch_fork_300', title: 'Wayfarer of Forks', description: 'Explored 300 branching decision points across divergent storylines', metric: 'branchPointsExplored', threshold: 300, tier: 'silver', category: 'explorer' },
+  { id: 'branch_fork_1000', title: 'Pathfinder', description: 'Explored 1,000 branching decision points across the Loom', metric: 'branchPointsExplored', threshold: 1000, tier: 'gold', category: 'explorer' },
+  { id: 'branch_fork_2500', title: 'Cartographer of Possibility', description: 'Charted 2,500 branching decision points into the unknown', metric: 'branchPointsExplored', threshold: 2500, tier: 'platinum', category: 'explorer' },
 
   // ── NARRATIVE: HIGH-RISK CHOICES TAKEN ───────────────────────────────────
-  { id: 'risk_choice_15', title: 'Playing with Fire', description: 'Made 15 high-peril choices in the face of imminent danger', metric: 'highRiskChoicesTaken', threshold: 15, tier: 'bronze', category: 'survivor' },
-  { id: 'risk_choice_60', title: 'Edge of the Precipice', description: 'Made 60 high-peril choices without flinching', metric: 'highRiskChoicesTaken', threshold: 60, tier: 'silver', category: 'survivor' },
-  { id: 'risk_choice_180', title: 'Tempting the Abyss', description: 'Made 180 high-peril choices against overwhelming odds', metric: 'highRiskChoicesTaken', threshold: 180, tier: 'gold', category: 'survivor' },
-  { id: 'risk_choice_400', title: 'Iron Will', description: 'Architect of Ruin: Made 400 high-peril choices and survived', metric: 'highRiskChoicesTaken', threshold: 400, tier: 'platinum', category: 'survivor' },
+  { id: 'risk_choice_50', title: 'Playing with Fire', description: 'Made 50 high-peril choices in the face of imminent danger', metric: 'highRiskChoicesTaken', threshold: 50, tier: 'bronze', category: 'survivor' },
+  { id: 'risk_choice_200', title: 'Edge of the Precipice', description: 'Made 200 high-peril choices without flinching', metric: 'highRiskChoicesTaken', threshold: 200, tier: 'silver', category: 'survivor' },
+  { id: 'risk_choice_600', title: 'Tempting the Abyss', description: 'Made 600 high-peril choices against overwhelming odds', metric: 'highRiskChoicesTaken', threshold: 600, tier: 'gold', category: 'survivor' },
+  { id: 'risk_choice_1500', title: 'Iron Will', description: 'Architect of Ruin: Made 1,500 high-peril choices and survived', metric: 'highRiskChoicesTaken', threshold: 1500, tier: 'platinum', category: 'survivor' },
 
   // ── NARRATIVE: DELAYED CONSEQUENCES EXPERIENCED ──────────────────────────
-  { id: 'consequence_5', title: 'I Remember You', description: 'Reached 5 pages echoing consequences from an earlier decision', metric: 'consequenceExperienced', threshold: 5, tier: 'bronze', category: 'survivor' },
-  { id: 'consequence_25', title: 'Echoes of the Past', description: 'Experienced 25 narrative consequences shaped by your choices', metric: 'consequenceExperienced', threshold: 25, tier: 'silver', category: 'survivor' },
-  { id: 'consequence_80', title: 'Long Shadows', description: 'Experienced 80 delayed consequences echoing forward through time', metric: 'consequenceExperienced', threshold: 80, tier: 'gold', category: 'survivor' },
-  { id: 'consequence_200', title: 'Fate Defier', description: 'Unbreakable Causality: Navigated 200 long-term narrative consequences', metric: 'consequenceExperienced', threshold: 200, tier: 'platinum', category: 'survivor' },
+  { id: 'consequence_20', title: 'I Remember You', description: 'Reached 20 pages echoing consequences from an earlier decision', metric: 'consequenceExperienced', threshold: 20, tier: 'bronze', category: 'survivor' },
+  { id: 'consequence_80', title: 'Echoes of the Past', description: 'Experienced 80 narrative consequences shaped by your choices', metric: 'consequenceExperienced', threshold: 80, tier: 'silver', category: 'survivor' },
+  { id: 'consequence_250', title: 'Long Shadows', description: 'Experienced 250 delayed consequences echoing forward through time', metric: 'consequenceExperienced', threshold: 250, tier: 'gold', category: 'survivor' },
+  { id: 'consequence_600', title: 'Fate Defier', description: 'Unbreakable Causality: Navigated 600 long-term narrative consequences', metric: 'consequenceExperienced', threshold: 600, tier: 'platinum', category: 'survivor' },
 
   // ── NARRATIVE: THREADS RESOLVED ──────────────────────────────────────────
   { id: 'thread_res_3', title: 'Loose Ends', description: 'Brought 3 ongoing narrative plot threads to resolution', metric: 'threadsResolved', threshold: 3, tier: 'bronze', category: 'chronicler' },
