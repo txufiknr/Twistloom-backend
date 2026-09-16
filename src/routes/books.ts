@@ -6928,12 +6928,11 @@ router.post("/:identifier/migrate-guest-progress", requireAuth, async (c) => {
 
   if (allPageIds.size > 0) {
     const pageIdArr = Array.from(allPageIds);
-    const existingResult = await dbRead.execute(
-      sql`SELECT id FROM pages WHERE id = ANY(${pageIdArr}::uuid[])`,
-    );
-    const existingIds = new Set<string>(
-      (existingResult.rows as Array<{ id: string }>).map((r) => r.id),
-    );
+    const existingRows = await dbRead
+      .select({ id: pages.id })
+      .from(pages)
+      .where(inArray(pages.id, pageIdArr));
+    const existingIds = new Set<string>(existingRows.map((r) => r.id));
 
     // Filter actions to only those whose page references still exist
     validActions = actions.filter(
