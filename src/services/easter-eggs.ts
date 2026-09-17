@@ -15,9 +15,9 @@
  */
 
 import { createHmac, timingSafeEqual } from "crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, sql, asc } from "drizzle-orm";
 import { dbRead, dbWrite } from "../db/client.js";
-import { easterEggDiscoveries, easterEggRollBudget, userCounters, userInventory, userPageProgress, userSessions } from "../db/schema.js";
+import { easterEggDiscoveries, easterEggRollBudget, pages, userCounters, userInventory, userPageProgress, userSessions } from "../db/schema.js";
 import { generateId } from "../utils/uuid.js";
 import { deductUserItem } from "./consumables.js";
 import { addCredits } from "./credits.js";
@@ -32,6 +32,7 @@ const CLAIM_TOKEN_SECRET =
 const CLAIM_TOKEN_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const ROLL_COOLDOWN_MS = 15 * 1000; // 15 seconds between rolls
 const DAILY_ROLL_CAP = 50; // Max 50 rolls/day
+export const PRISM_DURATION_PAGES = 15; // +50% egg roll chance for next 15 page views
 
 export interface ClaimTokenPayload {
   userId: string;
@@ -87,6 +88,8 @@ export interface EasterEggCheckResult {
   show: boolean;
   paragraphIndex?: number;
   claimToken?: string;
+  prismActive?: boolean;
+  prismPagesRemaining?: number;
 }
 
 /**
@@ -134,10 +137,15 @@ export async function checkEasterEgg(
     .select({
       frontierPageId: userSessions.frontierPageId,
       frontierAncestorIds: userSessions.frontierAncestorIds,
+      prismPagesRemaining: userSessions.prismPagesRemaining,
     })
     .from(userSessions)
     .where(and(eq(userSessions.userId, userId), eq(userSessions.bookId, bookId)))
     .limit(1);
+
+  const initialPrismPages = session?.prismPagesRemaining ?? 0;
+  const isPrismActive = initialPrismPages > 0;
+  let remainingPrismPages = initialPrismPages;
 
   if (session) {
     const isAncestor =
@@ -145,7 +153,7 @@ export async function checkEasterEgg(
       session.frontierAncestorIds?.includes(pageId);
 
     if (isAncestor) {
-      return { show: false };
+      return { show: false, prismActive: isPrismActive, prismPagesRemaining: initialPrismPages };
     }
   }
 
@@ -166,12 +174,12 @@ export async function checkEasterEgg(
 
   // Check cooldown (< 15s)
   if (lastRollAt && now.getTime() - lastRollAt.getTime() < ROLL_COOLDOWN_MS) {
-    return { show: false };
+    return { show: false, prismActive: isPrismActive, prismPagesRemaining: initialPrismPages };
   }
 
   // Check daily limit (50 rolls/day)
   if (rollsToday >= DAILY_ROLL_CAP) {
-    return { show: false };
+    return { show: false, prismActive: isPrismActive, prismPagesRemaining: initialPrismPages };
   }
 
   // Update roll budget
@@ -209,9 +217,27 @@ export async function checkEasterEgg(
     probability = 0.005; // Soft anti-drought boost: 0.5%
   }
 
+  // ── Resonance Prism boost (+50% roll bonus) ──
+  if (isPrismActive) {
+    probability *= 1.5;
+    const [updated] = await dbWrite
+      .update(userSessions)
+      .set({
+        prismPagesRemaining: sql`GREATEST(0, ${userSessions.prismPagesRemaining} - 1)`,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(userSessions.userId, userId), eq(userSessions.bookId, bookId)))
+      .returning({ prismPagesRemaining: userSessions.prismPagesRemaining });
+    remainingPrismPages = updated?.prismPagesRemaining ?? Math.max(0, initialPrismPages - 1);
+  }
+
   const rolled = Math.random() < probability;
   if (!rolled) {
-    return { show: false };
+    return {
+      show: false,
+      prismActive: remainingPrismPages > 0,
+      prismPagesRemaining: remainingPrismPages,
+    };
   }
 
   // 4. On Hit: pick random paragraph index & issue claim token
@@ -230,6 +256,8 @@ export async function checkEasterEgg(
     show: true,
     paragraphIndex,
     claimToken,
+    prismActive: remainingPrismPages > 0,
+    prismPagesRemaining: remainingPrismPages,
   };
 }
 
@@ -473,3 +501,100 @@ export async function crackEasterEgg(userId: string): Promise<EasterEggCrackResu
 
   return result;
 }
+
+export interface ResonancePrismActivationResult {
+  success: boolean;
+  prismPagesRemaining: number;
+  remainingPrisms: number;
+}
+
+/**
+ * Activates 1 Resonance Prism for the given session.
+ * Deducts 1 item_resonance_prism from user inventory and credits 15 pages of +50% Easter Egg boost.
+ */
+export async function activateResonancePrism(
+  userId: string,
+  bookId: string,
+  pageId?: string,
+): Promise<ResonancePrismActivationResult> {
+  const result = await dbWrite.transaction(async (tx) => {
+    // 1. Deduct 1 prism from user inventory
+    const remainingPrisms = await deductUserItem(tx, userId, "item_resonance_prism", 1);
+
+    // 2. Add 15 pages to session
+    const [existingSession] = await tx
+      .select({ id: userSessions.id, prismPagesRemaining: userSessions.prismPagesRemaining })
+      .from(userSessions)
+      .where(and(eq(userSessions.userId, userId), eq(userSessions.bookId, bookId)))
+      .limit(1);
+
+    let prismPagesRemaining: number;
+
+    if (existingSession) {
+      const [updated] = await tx
+        .update(userSessions)
+        .set({
+          prismPagesRemaining: sql`COALESCE(${userSessions.prismPagesRemaining}, 0) + ${PRISM_DURATION_PAGES}`,
+          updatedAt: new Date(),
+        })
+        .where(eq(userSessions.id, existingSession.id))
+        .returning({ prismPagesRemaining: userSessions.prismPagesRemaining });
+      prismPagesRemaining = updated?.prismPagesRemaining ?? (existingSession.prismPagesRemaining + PRISM_DURATION_PAGES);
+    } else {
+      let targetPageId = pageId;
+      if (!targetPageId) {
+        const [firstPage] = await tx
+          .select({ id: pages.id })
+          .from(pages)
+          .where(eq(pages.bookId, bookId))
+          .orderBy(asc(pages.page))
+          .limit(1);
+        targetPageId = firstPage?.id;
+      }
+
+      if (!targetPageId) {
+        throw new Error("Cannot activate Resonance Prism without an active reading session or book page");
+      }
+
+      const [created] = await tx
+        .insert(userSessions)
+        .values({
+          userId,
+          bookId,
+          pageId: targetPageId,
+          prismPagesRemaining: PRISM_DURATION_PAGES,
+        })
+        .returning({ prismPagesRemaining: userSessions.prismPagesRemaining });
+      prismPagesRemaining = created?.prismPagesRemaining ?? PRISM_DURATION_PAGES;
+    }
+
+    return {
+      success: true,
+      prismPagesRemaining,
+      remainingPrisms,
+    };
+  });
+
+  return result;
+}
+
+/**
+ * Checks the current active Resonance Prism status for a user's reading session.
+ */
+export async function getResonancePrismStatus(
+  userId: string,
+  bookId: string,
+): Promise<{ prismActive: boolean; prismPagesRemaining: number }> {
+  const [session] = await dbRead
+    .select({ prismPagesRemaining: userSessions.prismPagesRemaining })
+    .from(userSessions)
+    .where(and(eq(userSessions.userId, userId), eq(userSessions.bookId, bookId)))
+    .limit(1);
+
+  const remaining = session?.prismPagesRemaining ?? 0;
+  return {
+    prismActive: remaining > 0,
+    prismPagesRemaining: remaining,
+  };
+}
+

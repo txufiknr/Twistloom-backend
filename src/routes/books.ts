@@ -107,7 +107,8 @@ import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
 import { requireNotSuspended, requireNotMuted, requireGenerationQuota } from "../middleware/trust-safety.js";
 import { rateLimit } from "../middleware/rate-limit.js";
-import { books, branches, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress, userCompletedBooks, uploadedImages, userActivityLogs, pages, bookTestimonials, pageReactions, userSessions, companionAnswers } from "../db/schema.js";
+import { books, branches, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress, userCompletedBooks, uploadedImages, userActivityLogs, pages, bookTestimonials, pageReactions, userSessions, companionAnswers, creatorWallets } from "../db/schema.js";
+import { deductUserItem } from "../services/consumables.js";
 import { getErrorMessage, cApiError, cForbiddenError, cNotFoundError, cRateLimitError, cUnauthorizedError, cValidationError } from "../utils/error.js";
 import { sanitizeKeywords, cleanMultilineText } from '../utils/text-processing.js';
 import { stripHtml } from '../utils/sanitize-html.js';
@@ -4759,6 +4760,7 @@ const testimonialWithAuthorSelect = {
   content: bookTestimonials.content,
   status: bookTestimonials.status,
   featured: bookTestimonials.featured,
+  curatorQuill: bookTestimonials.curatorQuill,
   createdAt: bookTestimonials.createdAt,
   updatedAt: bookTestimonials.updatedAt,
   name: users.name,
@@ -5339,13 +5341,14 @@ router.post('/:identifier/:pageId/confirm-visit', requireAuth, async (c) => {
   const { consumeCredits } = c.get("body") as { actionedPageId?: string; consumeCredits?: boolean };
   const userId = c.get("userId")!;
 
-  const { visitDetails, dbPage, book } = await visitBookPage(
+  const result = await visitBookPage(
     { userId, pageId: pageId as string, bookIdentifier: bookIdentifier as string, skipVisit: false, takeAction: true, consumeCredits: !!consumeCredits, language: c.req.header('accept-language') },
     { c }
   );
-  if (!dbPage || !book) return; // visitBookPage already sent the error response
+  if (result.errorResponse) return result.errorResponse;
+  if (!result.dbPage || !result.book) return cNotFoundError(c, "Page or book not found");
 
-  return c.json({ visitDetails });
+  return c.json({ visitDetails: result.visitDetails });
 });
 
 /**
@@ -7756,7 +7759,7 @@ router.get("/:identifier/:pageId", optionalAuth, async (c) => {
       return c.json({ page: result.page, book: result.book });
     }
 
-    const { visitDetails, book, dbPage, sourceAction, isUserTakeAction } = await visitBookPage({
+    const result = await visitBookPage({
       userId,
       pageId: pageId as string,
       bookIdentifier,
@@ -7766,8 +7769,10 @@ router.get("/:identifier/:pageId", optionalAuth, async (c) => {
       language: headerLanguage
     }, { c });
 
-    // Response already sent by `visitBookPage` internally
-    if (!dbPage || !book) return;
+    if (result.errorResponse) return result.errorResponse;
+    if (!result.dbPage || !result.book) return cNotFoundError(c, "Page or book not found");
+
+    const { visitDetails, book, dbPage, sourceAction, isUserTakeAction } = result;
 
     // Access control: reject if book is archived or private and user is not the owner
     if ((book.status === 'archived' || book.visibility === 'private') && (!c.get("userId") || c.get("userId") !== book.userId)) {
@@ -8372,7 +8377,11 @@ router.get("/testimonials", requireAuth, async (c) => {
 router.post("/:identifier/testimonials", requireAuth, requireNotSuspended, requireNotMuted, async (c) => {
   const identifier = c.req.param().identifier as string;
   const userId = c.get("userId")!;
-  const { rating, content } = c.get("body") as { rating?: number; content?: string };
+  const { rating, content, useCuratorQuill } = c.get("body") as {
+    rating?: number;
+    content?: string;
+    useCuratorQuill?: boolean;
+  };
 
   const book = await resolveBook(identifier);
   if (!book) {
@@ -8395,17 +8404,50 @@ router.post("/:identifier/testimonials", requireAuth, requireNotSuspended, requi
     normalizedRating = numericRating;
   }
 
-  const [created] = await dbWrite
-    .insert(bookTestimonials)
-    .values({
-      userId,
-      bookId: book.id,
-      rating: normalizedRating,
-      content: content.trim(),
-      status: "pending",
-      featured: false,
-    })
-    .returning({ id: bookTestimonials.id });
+  if (useCuratorQuill !== undefined && typeof useCuratorQuill !== "boolean") {
+    return cValidationError(c, "useCuratorQuill must be a boolean");
+  }
+  const isCuratorQuill = useCuratorQuill === true;
+
+  const created = await dbWrite.transaction(async (tx) => {
+    if (isCuratorQuill) {
+      // 1. Deduct 1 Curator's Quill from user inventory
+      await deductUserItem(tx, userId, "item_curator_quill", 1);
+
+      // 2. Credit 35 credits to creator's wallet if book has an author
+      if (book.userId) {
+        await tx
+          .insert(creatorWallets)
+          .values({
+            creatorId: book.userId,
+            availableAmount: 35,
+            currency: "USD",
+          })
+          .onConflictDoUpdate({
+            target: creatorWallets.creatorId,
+            set: {
+              availableAmount: sql`${creatorWallets.availableAmount} + 35`,
+              updatedAt: new Date(),
+            },
+          });
+      }
+    }
+
+    const [row] = await tx
+      .insert(bookTestimonials)
+      .values({
+        userId,
+        bookId: book.id,
+        rating: normalizedRating,
+        content: content.trim(),
+        status: "pending",
+        featured: false,
+        curatorQuill: isCuratorQuill,
+      })
+      .returning({ id: bookTestimonials.id });
+
+    return row;
+  });
 
   const [testimonial] = await dbRead
     .select(testimonialWithAuthorSelect)

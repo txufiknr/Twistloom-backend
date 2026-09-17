@@ -1191,6 +1191,8 @@ export const userSessions = pgTable(
     frontierAncestorIds: uuid("frontier_ancestor_ids").array().notNull().default(sql`ARRAY[]::uuid[]`), // frontier page id + its actionsHistory pageIds
     /** Whether the reader has seen the front matter page (cross-device sync). */
     frontMatterSeen: boolean("front_matter_seen").notNull().default(false),
+    /** Remaining pages covered by active Resonance Prism Easter Egg boost (+50%). */
+    prismPagesRemaining: integer("prism_pages_remaining").notNull().default(0),
     status: text("status").$type<SessionStatus>().notNull().default("active"),
     createdAt,
     updatedAt,
@@ -2132,6 +2134,27 @@ export const userInventory = pgTable(
 );
 
 /**
+ * User Story Anchors (Memory Anchor exploration consumable).
+ * @summary Temporal bookmarks planted at decision forks allowing instant return.
+ *   Up to 3 anchors per user per book.
+ */
+export const userStoryAnchors = pgTable(
+  "user_story_anchors",
+  {
+    id: id(),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    bookId: bookId("cascade"),
+    pageId: pageId("cascade"),
+    pageNumber: integer("page_number").notNull().default(1),
+    choicePrompt: text("choice_prompt"),
+    createdAt,
+  },
+  (t) => [
+    index("user_story_anchors_user_book_idx").on(t.userId, t.bookId),
+  ]
+);
+
+/**
  * Easter Egg discoveries claim log (SSOT).
  * @summary Records every claimed Easter Egg per user per page. Eggs themselves
  *   are ephemeral (rolled at runtime on page turn); this table prevents
@@ -2729,6 +2752,8 @@ export const bookTestimonials = pgTable(
     content: text("content").notNull(),
     status: text("status").$type<'pending' | 'approved' | 'rejected'>().default('pending').notNull(),
     featured: boolean("featured").default(false).notNull(),
+    /** Endorsed with Curator's Quill tribute (gilded calligraphy glow). */
+    curatorQuill: boolean("curator_quill").default(false).notNull(),
     createdAt,
     updatedAt,
   },

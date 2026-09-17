@@ -356,6 +356,41 @@ router.get("/weave/today", requireAuth, async (c: Context<AppEnv>) => {
 });
 
 /**
+ * GET /api/user/weave/progress
+ * Returns progress for a specific reading session's weave via query parameter (?sessionId=...).
+ * Also prevents path collision with /weave/:sessionId when literal "progress" is queried.
+ */
+router.get("/weave/progress", requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get("userId")!;
+    const sessionId = c.req.query("sessionId");
+
+    if (!sessionId) {
+      return cValidationError(c, "sessionId query parameter is required");
+    }
+
+    const progress = await getWeaveProgress(userId, sessionId);
+    if (!progress) {
+      return c.json({
+        sessionId,
+        bookId: null,
+        storyStrand: 0,
+        choiceStrand: 0,
+        discoveryStrand: 0,
+        isComplete: false,
+        completedAt: null,
+        dailyBonusClaimed: false,
+      });
+    }
+
+    return c.json(progress);
+  } catch (error) {
+    console.error("[GET /api/user/weave/progress] ❌", error);
+    return cApiError(c, "Failed to fetch weave progress", error);
+  }
+});
+
+/**
  * GET /api/user/weave/:sessionId
  * Returns progress for a specific reading session's weave.
  */

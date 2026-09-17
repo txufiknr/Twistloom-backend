@@ -503,6 +503,11 @@ export type VisitBookPageResult = {
   visitDetails?: BookPageVisit,
   book?: EnrichedBookData,
   dbPage?: DBPage,
+  /**
+   * Web-standard Response object (from Hono error helpers like cNotFoundError / cValidationError)
+   * returned when page/book resolution fails during visit evaluation.
+   */
+  errorResponse?: Response,
 } & TakeActionValidity;
 
 export type EnrichedPageOptions = {

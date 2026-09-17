@@ -23,7 +23,7 @@ import type { AppEnv } from "../hono/env.js";
 import { requireAuth } from "../middleware/nextauth.js";
 import { rateLimit } from "../middleware/rate-limit.js";
 import { cApiError, cValidationError } from "../utils/error.js";
-import { purchaseConsumableBatch, getUserItemCount } from "../services/consumables.js";
+import { purchaseConsumableBatch, getUserItemCount, checkDivergence, dropMemoryAnchor, getStoryAnchors, deleteStoryAnchor } from "../services/consumables.js";
 import { CONSUMABLES_REGISTRY, CONSUMABLES_BY_TYPE } from "../config/consumables.js";
 import type { InventoryItemType } from "../types/consumable.js";
 import { CONSUMABLE_PURCHASE_RATE_LIMIT } from "../config/ai-rate-limits.js";
@@ -128,4 +128,154 @@ router.post(
   }
 );
 
+/**
+ * POST /api/consumables/divergence-check
+ *
+ * Evaluates which branch choices on the current page have not yet been explored.
+ * Deducts 1 Divergence Compass and returns unvisited choice indices/texts.
+ *
+ * @route POST /api/consumables/divergence-check
+ * @auth Required
+ * @body {string} bookId - Book ID
+ * @body {string} pageId - Page ID
+ */
+router.post(
+  "/divergence-check",
+  requireAuth,
+  rateLimit({
+    windowSeconds: 60,
+    maxRequests: 20,
+    message: "Please wait before using another Divergence Compass.",
+    prefix: "divergence-check",
+  }),
+  async (c) => {
+    try {
+      const userId = c.get("userId")!;
+      const body = ((c.get("body") as Record<string, unknown>) ||
+        (await c.req.json().catch(() => ({})))) as { bookId?: unknown; pageId?: unknown };
+
+      const { bookId, pageId } = body;
+
+      if (!bookId || typeof bookId !== "string") {
+        return cValidationError(c, "bookId is required");
+      }
+      if (!pageId || typeof pageId !== "string") {
+        return cValidationError(c, "pageId is required");
+      }
+
+      const result = await checkDivergence(userId, bookId, pageId);
+      return c.json(result);
+    } catch (error) {
+      console.error("[POST /api/consumables/divergence-check] ❌ Error:", error);
+      return cApiError(c, "Failed to check divergence", error);
+    }
+  }
+);
+
+/**
+ * POST /api/consumables/anchors
+ *
+ * Drops a Memory Anchor bookmark at the current page/fork.
+ * Deducts 1 Memory Anchor item. Stores up to 3 anchors per book.
+ *
+ * @route POST /api/consumables/anchors
+ * @auth Required
+ * @body {string} bookId - Book ID
+ * @body {string} pageId - Page ID
+ * @body {number} pageNumber - Page number
+ * @body {string} [choicePrompt] - Optional choice description
+ */
+router.post(
+  "/anchors",
+  requireAuth,
+  rateLimit({
+    windowSeconds: 60,
+    maxRequests: 20,
+    message: "Please wait before dropping another Memory Anchor.",
+    prefix: "drop-anchor",
+  }),
+  async (c) => {
+    try {
+      const userId = c.get("userId")!;
+      const body = ((c.get("body") as Record<string, unknown>) ||
+        (await c.req.json().catch(() => ({})))) as {
+        bookId?: unknown;
+        pageId?: unknown;
+        pageNumber?: unknown;
+        choicePrompt?: unknown;
+      };
+
+      const { bookId, pageId, pageNumber: rawPageNumber, choicePrompt } = body;
+
+      if (!bookId || typeof bookId !== "string") {
+        return cValidationError(c, "bookId is required");
+      }
+      if (!pageId || typeof pageId !== "string") {
+        return cValidationError(c, "pageId is required");
+      }
+
+      const pageNumber = Number(rawPageNumber) || 1;
+      const prompt = typeof choicePrompt === "string" ? choicePrompt : undefined;
+
+      const result = await dropMemoryAnchor(userId, bookId, pageId, pageNumber, prompt);
+      return c.json(result);
+    } catch (error) {
+      console.error("[POST /api/consumables/anchors] ❌ Error:", error);
+      return cApiError(c, "Failed to drop Memory Anchor", error);
+    }
+  }
+);
+
+/**
+ * GET /api/consumables/anchors
+ *
+ * Retrieves all saved Memory Anchors for the user in the specified book.
+ *
+ * @route GET /api/consumables/anchors
+ * @auth Required
+ * @query {string} bookId - Book ID
+ */
+router.get("/anchors", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId")!;
+    const bookId = c.req.query("bookId");
+
+    if (!bookId) {
+      return cValidationError(c, "bookId is required query parameter");
+    }
+
+    const anchors = await getStoryAnchors(userId, bookId);
+    return c.json({ anchors });
+  } catch (error) {
+    console.error("[GET /api/consumables/anchors] ❌ Error:", error);
+    return cApiError(c, "Failed to fetch memory anchors", error);
+  }
+});
+
+/**
+ * DELETE /api/consumables/anchors/:anchorId
+ *
+ * Removes a saved Memory Anchor.
+ *
+ * @route DELETE /api/consumables/anchors/:anchorId
+ * @auth Required
+ */
+router.delete("/anchors/:anchorId", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId")!;
+    const anchorId = c.req.param("anchorId");
+
+    if (!anchorId) {
+      return cValidationError(c, "anchorId is required");
+    }
+
+    const result = await deleteStoryAnchor(userId, anchorId);
+    return c.json(result);
+  } catch (error) {
+    console.error("[DELETE /api/consumables/anchors/:anchorId] ❌ Error:", error);
+    return cApiError(c, "Failed to delete memory anchor", error);
+  }
+});
+
 export default router;
+

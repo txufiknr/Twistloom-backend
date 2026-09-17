@@ -1122,14 +1122,13 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
  *
  * @example
  * ```typescript
- * const { visitDetails, book, dbPage, sourceAction, isUserTakeAction } =
- *   await visitBookPage(
- *     { userId, pageId, bookIdentifier, skipVisit, takeAction, consumeCredits, language },
- *     { c }
- *   );
- *
- * // Response already sent by visitBookPage on error paths
- * if (!dbPage || !book) return;
+ * const result = await visitBookPage(
+ *   { userId, pageId, bookIdentifier, skipVisit, takeAction, consumeCredits, language },
+ *   { c }
+ * );
+ * if (result.errorResponse) return result.errorResponse;
+ * if (!result.dbPage || !result.book) return cNotFoundError(c, "Book or page not found");
+ * const { visitDetails, book, dbPage, sourceAction, isUserTakeAction } = result;
  *
  * const page = await mapToEnrichedPage(dbPage, {
  *   userId,
@@ -1154,8 +1153,7 @@ export async function visitBookPage(
   const dbPage = await getPageFromDB(pageId, { bookIdentifier });
   if (!dbPage) {
     console.error(`[visit] ❌ Visited page not found:`, pageId);
-    cNotFoundError(res, `Page not found`);
-    return {};
+    return { errorResponse: cNotFoundError(res, `Page not found`) };
   }
 
   // Get book
@@ -1163,8 +1161,7 @@ export async function visitBookPage(
   const book = await getEnrichedBook(bookId, userId, language);
   if (!book) {
     console.error(`[visit] ❌ Book not found:`, bookId);
-    cNotFoundError(res, `Book not found`);
-    return {};
+    return { errorResponse: cNotFoundError(res, `Book not found`) };
   }
 
   if (isUserTakeAction) {
@@ -1187,8 +1184,7 @@ export async function visitBookPage(
     const parentDbPage = parentPageId ? await getPageFromDB(parentPageId) : null;
     if (!parentDbPage) {
       console.error(`[visit] ❌ Previous page not found:`, parentPageId);
-      cNotFoundError(res, `Previous page not found for pageNumber ${pageNumber}`);
-      return {};
+      return { errorResponse: cNotFoundError(res, `Previous page not found for pageNumber ${pageNumber}`) };
     }
 
     action = parentDbPage.actions.filter(a => a.destinationPageIds?.some(p => p === pageId))[0];
@@ -1224,8 +1220,7 @@ export async function visitBookPage(
 
     if (!action) {
       console.error(`[visit] ❌ Action for this page not found in the parent page:`, parentPageId);
-      cNotFoundError(res, `Action for this page not found in the parent page`);
-      return {};
+      return { errorResponse: cNotFoundError(res, `Action for this page not found in the parent page`) };
     }
 
     selectedAction = mapActionToSelectedAction(action, parentPageId!, parentDbPage.page, pageId);
@@ -1236,11 +1231,16 @@ export async function visitBookPage(
       const selectedActions = await getPageActionsFromDB(userId, book.id, parentPageId!);
       if (selectedActions.length) {
         if (!selectedActions.some((a) => a.text === action!.text)) {
-          if (!consumeCredits) {
+          // If this action is the user's own authored custom action, they were already
+          // charged credits at submission time (Zero Double-Charge Invariant #4).
+          // Authored custom actions are permanently exempt from branch-switch penalties.
+          const isOwnCustomAction = action.source === 'custom' || Boolean(action.customActionId);
+          if (isOwnCustomAction) {
+            shouldConsumeCredits = false;
+          } else if (!consumeCredits) {
             // User already chose a different action on this page; can't continue except they pay credits
             console.error(`[visit] 💥 Choice made, can't make another choice`);
-            cForbiddenError(res, "Choice made, can't make another choice");
-            return {};
+            return { errorResponse: cForbiddenError(res, "Choice made, can't make another choice") };
           } else {
             shouldConsumeCredits = true;
           }

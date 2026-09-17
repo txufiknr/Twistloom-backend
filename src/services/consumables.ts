@@ -13,9 +13,9 @@
  * @see src/db/schema.ts (`user_inventory`)
  */
 
-import { and, eq, sql } from "drizzle-orm";
-import { dbRead, type DBTransaction } from "../db/client.js";
-import { userCounters, userInventory } from "../db/schema.js";
+import { and, eq, sql, asc, desc, inArray } from "drizzle-orm";
+import { dbRead, dbWrite, type DBTransaction } from "../db/client.js";
+import { pages, userCounters, userInventory, userPageProgress, userStoryAnchors } from "../db/schema.js";
 import { getConsumable } from "../config/consumables.js";
 import { executeWithCredits } from "./credits.js";
 import type { InventoryItemType } from "../types/consumable.js";
@@ -252,3 +252,176 @@ export async function deductUserItem(
 
   return remaining;
 }
+
+export interface DivergenceCheckResult {
+  success: boolean;
+  unexploredActionIndices: number[];
+  unexploredActionTexts: string[];
+  remainingCompasses: number;
+}
+
+/**
+ * Evaluates branch choice exploration status for the current page.
+ * Validates page existence first, deducts 1 Divergence Compass, and returns indices/texts of unvisited choices.
+ *
+ * Design Rationale:
+ * A Divergence Compass performs an exploratory scan of the current decision junction.
+ * Even if all branches have already been explored (unexploredActionIndices is empty), the scan
+ * provides the critical diagnostic information that the reader has completely cleared this fork.
+ * Therefore, the compass is intentionally consumed without refund upon successful scan.
+ */
+export async function checkDivergence(
+  userId: string,
+  bookId: string,
+  pageId: string,
+): Promise<DivergenceCheckResult> {
+  return await dbWrite.transaction(async (tx) => {
+    // 1. Fetch page actions and validate existence BEFORE deducting item
+    const [page] = await tx
+      .select({ actions: pages.actions })
+      .from(pages)
+      .where(and(eq(pages.id, pageId), eq(pages.bookId, bookId)))
+      .limit(1);
+
+    if (!page) {
+      throw new Error(`Page not found: ${pageId}`);
+    }
+
+    // 2. Deduct 1 compass
+    const remainingCompasses = await deductUserItem(tx, userId, "item_divergence_compass", 1);
+
+    const pageActions = (page.actions ?? []) as Array<{
+      text?: string;
+      destinationPageIds?: string[];
+    }>;
+
+    // 3. Fetch all destination pages user has visited in this book
+    const userProgress = await tx
+      .select({ nextPageId: userPageProgress.nextPageId })
+      .from(userPageProgress)
+      .where(and(eq(userPageProgress.userId, userId), eq(userPageProgress.bookId, bookId)));
+
+    const visitedPageIds = new Set(userProgress.map((p) => p.nextPageId));
+
+    // 4. Identify unexplored actions
+    const unexploredActionIndices: number[] = [];
+    const unexploredActionTexts: string[] = [];
+
+    pageActions.forEach((action, idx) => {
+      const dests = action.destinationPageIds ?? [];
+      const hasVisited = dests.length > 0 && dests.some((d) => visitedPageIds.has(d));
+      if (!hasVisited) {
+        unexploredActionIndices.push(idx);
+        if (action.text) {
+          unexploredActionTexts.push(action.text);
+        }
+      }
+    });
+
+    return {
+      success: true,
+      unexploredActionIndices,
+      unexploredActionTexts,
+      remainingCompasses,
+    };
+  });
+}
+
+export interface StoryAnchorItem {
+  id: string;
+  userId: string;
+  bookId: string;
+  pageId: string;
+  pageNumber: number;
+  choicePrompt: string | null;
+  createdAt: Date;
+}
+
+const MAX_ANCHORS_PER_BOOK = 3;
+
+/**
+ * Drops a Memory Anchor at the current page/fork.
+ * Deducts 1 Memory Anchor from inventory. Replaces the oldest anchor(s) if user already has 3.
+ *
+ * Concurrency Safety:
+ * Queries existing anchors with `.for("update")` to serialize concurrent anchor placements.
+ * Evicts all excess anchors so total count strictly remains <= MAX_ANCHORS_PER_BOOK.
+ *
+ * @param choicePrompt Optional concise text preview snippet (truncated to 40 chars in UI for backtrack menu preview)
+ */
+export async function dropMemoryAnchor(
+  userId: string,
+  bookId: string,
+  pageId: string,
+  pageNumber: number,
+  choicePrompt?: string,
+): Promise<{ success: boolean; anchor: StoryAnchorItem; remainingAnchors: number }> {
+  return await dbWrite.transaction(async (tx) => {
+    // 1. Deduct 1 anchor
+    const remainingAnchors = await deductUserItem(tx, userId, "item_memory_anchor", 1);
+
+    // 2. Check existing anchors for this user & book with row locking to serialize concurrent requests
+    const existing = await tx
+      .select({ id: userStoryAnchors.id, createdAt: userStoryAnchors.createdAt })
+      .from(userStoryAnchors)
+      .where(and(eq(userStoryAnchors.userId, userId), eq(userStoryAnchors.bookId, bookId)))
+      .orderBy(asc(userStoryAnchors.createdAt))
+      .for("update");
+
+    // If >= MAX_ANCHORS_PER_BOOK, evict enough oldest anchors to make room for 1 new anchor
+    if (existing.length >= MAX_ANCHORS_PER_BOOK) {
+      const excessCount = existing.length - MAX_ANCHORS_PER_BOOK + 1;
+      const idsToDelete = existing.slice(0, excessCount).map((a) => a.id);
+      await tx.delete(userStoryAnchors).where(inArray(userStoryAnchors.id, idsToDelete));
+    }
+
+    // 3. Insert new anchor
+    const [inserted] = await tx
+      .insert(userStoryAnchors)
+      .values({
+        userId,
+        bookId,
+        pageId,
+        pageNumber,
+        choicePrompt: choicePrompt || null,
+      })
+      .returning();
+
+    return {
+      success: true,
+      anchor: inserted,
+      remainingAnchors,
+    };
+  });
+}
+
+/**
+ * Retrieves all saved memory anchors for a user in a specific book.
+ */
+export async function getStoryAnchors(
+  userId: string,
+  bookId: string,
+): Promise<StoryAnchorItem[]> {
+  const anchors = await dbRead
+    .select()
+    .from(userStoryAnchors)
+    .where(and(eq(userStoryAnchors.userId, userId), eq(userStoryAnchors.bookId, bookId)))
+    .orderBy(desc(userStoryAnchors.createdAt));
+
+  return anchors;
+}
+
+/**
+ * Deletes a saved memory anchor.
+ */
+export async function deleteStoryAnchor(
+  userId: string,
+  anchorId: string,
+): Promise<{ success: boolean }> {
+  await dbWrite
+    .delete(userStoryAnchors)
+    .where(and(eq(userStoryAnchors.id, anchorId), eq(userStoryAnchors.userId, userId)));
+
+  return { success: true };
+}
+

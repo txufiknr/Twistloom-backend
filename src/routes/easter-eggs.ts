@@ -19,11 +19,7 @@ import type { AppEnv } from "../hono/env.js";
 import { requireAuth } from "../middleware/nextauth.js";
 import { rateLimit } from "../middleware/rate-limit.js";
 import { cApiError, cValidationError } from "../utils/error.js";
-import {
-  checkEasterEgg,
-  claimEasterEgg,
-  crackEasterEgg,
-} from "../services/easter-eggs.js";
+import { checkEasterEgg, claimEasterEgg, crackEasterEgg, activateResonancePrism, getResonancePrismStatus } from "../services/easter-eggs.js";
 
 const router = new Hono<AppEnv>();
 
@@ -135,4 +131,72 @@ router.post(
   }
 );
 
+/**
+ * POST /api/easter-eggs/prism/activate
+ *
+ * Activates 1 Resonance Prism for the given book reading session.
+ *
+ * @route POST /api/easter-eggs/prism/activate
+ * @auth Required
+ * @body {string} bookId - Book ID to bind the prism boost
+ */
+router.post(
+  "/prism/activate",
+  requireAuth,
+  rateLimit({
+    windowSeconds: 60,
+    maxRequests: 10,
+    message: "Please wait before activating another prism.",
+    prefix: "prism-activate",
+  }),
+  async (c) => {
+    try {
+      const userId = c.get("userId")!;
+      const body = (await c.req.json().catch(() => ({}))) as { bookId?: unknown; pageId?: unknown };
+      const { bookId, pageId } = body;
+
+      if (!bookId || typeof bookId !== "string") {
+        return cValidationError(c, "bookId is required");
+      }
+
+      const result = await activateResonancePrism(
+        userId,
+        bookId,
+        typeof pageId === "string" ? pageId : undefined,
+      );
+      return c.json(result);
+    } catch (error) {
+      console.error("[POST /api/easter-eggs/prism/activate] ❌ Error:", error);
+      return cApiError(c, "Failed to activate Resonance Prism", error);
+    }
+  }
+);
+
+/**
+ * GET /api/easter-eggs/prism/status
+ *
+ * Checks the active status of Resonance Prism for the given book session.
+ *
+ * @route GET /api/easter-eggs/prism/status
+ * @auth Required
+ * @query {string} bookId - Book ID
+ */
+router.get("/prism/status", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId")!;
+    const bookId = c.req.query("bookId");
+
+    if (!bookId) {
+      return cValidationError(c, "bookId is required query parameter");
+    }
+
+    const result = await getResonancePrismStatus(userId, bookId);
+    return c.json(result);
+  } catch (error) {
+    console.error("[GET /api/easter-eggs/prism/status] ❌ Error:", error);
+    return cApiError(c, "Failed to get Resonance Prism status", error);
+  }
+});
+
 export default router;
+
