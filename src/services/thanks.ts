@@ -8,7 +8,7 @@
  * @see docs/architecture/THANKS_SYSTEM_ARCHITECTURE.md
  */
 
-import { eq, sql, and } from "drizzle-orm";
+import { eq, sql, and, count } from "drizzle-orm";
 import { dbRead, dbWrite } from "../db/client.js";
 import { creatorEarnings, creatorWallets, users, books, userNotifications } from "../db/schema.js";
 import { calculatePlatformFee, calculateCreatorAmount } from "../config/thanks.js";
@@ -17,6 +17,7 @@ import { getErrorMessage } from "../utils/error.js";
 import { isUniqueConstraintError } from "../utils/retry.js";
 import { PAYMENT_GATEWAY, type PaymentGateway } from "../types/payment.js";
 import type { WalletCurrency } from "../types/wallet.js";
+import { sendSystemBroadcast, type SystemBroadcastI18nPayload } from "./broadcast.js";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -209,7 +210,81 @@ export async function recordThanks(options: RecordThanksOptions): Promise<{ dupl
     console.error("[thanks] ⚠️ Failed to send notification:", getErrorMessage(notifError));
   }
 
+  // 7. Fire system broadcast when this is the creator's first Thanks.
+  // Fire-and-forget; non-critical path so errors are silently swallowed.
+  void fireFirstThanksBroadcast(creatorId, bookId);
+
   return { duplicate: false };
+}
+
+/**
+ * Fires a locale-aware system broadcast when a creator receives their first
+ * Thanks from a reader. Uses the same DRY pattern as `fireFirstEndingBroadcast`
+ * in `book-controller.ts` and Easter Egg broadcasts in `easter-eggs.ts`.
+ *
+ * **Design decisions (by-design, not bugs):**
+ * - **No `username` in `messageParams`:** The `BroadcastBanner` always renders
+ *   `@{broadcast.username}` as a separate span. Translation strings don't include
+ *   `@{username}` to avoid duplication.
+ * - **Race condition:** Two simultaneous first tips can both see count === 0.
+ *   At most one duplicate system message — acceptable for rare events.
+ * - **Fire-and-forget:** Errors logged, never propagated. Broadcast failure
+ *   for a social milestone is tolerable.
+ */
+async function fireFirstThanksBroadcast(
+  creatorId: string,
+  bookId: string,
+): Promise<void> {
+  try {
+    // Check if this creator has received any Thanks before.
+    const [existing] = await dbRead
+      .select({ value: count() })
+      .from(creatorEarnings)
+      .where(
+        and(
+          eq(creatorEarnings.creatorId, creatorId),
+          eq(creatorEarnings.source, "thanks"),
+          eq(creatorEarnings.status, "completed"),
+        ),
+      );
+
+    // existing.value includes the current row (already inserted), so > 1 means
+    // this creator had prior Thanks. If exactly 1, this is the first.
+    if (!existing || existing.value > 1) return;
+
+    // Fetch creator username and book title for the broadcast params.
+    const [creator, book] = await Promise.all([
+      dbRead
+        .select({ name: users.name, username: users.username })
+        .from(users)
+        .where(eq(users.userId, creatorId))
+        .limit(1),
+      dbRead
+        .select({ title: books.title })
+        .from(books)
+        .where(eq(books.id, bookId))
+        .limit(1),
+    ]);
+
+    const creatorName = creator[0]?.name || creator[0]?.username || "A creator";
+    const bookTitle = book[0]?.title;
+
+    const payload: SystemBroadcastI18nPayload = bookTitle
+      ? {
+          key: "broadcast.system.firstThanks",
+          params: { creatorName, bookTitle },
+          fallback: `🎉 ${creatorName} just received their first Thanks on "${bookTitle}"! The community is showing love.`,
+        }
+      : {
+          key: "broadcast.system.firstThanksNoBook",
+          params: { creatorName },
+          fallback: `🎉 ${creatorName} just received their first Thanks! The community is showing love.`,
+        };
+
+    await sendSystemBroadcast(creatorId, payload);
+  } catch (error) {
+    console.error("[thanks] ❌ Error firing first Thanks broadcast:", error);
+  }
 }
 
 // ── Thanks Queries ──────────────────────────────────────────────────────────

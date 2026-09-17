@@ -24,7 +24,7 @@ export const CONSUMABLES_REGISTRY: ConsumableItemDefinition[] = [
   // ── Broadcast & Core Utilities ──
   {
     type: "megaphone",
-    name: "📣 Megaphone",
+    name: "Megaphone",
     description:
       "Broadcast a short message to every reader for a few seconds. Runs AI moderation before it goes live.",
     creditsPrice: 100,
@@ -35,7 +35,7 @@ export const CONSUMABLES_REGISTRY: ConsumableItemDefinition[] = [
   },
   {
     type: "easter_egg",
-    name: "🥚 Easter Egg",
+    name: "Easter Egg",
     description:
       "A mysterious egg uncovered from the depths of a story. Crack it open to reveal credits, consumables, or rare lore rewards.",
     creditsPrice: 0,
@@ -48,7 +48,7 @@ export const CONSUMABLES_REGISTRY: ConsumableItemDefinition[] = [
   // ── Narrative Exploration Utilities (Step 10 Pillar 1) ──
   {
     type: "item_divergence_compass",
-    name: "🧭 Divergence Compass",
+    name: "Divergence Compass",
     description:
       "A delicate brass astrolabe that senses shifting probabilities. Highlights whether upcoming choices lead to unexplored vs visited timelines.",
     creditsPrice: 40,
@@ -59,7 +59,7 @@ export const CONSUMABLES_REGISTRY: ConsumableItemDefinition[] = [
   },
   {
     type: "item_memory_anchor",
-    name: "⚓ Memory Anchor",
+    name: "Memory Anchor",
     description:
       "Crystallized temporal quartz. Anchors your consciousness to a decision fork, allowing instant returns without re-reading from chapter start.",
     creditsPrice: 60,
@@ -70,7 +70,7 @@ export const CONSUMABLES_REGISTRY: ConsumableItemDefinition[] = [
   },
   {
     type: "item_resonance_prism",
-    name: "🔮 Resonance Prism",
+    name: "Resonance Prism",
     description:
       "An amethyst prism tuned to the multiverse. Increases Easter Egg and thread fragment discovery rates (+50%) for your next 15 pages.",
     creditsPrice: 35,
@@ -81,7 +81,7 @@ export const CONSUMABLES_REGISTRY: ConsumableItemDefinition[] = [
   },
   {
     type: "item_curator_quill",
-    name: "✒️ Curator's Quill",
+    name: "Curator's Quill",
     description:
       "Gilded scribe feather. Endorses an author on the Wall with a radiant golden calligraphy glow and tips 35 credits to their wallet.",
     creditsPrice: 50,

@@ -61,7 +61,6 @@ import type {
   BroadcastStatus,
   BroadcastType,
   PublicBroadcast,
-  SystemBroadcastSubmitResponse,
 } from "../types/broadcast.js";
 
 const MEGAPHONE: InventoryItemType = "megaphone";
@@ -872,8 +871,8 @@ export interface SystemBroadcastI18nPayload {
  *   No retry mechanism — broadcast failure for rare events (Easter Egg / ending
  *   discovery) is tolerable. The page visit completes normally regardless.
  * - **No validation on `key` field:** The `key` is controlled by backend code
- *   (easter-eggs.ts, book-controller.ts), not user input. Only
- *   `submitSystemBroadcast` (authenticated endpoint) runs `validateBroadcastInput`.
+ *   (easter-eggs.ts, book-controller.ts), not user input. Keys are constants
+ *   defined in the codebase, not user-provided strings.
  * - **`message` stores rendered English (fallback):** For structured payloads, the
  *   `fallback` field is stored in the `message` column (NOT NULL). This provides
  *   moderator-friendly text and a last-resort display if the frontend can't
@@ -936,80 +935,6 @@ export async function sendSystemBroadcast(
     console.error("[sendSystemBroadcast] ❌ Error sending system broadcast:", error);
     return null;
   }
-}
-
-/**
- * Submit a system broadcast from an authenticated endpoint (e.g., first-visitor
- * milestone). Unlike `sendSystemBroadcast` (fire-and-forget), this returns the
- * full `SystemBroadcastSubmitResponse` with scheduling details.
- *
- * Skips: Megaphone consumption, cooldown, ban check, AI moderation.
- * Runs: Gate 1 deterministic validation (length, characters, injection patterns)
- * for defense-in-depth — any authenticated user can POST to /system directly.
- *
- * @param userId - The user who triggered the milestone (for attribution)
- * @param rawMessage - Localized message from the frontend
- * @returns Full response with scheduling details
- * @throws BroadcastSubmitError on queue-full or validation failure
- */
-export async function submitSystemBroadcast(
-  userId: string,
-  rawMessage: string,
-): Promise<SystemBroadcastSubmitResponse> {
-  // Gate 1 — deterministic validation (same gate as user broadcasts).
-  // Even though system messages originate from frontend i18n templates, any
-  // authenticated user can POST to /system directly, so we MUST run the full
-  // validation gate for defense-in-depth.
-  const gate = validateBroadcastInput(rawMessage);
-  if (!gate.passed || !gate.sanitized) {
-    throw new BroadcastSubmitError(
-      gate.category === "injection_attempt" ? "broadcast.security" : "broadcast.validation",
-      gate.message ?? "System broadcast message rejected.",
-      undefined,
-      undefined,
-      gate.match ? [gate.match] : undefined,
-    );
-  }
-  const message = gate.sanitized;
-
-  const queueFull = await isBroadcastQueueFull();
-  if (queueFull) {
-    throw new BroadcastSubmitError("broadcast.queueFull", "The broadcast queue is full.");
-  }
-
-  const broadcastId = generateId();
-  const schedule = await dbWrite.transaction(async (tx) => {
-    // Reap stale queued rows before scheduling
-    await reapStaleQueuedBroadcasts(tx);
-
-    const s = await computeSchedule(tx);
-    await tx.insert(broadcasts).values({
-      id: broadcastId,
-      userId,
-      source: "system",
-      type: "message",
-      message,
-      status: "queued",
-      moderationResult: { outcome: "approve", reasons: [] },
-      containsSpoiler: false,
-      startsAt: s.startsAt,
-      expiresAt: s.expiresAt,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-    return s;
-  });
-
-  await invalidateCurrentBroadcastCache();
-
-  return {
-    id: broadcastId,
-    message,
-    source: "system",
-    queuePosition: schedule.queuePosition,
-    startsAt: schedule.startsAt.toISOString(),
-    expiresAt: schedule.expiresAt.toISOString(),
-  };
 }
 
 // ---------------------------------------------------------------------------
