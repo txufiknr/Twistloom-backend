@@ -3565,17 +3565,24 @@ router.get("/trust-safety/reports", requireAuth, requirePermission("users"), asy
 router.patch("/trust-safety/reports/:id", requireAuth, requirePermission("users"), async (c) => {
   try {
     const { id } = c.req.param();
-    const body = await c.req.json<{
-      status: "under_review" | "resolved" | "dismissed";
+    const body = (c.get("body") ?? {}) as {
+      status?: "under_review" | "resolved" | "dismissed";
       resolutionNotes?: string | null;
-    }>();
+    };
     const adminId = c.get("userId")!;
 
     if (!body.status || !["under_review", "resolved", "dismissed"].includes(body.status)) {
       return cValidationError(c, "Invalid status. Must be under_review, resolved, or dismissed");
     }
 
-    const report = await updateAdminModerationReport(id, body, adminId);
+    const report = await updateAdminModerationReport(
+      id,
+      {
+        status: body.status,
+        resolutionNotes: body.resolutionNotes,
+      },
+      adminId
+    );
     if (!report) {
       return cNotFoundError(c, "Moderation report not found");
     }
@@ -3653,18 +3660,29 @@ router.get("/trust-safety/users/:userId/dossier", requireAuth, requirePermission
 router.post("/trust-safety/users/:userId/enforce", requireAuth, requirePermission("users"), async (c) => {
   try {
     const { userId } = c.req.param();
-    const body = await c.req.json<{
-      action: EnforcementAction;
-      violationType: ViolationType;
-      severity: ViolationSeverity;
-      reason: string;
+    const body = (c.get("body") ?? {}) as {
+      action?: EnforcementAction;
+      violationType?: ViolationType;
+      severity?: ViolationSeverity;
+      reason?: string;
       internalNotes?: string;
       durationHours?: number;
-    }>();
+    };
     const adminId = c.get("userId")!;
 
     if (!body.action || !body.violationType || !body.severity || !body.reason) {
       return cValidationError(c, "Missing required fields: action, violationType, severity, and reason are required");
+    }
+
+    if (body.durationHours !== undefined) {
+      if (
+        typeof body.durationHours !== "number" ||
+        !Number.isFinite(body.durationHours) ||
+        body.durationHours <= 0 ||
+        body.durationHours > 8760
+      ) {
+        return cValidationError(c, "durationHours must be a positive finite number up to 8,760 (1 year)");
+      }
     }
 
     const expiresAt = body.durationHours
@@ -3695,7 +3713,7 @@ router.post("/trust-safety/users/:userId/enforce", requireAuth, requirePermissio
 router.patch("/trust-safety/actions/:actionId/revoke", requireAuth, requirePermission("users"), async (c) => {
   try {
     const { actionId } = c.req.param();
-    const body = await c.req.json<{ reviewNotes?: string }>().catch(() => ({ reviewNotes: undefined }));
+    const body = (c.get("body") ?? {}) as { reviewNotes?: string };
     const adminId = c.get("userId")!;
 
     const action = await revokeEnforcementAction(actionId, adminId, body.reviewNotes);
@@ -3734,19 +3752,30 @@ router.get("/trust-safety/appeals", requireAuth, requirePermission("users"), asy
 router.post("/trust-safety/appeals/:appealId/resolve", requireAuth, requirePermission("users"), async (c) => {
   try {
     const { appealId } = c.req.param();
-    const body = await c.req.json<{
-      decision: "approved" | "rejected";
+    const body = (c.get("body") ?? {}) as {
+      decision?: "approved" | "rejected";
       adminNotes?: string | null;
       grantApologyCredits?: boolean;
       apologyCreditAmount?: number;
-    }>();
+    };
     const adminId = c.get("userId")!;
 
     if (!body.decision || !["approved", "rejected"].includes(body.decision)) {
       return cValidationError(c, "Invalid decision. Must be 'approved' or 'rejected'");
     }
 
-    const appeal = await resolveAdminModerationAppeal(appealId, body, adminId);
+    if (body.apologyCreditAmount !== undefined) {
+      if (
+        typeof body.apologyCreditAmount !== "number" ||
+        !Number.isInteger(body.apologyCreditAmount) ||
+        body.apologyCreditAmount < 1 ||
+        body.apologyCreditAmount > 100
+      ) {
+        return cValidationError(c, "apologyCreditAmount must be an integer between 1 and 100");
+      }
+    }
+
+    const appeal = await resolveAdminModerationAppeal(appealId, body as { decision: "approved" | "rejected"; adminNotes?: string | null; grantApologyCredits?: boolean; apologyCreditAmount?: number }, adminId);
     return c.json({ success: true, appeal });
   } catch (error) {
     return cApiError(c, "Failed to resolve moderation appeal", error);

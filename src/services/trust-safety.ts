@@ -181,8 +181,8 @@ export async function applyEnforcementAction(params: ApplyEnforcementActionParam
         },
       });
 
-    // 3. Dual-write to `users` for hard lockout actions (permanent_ban or suspend)
-    if (action === "permanent_ban" || action === "suspend") {
+    // 3. Dual-write to `users` for hard lockout actions (permanent_ban only)
+    if (action === "permanent_ban") {
       await tx
         .update(users)
         .set({
@@ -215,15 +215,21 @@ export async function revokeEnforcementAction(
   const now = new Date();
 
   const updatedAction = await dbWrite.transaction(async (tx) => {
-    // 1. Mark action as revoked
+    // 1. Mark action as revoked and record reviewer context
+    const noteSuffix = `\n[Revoked by ${reviewerId || 'Admin'}]: ${reviewNotes || 'Manual administrative revocation'}`;
+    const revocationMeta = JSON.stringify({
+      revokedBy: reviewerId ?? null,
+      revokedAt: now.toISOString(),
+      reason: reviewNotes ?? null,
+    });
+
     const [action] = await tx
       .update(userEnforcementActions)
       .set({
         isRevoked: true,
         revokedAt: now,
-        internalNotes: reviewNotes
-          ? sql`COALESCE(${userEnforcementActions.internalNotes}, '') || E'\n[Revocation Note]: ' || ${reviewNotes}`
-          : userEnforcementActions.internalNotes,
+        internalNotes: sql`COALESCE(${userEnforcementActions.internalNotes}, '') || ${noteSuffix}`,
+        metadata: sql`jsonb_set(COALESCE(${userEnforcementActions.metadata}, '{}'::jsonb), '{revocation}', ${revocationMeta}::jsonb)`,
         updatedAt: now,
       })
       .where(eq(userEnforcementActions.id, actionId))
@@ -233,18 +239,14 @@ export async function revokeEnforcementAction(
 
     const userId = action.userId;
 
-    // 2. Check if user has any other active ban or suspension
-    const activeBans = await tx
-      .select({ id: userEnforcementActions.id })
+    // 2. Fetch remaining unrevoked actions for dynamic trust profile recalculation
+    const remainingActions = await tx
+      .select()
       .from(userEnforcementActions)
       .where(
         and(
           eq(userEnforcementActions.userId, userId),
           eq(userEnforcementActions.isRevoked, false),
-          or(
-            eq(userEnforcementActions.action, "permanent_ban"),
-            eq(userEnforcementActions.action, "suspend")
-          ),
           or(
             isNull(userEnforcementActions.expiresAt),
             gt(userEnforcementActions.expiresAt, now)
@@ -252,8 +254,55 @@ export async function revokeEnforcementAction(
         )
       );
 
-    // If no other active ban/suspension exists, clear `users.bannedAt`
-    if (activeBans.length === 0) {
+    let totalDeduction = 0;
+    let hasRemainingBan = false;
+
+    for (const act of remainingActions) {
+      if (act.action === "permanent_ban") hasRemainingBan = true;
+      switch (act.severity) {
+        case "low":
+          totalDeduction += 10;
+          break;
+        case "medium":
+          totalDeduction += 25;
+          break;
+        case "high":
+          totalDeduction += 45;
+          break;
+        case "critical":
+          totalDeduction += 100;
+          break;
+      }
+    }
+
+    const recalculatedScore = Math.max(0, 100 - totalDeduction);
+    let recalculatedTier: RiskTier = "low";
+    if (recalculatedScore < 25) recalculatedTier = "critical";
+    else if (recalculatedScore < 50) recalculatedTier = "high";
+    else if (recalculatedScore < 75) recalculatedTier = "elevated";
+
+    await tx
+      .insert(userTrustProfiles)
+      .values({
+        userId,
+        trustScore: recalculatedScore,
+        strikeCount: remainingActions.length,
+        riskTier: recalculatedTier,
+        lastEvaluatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: userTrustProfiles.userId,
+        set: {
+          trustScore: recalculatedScore,
+          strikeCount: remainingActions.length,
+          riskTier: recalculatedTier,
+          lastEvaluatedAt: now,
+          updatedAt: now,
+        },
+      });
+
+    // 3. Clear users.bannedAt if no other active permanent ban remains
+    if (!hasRemainingBan) {
       await tx
         .update(users)
         .set({
@@ -302,9 +351,16 @@ export async function getActiveEnforcementsForUser(userId: string) {
  * Computes user capabilities status for middleware gating.
  */
 export async function getUserEnforcementStatus(userId: string): Promise<UserEnforcementStatus> {
-  const activeRows = await getActiveEnforcementsForUser(userId);
+  const [activeRows, userRow] = await Promise.all([
+    getActiveEnforcementsForUser(userId),
+    dbRead
+      .select({ bannedAt: users.bannedAt })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1),
+  ]);
 
-  let isBanned = false;
+  let isBanned = Boolean(userRow[0]?.bannedAt);
   let isSuspended = false;
   let isThrottled = false;
   let isMuted = false;
@@ -550,15 +606,20 @@ export async function updateAdminModerationReport(
   adminId: string
 ) {
   const now = new Date();
+  const updatePayload: Record<string, unknown> = {
+    status: updateData.status,
+    resolvedBy: adminId,
+    resolvedAt: updateData.status === "resolved" || updateData.status === "dismissed" ? now : null,
+    updatedAt: now,
+  };
+
+  if (updateData.resolutionNotes !== undefined) {
+    updatePayload.resolutionNotes = updateData.resolutionNotes || null;
+  }
+
   const [updated] = await dbWrite
     .update(moderationReports)
-    .set({
-      status: updateData.status,
-      resolutionNotes: updateData.resolutionNotes || null,
-      resolvedBy: adminId,
-      resolvedAt: updateData.status === "resolved" || updateData.status === "dismissed" ? now : null,
-      updatedAt: now,
-    })
+    .set(updatePayload)
     .where(eq(moderationReports.id, reportId))
     .returning();
 
@@ -706,10 +767,27 @@ export async function getUserForensicDossier(userId: string) {
     .from(books)
     .where(eq(books.userId, userId));
 
+  const isRestricted =
+    enforcementStatus.isBanned ||
+    enforcementStatus.isSuspended ||
+    enforcementStatus.isThrottled ||
+    enforcementStatus.isMuted;
+
   return {
     user: userProfile[0],
     trustProfile,
-    capabilities: enforcementStatus,
+    capabilities: {
+      capabilities: {
+        canSpark: !enforcementStatus.isBanned && !enforcementStatus.isSuspended && !enforcementStatus.isThrottled,
+        canPen: !enforcementStatus.isBanned && !enforcementStatus.isSuspended && !enforcementStatus.isThrottled,
+        canComment: !enforcementStatus.isBanned && !enforcementStatus.isSuspended && !enforcementStatus.isMuted,
+        canPublish: !enforcementStatus.isBanned && !enforcementStatus.isSuspended,
+        isSuspended: enforcementStatus.isSuspended,
+        isBanned: enforcementStatus.isBanned,
+      },
+      activeActions: enforcementStatus.activeActions,
+      isRestricted,
+    },
     activeActions: enforcementStatus.activeActions,
     allActions,
     recentViolations,
@@ -816,6 +894,9 @@ export async function resolveAdminModerationAppeal(
       .limit(1);
 
     if (!appeal) throw new Error("Appeal not found");
+    if (appeal.status !== "pending") {
+      throw new Error(`Appeal is already resolved (${appeal.status}).`);
+    }
 
     const [updatedAppeal] = await tx
       .update(moderationAppeals)
@@ -843,39 +924,14 @@ export async function resolveAdminModerationAppeal(
         })
         .where(eq(userEnforcementActions.id, appeal.enforcementActionId));
 
-      // 2. Restore User Trust Profile
-      await tx
-        .insert(userTrustProfiles)
-        .values({
-          userId: appeal.userId,
-          trustScore: 100,
-          strikeCount: 0,
-          riskTier: "low",
-          lastEvaluatedAt: now,
-        })
-        .onConflictDoUpdate({
-          target: userTrustProfiles.userId,
-          set: {
-            trustScore: 100,
-            strikeCount: 0,
-            riskTier: "low",
-            lastEvaluatedAt: now,
-            updatedAt: now,
-          },
-        });
-
-      // 3. Clear users.bannedAt if no other active ban remains
-      const otherBans = await tx
-        .select({ id: userEnforcementActions.id })
+      // 2. Fetch remaining unrevoked actions for dynamic trust profile recalculation
+      const remainingActions = await tx
+        .select()
         .from(userEnforcementActions)
         .where(
           and(
             eq(userEnforcementActions.userId, appeal.userId),
             eq(userEnforcementActions.isRevoked, false),
-            or(
-              eq(userEnforcementActions.action, "permanent_ban"),
-              eq(userEnforcementActions.action, "suspend")
-            ),
             or(
               isNull(userEnforcementActions.expiresAt),
               gt(userEnforcementActions.expiresAt, now)
@@ -883,7 +939,55 @@ export async function resolveAdminModerationAppeal(
           )
         );
 
-      if (otherBans.length === 0) {
+      let totalDeduction = 0;
+      let hasRemainingBan = false;
+
+      for (const act of remainingActions) {
+        if (act.action === "permanent_ban") hasRemainingBan = true;
+        switch (act.severity) {
+          case "low":
+            totalDeduction += 10;
+            break;
+          case "medium":
+            totalDeduction += 25;
+            break;
+          case "high":
+            totalDeduction += 45;
+            break;
+          case "critical":
+            totalDeduction += 100;
+            break;
+        }
+      }
+
+      const recalculatedScore = Math.max(0, 100 - totalDeduction);
+      let recalculatedTier: RiskTier = "low";
+      if (recalculatedScore < 25) recalculatedTier = "critical";
+      else if (recalculatedScore < 50) recalculatedTier = "high";
+      else if (recalculatedScore < 75) recalculatedTier = "elevated";
+
+      await tx
+        .insert(userTrustProfiles)
+        .values({
+          userId: appeal.userId,
+          trustScore: recalculatedScore,
+          strikeCount: remainingActions.length,
+          riskTier: recalculatedTier,
+          lastEvaluatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: userTrustProfiles.userId,
+          set: {
+            trustScore: recalculatedScore,
+            strikeCount: remainingActions.length,
+            riskTier: recalculatedTier,
+            lastEvaluatedAt: now,
+            updatedAt: now,
+          },
+        });
+
+      // 3. Clear users.bannedAt if no active permanent ban remains
+      if (!hasRemainingBan) {
         await tx
           .update(users)
           .set({ bannedAt: null, updatedAt: now })

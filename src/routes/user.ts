@@ -63,7 +63,7 @@ import { dbRead, dbWrite } from "../db/client.js";
 import { requireAuth, optionalAuth } from "../middleware/nextauth.js";
 import { logAuditEvent } from "../utils/audit-log.js";
 import { requireNotSuspended, requireNotMuted } from "../middleware/trust-safety.js";
-import { users, books, userAuth, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, userSessions, userCompletedBooks, userComments, transactions, userProviders, userFeedbacks, bookTestimonials, uploadedImages, userReports, moderationReports, moderationAppeals, userEnforcementActions, userBlocks, platformTestimonials, pages, userInventory, posts } from "../db/schema.js";
+import { users, books, userAuth, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, userSessions, userCompletedBooks, userComments, transactions, userProviders, userFeedbacks, bookTestimonials, uploadedImages, userReports, moderationReports, moderationAppeals, userEnforcementActions, userBlocks, platformTestimonials, pages, userInventory, posts, customActions } from "../db/schema.js";
 import type { ReportTargetType, ReportType } from "../types/trust-safety.js";
 import { getOrFetchUserEnforcementStatus, getOrCreateUserTrustProfile, getUserTrustSafetyOverview, submitUserAppeal, getUserAppeals } from "../services/trust-safety.js";
 import { getErrorMessage, cApiError, cNotFoundError, cConflictError, cValidationError, cUnauthorizedError, cForbiddenError } from "../utils/error.js";
@@ -3367,7 +3367,7 @@ router.post('/users/:identifier/report', requireAuth, async (c: Context<AppEnv>)
 router.post('/reports', requireAuth, async (c: Context<AppEnv>) => {
   try {
     const reporterId = c.get('userId')!;
-    const { targetType, targetId, reportType, message } = c.get('body') as {
+    const { targetType, targetId, reportType, message } = (c.get('body') ?? {}) as {
       targetType?: ReportTargetType;
       targetId?: string;
       reportType?: string;
@@ -3403,6 +3403,29 @@ router.post('/reports', requireAuth, async (c: Context<AppEnv>) => {
     } else if (targetType === 'comment') {
       const [commentRow] = await dbRead.select({ userId: userComments.userId }).from(userComments).where(eq(userComments.id, targetId)).limit(1);
       reportedUserId = commentRow?.userId ?? null;
+    } else if (targetType === 'testimonial') {
+      const [bookTestimonial] = await dbRead
+        .select({ userId: bookTestimonials.userId })
+        .from(bookTestimonials)
+        .where(eq(bookTestimonials.id, targetId))
+        .limit(1);
+      if (bookTestimonial) {
+        reportedUserId = bookTestimonial.userId;
+      } else {
+        const [platformTestimonial] = await dbRead
+          .select({ userId: platformTestimonials.userId })
+          .from(platformTestimonials)
+          .where(eq(platformTestimonials.id, targetId))
+          .limit(1);
+        reportedUserId = platformTestimonial?.userId ?? null;
+      }
+    } else if (targetType === 'custom_action') {
+      const [customActionRow] = await dbRead
+        .select({ userId: customActions.userId })
+        .from(customActions)
+        .where(eq(customActions.id, targetId))
+        .limit(1);
+      reportedUserId = customActionRow?.userId ?? null;
     } else if (targetType === 'post') {
       const [postRow] = await dbRead.select({ userId: posts.userId }).from(posts).where(eq(posts.id, targetId)).limit(1);
       if (!postRow) return cNotFoundError(c, 'Post not found');
@@ -3458,7 +3481,7 @@ router.get('/trust-safety', requireAuth, async (c: Context<AppEnv>) => {
 router.post('/appeals', requireAuth, async (c: Context<AppEnv>) => {
   try {
     const userId = c.get('userId')!;
-    const { actionId, appealReason, userEvidence } = c.get('body') as {
+    const { actionId, appealReason, userEvidence } = (c.get('body') ?? {}) as {
       actionId?: string;
       appealReason?: string;
       userEvidence?: string;
