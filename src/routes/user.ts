@@ -65,7 +65,7 @@ import { logAuditEvent } from "../utils/audit-log.js";
 import { requireNotSuspended, requireNotMuted } from "../middleware/trust-safety.js";
 import { users, books, userAuth, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, userSessions, userCompletedBooks, userComments, transactions, userProviders, userFeedbacks, bookTestimonials, uploadedImages, userReports, moderationReports, moderationAppeals, userEnforcementActions, userBlocks, platformTestimonials, pages, userInventory, posts } from "../db/schema.js";
 import type { ReportTargetType, ReportType } from "../types/trust-safety.js";
-import { getOrFetchUserEnforcementStatus, getOrCreateUserTrustProfile } from "../services/trust-safety.js";
+import { getOrFetchUserEnforcementStatus, getOrCreateUserTrustProfile, getUserTrustSafetyOverview, submitUserAppeal, getUserAppeals } from "../services/trust-safety.js";
 import { getErrorMessage, cApiError, cNotFoundError, cConflictError, cValidationError, cUnauthorizedError, cForbiddenError } from "../utils/error.js";
 import { eq, and, desc, sql, gte } from "drizzle-orm";
 import { calculatePaginationMeta, extractPaginationParams } from "../utils/pagination.js";
@@ -3432,6 +3432,79 @@ router.post('/reports', requireAuth, async (c: Context<AppEnv>) => {
     return c.json({ success: true, report: { id: modReport.id } });
   } catch (error) {
     return cApiError(c, 'Failed to submit report', error);
+  }
+});
+
+/**
+ * GET /api/user/trust-safety
+ * Returns the authenticated user's trust profile, capabilities, quota, active actions, and appeals.
+ * Safe-haven endpoint (no requireNotSuspended) so restricted users can review their standing.
+ */
+router.get('/trust-safety', requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get('userId')!;
+    const overview = await getUserTrustSafetyOverview(userId);
+    return c.json({ success: true, data: overview });
+  } catch (error) {
+    return cApiError(c, 'Failed to fetch trust & safety status', error);
+  }
+});
+
+/**
+ * POST /api/user/appeals
+ * Submits a self-service appeal for an active disciplinary action.
+ * Safe-haven endpoint (no requireNotSuspended).
+ */
+router.post('/appeals', requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get('userId')!;
+    const { actionId, appealReason, userEvidence } = c.get('body') as {
+      actionId?: string;
+      appealReason?: string;
+      userEvidence?: string;
+    };
+
+    if (!actionId || !isValidUuid(actionId)) {
+      return cValidationError(c, 'Valid actionId (UUID) is required');
+    }
+    if (!appealReason || typeof appealReason !== 'string' || appealReason.trim().length < 10) {
+      return cValidationError(c, 'Please provide a detailed appeal explanation (at least 10 characters)');
+    }
+    if (appealReason.trim().length > 2000) {
+      return cValidationError(c, 'Appeal explanation must not exceed 2,000 characters');
+    }
+    if (userEvidence && typeof userEvidence === 'string' && userEvidence.trim().length > 2000) {
+      return cValidationError(c, 'Supporting evidence must not exceed 2,000 characters');
+    }
+
+    const cleanReason = sanitizeText(appealReason.trim(), { preserveNewlines: true });
+    const cleanEvidence = userEvidence ? sanitizeText(userEvidence.trim(), { preserveNewlines: true }) : undefined;
+
+    const appeal = await submitUserAppeal(userId, {
+      actionId,
+      appealReason: cleanReason,
+      userEvidence: cleanEvidence,
+    });
+
+    c.status(201);
+    return c.json({ success: true, appeal });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : 'Failed to submit appeal';
+    return cApiError(c, msg, error);
+  }
+});
+
+/**
+ * GET /api/user/appeals
+ * Retrieves all appeals filed by the authenticated user.
+ */
+router.get('/appeals', requireAuth, async (c: Context<AppEnv>) => {
+  try {
+    const userId = c.get('userId')!;
+    const appeals = await getUserAppeals(userId);
+    return c.json({ success: true, appeals });
+  } catch (error) {
+    return cApiError(c, 'Failed to fetch user appeals', error);
   }
 });
 

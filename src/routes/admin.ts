@@ -39,7 +39,20 @@ import { sanitizeBlogHtml } from "../utils/sanitize-html.js";
 import { notifyForumUserBanned, notifyForumUserUnbanned } from "../services/forum-queue.js";
 import { invalidateUserProfileCache } from "../services/cache.js";
 import { getNeonProjectUsage, NeonApiError } from "../services/neon-usage.js";
-import { applyEnforcementAction, revokeEnforcementAction, getActiveEnforcementsForUser } from "../services/trust-safety.js";
+import {
+  applyEnforcementAction,
+  revokeEnforcementAction,
+  getActiveEnforcementsForUser,
+  getAdminTrustSafetySummary,
+  getAdminModerationReports,
+  updateAdminModerationReport,
+  getAdminViolationEvents,
+  getUserForensicDossier,
+  getAdminModerationAppeals,
+  resolveAdminModerationAppeal,
+  getAdminEnforcementActions,
+} from "../services/trust-safety.js";
+import type { EnforcementAction, ViolationType, ViolationSeverity } from "../types/trust-safety.js";
 import { parsePaymentGateway, formatPaymentAmount, getGatewayCurrency, getSubscriptionPlanName } from "../utils/payment.js";
 
 const router = new Hono<AppEnv>();
@@ -3507,4 +3520,238 @@ router.patch("/kyc/review-queue/:id",
   }
 );
 
+// ---------------------------------------------------------------------------
+// Trust & Safety Moderation Cockpit Routes (Phase 4)
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /admin/trust-safety/summary
+ * Returns KPI aggregates for the moderation cockpit.
+ */
+router.get("/trust-safety/summary", requireAuth, requirePermission("users"), async (c) => {
+  try {
+    const summary = await getAdminTrustSafetySummary();
+    return c.json({ success: true, summary });
+  } catch (error) {
+    return cApiError(c, "Failed to fetch Trust & Safety summary", error);
+  }
+});
+
+/**
+ * GET /admin/trust-safety/reports
+ * Lists polymorphic moderation reports with filtering and pagination.
+ */
+router.get("/trust-safety/reports", requireAuth, requirePermission("users"), async (c) => {
+  try {
+    const query = c.req.query();
+    const result = await getAdminModerationReports({
+      status: query.status,
+      targetType: query.targetType,
+      reportType: query.reportType,
+      search: query.search,
+      limit: query.limit ? Number(query.limit) : undefined,
+      offset: query.offset ? Number(query.offset) : undefined,
+    });
+    return c.json({ success: true, ...result });
+  } catch (error) {
+    return cApiError(c, "Failed to fetch moderation reports", error);
+  }
+});
+
+/**
+ * PATCH /admin/trust-safety/reports/:id
+ * Updates report status (under_review, resolved, dismissed) and resolution notes.
+ */
+router.patch("/trust-safety/reports/:id", requireAuth, requirePermission("users"), async (c) => {
+  try {
+    const { id } = c.req.param();
+    const body = await c.req.json<{
+      status: "under_review" | "resolved" | "dismissed";
+      resolutionNotes?: string | null;
+    }>();
+    const adminId = c.get("userId")!;
+
+    if (!body.status || !["under_review", "resolved", "dismissed"].includes(body.status)) {
+      return cValidationError(c, "Invalid status. Must be under_review, resolved, or dismissed");
+    }
+
+    const report = await updateAdminModerationReport(id, body, adminId);
+    if (!report) {
+      return cNotFoundError(c, "Moderation report not found");
+    }
+    return c.json({ success: true, report });
+  } catch (error) {
+    return cApiError(c, "Failed to update moderation report", error);
+  }
+});
+
+/**
+ * GET /admin/trust-safety/violations
+ * Lists violation events telemetry logs with filtering and pagination.
+ */
+router.get("/trust-safety/violations", requireAuth, requirePermission("users"), async (c) => {
+  try {
+    const query = c.req.query();
+    const result = await getAdminViolationEvents({
+      userId: query.userId,
+      violationType: query.violationType,
+      source: query.source,
+      search: query.search,
+      limit: query.limit ? Number(query.limit) : undefined,
+      offset: query.offset ? Number(query.offset) : undefined,
+    });
+    return c.json({ success: true, ...result });
+  } catch (error) {
+    return cApiError(c, "Failed to fetch violation events", error);
+  }
+});
+
+/**
+ * GET /admin/trust-safety/actions
+ * Lists all enforcement actions ledger entries with filtering and pagination.
+ */
+router.get("/trust-safety/actions", requireAuth, requirePermission("users"), async (c) => {
+  try {
+    const query = c.req.query();
+    const result = await getAdminEnforcementActions({
+      userId: query.userId,
+      action: query.action,
+      violationType: query.violationType,
+      isRevoked: query.isRevoked !== undefined ? query.isRevoked === "true" : undefined,
+      search: query.search,
+      limit: query.limit ? Number(query.limit) : undefined,
+      offset: query.offset ? Number(query.offset) : undefined,
+    });
+    return c.json({ success: true, ...result });
+  } catch (error) {
+    return cApiError(c, "Failed to fetch enforcement actions", error);
+  }
+});
+
+/**
+ * GET /admin/trust-safety/users/:userId/dossier
+ * Fetches deep forensic user dossier including trust profile, active & historical actions,
+ * violation events, velocity stats, and reports against the user.
+ */
+router.get("/trust-safety/users/:userId/dossier", requireAuth, requirePermission("users"), async (c) => {
+  try {
+    const { userId } = c.req.param();
+    const dossier = await getUserForensicDossier(userId);
+    if (!dossier) {
+      return cNotFoundError(c, "User not found");
+    }
+    return c.json({ success: true, dossier });
+  } catch (error) {
+    return cApiError(c, "Failed to fetch user forensic dossier", error);
+  }
+});
+
+/**
+ * POST /admin/trust-safety/users/:userId/enforce
+ * Applies manual disciplinary enforcement action to a user.
+ */
+router.post("/trust-safety/users/:userId/enforce", requireAuth, requirePermission("users"), async (c) => {
+  try {
+    const { userId } = c.req.param();
+    const body = await c.req.json<{
+      action: EnforcementAction;
+      violationType: ViolationType;
+      severity: ViolationSeverity;
+      reason: string;
+      internalNotes?: string;
+      durationHours?: number;
+    }>();
+    const adminId = c.get("userId")!;
+
+    if (!body.action || !body.violationType || !body.severity || !body.reason) {
+      return cValidationError(c, "Missing required fields: action, violationType, severity, and reason are required");
+    }
+
+    const expiresAt = body.durationHours
+      ? new Date(Date.now() + body.durationHours * 60 * 60 * 1000)
+      : null;
+
+    const action = await applyEnforcementAction({
+      userId,
+      action: body.action,
+      violationType: body.violationType,
+      severity: body.severity,
+      reason: body.reason,
+      internalNotes: body.internalNotes,
+      createdBy: adminId,
+      expiresAt,
+    });
+
+    return c.json({ success: true, action });
+  } catch (error) {
+    return cApiError(c, "Failed to apply enforcement action", error);
+  }
+});
+
+/**
+ * PATCH /admin/trust-safety/actions/:actionId/revoke
+ * Manually revokes an active enforcement action.
+ */
+router.patch("/trust-safety/actions/:actionId/revoke", requireAuth, requirePermission("users"), async (c) => {
+  try {
+    const { actionId } = c.req.param();
+    const body = await c.req.json<{ reviewNotes?: string }>().catch(() => ({ reviewNotes: undefined }));
+    const adminId = c.get("userId")!;
+
+    const action = await revokeEnforcementAction(actionId, adminId, body.reviewNotes);
+    if (!action) {
+      return cNotFoundError(c, "Enforcement action not found");
+    }
+    return c.json({ success: true, action });
+  } catch (error) {
+    return cApiError(c, "Failed to revoke enforcement action", error);
+  }
+});
+
+/**
+ * GET /admin/trust-safety/appeals
+ * Lists moderation appeals queue with filtering and pagination.
+ */
+router.get("/trust-safety/appeals", requireAuth, requirePermission("users"), async (c) => {
+  try {
+    const query = c.req.query();
+    const result = await getAdminModerationAppeals({
+      status: query.status,
+      search: query.search,
+      limit: query.limit ? Number(query.limit) : undefined,
+      offset: query.offset ? Number(query.offset) : undefined,
+    });
+    return c.json({ success: true, ...result });
+  } catch (error) {
+    return cApiError(c, "Failed to fetch moderation appeals", error);
+  }
+});
+
+/**
+ * POST /admin/trust-safety/appeals/:appealId/resolve
+ * Resolves a user's moderation appeal (approve with auto-unban + apology credits, or reject).
+ */
+router.post("/trust-safety/appeals/:appealId/resolve", requireAuth, requirePermission("users"), async (c) => {
+  try {
+    const { appealId } = c.req.param();
+    const body = await c.req.json<{
+      decision: "approved" | "rejected";
+      adminNotes?: string | null;
+      grantApologyCredits?: boolean;
+      apologyCreditAmount?: number;
+    }>();
+    const adminId = c.get("userId")!;
+
+    if (!body.decision || !["approved", "rejected"].includes(body.decision)) {
+      return cValidationError(c, "Invalid decision. Must be 'approved' or 'rejected'");
+    }
+
+    const appeal = await resolveAdminModerationAppeal(appealId, body, adminId);
+    return c.json({ success: true, appeal });
+  } catch (error) {
+    return cApiError(c, "Failed to resolve moderation appeal", error);
+  }
+});
+
 export default router;
+
