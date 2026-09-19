@@ -27,7 +27,7 @@ export const XENDIT_CONFIG = {
   enabled: process.env.XENDIT_ENABLED === "true",
 
   secretKey: process.env.XENDIT_SECRET_KEY || "",
-  webhookToken: process.env.XENDIT_WEBHOOK_TOKEN || "",
+  webhookToken: process.env.XENDIT_WEBHOOK_TOKEN || process.env.XENDIT_WEBHOOK_VERIFICATION_TOKEN || "",
 
   /** Fixed USD → IDR rate (update when FX moves materially) */
   usdToIdrRate: parseInt(process.env.XENDIT_USD_TO_IDR_RATE || "15500", 10),

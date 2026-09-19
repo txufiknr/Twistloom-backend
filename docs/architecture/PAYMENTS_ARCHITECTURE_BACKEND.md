@@ -672,7 +672,7 @@ For creator payouts, Twistloom integrates Xendit Single Disbursements (`POST htt
    - Disbursement simulations: return a mock payload with `status: "PENDING"`.
 3. **Disbursement Webhook Reconciliation**:
    - Endpoint: `POST /payments/xendit/disbursement-webhook`.
-   - Validates `x-callback-token` against `XENDIT_WEBHOOK_VERIFICATION_TOKEN`.
+   - Validates `x-callback-token` against `XENDIT_WEBHOOK_TOKEN` (alias: `XENDIT_WEBHOOK_VERIFICATION_TOKEN`).
    - On `COMPLETED`: finalizes `pendingAmount` $\to$ `withdrawnAmount`, marks payout status `completed`, and records an audit event in `creator_payout_events`.
    - On `FAILED`: atomically restores funds from `pendingAmount` $\to$ `availableAmount`, records failure code and status `failed`, and logs the audit event.
 
@@ -1099,9 +1099,12 @@ Twistloom uses a composite string similarity engine combining:
 2. **Jaro-Winkler distance:** Measures transposition and edit distance with prefix scaling ($p = 0.1$).
 3. **Token intersection (Jaccard similarity):** Tokenizes names into word sets to account for reversed names (e.g. "Budi Santoso" vs "Santoso Budi").
 4. **Verification Thresholds:**
-   - $\ge 0.85$ (High Confidence): Auto-verified instantly.
-   - $0.70 - 0.84$ (Medium Confidence): Accepted with verified status.
-   - $< 0.70$ (Low Confidence): Flagged as `requires_manual_review` or rejected.
+   - $\ge 0.85$ (High Confidence): Auto-verified instantly (`is_verified = true`, `payout_verified = true`).
+   - $0.60 - 0.84$ (Medium Confidence): Flagged for admin verification (`is_verified = false`, `requires_manual_review`) and routed to the Admin KYC review queue.
+   - $< 0.60$ (Low Confidence): Rejected immediately with `NAME_MISMATCH`.
+5. **Indonesian Banking Name Normalization:**
+   - Prefix expansion: `MOH` / `MOHD` / `MD` $\to$ `MUHAMMAD`, `ST` $\to$ `SITI`.
+   - Academic & honorific title stripping: `S.Kom`, `S.E.`, `S.H.`, `M.M.`, `Dr.`, `Ir.`, etc.
 
 ### 17.3 Xendit Account Inquiry Switch & Local Dev Fallback
 
@@ -1131,5 +1134,31 @@ All verification attempts write immutable audit records to `creator_kyc_verifica
 
 ---
 
-*Last updated: September 2026 (Phase 1 & 2 Creator Payout Verification, AES-256 encryption, blind index Sybil prevention, Xendit local dev fallback, and KYC audit ledger complete. Companion to frontend doc: `PAYMENTS_ARCHITECTURE_FRONTEND.md`)*
+## 18. Automated Disbursement Pipeline & Global Tax Compliance
+
+### 18.1 Disbursement State Machine & Concurrency Safeguards
+
+Disbursements execute through an asynchronous, fault-tolerant state machine in `services/disbursement.ts`:
+1. **Initiation (`initiatePayout`):**
+   - Atomically deducts `creatorWallets.availableAmount` and credits `creatorWallets.pendingAmount` with row-level locks (`SELECT ... FOR UPDATE`).
+   - Validates that creator's tax profile is verified (`status === 'verified'`) and unexpired (`expiresAt`).
+   - Deducts statutory or treaty withholding tax as payout fee (`resolveWithholdingRate`).
+   - Binds `payoutMethodId` explicitly to `creatorPayouts`.
+2. **Worker Batch Processing (`processPendingPayouts`):**
+   - Locks pending payouts to `processing` state in DB with row-level locking.
+   - Decrypts beneficiary account number via Web Crypto AES-256-GCM.
+   - Makes external HTTP call (`createXenditDisbursement`) **outside** the DB transaction with deterministic idempotency keys (`tl_po_${payoutId}_att_${attempt}`).
+   - Automatically detects stuck payouts in `processing` state for $> 15$ minutes and retries dispatch idempotently.
+3. **Webhook Reconciliation (`handleXenditDisbursementWebhook`):**
+   - Validates `x-callback-token` header and parses external UUID safely.
+   - On `COMPLETED`: finalizes `pendingAmount` $\to$ `withdrawnAmount` and marks payout `completed`.
+   - On `FAILED`: restores `pendingAmount` $\to$ `availableAmount` with row locks and marks payout `failed`.
+4. **Planned Enhancements:**
+   - Stripe Connect Transfers integration for automated global USD disbursements.
+   - Dynamic hold tiering (reducing hold period from 14 days to 7 days for trusted creators with $> \$5,000$ volume).
+   - Negative balance clawback recovery engine for reader chargebacks and dispute resolution.
+
+---
+
+*Last updated: September 2026 (Phase 1 & 2 Creator Payout Verification, AES-256 encryption with v1 key versioning, blind index Sybil prevention, Xendit local dev fallback, KYC audit ledger, and automated disbursement pipeline complete. Companion to frontend doc: `PAYMENTS_ARCHITECTURE_FRONTEND.md`)*
 

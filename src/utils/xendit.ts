@@ -206,7 +206,7 @@ export function isXenditConfigured(): boolean {
  * @param callbackToken - Value of `x-callback-token` request header
  */
 export function verifyXenditCallbackToken(callbackToken: string | undefined | null): boolean {
-  const expected = XENDIT_CONFIG.webhookToken || process.env.XENDIT_WEBHOOK_TOKEN;
+  const expected = XENDIT_CONFIG.webhookToken || process.env.XENDIT_WEBHOOK_TOKEN || process.env.XENDIT_WEBHOOK_VERIFICATION_TOKEN;
   if (!expected || !callbackToken) return false;
   return callbackToken === expected;
 }
