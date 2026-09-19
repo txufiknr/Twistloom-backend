@@ -178,7 +178,7 @@ import { cancelGitHubWorkflowRuns } from "../utils/github-workflow.js";
 import { requireEnv } from "../utils/env.js";
 import type { UserComment } from "../types/user.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
-import { MAX_CONCURRENT_GENERATIONS, AI_VALIDATION_TIMEOUT_MS, BOOK_CREATION_PROMPT_MIN_CHARS } from "../config/book-creation.js";
+import { getMaxConcurrentGenerations, AI_VALIDATION_TIMEOUT_MS, BOOK_CREATION_PROMPT_MIN_CHARS } from "../config/book-creation.js";
 import { BOOK_CREATION_RATE_LIMIT, BOOK_STREAM_RATE_LIMIT, BOOK_ASYNC_RATE_LIMIT, BOOK_PROMPT_RATE_LIMIT, ACTION_HINT_RATE_LIMIT, CUSTOM_ACTION_PREVIEW_RATE_LIMIT, CUSTOM_ACTION_SUBMIT_RATE_LIMIT, COMPANION_ASK_RATE_LIMIT } from "../config/ai-rate-limits.js";
 import { isValidReactionEmoji, REACTION_IDS, reactionIdList, REACTION_EMOJI_MAP } from "../config/reactions.js";
 import { generateRandomCharacter } from "../utils/characters.js";
@@ -199,9 +199,18 @@ const STEPS_WITH_FIRST_PAGE: readonly string[] = [
 
 /**
  * Checks whether the user has reached the concurrent generation limit.
- * If so, responds with 429 and returns true.
+ * If so, responds with 429 using cRateLimitError and returns the Response.
+ * VIP users are granted double capacity (10 vs 5).
+ * Accepts an optional pre-fetched isVip boolean to avoid redundant DB roundtrips.
  */
-async function isConcurrentGenerationLimitReached(userId: string, c: Context<AppEnv>): Promise<boolean> {
+async function checkConcurrentGenerationLimit(
+  userId: string,
+  c: Context<AppEnv>,
+  isVipParam?: boolean
+): Promise<Response | null> {
+  const isVip = isVipParam !== undefined ? isVipParam : await hasActiveVipSubscription(userId);
+  const maxAllowed = getMaxConcurrentGenerations(isVip);
+
   const [result] = await dbRead
     .select({ count: sql<number>`COUNT(*)::int` })
     .from(bookGenerations)
@@ -212,15 +221,14 @@ async function isConcurrentGenerationLimitReached(userId: string, c: Context<App
       ),
     );
 
-  if (result.count >= MAX_CONCURRENT_GENERATIONS) {
-    cRateLimitError(
+  if (result.count >= maxAllowed) {
+    return cRateLimitError(
       c,
-      `You can only have ${MAX_CONCURRENT_GENERATIONS} concurrent book generations. Please wait for existing generations to complete.`,
+      `You can only have ${maxAllowed} concurrent book generations. Please wait for existing generations to complete.`,
     );
-    return true;
   }
 
-  return false;
+  return null;
 }
 
 /**
@@ -267,8 +275,12 @@ router.post("/", requireAuth, rateLimit(BOOK_CREATION_RATE_LIMIT), async (c) => 
     const { theme, mcCandidate, generateCoverImage, advancedOptions, mode } = c.get("body");
     const userId = c.get("userId")!;
 
+    // Fetch VIP status once upfront to avoid redundant queries
+    const isVip = await hasActiveVipSubscription(userId);
+
     // Enforce concurrent generation limit
-    if (await isConcurrentGenerationLimitReached(userId, c)) return;
+    const limitErr = await checkConcurrentGenerationLimit(userId, c, isVip);
+    if (limitErr) return limitErr;
     
     // Use shared core logic (without progress callback for synchronous response)
     const result = await createBookCore(
@@ -281,6 +293,7 @@ router.post("/", requireAuth, rateLimit(BOOK_CREATION_RATE_LIMIT), async (c) => 
         advancedOptions,
         mode,
         context: "book_creation",
+        isVip,
       },
       // No progress callback for POST endpoint (synchronous response)
     );
@@ -475,8 +488,12 @@ router.post("/stream", requireAuth, rateLimit(BOOK_STREAM_RATE_LIMIT), async (c)
     const { theme, mcCandidate, generateCoverImage, advancedOptions, mode } = c.get("body");
     const userId = c.get("userId")!;
 
+    // Fetch VIP status once upfront to avoid redundant queries
+    const isVip = await hasActiveVipSubscription(userId);
+
     // Enforce concurrent generation limit
-    if (await isConcurrentGenerationLimitReached(userId, c)) return;
+    const limitErr = await checkConcurrentGenerationLimit(userId, c, isVip);
+    if (limitErr) return limitErr;
 
     return streamSSE(c, async (stream) => {
       // Create progress callback for SSE events
@@ -495,6 +512,7 @@ router.post("/stream", requireAuth, rateLimit(BOOK_STREAM_RATE_LIMIT), async (c)
           advancedOptions,
           mode,
           context: "book_creation_stream",
+          isVip,
         },
         onProgress
       );
@@ -561,8 +579,12 @@ router.post('/async', requireAuth, rateLimit(BOOK_ASYNC_RATE_LIMIT), requireNotS
     const startTime = Date.now();
     console.log(`[POST /api/books/async] 🚀 Starting async book creation for user ${userId}: "${themePreview}"`);
 
+    // Fetch VIP status once upfront to avoid redundant queries across limit check and validation
+    const isVip = await hasActiveVipSubscription(userId);
+
     // ── STEP 0: Enforce concurrent generation limit ─────────────────────────
-    if (await isConcurrentGenerationLimitReached(userId, c)) return;
+    const limitErr = await checkConcurrentGenerationLimit(userId, c, isVip);
+    if (limitErr) return limitErr;
 
     // ── STEP 0b: Validate + resolve book creation mode ─────────────────────
     const mode = bookModes.includes(requestedMode) ? requestedMode : 'interactive';
@@ -587,7 +609,8 @@ router.post('/async', requireAuth, rateLimit(BOOK_ASYNC_RATE_LIMIT), requireNotS
       advancedOptions,
       isOriginal: false,
       aiValidationTimeout: AI_VALIDATION_TIMEOUT_MS,
-      onProgress: undefined // No SSE progress callback for async route
+      onProgress: undefined, // No SSE progress callback for async route
+      isVip,
     });
 
     console.log(`[POST /api/books/async] ✅ Structural + heuristic validation passed`);
@@ -1328,7 +1351,8 @@ router.post('/:bookId/retry', requireAuth, async (c) => {
     }
 
     // Enforce concurrent generation limit
-    if (await isConcurrentGenerationLimitReached(userId, c)) return;
+    const limitErr = await checkConcurrentGenerationLimit(userId, c);
+    if (limitErr) return limitErr;
 
     // Consume credits atomically with resetting the generation state.
     // Credits were refunded when the generation failed or was cancelled,
@@ -6045,8 +6069,9 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
     }
 
     // Parse and validate body
+    const isVip = await hasActiveVipSubscription(userId);
     const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
-    const validation = validateCompanionQuestion(typeof body?.question === "string" ? body.question : "");
+    const validation = validateCompanionQuestion(typeof body?.question === "string" ? body.question : "", isVip);
     if (!validation.valid) {
       return cValidationError(c, validation.reason || "Invalid question");
     }
@@ -6533,8 +6558,9 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(
       return cValidationError(c, "Invalid pageId: must be a valid UUID");
     }
 
+    const isVip = await hasActiveVipSubscription(userId);
     const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
-    const validation = validateCompanionQuestion(typeof body?.question === "string" ? body.question : "");
+    const validation = validateCompanionQuestion(typeof body?.question === "string" ? body.question : "", isVip);
     if (!validation.valid) {
       return cValidationError(c, validation.reason || "Invalid question");
     }
@@ -7899,7 +7925,8 @@ router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, rateLimi
     }
 
     // Gate 1 — Security filter
-    const gate1Result = runGate1(text);
+    const isVip = await hasActiveVipSubscription(userId);
+    const gate1Result = runGate1(text, isVip);
     if (!gate1Result.passed) {
       if (gate1Result.category === 'injection_attempt' || gate1Result.category === 'denylist') {
         recordViolationEvent({
@@ -8114,7 +8141,8 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit
     }
 
     // Gate 1 — Security filter
-    const gate1Result = runGate1(text);
+    const isVip = await hasActiveVipSubscription(userId);
+    const gate1Result = runGate1(text, isVip);
     if (!gate1Result.passed) {
       if (gate1Result.category === 'injection_attempt' || gate1Result.category === 'denylist') {
         recordViolationEvent({
@@ -8752,7 +8780,13 @@ router.post("/:identifier/export", requireAuth, async (c) => {
     const enrichedBook = await getEnrichedBook(bookIdentifier, userId, c.get("headerLanguage"));
     if (!enrichedBook) return cNotFoundError(c, "Book not found");
 
-    // 2. Strict Ownership Gate: Only the story author can export manuscripts
+    // 2. VIP Subscription Gate: Manuscript Studio export is exclusive to VIP members
+    const isVip = await hasActiveVipSubscription(userId);
+    if (!isVip) {
+      return cForbiddenError(c, "Manuscript Studio export is an exclusive VIP perk.");
+    }
+
+    // 3. Strict Ownership Gate: Only the story author can export manuscripts
     if (!enrichedBook.isMine && enrichedBook.userId !== userId) {
       return cForbiddenError(c, "Only the author can export manuscripts for this story.");
     }

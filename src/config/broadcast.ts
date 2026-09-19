@@ -17,8 +17,11 @@ import type { BroadcastRejectReason } from "../types/broadcast.js";
 /** Minimum characters for a broadcast message (after sanitization). */
 export const BROADCAST_MIN_LENGTH = 3;
 
-/** Maximum characters for a broadcast message (hard cap; design target 140). */
+/** Maximum characters for a broadcast message (hard cap; design target 140, VIP 280). */
 export const BROADCAST_MAX_LENGTH = 140;
+export const BROADCAST_MAX_LENGTH_VIP = 280;
+export const getMaxBroadcastLength = (isVip: boolean): number =>
+  isVip ? BROADCAST_MAX_LENGTH_VIP : BROADCAST_MAX_LENGTH;
 
 // ── Rate limits / scheduling ────────────────────────────────────────────────
 

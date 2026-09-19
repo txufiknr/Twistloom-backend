@@ -5,22 +5,83 @@ import type { VerificationConfidence } from "../types/wallet.js";
  * and KYC name verification.
  */
 
+const INDONESIAN_PREFIX_HONORIFICS = new Set([
+  "dr",
+  "drs",
+  "dra",
+  "ir",
+  "prof",
+  "h",
+  "hj",
+  "kh",
+]);
+
+const INDONESIAN_SUFFIX_TITLES = new Set([
+  "st",
+  "sp",
+  "ss",
+  "se",
+  "sh",
+  "skom",
+  "kom",
+  "mm",
+  "mba",
+  "spd",
+  "ssi",
+  "skep",
+  "msi",
+]);
+
 /**
  * Normalizes a human or corporate name:
  * - Converts to lowercase
  * - Strips diacritics/accents (e.g., é -> e)
  * - Removes punctuation and non-alphanumeric chars except whitespace
+ * - Expands standard Indonesian banking abbreviations (Moh/Md -> Muhammad, St -> Siti, etc.)
+ * - Strips common academic and religious honorific titles (Dr, Ir, SE, SH, SKom, etc.)
  * - Collapses repeated whitespace
  */
 export function normalizeName(name: string): string {
   if (!name) return "";
-  return name
+  const cleaned = name
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
+
+  const tokens = cleaned.split(" ").filter(Boolean);
+  const normalizedTokens: string[] = [];
+
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+
+    // Strip prefix honorifics (e.g. Dr., Ir., Prof., H., Hj.)
+    if (i === 0 && INDONESIAN_PREFIX_HONORIFICS.has(token)) {
+      continue;
+    }
+
+    // Strip suffix degree titles (e.g. S.Kom, S.E., S.H., M.M., M.B.A.)
+    if (i > 0 && INDONESIAN_SUFFIX_TITLES.has(token)) {
+      continue;
+    }
+
+    // Expand standard Indonesian name abbreviations
+    if (token === "st" && i === 0 && tokens.length > 1) {
+      normalizedTokens.push("siti");
+    } else if (token === "moh" || token === "mohd" || token === "md" || token === "muh") {
+      normalizedTokens.push("muhammad");
+    } else if (token === "abd") {
+      normalizedTokens.push("abdul");
+    } else if (token === "ibn") {
+      normalizedTokens.push("ibnu");
+    } else {
+      normalizedTokens.push(token);
+    }
+  }
+
+  return normalizedTokens.join(" ");
 }
 
 /**
@@ -127,9 +188,9 @@ export interface NameMatchResult {
 /**
  * Calculates a composite name match score combining Jaro-Winkler and Token Intersection.
  * Thresholds:
- * - score >= 0.85: "high" confidence match
- * - score >= 0.70: "medium" confidence match
- * - score < 0.70: "low" confidence (no match)
+ * - score >= 0.85: "high" confidence match (auto-approved)
+ * - score >= 0.60: "medium" confidence match (requires manual review)
+ * - score < 0.60: "low" confidence (rejected)
  */
 export function calculateNameMatchScore(
   userName: string,
@@ -145,7 +206,7 @@ export function calculateNameMatchScore(
 
   if (roundedScore >= 0.85) {
     return { score: roundedScore, isMatch: true, confidence: "high" };
-  } else if (roundedScore >= 0.7) {
+  } else if (roundedScore >= 0.60) {
     return { score: roundedScore, isMatch: true, confidence: "medium" };
   } else {
     return { score: roundedScore, isMatch: false, confidence: "low" };

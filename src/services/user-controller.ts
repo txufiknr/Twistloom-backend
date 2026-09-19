@@ -22,7 +22,8 @@ import { uploadUserImage } from './image.js';
 import { cApiError, cNotFoundError, cValidationError } from '../utils/error.js';
 import { sanitizeUsername } from '../utils/username.js';
 import { invalidateUserProfileCache } from './cache.js';
-import { REFERRAL_BONUS, BETA_TESTER_REWARD_CREDITS } from '../config/credits.js';
+import { REFERRAL_BONUS, REFERRAL_BONUS_VIP_REFERRER, BETA_TESTER_REWARD_CREDITS, getReferralBonus } from '../config/credits.js';
+import { hasActiveVipSubscription } from './subscription.js';
 import { CURRENT_TERMS_VERSION } from '../config/legal.js';
 import { awardCredits } from './credits.js';
 import type { Context } from 'hono';
@@ -96,7 +97,7 @@ export function getEnrichedUserSelect() {
     referralRewards: sql<number>`COALESCE((
       SELECT SUM(credits) FROM transactions
       WHERE user_id = users.user_id AND type = 'reward' AND context = 'referral_bonus' AND metadata->>'referredUserId' IS NOT NULL
-    ), COALESCE(${userCounters.referredUsers}, 0) * ${REFERRAL_BONUS})`,
+    ), COALESCE(${userCounters.referredUsers}, 0) * (CASE WHEN ${users.tier} = 'vip' THEN ${REFERRAL_BONUS_VIP_REFERRER} ELSE ${REFERRAL_BONUS} END))`,
     followersCount: sql<number>`COALESCE(${userCounters.followersCount},0)`,
     followingCount: sql<number>`COALESCE(${userCounters.followingCount},0)`,
     // Comments the user wrote (top-level, parent_comment_id IS NULL) — SSOT-backed
@@ -589,21 +590,23 @@ export async function tryAwardReferralBonus(userId: string): Promise<boolean> {
       }
 
       const rid = claimed[0].referrerId;
+      const isVipReferrer = await hasActiveVipSubscription(rid);
+      const { referrer: referrerBonus, referee: refereeBonus } = getReferralBonus(isVipReferrer);
 
-      await awardCredits(rid, REFERRAL_BONUS, {
+      await awardCredits(rid, referrerBonus, {
         type: 'reward',
         notificationType: 'referral_bonus',
-        notificationTitle: 'Referral Bonus',
-        notificationMessage: `You received ${REFERRAL_BONUS} credits for referring a new user`,
-        metadata: { referredUserId: userId },
+        notificationTitle: isVipReferrer ? 'VIP Referral Bonus' : 'Referral Bonus',
+        notificationMessage: `You received ${referrerBonus} credits for referring a new user`,
+        metadata: { referredUserId: userId, isVipReferrer },
         context: 'referral_bonus',
         tx,
       });
-      await awardCredits(userId, REFERRAL_BONUS, {
+      await awardCredits(userId, refereeBonus, {
         type: 'reward',
         notificationType: 'referral_bonus',
-        notificationTitle: 'Referral Bonus',
-        notificationMessage: `You received ${REFERRAL_BONUS} credits for using a referral code`,
+        notificationTitle: 'Referral Welcome Bonus',
+        notificationMessage: `You received ${refereeBonus} credits for using a referral code`,
         metadata: { referrerId: rid },
         context: 'referral_bonus',
         tx,

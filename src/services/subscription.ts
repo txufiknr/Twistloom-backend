@@ -31,12 +31,13 @@
 
 import { dbWrite, dbRead } from "../db/client.js";
 import { subscriptions, subscriptionTransactions, users, userNotifications } from "../db/schema.js";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray, sql } from "drizzle-orm";
 import { addCredits } from "./credits.js";
 import { VIP_BENEFITS, VIP_TRIAL } from "../config/subscription.js";
 import type { SubscriptionStatus } from "../types/subscription.js";
 import { PAYMENT_GATEWAY, type PaymentGateway } from "../types/payment.js";
 import { isUniqueConstraintError } from "../utils/retry.js";
+import { invalidateUserProfileCache } from "./cache.js";
 
 export type { PaymentGateway };
 
@@ -397,6 +398,28 @@ export async function cancelSubscription(params: {
 }
 
 /**
+ * Canonical SSOT helper to check if a user record has active, unexpired VIP status.
+ *
+ * Enforces both:
+ * 1. user.tier === 'vip'
+ * 2. user.vipExpiresAt is present and in the future
+ *
+ * Eliminates ad-hoc, divergent checks across backend services.
+ *
+ * @param user - User object or slice with tier and vipExpiresAt
+ * @returns true if user is currently an active VIP
+ */
+export function isUserVipActive(
+  user: { tier?: string | null; vipExpiresAt?: Date | string | null } | null | undefined
+): boolean {
+  if (!user || user.tier !== 'vip' || !user.vipExpiresAt) {
+    return false;
+  }
+  const expiry = user.vipExpiresAt instanceof Date ? user.vipExpiresAt : new Date(user.vipExpiresAt);
+  return expiry.getTime() > Date.now();
+}
+
+/**
  * Checks if user has active VIP subscription
  *
  * A user has active VIP if:
@@ -422,21 +445,14 @@ export async function hasActiveVipSubscription(userId: string): Promise<boolean>
     .limit(1);
 
   if (user.length === 0) return false;
-
-  const userData = user[0];
-
-  // Check if user is VIP and subscription hasn't expired
-  if (userData.tier !== 'vip') return false;
-  if (!userData.vipExpiresAt) return false;
-
-  return new Date(userData.vipExpiresAt) > new Date();
+  return isUserVipActive(user[0]);
 }
 
 /**
- * Downgrades user from VIP to standard (called by cron job)
+ * Downgrades user from VIP to standard (called by cron job or webhook expiry)
  *
- * Removes VIP status and clears subscription reference.
- * Called when a VIP subscription has expired.
+ * Removes VIP status, synchronizes the active subscription record, and clears
+ * cached profile data so stale VIP privileges do not linger.
  *
  * @param userId - User ID to downgrade
  *
@@ -446,13 +462,49 @@ export async function hasActiveVipSubscription(userId: string): Promise<boolean>
  * ```
  */
 export async function downgradeUserFromVip(userId: string): Promise<void> {
-  await dbWrite.update(users)
-    .set({
-      tier: 'standard',
-      vipExpiresAt: null,
-      subscriptionId: null,
+  const [currentUser] = await dbRead
+    .select({
+      subscriptionId: users.subscriptionId,
+      username: users.username,
     })
-    .where(eq(users.userId, userId));
+    .from(users)
+    .where(eq(users.userId, userId))
+    .limit(1);
+
+  await dbWrite.transaction(async (tx) => {
+    // 1. Downgrade user record and revoke VIP obsidian avatar frame if equipped
+    await tx.update(users)
+      .set({
+        tier: 'standard',
+        vipExpiresAt: null,
+        subscriptionId: null,
+        avatarFrame: sql`CASE WHEN ${users.avatarFrame} = 'obsidian' THEN NULL ELSE ${users.avatarFrame} END`,
+      })
+      .where(eq(users.userId, userId));
+
+    // 2. Synchronize current subscription row if exists and currently active/trialing
+    if (currentUser?.subscriptionId) {
+      await tx.update(subscriptions)
+        .set({
+          status: 'canceled',
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(subscriptions.id, currentUser.subscriptionId),
+          inArray(subscriptions.status, ['active', 'trialing'])
+        ));
+    }
+  });
+
+  // 3. Invalidate cached profile (both by userId and username identifier) so stale 'vip' tier does not linger
+  try {
+    await invalidateUserProfileCache(userId);
+    if (currentUser?.username) {
+      await invalidateUserProfileCache(`username:${currentUser.username}`);
+    }
+  } catch (cacheError) {
+    console.warn(`[subscription] ⚠️ Failed to invalidate user profile cache for ${userId}:`, cacheError);
+  }
 }
 
 /**

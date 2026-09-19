@@ -1,6 +1,6 @@
 import { CUSTOM_ACTION_SECURITY_PATTERNS } from "../config/custom-actions.js";
 import { MAX_PROMPT_APPEND_LENGTH } from "../config/book-creation.js";
-import { COMPANION_ASK_MIN_CHARS, COMPANION_ASK_MAX_CHARS } from "../config/story.js";
+import { COMPANION_ASK_MIN_CHARS, getMaxCompanionAskChars } from "../config/story.js";
 import { cleanText, removeControlCharacters } from "./text-processing.js";
 
 // ============================================================================
@@ -150,28 +150,34 @@ export function sanitizeCompanionQuestion(raw: string | null | undefined): strin
     .replace(/\s+/g, ' ')
     .trim();
 
-  if (cleaned.length > COMPANION_ASK_MAX_CHARS) {
-    cleaned = cleaned.slice(0, COMPANION_ASK_MAX_CHARS);
-  }
-
   return cleaned;
 }
 
 /**
  * Validates a companion question for malicious injection patterns and character bounds.
  */
-export function validateCompanionQuestion(raw: string | null | undefined): { valid: boolean; sanitized: string; reason?: string } {
+export function validateCompanionQuestion(raw: string | null | undefined, isVip: boolean = false): { valid: boolean; sanitized: string; reason?: string } {
   const sanitized = sanitizeCompanionQuestion(raw);
 
   if (!sanitized) {
     return { valid: false, sanitized: '', reason: 'Question is required' };
   }
 
+  const maxChars = getMaxCompanionAskChars(isVip);
+
   if (sanitized.length < COMPANION_ASK_MIN_CHARS) {
     return {
       valid: false,
       sanitized,
       reason: `Question must be at least ${COMPANION_ASK_MIN_CHARS} characters`,
+    };
+  }
+
+  if (sanitized.length > maxChars) {
+    return {
+      valid: false,
+      sanitized,
+      reason: `Question must be at most ${maxChars} characters`,
     };
   }
 

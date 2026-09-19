@@ -608,6 +608,9 @@ export const PEN_DRAFT_CAST_LIMIT = 20;
  * parent (the would-be page 1) counts against its own bucket.
  */
 export const PEN_DRAFTS_PER_PARENT = 5;
+export const PEN_DRAFTS_PER_PARENT_VIP = 15;
+export const getMaxPenDrafts = (isVip: boolean): number =>
+  isVip ? PEN_DRAFTS_PER_PARENT_VIP : PEN_DRAFTS_PER_PARENT;
 /** Maximum length of a draft's editorial `label` (draft shelf, D-3). */
 export const PEN_DRAFT_LABEL_MAX_LENGTH = 120;
 /** Maximum length of a draft's author-authored choice text (`actionText`, D-4 core). */
@@ -778,6 +781,10 @@ export const PEN_ENDING_OUTLINE_MAX_ITEMS = 20;
  */
 export const COMPANION_ASK_MIN_CHARS = 10;
 export const COMPANION_ASK_MAX_CHARS = 150;
+export const COMPANION_ASK_MAX_CHARS_VIP = 400;
+
+export const getMaxCompanionAskChars = (isVip: boolean): number =>
+  isVip ? COMPANION_ASK_MAX_CHARS_VIP : COMPANION_ASK_MAX_CHARS;
 
 /**
  * Companion answer cache: minimum Jaccard word-similarity (0–1) required for a

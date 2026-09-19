@@ -38,11 +38,16 @@ let cachedHmacKey: CryptoKey | null = null;
 async function getEncryptionKey(): Promise<CryptoKey> {
   if (cachedAesKey) return cachedAesKey;
 
+  const isProduction = process.env.NODE_ENV === "production";
   const hexKey = process.env.PII_ENCRYPTION_KEY_HEX?.trim();
   let rawKeyBytes: Uint8Array;
 
-  if (hexKey && hexKey.length === 64) {
+  if (hexKey && /^[0-9a-fA-F]{64}$/.test(hexKey)) {
     rawKeyBytes = hexToBytes(hexKey);
+  } else if (isProduction) {
+    throw new Error(
+      "FATAL SECURITY CONFIGURATION: PII_ENCRYPTION_KEY_HEX must be set to a valid 64-character hex string in production"
+    );
   } else {
     // Local development fallback derived from AUTH_SECRET via SHA-256
     const secret = process.env.AUTH_SECRET || "twistloom_dev_pii_encryption_secret_key_32b";
@@ -64,13 +69,23 @@ async function getEncryptionKey(): Promise<CryptoKey> {
 async function getBlindIndexHmacKey(): Promise<CryptoKey> {
   if (cachedHmacKey) return cachedHmacKey;
 
-  const salt =
-    process.env.PII_BLIND_INDEX_SALT?.trim() ||
-    (process.env.AUTH_SECRET ? `${process.env.AUTH_SECRET}_blind_salt` : "twistloom_dev_blind_salt");
+  const isProduction = process.env.NODE_ENV === "production";
+  const salt = process.env.PII_BLIND_INDEX_SALT?.trim();
+
+  let hmacSecret: string;
+  if (salt) {
+    hmacSecret = salt;
+  } else if (isProduction) {
+    throw new Error(
+      "FATAL SECURITY CONFIGURATION: PII_BLIND_INDEX_SALT must be set in production"
+    );
+  } else {
+    hmacSecret = process.env.AUTH_SECRET ? `${process.env.AUTH_SECRET}_blind_salt` : "twistloom_dev_blind_salt";
+  }
 
   cachedHmacKey = await crypto.subtle.importKey(
     "raw",
-    new TextEncoder().encode(salt),
+    new TextEncoder().encode(hmacSecret),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"]
@@ -83,7 +98,7 @@ async function getBlindIndexHmacKey(): Promise<CryptoKey> {
 
 /**
  * Encrypts sensitive PII (like raw bank account numbers) using standard Web Crypto AES-256-GCM.
- * Output format: `ivHex:authTagHex:ciphertextHex`
+ * Output format: `v1:ivHex:authTagHex:ciphertextHex`
  */
 export async function encryptPII(plainText: string): Promise<string> {
   if (!plainText) return "";
@@ -103,20 +118,30 @@ export async function encryptPII(plainText: string): Promise<string> {
   const ciphertextBytes = encryptedWithTag.slice(0, -16);
   const authTagBytes = encryptedWithTag.slice(-16);
 
-  return `${bytesToHex(iv)}:${bytesToHex(authTagBytes)}:${bytesToHex(ciphertextBytes)}`;
+  return `v1:${bytesToHex(iv)}:${bytesToHex(authTagBytes)}:${bytesToHex(ciphertextBytes)}`;
 }
 
 /**
- * Decrypts sensitive PII formatted as `ivHex:authTagHex:ciphertextHex` using Web Crypto AES-256-GCM.
+ * Decrypts sensitive PII formatted as `v1:ivHex:authTagHex:ciphertextHex` (or legacy `ivHex:authTagHex:ciphertextHex`)
+ * using Web Crypto AES-256-GCM.
  */
 export async function decryptPII(encryptedPayload: string): Promise<string> {
   if (!encryptedPayload) return "";
   const parts = encryptedPayload.split(":");
-  if (parts.length !== 3) {
+  let ivHex: string;
+  let authTagHex: string;
+  let cipherHex: string;
+
+  if (parts.length === 4 && parts[0] === "v1") {
+    // Versioned format
+    [, ivHex, authTagHex, cipherHex] = parts;
+  } else if (parts.length === 3) {
+    // Legacy unversioned format
+    [ivHex, authTagHex, cipherHex] = parts;
+  } else {
     return encryptedPayload;
   }
 
-  const [ivHex, authTagHex, cipherHex] = parts;
   const iv = hexToBytes(ivHex);
   const authTag = hexToBytes(authTagHex);
   const cipher = hexToBytes(cipherHex);
@@ -173,3 +198,25 @@ export function maskAccountNumber(accountNumber: string): string {
   if (!last4) return "";
   return `••••${last4}`;
 }
+
+/**
+ * Compares two strings in constant time to prevent timing attacks.
+ * Uses bitwise XOR accumulation over byte representations.
+ * Completely runtime-agnostic (zero `node:crypto`).
+ */
+export function constantTimeEqual(a: string, b: string): boolean {
+  const encoder = new TextEncoder();
+  const aBuf = encoder.encode(a);
+  const bBuf = encoder.encode(b);
+
+  if (aBuf.byteLength !== bBuf.byteLength) {
+    return false;
+  }
+
+  let diff = 0;
+  for (let i = 0; i < aBuf.byteLength; i++) {
+    diff |= aBuf[i]! ^ bBuf[i]!;
+  }
+  return diff === 0;
+}
+

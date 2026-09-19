@@ -23,6 +23,7 @@ import { ACHIEVEMENT_REGISTRY } from '../config/achievements.js';
 import { addCredits } from './credits.js';
 import { logUserActivity } from './user.js';
 import { invalidateUserProfileCache } from './cache.js';
+import { isUserVipActive } from './subscription.js';
 import type { QuestCounterMetric, QuestDetector, QuestStatus, UserQuestState } from '../types/quests.js';
 
 /**
@@ -238,7 +239,7 @@ async function loadQuestMetrics(userId: string): Promise<QuestMetricSnapshot> {
     }
   }
 
-  const isVip = profile?.tier === 'vip' && (!profile.vipExpiresAt || profile.vipExpiresAt.getTime() > Date.now());
+  const isVip = isUserVipActive(profile);
 
   return {
     counters: {
@@ -478,9 +479,13 @@ export async function getUserQuests(userId: string): Promise<UserQuestState[]> {
       const state = stateMap.get(rule.id);
       const { current, threshold } = evaluateDetector(rule.detector, metrics);
       const status: QuestStatus = state?.status ?? 'in_progress';
-      const progressPercent = threshold > 0
-        ? Math.min(100, Math.round((current / threshold) * 100))
-        : 0;
+      // Completed/claimed quests always show 100% progress regardless of live
+      // metric drift — the DB status is authoritative once the goal is met.
+      const progressPercent = status === 'completed' || status === 'claimed'
+        ? 100
+        : threshold > 0
+          ? Math.min(100, Math.round((current / threshold) * 100))
+          : 0;
 
       return {
         id: rule.id,
@@ -556,7 +561,7 @@ export async function claimQuestReward(
         .where(eq(users.userId, userId))
         .limit(1);
 
-      const isVip = user?.tier === 'vip' && (!user.vipExpiresAt || user.vipExpiresAt.getTime() > Date.now());
+      const isVip = isUserVipActive(user);
       if (!isVip) {
         return { status: 'vip_required', creditsAwarded: 0, newBalance: user?.credits ?? 0 };
       }
@@ -660,7 +665,7 @@ export async function claimAllQuestRewards(
       .where(eq(users.userId, userId))
       .limit(1);
 
-    const isVip = user?.tier === 'vip' && (!user.vipExpiresAt || user.vipExpiresAt.getTime() > Date.now());
+    const isVip = isUserVipActive(user);
 
     const claimable = await tx
       .select({ questId: userQuests.questId })

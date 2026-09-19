@@ -418,7 +418,7 @@ export type InitializeBookParams = StoryPlan & {
   mode?: BookMode;
 };
 
-export type CreateBookParams = Omit<InitializeBookParams, 'aiComment' | 'language' | 'bookId' | 'tx'> & { context?: string; mode?: BookMode }
+export type CreateBookParams = Omit<InitializeBookParams, 'aiComment' | 'language' | 'bookId' | 'tx'> & { context?: string; mode?: BookMode; isVip?: boolean; };
 
 /**
  * Return type for initializeBook function

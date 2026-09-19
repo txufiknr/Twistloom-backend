@@ -42,6 +42,9 @@ export const THANKS_CONFIG = {
   usdCentsPerCredit: 6.45,
   /** Minimum USD cents convertible in a single transaction ($1.00 = 100 cents) */
   minConversionAmountUSD: 100,
+
+  /** Settlement & Risk Maturation Hold (days earnings are held in pending status before maturing to available) */
+  maturationHoldDays: 14,
 } as const;
 
 /**

@@ -1,4 +1,4 @@
-export type AchievementTier = 'bronze' | 'silver' | 'gold' | 'platinum';
+export type AchievementTier = 'bronze' | 'silver' | 'gold' | 'platinum' | 'obsidian';
 
 export type AchievementCategory =
   | 'multiverse'

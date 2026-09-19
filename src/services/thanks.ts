@@ -11,7 +11,7 @@
 import { eq, sql, and, count } from "drizzle-orm";
 import { dbRead, dbWrite } from "../db/client.js";
 import { creatorEarnings, creatorWallets, users, books, userNotifications } from "../db/schema.js";
-import { calculatePlatformFee, calculateCreatorAmount } from "../config/thanks.js";
+import { calculatePlatformFee, calculateCreatorAmount, THANKS_CONFIG } from "../config/thanks.js";
 import { XENDIT_CONFIG } from "../config/xendit.js";
 import { getErrorMessage } from "../utils/error.js";
 import { isUniqueConstraintError } from "../utils/retry.js";
@@ -122,10 +122,11 @@ export async function recordThanks(options: RecordThanksOptions): Promise<{ dupl
 
   const platformFee = calculatePlatformFee(settlementGross);
   const creatorAmount = calculateCreatorAmount(settlementGross);
+  const matureAt = new Date(Date.now() + THANKS_CONFIG.maturationHoldDays * 24 * 60 * 60 * 1000);
 
   try {
     await dbWrite.transaction(async (tx) => {
-      // 4. Insert normalized earnings record (source='thanks')
+      // 4. Insert normalized earnings record (source='thanks', settlement hold active)
       await tx.insert(creatorEarnings).values({
         creatorId,
         bookId,
@@ -146,7 +147,8 @@ export async function recordThanks(options: RecordThanksOptions): Promise<{ dupl
         stripeSessionId: sessionId,
         stripePaymentIntent: paymentIntentId,
         stripeEventId,
-        status: "completed",
+        status: "pending",
+        matureAt,
         message: message || null,
         metadata: {
           gateway,
@@ -155,18 +157,19 @@ export async function recordThanks(options: RecordThanksOptions): Promise<{ dupl
         },
       });
 
-      // 5. Upsert creator wallet (atomic increment in creator's settlement currency)
+      // 5. Upsert creator wallet (funds held in pendingAmount during 14-day maturation settlement hold)
       await tx
         .insert(creatorWallets)
         .values({
           creatorId,
-          availableAmount: creatorAmount,
+          availableAmount: 0,
+          pendingAmount: creatorAmount,
           currency: targetCurrency,
         })
         .onConflictDoUpdate({
           target: creatorWallets.creatorId,
           set: {
-            availableAmount: sql`${creatorWallets.availableAmount} + ${creatorAmount}`,
+            pendingAmount: sql`${creatorWallets.pendingAmount} + ${creatorAmount}`,
             updatedAt: new Date(),
           },
         });
@@ -189,7 +192,7 @@ export async function recordThanks(options: RecordThanksOptions): Promise<{ dupl
     const readerName = reader[0]?.name || "A reader";
     const bookTitle = book[0]?.title || "your story";
 
-    await dbRead.insert(userNotifications).values({
+    await dbWrite.insert(userNotifications).values({
       userId: creatorId,
       type: "thanks_received",
       title: "Thanks Received!",

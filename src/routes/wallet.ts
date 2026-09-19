@@ -23,8 +23,9 @@ import {
   convertBalanceToCredits,
 } from "../services/wallet.js";
 import { cApiError, cValidationError, getErrorMessage } from "../utils/error.js";
+import { getCreatorTaxProfile, saveCreatorTaxProfile, isValidCountryCode } from "../services/tax.js";
 import type { AppEnv } from "../hono/env.js";
-import type { EarningSource } from "../types/wallet.js";
+import type { EarningSource, SaveTaxProfileRequest } from "../types/wallet.js";
 
 const VALID_SOURCES: EarningSource[] = ["thanks", "revenue_share", "custom_action", "other"];
 
@@ -116,6 +117,21 @@ router.post("/withdraw", requireAuth, async (c) => {
     const msg = getErrorMessage(error);
     if (msg === "PAYOUT_NOT_VERIFIED") {
       return cValidationError(c, "Please set up your payout method first");
+    }
+    if (msg === "USD_PAYOUTS_UNSUPPORTED") {
+      return cValidationError(c, "Automated USD payouts via Stripe Connect Transfers are currently in planned development. Please contact support.");
+    }
+    if (msg === "TAX_PROFILE_VERIFICATION_REQUIRED") {
+      return cValidationError(c, "Tax certification profile is required prior to requesting a payout withdrawal");
+    }
+    if (msg === "TAX_PROFILE_EXPIRED") {
+      return cValidationError(c, "Your tax certification has expired. Please recertify your tax profile");
+    }
+    if (msg === "NO_VERIFIED_PAYOUT_METHOD") {
+      return cValidationError(c, "No verified payout method found for your account");
+    }
+    if (msg === "AMOUNT_TOO_LOW_AFTER_TAX") {
+      return cValidationError(c, "Available balance after tax withholding is below the minimum payout amount");
     }
     if (msg === "BELOW_MINIMUM") {
       const wallet = await getCreatorWallet(userId);
@@ -332,6 +348,69 @@ router.post("/payout-method", requireAuth, async (c) => {
       );
     }
     return cApiError(c, "Failed to save payout method", error);
+  }
+});
+
+// ── GET /wallet/tax-profile ─────────────────────────────────────────────────
+
+/**
+ * Retrieves the creator's certified tax profile and current withholding rate.
+ */
+router.get("/tax-profile", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId")!;
+    const profile = await getCreatorTaxProfile(userId);
+    return c.json({ profile });
+  } catch (error) {
+    return cApiError(c, "Failed to fetch tax profile", error);
+  }
+});
+
+// ── POST /wallet/tax-profile ────────────────────────────────────────────────
+
+/**
+ * Certifies or updates the creator's tax profile (W-8BEN, W-9, or NPWP).
+ */
+router.post("/tax-profile", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId")!;
+    const body = c.get("body") as SaveTaxProfileRequest;
+
+    if (!body || !body.formType || !body.legalName || !body.taxCountry) {
+      return cValidationError(c, "formType, legalName, and taxCountry are required");
+    }
+
+    if (!isValidCountryCode(body.taxCountry)) {
+      return cValidationError(c, "taxCountry must be a valid 2-letter ISO 3166-1 alpha-2 country code");
+    }
+
+    if (body.treatyBenefitClaimed && body.treatyCountry && !isValidCountryCode(body.treatyCountry)) {
+      return cValidationError(c, "treatyCountry must be a valid 2-letter ISO 3166-1 alpha-2 country code");
+    }
+
+    const clientIp =
+      body.signerIpAddress ||
+      c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ||
+      c.req.header("cf-connecting-ip") ||
+      undefined;
+
+    const result = await saveCreatorTaxProfile(userId, {
+      ...body,
+      signerIpAddress: clientIp,
+    });
+    return c.json(result);
+  } catch (error) {
+    const msg = getErrorMessage(error);
+    if (msg === "TAX_ID_ALREADY_REGISTERED_BY_ANOTHER_CREATOR") {
+      return c.json(
+        {
+          error: "This Tax ID is already registered to another creator account",
+          code: "TAX_ID_ALREADY_REGISTERED_BY_ANOTHER_CREATOR",
+        },
+        409
+      );
+    }
+    return cApiError(c, "Failed to save tax profile", error);
   }
 });
 

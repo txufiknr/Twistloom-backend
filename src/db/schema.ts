@@ -29,9 +29,13 @@ import { FIRST_TIME_CREDITS } from "../config/credits.js";
 import type {
   WalletCurrency,
   PayoutMethodType,
+  PayoutStatus,
+  PayoutEventActorType,
   KycVerificationType,
   KycVerificationStatus,
   VerificationConfidence,
+  TaxFormType,
+  TaxProfileStatus,
 } from "../types/wallet.js";
 import type { PrivacyPreferences } from "../types/privacy-preferences.js";
 import type { WallAttachmentSnapshot, WallPostFlair, WallPostType, WallReactionCounts, WallReactionType } from "../types/wall.js";
@@ -3572,8 +3576,9 @@ export const creatorEarnings = pgTable(
     stripePaymentIntent: text("stripe_payment_intent"),
     stripeEventId: text("stripe_event_id"),
 
-    status: text("status").notNull().default("completed")
+    status: text("status").notNull().default("pending")
       .$type<"pending" | "completed" | "refunded">(),
+    matureAt: timestamp("mature_at", { withTimezone: true }),
     message: text("message"),
     metadata: jsonb("metadata"),
     createdAt,
@@ -3582,6 +3587,7 @@ export const creatorEarnings = pgTable(
   (t) => [
     index("creator_earnings_creator_idx").on(t.creatorId, t.createdAt.desc()),
     index("creator_earnings_creator_status_idx").on(t.creatorId, t.status),
+    index("creator_earnings_status_mature_idx").on(t.status, t.matureAt),
     index("creator_earnings_book_idx").on(t.bookId),
     index("creator_earnings_reader_idx").on(t.readerId),
     index("creator_earnings_source_idx").on(t.source),
@@ -3629,6 +3635,7 @@ export const creatorPayouts = pgTable(
   {
     id: id(),
     creatorId: uuid("creator_id").notNull().references(() => users.userId, { onDelete: "cascade" }),
+    payoutMethodId: uuid("payout_method_id").references(() => creatorPayoutMethods.id, { onDelete: "set null" }),
     amount: integer("amount").notNull(),
     fee: integer("fee").notNull().default(0),
     netAmount: integer("net_amount").notNull(),
@@ -3650,6 +3657,35 @@ export const creatorPayouts = pgTable(
     index("creator_payouts_creator_idx").on(t.creatorId, t.createdAt.desc()),
     index("creator_payouts_creator_status_idx").on(t.creatorId, t.status),
     index("creator_payouts_status_idx").on(t.status),
+  ]
+);
+
+/**
+ * Creator payout event audit log — tracks all lifecycle transitions,
+ * state changes, approvals, failures, and actor metadata.
+ *
+ * @see docs/architecture/CREATOR_WALLET_ARCHITECTURE.md
+ * @see docs/roadmap/CREATOR_PAYOUT_DISBURSEMENT_PIPELINE_ROADMAP.md
+ */
+export const creatorPayoutEvents = pgTable(
+  "creator_payout_events",
+  {
+    id: id(),
+    payoutId: uuid("payout_id").notNull().references(() => creatorPayouts.id, { onDelete: "cascade" }),
+    previousStatus: text("previous_status")
+      .$type<PayoutStatus>(),
+    newStatus: text("new_status").notNull()
+      .$type<PayoutStatus>(),
+    actorType: text("actor_type").notNull().default("system")
+      .$type<PayoutEventActorType>(),
+    actorId: uuid("actor_id").references(() => users.userId, { onDelete: "set null" }),
+    note: text("note"),
+    metadata: jsonb("metadata"),
+    createdAt,
+  },
+  (t) => [
+    index("creator_payout_events_payout_idx").on(t.payoutId, t.createdAt.desc()),
+    index("creator_payout_events_actor_idx").on(t.actorType, t.actorId),
   ]
 );
 
@@ -3719,6 +3755,50 @@ export const creatorKycVerifications = pgTable(
   (t) => [
     index("creator_kyc_creator_idx").on(t.creatorId),
     index("creator_kyc_status_idx").on(t.status),
+  ]
+);
+
+/**
+ * Creator tax onboarding profiles.
+ * Stores IRS W-8BEN, W-9, and Indonesian NPWP tax certifications.
+ * Sensitive Tax IDs (TIN / SSN / EIN / NPWP) are encrypted with AES-256-GCM.
+ * Blind indexed with HMAC-SHA256 for Sybil/duplicate identification.
+ *
+ * @see docs/architecture/CREATOR_WALLET_ARCHITECTURE.md
+ * @see docs/roadmap/CREATOR_GLOBAL_TAX_ONBOARDING_ROADMAP.md
+ */
+export const creatorTaxProfiles = pgTable(
+  "creator_tax_profiles",
+  {
+    id: id(),
+    creatorId: uuid("creator_id").notNull().references(() => users.userId, { onDelete: "cascade" }),
+    formType: text("form_type").notNull()
+      .$type<TaxFormType>(),
+    taxCountry: text("tax_country").notNull().default("ID"),
+    taxIdEncrypted: text("tax_id_encrypted"),
+    taxIdLast4: text("tax_id_last4"),
+    taxIdBlindIndex: text("tax_id_blind_index"),
+    legalName: text("legal_name").notNull(),
+    signatureName: text("signature_name"),
+    signerIpAddress: text("signer_ip_address"),
+    treatyBenefitClaimed: boolean("treaty_benefit_claimed").notNull().default(false),
+    treatyCountry: text("treaty_country"),
+    treatyArticle: text("treaty_article"),
+    withholdingRate: real("withholding_rate").notNull().default(0.0),
+    certifiedAt: timestamp("certified_at", { withTimezone: true }).defaultNow().notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    status: text("status").notNull().default("pending")
+      .$type<TaxProfileStatus>(),
+    failureReason: text("failure_reason"),
+    metadata: jsonb("metadata"),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    unique("creator_tax_profiles_creator_unique").on(t.creatorId),
+    index("creator_tax_profiles_creator_idx").on(t.creatorId),
+    index("creator_tax_profiles_blind_idx").on(t.taxIdBlindIndex),
+    index("creator_tax_profiles_status_idx").on(t.status),
   ]
 );
 

@@ -12,11 +12,12 @@ export type Gender = typeof genders[number];
 export type KnownGender = Exclude<Gender, 'unknown'>;
 
 export const avatarFrames = [
-  // ── Achievement Tier Frames (4) ──
+  // ── Achievement Tier Frames (5) ──
   'bronze',
   'silver',
   'gold',
   'platinum',
+  'obsidian',
   // ── Archetype Resonance Frames (6) ──
   'worldwalker',
   'seeker',

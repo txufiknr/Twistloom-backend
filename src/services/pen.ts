@@ -35,8 +35,9 @@ import type { AIPromptForJson } from "../types/ai-chat.js";
 import { AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 import type { PenContinueLength } from "../config/story.js";
-import { PEN_DRAFT_CAST_LIMIT, PEN_CONTINUE_MAX_TOKENS, penContinueLengthForAssistance, PEN_ESSENTIALS_MAX_TOKENS, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TOKENS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_FINALIZE_PROPOSE_MAX_ITEM_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TRAITS, PEN_DRAFT_BUFFER_MAX_CHARS, PEN_DRAFTS_PER_PARENT, PEN_DRAFT_LABEL_MAX_LENGTH, PEN_DRAFT_ACTION_TEXT_MAX_LENGTH, PEN_DRAFT_ACTION_HINT_MAX_LENGTH, PEN_TRANSFORM_MAX_TOKENS, PEN_TRANSFORM_SELECTION_MAX_LENGTH, PEN_PAGE_EDIT_DIFF_TOLERANCE, PEN_MIN_ENDING_PAGE, PEN_TA_LATENT_BRANCH_COUNT, PEN_TA_PROMOTE_LATENT_BRANCHES, PEN_TA_GATE2_CANON_CHECK, PEN_DEFAULT_IMPORTED_MC } from "../config/story.js";
+import { PEN_DRAFT_CAST_LIMIT, PEN_CONTINUE_MAX_TOKENS, penContinueLengthForAssistance, PEN_ESSENTIALS_MAX_TOKENS, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TOKENS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_FINALIZE_PROPOSE_MAX_ITEM_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TRAITS, PEN_DRAFT_BUFFER_MAX_CHARS, getMaxPenDrafts, PEN_DRAFT_LABEL_MAX_LENGTH, PEN_DRAFT_ACTION_TEXT_MAX_LENGTH, PEN_DRAFT_ACTION_HINT_MAX_LENGTH, PEN_TRANSFORM_MAX_TOKENS, PEN_TRANSFORM_SELECTION_MAX_LENGTH, PEN_PAGE_EDIT_DIFF_TOLERANCE, PEN_MIN_ENDING_PAGE, PEN_TA_LATENT_BRANCH_COUNT, PEN_TA_PROMOTE_LATENT_BRANCHES, PEN_TA_GATE2_CANON_CHECK, PEN_DEFAULT_IMPORTED_MC } from "../config/story.js";
 import { generateId } from "../utils/uuid.js";
+import { hasActiveVipSubscription } from "./subscription.js";
 import { executeWithCredits } from "./credits.js";
 import { persistPageWithState, insertStoryPage, getPageFromDB, mapToPersistedStoryPage } from "./book.js";
 import { insertStoryState } from "./story.js";
@@ -685,12 +686,15 @@ export async function createSessionDraft(
     if (!page || page.bookId !== session.bookId) throw new PenSessionNotFoundError("Parent page not found");
   }
 
+  const isVip = await hasActiveVipSubscription(userId);
+  const maxDrafts = getMaxPenDrafts(isVip);
+
   const [draft] = await dbWrite.transaction(async (tx) => {
     const siblings = await tx
       .select({ id: penDrafts.id })
       .from(penDrafts)
       .where(and(eq(penDrafts.sessionId, sessionId), draftParentPredicate(parentPageId)));
-    if (siblings.length >= PEN_DRAFTS_PER_PARENT) throw new PenDraftLimitError();
+    if (siblings.length >= maxDrafts) throw new PenDraftLimitError();
     return tx
       .insert(penDrafts)
       .values({ sessionId, parentPageId, label, actionText, isEnding, draftBuffer: [], draftCharactersPresent: [], draftSceneEssentials: null })

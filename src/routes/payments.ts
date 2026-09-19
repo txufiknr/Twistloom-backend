@@ -44,6 +44,7 @@ import {
   trackXenditWebhookDelivery,
 } from "../services/xendit.js";
 import { getGatewayAdapter, initGatewayAdapters } from "../services/gateways/registry.js";
+import { handleXenditDisbursementCallback, type XenditDisbursementCallbackPayload } from "../services/disbursement.js";
 import {
   handleSubscriptionCreated as stripeSubCreated,
   handleSubscriptionUpdated as stripeSubUpdated,
@@ -762,6 +763,38 @@ router.post("/xendit/webhook", async (c) => {
       ).catch(console.error);
     }
     return cApiError(c, "Failed to process Xendit webhook", error);
+  }
+});
+
+/**
+ * POST /xendit/disbursement-webhook
+ *
+ * Receives Xendit Disbursement callbacks (COMPLETED / FAILED).
+ * Verifies `x-callback-token`, reconciles payout status, finalizes
+ * creator wallet balances, and logs audit events.
+ *
+ * Configure in Xendit Dashboard → Settings → Callbacks → Disbursements:
+ * `https://<backend>/api/payments/xendit/disbursement-webhook`
+ *
+ * @route POST /api/payments/xendit/disbursement-webhook
+ */
+router.post("/xendit/disbursement-webhook", async (c) => {
+  try {
+    const callbackToken = c.req.header("x-callback-token");
+    if (!verifyXenditCallbackToken(callbackToken)) {
+      return c.json({ error: "Invalid callback token" }, 401);
+    }
+
+    const body = (await c.req.json()) as XenditDisbursementCallbackPayload;
+    const result = await handleXenditDisbursementCallback(body);
+
+    if (!result.success) {
+      return c.json({ received: true, handled: false, error: result.error }, 400);
+    }
+
+    return c.json({ received: true, payoutId: result.payoutId });
+  } catch (error) {
+    return cApiError(c, "Failed to process Xendit disbursement callback", error);
   }
 });
 

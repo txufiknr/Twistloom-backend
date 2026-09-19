@@ -6,6 +6,7 @@ import { users } from '../db/schema.js';
 import type { AppEnv } from '../hono/env.js';
 import { getErrorMessage } from '../utils/error.js';
 import { getRedisClient } from '../utils/redis.js';
+import { isUserVipActive } from '../services/subscription.js';
 
 const NEW_ACCOUNT_AGE_MS = 24 * 60 * 60 * 1_000;
 const redis = getRedisClient();
@@ -39,8 +40,7 @@ export const wallCreateRateLimit = createMiddleware<AppEnv>(async (c, next) => {
     }
 
     const accountIsNew = Date.now() - user.createdAt.getTime() < NEW_ACCOUNT_AGE_MS;
-    const activeVip = user.tier === 'vip'
-      && (!user.vipExpiresAt || user.vipExpiresAt.getTime() > Date.now());
+    const activeVip = isUserVipActive(user);
     const limiter = accountIsNew ? newAccountLimiter : activeVip ? vipLimiter : freeLimiter;
     const maximum = accountIsNew ? 3 : activeVip ? 30 : 10;
     if (!limiter) {

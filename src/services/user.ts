@@ -19,11 +19,12 @@ import { users, books, posts, userComments, userAuth, userCheckins, userActivity
 import { eq, and, gt, ne, sql, desc, or, inArray } from "drizzle-orm";
 import { debounceAsync } from "../utils/debounce.js";
 import { sanitizeTextForDB, cleanSingleLineText, cleanMultilineText, camelCase } from '../utils/text-processing.js';
-import { getErrorMessage, cConflictError, cValidationError } from "../utils/error.js";
+import { getErrorMessage, cConflictError, cValidationError, cForbiddenError } from "../utils/error.js";
 import { DAILY_CHECKIN_BONUS, DAILY_CHECKIN_DAYS, DAILY_CHECKIN_BIG_BONUS } from "../config/credits.js";
 import { getCurrentUTCDay } from "../utils/time.js";
 import { requireEnv } from "../utils/env.js";
 import { VIP_BENEFITS } from "../config/subscription.js";
+import { isUserVipActive, hasActiveVipSubscription } from "./subscription.js";
 import { LRUCache } from 'lru-cache';
 import { convertEmailToName, convertNameOrEmailToUsername, sanitizeUsername, validateUsername } from "../utils/username.js";
 import { normalizeGender } from "../utils/parser.js";
@@ -726,28 +727,15 @@ export async function performDailyCheckIn(userId: string, claimType: CheckinClai
           .where(eq(users.userId, userId))
           .limit(1);
         
-        if (user.length === 0 || user[0].tier !== 'vip') {
-          console.warn(`[checkin] ⚠️ User ${userId} attempted VIP 2x claim without VIP status`);
+        if (user.length === 0 || !isUserVipActive(user[0])) {
+          console.warn(`[checkin] ⚠️ User ${userId} attempted VIP 2x claim without active VIP status`);
           return {
             success: false,
             creditsAwarded: 0,
             currentStreak: 0,
             totalCreditsClaimed: 0,
             checkInDate: todayUTC,
-            message: "VIP 2x claim is only available to VIP subscribers",
-          } satisfies CheckinPostResponse;
-        }
-        
-        // Check if VIP subscription has expired
-        if (user[0].vipExpiresAt && new Date(user[0].vipExpiresAt) < new Date()) {
-          console.warn(`[checkin] ⚠️ User ${userId} attempted VIP 2x claim with expired subscription`);
-          return {
-            success: false,
-            creditsAwarded: 0,
-            currentStreak: 0,
-            totalCreditsClaimed: 0,
-            checkInDate: todayUTC,
-            message: "VIP subscription has expired",
+            message: "VIP 2x claim is only available to active VIP subscribers",
           } satisfies CheckinPostResponse;
         }
       }
@@ -1193,11 +1181,15 @@ function sanitizeFieldValue(
  * if (!updateData) return; // error already sent
  * ```
  */
+export type SanitizeProfileResult =
+  | { data: Partial<DBNewUser>; errorResponse?: never }
+  | { data?: never; errorResponse: Response };
+
 export async function sanitizeProfileUpdate(
   userId: string,
   payload: Record<'name' | 'bio' | 'imageUrl' | 'gender' | 'username' | 'avatarFrame' | 'profileTitle' | 'pinnedStoryIds' | 'featuredStoryId' | 'featuredStoryNote' | 'favoriteStoryIds' | 'loreStatus', unknown>,
   res: Context
-): Promise<Partial<DBNewUser> | null> {
+): Promise<SanitizeProfileResult> {
   const updateData: Partial<DBNewUser> = {};
 
   // Process scalar fields through the shared sanitizer.
@@ -1214,10 +1206,20 @@ export async function sanitizeProfileUpdate(
   const gender = sanitizeFieldValue('gender', payload.gender);
   if (gender !== undefined) updateData.gender = gender;
 
+  const isVip = await hasActiveVipSubscription(userId);
+  const maxPinnedStories = isVip ? 6 : 3;
+  const maxFavoriteStories = isVip ? 8 : 4;
+  const maxFeaturedStoryNoteLength = isVip ? 500 : 280;
+
   if ('avatarFrame' in payload) {
     if (payload.avatarFrame === null || payload.avatarFrame === '') {
       updateData.avatarFrame = null;
     } else if (typeof payload.avatarFrame === 'string' && avatarFrames.includes(payload.avatarFrame as AvatarFrame)) {
+      if (payload.avatarFrame === 'obsidian' && !isVip) {
+        return {
+          errorResponse: cForbiddenError(res, 'The Obsidian avatar frame is exclusive to VIP members.'),
+        };
+      }
       updateData.avatarFrame = payload.avatarFrame as AvatarFrame;
     }
   }
@@ -1235,10 +1237,10 @@ export async function sanitizeProfileUpdate(
     if (payload.pinnedStoryIds === null || !Array.isArray(payload.pinnedStoryIds)) {
       updateData.pinnedStoryIds = null;
     } else {
-      // Max 3 pinned stories, validate UUIDs
+      // Max 3 pinned stories for free, 6 for VIP; validate UUIDs
       const ids = (payload.pinnedStoryIds as unknown[])
         .filter((id): id is string => typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))
-        .slice(0, 3);
+        .slice(0, maxPinnedStories);
       updateData.pinnedStoryIds = ids.length > 0 ? ids : null;
     }
   }
@@ -1255,8 +1257,8 @@ export async function sanitizeProfileUpdate(
     if (payload.featuredStoryNote === null || typeof payload.featuredStoryNote !== 'string') {
       updateData.featuredStoryNote = null;
     } else {
-      // Max 280 characters
-      const note = payload.featuredStoryNote.slice(0, 280);
+      // Max 280 characters for free, 500 for VIP
+      const note = payload.featuredStoryNote.slice(0, maxFeaturedStoryNoteLength);
       updateData.featuredStoryNote = note;
     }
   }
@@ -1265,10 +1267,10 @@ export async function sanitizeProfileUpdate(
     if (payload.favoriteStoryIds === null || !Array.isArray(payload.favoriteStoryIds)) {
       updateData.favoriteStoryIds = null;
     } else {
-      // Max 4 favorite stories, validate UUIDs
+      // Max 4 favorite stories for free, 8 for VIP; validate UUIDs
       const ids = (payload.favoriteStoryIds as unknown[])
         .filter((id): id is string => typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))
-        .slice(0, 4);
+        .slice(0, maxFavoriteStories);
       updateData.favoriteStoryIds = ids.length > 0 ? ids : null;
     }
   }
@@ -1296,8 +1298,9 @@ export async function sanitizeProfileUpdate(
     const validation = validateUsername(cleanUsername);
 
     if (!validation.valid) {
-      cValidationError(res, 'Invalid username', validation.errors, 422);
-      return null;
+      return {
+        errorResponse: cValidationError(res, 'Invalid username', validation.errors, 422),
+      };
     }
 
     // Hard conflict: ensure no *other* user has this username
@@ -1308,14 +1311,15 @@ export async function sanitizeProfileUpdate(
       .limit(1);
 
     if (conflict && conflict.userId !== userId) {
-      cConflictError(res, 'That username is already taken. Please choose another.');
-      return null;
+      return {
+        errorResponse: cConflictError(res, 'That username is already taken. Please choose another.'),
+      };
     }
 
     updateData.username = cleanUsername;
   }
 
-  return updateData;
+  return { data: updateData };
 }
 
 /**

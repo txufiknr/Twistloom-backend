@@ -6,6 +6,9 @@ import type { WritingPreset } from "../types/book-creation.js";
 import type { ActionHintType, EndingPlanType, EndingType, ProfileShiftType } from "../types/story.js";
 
 export const MAX_CONCURRENT_GENERATIONS = 5;
+export const MAX_CONCURRENT_GENERATIONS_VIP = 10;
+export const getMaxConcurrentGenerations = (isVip: boolean): number =>
+  isVip ? MAX_CONCURRENT_GENERATIONS_VIP : MAX_CONCURRENT_GENERATIONS;
 
 /** Maximum generation duration before considering it stuck */
 export const MAX_GENERATION_DURATION_MS = 30 * 60 * 1000; // 30 minutes

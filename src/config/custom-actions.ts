@@ -42,6 +42,10 @@ export const MIN_CUSTOM_ACTION_CHARS = 3;
 
 /** Maximum characters for a custom action */
 export const MAX_CUSTOM_ACTION_CHARS = 60;
+export const MAX_CUSTOM_ACTION_CHARS_VIP = 120;
+
+export const getMaxCustomActionChars = (isVip: boolean): number =>
+  isVip ? MAX_CUSTOM_ACTION_CHARS_VIP : MAX_CUSTOM_ACTION_CHARS;
 
 /**
  * Valid text pattern — rejects emoji, control characters, and most non-Latin-script noise.

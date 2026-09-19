@@ -660,6 +660,22 @@ Xendit uses the Recurring Plans API. The flow:
 
 `trackXenditWebhookDelivery()` mirrors the Stripe pattern — checks `webhookDeliveries` for `(gateway='xendit', eventId)`, inserts with unique violation handling for concurrent deliveries.
 
+### 8.4 Xendit Disbursements & Local Development Mock Fallback
+
+For creator payouts, Twistloom integrates Xendit Single Disbursements (`POST https://api.xendit.co/disbursements`) routed through the **BI-FAST** interbank switch.
+
+1. **Deterministic Idempotency**:
+   - Every disbursement request generates a deterministic `external_id` (matching `creatorPayout.id`) and attaches an `X-IDEMPOTENCY-KEY` header to guarantee that network disconnects or retries never trigger duplicate banking transfers.
+2. **Local Development & Offline Fallback**:
+   - In non-production environments (`NODE_ENV !== "production"`) or when `XENDIT_SECRET_KEY` is not provided (or matches test placeholders), `createXenditDisbursement` and `inquireXenditBankAccount` automatically fallback to simulated mock responses without making external network calls.
+   - Bank inquiry simulations: account numbers prefixed with `0000` simulate `INVALID_ACCOUNT_NO`, whereas other inputs return a mock verified holder name.
+   - Disbursement simulations: return a mock payload with `status: "PENDING"`.
+3. **Disbursement Webhook Reconciliation**:
+   - Endpoint: `POST /payments/xendit/disbursement-webhook`.
+   - Validates `x-callback-token` against `XENDIT_WEBHOOK_VERIFICATION_TOKEN`.
+   - On `COMPLETED`: finalizes `pendingAmount` $\to$ `withdrawnAmount`, marks payout status `completed`, and records an audit event in `creator_payout_events`.
+   - On `FAILED`: atomically restores funds from `pendingAmount` $\to$ `availableAmount`, records failure code and status `failed`, and logs the audit event.
+
 ---
 
 ## 9. API routes reference
@@ -676,7 +692,8 @@ Xendit uses the Recurring Plans API. The flow:
 | POST | `/subscription/cancel` | required | Both | Cancel at period end |
 | GET | `/subscription/portal` | required | Stripe only | Customer Portal URL |
 | POST | `/stripe/webhook` | Stripe sig | Stripe | Webhook ingestion |
-| POST | `/xendit/webhook` | Callback token | Xendit | Webhook ingestion |
+| POST | `/xendit/webhook` | Callback token | Xendit | Webhook ingestion (credits & recurring) |
+| POST | `/xendit/disbursement-webhook` | Callback token | Xendit | Payout disbursement callback reconciliation |
 | POST | `/consume-credits` | required | Both | Deduct credits for an action |
 | GET | `/transactions` | required | Both | Paginated transaction history |
 | POST | `/vouchers/redeem` | required | Both | Voucher code redemption |

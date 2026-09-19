@@ -22,16 +22,18 @@ export async function runVipExpirationCheck(): Promise<void> {
     const { downgradeUserFromVip } = await import("../services/subscription.js");
     const { dbRead } = await import("../db/client.js");
     const { users } = await import("../db/schema.js");
-    const { eq, and, lt, sql } = await import("drizzle-orm");
+    const { eq, and, lt, or, isNull } = await import("drizzle-orm");
     
-    // Find users with expired VIP subscriptions
+    // Find users with expired VIP subscriptions (including corrupted/orphaned rows where vipExpiresAt IS NULL)
     const expiredUsers = await dbRead
       .select({ userId: users.userId })
       .from(users)
       .where(and(
         eq(users.tier, 'vip'),
-        sql`${users.vipExpiresAt} IS NOT NULL`,
-        lt(users.vipExpiresAt, new Date())
+        or(
+          isNull(users.vipExpiresAt),
+          lt(users.vipExpiresAt, new Date())
+        )
       ));
     
     if (expiredUsers.length === 0) {

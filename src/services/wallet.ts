@@ -17,8 +17,10 @@ import {
   creatorEarnings,
   creatorWallets,
   creatorPayouts,
+  creatorPayoutEvents,
   creatorPayoutMethods,
   creatorKycVerifications,
+  creatorTaxProfiles,
   users,
   books,
   transactions,
@@ -147,6 +149,8 @@ export async function getCreatorEarnings(
       platformFee: creatorEarnings.platformFee,
       creatorAmount: creatorEarnings.creatorAmount,
       currency: creatorEarnings.currency,
+      status: creatorEarnings.status,
+      matureAt: creatorEarnings.matureAt,
       readerId: creatorEarnings.readerId,
       message: creatorEarnings.message,
       metadata: creatorEarnings.metadata,
@@ -188,6 +192,8 @@ export async function getCreatorEarnings(
         platformFee: e.platformFee,
         creatorAmount: e.creatorAmount,
         currency: e.currency,
+        status: e.status,
+        matureAt: e.matureAt,
         readerId: e.readerId,
         readerName: readerMap.get(e.readerId) || "A reader",
         message: e.message,
@@ -318,9 +324,44 @@ export async function initiatePayout(creatorId: string): Promise<CreatorPayout> 
     if (!wallet) throw new Error("WALLET_NOT_FOUND");
     if (!wallet.payoutVerified) throw new Error("PAYOUT_NOT_VERIFIED");
 
-    const minimum = wallet.currency === "USD"
-      ? THANKS_CONFIG.minimumWithdrawalUSD
-      : THANKS_CONFIG.minimumWithdrawalIDR;
+    // Guardrail: USD automated payout rail (Stripe Connect Transfers) is planned for Phase 3
+    if (wallet.currency === "USD") {
+      throw new Error("USD_PAYOUTS_UNSUPPORTED");
+    }
+
+    // 2. Validate creator tax certification profile
+    const [taxProfile] = await tx
+      .select()
+      .from(creatorTaxProfiles)
+      .where(eq(creatorTaxProfiles.creatorId, creatorId))
+      .limit(1);
+
+    if (!taxProfile || taxProfile.status !== "verified") {
+      throw new Error("TAX_PROFILE_VERIFICATION_REQUIRED");
+    }
+
+    if (taxProfile.expiresAt && new Date(taxProfile.expiresAt) < new Date()) {
+      throw new Error("TAX_PROFILE_EXPIRED");
+    }
+
+    // 3. Find creator's default verified payout method to bind to this withdrawal
+    const [defaultMethod] = await tx
+      .select({ id: creatorPayoutMethods.id })
+      .from(creatorPayoutMethods)
+      .where(
+        and(
+          eq(creatorPayoutMethods.creatorId, creatorId),
+          eq(creatorPayoutMethods.isVerified, true)
+        )
+      )
+      .orderBy(desc(creatorPayoutMethods.isDefault), desc(creatorPayoutMethods.createdAt))
+      .limit(1);
+
+    if (!defaultMethod) {
+      throw new Error("NO_VERIFIED_PAYOUT_METHOD");
+    }
+
+    const minimum = THANKS_CONFIG.minimumWithdrawalIDR;
 
     if (wallet.availableAmount < minimum) {
       throw new Error("BELOW_MINIMUM");
@@ -328,7 +369,16 @@ export async function initiatePayout(creatorId: string): Promise<CreatorPayout> 
 
     const amount = wallet.availableAmount;
 
-    // 2. Deduct from available balance and increment pending balance atomically
+    // 4. Calculate statutory or treaty tax withholding
+    const withholdingRate = taxProfile.withholdingRate || 0;
+    const taxWithheld = Math.round(amount * withholdingRate);
+    const netAmount = amount - taxWithheld;
+
+    if (netAmount <= 0) {
+      throw new Error("AMOUNT_TOO_LOW_AFTER_TAX");
+    }
+
+    // 5. Deduct from available balance and increment pending balance atomically
     const [updated] = await tx
       .update(creatorWallets)
       .set({
@@ -343,26 +393,46 @@ export async function initiatePayout(creatorId: string): Promise<CreatorPayout> 
       throw new Error("INSUFFICIENT_BALANCE");
     }
 
-    // 3. Create payout record with appropriate provider routing
-    const provider = wallet.currency === "USD" ? "stripe" : "xendit";
+    // 6. Create payout record with bound payoutMethodId and tax fee
     const [payout] = await tx
       .insert(creatorPayouts)
       .values({
         creatorId,
+        payoutMethodId: defaultMethod.id,
         amount,
-        fee: 0,
-        netAmount: amount,
+        fee: taxWithheld,
+        netAmount,
         currency: wallet.currency as WalletCurrency,
         status: "pending",
-        provider,
+        provider: "xendit",
+        metadata: {
+          taxProfileId: taxProfile.id,
+          formType: taxProfile.formType,
+          withholdingRate,
+          taxWithheld,
+        },
       })
       .returning();
+
+    // Record initial payout lifecycle event in audit log
+    await tx.insert(creatorPayoutEvents).values({
+      payoutId: payout.id,
+      previousStatus: null,
+      newStatus: "pending",
+      actorType: "creator",
+      actorId: creatorId,
+      note: taxWithheld > 0
+        ? `Payout withdrawal initiated with tax withholding rate ${(withholdingRate * 100).toFixed(0)}% (${taxWithheld} ${wallet.currency})`
+        : "Payout withdrawal request initiated by creator",
+    });
 
     return [payout];
   });
 
   return {
     id: payout.id,
+    creatorId: payout.creatorId,
+    payoutMethodId: payout.payoutMethodId,
     amount: payout.amount,
     fee: payout.fee,
     netAmount: payout.netAmount,
@@ -389,6 +459,8 @@ export async function getCreatorPayouts(
 
   return rows.map((r) => ({
     id: r.id,
+    creatorId: r.creatorId,
+    payoutMethodId: r.payoutMethodId,
     amount: r.amount,
     fee: r.fee,
     netAmount: r.netAmount,
@@ -555,10 +627,26 @@ export async function savePayoutMethod(
       matchScore = match.score;
       confidence = match.confidence;
 
-      if (match.score >= 0.7) {
+      if (match.score >= 0.85) {
         kycStatus = "verified";
-      } else {
+      } else if (match.score >= 0.60) {
         kycStatus = "requires_manual_review";
+      } else {
+        // Record KYC rejection audit record before rejecting
+        await dbWrite.insert(creatorKycVerifications).values({
+          creatorId,
+          payoutMethodId: null,
+          verificationType: "bank_account_inquiry",
+          status: "rejected",
+          inquiryHolderName: verifiedHolderName,
+          registeredName,
+          nameMatchScore: matchScore,
+          confidence: "low",
+          failureReason: "NAME_MISMATCH_TOO_LOW",
+          externalReferenceId: externalRef,
+          verifiedAt: null,
+        });
+        throw new Error("NAME_MISMATCH_KYC_FAILED");
       }
     } else {
       kycStatus = "requires_manual_review";

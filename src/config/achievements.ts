@@ -495,4 +495,11 @@ export const ACHIEVEMENT_REGISTRY: AchievementRule[] = [
   { id: 'thread_res_15', title: 'Untangled Knot', description: 'Resolved 15 ongoing narrative threads across complex mysteries', metric: 'threadsResolved', threshold: 15, tier: 'silver', category: 'chronicler' },
   { id: 'thread_res_50', title: 'No Loose Threads', description: 'Resolved 50 ongoing narrative threads across the Loom', metric: 'threadsResolved', threshold: 50, tier: 'gold', category: 'chronicler' },
   { id: 'thread_res_150', title: 'Master Chronicler', description: 'The Loom\'s Weaver: Resolved 150 complex story threads to ultimate closure', metric: 'threadsResolved', threshold: 150, tier: 'platinum', category: 'chronicler' },
+
+  // ── VIP PRESTIGE: OBSIDIAN TIER ──────────────────────────────────────────
+  { id: 'obsidian_weaver', title: 'Obsidian Weaver', description: 'VIP Prestige: Generated 1,000 branching horror worlds as an active VIP', metric: 'booksGenerated', threshold: 1000, tier: 'obsidian', category: 'legacy' },
+  { id: 'obsidian_survivor', title: 'Void Walker', description: 'VIP Prestige: Survived 500 fatal narrative storylines as an active VIP', metric: 'booksCompleted', threshold: 500, tier: 'obsidian', category: 'survivor' },
+  { id: 'obsidian_scholar', title: 'Omniscient Reader', description: 'VIP Prestige: Consumed 5,000 pages of divergent dark fiction as an active VIP', metric: 'pagesRead', threshold: 5000, tier: 'obsidian', category: 'legacy' },
+  { id: 'obsidian_inquisitor', title: 'Loom Oracle', description: 'VIP Prestige: Uncovered 2,500 hidden narrative clues across labyrinthine plots as an active VIP', metric: 'cluesUncovered', threshold: 2500, tier: 'obsidian', category: 'seeker' },
+  { id: 'obsidian_fate', title: 'Architect of Ruin', description: 'VIP Prestige: Navigated 3,000 perilous branching decision points as an active VIP', metric: 'branchPointsExplored', threshold: 3000, tier: 'obsidian', category: 'explorer' },
 ];

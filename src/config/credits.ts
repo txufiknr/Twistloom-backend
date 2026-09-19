@@ -299,7 +299,15 @@ export const DAILY_CHECKIN_DAYS = 7; // Big 20 credits bonus on 7th consecutive 
 export const DAILY_CHECKIN_BONUS = 5; // Flat 5 credits bonus on day 1-6
 export const DAILY_CHECKIN_BIG_BONUS = 20; // Bonus applied on the 7th consecutive day
 
-export const REFERRAL_BONUS = 10; // Bonus for both users
+export const REFERRAL_BONUS = 10; // Standard bonus for both users
+export const REFERRAL_BONUS_VIP_REFERRER = 20; // VIP referrer reward (2x multiplier, balanced with 200 monthly credits)
+
+export function getReferralBonus(isVipReferrer: boolean): { referrer: number; referee: number } {
+  return {
+    referrer: isVipReferrer ? REFERRAL_BONUS_VIP_REFERRER : REFERRAL_BONUS,
+    referee: REFERRAL_BONUS, // Uniform referee reward: ensures no discrimination or "link shopping"
+  };
+}
 export const FIRST_PURCHASE_BONUS = 50; // Bonus for first purchase
 
 /** One-time credit reward granted to a user when they join the beta tester program. */

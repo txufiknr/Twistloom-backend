@@ -20,6 +20,7 @@ import { normalizePrivacyPreferences } from './privacy-preferences.js';
 import { getPsychologicalProfileResult } from './psychological-profile.js';
 import { computeEndingStats } from './story.js';
 import { logUserActivity } from './user.js';
+import { isUserVipActive } from './subscription.js';
 import {
   getWallPostAfterMutation,
   WallServiceError,
@@ -717,7 +718,7 @@ function validateContent(content: string, limit: number, attachmentAllowsEmpty: 
 }
 
 function activePostLimit(tier: string | null, vipExpiresAt: Date | null): number {
-  const isVip = tier === 'vip' && (!vipExpiresAt || vipExpiresAt.getTime() > Date.now());
+  const isVip = isUserVipActive({ tier, vipExpiresAt });
   return isVip ? WALL_LIMITS.vipPostGraphemes : WALL_LIMITS.freePostGraphemes;
 }
 

@@ -519,3 +519,128 @@ export async function inquireXenditBankAccount(
   }
 }
 
+const XENDIT_DISBURSEMENTS_API = "https://api.xendit.co/disbursements";
+
+export interface CreateXenditDisbursementParams {
+  externalId: string;
+  amount: number;
+  bankCode: string;
+  accountHolderName: string;
+  accountNumber: string;
+  description?: string;
+  channelCode?: string;
+}
+
+export interface XenditDisbursementResult {
+  id: string;
+  external_id: string;
+  amount: number;
+  bank_code: string;
+  account_holder_name: string;
+  status: "PENDING" | "COMPLETED" | "FAILED";
+  failure_code?: string;
+  disbursement_description?: string;
+}
+
+/**
+ * Creates an automated disbursement through Xendit (or dev simulation).
+ * Dispatches funds from Twistloom platform balance to creator bank account.
+ * Supports BI-FAST / Realtime interbank routing via channel_code.
+ *
+ * @param params - Disbursement destination, amount, and idempotency key
+ * @returns Xendit disbursement record
+ */
+export async function createXenditDisbursement(
+  params: CreateXenditDisbursementParams
+): Promise<XenditDisbursementResult> {
+  const cleanAccount = params.accountNumber.replace(/[\s-]/g, "").trim();
+
+  // Local development / test / unconfigured fallback
+  if (!isXenditConfigured() || (process.env.NODE_ENV !== "production" && (!XENDIT_CONFIG.secretKey || XENDIT_CONFIG.secretKey.startsWith("xnd_development_mock")))) {
+    console.log(`[Xendit] Dev mock disbursement created for ${params.externalId}: Rp ${params.amount} to ${params.bankCode} ${cleanAccount}`);
+    return {
+      id: `mock_disb_${Date.now()}`,
+      external_id: params.externalId,
+      amount: params.amount,
+      bank_code: params.bankCode,
+      account_holder_name: params.accountHolderName,
+      status: "PENDING",
+      disbursement_description: params.description || "Twistloom Creator Payout",
+    };
+  }
+
+  try {
+    const response = await fetch(XENDIT_DISBURSEMENTS_API, {
+      method: "POST",
+      headers: {
+        ...getXenditHeaders(),
+        "X-IDEMPOTENCY-KEY": params.externalId,
+      },
+      body: JSON.stringify({
+        external_id: params.externalId,
+        amount: params.amount,
+        bank_code: params.bankCode,
+        account_holder_name: params.accountHolderName,
+        account_number: cleanAccount,
+        description: params.description || "Twistloom Creator Payout",
+        ...(params.channelCode ? { channel_code: params.channelCode } : {}),
+      }),
+    });
+
+    const data = (await response.json()) as {
+      id?: string;
+      external_id?: string;
+      amount?: number;
+      bank_code?: string;
+      account_holder_name?: string;
+      status?: "PENDING" | "COMPLETED" | "FAILED";
+      failure_code?: string;
+      message?: string;
+      error_code?: string;
+    };
+
+    if (!response.ok) {
+      // If live API returns error in non-prod, fallback with warning
+      if (process.env.NODE_ENV !== "production") {
+        console.warn(`[Xendit] Live disbursement failed (${response.status}: ${data.message || data.error_code}), falling back to dev simulation.`);
+        return {
+          id: `mock_disb_${Date.now()}`,
+          external_id: params.externalId,
+          amount: params.amount,
+          bank_code: params.bankCode,
+          account_holder_name: params.accountHolderName,
+          status: "PENDING",
+          disbursement_description: params.description || "Twistloom Creator Payout",
+        };
+      }
+      throw new Error(`Xendit disbursement failed (${response.status}): ${data.message || data.error_code || "Unknown error"}`);
+    }
+
+    return {
+      id: data.id || `disb_${Date.now()}`,
+      external_id: data.external_id || params.externalId,
+      amount: data.amount || params.amount,
+      bank_code: data.bank_code || params.bankCode,
+      account_holder_name: data.account_holder_name || params.accountHolderName,
+      status: data.status || "PENDING",
+      failure_code: data.failure_code,
+      disbursement_description: params.description,
+    };
+  } catch (error) {
+    if (process.env.NODE_ENV !== "production") {
+      console.warn("[Xendit] Live disbursement threw error, falling back to dev simulation.", error);
+      return {
+        id: `mock_disb_${Date.now()}`,
+        external_id: params.externalId,
+        amount: params.amount,
+        bank_code: params.bankCode,
+        account_holder_name: params.accountHolderName,
+        status: "PENDING",
+        disbursement_description: params.description || "Twistloom Creator Payout",
+      };
+    }
+    throw error;
+  }
+}
+
+

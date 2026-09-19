@@ -22,7 +22,7 @@ import {
   CUSTOM_ACTION_SECURITY_PATTERNS,
   CUSTOM_ACTION_DENYLIST_KEYWORDS,
   MIN_CUSTOM_ACTION_CHARS,
-  MAX_CUSTOM_ACTION_CHARS,
+  getMaxCustomActionChars,
   CUSTOM_ACTION_VALID_TEXT_PATTERN,
 } from "../config/custom-actions.js";
 import type { PlaceMemory } from "../types/places.js";
@@ -73,7 +73,7 @@ export function runGate0(
  * Gate 1 — Deterministic security filter. No AI.
  * Checks for prompt injection, denylist keywords, length, and valid characters.
  */
-export function runGate1(text: string): CustomActionSecurityResult {
+export function runGate1(text: string, isVip: boolean = false): CustomActionSecurityResult {
   const trimmed = text.trim();
   const normalized = normalizeText(trimmed);
 
@@ -82,11 +82,12 @@ export function runGate1(text: string): CustomActionSecurityResult {
     return { passed: false, category: 'empty' };
   }
 
-  // Length check
+  // Length check (tier-aware max)
+  const maxChars = getMaxCustomActionChars(isVip);
   if (normalized.length < MIN_CUSTOM_ACTION_CHARS) {
     return { passed: false, category: 'length' };
   }
-  if (normalized.length > MAX_CUSTOM_ACTION_CHARS) {
+  if (normalized.length > maxChars) {
     return { passed: false, category: 'length' };
   }
 

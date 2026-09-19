@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+﻿import { Hono } from "hono";
 import userRouter from "./user.js";
 import booksRouter from "./books.js";
 import adminRouter from "./admin.js";
@@ -17,6 +17,7 @@ import walletRouter from "./wallet.js";
 import easterEggsRouter from "./easter-eggs.js";
 import helpRouter from "./help.js";
 import wallRouter from "./wall.js";
+import cronRouter from "./cron.js";
 import { APP_NAME, VERSION } from "../config/constants.js";
 import type { AppEnv } from "../hono/env.js";
 
@@ -41,6 +42,7 @@ router.get("/", (c) => {
       "/easter-eggs": "Easter egg discovery, claim, and reward cracking",
       "/help": "Help center article feedback (votes, stats)",
       "/wall": "Wall Notes social feed, profile Walls, and Reading Vault",
+      "/cron": "Scheduled background jobs and maturation triggers",
     },
   });
 });
@@ -64,5 +66,6 @@ router.route("/wallet", walletRouter);
 router.route("/easter-eggs", easterEggsRouter);
 router.route("/help", helpRouter);
 router.route("/wall", wallRouter);
+router.route("/cron", cronRouter);
 
 export default router;

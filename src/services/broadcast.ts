@@ -33,6 +33,7 @@ import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 import {
   BROADCAST_MIN_LENGTH,
   BROADCAST_MAX_LENGTH,
+  getMaxBroadcastLength,
   BROADCAST_USER_COOLDOWN_SECONDS,
   BROADCAST_GLOBAL_INTERVAL_SECONDS,
   BROADCAST_DISPLAY_SECONDS,
@@ -44,6 +45,7 @@ import {
   BROADCAST_HEURISTIC_PATTERNS,
   type BroadcastErrorCode,
 } from "../config/broadcast.js";
+import { hasActiveVipSubscription } from "./subscription.js";
 import { recordViolationEvent } from "./trust-safety.js";
 import {
   getUserItemCount,
@@ -105,14 +107,16 @@ interface BroadcastHeuristicHit {
  * patterns. Returns the sanitized text on success so the caller can pass the
  * exact stored string straight to AI moderation without re-sanitizing.
  */
-export function validateBroadcastInput(raw: unknown): BroadcastValidationResult {
+export function validateBroadcastInput(raw: unknown, isVip: boolean = false): BroadcastValidationResult {
   if (typeof raw !== "string" || !raw.trim()) {
     return { passed: false, category: "empty", message: "Broadcast message is required." };
   }
 
+  const maxLen = getMaxBroadcastLength(isVip);
+
   // Defense-in-depth: drop any HTML the client might have injected.
   const stripped = stripHtml(raw);
-  const sanitized = cleanSingleLineText(sanitizedText(stripped), BROADCAST_MAX_LENGTH);
+  const sanitized = cleanSingleLineText(sanitizedText(stripped));
 
   if (!sanitized) {
     return { passed: false, category: "empty", message: "Broadcast message is empty after sanitization." };
@@ -126,11 +130,11 @@ export function validateBroadcastInput(raw: unknown): BroadcastValidationResult 
     };
   }
 
-  if (sanitized.length > BROADCAST_MAX_LENGTH) {
+  if (sanitized.length > maxLen) {
     return {
       passed: false,
       category: "length",
-      message: `Broadcast must be at most ${BROADCAST_MAX_LENGTH} characters.`,
+      message: `Broadcast must be at most ${maxLen} characters.`,
     };
   }
 
@@ -456,7 +460,8 @@ export async function submitBroadcast(
   meta: SubmitBroadcastMeta = {},
 ): Promise<SubmitBroadcastResult> {
   // Gate 1 — deterministic
-  const gate = validateBroadcastInput(rawMessage);
+  const isVip = await hasActiveVipSubscription(userId);
+  const gate = validateBroadcastInput(rawMessage, isVip);
   if (!gate.passed || !gate.sanitized) {
     throw new BroadcastSubmitError(
       gate.category === "injection_attempt" ? "broadcast.security" : "broadcast.validation",
@@ -632,7 +637,8 @@ export async function previewBroadcast(
   message?: string;
   preview?: { message: string };
 }> {
-  const gate = validateBroadcastInput(rawMessage);
+  const isVip = await hasActiveVipSubscription(userId);
+  const gate = validateBroadcastInput(rawMessage, isVip);
   if (!gate.passed || !gate.sanitized) {
     throw new BroadcastSubmitError(
       gate.category === "injection_attempt" ? "broadcast.security" : "broadcast.validation",
@@ -899,6 +905,7 @@ export async function sendSystemBroadcast(
     }
 
     const isStructured = typeof messageOrPayload !== "string";
+    // TODO: why BROADCAST_MAX_LENGTH? that supposed to be used to limit user broadcast, system message can be longer
     const fallbackMessage = isStructured
       ? cleanSingleLineText(messageOrPayload.fallback, BROADCAST_MAX_LENGTH)
       : cleanSingleLineText(messageOrPayload, BROADCAST_MAX_LENGTH);

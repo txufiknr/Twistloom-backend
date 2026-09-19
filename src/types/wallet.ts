@@ -41,6 +41,8 @@ export interface CreatorEarning {
   platformFee: number;
   creatorAmount: number;
   currency: WalletCurrency;
+  status?: "pending" | "completed" | "refunded";
+  matureAt?: Date | null;
   readerName: string;
   readerId: string;
   message: string | null;
@@ -51,6 +53,8 @@ export interface CreatorEarning {
 
 export interface CreatorPayout {
   id: string;
+  creatorId: string;
+  payoutMethodId?: string | null;
   amount: number;
   fee: number;
   netAmount: number;
@@ -123,5 +127,83 @@ export interface BankAccountValidationResult {
   status: BankAccountStatus;
   rawStatus?: string;
 }
+
+export const payoutEventActorTypes = ["system", "admin", "webhook", "creator"] as const;
+export type PayoutEventActorType = (typeof payoutEventActorTypes)[number];
+
+export interface CreatorPayoutEvent {
+  id: string;
+  payoutId: string;
+  previousStatus: PayoutStatus | null;
+  newStatus: PayoutStatus;
+  actorType: PayoutEventActorType;
+  actorId: string | null;
+  note: string | null;
+  metadata?: Record<string, unknown> | null;
+  createdAt: Date;
+}
+
+export interface MaturationResult {
+  maturedCount: number;
+  creatorsCount: number;
+  totalAmountsByCurrency: Record<WalletCurrency, number>;
+}
+
+export interface DisbursementBatchResult {
+  processedCount: number;
+  completedCount: number;
+  pendingCount: number;
+  failedCount: number;
+  skippedCount: number;
+}
+
+export const taxFormTypes = ["w8ben", "w9", "npwp"] as const;
+export type TaxFormType = (typeof taxFormTypes)[number];
+
+export const taxProfileStatuses = ["pending", "verified", "rejected"] as const;
+export type TaxProfileStatus = (typeof taxProfileStatuses)[number];
+
+export interface CreatorTaxProfile {
+  id: string;
+  creatorId: string;
+  formType: TaxFormType;
+  taxCountry: string;
+  taxIdLast4: string | null;
+  legalName: string;
+  signatureName?: string | null;
+  signerIpAddress?: string | null;
+  treatyBenefitClaimed: boolean;
+  treatyCountry: string | null;
+  treatyArticle: string | null;
+  withholdingRate: number;
+  certifiedAt: Date;
+  expiresAt?: Date | null;
+  status: TaxProfileStatus;
+  failureReason: string | null;
+  createdAt: Date;
+}
+
+export interface SaveTaxProfileRequest {
+  formType: TaxFormType;
+  taxCountry: string;
+  taxId?: string;
+  legalName: string;
+  signatureName?: string;
+  signerIpAddress?: string;
+  treatyBenefitClaimed?: boolean;
+  treatyCountry?: string;
+  treatyArticle?: string;
+}
+
+export interface SaveTaxProfileResponse {
+  success: boolean;
+  taxProfileId?: string;
+  withholdingRate: number;
+  status: TaxProfileStatus;
+  message?: string;
+}
+
+
+
 
 

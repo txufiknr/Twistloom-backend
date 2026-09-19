@@ -30,7 +30,7 @@ import { getAdminBusinessMetrics } from "../services/admin-business-analytics.js
 import { getBookFromDB, getPageFromDB, invalidateEnrichedBookCache } from "../services/book.js";
 import { getStoryState } from "../services/story.js";
 import { dbRead, dbWrite } from "../db/client.js";
-import { socialMentions, bookTestimonials, adminUsers, adminSettings, usage, users, userFeedbacks, books, portalBlogPosts, platformTestimonials, pages, userPageProgress, creatorPayouts, creatorWallets, creatorPayoutMethods, transactions, subscriptions } from "../db/schema.js";
+import { socialMentions, bookTestimonials, adminUsers, adminSettings, usage, users, userFeedbacks, books, portalBlogPosts, platformTestimonials, pages, userPageProgress, creatorPayouts, creatorPayoutEvents, creatorWallets, creatorPayoutMethods, creatorKycVerifications, transactions, subscriptions } from "../db/schema.js";
 import type { AppEnv } from "../hono/env.js";
 import { bookStatuses, bookVisibilities, type BookStatus, type BookVisibility } from "../types/book.js";
 import { feedbackAdminStatuses, feedbackCategories, type FeedbackAdminStatus, type FeedbackCategory } from "../types/user.js";
@@ -2926,6 +2926,18 @@ router.patch("/payouts/:id",
           .where(and(eq(creatorPayouts.id, id), eq(creatorPayouts.status, existing.status)))
           .returning();
 
+        if (result) {
+          const adminId = c.get("userId") ?? null;
+          await tx.insert(creatorPayoutEvents).values({
+            payoutId: id,
+            previousStatus: existing.status,
+            newStatus,
+            actorType: "admin",
+            actorId: adminId,
+            note: body.failureReason || (body.providerPayoutId ? `Provider Payout ID: ${body.providerPayoutId}` : null),
+          });
+        }
+
         return result ?? null;
       });
 
@@ -3376,6 +3388,121 @@ router.post(
       }
     } catch (error) {
       return cApiError(c, "Failed to regenerate illustrations", error);
+    }
+  }
+);
+
+/**
+ * GET /admin/kyc/review-queue
+ *
+ * Lists creator KYC verification submissions that require manual review.
+ */
+router.get("/kyc/review-queue",
+  requireAuth,
+  requirePermission("payouts"),
+  async (c) => {
+    try {
+      const queue = await dbRead
+        .select({
+          id: creatorKycVerifications.id,
+          creatorId: creatorKycVerifications.creatorId,
+          creatorName: users.name,
+          creatorEmail: users.email,
+          payoutMethodId: creatorKycVerifications.payoutMethodId,
+          verificationType: creatorKycVerifications.verificationType,
+          status: creatorKycVerifications.status,
+          inquiryHolderName: creatorKycVerifications.inquiryHolderName,
+          registeredName: creatorKycVerifications.registeredName,
+          nameMatchScore: creatorKycVerifications.nameMatchScore,
+          confidence: creatorKycVerifications.confidence,
+          bankName: creatorPayoutMethods.bankName,
+          bankCode: creatorPayoutMethods.bankCode,
+          accountLast4: creatorPayoutMethods.accountLast4,
+          createdAt: creatorKycVerifications.createdAt,
+        })
+        .from(creatorKycVerifications)
+        .innerJoin(users, eq(creatorKycVerifications.creatorId, users.userId))
+        .leftJoin(creatorPayoutMethods, eq(creatorKycVerifications.payoutMethodId, creatorPayoutMethods.id))
+        .where(eq(creatorKycVerifications.status, "requires_manual_review"))
+        .orderBy(desc(creatorKycVerifications.createdAt));
+
+      return c.json({ queue });
+    } catch (error) {
+      return cApiError(c, "Failed to fetch KYC review queue", error);
+    }
+  }
+);
+
+/**
+ * PATCH /admin/kyc/review-queue/:id
+ *
+ * Manually approves or rejects a pending KYC verification.
+ */
+router.patch("/kyc/review-queue/:id",
+  requireAuth,
+  requirePermission("payouts"),
+  async (c) => {
+    try {
+      const { id } = c.req.param();
+      const body = await c.req.json<{ action: "approve" | "reject"; note?: string }>();
+
+      if (!body.action || (body.action !== "approve" && body.action !== "reject")) {
+        return cValidationError(c, "Invalid action. Must be 'approve' or 'reject'");
+      }
+
+      const isApprove = body.action === "approve";
+      const targetStatus = isApprove ? "verified" : "rejected";
+
+      return await dbWrite.transaction(async (tx) => {
+        const [kyc] = await tx
+          .select()
+          .from(creatorKycVerifications)
+          .where(eq(creatorKycVerifications.id, id))
+          .for("update")
+          .limit(1);
+
+        if (!kyc) {
+          return cNotFoundError(c, "KYC verification record not found");
+        }
+
+        const [updatedKyc] = await tx
+          .update(creatorKycVerifications)
+          .set({
+            status: targetStatus,
+            verifiedAt: isApprove ? new Date() : null,
+            failureReason: isApprove ? null : (body.note || "Rejected by admin review"),
+            updatedAt: new Date(),
+          })
+          .where(eq(creatorKycVerifications.id, id))
+          .returning();
+
+        if (kyc.payoutMethodId) {
+          await tx
+            .update(creatorPayoutMethods)
+            .set({
+              isVerified: isApprove,
+              updatedAt: new Date(),
+            })
+            .where(eq(creatorPayoutMethods.id, kyc.payoutMethodId));
+        }
+
+        if (isApprove) {
+          await tx
+            .update(creatorWallets)
+            .set({
+              payoutVerified: true,
+              updatedAt: new Date(),
+            })
+            .where(eq(creatorWallets.creatorId, kyc.creatorId));
+        }
+
+        return c.json({
+          success: true,
+          kyc: updatedKyc,
+        });
+      });
+    } catch (error) {
+      return cApiError(c, "Failed to update KYC verification", error);
     }
   }
 );

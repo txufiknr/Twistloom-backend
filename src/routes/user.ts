@@ -659,8 +659,9 @@ router.post('/', requireAuth, async (c: Context<AppEnv>) => {
     }
 
     // 1. Sanitize payload via SSOT (all fields optional; empty body is valid)
-    const updateData = await sanitizeProfileUpdate(userId, body, c);
-    if (!updateData) return;
+    const sanitizeResult = await sanitizeProfileUpdate(userId, body, c);
+    if (sanitizeResult.errorResponse) return sanitizeResult.errorResponse;
+    const updateData = sanitizeResult.data;
 
     // 2. Avatar base64 → ImageKit (same path as PUT /user)
     if (updateData.imageUrl?.startsWith('data:')) {
@@ -798,8 +799,9 @@ router.put('/', requireAuth, async (c: Context<AppEnv>) => {
     const body = c.get("body") ?? {};
 
     // 1. Sanitize payload via SSOT
-    const updateData = await sanitizeProfileUpdate(userId, body, c);
-    if (!updateData) return;
+    const sanitizeResult = await sanitizeProfileUpdate(userId, body, c);
+    if (sanitizeResult.errorResponse) return sanitizeResult.errorResponse;
+    const updateData = sanitizeResult.data;
 
     // Require at least one valid field to update
     if (Object.keys(updateData).length === 0) {

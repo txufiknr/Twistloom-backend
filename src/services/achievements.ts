@@ -2,6 +2,7 @@ import { eq } from 'drizzle-orm';
 import { dbRead, dbWrite } from '../db/client.js';
 import { userCounters, userAchievements } from '../db/schema.js';
 import { ACHIEVEMENT_REGISTRY } from '../config/achievements.js';
+import { hasActiveVipSubscription } from './subscription.js';
 import type { AchievementMetric } from '../types/achievements.js';
 import type { UserAchievement } from '../types/user.js';
 
@@ -117,6 +118,7 @@ export async function getUserMetrics(userId: string) {
  */
 export async function checkAndAwardAchievements(userId: string): Promise<string[]> {
   const metrics = await getUserMetrics(userId);
+  const isVip = await hasActiveVipSubscription(userId);
   const unlockedBadges = await dbRead
     .select({ achievementId: userAchievements.achievementId })
     .from(userAchievements)
@@ -128,6 +130,17 @@ export async function checkAndAwardAchievements(userId: string): Promise<string[
 
   for (const rule of ACHIEVEMENT_REGISTRY) {
     if (unlockedIdsSet.has(rule.id)) continue; // Already awarded
+
+    if (rule.tier === 'obsidian') {
+      if (!isVip) continue; // VIP-exclusive achievement tier
+      // Ensure the prerequisite Platinum badge for this metric track is unlocked
+      const platinumPrereq = ACHIEVEMENT_REGISTRY.find(
+        (r) => r.metric === rule.metric && r.tier === 'platinum'
+      );
+      if (platinumPrereq && !unlockedIdsSet.has(platinumPrereq.id) && !newlyUnlocked.includes(platinumPrereq.id)) {
+        continue;
+      }
+    }
 
     const userValue = metrics[rule.metric];
     if (userValue >= rule.threshold) {

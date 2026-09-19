@@ -48,8 +48,9 @@ import { dispatchGitHubWorkflow } from '../utils/github-workflow.js';
 import { GITHUB_REPO_CONFIG } from '../config/env.js';
 import { MAX_GENERATION_DURATION_MS, PENDING_TIMEOUT_MS } from '../config/book-creation.js';
 import { isValidUuid } from '../utils/uuid.js';
-import { writingPresets, type AdvancedOptionsConfig } from '../types/book-creation.js';
+import { writingPresets, type AdvancedOptionsConfig, isWritingPresetVipOnly } from '../types/book-creation.js';
 import { validatePromptAppend } from '../utils/prompt-security.js';
+import { hasActiveVipSubscription } from './subscription.js';
 // ---------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------
@@ -60,7 +61,7 @@ import { validatePromptAppend } from '../utils/prompt-security.js';
  * Shared by the sync, SSE, and async creation routes so they all enforce the
  * same structure, preset list, and default values before generation starts.
  */
-export function normalizeAdvancedOptions(advancedOptions?: AdvancedOptionsConfig): AdvancedOptionsConfig | undefined {
+export function normalizeAdvancedOptions(advancedOptions?: AdvancedOptionsConfig, isVip: boolean = false): AdvancedOptionsConfig | undefined {
   if (advancedOptions == null) return undefined;
 
   if (typeof advancedOptions !== 'object' || advancedOptions === null || Array.isArray(advancedOptions)) {
@@ -81,6 +82,14 @@ export function normalizeAdvancedOptions(advancedOptions?: AdvancedOptionsConfig
       `Invalid writingPreset "${String(preset ?? '')}". Valid values: ${writingPresets.join(', ')}`,
       undefined,
       400
+    );
+  }
+
+  if (isWritingPresetVipOnly(preset) && !isVip) {
+    throw new BookCreationError(
+      `Writing preset "${preset}" is an exclusive VIP perk. Upgrade to VIP to use this style profile.`,
+      undefined,
+      403
     );
   }
 
@@ -143,9 +152,10 @@ export async function createBookValidate(params: {
   advancedOptions?: AdvancedOptionsConfig;
   isOriginal?: boolean,
   onProgress?: ProgressCallback,
-  aiValidationTimeout?: number
+  aiValidationTimeout?: number,
+  isVip?: boolean,
 }): Promise<ThemeValidationResult> {
-  const { mcCandidate, generateCoverImage, advancedOptions, isOriginal = false, onProgress, aiValidationTimeout } = params;
+  const { mcCandidate, generateCoverImage, advancedOptions, isOriginal = false, onProgress, aiValidationTimeout, isVip = false } = params;
   let { theme } = params;
 
   // ── 1. Theme structural validation ───────────────────────────────────────
@@ -218,7 +228,7 @@ export async function createBookValidate(params: {
   }
 
   // ── 4. Advanced options validation ─────────────────────────────────────
-  const normalizedAdvancedOptions = normalizeAdvancedOptions(advancedOptions);
+  const normalizedAdvancedOptions = normalizeAdvancedOptions(advancedOptions, isVip);
 
   // ── 5. Theme validation (heuristic + optional AI) ─────────────────────────
   //
@@ -316,9 +326,11 @@ export async function createBookCore(
     isOriginal,
     context = 'book_creation',
     mode = 'interactive',
+    isVip: isVipParam,
   } = params;
 
   const isInternal = isOriginal || userId === process.env.SYSTEM_USER_ID;
+  const isVip = isInternal || (isVipParam ?? (userId ? await hasActiveVipSubscription(userId) : false));
   let correlationId: string | undefined;
 
   try {
@@ -329,7 +341,8 @@ export async function createBookCore(
       generateCoverImage,
       advancedOptions,
       isOriginal,
-      onProgress
+      onProgress,
+      isVip,
     });
     const { comment: aiComment, language = 'en', titleIdea, hook: themeHook, summary: themeSummary, mcCandidate } = aiResult || {};
     const initializeParams: InitializeBookParams = {
