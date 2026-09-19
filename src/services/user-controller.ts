@@ -22,7 +22,7 @@ import { uploadUserImage } from './image.js';
 import { cApiError, cNotFoundError, cValidationError } from '../utils/error.js';
 import { sanitizeUsername } from '../utils/username.js';
 import { invalidateUserProfileCache } from './cache.js';
-import { REFERRAL_BONUS, REFERRAL_BONUS_VIP_REFERRER, BETA_TESTER_REWARD_CREDITS, getReferralBonus } from '../config/credits.js';
+import { BETA_TESTER_REWARD_CREDITS, getReferralBonus } from '../config/credits.js';
 import { hasActiveVipSubscription } from './subscription.js';
 import { CURRENT_TERMS_VERSION } from '../config/legal.js';
 import { awardCredits } from './credits.js';
@@ -97,7 +97,7 @@ export function getEnrichedUserSelect() {
     referralRewards: sql<number>`COALESCE((
       SELECT SUM(credits) FROM transactions
       WHERE user_id = users.user_id AND type = 'reward' AND context = 'referral_bonus' AND metadata->>'referredUserId' IS NOT NULL
-    ), COALESCE(${userCounters.referredUsers}, 0) * (CASE WHEN ${users.tier} = 'vip' THEN ${REFERRAL_BONUS_VIP_REFERRER}::int4 ELSE ${REFERRAL_BONUS}::int4 END))`,
+    ), 0)`,
     followersCount: sql<number>`COALESCE(${userCounters.followersCount},0)`,
     followingCount: sql<number>`COALESCE(${userCounters.followingCount},0)`,
     // Comments the user wrote (top-level, parent_comment_id IS NULL) — SSOT-backed
