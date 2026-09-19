@@ -97,7 +97,7 @@ export function getEnrichedUserSelect() {
     referralRewards: sql<number>`COALESCE((
       SELECT SUM(credits) FROM transactions
       WHERE user_id = users.user_id AND type = 'reward' AND context = 'referral_bonus' AND metadata->>'referredUserId' IS NOT NULL
-    ), COALESCE(${userCounters.referredUsers}, 0) * (CASE WHEN ${users.tier} = 'vip' THEN ${REFERRAL_BONUS_VIP_REFERRER} ELSE ${REFERRAL_BONUS} END))`,
+    ), COALESCE(${userCounters.referredUsers}, 0) * (CASE WHEN ${users.tier} = 'vip' THEN ${REFERRAL_BONUS_VIP_REFERRER}::int4 ELSE ${REFERRAL_BONUS}::int4 END))`,
     followersCount: sql<number>`COALESCE(${userCounters.followersCount},0)`,
     followingCount: sql<number>`COALESCE(${userCounters.followingCount},0)`,
     // Comments the user wrote (top-level, parent_comment_id IS NULL) — SSOT-backed
