@@ -1,7 +1,4 @@
 import type { StoryPhase } from "../types/story.js";
-import { formatOneOf } from "../utils/text-processing.js";
-import type { GenreCategory } from "../utils/genre-detection.js";
-import { GENRE_CONTEXT_CONFIGS } from "../utils/genre-detection.js";
 
 /**
  * Configuration constants for the custom actions system
@@ -150,31 +147,3 @@ export const EXPANDED_COMMUNITY_ACTION_COST = 1;
 
 /** Max actions per page — free retries */
 export const CUSTOM_ACTION_MAX_ATTEMPTS_PER_PAGE_LIMIT = 3;
-
-// ============================================================================
-// GENRE CONTEXT — Prompt Builder
-// ============================================================================
-
-/**
- * Builds a concise genre context block for the Gate 2 evaluator prompt.
- * Uses configs from `utils/genre-detection.ts` to inject only the detected
- * genre's rule plus a generic fallback, saving ~150 tokens per prompt.
- *
- * @param genreCategory - Detected genre key from `detectGenre()`
- * @returns Formatted genre context block
- */
-export function buildGenreContextBlock(genreCategory: GenreCategory): string {
-  if (genreCategory === 'general') {
-    return `GENRE CONTEXT: This is multi-genre or general fiction. Fiction inherently explores conflict, violence, and mature themes.
-The ONLY valid content_policy reasons are: real-world CSAM, terrorism, weapons synthesis, non-consensual violence against real people, self-harm encouragement, or doxxing.
-NEVER reject fictional combat, genre-appropriate violence, horror atmosphere, romantic conflict, or dramatic tension as content_policy.`;
-  }
-
-  const config = GENRE_CONTEXT_CONFIGS[genreCategory];
-  const examples = formatOneOf([...config.examples]);
-
-  return `GENRE CONTEXT (${genreCategory.toUpperCase()}): ${config.rule}
-Example standard actions: ${examples}.
-The ONLY valid content_policy reasons are: real-world CSAM, terrorism, weapons synthesis, non-consensual violence against real people, self-harm encouragement, or doxxing.
-NEVER reject fictional combat, genre-appropriate violence, horror atmosphere, romantic conflict, or dramatic tension as content_policy.`;
-}

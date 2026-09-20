@@ -1,5 +1,6 @@
-import type { Action, ActionRiskMetadata, ActionType as ActionTypeStory, ActionHintType } from "../types/story.js";
+import type { Action, ActionRiskMetadata, ActionType as ActionTypeStory, ActionHintType, GenreCategory } from "../types/story.js";
 import { ucfirst } from "./formatter.js";
+import { GENRE_CONTEXT_CONFIGS } from "./genre-detection.js";
 
 /**
  * Shared factory for building a reader-authored custom `Action`.
@@ -65,4 +66,39 @@ export function deriveActionRisk(actionType: ActionTypeStory): ActionRiskMetadat
     default:
       return undefined;
   }
+}
+
+// ============================================================================
+// GENRE CONTEXT — Prompt Builder
+// ============================================================================
+
+/**
+ * Universal content policy guardrails applied to all genres.
+ * Extracted to maintain a Single Source of Truth (SSOT).
+ */
+const UNIVERSAL_CONTENT_POLICY = `CRITICAL RESTRAINT: The ONLY valid content_policy reasons for rejection are real-world CSAM, terrorism, weapons synthesis, non-consensual violence against real people, self-harm encouragement, or doxxing.`;
+
+/**
+ * Builds a concise genre context block for the evaluator prompt.
+ * Uses configs to inject only the detected genre's rule plus a generic fallback, 
+ * keeping the system prompt lean and preventing over-censorship.
+ *
+ * @param genreCategory - Detected genre key from `detectGenre()`
+ * @returns Formatted genre context block string
+ */
+export function buildGenreContextBlock(genreCategory: GenreCategory): string {
+  if (genreCategory === 'general') {
+    return `GENRE CONTEXT (MULTI-GENRE/GENERAL): Fiction inherently explores conflict, violence, and mature themes. NEVER reject fictional combat, genre-appropriate violence, horror atmosphere, or dramatic tension as a policy violation.
+${UNIVERSAL_CONTENT_POLICY}`;
+  }
+
+  const config = GENRE_CONTEXT_CONFIGS[genreCategory];
+  // Formats array into "A, B, or C" for clean prompt injection
+  const formattedExamples = config.examples.length > 1 
+    ? `${config.examples.slice(0, -1).join(', ')}, or ${config.examples[config.examples.length - 1]}`
+    : config.examples[0];
+
+  return `GENRE CONTEXT (${genreCategory.toUpperCase()}): ${config.rule}
+Example standard actions: ${formattedExamples}.
+${UNIVERSAL_CONTENT_POLICY}`;
 }

@@ -14,20 +14,11 @@ import { getPageFromDB, mapToUserStoryPage, getBookFromDB, mapBookFromDb } from 
 import { getStoryStateFromPage } from "./story.js";
 import { generateNextPages } from "../utils/prompt.js";
 import { detectGenre } from "../utils/genre-detection.js";
-import { buildGenreContextBlock } from "../config/custom-actions.js";
 import { acquireLock, releaseLock } from "../utils/distributed-lock.js";
-import { buildCustomActionAction } from "../utils/custom-action.js";
+import { buildCustomActionAction, buildGenreContextBlock } from "../utils/custom-action.js";
 import type { Book } from "../types/book.js";
 import type { CandidateGenerationPage } from "../types/candidate-generation.js";
-import {
-  CUSTOM_ACTION_DISABLED_PHASES,
-  CUSTOM_ACTION_SECURITY_PATTERNS,
-  CUSTOM_ACTION_DENYLIST_KEYWORDS,
-  MIN_CUSTOM_ACTION_CHARS,
-  getMaxCustomActionChars,
-  CUSTOM_ACTION_VALID_TEXT_PATTERN,
-  matchesCreativeWhitelist,
-} from "../config/custom-actions.js";
+import { CUSTOM_ACTION_DISABLED_PHASES, CUSTOM_ACTION_SECURITY_PATTERNS, CUSTOM_ACTION_DENYLIST_KEYWORDS, CUSTOM_ACTION_VALID_TEXT_PATTERN, MIN_CUSTOM_ACTION_CHARS, getMaxCustomActionChars, matchesCreativeWhitelist } from "../config/custom-actions.js";
 import type { PlaceMemory } from "../types/places.js";
 import type { ObjectItem } from "../types/character.js";
 import type { AIJsonProperty } from "../types/ai-chat.js";

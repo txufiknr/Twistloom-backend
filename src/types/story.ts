@@ -150,6 +150,8 @@ export type EndingType = keyof typeof endingTypes;
  */
 export type ActionType = keyof typeof actionTypes;
 
+export type GenreCategory = 'fantasy' | 'scifi' | 'horror' | 'thriller' | 'drama' | 'general';
+
 export type AIParameterValue = { adjustment: number, min: number, max: number };
 export type AIActionConfig = { temperature: AIParameterValue, topP: AIParameterValue, topK: AIParameterValue };
 

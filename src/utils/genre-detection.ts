@@ -12,11 +12,7 @@
  * that needs genre awareness (e.g., content moderation, recommendation).
  */
 
-// ============================================================================
-// Types
-// ============================================================================
-
-export type GenreCategory = 'fantasy' | 'scifi' | 'horror' | 'thriller' | 'drama' | 'general';
+import type { GenreCategory } from "../types/story.js";
 
 // ============================================================================
 // Keyword → Genre Mapping
@@ -43,15 +39,21 @@ const GENRE_DETECTION_ORDER: readonly Exclude<GenreCategory, 'general'>[] = [
  * Detect the dominant genre from a book's keywords.
  * Returns the first matching genre category, or 'general' if none match.
  *
+ * @param keywords - Array of raw tags/keywords provided by the user or metadata.
+ * @returns {GenreCategory} The resolved genre category.
+ * 
  * @example
  * detectGenre(['dark-fantasy', 'dragons']) // → 'fantasy'
- * detectGenre(['cooking', 'travel'])        // → 'general'
+ * detectGenre(['cooking', 'travel'])       // → 'general'
  */
 export function detectGenre(keywords: string[]): GenreCategory {
-  const lower = keywords.map((k) => k.toLowerCase());
+  if (!keywords || keywords.length === 0) return 'general';
+  
+  const lowerKeywords = keywords.map((k) => k.toLowerCase());
+  
   for (const genre of GENRE_DETECTION_ORDER) {
     const patterns = GENRE_KEYWORD_MAP[genre];
-    if (lower.some((kw) => patterns.some((p) => kw.includes(p)))) {
+    if (lowerKeywords.some((kw) => patterns.some((p) => kw.includes(p)))) {
       return genre;
     }
   }
@@ -65,29 +67,29 @@ export function detectGenre(keywords: string[]): GenreCategory {
 export interface GenreContextConfig {
   /** Example actions for the prompt (2-3 max for token efficiency) */
   readonly examples: readonly string[];
-  /** One-line rule for the evaluator */
+  /** One-line rule for the evaluator using prescriptive AI commands */
   readonly rule: string;
 }
 
 export const GENRE_CONTEXT_CONFIGS: Record<Exclude<GenreCategory, 'general'>, GenreContextConfig> = {
   fantasy: {
     examples: ['attack the dragon', 'cast a fireball', 'draw my sword'],
-    rule: 'FANTASY: Combat magic, sword fights, and monster battles are standard tropes — NEVER reject as content_policy.',
+    rule: 'Combat magic, sword fights, and monster battles are standard tropes. NEVER reject fictional fantasy violence as a policy violation.',
   },
   scifi: {
     examples: ['hack the mainframe', 'board the alien ship', 'activate my implant'],
-    rule: 'SCI-FI: Tech/combat actions, hacking, and alien encounters are standard tropes — NEVER reject as content_policy.',
+    rule: 'Tech/combat actions, hacking, and alien encounters are standard tropes. NEVER reject sci-fi conflict as a policy violation.',
   },
   horror: {
     examples: ['confront the ghost', 'explore the haunted house', 'banish the demon'],
-    rule: 'HORROR: Ghost/demon confrontation, dark exploration, and survival actions are core mechanics — NEVER reject as content_policy.',
+    rule: 'Ghost/demon confrontation, dark exploration, and survival actions are core mechanics. NEVER reject horror atmosphere or dread as a policy violation.',
   },
   thriller: {
     examples: ['interrogate the suspect', 'chase the fleeing figure', 'search for clues'],
-    rule: 'THRILLER: Interrogation, pursuit, and investigation actions are standard — NEVER reject as content_policy.',
+    rule: 'Interrogation, pursuit, and investigation actions are standard. NEVER reject tense dramatic conflict as a policy violation.',
   },
   drama: {
     examples: ['confront the betrayal', 'confess my feelings', 'defy the tyrant'],
-    rule: 'DRAMA: Emotional confrontation, betrayal, and conflict are core dramatic actions — NEVER reject as content_policy.',
+    rule: 'Emotional confrontation, betrayal, and intense personal conflict are core dramatic actions. NEVER reject romantic or dramatic tension as a policy violation.',
   },
 } as const;
