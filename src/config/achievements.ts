@@ -496,10 +496,11 @@ export const ACHIEVEMENT_REGISTRY: AchievementRule[] = [
   { id: 'thread_res_50', title: 'No Loose Threads', description: 'Resolved 50 ongoing narrative threads across the Loom', metric: 'threadsResolved', threshold: 50, tier: 'gold', category: 'chronicler' },
   { id: 'thread_res_150', title: 'Master Chronicler', description: 'The Loom\'s Weaver: Resolved 150 complex story threads to ultimate closure', metric: 'threadsResolved', threshold: 150, tier: 'platinum', category: 'chronicler' },
 
-  // ── VIP PRESTIGE: OBSIDIAN TIER ──────────────────────────────────────────
-  { id: 'obsidian_weaver', title: 'Obsidian Weaver', description: 'VIP Prestige: Generated 1,000 branching horror worlds as an active VIP', metric: 'booksGenerated', threshold: 1000, tier: 'obsidian', category: 'legacy' },
-  { id: 'obsidian_survivor', title: 'Void Walker', description: 'VIP Prestige: Survived 500 fatal narrative storylines as an active VIP', metric: 'booksCompleted', threshold: 500, tier: 'obsidian', category: 'survivor' },
-  { id: 'obsidian_scholar', title: 'Omniscient Reader', description: 'VIP Prestige: Consumed 5,000 pages of divergent dark fiction as an active VIP', metric: 'pagesRead', threshold: 5000, tier: 'obsidian', category: 'legacy' },
-  { id: 'obsidian_inquisitor', title: 'Loom Oracle', description: 'VIP Prestige: Uncovered 2,500 hidden narrative clues across labyrinthine plots as an active VIP', metric: 'cluesUncovered', threshold: 2500, tier: 'obsidian', category: 'seeker' },
-  { id: 'obsidian_fate', title: 'Architect of Ruin', description: 'VIP Prestige: Navigated 3,000 perilous branching decision points as an active VIP', metric: 'branchPointsExplored', threshold: 3000, tier: 'obsidian', category: 'explorer' },
+  // ── VIP PRESTIGE: MYTHIC TIER ──────────────────────────────────────────
+  { id: 'mythic_weaver', title: 'Mythic Weaver', description: 'VIP Prestige: Generated 2,000 branching horror worlds as an active VIP', metric: 'booksGenerated', threshold: 2000, tier: 'mythic', category: 'legacy' },
+  { id: 'mythic_survivor', title: 'Void Sovereign', description: 'VIP Prestige: Survived 1,500 fatal narrative storylines as an active VIP', metric: 'booksCompleted', threshold: 1500, tier: 'mythic', category: 'survivor' },
+  { id: 'mythic_scholar', title: 'Omniscient Scholar', description: 'VIP Prestige: Consumed 40,000 pages of divergent dark fiction as an active VIP', metric: 'pagesRead', threshold: 40000, tier: 'mythic', category: 'legacy' },
+  { id: 'mythic_inquisitor', title: 'Loom Oracle', description: 'VIP Prestige: Uncovered 5,000 hidden narrative clues across labyrinthine plots as an active VIP', metric: 'cluesUncovered', threshold: 5000, tier: 'mythic', category: 'seeker' },
+  { id: 'mythic_fate', title: 'Architect of Fate', description: 'VIP Prestige: Navigated 10,000 perilous branching decision points as an active VIP', metric: 'branchPointsExplored', threshold: 10000, tier: 'mythic', category: 'explorer' },
 ];
+

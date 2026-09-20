@@ -472,13 +472,13 @@ export async function downgradeUserFromVip(userId: string): Promise<void> {
     .limit(1);
 
   await dbWrite.transaction(async (tx) => {
-    // 1. Downgrade user record and revoke VIP obsidian avatar frame if equipped
+    // 1. Downgrade user record and revoke VIP mythic avatar frame if equipped
     await tx.update(users)
       .set({
         tier: 'standard',
         vipExpiresAt: null,
         subscriptionId: null,
-        avatarFrame: sql`CASE WHEN ${users.avatarFrame} = 'obsidian' THEN NULL ELSE ${users.avatarFrame} END`,
+        avatarFrame: sql`CASE WHEN ${users.avatarFrame} = 'mythic' THEN NULL ELSE ${users.avatarFrame} END`,
       })
       .where(eq(users.userId, userId));
 

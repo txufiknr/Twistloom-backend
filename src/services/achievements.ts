@@ -131,7 +131,7 @@ export async function checkAndAwardAchievements(userId: string): Promise<string[
   for (const rule of ACHIEVEMENT_REGISTRY) {
     if (unlockedIdsSet.has(rule.id)) continue; // Already awarded
 
-    if (rule.tier === 'obsidian') {
+    if (rule.tier === 'mythic') {
       if (!isVip) continue; // VIP-exclusive achievement tier
       // Ensure the prerequisite Platinum badge for this metric track is unlocked
       const platinumPrereq = ACHIEVEMENT_REGISTRY.find(

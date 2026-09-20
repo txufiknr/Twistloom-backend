@@ -1215,9 +1215,9 @@ export async function sanitizeProfileUpdate(
     if (payload.avatarFrame === null || payload.avatarFrame === '') {
       updateData.avatarFrame = null;
     } else if (typeof payload.avatarFrame === 'string' && avatarFrames.includes(payload.avatarFrame as AvatarFrame)) {
-      if (payload.avatarFrame === 'obsidian' && !isVip) {
+      if (payload.avatarFrame === 'mythic' && !isVip) {
         return {
-          errorResponse: cForbiddenError(res, 'The Obsidian avatar frame is exclusive to VIP members.'),
+          errorResponse: cForbiddenError(res, 'The Mythic avatar frame is exclusive to VIP members.'),
         };
       }
       updateData.avatarFrame = payload.avatarFrame as AvatarFrame;
