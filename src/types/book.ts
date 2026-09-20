@@ -9,9 +9,6 @@ import type { NewThread, StoryThreadTranslation } from "./story-thread.js";
 import type { AdvancedOptionsConfig } from "./book-creation.js";
 import type { RarityTier } from "./rarity.js";
 
-export const bookStatuses = ['active', 'archived', 'draft'] as const;
-export type BookStatus = typeof bookStatuses[number];
-
 /**
  * Book visibility levels controlling discoverability and access
  * 
@@ -36,15 +33,38 @@ export type BookVisibility = typeof bookVisibilities[number];
 export const bookModes = ['novel', 'interactive', 'multiverse'] as const;
 export type BookMode = typeof bookModes[number];
 
-export const bookGenerationStatuses = [
-  'pending',
-  'in_progress',
-  'completed',
-  'failed',
-  'cancelled',
-];
+/**
+ * Lifecycle statuses available for a book.
+ *
+ * - `active`: The book is available for normal use.
+ * - `archived`: The book has been archived and is no longer active.
+ * - `draft`: The book is still being prepared and is not yet active.
+ */
+export const bookStatuses = ['active', 'archived', 'draft'] as const;
+export type BookStatus = typeof bookStatuses[number];
 
+/**
+ * Statuses reported while a book is being generated.
+ *
+ * - `pending`: Generation is queued but has not started.
+ * - `in_progress`: Generation is currently running.
+ * - `completed`: Generation finished successfully.
+ * - `failed`: Generation ended because of an error.
+ * - `cancelled`: Generation was intentionally stopped before completion.
+ */
+export const bookGenerationStatuses = ['pending', 'in_progress', 'completed', 'failed', 'cancelled'] as const;
 export type BookGenerationStatus = typeof bookGenerationStatuses[number];
+
+/**
+ * Content ratings used to indicate the maturity level of a book.
+ *
+ * - `general`: Suitable for a general audience.
+ * - `teen`: Intended for teen audiences.
+ * - `mature`: Contains mature themes.
+ * - `adult`: Intended for adults only.
+ */
+export const contentRatings = ['general', 'teen', 'mature', 'adult'] as const;
+export type ContentRating = typeof contentRatings[number];
 
 /**
  * Story generation step types
@@ -202,6 +222,11 @@ export type Book = {
   ending?: Ending;
   /** Writer-controlled kill switch: when false, readers hear no BGM for this book */
   bgmEnabled: boolean;
+  /**
+   * Content rating for age-gating.
+   * 'general' = accessible to all, 'teen' = 13+, 'mature' = 16+, 'adult' = 18+
+   */
+  contentRating: 'general' | 'teen' | 'mature' | 'adult';
   /** Optional front matter — one rich-text page shown before Page 1 */
   frontMatter: BookFrontMatter | null;
   /** When the book was created */

@@ -7961,7 +7961,7 @@ router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, rateLimi
       : getCreditCostForUser(userId, 'CUSTOM_ACTION');
 
     // Gate 2 — AI validation (light tier)
-    const userPrompt = buildCustomActionValidationPrompt(text, storyState, dbPage, book.language);
+    const userPrompt = buildCustomActionValidationPrompt(text, storyState, dbPage, book.language, book.keywords);
 
     const evalConfig: AIPromptForJson<CustomActionValidationResult> = {
       schema: CUSTOM_ACTION_VALIDATION_SCHEMA_DEFINITION,
@@ -8161,7 +8161,7 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit
     }
 
     // Gate 2 — AI validation
-    const userPrompt = buildCustomActionValidationPrompt(text, storyState, dbPage, book.language);
+    const userPrompt = buildCustomActionValidationPrompt(text, storyState, dbPage, book.language, book.keywords);
 
     const evalConfig: AIPromptForJson<CustomActionValidationResult> = {
       schema: CUSTOM_ACTION_VALIDATION_SCHEMA_DEFINITION,

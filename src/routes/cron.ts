@@ -16,6 +16,7 @@ import { cApiError } from "../utils/error.js";
 import { constantTimeEqual } from "../utils/crypto.js";
 import { maturePendingEarnings } from "../services/maturation.js";
 import { processPendingPayouts } from "../services/disbursement.js";
+import { evaluateTrustScores } from "../cron/evaluate-trust.js";
 
 const router = new Hono<AppEnv>();
 
@@ -108,6 +109,28 @@ router.post("/process-disbursements", async (c) => {
     });
   } catch (error) {
     return cApiError(c, "Failed to process payout disbursements", error);
+  }
+});
+
+/**
+ * POST /api/cron/evaluate-trust
+ *
+ * Runs the daily trust score evaluation engine to re-evaluate all users
+ * with active enforcement actions or recent violation events. Applies
+ * exponential time-decay, recalculates risk tiers, and sets probation periods.
+ *
+ * Schedule: Daily 04:00 UTC (off-peak)
+ */
+router.post("/evaluate-trust", async (c) => {
+  try {
+    await evaluateTrustScores();
+    return c.json({
+      success: true,
+      message: "Trust score evaluation complete",
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    return cApiError(c, "Failed to evaluate trust scores", error);
   }
 });
 

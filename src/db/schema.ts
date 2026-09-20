@@ -1,9 +1,9 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer, unique, uniqueIndex, foreignKey, type UpdateDeleteAction, boolean, vector } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer, unique, uniqueIndex, foreignKey, type UpdateDeleteAction, boolean, vector, date as pgDate } from "drizzle-orm/pg-core";
 import type { AvatarFrame, CheckinClaimType, FeedbackAdminStatus, FeedbackCategory, FeedbackStatus, Gender, Source, UserActivityType, UserTier } from "../types/user.js";
 import type { LikeTargetType } from "../types/user.js";
 import type { CharacterMemoryTranslation, CharacterPlan, HealthStatus, InjuryTranslation, InventoryItem, InventoryItemTranslation, StoryMC, StoryMCCandidate, StoryMCTranslation } from "../types/character.js";
-import type { BookGenerationStatus, StoryGenerationStep, BookStatus, BookVisibility, Book, BookStats, UploadedImageType, BookMode, BookFrontMatter } from "../types/book.js";
+import type { BookGenerationStatus, StoryGenerationStep, BookStatus, BookVisibility, Book, BookStats, UploadedImageType, BookMode, BookFrontMatter, ContentRating } from "../types/book.js";
 import type { AdvancedOptionsConfig } from "../types/book-creation.js";
 import type { SessionStatus } from "../types/session.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
@@ -356,6 +356,28 @@ export const users = pgTable(
     termsVersion: text("terms_version"),
     // COPPA/GDPR: age confirmation timestamp
     ageConfirmedAt: timestamp("age_confirmed_at", { withTimezone: true }),
+    /**
+     * User's date of birth for age-gating content.
+     * Set during age verification or profile completion.
+     * Used by age-gate middleware to restrict access to elevated content ratings.
+     */
+    dateOfBirth: pgDate("date_of_birth"),
+    /**
+     * Whether the user's age has been verified via ID or trusted method.
+     * When true, dateOfBirth is considered reliable for age-gating.
+     */
+    ageVerified: boolean("age_verified").notNull().default(false),
+    /**
+     * Parental consent for users aged 13-17.
+     * Required for access to 'mature' and 'adult' content ratings.
+     * Set via parental consent flow (COPPA compliance).
+     */
+    parentalConsent: boolean("parental_consent").notNull().default(false),
+    /**
+     * Timestamp of when parental consent was obtained.
+     * Audit trail for COPPA compliance.
+     */
+    parentalConsentAt: timestamp("parental_consent_at", { withTimezone: true }),
     tokenVersion: integer("token_version").notNull().default(0), // Session version for JWT revocation
     /**
      * Admin ban (P4). NULL = not banned. Non-null = banned since this timestamp.
@@ -652,6 +674,12 @@ export const books = pgTable(
     ending: jsonb("ending").$type<Ending>(),
     /** Writer-controlled kill switch: when false, readers hear no BGM for this book. */
     bgmEnabled: boolean("bgm_enabled").notNull().default(true),
+    /**
+     * Content rating for age-gating. Set during book creation or post-generation analysis.
+     * Values: 'general', 'teen', 'mature', 'adult'. Default 'general'.
+     * Used by age-gate middleware to restrict access for underage users.
+     */
+    contentRating: text("content_rating").$type<ContentRating>().notNull().default('general'),
     /** Optional front matter — one rich-text page shown before Page 1. */
     frontMatter: jsonb("front_matter").$type<BookFrontMatter>(),
     createdAt,

@@ -25,7 +25,7 @@ import type { StoryGenerationStep } from "../types/book.js";
 import type { ChatCompletionRequest, ChatCompletionResponse } from "@mistralai/mistralai/models/components";
 import type * as GroqCompletion from "groq-sdk/resources/chat/completions.mjs";
 import { isObjectLike } from "./parser.js";
-import { recordViolationEvent } from "../services/trust-safety.js";
+import { evaluateProviderSafetySignal } from "../services/content-safety.js";
 
 /**
  * Base function for AI provider prompt handling with common patterns
@@ -133,17 +133,36 @@ async function promptWithFallback<T>(
       // Retryable errors were already retried by retryWithBackoff within the try block.
       const code = classifyGenAIError(provider, model, error);
 
-      // Log safety block events in shadow mode for forensic visibility
+      // Safety block handling with creative-contextual false-positive detection.
+      // When a provider returns a safety block, evaluate whether it's a genuine
+      // policy violation or a creative content false positive. Genuine violations
+      // are escalated immediately; false positives trigger waterfall fallback to
+      // the next provider instead of penalizing the user.
       if (code === 'SAFETY_BLOCKED') {
         const userId = (options as any)?.userId;
-        if (userId) {
-          recordViolationEvent({
-            userId,
-            violationType: 'ai_policy',
-            source: 'ai_moderator',
-            rawInput: prompt.slice(0, 500),
-            detectionDetails: { provider, model, code: 'SAFETY_BLOCKED' },
-          }).catch((err) => console.error(`[${provider}] ⚠️ Failed to log safety violation event:`, err));
+        const rawError = error instanceof Error ? error.message : String(error);
+
+        const classification = evaluateProviderSafetySignal({
+          provider,
+          model,
+          rawError,
+          normalizedCode: code,
+          prompt: prompt.slice(0, 500),
+          userId,
+        });
+
+        if (classification.shouldEscalate) {
+          // Genuine violation — break out of model loop, do not retry
+          console.error(`[${provider}] 🚫 Genuine safety violation (${classification.reason}) — escalating`);
+          break;
+        } else if (classification.shouldRetryWithAlternateProvider) {
+          // Creative false positive or ambiguous — break model loop, let outer
+          // aiPrompt loop continue to the next provider
+          console.warn(`[${provider}] ⚡ Safety block likely false positive (${classification.reason}) — falling back to next provider`);
+          break;
+        } else {
+          // Should not happen, but handle gracefully — log and continue to next model
+          console.warn(`[${provider}] ⚠️ Safety block unclassified — continuing`);
         }
       }
 

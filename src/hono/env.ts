@@ -19,12 +19,16 @@ import type { UploadedFile } from "../types/hono.js";
  * - `user`     : resolved {@link AuthUser} (set by the auth middleware)
  * - `headerLanguage` : parsed Accept-Language code (set by the locale middleware)
  * - `file`     : parsed multipart file (set by the upload middleware)
+ * - `bookContentRating` : content rating for age-gating (set by route handlers)
+ * - `hasAcknowledgedContent` : whether user acknowledged mature content (set by route handlers)
  */
 export interface AppVariables {
   userId?: string;
   user?: AuthUser;
   headerLanguage?: string | null;
   file?: UploadedFile;
+  bookContentRating?: 'general' | 'teen' | 'mature' | 'adult';
+  hasAcknowledgedContent?: boolean;
   /**
    * Parsed JSON request body (set by the global JSON body middleware).
    *

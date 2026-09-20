@@ -2610,6 +2610,7 @@ export function mapBookFromDb(dbBook: DBBook): Book {
     advancedOptions: dbBook.advancedOptions || undefined,
     ending: dbBook.ending || undefined,
     bgmEnabled: dbBook.bgmEnabled ?? true,
+    contentRating: dbBook.contentRating ?? 'general',
     frontMatter: dbBook.frontMatter ?? null,
     createdAt: dbBook.createdAt,
     updatedAt: dbBook.updatedAt,

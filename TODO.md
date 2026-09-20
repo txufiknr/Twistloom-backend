@@ -17,6 +17,7 @@
 
 [ ] multi-turn & pen propose DRY: `PEN_STATE_PROPOSAL_vs_MULTI_TURN_TURND_DRY_ROADMAP.md`
 [ ] tackle new issues in `MULTI_TURN_PAGE_GENERATION_BUG_REPORT.md`
+[ ] add `users.lastLoginIp` or `user_ip_logs` table for anti-fraud
 
 ---
 

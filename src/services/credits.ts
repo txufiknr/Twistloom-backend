@@ -30,6 +30,7 @@ import { logUserActivity } from './user.js';
 import { retryWithBackoffOrNull } from '../utils/retry.js';
 import type { ConsumeCreditsOptions, ConsumeCreditsResult, TransactionType } from '../types/credits.js';
 import { PAYMENT_GATEWAY, type PaymentGateway } from '../types/payment.js';
+import { requireNoFraudFlags } from './fraud-detection.js';
 
 // ---------------------------------------------------------------------------
 // consumeCredits
@@ -491,6 +492,11 @@ export async function executeWithCredits<T>(
   if (cost < 0) throw new Error(`Invalid credit cost: ${costKey} must be greater than or equal to 0`);
 
   const correlationId = options.correlationId || generateId();
+
+  // Fraud detection: block high-risk users from credit-sensitive operations
+  if (cost > 0) {
+    await requireNoFraudFlags(userId, undefined, 'usage');
+  }
 
   // Free demo / zero-cost — run the operation without charging
   if (cost === 0) {
