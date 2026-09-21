@@ -11,7 +11,7 @@ import { eq, and } from "drizzle-orm";
 import type { StoryState, StoryProgressWithBranch, BranchValidationResult, BranchNavigationOptions, TraversalOptions, StateReconstructionDeps } from "../types/story.js";
 import { getBookFromDB, getPageFromDB } from "./book.js";
 import { getBranchPath, getSiblingPages, getBranchStats, reconstructStoryState, preWarmBranchCache } from "../utils/branch-traversal.js";
-import { getStoryState, getStoryProgress, getUserSession, insertStoryState } from "./story.js";
+import { getStoryState, getStoryStateFromDB, mapStoryStateFromDb, getStoryProgress, getUserSession, insertStoryState } from "./story.js";
 import { setDeletedState } from "./story-state-cache.js";
 import { getErrorMessage } from "../utils/error.js";
 import { MAX_ACTION_CHOICES, MIN_PAGES_FOR_MIDDLE, SNAPSHOT_INTERVAL } from "../config/story.js";
@@ -389,10 +389,13 @@ export async function cleanupStoryStatesWithStrategy(bookId: string): Promise<vo
       console.log(`[cleanupStoryStatesWithStrategy] 🗑️ Preparing to delete ${statesToDelete.length} states, keeping ${pagesToKeep.size} states`);
       
       for (const stateToDelete of statesToDelete) {
-        // Cache the state before deletion for safety net
-        const fullState = await getStoryState(stateToDelete.pageId);
-        if (fullState) {
-          setDeletedState(stateToDelete.pageId, fullState);
+        // Cache the state before deletion for safety net.
+        // Use getStoryStateFromDB (direct query) instead of getStoryState
+        // (full parent-chain reconstruction) to avoid transient connection
+        // errors in the reconstruction chain during cleanup.
+        const dbState = await getStoryStateFromDB(stateToDelete.pageId);
+        if (dbState) {
+          setDeletedState(stateToDelete.pageId, mapStoryStateFromDb(dbState));
           console.log(`[cleanupStoryStatesWithStrategy] 💾 Cached state before deletion for page ${stateToDelete.pageId} (page ${stateToDelete.page})`);
         }
         
