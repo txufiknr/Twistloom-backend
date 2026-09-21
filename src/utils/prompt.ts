@@ -13,6 +13,7 @@ import { aiPrompt, createAIOptionsWithSchema, resolveUseStringEvaluator, runEval
 import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, applyStateDelta, advanceStoryState, calculatePsychologicalDeltas, mapFutureNoteWithKey, createStoryThread } from "./story.js";
 import { ensureCandidatesForPageWithStrategy, triggerCandidateGenerationWorkflow } from "./candidate-generation.js";
 import { calculateHealthStatus, generateRandomCharacter, getMainCharacterInfo } from "./characters.js";
+import { blacklistedNames } from "../config/characters.js";
 import { getPreviousPages } from "../services/story.js";
 import { BOOK_MAX_PAGES, MAX_WORDS_PER_PAGE } from "../config/story.js";
 import { getErrorMessage } from "./error.js";
@@ -6228,6 +6229,7 @@ CHARACTER CONSTRAINTS:
 - Main character age must be between ${MIN_CHARACTER_AGE} and ${MAX_CHARACTER_AGE}.
 - Character gender must be one of: ${formatOneOf(genders)}.
 - If specifying the main character, explicitly state whether they are "male" or "female".
+- Do NOT use these blacklisted names for any character: ${formatOneOf(blacklistedNames)}.
 
 Examples of useful information (all optional except the premise):
 - Character names

@@ -1478,7 +1478,15 @@ router.get("/prompt", optionalAuth, rateLimit(BOOK_PROMPT_RATE_LIMIT, { ipFallba
           summary: summaryContext,
         });
 
-        // Pipe chunks live to client while extracting clean prompt text
+        // Pipe chunks live to client while extracting clean prompt text.
+        // Optimistic streaming: the writeChunk callback forwards ALL raw SSE
+        // bytes to the client immediately — including chunks from failed
+        // provider attempts. On fallback, the frontend may see text appear,
+        // clear (on provider_error), and reappear with new content. This is
+        // by design: buffering until validation would add latency to every
+        // request to fix a rare cosmetic flicker. The returned promptContent
+        // is always correct (only the successful attempt's text) because
+        // extractSseText resets on start/provider_error boundary events.
         promptContent = await pipeSSEStreamAndExtractText(aiStream, (chunk) => stream.write(chunk));
         
         // Validate and save to cache if quality is good. Never cache a truncated

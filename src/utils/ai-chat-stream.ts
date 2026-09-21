@@ -53,6 +53,28 @@ import { convertToGeminiSchema } from "./gemini.js";
  * - Less encapsulated fallback logic
  *
  * @remarks
+ * **Optimistic Streaming (Design Decision)**
+ *
+ * Chunks are piped to the client **immediately** as they arrive — before
+ * post-stream validation (completeness, minOutputLength, finishReason) runs.
+ * This is intentional: it minimizes time-to-first-token (TTFT) for the
+ * **common case** where the first model succeeds (~95%+ of requests).
+ *
+ * When a model fails validation AFTER streaming its full output, the client
+ * has already received those chunks. The orchestrator then emits a
+ * `provider_error` event and retries the next model, which re-streams fresh
+ * text. The client sees: text appears → provider_error clears it → new text
+ * appears. This "double-render" on fallback is a deliberate trade-off:
+ * penalizing every request with buffering latency to eliminate a rare
+ * cosmetic flicker is not worth it.
+ *
+ * Server-side callers using `pipeSSEStreamAndExtractText` are unaffected:
+ * `extractSseText` resets its accumulated text on `start`/`provider_error`
+ * events, so the returned string always contains ONLY the successful
+ * attempt's text. Only the raw SSE wire bytes (which include failed
+ * attempts) reach the HTTP client.
+ *
+ * @remarks
  * **Architecture Approach: Orchestrator-Level Fallback**
  * 
  * @remarks
@@ -366,6 +388,9 @@ export async function aiStreamSSE(
                 await handleBackpressure(controller);
 
                 fullText += chunk;
+                // OPTIMISTIC PIPE: chunks go to the client immediately, before
+                // post-stream validation. See the "Optimistic Streaming" note in
+                // the class-level JSDoc for why this trade-off is intentional.
                 controller.enqueue(encoder.encode(createTextChunkEvent(chunk)));
               }
 
@@ -397,6 +422,7 @@ export async function aiStreamSSE(
                     await handleBackpressure(controller);
 
                     fullText += chunk;
+                    // OPTIMISTIC PIPE: same as above — flush to client immediately.
                     controller.enqueue(encoder.encode(createTextChunkEvent(chunk)));
                   }
                 } catch (streamError) {
@@ -1162,6 +1188,12 @@ async function extractSseText(
         // final output. Discard it so the extracted text is never a
         // partial+full concatenation (which would corrupt cached prompts). The
         // next provider re-streams the full output from scratch.
+        //
+        // This is the server-side guarantee behind "Optimistic Streaming":
+        // even though raw SSE bytes from failed attempts reach the HTTP client
+        // (via the writeChunk callback), the RETURNED text from
+        // pipeSSEStreamAndExtractText always contains only the successful
+        // attempt's content.
         if (
           currentEventType === 'start' ||
           currentEventType === 'error' ||
@@ -1212,6 +1244,15 @@ export async function parseSSEStreamContent(stream: ReadableStream<Uint8Array>):
 /**
  * Pipes an SSE ReadableStream to an output writer callback while simultaneously
  * extracting and accumulating the clean text content from `data.content` in real-time.
+ *
+ * **Optimistic streaming note**: The `writeChunk` callback receives raw SSE bytes
+ * immediately — including chunks from failed provider attempts (see
+ * {@link aiStreamSSE}'s "Optimistic Streaming" JSDoc). The returned text, however,
+ * contains ONLY the successful attempt's content because {@link extractSseText}
+ * resets its accumulator on `start`/`provider_error` boundary events. Callers that
+ * need the final clean text (e.g. for DB caching) should use the return value;
+ * callers that pipe to HTTP clients should rely on the `writeChunk` side-effect
+ * for real-time delivery.
  *
  * @param stream - ReadableStream of SSE-formatted Uint8Array chunks
  * @param writeChunk - Callback to write each binary chunk (e.g. `chunk => stream.write(chunk)`)
