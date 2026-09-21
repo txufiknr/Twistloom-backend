@@ -15,6 +15,15 @@
  *
  * Decoupled from custom-actions so it can be reused by any system
  * that needs genre awareness (e.g., content moderation, recommendation).
+ *
+ * Behavior note (see `scoreKeywordForGenre`): a prior version could silently
+ * downgrade a genuine exact-match compound keyword (e.g. "high-fantasy",
+ * "psychological-horror") to a lower bounded-match score, purely because of
+ * pattern-array ordering. That's fixed now. The fix is intentional and can
+ * change the tie-break winner for books tagged with strong (explicit-tier)
+ * keywords from two different genres at once — two scores that used to
+ * differ by 1 solely because of the bug can now correctly tie and fall to
+ * `GENRE_DETECTION_ORDER`. Single-genre tagging is unaffected.
  */
 
 // ============================================================================
@@ -64,9 +73,25 @@ const SIGNAL_SCORE: Record<GenreSignalStrength, number> = {
 };
 
 /**
- * Minimum evidence required before resolving a non-general genre.
- *
- * Equivalent to one exact high-strength match (3) or two exact medium matches.
+ * Signal tiers in strongest-to-weakest order. Declared once at module scope
+ * — rather than as a local array literal inside `scoreKeywordForGenre` — so
+ * the same tier list isn't reallocated on every keyword/genre pair scored,
+ * and so the iteration order has a single named source of truth rather than
+ * a hardcoded array that could quietly drift from `SIGNAL_SCORE`'s keys.
+ */
+const SIGNAL_TIERS_DESCENDING: readonly GenreSignalStrength[] = [
+  'explicit',
+  'high',
+  'medium',
+  'low',
+];
+
+/**
+ * Minimum cumulative genre score required before resolving a non-general
+ * genre. This is a floor, not an exact target: it's cleared by a single
+ * exact high-tier match (score 3), a single exact explicit-tier match
+ * (score 4), two exact medium matches (score 2+2=4), or one medium plus one
+ * low match (2+1=3) — but NOT by two low matches alone (1+1=2).
  * Prevents false positives from weak/ambiguous keyword combinations.
  */
 const MIN_GENRE_SCORE = 3;
@@ -318,6 +343,31 @@ const GENRE_DETECTION_ORDER = [
   'drama',
 ] as const satisfies readonly DetectableGenre[];
 
+/**
+ * Compile-time guard ensuring every `DetectableGenre` has an entry in
+ * `GENRE_DETECTION_ORDER`. `GENRE_KEYWORD_MAP` and `GENRE_CONTEXT_CONFIGS`
+ * get this guarantee for free via `satisfies Record<DetectableGenre, ...>`;
+ * a plain tuple has no built-in equivalent, so without this check, adding a
+ * new genre to `GenreCategory` without also listing it here would compile
+ * fine — the new genre's score would just sit at 0 forever inside
+ * `detectGenre` (both loops there only visit genres this array lists), so
+ * it could never be selected, with nothing to say why. This turns that into
+ * a compile error instead.
+ *
+ * Both sides are wrapped in single-element tuples to stop TypeScript from
+ * distributing the conditional over each member of `DetectableGenre`;
+ * without that, a genre missing from `GENRE_DETECTION_ORDER` would
+ * silently vanish from the union instead of failing the check.
+ *
+ * Type-only — erased at compile time, no runtime cost or behavior.
+ */
+type GenreDetectionOrderIsExhaustive = [DetectableGenre] extends [
+  (typeof GENRE_DETECTION_ORDER)[number],
+]
+  ? true
+  : never;
+void (true satisfies GenreDetectionOrderIsExhaustive);
+
 // ============================================================================
 // Genre Detection Helpers
 // ============================================================================
@@ -391,23 +441,42 @@ function scoreMatch(strength: GenreSignalStrength, exact: boolean): number {
 /**
  * Resolve the strongest match score for one keyword against one genre.
  *
- * Iterates signal tiers from strongest to weakest. Only the strongest
- * matching pattern contributes for a given keyword/genre pair, preventing
- * compound terms such as "psychological-horror" from being double-counted
- * because they also contain "horror".
+ * Iterates signal tiers from strongest to weakest, stopping at the first
+ * tier that produces a match — so an explicit-tier match always outranks
+ * any high/medium/low-tier match, even a merely bounded one. This is also
+ * what prevents compound terms such as "psychological-horror" from being
+ * double-counted for also containing "horror": once the explicit tier
+ * matches on either pattern, scoring stops there and the lower tiers are
+ * never consulted.
+ *
+ * Within a tier, EVERY pattern is checked for an exact match before ANY
+ * pattern is checked for a bounded match. This two-pass order matters:
+ * tier lists are authored with the bare genre name first (e.g. "horror")
+ * followed by its compound subgenres (e.g. "psychological-horror"), so a
+ * single-pass scan would find "horror" as a bounded match inside the
+ * keyword "psychological-horror" before ever reaching the exact
+ * "psychological-horror" entry later in the same array — silently
+ * downgrading a genuine exact match to a lower bounded score purely
+ * because of list order. Checking all exact matches first makes the result
+ * independent of how the pattern arrays happen to be ordered.
  */
 function scoreKeywordForGenre(
   normalizedKeyword: string,
   genre: DetectableGenre,
 ): number {
-  const tiers: GenreSignalStrength[] = ['explicit', 'high', 'medium', 'low'];
+  for (const tier of SIGNAL_TIERS_DESCENDING) {
+    const patterns = GENRE_KEYWORD_MAP[genre][tier];
 
-  for (const tier of tiers) {
-    for (const pattern of GENRE_KEYWORD_MAP[genre][tier]) {
+    // Pass 1: exact matches only.
+    for (const pattern of patterns) {
       if (normalizedKeyword === pattern) {
         return scoreMatch(tier, true);
       }
+    }
 
+    // Pass 2: bounded matches — only reached if no exact match exists
+    // anywhere in this tier.
+    for (const pattern of patterns) {
       if (isBoundedGenreMatch(normalizedKeyword, pattern)) {
         return scoreMatch(tier, false);
       }
@@ -456,9 +525,17 @@ export function detectGenre(
     return 'general';
   }
 
-  // Deduplicate normalized keywords to prevent duplicate synonyms from
-  // inflating scores (e.g., ["horror", "horror-story", "horor"] all
-  // mapping to the same concept and scoring 4+4+4 = 12).
+  // Deduplicate keywords that normalize to the exact same string, so
+  // formatting-only variants of one tag (e.g. "Horror", "horror ", "HORROR")
+  // don't each add their own score. This does NOT catch different
+  // spellings of the same concept: "horror", "horor" (Indonesian), and
+  // "horror-story" each normalize to different strings and are scored
+  // independently below, so if a caller ever emits more than one of those
+  // for what is really a single underlying genre selection, they'll still
+  // be weighed as separate evidence. Collapsing genuine cross-spelling
+  // synonyms would need concept-level grouping this function doesn't
+  // attempt — if that turns out to matter in practice, dedupe at the
+  // source (one canonical keyword per selection) rather than here.
   const normalizedKeywords = [
     ...new Set(
       keywords
@@ -605,14 +682,19 @@ ${UNIVERSAL_CONTENT_POLICY}`;
 
   const config = GENRE_CONTEXT_CONFIGS[genreCategory];
 
-  // Formats array into "A, B, or C" for clean prompt injection.
+  // Formats the example list into natural English: "A" / "A or B" /
+  // "A, B, or C". Every current config has exactly 3 examples (so only the
+  // last branch is reachable today), but this stays grammatically correct
+  // if a config is ever trimmed to 1-2 examples.
   const examples: readonly string[] = config.examples;
   const formattedExamples =
     examples.length === 0
       ? ''
       : examples.length === 1
         ? examples[0]
-        : `${examples.slice(0, -1).join(', ')}, or ${examples[examples.length - 1]}`;
+        : examples.length === 2
+          ? `${examples[0]} or ${examples[1]}`
+          : `${examples.slice(0, -1).join(', ')}, or ${examples[examples.length - 1]}`;
 
   const examplesLine = formattedExamples
     ? `\nExample standard actions: ${formattedExamples}.`
