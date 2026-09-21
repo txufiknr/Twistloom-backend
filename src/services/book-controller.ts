@@ -167,7 +167,8 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
               WHEN ss.page::float / NULLIF(ss.max_page, 0) >= ${PHASE_LATE_FLOOR} THEN 'LATE'
               WHEN ss.page::float / NULLIF(ss.max_page, 0) > ${PHASE_EARLY_CEILING} THEN 'MID'
               ELSE 'EARLY'
-            END
+            END,
+            'maxPage', ss.max_page
           )
           FROM user_sessions us
           LEFT JOIN pages p ON p.id = us.page_id
@@ -619,16 +620,17 @@ export async function enrichBooksWithUserData(
       const phase: StoryPhase = progress >= PHASE_FINALE_FLOOR ? 'FINALE' : progress >= PHASE_LATE_FLOOR ? 'LATE' : progress > PHASE_EARLY_CEILING ? 'MID' : 'EARLY';
       return [
         s.bookId,
-        {
-          lastReadAt: s.lastReadAt,
-          lastPageId: s.lastPageId,
-          lastPageNumber: s.lastPageNumber ?? null,
-          frontierPageId: s.frontierPageId ?? null,
-          frontierPageNumber: s.frontierPageNumber ?? 1,
-          frontierAncestorIds: s.frontierAncestorIds ?? [],
-          contextHistory: s.contextHistory || "",
-          phase,
-        } as EnrichedBookSession,
+      {
+        lastReadAt: s.lastReadAt,
+        lastPageId: s.lastPageId,
+        lastPageNumber: s.lastPageNumber ?? null,
+        frontierPageId: s.frontierPageId ?? null,
+        frontierPageNumber: s.frontierPageNumber ?? 1,
+        frontierAncestorIds: s.frontierAncestorIds ?? [],
+        contextHistory: s.contextHistory || "",
+        phase,
+        maxPage: s.ssMaxPage,
+      } as EnrichedBookSession,
       ];
     })
   );

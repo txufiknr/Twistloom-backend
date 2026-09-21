@@ -120,6 +120,7 @@ const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
  * @returns {string|null} user.imageUrl - User's profile image URL
  * @returns {number} user.credits - Available credits
  * @returns {boolean} user.isNewUser - Onboarding completed flag
+ * @returns {boolean} user.isAdmin - Whether user is a platform admin (for conditional nav rendering)
  * @returns {boolean} user.hasReferrer - Whether a referrer is already set (SSOT for welcome modal)
  * @returns {boolean} user.emailVerified - Whether email is verified
  * @returns {boolean} user.havePurchased - Whether user has made purchases

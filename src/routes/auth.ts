@@ -53,6 +53,7 @@ import { createOrUpdateOAuthUser, setReferrerForNewUser, tryAwardReferralBonus }
 import { validateUsername } from '../utils/username.js';
 import { isTemp as isTemporaryEmail } from 'tempmail-checker';
 import { requireAuth, invalidateCurrentSessionVerifyCache } from '../middleware/nextauth.js';
+import { resolveAdminAccess } from '../middleware/admin-auth.js';
 import { logAuditEvent } from '../utils/audit-log.js';
 import { createSession, getUserSessions, logoutFromSpecificDevice, logoutFromAllOtherDevices, logoutFromAllDevices, deleteSessionById } from '../services/session-manager.js';
 import { sanitizeUserData, getUserForAuth, getUserIdByEmail } from '../services/user.js';
@@ -115,7 +116,13 @@ async function handleGoogleAuth(idToken: string, c: Context<AppEnv>): Promise<Re
     return cApiError(c, 'Failed to retrieve user data');
   }
 
-  return c.json({ ...user, sessionId });
+  // Resolve admin status for JWT embedding. This check is lightweight:
+  // isSuperAdminUserId() is a constant comparison; loadAdminRow() hits the
+  // admin_users table (indexed PK lookup, <1ms). At current scale this is
+  // negligible — ~1 extra query per sign-in for non-super-admin users.
+  const access = await resolveAdminAccess(userId);
+
+  return c.json({ ...user, isAdmin: access.isAdmin, sessionId });
 }
 
 // ---------------------------------------------------------------------------
@@ -227,6 +234,9 @@ router.post('/verify-credentials', async (c) => {
       // Non-critical: token cleanup failure shouldn't block login.
     });
 
+    // Resolve admin status for JWT embedding.
+    const access = await resolveAdminAccess(userData.userId);
+
     return c.json({
       userId: userData.userId,
       email: userData.email,
@@ -234,8 +244,9 @@ router.post('/verify-credentials', async (c) => {
       username: userData.username,
       imageUrl: userData.imageUrl,
       isNewUser: userData.isNewUser,
+      isAdmin: access.isAdmin,
       sessionId,
-    } satisfies Omit<DBUserForAuth, 'passwordHash'> & { isNewUser: boolean; sessionId: string });
+    } satisfies Omit<DBUserForAuth, 'passwordHash'> & { isNewUser: boolean; isAdmin: boolean; sessionId: string });
   } catch (error) {
     console.error('[POST /api/auth/verify-credentials] ❌ Credential verification error:', error);
     return cApiError(c, 'Failed to verify credentials', error, 500);

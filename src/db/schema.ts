@@ -262,6 +262,21 @@ export const storyStates = pgTable(
     pageId: pageId("cascade"), // Delete if page is deleted (primary key)
     bookId: bookId("cascade"), // Delete if book is deleted
     page: integer("page").notNull(),
+    /**
+     * The authoritative story ceiling for this branch — the denominator used
+     * by `getStoryStateInfo()` to compute `pageProgress`, `phase`, and
+     * `remainingPages`.  May differ from `books.total_pages`:
+     *
+     *   - **Shorter**: dangerous reader actions can trigger an early ending,
+     *     capping `maxPage` below the initial target.
+     *   - **Longer**: `finalizePenDraft` grows `maxPage` monotonically when
+     *     the narrative expands beyond the initial target:
+     *     `Math.max(currentState.maxPage, book.totalPages, pageNumber)`.
+     *
+     * **SSOT for progress display** — both the reader (`ReaderControls`)
+     * and the dashboard (`ReadingProgress`) derive their progress bar
+     * ceiling and phase badge from this value, NOT from `books.total_pages`.
+     */
     maxPage: integer("max_page").notNull(),
     flags: jsonb("flags").$type<PsychologicalFlags>().notNull(), // Psychological flags structure
     traumaTags: text("trauma_tags").array().notNull().default(sql`ARRAY[]::text[]`),
@@ -631,6 +646,18 @@ export const books = pgTable(
     userId: uuid("user_id").references(() => users.userId, { onDelete: "set null" }), // Preserve books when users are deleted
     slug: text("slug").unique(), // SEO-friendly URL identifier
     title: text("title").notNull(),
+    /**
+     * Initial target page count set at book-creation time (default
+     * `BOOK_MIN_PAGES`).  Serves as a **fallback denominator** when
+     * `story_states.max_page` is unavailable (e.g. the reader has not yet
+     * opened the book, or the story-state row hasn't been reconstructed).
+     *
+     * NOT the SSOT for in-progress stories — use `story_states.max_page`
+     * (exposed to the client as `session.maxPage`) for progress bars,
+     * phase computation, and "Page X of Y" display.  This value is static
+     * after creation; `maxPage` is dynamic and tracks the actual branch
+     * ceiling as the narrative evolves.
+     */
     totalPages: integer("total_pages").notNull().default(BOOK_MIN_PAGES),
     language: text("language").notNull().default('en'),
     hook: text("hook"),

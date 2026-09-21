@@ -1733,7 +1733,18 @@ export type StoryState = {
   pageId: string;
   /** Current page number in the story progression */
   page: number;
-  /** Maximum planned pages for the story */
+  /**
+   * The authoritative story ceiling for this branch — the denominator for
+   * `pageProgress`, `phase`, and `remainingPages` in `StoryStateInfo`.
+   *
+   * **SSOT for progress display.** May differ from `book.totalPages`:
+   *   - Dangerous reader actions can trigger early endings (maxPage shrinks).
+   *   - `finalizePenDraft` grows it monotonically when the story expands
+   *     beyond the initial target.
+   *
+   * Exposed to the client as `session.maxPage` so dashboard surfaces
+   * (ReadingProgress) use the same denominator as the reader (ReaderControls).
+   */
   maxPage: number;
 
   /**
@@ -1918,7 +1929,11 @@ export type StoryMCState = {
 export type StoryStateInfo = {
   /** Current page number in the story (1-indexed) */
   currentPage: number;
-  /** Total number of pages in the story */
+  /**
+   * The story ceiling for this branch — equals `StoryState.maxPage`.
+   * Authoritative denominator for `pageProgress`, `phase`, and all
+   * progress-based computations.  May differ from `book.totalPages`.
+   */
   totalPages: number;
   /** Number of pages remaining until the story ends */
   remainingPages: number;

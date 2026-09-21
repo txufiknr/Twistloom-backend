@@ -172,7 +172,13 @@ export type Book = {
   slug?: string;
   /** Book title (catchy, mysterious) */
   title: string;
-  /** Total number of pages in the book */
+  /**
+   * Initial target page count set at book-creation time.  Serves as a
+   * **fallback denominator** when `story_states.max_page` is unavailable.
+   * NOT the SSOT for in-progress stories — use `session.maxPage` (from
+   * `story_states.max_page`) for progress bars and phase computation.
+   * Static after creation; `maxPage` is dynamic.
+   */
   totalPages: number;
   /** Book language */
   language: string;
@@ -348,6 +354,19 @@ export type EnrichedBookSession = {
   contextHistory: string;
   /** Computed story phase derived from page / maxPage ratio */
   phase: StoryPhase;
+  /**
+   * The story-state ceiling for this branch — the authoritative denominator
+   * for progress bars and phase computation.  May differ from
+   * `book.totalPages` when the narrative ends sooner (dangerous actions) or
+   * expands beyond the initial target.  Sent to the client so dashboard
+   * surfaces (ReadingProgress) use the same denominator as the reader.
+   *
+   * `null` when no `story_states` row exists yet (reader hasn't opened the
+   * book).  The frontend uses `session.maxPage ?? book.totalPages` to fall
+   * back gracefully — **never coalesce to 0**, as that defeats the `??`
+   * fallback and shows "Page X of 0".
+   */
+  maxPage: number | null;
 };
 export type EnrichedBookGeneration = {
   generationStatus?: BookGenerationStatus;
