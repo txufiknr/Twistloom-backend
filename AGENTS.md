@@ -1,12 +1,14 @@
 # AI Agent Development Guidelines
 
-## 📋 Overview
+## Overview
 
 This document outlines the architecture, coding standards, established design patterns, and best practices for AI agents working on the **Twistloom** backend project. Following these guidelines ensures consistency, high performance, strict type safety, data integrity, and adherence to established architectural standards across the codebase.
 
+> **Operational rules** (working style, runtime tooling, validation commands, PR discipline, import conventions) live in [`.github/copilot-instructions.md`](.github/copilot-instructions.md). This file is the architectural constitution.
+
 ---
 
-## 🧠 Architecture-First Principle (CRITICAL)
+## 1. Architecture-First Principle (CRITICAL)
 
 > **"Always design as if Twistloom has 10M concurrent active users today."**
 
@@ -45,7 +47,7 @@ This document outlines the architecture, coding standards, established design pa
 
 ---
 
-## 🛠️ Technology Stack & Runtime Architecture
+## 2. Technology Stack & Runtime Architecture
 
 ### Core Technologies
 - **Runtime**: Bun 1.3+ (Local dev via `Bun.serve()`, Vercel Node.js Serverless runtime in production)
@@ -57,21 +59,44 @@ This document outlines the architecture, coding standards, established design pa
 - **Language**: TypeScript 6.0+ (strict mode, no `any`)
 - **Package Manager**: Bun (`bun install`)
 
-### AI Multi-Provider Waterfall (8 Providers)
-1. **Mistral**: Primary creative writing prose & natural character voices
-2. **Google Gemini**: Large context (1M+ tokens), rapid generation, world-building lore
-3. **OpenRouter**: Unified gateway for Qwen, Llama-4, DeepSeek, Nemotron
+### AI Multi-Provider Waterfall (18 Chat Providers)
+
+> Provider config: [`src/config/ai-clients.ts`](file:///d:/Projects/Twistloom/Twistloom-backend/src/config/ai-clients.ts)
+> Type definition: [`src/types/ai-chat.ts`](file:///d:/Projects/Twistloom/Twistloom-backend/src/types/ai-chat.ts)
+
+#### Primary Creative & Large Context
+1. **Mistral**: Primary creative writing prose & natural character voices (lighter RLHF, understands gritty tension/subtext)
+2. **Google Gemini**: Large context (1M+ tokens), explicit context cache, world-building lore
+3. **OpenRouter**: Unified gateway for Qwen3, Llama-4, DeepSeek, Nemotron, GLM
+
+#### High-Speed Inference
 4. **Cerebras**: Ultra-high-speed inference for GLM-4.7 & reasoning
-5. **Groq**: Low-latency fast validation (Llama-3.3, Qwen)
-6. **NVIDIA**: Cost-effective Llama-3.3 on NIM
+5. **Groq**: Low-latency fast validation (Llama-3.3, Qwen3)
+6. **NVIDIA NIM**: Cost-effective Llama-3.3 / Nemotron on NIM
+
+#### Edge & Multilingual
 7. **Cloudflare Workers AI**: Edge inference for Mistral-7B / Llama-3.1
-8. **Cohere**: Last-resort fallback (Command-R)
+8. **Cohere**: Multilingual (10 core languages), RAG-optimized
+
+#### New Providers (2026-08-04 Assessment)
+9. **OVHcloud**: High-capacity (400 RPM authenticated), Qwen3.6-27B / GPT-OSS-120B
+10. **SambaNova**: DeepSeek-V3.2 / Llama on custom RDU hardware
+11. **ModelScope**: Qwen3.5-family (Alibaba-first releases)
+12. **Z.ai**: GLM-4.7-Flash (warm, theatrical prose)
+13. **SiliconFlow**: Qwen3-8B ($0 tier, light fallback)
+14. **Aion Labs**: aion-2.5 (dark/mature fiction, ~20K token/day budget — IDEA-only)
+15. **Chutes**: Decentralized Bittensor compute (requires funded account, no free tier)
+16. **LLM7.io**: Unofficial mirror/last-resort fallback (no SLA)
+17. **Inception Labs**: Mercury diffusion LLM ($0 during API-credits burn campaign)
+
+#### Embeddings Only
+- **Jina**: jina-embeddings-v5-text-small (100K TPM, not a chat provider)
 
 ---
 
-## ⚡ Established Architectural Patterns & Best Practices
+## 3. Established Architectural Patterns & Best Practices
 
-### 1. In-Memory LRU Caching Patterns
+### 3.1 In-Memory LRU Caching Patterns
 
 The backend employs dedicated in-memory LRU caches (`lru-cache`) for high-frequency, sub-millisecond reads where network trips to Redis or Postgres are unnecessary overhead.
 
@@ -100,7 +125,7 @@ export const storyStateCache = new LRUCache<string, StoryStateCacheEntry>({
 
 ---
 
-### 2. Redis & Multi-Tier Caching Architecture
+### 3.2 Redis & Multi-Tier Caching Architecture
 
 Twistloom uses a 3-tier caching hierarchy:
 1. **L1 In-Memory LRU**: Process-local, instant access (branch states, prompt templates).
@@ -156,7 +181,7 @@ try {
 
 ---
 
-### 3. Credits Consumption & Financial Integrity
+### 3.3 Credits Consumption & Financial Integrity
 
 All credit deductions and rewards must maintain strict transactional guarantees, row-level locking, and idempotency.
 
@@ -196,7 +221,7 @@ const { result, correlationId, transactionId } = await executeWithCredits(
 
 ---
 
-### 4. Server-Sent Events (SSE) Streaming Architecture
+### 3.4 Server-Sent Events (SSE) Streaming Architecture
 
 Twistloom delivers real-time AI generation with Time-To-First-Token < 300ms using W3C-compliant SSE over HTTP.
 
@@ -267,7 +292,7 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, async (c) 
 
 ---
 
-### 5. Database Operations & Drizzle ORM Guidelines
+### 3.5 Database Operations & Drizzle ORM Guidelines
 
 - **Database Client Splitting**: Use `dbRead` for read-only replica queries and `dbWrite` for write operations / transactions (`src/db/client.ts`).
 - **Connection Management**: Neon serverless uses WebSockets (`neonConfig.webSocketConstructor = globalThis.WebSocket`).
@@ -279,7 +304,7 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, async (c) 
 
 ---
 
-### 6. Hono Route Handlers & Error Handling
+### 3.6 Hono Route Handlers & Error Handling
 
 - **Typed Context**: Always type Hono apps and routers with `AppEnv` (`src/hono/env.ts`):
   ```typescript
@@ -299,7 +324,7 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, async (c) 
 
 ---
 
-### 7. Hot-Path & Serialization Performance Best Practices
+### 3.7 Hot-Path & Serialization Performance Best Practices
 
 These patterns reduce latency and DB/CPU load at **any** scale—not only under serverless CPU quotas. Apply them whenever you touch a high-frequency endpoint or an AI-generation path.
 
@@ -321,72 +346,7 @@ Presence endpoints (`POST /touch`, session heartbeats) must be O(1) atomic upser
 
 ---
 
-## 📝 Coding Standards & Conventions
-
-### Naming Conventions
-
-| Element | Style | Examples |
-|---------|-------|----------|
-| **Files** | `kebab-case` | `story-state-cache.ts`, `companion-stream.ts`, `credits.ts` |
-| **Constants** | `UPPER_SNAKE_CASE` | `BRANCH_CACHE_TTL`, `MAX_STATE_CACHE_SIZE`, `CREDIT_COSTS` |
-| **Variables & Functions** | `camelCase` | `executeWithCredits`, `calculateBranchSwitchCost`, `userId` |
-| **Classes & Interfaces** | `PascalCase` | `StreamingJsonAnswerExtractor`, `DBStoryState`, `AppEnv` |
-
-### TSDoc/JSDoc Requirements
-Write clear TSDoc comments for all exported utilities, functions, and interfaces, detailing behavior, parameters, return types, error cases, and examples.
-
-```typescript
-/**
- * Deducts credits and executes an operation within an atomic Postgres transaction.
- *
- * @param userId - ID of the user spending credits
- * @param costKey - Key in CREDIT_COSTS configuration or numeric value
- * @param operation - Async callback containing DB operations using the provided tx
- * @param options - Correlation ID, analytics context, and metadata
- * @returns Result of the operation and transaction identifiers
- * @throws Error with CREDIT_ERRORS.INSUFFICIENT_CREDITS if balance is too low
- */
-```
-
----
-
-## 💻 Development Commands
-
-> **🔧 PowerShell Command Separator**  
-> Use `;` as command separator in PowerShell to chain commands:
-> ```powershell
-> cd "d:\Projects\Twistloom\Twistloom-backend"; bun run check
-> ```
-
-### Development Scripts
-```bash
-bun dev                         # Start dev server with hot reload
-bun dev:api                     # Start API server only
-bun dev:cron:trending           # Run trending score calculation locally
-bun dev:cron:candidate          # Run candidate generation cron locally
-bun dev:cron:translate          # Run translation cron locally
-```
-
-### Quality & Type Checking
-```bash
-bun typecheck                   # Run TypeScript compiler check
-bun lint                        # Run ESLint
-bun lint:fix                    # Auto-fix linting issues
-bun lint:imports                # Verify all imports have .js extensions
-bun check                       # Run lint + lint:imports + typecheck in sequence
-```
-
-### Database Scripts (Manual Developer Execution Only)
-```bash
-bun db:test                     # Test Neon connection
-bun db:studio                   # Open Drizzle Studio UI
-bun db:migrate                  # Apply pending migrations (Dev)
-bun db:triggers                 # Apply Postgres triggers
-```
-
----
-
-### 7. Data Sanitization & Input Security Guidelines
+### 3.8 Data Sanitization & Input Security Guidelines
 
 All user-supplied strings and metadata entering backend routes and mutations must be sanitized to protect against XSS, control-character injection, and corrupt character sequences while strictly preserving emojis and valid formatting.
 
@@ -406,26 +366,7 @@ All user-supplied strings and metadata entering backend routes and mutations mus
 
 ---
 
-## 📋 Code Review Checklist for AI Agents
-
-Before providing code modifications:
-- [ ] User-supplied text and metadata fields are sanitized via `sanitizeText` / `sanitizeBookTextField` / `sanitizeBookEnding` / `sanitizeMainCharacter` with appropriate newline preservation and emoji support.
-- [ ] Multi-tier cache rules observed (LRU for process-local reads, Upstash Redis for distributed cache/locks, Postgres `user_cache` for persistent query cache).
-- [ ] Credit deductions use `executeWithCredits` with `tx` passed to all internal database operations.
-- [ ] Out-of-transaction activity logging for analytics so logging never breaks financial commits.
-- [ ] SSE streams pass `c.req.raw.signal` and use `pipeSSEStreamAndExtractText` or `StreamingJsonAnswerExtractor`.
-- [ ] All imports use explicit `.js` extensions.
-- [ ] No `any` types introduced; all types strictly defined.
-- [ ] Schema changes made **only** in `src/db/schema.ts` without triggering auto-migrations.
-- [ ] TSDoc comments provided for newly introduced functions and interfaces.
-- [ ] Expensive page-stable serialization is memoized with a page-scoped key (not recomputed per request).
-- [ ] Heartbeat / last-seen endpoints are lightweight atomic upserts (no full entity load/recompute).
-- [ ] Verified auth sessions are cached on hot paths (short TTL, token-hash keyed, invalidated on logout).
-- [ ] High-frequency poll endpoints coalesce bursts and use appropriate `private` `Cache-Control`.
-
----
-
-### 8. Payment Gateway & Credits Anti-Patterns (Hard-Won Lessons)
+### 3.9 Payment Gateway & Credits Anti-Patterns (Hard-Won Lessons)
 
 These patterns emerged from a comprehensive audit of the Stripe + Xendit gateway-agnostic payment system. Violations caused real production bugs.
 
@@ -557,7 +498,55 @@ if (event.deliveryId) {
 
 ---
 
-## 📚 Architecture Documentation Sitemap
+## 4. Coding Standards & Conventions
+
+### Naming Conventions
+
+| Element | Style | Examples |
+|---------|-------|----------|
+| **Files** | `kebab-case` | `story-state-cache.ts`, `companion-stream.ts`, `credits.ts` |
+| **Constants** | `UPPER_SNAKE_CASE` | `BRANCH_CACHE_TTL`, `MAX_STATE_CACHE_SIZE`, `CREDIT_COSTS` |
+| **Variables & Functions** | `camelCase` | `executeWithCredits`, `calculateBranchSwitchCost`, `userId` |
+| **Classes & Interfaces** | `PascalCase` | `StreamingJsonAnswerExtractor`, `DBStoryState`, `AppEnv` |
+
+### TSDoc/JSDoc Requirements
+Write clear TSDoc comments for all exported utilities, functions, and interfaces, detailing behavior, parameters, return types, error cases, and examples.
+
+```typescript
+/**
+ * Deducts credits and executes an operation within an atomic Postgres transaction.
+ *
+ * @param userId - ID of the user spending credits
+ * @param costKey - Key in CREDIT_COSTS configuration or numeric value
+ * @param operation - Async callback containing DB operations using the provided tx
+ * @param options - Correlation ID, analytics context, and metadata
+ * @returns Result of the operation and transaction identifiers
+ * @throws Error with CREDIT_ERRORS.INSUFFICIENT_CREDITS if balance is too low
+ */
+```
+
+---
+
+## 5. Code Review Checklist for AI Agents
+
+Before providing code modifications:
+- [ ] User-supplied text and metadata fields are sanitized via `sanitizeText` / `sanitizeBookTextField` / `sanitizeBookEnding` / `sanitizeMainCharacter` with appropriate newline preservation and emoji support.
+- [ ] Multi-tier cache rules observed (LRU for process-local reads, Upstash Redis for distributed cache/locks, Postgres `user_cache` for persistent query cache).
+- [ ] Credit deductions use `executeWithCredits` with `tx` passed to all internal database operations.
+- [ ] Out-of-transaction activity logging for analytics so logging never breaks financial commits.
+- [ ] SSE streams pass `c.req.raw.signal` and use `pipeSSEStreamAndExtractText` or `StreamingJsonAnswerExtractor`.
+- [ ] All imports use explicit `.js` extensions.
+- [ ] No `any` types introduced; all types strictly defined.
+- [ ] Schema changes made **only** in `src/db/schema.ts` without triggering auto-migrations.
+- [ ] TSDoc comments provided for newly introduced functions and interfaces.
+- [ ] Expensive page-stable serialization is memoized with a page-scoped key (not recomputed per request).
+- [ ] Heartbeat / last-seen endpoints are lightweight atomic upserts (no full entity load/recompute).
+- [ ] Verified auth sessions are cached on hot paths (short TTL, token-hash keyed, invalidated on logout).
+- [ ] High-frequency poll endpoints coalesce bursts and use appropriate `private` `Cache-Control`.
+
+---
+
+## 6. Architecture Documentation Sitemap
 
 Before modifying or adding core backend subsystems, read the respective architectural specification:
 

@@ -1,6 +1,6 @@
 # GitHub Agents Configuration Roadmap — Backend
 
-> **Status:** Proposed
+> **Status:** Implemented
 > **Date:** 2026-09-22
 > **Owner:** Solo Founder / Twistloom Engineering
 
@@ -11,36 +11,36 @@
 | # | Item | Priority | Status |
 |---|------|----------|--------|
 | 1 | Root `AGENTS.md` — Cross-agent architectural constitution | `P0` | ✅ Completed |
-| 2 | `.github/copilot-instructions.md` — Operational workflow rules | `P0` | ⬜ Planned |
-| 3 | `.github/instructions/database.instructions.md` — Database-specific rules | `P1` | ⬜ Planned |
-| 4 | `.github/instructions/ai.instructions.md` — AI orchestration rules | `P1` | ⬜ Planned |
-| 5 | `.github/instructions/payments.instructions.md` — Credits & payments rules | `P1` | ⬜ Planned |
-| 6 | `.github/instructions/story-engine.instructions.md` — Story engine rules | `P1` | ⬜ Planned |
-| 7 | `.github/instructions/sse-streaming.instructions.md` — SSE streaming rules | `P2` | ⬜ Planned |
-| 8 | `.github/instructions/auth.instructions.md` — Auth & session rules | `P1` | ⬜ Planned |
-| 9 | `.github/agents/story-engine-engineer.agent.md` — Story engine specialist | `P0` | ⬜ Planned |
-| 10 | `.github/agents/backend-quality-engineer.agent.md` — Quality specialist | `P0` | ⬜ Planned |
-| 11 | `.github/agents/ai-orchestration-engineer.agent.md` — AI orchestration specialist | `P1` | ⬜ Planned |
-| 12 | `.github/agents/database-engineer.agent.md` — Database specialist | `P1` | ⬜ Planned |
-| 13 | `.github/agents/security-reviewer.agent.md` — Security specialist | `P1` | ⬜ Planned |
-| 14 | `.github/agents/payments-economy-reviewer.agent.md` — Payments specialist | `P2` | ⬜ Planned |
-| 15 | `.github/agents/async-systems-engineer.agent.md` — Async/cron specialist | `P2` | ⬜ Planned |
-| 16 | `.github/agents/api-maintainer.agent.md` — API route specialist | `P2` | ⬜ Planned |
-| 17 | `.agents/skills/story-state-audit/SKILL.md` — Story state audit procedure | `P1` | ⬜ Planned |
-| 18 | `.agents/skills/branch-safety-review/SKILL.md` — Branch isolation verification | `P1` | ⬜ Planned |
-| 19 | `.agents/skills/canon-validation-review/SKILL.md` — Canon validation audit | `P1` | ⬜ Planned |
-| 20 | `.agents/skills/sse-stream-audit/SKILL.md` — SSE streaming correctness audit | `P1` | ⬜ Planned |
-| 21 | `.agents/skills/credit-transaction-audit/SKILL.md` — Credits & payments audit | `P1` | ⬜ Planned |
-| 22 | `.agents/skills/prompt-cost-audit/SKILL.md` — Token/cost optimization audit | `P2` | ⬜ Planned |
-| 23 | `.agents/skills/database-migration-review/SKILL.md` — Schema migration review | `P2` | ⬜ Planned |
-| 24 | `.agents/skills/api-contract-review/SKILL.md` — API contract verification | `P2` | ⬜ Planned |
-| 25 | `.agents/skills/doc-sync-audit/SKILL.md` — Documentation drift detection | `P0` | ⬜ Planned |
-| 26 | `.agents/skills/architecture-doc-audit/SKILL.md` — Architecture doc rigor audit | `P0` | ⬜ Planned |
-| 27 | `.agents/skills/roadmap-doc-audit/SKILL.md` — Roadmap doc rigor audit | `P0` | ⬜ Planned |
-| 28 | `.agents/skills/critique-workflow/SKILL.md` — Rigorous critique + refinement | `P0` | ⬜ Planned |
-| 29 | `.github/agents/doc-maintenance-engineer.agent.md` — Documentation maintenance | `P1` | ⬜ Planned |
-| 30 | `.github/workflows/doc-sync.yml` — GitHub Action: auto-audit docs on push | `P1` | ⬜ Planned |
-| 31 | `.github/workflows/doc-audit.yml` — GitHub Action: auto-audit new docs | `P1` | ⬜ Planned |
+| 2 | `.github/copilot-instructions.md` — Operational workflow rules | `P0` | ✅ Completed |
+| 3 | `.github/instructions/database.instructions.md` — Database-specific rules | `P1` | ✅ Completed |
+| 4 | `.github/instructions/ai.instructions.md` — AI orchestration rules | `P1` | ✅ Completed |
+| 5 | `.github/instructions/payments.instructions.md` — Credits & payments rules | `P1` | ✅ Completed |
+| 6 | `.github/instructions/story-engine.instructions.md` — Story engine rules | `P1` | ✅ Completed |
+| 7 | `.github/instructions/sse-streaming.instructions.md` — SSE streaming rules | `P2` | ✅ Completed |
+| 8 | `.github/instructions/auth.instructions.md` — Auth & session rules | `P1` | ✅ Completed |
+| 9 | `.github/agents/story-engine-engineer.agent.md` — Story engine specialist | `P0` | ✅ Completed |
+| 10 | `.github/agents/backend-quality-engineer.agent.md` — Quality specialist | `P0` | ✅ Completed |
+| 11 | `.github/agents/ai-orchestration-engineer.agent.md` — AI orchestration specialist | `P1` | ✅ Completed |
+| 12 | `.github/agents/database-engineer.agent.md` — Database specialist | `P1` | ✅ Completed |
+| 13 | `.github/agents/security-reviewer.agent.md` — Security specialist | `P1` | ✅ Completed |
+| 14 | `.github/agents/payments-economy-reviewer.agent.md` — Payments specialist | `P2` | ✅ Completed |
+| 15 | `.github/agents/async-systems-engineer.agent.md` — Async/cron specialist | `P2` | ✅ Completed |
+| 16 | `.github/agents/api-maintainer.agent.md` — API route specialist | `P2` | ✅ Completed |
+| 17 | `.agents/skills/story-state-audit/SKILL.md` — Story state audit procedure | `P1` | ✅ Completed |
+| 18 | `.agents/skills/branch-safety-review/SKILL.md` — Branch isolation verification | `P1` | ✅ Completed |
+| 19 | `.agents/skills/canon-validation-review/SKILL.md` — Canon validation audit | `P1` | ✅ Completed |
+| 20 | `.agents/skills/sse-stream-audit/SKILL.md` — SSE streaming correctness audit | `P1` | ✅ Completed |
+| 21 | `.agents/skills/credit-transaction-audit/SKILL.md` — Credits & payments audit | `P1` | ✅ Completed |
+| 22 | `.agents/skills/prompt-cost-audit/SKILL.md` — Token/cost optimization audit | `P2` | ✅ Completed |
+| 23 | `.agents/skills/database-migration-review/SKILL.md` — Schema migration review | `P2` | ✅ Completed |
+| 24 | `.agents/skills/api-contract-review/SKILL.md` — API contract verification | `P2` | ✅ Completed |
+| 25 | `.agents/skills/doc-sync-audit/SKILL.md` — Documentation drift detection | `P0` | ✅ Completed |
+| 26 | `.agents/skills/architecture-doc-audit/SKILL.md` — Architecture doc rigor audit | `P0` | ✅ Completed |
+| 27 | `.agents/skills/roadmap-doc-audit/SKILL.md` — Roadmap doc rigor audit | `P0` | ✅ Completed |
+| 28 | `.agents/skills/critique-workflow/SKILL.md` — Rigorous critique + refinement | `P0` | ✅ Completed |
+| 29 | `.github/agents/doc-maintenance-engineer.agent.md` — Documentation maintenance | `P1` | ✅ Completed |
+| 30 | `.github/workflows/doc-sync.yml` — GitHub Action: auto-audit docs on push | `P1` | ✅ Completed |
+| 31 | `.github/workflows/doc-audit.yml` — GitHub Action: auto-audit new docs | `P1` | ✅ Completed |
 
 ---
 
@@ -49,12 +49,12 @@
 ### Current State
 
 - The repository has a comprehensive `AGENTS.md` (573 lines) containing architectural rules, established patterns (LRU caching, Redis multi-tier caching, credits/financial integrity, SSE streaming, Drizzle ORM, Hono routes, hot-path performance, data sanitization), development commands, and an architecture documentation sitemap.
-- No `.github/` directory exists — no `copilot-instructions.md`, no `instructions/`, no `agents/`, no workflows.
-- The `.agents/skills/` directory contains only `roadmap-doc/SKILL.md`.
-- GitHub Copilot cloud agents and local Copilot Chat have no structured way to understand Twistloom's domain-specific invariants beyond the root `AGENTS.md`.
-- There are no specialist agents for high-value delegated work (story engine, quality, AI orchestration, database, security, payments).
-- There are no reusable skill procedures for common audit tasks (story state verification, branch safety, canon validation, SSE correctness, credit transactions).
-- The backend spans 15+ distinct domains (routes, services, utils, config, types, db, cron, middleware, hono, ai-clients, ai-clients providers, gateways, etc.) — a generic agent walking into this codebase without instructions could easily make a locally reasonable change that violates a system-level invariant.
+- `.github/` directory now exists with `copilot-instructions.md`, 6 path-specific `instructions/`, 9 specialist `agents/`, and 2 documentation `workflows/`.
+- The `.agents/skills/` directory now contains 12 audit/refinement skills alongside the original `roadmap-doc/SKILL.md`.
+- GitHub Copilot cloud agents and local Copilot Chat now have structured domain-specific instructions via `.github/copilot-instructions.md` and path-specific `.github/instructions/*.instructions.md` files.
+- 9 specialist agents are available for delegated work (story engine, quality, AI orchestration, database, security, payments, async, API, documentation).
+- 12 reusable skill procedures cover common audit tasks (story state, branch safety, canon validation, SSE correctness, credit transactions, prompt cost, database migration, API contract, doc sync, architecture doc audit, roadmap doc audit, critique workflow).
+- The backend spans 15+ distinct domains (routes, services, utils, config, types, db, cron, middleware, hono, ai-clients, ai-clients providers, gateways, etc.) — path-specific instructions ensure agents working in each domain understand its unique constraints.
 
 ### Pain Points
 
@@ -1801,18 +1801,9 @@ Triggers on PRs to `main` that modify `docs/**/*.md`. Checks for required sectio
 
 ---
 
-### Step 8: Update Open Questions — ⬜ Planned
-
-**Files:** This document (`docs/roadmap/GITHUB_AGENTS_CONFIGURATION_ROADMAP.md`)
-**Effort:** Low
-
-(See Section 7 below)
-
----
-
 ## 7. Open Questions
 
-### Q1. Should `AGENTS.md` be restructured or appended to? — ⬜ Open
+### Q1. Should `AGENTS.md` be restructured or appended to? — ✅ Decided: Option A
 
 The current `AGENTS.md` is 573 lines mixing architectural truth with operational details.
 
@@ -1820,7 +1811,7 @@ The current `AGENTS.md` is 573 lines mixing architectural truth with operational
 - **(B) Append** — Keep current structure; add a header section referencing new files. **Pros:** No disruption. **Cons:** Continues mixing concerns.
 - **(C) Restructure with git rename tracking** — Use `git mv` equivalent (copy + delete) to preserve some history. **Pros:** Balance of cleanliness and history. **Cons:** Still breaks line references.
 
-**Recommendation:** Option A. The 573-line file is already hard to navigate. Clean separation benefits all agents. The architectural patterns section (LRU, Redis, credits, SSE, Drizzle, Hono, hot-path, sanitization) should remain in `AGENTS.md` since it IS architectural truth.
+**Decision:** Option A chosen. The 573-line file is already hard to navigate. Clean separation benefits all agents. The architectural patterns section (LRU, Redis, credits, SSE, Drizzle, Hono, hot-path, sanitization) should remain in `AGENTS.md` since it IS architectural truth. **Implementation:** `.github/copilot-instructions.md` created with purely operational content (tooling, validation commands, PR discipline, working style, import conventions, development commands) — no architectural duplication. `AGENTS.md` restructured with clean numbering (1-6), operational commands removed, cross-reference header added.
 
 ---
 
@@ -1876,11 +1867,11 @@ GitHub cloud agents work on one repository at a time. A backend API contract cha
 
 ---
 
-## 7b. Graduated Rollout Plan
+## 7b. Graduated Rollout Plan ✅ All Phases Implemented
 
 Creating 31 files at once is impractical for a solo founder. Implement in phases:
 
-### Phase 1 (Day 1) — Foundation
+### Phase 1 (Day 1) — Foundation ✅ Implemented
 
 **Goal:** Copilot can produce basic architecture-compliant PRs.
 
@@ -1893,7 +1884,7 @@ Creating 31 files at once is impractical for a solo founder. Implement in phases
 
 **Verify:** Run a test agent task (e.g., "add JSDoc to src/services/credits.ts") and confirm agent follows operational rules.
 
-### Phase 2 (Week 1) — Path-Specific Rules
+### Phase 2 (Week 1) — Path-Specific Rules ✅ Implemented
 
 **Goal:** Domain-specific constraints are active.
 
@@ -1907,7 +1898,7 @@ Creating 31 files at once is impractical for a solo founder. Implement in phases
 
 **Verify:** Run agent task on a database schema change — confirm it follows Drizzle/Neon rules.
 
-### Phase 3 (Week 2) — Skills + Remaining Agents
+### Phase 3 (Week 2) — Skills + Remaining Agents ✅ Implemented
 
 **Goal:** Reusable audit procedures are available.
 
@@ -1923,7 +1914,7 @@ Creating 31 files at once is impractical for a solo founder. Implement in phases
 
 **Verify:** Run credit-transaction-audit skill on src/services/credits.ts — confirm findings are actionable.
 
-### Phase 4 (Month 1) — Documentation Automation
+### Phase 4 (Month 1) — Documentation Automation ✅ Implemented
 
 **Goal:** Docs stay accurate automatically.
 
@@ -1982,50 +1973,50 @@ Define success before implementation:
 
 | File | Change |
 |------|--------|
-| `AGENTS.md` | Existing — 573-line architectural constitution (may restructure in Step 8) |
-| `.github/copilot-instructions.md` | **NEW** — Operational workflow rules |
-| `.github/instructions/database.instructions.md` | **NEW** — Database-specific path rules |
-| `.github/instructions/ai.instructions.md` | **NEW** — AI orchestration path rules |
-| `.github/instructions/payments.instructions.md` | **NEW** — Credits & payments path rules |
-| `.github/instructions/story-engine.instructions.md` | **NEW** — Story engine path rules |
-| `.github/instructions/sse-streaming.instructions.md` | **NEW** — SSE streaming path rules |
-| `.github/instructions/auth.instructions.md` | **NEW** — Auth & session path rules |
-| `.github/agents/story-engine-engineer.agent.md` | **NEW** — Story engine specialist agent |
-| `.github/agents/backend-quality-engineer.agent.md` | **NEW** — Quality specialist agent |
-| `.github/agents/ai-orchestration-engineer.agent.md` | **NEW** — AI orchestration specialist agent |
-| `.github/agents/database-engineer.agent.md` | **NEW** — Database specialist agent |
-| `.github/agents/security-reviewer.agent.md` | **NEW** — Security specialist agent |
-| `.github/agents/payments-economy-reviewer.agent.md` | **NEW** — Payments specialist agent |
-| `.github/agents/async-systems-engineer.agent.md` | **NEW** — Async/cron specialist agent |
-| `.github/agents/api-maintainer.agent.md` | **NEW** — API route specialist agent |
-| `.github/agents/doc-maintenance-engineer.agent.md` | **NEW** — Documentation maintenance specialist |
-| `.github/workflows/doc-sync.yml` | **NEW** — GitHub Action: auto-audit docs on push |
-| `.github/workflows/doc-audit.yml` | **NEW** — GitHub Action: auto-audit new docs |
-| `.agents/skills/story-state-audit/SKILL.md` | **NEW** — Story state audit procedure |
-| `.agents/skills/branch-safety-review/SKILL.md` | **NEW** — Branch isolation verification |
-| `.agents/skills/canon-validation-review/SKILL.md` | **NEW** — Canon validation audit |
-| `.agents/skills/sse-stream-audit/SKILL.md` | **NEW** — SSE streaming correctness audit |
-| `.agents/skills/credit-transaction-audit/SKILL.md` | **NEW** — Credits & payments audit |
-| `.agents/skills/prompt-cost-audit/SKILL.md` | **NEW** — Token/cost optimization audit |
-| `.agents/skills/database-migration-review/SKILL.md` | **NEW** — Schema migration review |
-| `.agents/skills/api-contract-review/SKILL.md` | **NEW** — API contract verification |
-| `.agents/skills/doc-sync-audit/SKILL.md` | **NEW** — Documentation drift detection |
-| `.agents/skills/architecture-doc-audit/SKILL.md` | **NEW** — Architecture doc rigor audit |
-| `.agents/skills/roadmap-doc-audit/SKILL.md` | **NEW** — Roadmap doc rigor audit |
-| `.agents/skills/critique-workflow/SKILL.md` | **NEW** — Rigorous critique + refinement workflow |
+| `AGENTS.md` | Existing — 573-line architectural constitution (restructure pending Q1-A decision) |
+| `.github/copilot-instructions.md` | **CREATED** — Operational workflow rules |
+| `.github/instructions/database.instructions.md` | **CREATED** — Database-specific path rules |
+| `.github/instructions/ai.instructions.md` | **CREATED** — AI orchestration path rules |
+| `.github/instructions/payments.instructions.md` | **CREATED** — Credits & payments path rules |
+| `.github/instructions/story-engine.instructions.md` | **CREATED** — Story engine path rules |
+| `.github/instructions/sse-streaming.instructions.md` | **CREATED** — SSE streaming path rules |
+| `.github/instructions/auth.instructions.md` | **CREATED** — Auth & session path rules |
+| `.github/agents/story-engine-engineer.agent.md` | **CREATED** — Story engine specialist agent |
+| `.github/agents/backend-quality-engineer.agent.md` | **CREATED** — Quality specialist agent |
+| `.github/agents/ai-orchestration-engineer.agent.md` | **CREATED** — AI orchestration specialist agent |
+| `.github/agents/database-engineer.agent.md` | **CREATED** — Database specialist agent |
+| `.github/agents/security-reviewer.agent.md` | **CREATED** — Security specialist agent |
+| `.github/agents/payments-economy-reviewer.agent.md` | **CREATED** — Payments specialist agent |
+| `.github/agents/async-systems-engineer.agent.md` | **CREATED** — Async/cron specialist agent |
+| `.github/agents/api-maintainer.agent.md` | **CREATED** — API route specialist agent |
+| `.github/agents/doc-maintenance-engineer.agent.md` | **CREATED** — Documentation maintenance specialist |
+| `.github/workflows/doc-sync.yml` | **CREATED** — GitHub Action: auto-audit docs on push |
+| `.github/workflows/doc-audit.yml` | **CREATED** — GitHub Action: auto-audit new docs |
+| `.agents/skills/story-state-audit/SKILL.md` | **CREATED** — Story state audit procedure |
+| `.agents/skills/branch-safety-review/SKILL.md` | **CREATED** — Branch isolation verification |
+| `.agents/skills/canon-validation-review/SKILL.md` | **CREATED** — Canon validation audit |
+| `.agents/skills/sse-stream-audit/SKILL.md` | **CREATED** — SSE streaming correctness audit |
+| `.agents/skills/credit-transaction-audit/SKILL.md` | **CREATED** — Credits & payments audit |
+| `.agents/skills/prompt-cost-audit/SKILL.md` | **CREATED** — Token/cost optimization audit |
+| `.agents/skills/database-migration-review/SKILL.md` | **CREATED** — Schema migration review |
+| `.agents/skills/api-contract-review/SKILL.md` | **CREATED** — API contract verification |
+| `.agents/skills/doc-sync-audit/SKILL.md` | **CREATED** — Documentation drift detection |
+| `.agents/skills/architecture-doc-audit/SKILL.md` | **CREATED** — Architecture doc rigor audit |
+| `.agents/skills/roadmap-doc-audit/SKILL.md` | **CREATED** — Roadmap doc rigor audit |
+| `.agents/skills/critique-workflow/SKILL.md` | **CREATED** — Rigorous critique + refinement workflow |
 
 ### Codebase Findings
 
-- The existing `AGENTS.md` at 573 lines is comprehensive but mixes concerns. Architectural invariants (BookMode, branch safety, credits integrity, SSE anti-patterns) are interleaved with operational patterns (development commands, import conventions, naming conventions).
-- No `.github/` directory exists yet — this is greenfield.
-- The `.agents/skills/` directory has only `roadmap-doc/` — the skills ecosystem is nascent.
+- The existing `AGENTS.md` at 573 lines is comprehensive but mixes concerns. Architectural invariants (BookMode, branch safety, credits integrity, SSE anti-patterns) are interleaved with operational patterns (development commands, import conventions, naming conventions). Q1 decided Option A (restructure) — pending implementation.
+- `.github/` directory now exists with full agent ecosystem: `copilot-instructions.md`, 6 path-specific `instructions/`, 9 specialist `agents/`, and 2 documentation `workflows/`.
+- The `.agents/skills/` directory now contains 12 audit/refinement skills alongside the original `roadmap-doc/` — the skills ecosystem is fully operational.
 - 8 AI providers with a sophisticated fallback waterfall — the AI orchestration specialist is critical for provider changes.
-- The credits/financial integrity section documents hard-won anti-patterns (parseInt on decimals, BigInt ceiling division, in-memory rate limiting in serverless) — these MUST be preserved in agent instructions.
-- SSE streaming has 4 distinct archetypes with specific anti-patterns — the SSE streaming specialist prevents wire-protocol corruption.
-- 40+ architecture MD files exist in `docs/architecture/` — these are the primary documentation that needs sync-audit protection.
-- 46+ roadmap MD files exist in `docs/roadmap/` — these are the planning documents that need audit-on-creation protection.
-- No GitHub Actions workflows exist — documentation automation is greenfield.
-- The frontend repo already has a corresponding `GITHUB_AGENTS_CONFIGURATION_ROADMAP.md` — this backend roadmap should be implemented in parallel for cross-repository agent consistency.
+- The credits/financial integrity section documents hard-won anti-patterns (parseInt on decimals, BigInt ceiling division, in-memory rate limiting in serverless) — these ARE preserved in `payments.instructions.md` and `credit-transaction-audit/SKILL.md`.
+- SSE streaming has 4 distinct archetypes with specific anti-patterns — the SSE streaming specialist and `sse-stream-audit/SKILL.md` prevent wire-protocol corruption.
+- 40+ architecture MD files exist in `docs/architecture/` — these are the primary documentation protected by `doc-sync-audit` and `architecture-doc-audit` skills.
+- 46+ roadmap MD files exist in `docs/roadmap/` — these are planning documents protected by `roadmap-doc-audit` skill.
+- 2 GitHub Actions workflows (`doc-sync.yml`, `doc-audit.yml`) now automate documentation health checks on push and PR.
+- The frontend repo has a corresponding `GITHUB_AGENTS_CONFIGURATION_ROADMAP.md` — shared doc-audit skills are cross-referenced for cross-repository consistency.
 
 ---
 
@@ -2066,6 +2057,4 @@ Legend: ✅ Implemented & verified · ⏳ Partial / scoped down · ⬜ Future wo
 - ✅ `.agents/skills/architecture-doc-audit/SKILL.md` — architecture doc audit skill
 - ✅ `.agents/skills/roadmap-doc-audit/SKILL.md` — roadmap doc audit skill
 - ✅ `.agents/skills/critique-workflow/SKILL.md` — critique + refinement workflow
-
-### Remaining
-- ⬜ Root `AGENTS.md` restructure (pending Q1 decision)
+- ✅ Root `AGENTS.md` restructure — clean section numbering, operational rules moved to copilot-instructions.md

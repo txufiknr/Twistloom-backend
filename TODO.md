@@ -35,22 +35,9 @@
 mistral/mistral-medium-latest
 SDKError: API error occurred: Status 402. Body: {"detail":"Check your subscription on https://admin.mistral.ai/subscription"}
 
-gemini/gemini-3.5-flash
-ApiError: {"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}
-
-siliconflow/Qwen/Qwen3-8B
-chutes/zai-org/GLM-5.1-TEE
-error: 402 status code (no body)
-
 openrouter/qwen/qwen3-30b-a3b
-error: 402 This request requires more credits, or fewer max_tokens. You requested up to 4000 tokens, but can only afford 3384. To increase, visit https://openrouter.ai/settings/credits and upgrade to a paid account
-
 openrouter/google/gemini-2.5-flash
-error: 402 This request requires more credits, or fewer max_tokens. You requested up to 4000 tokens, but can only afford 676. To increase, visit https://openrouter.ai/settings/credits and upgrade to a paid account
-
 openrouter/z-ai/glm-4.5-air
-error: 402 This request requires more credits, or fewer max_tokens. You requested up to 4000 tokens, but can only afford 1538. To increase, visit https://openrouter.ai/settings/credits and upgrade to a paid account
-
 openrouter/meta-llama/llama-4-maverick
 error: 402 This request requires more credits, or fewer max_tokens. You requested up to 4000 tokens, but can only afford 1471. To increase, visit https://openrouter.ai/settings/credits and upgrade to a paid account
 
@@ -93,27 +80,10 @@ please write a comprehensive roadmap MD for this in @docs/roadmap\ , grounded on
 [ ] migrate to Interactions API? (https://ai.google.dev/gemini-api/docs/migrate-to-interactions)
 [ ] ensure `PUT /api/user/editor-prefs` API route optimal en-to-end based on `AI_CO_WRITING_PEN_ROADMAP.md` and frontend's `src\lib\services\users-api.ts`, shouldn't we only send dirty (only changed) fields instead of all fields?
 [ ] can you also add ai-cost for these gemini models: `gemini-3.6-flash`?
-[ ] book-creation.ts still not language-agnostic
 [@] pen prompt: ensure find matching lore entity from story text via triggerKeywords
 [ ] instead of 1 big failing request (schema too complex for gemini or prompt token exceeds) should we using multi-turn request for generating single big page json? ask AI to generate each json key and append sequentially in each turn, will that solve the problem?
 [ ] agentic mcp: TWISTLOOM_AGENT_MCP_ROADMAP.md
 [ ] claude: TODO-ai-gateway-decouple.md
-
----
-
-[gemini] ✅ gemini-3.5-flash succeeded (77 chars, finish: STOP, duration: 10983ms)
-"""
-{
-  "output": "JSON parsed successfully. Proceeding with story generation."
-}
-"""
-[gemini] 📊 Token usage: {
-  cachedTokens: undefined,
-  promptTokens: 17014,
-  outputTokens: 19,
-  totalTokens: 18547,
-  cacheHitRate: 0,
-}
 
 ---
 

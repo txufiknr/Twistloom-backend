@@ -4,7 +4,7 @@
 
 The AI chat stream implementation (`src/utils/ai-chat-stream.ts`) provides real-time streaming of AI responses using Server-Sent Events (SSE). This architecture is designed for serverless environments where responses must be streamed as they arrive, rather than accumulated and returned all at once.
 
-The implementation supports 7 AI providers (GitHub, Gemini, Groq, Cohere, Cerebras, Mistral, NVIDIA) with automatic fallback at both the provider and model levels.
+The implementation supports all 18 chat providers with automatic fallback at both the provider and model levels. See [AI/LLM Architecture — Provider Fallback Chain](AI_LLM_ARCHITECTURE.md#provider-fallback-chain) for the full provider list, feature matrix, and fallback order.
 
 ## Architecture Approach: Orchestrator-Level Fallback
 
@@ -33,14 +33,25 @@ The main orchestrator function that:
 
 ### Provider Generators
 
-Each provider has its own async generator function:
-- `githubStreamGenerator` - GitHub Models (OpenAI-compatible)
+Each provider has its own async generator function. The full provider list and model
+selections are defined in [`src/config/ai-clients.ts`](../../src/config/ai-clients.ts)
+(see [AI/LLM Architecture](AI_LLM_ARCHITECTURE.md) for the canonical provider list):
+
 - `geminiStreamGenerator` - Google Gemini
-- `groqStreamGenerator` - Groq
-- `cohereStreamGenerator` - Cohere
-- `cerebrasStreamGenerator` - Cerebras
 - `mistralStreamGenerator` - Mistral AI
+- `groqStreamGenerator` - Groq
+- `cerebrasStreamGenerator` - Cerebras
 - `nvidiaStreamGenerator` - NVIDIA NIM
+- `cohereStreamGenerator` - Cohere
+- `openrouterStreamGenerator` - OpenRouter (unified gateway)
+- `cloudflareStreamGenerator` - Cloudflare Workers AI
+- `ovhcloudStreamGenerator` - OVHcloud
+- `sambanovaStreamGenerator` - SambaNova
+- `zaiStreamGenerator` - Z.ai (GLM)
+- `modelscopeStreamGenerator` - ModelScope
+- `siliconflowStreamGenerator` - SiliconFlow
+- `inceptionStreamGenerator` - Inception Labs (diffusion LLM)
+- Additional providers: Aion Labs, Chutes, LLM7, Ollama (deep fallback)
 
 Each generator:
 - Accepts a prompt and options
@@ -57,8 +68,8 @@ The implementation uses Server-Sent Events with the following event types:
 ```typescript
 {
   type: 'start',
-  provider: 'github' | 'gemini' | ...,
-  model: 'gpt-4o' | 'gemini-2.5-flash' | ...
+  provider: 'gemini' | 'mistral' | 'groq' | ...,
+  model: 'gemini-2.5-flash' | 'mistral-medium-latest' | ...
 }
 ```
 
@@ -246,7 +257,7 @@ Applied once per provider:
 
 ### 6. DRY Principle
 
-No duplicated fallback logic across 7 generators:
+No duplicated fallback logic across 18 provider generators:
 - Less code to maintain
 - Consistent behavior across providers
 - Easier to add new providers
@@ -285,11 +296,6 @@ However:
 ## Implementation Details
 
 ### Provider-Specific Considerations
-
-#### GitHub (OpenAI-compatible)
-- Uses standard OpenAI SDK
-- Supports JSON schema validation
-- Includes response format for structured output
 
 #### Gemini
 - Uses Google GenAI SDK
@@ -421,19 +427,18 @@ setTimeout(() => abortController.abort(), 5000);
 ```typescript
 const stream = await aiStreamSSE('Tell me a story', {
   modelSelection: {
-    github: ['gpt-4o', 'gpt-4o-mini'],
-    gemini: ['gemini-2.5-flash', 'gemini-2.0-flash'],
+    gemini: ['gemini-2.5-flash', 'gemini-3.5-flash'],
+    mistral: ['mistral-medium-latest'],
     groq: ['llama-3.3-70b-versatile'],
   },
 });
 ```
 
 This will:
-1. Try GitHub with gpt-4o
-2. If fails, try GitHub with gpt-4o-mini
-3. If fails, try Gemini with gemini-2.5-flash
-4. If fails, try Gemini with gemini-2.0-flash
-5. If fails, try Groq with llama-3.3-70b-versatile
+1. Try Gemini with gemini-2.5-flash
+2. If fails, try Gemini with gemini-3.5-flash
+3. If fails, try Mistral with mistral-medium-latest
+4. If fails, try Groq with llama-3.3-70b-versatile
 
 ## Type Definitions
 
@@ -553,8 +558,9 @@ type AIChatModelSelection = {
 
 ## Related Documentation
 
-- [SSE Utilities](../src/utils/sse.ts) - SSE event formatting and stream utilities
-- [AI Chat](../src/utils/ai-chat.ts) - Non-streaming AI chat with fallback
-- [AI Limiters](../src/utils/ai-limiters.ts) - Rate limiting implementation
-- [AI Types](../src/types/ai-chat.ts) - Type definitions for AI chat
-- [AI Config](../src/config/ai-chat.ts) - Default configurations and model selections
+- [AI/LLM Architecture](AI_LLM_ARCHITECTURE.md) - Provider list, feature matrix, prompt architecture, caching, optimizations
+- [SSE Streaming Architecture](SERVER_SENT_EVENTS_STREAMING_ARCHITECTURE.md) - SSE wire protocol, anti-patterns, canonical recipes
+- [AI Chat](../../src/utils/ai-chat.ts) - Non-streaming AI chat with fallback
+- [AI Limiters](../../src/utils/ai-limiters.ts) - Rate limiting implementation
+- [AI Types](../../src/types/ai-chat.ts) - Type definitions (`AIChatProvider`, `AIModelSelection`)
+- [AI Config](../../src/config/ai-clients.ts) - Provider rate limits, model selections, prompt length limits

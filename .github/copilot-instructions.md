@@ -44,3 +44,41 @@ Fix issues caused by the change. Do not hide failures by disabling lint or TypeS
 
 Update comments or documentation when behavior, contracts, configuration, or architecture materially changes.
 Do not add comments that merely restate obvious code.
+
+## Development Commands
+
+> **PowerShell Command Separator**
+> Use `;` as command separator in PowerShell to chain commands:
+> ```powershell
+> cd "d:\Projects\Twistloom\Twistloom-backend"; bun run check
+> ```
+
+### Development Scripts
+```bash
+bun dev                         # Start dev server with hot reload
+bun dev:api                     # Start API server only
+bun dev:cron:trending           # Run trending score calculation locally
+bun dev:cron:candidate          # Run candidate generation cron locally
+bun dev:cron:translate          # Run translation cron locally
+```
+
+### Quality & Type Checking
+```bash
+bun typecheck                   # Run TypeScript compiler check
+bun lint                        # Run ESLint
+bun lint:fix                    # Auto-fix linting issues
+bun lint:imports                # Verify all imports have .js extensions
+bun check                       # Run lint + lint:imports + typecheck in sequence
+```
+
+### Database Scripts (Manual Developer Execution Only)
+```bash
+bun db:test                     # Test Neon connection
+bun db:studio                   # Open Drizzle Studio UI
+bun db:migrate                  # Apply pending migrations (Dev)
+bun db:triggers                 # Apply Postgres triggers
+```
+
+## Architectural Context
+
+For architectural invariants, established patterns, and domain-specific rules, see [`AGENTS.md`](../AGENTS.md).

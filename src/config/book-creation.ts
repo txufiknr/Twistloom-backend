@@ -69,10 +69,10 @@ const BASE_HARD_RULES = `- NEVER write sexually explicit content.`;
  * prose) so it can never drift preset-to-preset.
  */
 const BASE_NARRATIVE_RULES = `STRICT POV & NARRATIVE RULE:
-- FIRST-PERSON CENTRAL POV ("I") only — the MC is the narrator. NEVER third-person ("he", "she", "they", or the MC's own name) for the MC's actions or feelings.
+- FIRST-PERSON CENTRAL POV only — the MC is the narrator, speaking in first person. NEVER shift to a detached third-person perspective for the MC's actions or feelings. Always maintain first person throughout.
 - Unreliable narrator: show only what the MC perceives, believes, or wrongly assumes.`;
 
-const BASE_THRILLER_SYNTAX = `- Open sentences with native conjunctions to create a punchy, breathless rhythm. Avoid opening with definite articles — lead with direct objects and active verbs that feel natural to the target language's grammar.`;
+const BASE_THRILLER_SYNTAX = `- Open sentences with conjunctions, causatives, or direct objects to create a punchy, breathless rhythm. Favor syntactic inversions and front-loaded actions that feel natural in the target language — avoid stiff, formal sentence openings.`;
 
 const BASE_FORMAT_RULES = `- Max ${MAX_WORDS_PER_PAGE} words.
 - Write in the target language.
@@ -213,7 +213,7 @@ ${BASE_HARD_RULES}
 ${BASE_NARRATIVE_RULES}
 
 WRITING STYLE:
-- The MC's voice is lived-in and full of personal history. Use "I" naturally.
+- The MC's voice is lived-in and full of personal history. Narrate naturally in first person.
 - Sentences breathe. Long and winding, then short and brutal. Conversational rhythm.
 - Interiority is everything. Filter reality through the MC's specific prejudices and fears.
 - Sensory richness — the smell of a basement, the feel of a worn chair.
@@ -265,7 +265,7 @@ ${BASE_NARRATIVE_RULES}
 
 WRITING STYLE:
 ${BASE_THRILLER_SYNTAX}
-- The MC thinks in verbs. Not "I felt scared" — "My legs burned."
+- The MC thinks in verbs. Avoid naming emotions directly — describe the body's physical response instead.
 - Short paragraphs. Sentences are lean. Subject-verb-object. White space is pace.
 - Physical immediacy over interiority. No time to reflect.
 - Sensory focus on danger signals: footsteps, breathing, the click of a mechanism.
@@ -341,7 +341,7 @@ ${BASE_HARD_RULES}
 ${BASE_NARRATIVE_RULES}
 
 WRITING STYLE:
-- Unstable POV. The "I" may slip into second person ("you") during dissociation. The narrator argues with themselves.
+- Unstable POV. The narrator's grammatical person may shift during dissociation — first-person may slip into second-person or impersonal constructions. The narrator argues with themselves.
 - Sentence structure is a tool for disorientation. Run-on sentences. Lists that don't end.
 - Punctuation breaks when reality breaks. Excessive em dashes. Glitching text.
 - Meta elements allowed: the narrator addressing the reader, referencing the branching structure.
@@ -478,7 +478,7 @@ ${BASE_ENDING_RULES}
   experimental: `PAGE FORMAT:
 - Max ${MAX_WORDS_PER_PAGE} words. Write in the target language, but let language break when reality breaks.
 - The format serves the fracture. Paragraph length varies deliberately: long streams, single words, glitching repetitions.
-- Meta formatting: parenthetical thoughts addressed to the reader (e.g., "(Correction: you never left)"), fourth-wall glitches. NEVER start a line with bracketed text like [correction] — brackets at line-start are reserved exclusively for UI dialogue markers.
+- Meta formatting: parenthetical thoughts addressed to the reader (e.g., a self-correction or aside in the target language, formatted as "(text)"), fourth-wall glitches. NEVER start a line with bracketed text like [correction] — brackets at line-start are reserved exclusively for UI dialogue markers.
 
 PAGE OPENING RULES:
 - Continue from the selected action, but the connection may be unstable. Did the action really happen?
@@ -486,7 +486,7 @@ PAGE OPENING RULES:
 - Time may have passed, or skipped, or looped.
 
 ${BASE_DIALOGUE_RULES}
-- Reality-breaking speech: spoken lines can stutter, glitch, repeat erratically, or cut off mid-word ("Wait, I didn't—"). The [character_id] marker MUST still lead the line so the UI balloon renders.
+- Reality-breaking speech: spoken lines can stutter, glitch, repeat erratically, or cut off mid-word. The [character_id] marker MUST still lead the line so the UI balloon renders.
 - Phantom & disembodied voices: if an unknown presence, auditory hallucination, or disembodied voice speaks aloud to the MC, use [???] "Spoken words." If a dead or absent character's voice is heard, use their [character_id] "Spoken words."
 - Internal voices vs. speech: silent internal voices, intrusive thoughts, or alter-egos arguing in the MC's mind belong in *italic* prose without quotation marks or speaker markers (*Don't look at him.*) — reserve speaker markers strictly for voices heard aloud.
 - Dissolving loops: if a character's spoken line loops so many times it dissolves from dialogue into ambient narration, transition subsequent echoes into plain unquoted, un-marked text.

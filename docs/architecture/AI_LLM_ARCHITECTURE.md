@@ -2,7 +2,7 @@
 
 > **Revision:** v4 — current implementation audit
 > **Stack:** TypeScript / Node.js · Next.js · PostgreSQL (Neon) · Redis (Upstash)
-> **Providers:** Gemini, GitHub (OpenAI-compat), Groq, Cerebras, Mistral, NVIDIA NIM, Cohere
+> **Providers:** Gemini, Mistral, OpenRouter, Cerebras, Groq, NVIDIA NIM, Cloudflare, Cohere, OVHcloud, SambaNova, ModelScope, Z.ai, SiliconFlow, Aion Labs, Chutes, LLM7, Inception (18 chat providers + Jina embeddings)
 
 ---
 
@@ -78,10 +78,15 @@ possible, so each call processes fewer novel tokens.
 │   aiStreamSSE()       →  utils/ai-chat-stream.ts             │
 │   executePromptForJSON() → prompt assembly + schema          │
 │                                                               │
-│   ┌─────────┬─────────┬─────────┬─────────┬─────────────┐   │
-│   │ Gemini  │ GitHub  │  Groq   │Cerebras │ Mistral/NIM │   │
-│   │ +L3cache│+kv_24h  │         │         │             │   │
-│   └─────────┴─────────┴─────────┴─────────┴─────────────┘   │
+│   ┌─────────┬─────────┬─────────┬─────────┬─────────────┬──────────┐   │
+│   │ Gemini  │ Mistral │OpenRouter│Cerebras │ Groq / NIM  │ Cohere   │   │
+│   │ +L3cache│         │         │         │             │          │   │
+│   └─────────┴─────────┴─────────┴─────────┴─────────────┴──────────┘   │
+│   ┌──────────┬───────────┬──────────┬─────────┬─────────┬─────────┐   │
+│   │OVHcloud  │SambaNova  │ModelScope│ Z.ai    │Silicon  │Inception│   │
+│   │          │           │          │         │Flow     │(diffusn)│   │
+│   └──────────┴───────────┴──────────┴─────────┴─────────┴─────────┘   │
+│   + Aion Labs (IDEA-only), Chutes (funded), LLM7 (last-resort)        │
 │        Provider Fallback Chain — sequential, rate-limited     │
 └──────────┬───────────────────────────────────────────────────┘
            │
@@ -107,13 +112,35 @@ possible, so each call processes fewer novel tokens.
 ### Provider Fallback Chain
 
 ```
-Attempt 1  →  Gemini 2.5 Flash     (preferred: best structured output + explicit cache)
-Attempt 2  →  GitHub / OpenAI      (strong quality + KV 24hr retention)
-Attempt 3  →  Groq Llama 70B       (fastest raw speed)
-Attempt 4  →  Cerebras Llama       (ultra-fast inference)
-Attempt 5  →  Mistral Large        (reliable fallback)
-Attempt 6  →  NVIDIA NIM           (last resort)
-Attempt 7  →  Cohere               (emergency fallback)
+Primary Creative:
+  Attempt 1  →  Mistral Medium        (best prose, lighter RLHF)
+  Attempt 2  →  Gemini Flash          (large context + explicit cache)
+  Attempt 3  →  OpenRouter            (Qwen3, Llama-4, DeepSeek gateway)
+
+High-Speed:
+  Attempt 4  →  Cerebras              (ultra-fast GLM-4.7)
+  Attempt 5  →  Groq                  (fast Llama-3.3 / Qwen3)
+  Attempt 6  →  NVIDIA NIM            (cost-effective Nemotron)
+
+Edge & Multilingual:
+  Attempt 7  →  Cloudflare Workers AI (edge inference)
+  Attempt 8  →  Cohere                (multilingual, last-resort)
+
+New Providers (2026-08-04):
+  Attempt 9  →  OVHcloud              (400 RPM authenticated)
+  Attempt 10 →  SambaNova             (DeepSeek-V3.2 on RDU)
+  Attempt 11 →  ModelScope            (Qwen3.5, Alibaba-first)
+  Attempt 12 →  Z.ai                  (GLM-4.7-Flash)
+  Attempt 13 →  SiliconFlow           (Qwen3-8B, $0 tier)
+  Attempt 14 →  Inception Labs        (Mercury diffusion, $0)
+
+Deep Fallback:
+  Attempt 15 →  Aion Labs             (dark fiction, IDEA-only, 20K tok/day)
+  Attempt 16 →  Chutes                (decentralized, requires funded account)
+  Attempt 17 →  LLM7.io               (unofficial mirror, no SLA)
+
+Embeddings:
+  Jina        →  jina-embeddings-v5-text-small (100K TPM, not a chat provider)
 ```
 
 Model pools are configured per generation type:
@@ -126,12 +153,23 @@ Model pools are configured per generation type:
 | Provider | Structured Output | `systemInstruction` | Auto Cache | KV Retention | Explicit Cache | Hit Tracking |
 |----------|:-:|:-:|:-:|:-:|:-:|:-:|
 | Gemini | ✅ | ✅ | ✅ | — | ✅ | ✅ `cachedContentTokenCount` |
-| GitHub | ✅ | ✅ | ✅ | ✅ `24h` | — | ✅ `prompt_tokens_details` |
-| Groq | ✅ | ✅ | ✅ internal | — | — | — |
-| Cerebras | ✅ | ✅ | limited | — | — | — |
 | Mistral | ✅ | ✅ | limited | — | — | — |
+| OpenRouter | ✅ | ✅ | ✅ internal | — | — | — |
+| Cerebras | ✅ | ✅ | limited | — | — | — |
+| Groq | ✅ | ✅ | ✅ internal | — | — | — |
 | NVIDIA NIM | ❌ | ✅ | deployment-dep. | — | — | — |
+| Cloudflare | ✅ | ✅ | limited | — | — | — |
 | Cohere | ❌ | ✅ | very limited | — | — | ✅ `cachedTokens` |
+| OVHcloud | ✅ | ✅ | limited | — | — | — |
+| SambaNova | ✅ | ✅ | limited | — | — | — |
+| ModelScope | ✅ | ✅ | limited | — | — | — |
+| Z.ai | ✅ | ✅ | limited | — | — | — |
+| SiliconFlow | ✅ | ✅ | limited | — | — | — |
+| Aion Labs | ❌ | ✅ | limited | — | — | — |
+| Chutes | ✅ | ✅ | limited | — | — | — |
+| LLM7 | ✅ | ✅ | limited | — | — | — |
+| Inception | ❌ | ✅ | limited | — | — | — |
+| Jina | — | — | — | — | — | — |
 
 ### Structured Output Strategy
 
@@ -720,16 +758,11 @@ function determineAIConfig(state: StoryState): AIChatConfig {
 
 ---
 
-### Opt-7: GitHub KV Cache Retention
+### Opt-7: ~~GitHub KV Cache Retention~~ (Removed)
 
-```ts
-// In githubPrompt:
-prompt_cache_retention: "24h"
-```
-
-Extends the server-side KV (Key-Value attention matrix) retention to 24 hours.
-Subsequent requests with the same prefix skip recomputing the attention matrices
-for all cached tokens — deeper than prompt caching, touching the transformer internals.
+> **Removed:** GitHub Models provider was removed from the waterfall.
+> The `prompt_cache_retention: "24h"` feature was GitHub-specific and no longer applicable.
+> Gemini explicit context cache and per-provider auto-caching remain the primary caching strategies.
 
 ---
 
@@ -738,9 +771,6 @@ for all cached tokens — deeper than prompt caching, touching the transformer i
 ```ts
 // Gemini:
 const cacheHitRate = cachedContentTokenCount / promptTokenCount;
-
-// GitHub:
-const cacheHitRate = prompt_tokens_details.cached_tokens / prompt_tokens;
 
 // Cohere:
 const cacheHitRate = usage.cachedTokens / usage.promptTokens;
@@ -865,7 +895,6 @@ provider switch.
 
 ```ts
 Gemini:  cachedContentTokenCount / promptTokenCount   → in AIResponse.usage
-GitHub:  cached_tokens / prompt_tokens                → in AIResponse.usage
 Cohere:  cachedTokens / total                         → in AIResponse.usage
 ```
 
@@ -1043,4 +1072,3 @@ the user selects an action:
 | MC state split | — | — | Cache stays valid 5–15 pages vs. every page |
 | 10-rule `RULES_PAGE_GENERATION` | +675 sys | 0 user | Cache 51% → 57% |
 | Stable `determineAIConfig` | — | — | Consistent prose voice |
-| GitHub `prompt_cache_retention: "24h"` | — | — | KV retention across sessions |
