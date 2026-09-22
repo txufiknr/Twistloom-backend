@@ -111,6 +111,10 @@ export const AI_RATE_LIMITS: Record<AIChatProvider, AIProviderRateLimit> = {
   // 40 RPM confirmed. RPD unclear: either renewable-rate or finite credit pool
   // depending on account type (see build.nvidia.com usage panel).
   // Omitting rpd until credit model is confirmed for your account.
+  //
+  // UPDATED 2026-09-22: this rate figure is unaffected by the model swap
+  // below (same free NIM tier either way) — see AI_CHAT_MODELS_WRITING.nvidia
+  // for why the actual model string changed.
   nvidia:     { rpm: 40 }, // before: { rpm: 40, rpd: 57_600 },
 
   // 20 RPM / 1,000 RPD (requires one-time $10 credit top-up; 50 RPD without it).
@@ -263,7 +267,7 @@ export const AI_RATE_LIMIT_SAFETY_BUFFER_PERCENT = 8;
  * | Gemini        | gemini-2.5-flash-lite      | 1M tokens  | ~900K tokens | ~3,600,000      |
  * | Mistral       | mistral-large-latest       | 256K       | ~250K tokens | ~1,000,000      |
  * | Cohere        | command-r-08-2024          | 128K       | ~125K tokens | ~500,000        |
- * | NVIDIA NIM    | meta/llama-3.3-70b         | 128K       | ~120K tokens | ~480,000        |
+ * | NVIDIA NIM    | llama-3.3-nemotron-super-49b-v1.5 | 128K | ~120K tokens | ~480,000        |
  * | Cerebras      | llama-3.3-70b              | 128K       | 8K tokens    | ~32,000         |
  * | GitHub        | gpt-4o                     | 128K       | 8K tokens    | ~30,000         |
  * | Groq          | llama-3.3-70b-versatile    | 128K       | 6K tokens    | ~24,000         |
@@ -288,18 +292,20 @@ export const AI_RATE_LIMIT_SAFETY_BUFFER_PERCENT = 8;
  * @see https://docs.cohere.com/docs/models
  * @see https://console.groq.com/docs/models
  * @see https://inference-docs.cerebras.ai/models/overview
- * @see https://docs.api.nvidia.com/nim/reference/meta-llama-3_3-70b-instruct
+ * @see https://docs.api.nvidia.com/nim/reference/nvidia-llama-3_3-nemotron-super-49b-v1_5 — current NVIDIA NIM model (meta/llama-3.3-70b-instruct, the old link target, was retired from the hosted endpoint 2026-08-26; its docs page is stale but still online)
  * @see https://github.com/marketplace/models
  * @see https://docs.mistral.ai/getting-started/models/
  * @see https://developers.openai.com/api/docs/models
  * @see https://openrouter.ai/models
  * @see https://developers.cloudflare.com/workers-ai/models
+ * @see https://docs.llm7.io/guides/models
+ * @see https://api.llm7.io/v1/models
  */
 export const AI_MAX_PROMPT_LENGTH: Record<AIChatProvider, number> = {
   gemini:     3_600_000, // 1M tokens   - The Deep Memory Vault. Safe to load full story.
   mistral:    1_000_000, // 256K tokens - Handles massive context perfectly.
   cohere:     500_000,   // 128K tokens - Good for external lore fetching.
-  nvidia:     480_000,   // 128K tokens - Native context.
+  nvidia:     480_000,   // 128K tokens - Native context (nvidia/llama-3.3-nemotron-super-49b-v1.5 and qwen/qwen3-next-80b-a3b-instruct both meet or exceed this; unchanged from the retired meta/llama-3.3-70b-instruct figure).
   cerebras:   32_000,    // 8K tokens   - FREE TIER CAP. Do not exceed ~32,000 chars.
   groq:       24_000,    // 6K tokens   - FREE TIER TPM CAP. Exceeding this triggers a 429.
 
@@ -407,7 +413,14 @@ export const AI_STREAM_DEFAULT_MODEL: Record<AIChatProvider, string> = {
   mistral: 'mistral-large-latest',
   groq: 'llama-3.3-70b-versatile',
   cerebras: 'gpt-oss-120b',
-  nvidia: 'meta/llama-3.3-70b-instruct',
+  // UPDATED 2026-09-22: meta/llama-3.3-70b-instruct retired from NIM
+  // 2026-08-26 (see AI_CHAT_MODELS_WRITING.nvidia below for the full story).
+  // CAUTION: this replacement is a reasoning model that emits a visible
+  // thinking trace by default. If the nvidia streaming generator doesn't
+  // already send `detailed thinking off` in the system prompt, add it before
+  // relying on this as a stream default — otherwise chain-of-thought text
+  // will stream ahead of the actual answer.
+  nvidia: 'nvidia/llama-3.3-nemotron-super-49b-v1.5',
   openrouter: 'deepseek/deepseek-r1',
   cloudflare: '@cf/meta/llama-3.1-8b-instruct',
   jina: 'jina-embeddings-v5-text-small',
@@ -419,7 +432,7 @@ export const AI_STREAM_DEFAULT_MODEL: Record<AIChatProvider, string> = {
   siliconflow: 'Qwen/Qwen3-8B',
   aionlabs: 'aion-2.5',
   chutes: 'zai-org/GLM-5.1-TEE',
-  llm7: 'gpt-4o-mini',
+  llm7: 'default',
   inception: 'mercury-coder-small',
 }
 
@@ -491,10 +504,24 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
     // llama-3.1-8b-instant ✅
   ],
   nvidia: [
-    // Verify still in NIM catalog — Mixtral variants deprecated elsewhere
-    'meta/llama-3.3-70b-instruct', // Tightly paced, structurally robust. Llama-3.3 has a large context window and excels naturally at dialogue, character development, and narrative pacing. It generates much more "human-like" text that flows organically without feeling forced.
-    // TODO: Error: HTTP 404: 404 page not found
-    'qwen/qwen2.5-72b-instruct', // Intricate, heavily detailed. Ideal for massive lore.
+    // UPDATED 2026-09-22: meta/llama-3.3-70b-instruct was retired from NIM's
+    // hosted endpoint on 2026-08-26 (HTTP 410 Gone — confirmed against the
+    // actual error, not just the docs page, which still lists the model;
+    // that page lags real endpoint availability by weeks-to-months). NVIDIA
+    // did not publish a designated 1:1 replacement for this specific
+    // retirement (unlike some other NIM deprecations that do get an
+    // explicit "use X instead" notice).
+    //
+    // IMPORTANT — this replacement is a reasoning model and emits a visible
+    // thinking trace by default. Set `detailed thinking off` (or `/no_think`)
+    // in the system prompt for every call here, or the schema-shaped output
+    // will arrive wrapped in chain-of-thought text and likely fail
+    // parseAISafely.
+    'nvidia/llama-3.3-nemotron-super-49b-v1.5', // Closest same-lineage successor — NVIDIA's own NAS-derivative of the exact same base model (Llama-3.3-70B-Instruct), same 128K context, still free/commercial-use on NIM. Tightly paced, structurally robust; dialogue/pacing/character-voice quality should carry over directly from the old pick.
+    // qwen/qwen2.5-72b-instruct (the previous 2nd rung, flagged 404 above)
+    // isn't in NIM's current catalog at all — confirmed, not just untested.
+    // Replaced with the current large-context Qwen3 chat model.
+    'qwen/qwen3-next-80b-a3b-instruct', // 262K native context (extensible to ~1M via YaRN rope scaling). Plain instruct variant — no thinking-mode toggle to worry about, unlike the nemotron pick above (the separate qwen3-next-80b-a3b-thinking variant is the one with reasoning traces). MoE (80B total / 3B active params), Apache 2.0. Intricate, heavily detailed — good fit for massive lore.
   ],
   cloudflare: [
     '@cf/mistral/mistral-7b-instruct-v0.1', // Raw European tone hosted directly on the edge.
@@ -543,7 +570,7 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
     'mercury-coder-small', // Diffusion decoder; $0 during Inception's API-credits burn campaign.
   ],
   llm7: [
-    'gpt-4o-mini', // Unaffiliated mirror with no SLA; absolute last resort[cite: 3].
+    'default', // Unaffiliated mirror with no SLA; absolute last resort[cite: 3].
   ],
 };
 
@@ -579,7 +606,7 @@ export const AI_CHAT_MODELS_FAST: AIModelSelection = {
     'Qwen/Qwen3-8B', // Small $0-tier model[cite: 3], perfect for rapid action checks.
   ],
   llm7: [
-    'gpt-4o-mini', // Treated as an absolute last-resort proxy fallback[cite: 3].
+    'fast', // Treated as an absolute last-resort proxy fallback[cite: 3].
   ],
 };
 
@@ -618,7 +645,12 @@ export const AI_CHAT_MODELS_IDEA: AIModelSelection = {
     '@cf/meta/llama-3.1-8b-instruct',
     '@cf/qwen/qwen1.5-7b-chat-awq',
   ],
-  nvidia: ['meta/llama-3.3-70b-instruct'], // Creative writing, roleplay, brainstorming, and generating natural-sounding, lengthy prose.
+  // UPDATED 2026-09-22: meta/llama-3.3-70b-instruct retired from NIM
+  // 2026-08-26 — see AI_CHAT_MODELS_WRITING.nvidia above for the full story.
+  // Same reasoning-mode caveat applies here: set `detailed thinking off` in
+  // the system prompt, or IDEA-tier calls will come back wrapped in a
+  // visible thinking trace.
+  nvidia: ['nvidia/llama-3.3-nemotron-super-49b-v1.5'], // Creative writing, roleplay, brainstorming, and generating natural-sounding, lengthy prose.
   cohere: ['command-r-08-2024'],
 
   // --- New additions (2026-08-04) ---
@@ -647,7 +679,8 @@ export const AI_CHAT_MODELS_IDEA: AIModelSelection = {
     'gpt-oss:20b', // Level 1-2 free-tier model[cite: 3], good for offline/timeshared idea generation.
   ],
   llm7: [
-    'gpt-4o-mini', // Unofficial proxy mirror, strictly last-resort[cite: 3].
+    'default', // Unofficial proxy mirror, strictly last-resort[cite: 3].
+    'fast'
   ],
 };
 
@@ -764,7 +797,7 @@ export const AI_CHAT_MODELS_TRANSLATION: AIModelSelection = {
     'gpt-oss:20b', // Light fallback if GPU-time is available[cite: 3].
   ],
   llm7: [
-    'gpt-4o-mini', // OpenAI's translation alignment is top-tier; use as proxy fallback[cite: 3].
+    'default', // OpenAI's translation alignment is top-tier; use as proxy fallback[cite: 3].
   ],
 };
 
@@ -821,6 +854,6 @@ export const AI_CHAT_MODELS_EVALUATION: AIModelSelection = {
     'zai-org/GLM-5.1-TEE', // Prefer TEE-flagged models[cite: 3] to evaluate story content securely.
   ],
   llm7: [
-    'gpt-4o-mini', // Very strong at schema parsing, but keep as last resort due to unofficial mirror status[cite: 3].
+    'default', // Very strong at schema parsing, but keep as last resort due to unofficial mirror status[cite: 3].
   ],
 };

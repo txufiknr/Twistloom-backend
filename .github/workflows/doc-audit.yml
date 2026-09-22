@@ -1,0 +1,73 @@
+name: Documentation Audit
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docs/**/*.md'
+
+jobs:
+  doc-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Audit new/modified documentation
+        run: |
+          echo "=== Documentation Audit ==="
+          echo ""
+
+          CHANGED_DOCS=$(git diff --name-only origin/main -- 'docs/' 2>/dev/null || true)
+
+          if [ -z "$CHANGED_DOCS" ]; then
+            echo "No documentation files changed."
+            exit 0
+          fi
+
+          echo "Changed documentation files:"
+          echo "$CHANGED_DOCS"
+          echo ""
+
+          ISSUES=0
+
+          for doc in $CHANGED_DOCS; do
+            if [[ "$doc" == *.md ]]; then
+              echo "--- Auditing: $doc ---"
+
+              # Check for required sections (basic structural check)
+              if [[ "$doc" == *"ARCHITECTURE"* ]]; then
+                if ! grep -q "## .*Problem\|## .*Design\|## .*Implementation\|## .*References" "$doc" 2>/dev/null; then
+                  echo "Missing required sections in architecture doc"
+                  ISSUES=$((ISSUES + 1))
+                fi
+              fi
+
+              if [[ "$doc" == *"ROADMAP"* ]]; then
+                if ! grep -q "## .*Summary\|## .*Problem\|## .*Design\|## .*Implementation\|## .*Status" "$doc" 2>/dev/null; then
+                  echo "Missing required sections in roadmap doc"
+                  ISSUES=$((ISSUES + 1))
+                fi
+              fi
+
+              # Check for file references that don't exist
+              file_refs=$(grep -oh 'src/[a-zA-Z0-9_/-]*\.\(ts\|tsx\|js\|jsx\)' "$doc" 2>/dev/null || true)
+              for ref in $file_refs; do
+                if [ ! -f "$ref" ]; then
+                  echo "References non-existent file: $ref"
+                  ISSUES=$((ISSUES + 1))
+                fi
+              done
+
+              echo ""
+            fi
+          done
+
+          if [ $ISSUES -gt 0 ]; then
+            echo "Found $ISSUES potential issues in documentation."
+            echo "Consider running architecture-doc-audit or roadmap-doc-audit skill."
+          else
+            echo "No obvious issues found."
+          fi
+          # Advisory only — always exit 0
+          exit 0

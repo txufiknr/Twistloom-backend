@@ -1,0 +1,97 @@
+name: Documentation Sync Audit
+
+on:
+  push:
+    branches: [main, develop]
+
+jobs:
+  doc-sync-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check trigger conditions
+        id: check
+        run: |
+          # Condition 1: Commit message starts with "docs"
+          if [[ "${{ github.event.head_commit.message }}" == docs* ]]; then
+            echo "triggered=true" >> $GITHUB_OUTPUT
+            echo "Reason: commit message starts with 'docs'"
+            exit 0
+          fi
+
+          # Condition 2: More than 10 files changed
+          CHANGED_COUNT=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | wc -l)
+          if [ "$CHANGED_COUNT" -gt 10 ]; then
+            echo "triggered=true" >> $GITHUB_OUTPUT
+            echo "Reason: $CHANGED_COUNT files changed (threshold: 10)"
+            exit 0
+          fi
+
+          echo "triggered=false" >> $GITHUB_OUTPUT
+          echo "Skipped: $CHANGED_COUNT files changed, no 'docs' prefix"
+
+      - name: Audit documentation sync
+        if: steps.check.outputs.triggered == 'true'
+        run: |
+          echo "=== Documentation Sync Audit ==="
+          echo "Trigger: ${{ steps.check.outputs.reason }}"
+          echo ""
+
+          CHANGED_FILES=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} -- 'src/' 2>/dev/null || true)
+
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No source files changed."
+            exit 0
+          fi
+
+          echo "Changed source files:"
+          echo "$CHANGED_FILES"
+          echo ""
+
+          STALE_REFS=0
+          for file in $CHANGED_FILES; do
+            escaped=$(echo "$file" | sed 's/\//\\\//g')
+            refs=$(grep -r "$file" docs/ --include="*.md" -l 2>/dev/null || true)
+            if [ -n "$refs" ]; then
+              echo "Documentation referencing $file:"
+              echo "$refs"
+              STALE_REFS=$((STALE_REFS + 1))
+            fi
+          done
+
+          if [ $STALE_REFS -gt 0 ]; then
+            echo ""
+            echo "Found $STALE_REFS documentation files that may need updating."
+            echo "Consider running doc-sync-audit skill to verify accuracy."
+          else
+            echo "No documentation references to changed files found."
+          fi
+
+      - name: Check for orphaned docs
+        if: steps.check.outputs.triggered == 'true'
+        run: |
+          echo "=== Orphaned Documentation Check ==="
+          echo ""
+
+          doc_refs=$(grep -roh 'src/[a-zA-Z0-9_/-]*\.\(ts\|tsx\|js\|jsx\)' docs/ --include="*.md" 2>/dev/null | sort -u || true)
+
+          ORPHANED=0
+          for ref in $doc_refs; do
+            if [ ! -f "$ref" ]; then
+              echo "Orphaned reference: $ref (file does not exist)"
+              ORPHANED=$((ORPHANED + 1))
+            fi
+          done
+
+          if [ $ORPHANED -gt 0 ]; then
+            echo ""
+            echo "Found $ORPHANED orphaned documentation references."
+          else
+            echo "No orphaned references found."
+          fi
+          # Advisory only — always exit 0
+          exit 0

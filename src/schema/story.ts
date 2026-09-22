@@ -197,6 +197,7 @@ export const SPATIAL_SCHEMA: AIJsonProperty = {
       additionalProperties: false,
     },
   },
+  required: ['exits'],
   additionalProperties: false,
 };
 
