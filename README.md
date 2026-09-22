@@ -16,8 +16,8 @@
 </table>
 
 [![Twistloom](https://img.shields.io/badge/🩸_Twistloom-AI_Horror_Interactive_Fiction-7c3aed?style=for-the-badge&labelColor=1a0533&logoColor=white)](https://twistloom-web.vercel.app)
-[![Stack](https://img.shields.io/badge/Stack-Next.js_16_•_Hono_•_Neon_•_Upstash-a78bfa?style=for-the-badge&labelColor=0d0d1a)](https://twistloom-web.vercel.app)
-[![AI](https://img.shields.io/badge/AI-8_LLM_Providers-6d28d9?style=for-the-badge&labelColor=0d0d1a)](https://twistloom-web.vercel.app)
+[![Stack](https://img.shields.io/badge/Stack-Hono_•_Bun_•_Neon_•_Upstash-a78bfa?style=for-the-badge&labelColor=0d0d1a)](https://twistloom-web.vercel.app)
+[![AI](https://img.shields.io/badge/AI-19_LLM_Providers-6d28d9?style=for-the-badge&labelColor=0d0d1a)](https://twistloom-web.vercel.app)
 
 ![Bun](https://img.shields.io/badge/Bun-1.3+-f9f9f9?logo=bun&logoColor=white&labelColor=14151a)
 ![TypeScript](https://img.shields.io/badge/typescript-blue?logo=typescript)
@@ -41,7 +41,7 @@ A sophisticated psychological thriller branching story engine backend that deliv
 
 Twistloom is not merely a branching story platform. It is a multiverse storytelling engine where the same decision can lead to different realities, making every reader's journey potentially unique.
 
-[![Typing SVG](https://readme-typing-svg.herokuapp.com?font=Fira+Code&weight=500&size=16&pause=1200&color=A78BFA&center=true&vCenter=true&repeat=true&width=700&height=70&lines=🎭+Building+AI-powered+psychological+horror+fiction;🤖+Multi-LLM+orchestration+across+8+providers;⚡+Next.js+16+%7C+React+19+%7C+TypeScript;🧠+Narrative+engines%2C+momentum+systems+%26+story+AI;🩸+Where+every+choice+rewrites+the+horror...)](https://git.io/typing-svg)
+[![Typing SVG](https://readme-typing-svg.herokuapp.com?font=Fira+Code&weight=500&size=16&pause=1200&color=A78BFA&center=true&vCenter=true&repeat=true&width=700&height=70&lines=🎭+Building+AI-powered+psychological+horror+fiction;🤖+Multi-LLM+orchestration+across+19+providers;⚡+Hono+%7C+Bun+%7C+TypeScript;🧠+Narrative+engines%2C+momentum+systems+%26+story+AI;🩸+Where+every+choice+rewrites+the+horror...)](https://git.io/typing-svg)
 
 ## 🌐 URLs
 
@@ -56,12 +56,14 @@ Twistloom is not merely a branching story platform. It is a multiverse storytell
 |--------|---------|-----|
 | 💻 **TypeScript** | 6.0+ | Type safety, modern features, and excellent IDE support |
 | 🐰 **Bun** | 1.3+ | All-in-one JS runtime — fast dev server, native TypeScript, package manager, and test runner |
-| 🔥 **Hono.js** | 4.12+ | Ultra-fast, runtime-agnostic web framework with first-class TypeScript and native Bun support |
+| 🔥 **Hono.js** | 4.13+ | Ultra-fast, runtime-agnostic web framework with first-class TypeScript and native Bun support |
 | 🗄️ **Neon (Postgres)** | 18 | Serverless, auto-scaling, and excellent TypeScript support |
 | 🔧 **Drizzle ORM** | 0.45+ | Type-safe, excellent migrations, and modern query builder |
 | 🚀 **Vercel** | Node.js runtime | Stable serverless execution via custom `IncomingMessage` → `Request` adapter |
 
 ### **AI Providers**
+
+19 providers orchestrated via a waterfall ranking system. The `openai` npm package is used as the shared HTTP client for all OpenAI-compatible providers (OpenRouter, Cloudflare, OVHcloud, SambaNova, Ollama, ModelScope, Z.ai, SiliconFlow, Aion Labs, Chutes, LLM7, Inception).
 
 | Provider | Purpose |
 |----------|---------|
@@ -73,6 +75,17 @@ Twistloom is not merely a branching story platform. It is a multiverse storytell
 | 🥈 **NVIDIA** | Cost-effective Llama-3.3 on NIM catalog |
 | 🥉 **Cloudflare Workers AI** | Edge inference for Mistral-7B / Llama-3.1 / Gemma at low latency |
 | 🥉 **Cohere** | Last-resort fallback — Command-R |
+| 🌐 **OVHcloud** | High-capacity (400 RPM authenticated), Qwen3.6-27B / GPT-OSS-120B |
+| 🌐 **SambaNova** | DeepSeek-V3.2 / Llama on custom RDU hardware |
+| 🌐 **ModelScope** | Qwen3.5-family (Alibaba-first releases) |
+| 🌐 **Z.ai** | GLM-4.7-Flash (warm, theatrical prose) |
+| 🌐 **SiliconFlow** | Qwen3-8B ($0 tier, light fallback) |
+| 🌐 **Aion Labs** | aion-2.5 (dark/mature fiction, ~20K token/day budget) |
+| 🌐 **Chutes** | Decentralized Bittensor compute (requires funded account) |
+| 🌐 **LLM7.io** | Unofficial mirror/last-resort fallback (no SLA) |
+| 🌐 **Inception Labs** | Mercury diffusion LLM (API-credits campaign) |
+| 🌐 **Ollama** | Local inference (development/testing) |
+| 🔎 **Jina** | Embeddings only — jina-embeddings-v5-text-small (not a chat provider) |
 
 ## 🔥 Why Hono over Express
 
@@ -255,7 +268,7 @@ The codebase was originally migrated to be Edge Runtime-compatible, systematical
 
 ### **Advanced AI Systems**
 
-* **Multi-Provider AI Support**: 8 providers with tiered ranking and automatic fallback for reliability
+* **Multi-Provider AI Support**: 19 providers with tiered ranking and automatic fallback for reliability
 * **Adaptive AI Configuration**: Generation parameters dynamically adjust based on story progression and psychological state
 * **Context-Aware Storytelling**: Intelligent narrative context management for long-running stories
 * **Structured JSON Generation**: Type-safe AI responses with schema validation and auto-repair
@@ -333,12 +346,12 @@ The codebase was originally migrated to be Edge Runtime-compatible, systematical
 
 * **Auto-Translation Cron**: Scheduled Indonesian translation for books via AI
 * **Multi-Language Support**: Per-book translations stored in `book_translations` table
-* **Locale-Aware Emails**: i18n support (en/id) for all 15 transactional email templates
+* **Locale-Aware Emails**: i18n support (en/id) for all 16 transactional email templates
 * **Header-Language Routing**: `Accept-Language` header used for localized content delivery
 
 ### **Email System**
 
-* **15 Transactional Templates**: Security (verification, password reset), billing (receipts, subscription), support, and engagement (weekly recommendations, monthly summaries)
+* **16 Transactional Templates**: Security (verification, password reset), billing (receipts, subscription), engagement (weekly recommendations, monthly summaries), and system (story published, announcements)
 * **Resend Integration**: Production email delivery via Resend API
 * **HMAC Unsubscribe**: Cryptographically signed one-click unsubscribe links
 * **Preference Toggles**: Granular email notification preferences per user
@@ -412,7 +425,7 @@ Twistloom implements a sophisticated AI provider ranking and fallback system tha
 
 1. **Provider Ranking**: Based on `AI_CHAT_MODELS_WRITING` configuration
    ```
-   mistral → gemini → openrouter → cerebras → groq → nvidia → cloudflare → cohere
+   mistral → gemini → openrouter → cerebras → groq → nvidia → cloudflare → cohere → ovhcloud → sambanova → modelscope → zai → siliconflow → aionlabs → chutes → llm7 → inception
    ```
 
 2. **Model Selection**: Each provider has multiple models with fallback hierarchy
@@ -671,6 +684,7 @@ bun dev:cron:forum-ban           # Run forum ban reconciliation locally
 bun dev:cron:cleanup             # Run database cleanup cron job locally
 bun dev:cron:email-weekly        # Run weekly recommendations email
 bun dev:cron:email-monthly       # Run monthly summary email
+bun dev:usage-cache-report       # Run usage cache report locally
 ```
 
 ### **Production**
@@ -779,7 +793,7 @@ This allows:
 ## 🔧 Configuration
 
 ### **AI Configuration**
-- Multi-provider model selection (Mistral, Gemini, OpenRouter, Cerebras, Groq, NVIDIA, Cloudflare, Cohere)
+- Multi-provider model selection (Mistral, Gemini, OpenRouter, Cerebras, Groq, NVIDIA, Cloudflare, Cohere, OVHcloud, SambaNova, ModelScope, Z.ai, SiliconFlow, Aion Labs, Chutes, LLM7, Inception, Ollama)
 - Configurable temperature, top-k, and output limits
 - Rate limiting and caching strategies
 - Fallback and error handling
@@ -841,221 +855,103 @@ OPENROUTER_API_KEY=...
 ## 📚 Documentation
 
 ### **Code Organization**
+
+> **Note**: This is a simplified overview. The codebase evolves rapidly — for a complete listing, see the source tree directly.
+
 ```
 api/
-├── index.ts                        # Vercel entrypoint — re-exports src/app.ts's default export (the IncomingMessage → Request adapter)
+├── index.ts                        # Vercel entrypoint — re-exports src/app.ts's default export
 
 src/
-├── app.ts                          # Hono app configuration
+├── app.ts                          # Hono app configuration & Vercel adapter
 ├── server.bun.ts                   # Server entry point (Bun runtime)
 │
 ├── config/                         # Configuration files and AI client setup
-│   ├── achievements.ts             # Achievement definitions
 │   ├── ai-chat.ts                  # AI chat configuration
-│   ├── ai-clients.ts               # AI provider model selection
-│   ├── ai-images.ts                # AI image generation config
-│   ├── auth.ts                     # Authentication configuration
-│   ├── book-creation.ts            # Book creation limits and timeouts
-│   ├── branch-traversal.ts         # Branch traversal algorithm config
-│   ├── cache.ts                    # Cache configuration
-│   ├── candidate-generation.ts     # Candidate generation config
-│   ├── canon-validation.ts         # Canon validation config
-│   ├── characters.ts               # Character system config
-│   ├── constants.ts                # Application constants
+│   ├── ai-clients.ts               # AI provider model selection (19 providers)
+│   ├── cache.ts / redis.ts         # Cache and Redis configuration
 │   ├── credits.ts                  # Credits system config
-│   ├── custom-actions.ts           # Custom action validation config
-│   ├── emails/                     # Email templates
-│   ├── embedding.ts                # Embedding configuration
-│   ├── enums.ts                    # Shared enum definitions
-│   ├── env.ts                      # Environment variables
-│   ├── errors.ts                   # Error configuration
-│   ├── generation-refund.ts        # Pro-rata refund calculation
-│   ├── image.ts                    # Image configuration
-│   ├── legal.ts                    # Legal compliance config
-│   ├── pagination.ts               # Pagination config
-│   ├── prompt-cache.ts             # Prompt caching config
-│   ├── purge.ts                    # Cache purge config
-│   ├── redis.ts                    # Redis configuration
+│   ├── emails/                     # Email templates (16 templates, i18n)
 │   ├── story.ts                    # Story settings
-│   ├── subscription.ts             # Subscription config
-│   ├── theme-validation.ts         # Theme validation config
-│   ├── translation.ts              # Translation config
-│   ├── user.ts                     # User configuration
-│   └── xendit.ts                   # Xendit payment config
+│   └── ...                         # 40+ config modules (env, enums, constants, etc.)
 │
-├── cron/                           # Scheduled job handlers
+├── cron/                           # Scheduled job handlers (20 scripts)
 │   ├── auto-translate-indonesian.ts
-│   ├── cleanup.ts
-│   ├── email-monthly-summary.ts
-│   ├── email-weekly-recommendations.ts
-│   ├── forum-ban-reconciliation.ts
-│   ├── generate-originals.ts
-│   ├── on-demand-book-creation.ts
-│   ├── retry-pending-generations.ts
 │   ├── update-trending-scores.ts
-│   └── vip-expiration.ts
+│   ├── generate-originals.ts
+│   ├── retry-pending-generations.ts
+│   ├── on-demand-book-creation.ts
+│   ├── email-weekly-recommendations.ts
+│   ├── email-monthly-summary.ts
+│   └── ...                         # cleanup, vip-expiration, social-mentions, etc.
 │
 ├── db/                             # Database schema and migrations
-│   ├── client.ts                   # Database client
-│   ├── extensions.ts               # Database extensions
-│   ├── reset.ts                    # Database reset utilities
+│   ├── client.ts                   # Database client (Neon serverless)
 │   ├── schema.ts                   # Database schema (all tables)
-│   └── triggers.ts                 # Database triggers
+│   ├── extensions.ts               # Database extensions
+│   ├── triggers.ts                 # Database triggers
+│   └── reset.ts                    # Database reset utilities
 │
 ├── hono/                           # Hono framework setup
 │   ├── env.ts                      # AppEnv type definitions
-│   └── express-shim.ts             # Express-to-Hono conversion utilities
+│   └── express-shim.ts             # Express-to-Hono compatibility layer
 │
 ├── middleware/                      # Hono middleware
-│   ├── admin-auth.ts               # Admin authentication
-│   ├── body.ts                     # Body parsing
-│   ├── cache.ts                    # Response caching
-│   ├── locale.ts                   # Locale extraction
 │   ├── nextauth.ts                 # NextAuth v5 session verification
 │   ├── rate-limit.ts               # Rate limiting (Upstash Redis)
-│   └── upload.ts                   # Multipart image upload
+│   ├── cache.ts                    # Response caching
+│   ├── upload.ts                   # Multipart image upload
+│   ├── age-gate.ts                 # Age-gate enforcement
+│   ├── trust-safety.ts             # Trust & safety checks
+│   └── ...                         # locale, body, admin-auth, wall-rate-limit
 │
-├── routes/                         # API endpoint handlers
-│   ├── admin.ts                    # Admin routes
+├── routes/                         # API endpoint handlers (20 route modules)
 │   ├── auth.ts                     # Authentication routes
-│   ├── blog.ts                     # Blog routes
 │   ├── books.ts                    # Books API routes
-│   ├── email.ts                    # Email preference routes
-│   ├── index.ts                    # Route index
 │   ├── payments.ts                 # Payments API routes
-│   ├── social-mentions.ts          # Social mentions routes
-│   └── user.ts                     # User API routes
+│   ├── user.ts                     # User API routes
+│   ├── wall.ts                     # Wall/feed routes
+│   ├── notifications.ts            # Notification routes
+│   └── ...                         # admin, blog, email, social-mentions, pen, etc.
 │
-├── schema/                         # Schema definitions
-│   ├── book.ts                     # Book schema
-│   └── story.ts                    # Story schema
-│
-├── services/                       # Business logic and data access
-│   ├── achievements.ts             # Achievement system
-│   ├── book-controller.ts          # Book query builders and controllers
+├── services/                       # Business logic and data access (63 modules)
+│   ├── book.ts / book-controller.ts
 │   ├── book-creation.ts            # Book creation pipeline
-│   ├── book.ts                     # Book service (CRUD, enriched queries)
-│   ├── cache.ts                    # Cache service (Redis + in-memory)
-│   ├── canon-validation.ts         # Canon validation AI pipeline
 │   ├── credits.ts                  # Credits system
+│   ├── canon-validation.ts         # Canon validation AI pipeline
 │   ├── custom-actions.ts           # Custom action validation (Gate 0/1)
-│   ├── email-preferences.ts        # Email preference management
-│   ├── forum-queue.ts              # Forum notification queue
-│   ├── image.ts                    # Image upload and management
-│   ├── locked-paths.ts             # Locked paths timeline
-│   ├── performance-monitoring.ts   # System performance tracking
-│   ├── prompt-cache.ts             # Prompt caching service
-│   ├── psychological-profile.ts    # MC psychological profiling
-│   ├── session-manager.ts          # Session management
-│   ├── social/                     # Social mentions ingestion
 │   ├── story-branch.ts             # Branch-aware story functions
 │   ├── story-state-cache.ts        # Story state caching (LRU)
-│   ├── story.ts                    # Story service (visit, stats, session)
 │   ├── subscription.ts             # Subscription management
 │   ├── translation.ts              # Translation service
-│   ├── user-controller.ts          # User query builders
-│   ├── user.ts                     # User service
-│   ├── vector-memory.ts            # Vector memory (pgvector)
-│   └── xendit.ts                   # Xendit payment service
+│   ├── image.ts                    # Image upload via ImageKit
+│   ├── gateways/                   # Payment gateway adapters (Stripe, Xendit)
+│   └── ...                         # analytics, companion-cache, wall, wallet, etc.
 │
-├── types/                          # TypeScript type definitions
-│   ├── achievements.ts
-│   ├── ai-chat.ts
-│   ├── ai-images.ts
-│   ├── api.ts
-│   ├── book-creation.ts
-│   ├── book.ts
-│   ├── candidate-generation.ts
-│   ├── canon-validation.ts
-│   ├── character.ts
-│   ├── credits.ts
-│   ├── custom-action.ts
-│   ├── email-locale.ts
-│   ├── email-preferences.ts
-│   ├── express.d.ts
-│   ├── github-workflow.ts
-│   ├── hono.ts
-│   ├── image.ts
-│   ├── payment.ts
-│   ├── places.ts
-│   ├── prompt.ts
-│   ├── redis.ts
-│   ├── schema.ts
-│   ├── session.ts
-│   ├── sse.ts
-│   ├── story-thread.ts
-│   ├── story.ts
-│   ├── subscription.ts
-│   ├── theme-validation.ts
-│   └── user.ts
+├── types/                          # TypeScript type definitions (43 modules)
+│   ├── ai-chat.ts                  # AI provider & model types
+│   ├── story.ts                    # Story state types
+│   ├── book.ts                     # Book types
+│   ├── payment.ts                  # Payment types
+│   └── ...                         # session, sse, credits, custom-action, etc.
 │
-└── utils/                          # Utility functions and AI helpers
-    ├── account-lockout.ts          # Progressive account lockout
-    ├── ai-chat-stream.ts           # AI SSE streaming
+└── utils/                          # Utility functions and AI helpers (77 modules)
     ├── ai-chat.ts                  # AI chat abstraction
-    ├── ai-clients.ts               # AI client utilities
-    ├── ai-image.ts                 # AI image generation
-    ├── ai-limiters.ts              # AI rate limiting
-    ├── ai-logger.ts                # AI usage logging
+    ├── ai-chat-stream.ts           # AI SSE streaming
+    ├── ai-clients.ts               # AI client instances (OpenAI SDK for 12+ providers)
     ├── ai-parser.ts                # AI response JSON parsing
-    ├── ai-sampling.ts              # Top-k/temperature sampling config
-    ├── ai-token-repair.ts          # Token repair utilities
-    ├── book-mode.ts                # Book mode utilities
-    ├── books.ts                    # Book validation helpers
     ├── branch-traversal.ts         # Core Branch Traversal Algorithm
-    ├── cache.ts                    # Cache utilities
-    ├── candidate-generation.ts     # Candidate generation utilities
-    ├── characters.ts               # Character generation utilities
-    ├── debounce.ts                 # Debounce utilities
-    ├── distributed-lock.ts         # Distributed locking (Postgres advisory)
-    ├── edge-group.ts               # GitHub Actions group formatting
-    ├── email-verification.ts       # Email verification tokens
-    ├── email.ts                    # Email sending utilities
-    ├── embedding.ts                # Embedding generation
-    ├── env.ts                      # Environment utilities
-    ├── error.ts                    # Error handling helpers
-    ├── formatter.ts                # Text formatting
-    ├── gemini.ts                   # Gemini-specific utilities
-    ├── github-workflow.ts          # GitHub workflow dispatch
-    ├── graceful-shutdown.ts        # Graceful shutdown
-    ├── logger.ts                   # Structured logging
-    ├── narrative-style.ts          # Narrative style utilities
-    ├── page-validation.ts          # Page validation utilities
-    ├── pagination.ts               # Pagination utilities (cursor, offset)
-    ├── parser.ts                   # AI response parsing
-    ├── password-reset.ts           # Password reset tokens
-    ├── password-validation.ts      # Password strength validation
-    ├── password.ts                 # Password hashing (bcryptjs)
-    ├── places.ts                   # Place utilities
-    ├── player-profile.ts           # Player profile utilities
-    ├── progress-tracking.ts        # Action progress tracking
-    ├── prompt-security.ts          # Prompt injection prevention
-    ├── prompt-stream.ts            # Cached prompt streaming
-    ├── prompt-telemetry.ts         # Prompt usage telemetry
-    ├── prompt-translation.ts       # Prompt translation utilities
     ├── prompt.ts                   # AI prompt engineering
-    ├── quote.ts                    # Quote utilities
+    ├── error.ts                    # Error handling helpers (cApiError, etc.)
     ├── redis.ts                    # Redis client utilities
-    ├── reliability.ts              # Retry/reliability utilities
-    ├── retry.ts                    # Retry logic
-    ├── sanitize-html.ts            # HTML sanitization
-    ├── search.ts                   # Search utilities
-    ├── sse.ts                      # Server-Sent Events utilities
-    ├── story.ts                    # Story utilities
     ├── stripe.ts                   # Stripe utilities
-    ├── text-processing.ts          # Text processing
-    ├── text-similarity.ts          # Text similarity
-    ├── theme-validation.ts         # Theme validation
-    ├── time.ts                     # Time utilities
-    ├── translation.ts              # Translation utilities
-    ├── username.ts                 # Username generation
-    ├── uuid.ts                     # UUID generation (v7)
-    └── xendit.ts                   # Xendit utilities
+    ├── companion-stream.ts         # Companion chat SSE streaming
+    └── ...                         # 60+ utility modules
 ```
 
 ### **Key Modules**
 - **Story Engine**: Core branching narrative logic
-- **AI Integration**: Multi-provider AI communication with fallback orchestration
+- **AI Integration**: Multi-provider AI communication with fallback orchestration (19 providers via OpenAI-compatible SDK)
 - **Character System**: Dynamic character management and psychological profiling
 - **Database Layer**: Type-safe data persistence with Drizzle ORM
 - **API Layer**: RESTful endpoint implementation on Hono.js
@@ -1075,7 +971,7 @@ src/
 - **Image Service**: Image upload and management via ImageKit
 - **Authentication**: NextAuth v5 with Google OAuth + Email/Password
 - **Rate Limiting**: Request throttling via Upstash Redis
-- **Email System**: 15 transactional templates via Resend with i18n
+- **Email System**: 16 transactional templates via Resend with i18n
 - **Referral System**: Early-attribution referrals with deferred mutual payouts
 - **Achievement System**: Trackable reader/writer achievements
 - **Vector Memory**: pgvector-based semantic memory for narrative context

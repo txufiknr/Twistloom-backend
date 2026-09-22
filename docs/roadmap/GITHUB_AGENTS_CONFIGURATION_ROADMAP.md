@@ -48,7 +48,7 @@
 
 ### Current State
 
-- The repository has a comprehensive `AGENTS.md` (573 lines) containing architectural rules, established patterns (LRU caching, Redis multi-tier caching, credits/financial integrity, SSE streaming, Drizzle ORM, Hono routes, hot-path performance, data sanitization), development commands, and an architecture documentation sitemap.
+- The repository has a comprehensive `AGENTS.md` (565 lines) containing architectural rules, established patterns (LRU caching, Redis multi-tier caching, credits/financial integrity, SSE streaming, Drizzle ORM, Hono routes, hot-path performance, data sanitization), development commands, and an architecture documentation sitemap.
 - `.github/` directory now exists with `copilot-instructions.md`, 6 path-specific `instructions/`, 9 specialist `agents/`, and 2 documentation `workflows/`.
 - The `.agents/skills/` directory now contains 12 audit/refinement skills alongside the original `roadmap-doc/SKILL.md`.
 - GitHub Copilot cloud agents and local Copilot Chat now have structured domain-specific instructions via `.github/copilot-instructions.md` and path-specific `.github/instructions/*.instructions.md` files.
@@ -60,7 +60,7 @@
 
 1. **Generic agent behavior** — A GitHub Copilot cloud agent assigned to fix a story generation bug has no understanding of BookMode semantics, branch isolation, canon validation, or the deterministic-vs-generative principle. It will apply generic Hono/TypeScript patterns that may violate Twistloom's architecture.
 2. **No operational workflow guidance** — `AGENTS.md` encodes *what* the system is, but not *how* to work in this repo (tooling, validation commands, PR discipline, working style, import conventions).
-3. **No path-specific rules** — Database schema, AI orchestration, payments, story engine, and SSE streaming each have unique constraints buried in a 573-line root file. Agents working on database code must parse rules about payments, SSE, and AI providers.
+3. **No path-specific rules** — Database schema, AI orchestration, payments, story engine, and SSE streaming each have unique constraints buried in a 565-line root file. Agents working on database code must parse rules about payments, SSE, and AI providers.
 4. **No specialist personas** — Complex delegated tasks (story engine bugs, credit transaction correctness, AI provider fallback, branch isolation) benefit from agents with tuned risk posture, priority ordering, and domain-specific definition of done.
 5. **No reusable skill procedures** — Common audit tasks (branch safety review, canon validation, SSE stream correctness, credit transaction integrity, prompt cost analysis) are performed ad-hoc without standardized, repeatable procedures.
 6. **Documentation drift** — 40+ architecture MD files and 46+ roadmap MD files exist in `docs/`. When code changes are pushed, these docs silently become stale. No automated mechanism detects or prompts updates.
@@ -125,7 +125,7 @@ The configuration follows a **five-layer** conceptual separation with a feedback
 Keep everything in the root `AGENTS.md` as-is.
 
 **Pros:** Simple, single source of truth, no coordination between files.
-**Cons:** 573+ lines that agents must parse fully; no path-specific scoping; no specialist tuning; no operational workflow guidance; agents apply irrelevant rules to every change.
+**Cons:** 565+ lines that agents must parse fully; no path-specific scoping; no specialist tuning; no operational workflow guidance; agents apply irrelevant rules to every change.
 
 #### Alternative B: Split into `.github/copilot-instructions.md` + `.github/instructions/` only
 
@@ -354,7 +354,7 @@ applyTo: "src/utils/ai*.ts", "src/config/ai*.ts", "src/utils/prompt*.ts"
 - Provider/model failure should follow the existing fallback and retry strategy.
 - Do not bypass the provider abstraction for convenience.
 
-## Provider Waterfall (8 Providers)
+## Provider Waterfall (19 Providers)
 
 1. Mistral — Primary creative writing prose & natural character voices
 2. Google Gemini — Large context (1M+ tokens), rapid generation, world-building lore
@@ -364,6 +364,17 @@ applyTo: "src/utils/ai*.ts", "src/config/ai*.ts", "src/utils/prompt*.ts"
 6. NVIDIA — Cost-effective Llama-3.3 on NIM
 7. Cloudflare Workers AI — Edge inference for Mistral-7B / Llama-3.1
 8. Cohere — Last-resort fallback (Command-R)
+9. OVHcloud — High-capacity (400 RPM authenticated), Qwen3.6-27B / GPT-OSS-120B
+10. SambaNova — DeepSeek-V3.2 / Llama on custom RDU hardware
+11. ModelScope — Qwen3.5-family (Alibaba-first releases)
+12. Z.ai — GLM-4.7-Flash (warm, theatrical prose)
+13. SiliconFlow — Qwen3-8B ($0 tier, light fallback)
+14. Aion Labs — aion-2.5 (dark/mature fiction, ~20K token/day budget)
+15. Chutes — Decentralized Bittensor compute (requires funded account)
+16. LLM7.io — Unofficial mirror/last-resort fallback (no SLA)
+17. Inception Labs — Mercury diffusion LLM (API-credits campaign)
+18. Ollama — Local inference for development/testing
+19. Jina — Embeddings only (jina-embeddings-v5-text-small, not a chat provider)
 
 ## Deterministic vs Generative
 
@@ -1805,13 +1816,13 @@ Triggers on PRs to `main` that modify `docs/**/*.md`. Checks for required sectio
 
 ### Q1. Should `AGENTS.md` be restructured or appended to? — ✅ Decided: Option A
 
-The current `AGENTS.md` is 573 lines mixing architectural truth with operational details.
+The current `AGENTS.md` is 565 lines mixing architectural truth with operational details.
 
 - **(A) Restructure** — Reorganize into clean sections (Architecture, Established Patterns, Coding Standards, Development Commands, Code Review Checklist, Documentation Sitemap). Move operational rules to `.github/copilot-instructions.md`. **Pros:** Cleaner separation; each file has a single purpose. **Cons:** Git diff noise; existing references to line numbers break.
 - **(B) Append** — Keep current structure; add a header section referencing new files. **Pros:** No disruption. **Cons:** Continues mixing concerns.
 - **(C) Restructure with git rename tracking** — Use `git mv` equivalent (copy + delete) to preserve some history. **Pros:** Balance of cleanliness and history. **Cons:** Still breaks line references.
 
-**Decision:** Option A chosen. The 573-line file is already hard to navigate. Clean separation benefits all agents. The architectural patterns section (LRU, Redis, credits, SSE, Drizzle, Hono, hot-path, sanitization) should remain in `AGENTS.md` since it IS architectural truth. **Implementation:** `.github/copilot-instructions.md` created with purely operational content (tooling, validation commands, PR discipline, working style, import conventions, development commands) — no architectural duplication. `AGENTS.md` restructured with clean numbering (1-6), operational commands removed, cross-reference header added.
+**Decision:** Option A chosen. The 565-line file is already hard to navigate. Clean separation benefits all agents. The architectural patterns section (LRU, Redis, credits, SSE, Drizzle, Hono, hot-path, sanitization) should remain in `AGENTS.md` since it IS architectural truth. **Implementation:** `.github/copilot-instructions.md` created with purely operational content (tooling, validation commands, PR discipline, working style, import conventions, development commands) — no architectural duplication. `AGENTS.md` restructured with clean numbering (1-6), operational commands removed, cross-reference header added.
 
 ---
 
@@ -1973,7 +1984,7 @@ Define success before implementation:
 
 | File | Change |
 |------|--------|
-| `AGENTS.md` | Existing — 573-line architectural constitution (restructure pending Q1-A decision) |
+| `AGENTS.md` | Existing — 565-line architectural constitution (restructure pending Q1-A decision) |
 | `.github/copilot-instructions.md` | **CREATED** — Operational workflow rules |
 | `.github/instructions/database.instructions.md` | **CREATED** — Database-specific path rules |
 | `.github/instructions/ai.instructions.md` | **CREATED** — AI orchestration path rules |
@@ -2007,10 +2018,10 @@ Define success before implementation:
 
 ### Codebase Findings
 
-- The existing `AGENTS.md` at 573 lines is comprehensive but mixes concerns. Architectural invariants (BookMode, branch safety, credits integrity, SSE anti-patterns) are interleaved with operational patterns (development commands, import conventions, naming conventions). Q1 decided Option A (restructure) — pending implementation.
+- The existing `AGENTS.md` at 565 lines is comprehensive but mixes concerns. Architectural invariants (BookMode, branch safety, credits integrity, SSE anti-patterns) are interleaved with operational patterns (development commands, import conventions, naming conventions). Q1 decided Option A (restructure) — pending implementation.
 - `.github/` directory now exists with full agent ecosystem: `copilot-instructions.md`, 6 path-specific `instructions/`, 9 specialist `agents/`, and 2 documentation `workflows/`.
 - The `.agents/skills/` directory now contains 12 audit/refinement skills alongside the original `roadmap-doc/` — the skills ecosystem is fully operational.
-- 8 AI providers with a sophisticated fallback waterfall — the AI orchestration specialist is critical for provider changes.
+- 19 AI providers with a sophisticated fallback waterfall — the AI orchestration specialist is critical for provider changes.
 - The credits/financial integrity section documents hard-won anti-patterns (parseInt on decimals, BigInt ceiling division, in-memory rate limiting in serverless) — these ARE preserved in `payments.instructions.md` and `credit-transaction-audit/SKILL.md`.
 - SSE streaming has 4 distinct archetypes with specific anti-patterns — the SSE streaming specialist and `sse-stream-audit/SKILL.md` prevent wire-protocol corruption.
 - 40+ architecture MD files exist in `docs/architecture/` — these are the primary documentation protected by `doc-sync-audit` and `architecture-doc-audit` skills.
@@ -2025,7 +2036,7 @@ Define success before implementation:
 Legend: ✅ Implemented & verified · ⏳ Partial / scoped down · ⬜ Future work · ⏩ Deferred
 
 ### Completed
-- ✅ Existing `AGENTS.md` — comprehensive 573-line architectural rules already in place
+- ✅ Existing `AGENTS.md` — comprehensive 565-line architectural rules already in place
 - ✅ Existing `.agents/skills/roadmap-doc/SKILL.md` — roadmap documentation skill already in place
 - ✅ `.github/copilot-instructions.md` — operational-only content (no architectural duplication)
 - ✅ `.github/instructions/auth.instructions.md` — authentication boundaries

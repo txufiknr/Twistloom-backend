@@ -51,7 +51,7 @@ This document outlines the architecture, coding standards, established design pa
 
 ### Core Technologies
 - **Runtime**: Bun 1.3+ (Local dev via `Bun.serve()`, Vercel Node.js Serverless runtime in production)
-- **API Framework**: Hono.js 4.12+ (runtime-agnostic, typed `AppEnv` bindings, Web API standard)
+- **API Framework**: Hono.js 4.13+ (runtime-agnostic, typed `AppEnv` bindings, Web API standard)
 - **Database**: Neon (PostgreSQL 18, serverless connection pooling & WebSocket support)
 - **ORM**: Drizzle ORM 0.45+ (type-safe query builder with SQL interval arithmetic)
 - **In-Memory Cache**: `lru-cache` 11.5+ (process-level sub-millisecond cache with TTL)
@@ -59,10 +59,12 @@ This document outlines the architecture, coding standards, established design pa
 - **Language**: TypeScript 6.0+ (strict mode, no `any`)
 - **Package Manager**: Bun (`bun install`)
 
-### AI Multi-Provider Waterfall (18 Chat Providers)
+### AI Multi-Provider Waterfall (19 Providers)
 
 > Provider config: [`src/config/ai-clients.ts`](file:///d:/Projects/Twistloom/Twistloom-backend/src/config/ai-clients.ts)
 > Type definition: [`src/types/ai-chat.ts`](file:///d:/Projects/Twistloom/Twistloom-backend/src/types/ai-chat.ts)
+
+The `openai` npm package is used as the shared HTTP client for all OpenAI-compatible providers (OpenRouter, Cloudflare, OVHcloud, SambaNova, Ollama, ModelScope, Z.ai, SiliconFlow, Aion Labs, Chutes, LLM7, Inception).
 
 #### Primary Creative & Large Context
 1. **Mistral**: Primary creative writing prose & natural character voices (lighter RLHF, understands gritty tension/subtext)
@@ -78,7 +80,7 @@ This document outlines the architecture, coding standards, established design pa
 7. **Cloudflare Workers AI**: Edge inference for Mistral-7B / Llama-3.1
 8. **Cohere**: Multilingual (10 core languages), RAG-optimized
 
-#### New Providers (2026-08-04 Assessment)
+#### OpenAI-Compatible Gateway Providers
 9. **OVHcloud**: High-capacity (400 RPM authenticated), Qwen3.6-27B / GPT-OSS-120B
 10. **SambaNova**: DeepSeek-V3.2 / Llama on custom RDU hardware
 11. **ModelScope**: Qwen3.5-family (Alibaba-first releases)
@@ -88,6 +90,7 @@ This document outlines the architecture, coding standards, established design pa
 15. **Chutes**: Decentralized Bittensor compute (requires funded account, no free tier)
 16. **LLM7.io**: Unofficial mirror/last-resort fallback (no SLA)
 17. **Inception Labs**: Mercury diffusion LLM ($0 during API-credits burn campaign)
+18. **Ollama**: Local inference for development/testing
 
 #### Embeddings Only
 - **Jina**: jina-embeddings-v5-text-small (100K TPM, not a chat provider)

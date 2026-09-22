@@ -13,7 +13,7 @@ See `AGENTS.md` for the full architectural invariants. This file adds path-speci
 - Provider/model failure should follow the existing fallback and retry strategy.
 - Do not bypass the provider abstraction for convenience.
 
-## Provider Waterfall (8 Providers)
+## Provider Waterfall (19 Providers)
 
 1. Mistral — Primary creative writing prose & natural character voices
 2. Google Gemini — Large context (1M+ tokens), rapid generation, world-building lore
@@ -23,6 +23,17 @@ See `AGENTS.md` for the full architectural invariants. This file adds path-speci
 6. NVIDIA — Cost-effective Llama-3.3 on NIM
 7. Cloudflare Workers AI — Edge inference for Mistral-7B / Llama-3.1
 8. Cohere — Last-resort fallback (Command-R)
+9. OVHcloud — High-capacity (400 RPM authenticated), Qwen3.6-27B / GPT-OSS-120B
+10. SambaNova — DeepSeek-V3.2 / Llama on custom RDU hardware
+11. ModelScope — Qwen3.5-family (Alibaba-first releases)
+12. Z.ai — GLM-4.7-Flash (warm, theatrical prose)
+13. SiliconFlow — Qwen3-8B ($0 tier, light fallback)
+14. Aion Labs — aion-2.5 (dark/mature fiction, ~20K token/day budget)
+15. Chutes — Decentralized Bittensor compute (requires funded account)
+16. LLM7.io — Unofficial mirror/last-resort fallback (no SLA)
+17. Inception Labs — Mercury diffusion LLM (API-credits campaign)
+18. Ollama — Local inference for development/testing
+19. Jina — Embeddings only (jina-embeddings-v5-text-small, not a chat provider)
 
 ## Deterministic vs Generative
 

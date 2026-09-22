@@ -58,8 +58,15 @@ Do not add comments that merely restate obvious code.
 bun dev                         # Start dev server with hot reload
 bun dev:api                     # Start API server only
 bun dev:cron:trending           # Run trending score calculation locally
+bun dev:cron:generate           # Run originals generation cron locally
 bun dev:cron:candidate          # Run candidate generation cron locally
 bun dev:cron:translate          # Run translation cron locally
+bun dev:cron:vip-expiration     # Run VIP expiration cron locally
+bun dev:cron:forum-ban          # Run forum ban reconciliation locally
+bun dev:cron:cleanup            # Run database cleanup cron locally
+bun dev:cron:email-weekly       # Run weekly recommendations email locally
+bun dev:cron:email-monthly      # Run monthly summary email locally
+bun dev:usage-cache-report      # Run usage cache report locally
 ```
 
 ### Quality & Type Checking
