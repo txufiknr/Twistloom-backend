@@ -38,15 +38,9 @@ SDKError: API error occurred: Status 402. Body: {"detail":"Check your subscripti
 gemini/gemini-3.5-flash
 ApiError: {"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}
 
-nvidia/qwen/qwen2.5-72b-instruct
-error: HTTP 404: 404 page not found
-
 siliconflow/Qwen/Qwen3-8B
 chutes/zai-org/GLM-5.1-TEE
 error: 402 status code (no body)
-
-llm7/gpt-4o-mini
-error: 400 Model 'gpt-4o-mini' is currently unavailable.
 
 openrouter/qwen/qwen3-30b-a3b
 error: 402 This request requires more credits, or fewer max_tokens. You requested up to 4000 tokens, but can only afford 3384. To increase, visit https://openrouter.ai/settings/credits and upgrade to a paid account

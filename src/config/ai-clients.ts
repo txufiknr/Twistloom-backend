@@ -32,7 +32,7 @@ import type { AIChatProvider, AIModelSelection, AIProviderRateLimit } from "../t
  * | Z.ai        | 5    | 100    | Third-party figures range from "1 concurrent request" to "~1,000/day" — deliberately conservative until confirmed. Use the z.ai (international) endpoint, not bigmodel.cn. |
  * | SiliconFlow | 10   | 50     | 50 RPD is the true no-cost default; rises to 1,000 RPD only after a ~$10 credit top-up (spent or not). Assumes the siliconflow.com platform, not .cn. |
  * | Aion Labs   | 15   | n/a    | Real constraint is ~20K tokens/day, not a request count — same "token budget, not RPD" pattern as Mistral/NVIDIA below. Deliberately tiny; reserved for IDEA/THEME-scale calls only. |
- * | Chutes      | 10   | 200    | No official ceiling published ("no hard cap" per one tracker) — this is a cautious made-up number pending real traffic data. Decentralized/miner-served; prefer TEE-flagged models. |
+ * | Chutes      | 10   | 200    | UPDATED 2026-09-22: confirmed live (llm.chutes.ai/v1/models as of Sept 2026) that Chutes now requires an active subscription or funded PAYG balance for every model — no genuinely free tier remains, and all 13 catalog models report confidential_compute=true (so "prefer TEE-flagged" no longer means anything — every current option qualifies). RPM/RPD below are pre-paywall estimates and may not reflect subscription-tier limits; unverified. |
  * | LLM7.io     | 60   | n/a    | 60 RPM / 2 req/sec matches the registered-token tier; real daily gate is a 1M-token/day budget, not a request count. Treat as last-resort — unofficial mirror, no SLA. |
  * 
  * RPM = Requests Per Minute
@@ -57,6 +57,7 @@ import type { AIChatProvider, AIModelSelection, AIProviderRateLimit } from "../t
  * @see https://docs.siliconflow.com/en/userguide/rate-limits/rate-limit-and-upgradation
  * @see https://www.aionlabs.ai/docs/pricing/
  * @see https://chutes.ai/terms
+ * @see https://llm.chutes.ai/v1/models — live catalog; confirms pricing and confidential_compute flag per model
  * @see https://docs.llm7.io/limits
  */
 export const AI_RATE_LIMITS: Record<AIChatProvider, AIProviderRateLimit> = {
@@ -217,11 +218,24 @@ export const AI_RATE_LIMITS: Record<AIChatProvider, AIProviderRateLimit> = {
   // invented, cautious placeholder pending real traffic data. Chutes runs
   // on a decentralized Bittensor compute market: your actual request is
   // served by whichever anonymous third-party "miner" node wins that
-  // request's auction, and free/cheap availability is subsidized by
-  // Bittensor token economics that can shift without notice. Prefer
-  // models flagged `confidential_compute: true` (TEE-protected) if you
-  // route real story content through this provider — non-TEE requests
-  // aren't logged by Chutes itself, but do transit an unvetted operator.
+  // request's auction. Prefer models flagged `confidential_compute: true`
+  // (TEE-protected) if you route real story content through this provider —
+  // non-TEE requests aren't logged by Chutes itself, but do transit an
+  // unvetted operator.
+  //
+  // UPDATED 2026-09-22: "free/cheap availability is subsidized by Bittensor
+  // token economics" (the previous framing here) no longer holds — confirmed
+  // live against llm.chutes.ai/v1/models that every one of Chutes' 13
+  // current catalog models carries real, non-zero USD pricing, and Chutes'
+  // own docs now state an active subscription or funded PAYG balance is
+  // required to call ANY model. There is no genuinely free path on this
+  // provider anymore. Also: all 13 current models report
+  // confidential_compute=true, so the TEE-preference note above is now
+  // automatically satisfied by anything in the catalog, not a reason to
+  // reach for the most expensive flagship (see AI_CHAT_MODELS_WRITING.chutes
+  // for what that mistake actually cost). The 10/200 ceiling below is
+  // unverified against subscription-tier limits — re-check once an account
+  // tier is chosen.
   chutes:     { rpm: 10,  rpd: 200 },
 
   // Registered-token tier (free, no card): 250 req/hr, 60 req/min,
@@ -281,7 +295,7 @@ export const AI_RATE_LIMIT_SAFETY_BUFFER_PERCENT = 8;
  * | Z.ai        | glm-4.7-flash            | 200K tokens     | ~600,000         |
  * | SambaNova   | DeepSeek-V3.2 / Llama    | 128K tokens     | ~450,000         |
  * | ModelScope  | Qwen3.5-family           | ~128K tokens    | ~400,000         |
- * | Chutes      | DeepSeek-R1 / GLM-5.1    | ~128K tokens    | ~300,000         |
+ * | Chutes      | unsloth/Mistral-Nemo-Instruct-2407-TEE | 131K tokens | ~300,000 |
  * | OVHcloud    | Qwen3.6-27B / gpt-oss    | ~128K tokens    | ~120,000 (conservative — payload-size, not context, is the documented constraint) |
  * | SiliconFlow | Qwen3-8B ($0 tier)       | ~32-128K tokens | ~120,000         |
  * | LLM7.io     | gpt-4o-mini / deepseek   | 128K tokens     | ~100,000 (kept small — this is a last-resort provider, not a primary one) |
@@ -431,7 +445,13 @@ export const AI_STREAM_DEFAULT_MODEL: Record<AIChatProvider, string> = {
   zai: 'glm-4.7-flash',
   siliconflow: 'Qwen/Qwen3-8B',
   aionlabs: 'aion-2.5',
-  chutes: 'zai-org/GLM-5.1-TEE',
+  // UPDATED 2026-09-22: zai-org/GLM-5.1-TEE was Chutes' priciest flagship
+  // ($0.98/$3.08 per 1M — confirmed live), not a budget pick — a mismatch
+  // with why chutes sits at the bottom of every waterfall here. Swapped to
+  // the cheapest model in Chutes' current catalog. See
+  // AI_CHAT_MODELS_WRITING.chutes for the full story, including why this
+  // alone may not fix a 402.
+  chutes: 'unsloth/Mistral-Nemo-Instruct-2407-TEE',
   llm7: 'default',
   inception: 'mercury-coder-small',
 }
@@ -555,7 +575,32 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
     'gpt-oss:20b', // Kept to level 1-2 models; positioned last due to 5h/7d cycle constraints[cite: 3].
   ],
   chutes: [
-    'zai-org/GLM-5.1-TEE', // Prefer TEE-flagged models specifically to avoid decentralized logging[cite: 3].
+    // UPDATED 2026-09-22: the 402 you're seeing isn't (only) about the model
+    // string — zai-org/GLM-5.1-TEE is Chutes' priciest flagship model
+    // ($0.98 in / $3.08 out per 1M tokens, confirmed live against
+    // llm.chutes.ai/v1/models), a 754B-param MoE model. That's a real bug:
+    // this waterfall clearly meant chutes as the cheap/last-resort rung
+    // (it sits below groq/cerebras/sambanova/ovhcloud/modelscope/zai
+    // everywhere it appears), not the tier for reaching for the single most
+    // expensive thing in the catalog. The "prefer TEE-flagged models"
+    // reasoning in the original comment also no longer picks anything out —
+    // confirmed all 13 models in Chutes' current catalog report
+    // confidential_compute=true, flagship included, so it never needed to be
+    // the expensive one.
+    //
+    // Swapped to the cheapest model in the live catalog as of today.
+    // IMPORTANT — this likely does NOT fully fix the 402 on its own: Chutes'
+    // own docs now state a subscription or funded pay-as-you-go balance is
+    // required to call ANY model (confirmed — every one of the 13 catalog
+    // models carries real, non-zero pricing; there is no free tier left on
+    // this platform). If your Chutes account has zero balance and no active
+    // subscription, this will 402 regardless of which model string is here.
+    // Check chutes.ai/pricing / your account balance directly — that's an
+    // account-side fix, not something either of these files can do for you.
+    // If you'd rather not fund a Chutes balance right now, the clean
+    // architectural move is to drop chutes from the waterfall entirely
+    // until you do, rather than carry a rung that will reliably 402.
+    'unsloth/Mistral-Nemo-Instruct-2407-TEE', // Cheapest current Chutes model ($0.0245 in / $0.0978 out per 1M) — a much better fit for a bottom-of-waterfall fallback. Trade-off: Mistral Nemo (12B, July 2024) is a noticeably weaker/older model than the GLM-5.1 flagship it replaces — expect plainer prose. If quality matters more than squeezing cost here, `Nemotron-3-Nano-Omni-30B-TEE` is the same price with a newer, larger (30B) reasoning-tuned base — but "reasoning-tuned" may carry the same visible-thinking-trace risk flagged for the NVIDIA NIM pick above; verify before relying on it for schema-shaped output.
   ],
   // PROMOTED 2026-08-15: Inception Labs Mercury (diffusion LLM) moved up from
   // the inert AI_CHAT_MODELS_DIFFUSION experimental rung into the live writing
@@ -672,8 +717,12 @@ export const AI_CHAT_MODELS_IDEA: AIModelSelection = {
   siliconflow: [
     'Qwen/Qwen3-8B', // True no-cost default model[cite: 3] for small idea payloads.
   ],
+  // UPDATED 2026-09-22: zai-org/GLM-5.1-TEE was Chutes' priciest flagship,
+  // not a budget model — see AI_CHAT_MODELS_WRITING.chutes above for the
+  // full story, including why fixing the model string may not clear the 402
+  // on its own (Chutes now requires a funded account for any model).
   chutes: [
-    'zai-org/GLM-5.1-TEE', // Decentralized/miner-served[cite: 3], but fine for low-stakes idea generation.
+    'unsloth/Mistral-Nemo-Instruct-2407-TEE', // Cheapest current Chutes model; fine for low-stakes idea generation.
   ],
   ollama: [
     'gpt-oss:20b', // Level 1-2 free-tier model[cite: 3], good for offline/timeshared idea generation.
@@ -790,8 +839,11 @@ export const AI_CHAT_MODELS_TRANSLATION: AIModelSelection = {
   siliconflow: [
     'Qwen/Qwen3-8B', // Smaller/lighter Qwen variant for fallback capacity[cite: 3].
   ],
+  // UPDATED 2026-09-22: see AI_CHAT_MODELS_WRITING.chutes above — was
+  // Chutes' priciest flagship, not a budget pick, and Chutes now requires a
+  // funded account for any model regardless of which one is named here.
   chutes: [
-    'zai-org/GLM-5.1-TEE', // GLM lineage is extremely robust with non-English datasets.
+    'unsloth/Mistral-Nemo-Instruct-2407-TEE', // Cheapest current Chutes model. Weaker than GLM at non-English nuance, but this is a deep fallback rung behind zai/sambanova/ovhcloud above.
   ],
   ollama: [
     'gpt-oss:20b', // Light fallback if GPU-time is available[cite: 3].
@@ -850,8 +902,11 @@ export const AI_CHAT_MODELS_EVALUATION: AIModelSelection = {
   zai: [
     'glm-4.7-flash', // Powerful reasoning capabilities for finding schema errors.
   ],
+  // UPDATED 2026-09-22: see AI_CHAT_MODELS_WRITING.chutes above — was
+  // Chutes' priciest flagship, not a budget pick, and Chutes now requires a
+  // funded account for any model regardless of which one is named here.
   chutes: [
-    'zai-org/GLM-5.1-TEE', // Prefer TEE-flagged models[cite: 3] to evaluate story content securely.
+    'unsloth/Mistral-Nemo-Instruct-2407-TEE', // Cheapest current Chutes model; supports json_mode/tools per the live catalog, but this is a deep fallback rung — reach for it last.
   ],
   llm7: [
     'default', // Very strong at schema parsing, but keep as last resort due to unofficial mirror status[cite: 3].
