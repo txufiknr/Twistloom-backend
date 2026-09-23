@@ -17,6 +17,7 @@ import { extractLocale } from "./middleware/locale.js";
 import { cacheControl } from "./middleware/cache.js";
 import { rateLimitByUser } from "./middleware/rate-limit.js";
 import { verifyNextAuthToken } from "./middleware/nextauth.js";
+import { bearerAuthMiddleware } from "./middleware/bearer.js";
 import routes from "./routes/index.js";
 import { APP_NAME, VERSION } from "./config/constants.js";
 import { IS_PRODUCTION } from "./config/env.js";
@@ -131,7 +132,16 @@ app.use(
 // "Response body object should not be disturbed or locked" when the body
 // stream has already been consumed (e.g., by parseJsonBody). Running auth
 // first keeps the raw body pristine for getAuthUser.
+//
+// Bearer branch first (Step 5): when Authorization: Bearer <mobile JWT> is
+// present (and path is not /api/cron/*), verify + attach userId from the
+// token. When absent, fall through to cookie verification (existing path).
+app.use("/api/*", bearerAuthMiddleware);
 app.use("/api/*", async (c, next) => {
+  if (c.get("userId")) {
+    await next();
+    return;
+  }
   const user = await verifyNextAuthToken(c);
   if (user) {
     c.set("user", user);

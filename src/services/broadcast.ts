@@ -50,6 +50,7 @@ import { recordViolationEvent } from "./trust-safety.js";
 import {
   getUserItemCount,
   deductUserItem,
+  ConsumableError,
 } from "./consumables.js";
 export {
   getUserItemCount,
@@ -548,8 +549,15 @@ export async function submitBroadcast(
     // 2. Re-check + lock the inventory row and deduct 1 Megaphone atomically
     try {
       remaining = await deductUserItem(tx, userId, MEGAPHONE, 1);
-    } catch {
-      throw new BroadcastSubmitError("broadcast.noMegaphone", "You have no 📣 Megaphones. Purchase one to broadcast.");
+    } catch (error) {
+      // Out-of-stock keeps the broadcast-specific code/namespace so the
+      // composer renders its own `broadcast.noMegaphone` message; any other
+      // error (a real DB failure inside the deduct) must propagate as a 500
+      // instead of being mislabeled as "no Megaphones".
+      if (error instanceof ConsumableError && error.code === "consumables.noneLeft") {
+        throw new BroadcastSubmitError("broadcast.noMegaphone", "You have no 📣 Megaphones. Purchase one to broadcast.");
+      }
+      throw error;
     }
 
     // 3. Compute FIFO schedule inside the same transaction

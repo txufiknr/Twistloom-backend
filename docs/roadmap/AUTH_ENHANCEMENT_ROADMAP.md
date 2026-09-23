@@ -1,5 +1,7 @@
 # Authentication Enhancement Roadmap
 
+> **Related (2026-09-23):** cookie-era hardening below does **not** cover native Flutter bearer tokens. See [NATIVE_MOBILE_BEARER_AUTH_ROADMAP.md](NATIVE_MOBILE_BEARER_AUTH_ROADMAP.md) for mobile access/refresh issuance, global bearer verification and family revocation (G-auth-1/2/4). That roadmap’s Alternative C (cookie web + short-lived bearer/refresh native) is the intended long-term multi-platform architecture — dual credential, one identity store, same pattern as Meta/Google/X — not a temporary bridge away from the cookie path hardened here.
+
 ## Overview
 
 This roadmap outlines security enhancements and future-proofing improvements for the Twistloom authentication system. The current NextAuth v5 implementation is production-ready for basic authentication but requires additional security hardening to meet enterprise-grade security standards.

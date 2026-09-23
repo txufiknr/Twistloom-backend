@@ -639,6 +639,44 @@ export const authSessions = pgTable(
  *   "created_at": "2023-01-01T00:00:00.000Z"
  * }
  */
+/**
+ * Mobile refresh-token families (Alternative C — native face).
+ * One row per login session. `refreshHash` is the **current** opaque secret's
+ * SHA-256; every previously presented hash is appended to `usedHashes` on
+ * rotation so reuse of any old secret remains queryable (RFC 9700 theft
+ * detection). Reuse of a hash found in `usedHashes` revokes the whole family.
+ * Schema-only change — migrations are run manually by the owner (AGENTS.md §3.5).
+ */
+export const refreshFamilies = pgTable(
+  "refresh_families",
+  {
+    id: uuid("id").primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.userId, { onDelete: "cascade" }),
+    sessionId: uuid("session_id")
+      .notNull()
+      .references(() => authSessions.id, { onDelete: "cascade" }),
+    tokenVersion: integer("token_version").notNull().default(0),
+    refreshHash: text("refresh_hash").notNull(),
+    /** Every hash already rotated away from this family (append-only). */
+    usedHashes: text("used_hashes").array().notNull().default(sql`ARRAY[]::text[]`),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    replacedByRefreshHash: text("replaced_by_refresh_hash"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().default(sql`now()`),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().default(sql`now()`),
+  },
+  (table) => [
+    uniqueIndex("refresh_families_hash_uq").on(table.refreshHash),
+    index("refresh_families_user_idx").on(table.userId),
+    index("refresh_families_session_idx").on(table.sessionId),
+    // Reuse lookup: WHERE used_hashes @> ARRAY[$1]
+    index("refresh_families_used_hashes_gin").using("gin", table.usedHashes),
+  ],
+);
+
 export const books = pgTable(
   "books",
   {
@@ -1252,6 +1290,15 @@ export const userSessions = pgTable(
     frontMatterSeen: boolean("front_matter_seen").notNull().default(false),
     /** Remaining pages covered by active Resonance Prism Easter Egg boost (+50%). */
     prismPagesRemaining: integer("prism_pages_remaining").notNull().default(0),
+    /**
+     * Start page of the active 👁️ Danger Sight hazard-badge window
+     * (`NULL` = inactive). The window is the positional page range
+     * `[dangerSightFromPage, dangerSightFromPage + DANGER_SIGHT_DURATION_PAGES - 1]`
+     * of *this* book — derived at read time, never decremented per page turn.
+     * A row whose stored range no longer covers the reader's current page simply
+     * reads as inactive (and is re-claimable by the next activation).
+     */
+    dangerSightFromPage: integer("danger_sight_from_page"),
     status: text("status").$type<SessionStatus>().notNull().default("active"),
     createdAt,
     updatedAt,
@@ -2189,43 +2236,6 @@ export const userInventory = pgTable(
   (t) => [
     unique("user_inventory_user_type_unique").on(t.userId, t.itemType),
     index("user_inventory_user_idx").on(t.userId),
-  ]
-);
-
-/**
- * Active account-global consumable effect windows (👁️ Danger Sight today).
- *
- * One row per `(user_id, item_type)` encodes the no-stacking rule — the unique
- * constraint plus an atomic `ON CONFLICT … WHERE expires_at <= now` upsert
- * rejects live-window re-activation with `409 consumables.alreadyActive`
- * without ever locking the hot `users` row. `expires_at` is the wall-clock
- * SSOT: a past-dated row simply reads as inactive (lazy expiry, no cron).
- * Adding another time-gated buff = new `item_type` + duration constant,
- * zero schema migration.
- *
- * Intentionally NOT on `users` (per-buff column sprawl + false write
- * contention) and NOT JSONB (effect state is queried/filtered, so it needs
- * typed columns). Session-scoped counters (🔮 Prism →
- * `user_sessions.prism_pages_remaining`) and instance placements (⚓ →
- * `user_story_anchors`) have different lifecycles and stay where they are.
- */
-export const userConsumableEffects = pgTable(
-  "user_consumable_effects",
-  {
-    id: id(),
-    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
-    itemType: text("item_type").$type<InventoryItemType>().notNull(),
-    /** When this activation window was (re)claimed. */
-    activatedAt: timestamp("activated_at", { withTimezone: true }).notNull().defaultNow(),
-    /** Wall-clock end of the window; a past value means the effect is inactive. */
-    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-    createdAt,
-    updatedAt,
-  },
-  (t) => [
-    // One active window per (user, effect) — the no-stacking invariant.
-    unique("user_consumable_effects_user_type_unique").on(t.userId, t.itemType),
-    index("user_consumable_effects_user_idx").on(t.userId),
   ]
 );
 

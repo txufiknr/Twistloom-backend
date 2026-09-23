@@ -13,10 +13,11 @@
  * @see src/db/schema.ts (`user_inventory`)
  */
 
-import { and, eq, sql, asc, desc, inArray, lte } from "drizzle-orm";
+import type { Context } from "hono";
+import { and, eq, sql, asc, desc, inArray } from "drizzle-orm";
 import { dbRead, dbWrite, type DBTransaction } from "../db/client.js";
-import { pages, userConsumableEffects, userCounters, userInventory, userPageProgress, userStoryAnchors } from "../db/schema.js";
-import { getConsumable, DANGER_SIGHT_DURATION_SECONDS } from "../config/consumables.js";
+import { pages, userCounters, userInventory, userPageProgress, userSessions, userStoryAnchors } from "../db/schema.js";
+import { getConsumable, DANGER_SIGHT_DURATION_PAGES } from "../config/consumables.js";
 import { executeWithCredits } from "./credits.js";
 import type { InventoryItemType } from "../types/consumable.js";
 
@@ -34,6 +35,7 @@ const DANGER_SIGHT: InventoryItemType = "item_danger_sight";
 export const CONSUMABLE_ERROR_CODES = [
   "consumables.alreadyActive",
   "consumables.noneLeft",
+  "consumables.pageNotFound",
 ] as const;
 
 export type ConsumableErrorCode = (typeof CONSUMABLE_ERROR_CODES)[number];
@@ -49,12 +51,51 @@ export class ConsumableError extends Error {
   }
 }
 
-/** Shared Danger Sight payload for activate + status responses. */
+/**
+ * HTTP status for every {@link ConsumableErrorCode}. Typed as
+ * `Record<ConsumableErrorCode, …>` so adding a code to the union without a
+ * status mapping is a compile error — the code vocabulary, the class, and the
+ * HTTP contract can never drift apart.
+ */
+const CONSUMABLE_ERROR_HTTP_STATUS: Record<ConsumableErrorCode, 400 | 404 | 409> = {
+  "consumables.alreadyActive": 409,
+  "consumables.noneLeft": 400,
+  "consumables.pageNotFound": 404,
+};
+
+/**
+ * Shared route helper: maps a {@link ConsumableError} to its HTTP response —
+ * `{ error, code }` where `code` is the i18n key suffix the client resolves
+ * under `consumables.errors`. Call sites: `if (error instanceof ConsumableError)
+ * return cConsumableError(c, error);` inside the route's catch, before the
+ * generic `cApiError` fallback (which would otherwise 500 a client-fault code).
+ *
+ * @param c - Hono context
+ * @param error - The caught ConsumableError
+ * @returns `c.json` response with the code-mapped 4xx status
+ */
+export function cConsumableError(c: Context, error: ConsumableError) {
+  return c.json({ error: error.message, code: error.code }, CONSUMABLE_ERROR_HTTP_STATUS[error.code]);
+}
+
+/**
+ * Shared Danger Sight payload for activate + status responses.
+ *
+ * The window is a *positional* page range in the activated book — the client
+ * derives `active`/`pagesRemaining` from its current page against this range
+ * (same "server issues SSOT, client derives display" split the old
+ * `remainingSeconds` countdown used, but with no timers to arm).
+ */
 export interface DangerSightStatus {
-  active: boolean;
-  expiresAt: string | null;
-  /** Server-authoritative seconds left; the client derives its countdown from this. */
-  remainingSeconds: number;
+  /** First covered page of the range as stored; `null` only when no window is stored (never activated / no session row). */
+  fromPage: number | null;
+  /**
+   * Last covered page (`fromPage + DANGER_SIGHT_DURATION_PAGES - 1`); `null`
+   * only when no window is stored. Returned as stored even when a reader is
+   * already past it — the server does not know the current page, so the
+   * client derives activity from its own page number against the range.
+   */
+  toPage: number | null;
 }
 
 export interface DangerSightActivationResult extends DangerSightStatus {
@@ -62,81 +103,115 @@ export interface DangerSightActivationResult extends DangerSightStatus {
   remainingItems: number;
 }
 
-function toDangerSightStatus(expiresAt: Date | null): DangerSightStatus {
-  const remainingMs = expiresAt ? expiresAt.getTime() - Date.now() : 0;
-  const remainingSeconds = Math.max(0, Math.floor(remainingMs / 1000));
+/**
+ * Reads the Danger Sight page range for one book's reading session (pure
+ * read). A missing session or `NULL` column reads as inactive; a stored range
+ * that no longer covers the reader's current page also reads as inactive —
+ * the client performs that in-range check against its current page number.
+ */
+export async function getDangerSightStatus(
+  userId: string,
+  bookId: string,
+): Promise<DangerSightStatus> {
+  const [session] = await dbRead
+    .select({ fromPage: userSessions.dangerSightFromPage })
+    .from(userSessions)
+    .where(and(eq(userSessions.userId, userId), eq(userSessions.bookId, bookId)))
+    .limit(1);
+  const fromPage = session?.fromPage ?? null;
   return {
-    active: remainingSeconds > 0,
-    expiresAt: remainingSeconds > 0 && expiresAt ? expiresAt.toISOString() : null,
-    remainingSeconds,
+    fromPage,
+    toPage: fromPage !== null ? fromPage + DANGER_SIGHT_DURATION_PAGES - 1 : null,
   };
 }
 
 /**
- * Reads the account-global Danger Sight buff state (pure read; the effect
- * row's `expiresAt` is the source of truth — no separate "active" flag to
- * drift). A missing or past-dated `user_consumable_effects` row reads as
- * inactive (lazy expiry).
- */
-export async function getDangerSightStatus(userId: string): Promise<DangerSightStatus> {
-  const [row] = await dbRead
-    .select({ expiresAt: userConsumableEffects.expiresAt })
-    .from(userConsumableEffects)
-    .where(
-      and(
-        eq(userConsumableEffects.userId, userId),
-        eq(userConsumableEffects.itemType, DANGER_SIGHT),
-      ),
-    )
-    .limit(1);
-  return toDangerSightStatus(row?.expiresAt ?? null);
-}
-
-/**
- * Activates 1 Danger Sight: atomically claims the user's
- * `(user_id, item_type)` row in `user_consumable_effects` via
- * `ON CONFLICT … WHERE expires_at <= now` (zero returned rows ⇒ a window is
- * still live ⇒ `409 alreadyActive` — no stacking, no `users` row lock), then
- * deducts 1 `item_danger_sight`, all in one transaction. A rollback on the
- * deduct also reverts the claim, so the effect row and inventory can never
- * diverge.
+ * Activates 1 Danger Sight for a book session: resolves the start page from
+ * the `pages` table (server-authoritative), claims the session's window, then
+ * deducts 1 `item_danger_sight` — all in one transaction.
  *
- * @throws {ConsumableError} `consumables.alreadyActive` when the buff is live,
- *   `consumables.noneLeft` when the user owns zero lenses.
+ * The claim is row-locked (`SELECT … FOR UPDATE` on the session) so
+ * concurrent activations serialize: if the stored range still covers the
+ * requested start page, the window is live → `409 alreadyActive` (no
+ * stacking); a past-the-range row is re-claimable (positional "lazy expiry").
+ * Session miss falls back to an `INSERT … ON CONFLICT DO NOTHING` whose
+ * zero-row result reads the same conflict. A rollback on the claim also
+ * reverts the deduct, so effect state and inventory can never diverge.
+ *
+ * @param userId - Owner of the lens
+ * @param bookId - Book whose session the range binds to (page numbers are per-book)
+ * @param pageId - Page the reader is on; its `pages.page` becomes `fromPage`
+ * @throws {ConsumableError} `consumables.alreadyActive` when the range still
+ *   covers `pageId`'s page number, `consumables.noneLeft` when the user owns
+ *   zero lenses, `consumables.pageNotFound` when `pageId` does not exist
+ *   within `bookId` (deleted page, wrong book, or nonexistent book).
  */
-export async function activateDangerSight(userId: string): Promise<DangerSightActivationResult> {
+export async function activateDangerSight(
+  userId: string,
+  bookId: string,
+  pageId: string,
+): Promise<DangerSightActivationResult> {
   const owned = await getUserItemCount(userId, DANGER_SIGHT);
   if (owned < 1) {
     throw new ConsumableError("consumables.noneLeft", "You have no Danger Sight lenses to activate.");
   }
 
   return dbWrite.transaction(async (tx) => {
-    const now = new Date();
-    const expiresAt = new Date(now.getTime() + DANGER_SIGHT_DURATION_SECONDS * 1000);
+    const [page] = await tx
+      .select({ pageNumber: pages.page })
+      .from(pages)
+      .where(and(eq(pages.id, pageId), eq(pages.bookId, bookId)))
+      .limit(1);
+    if (!page) {
+      // Well-formed uuid that resolves to no row (deleted page, another
+      // book's page, or a nonexistent bookId) — client input failure, so a
+      // code-driven 4xx, never a generic 500. Thrown before any write, so
+      // the transaction rolls back with nothing to undo.
+      throw new ConsumableError(
+        "consumables.pageNotFound",
+        "That page could not be found in this story.",
+      );
+    }
+    const startPage = page.pageNumber;
+    const toPage = startPage + DANGER_SIGHT_DURATION_PAGES - 1;
 
-    const [effect] = await tx
-      .insert(userConsumableEffects)
-      .values({
-        userId,
-        itemType: DANGER_SIGHT,
-        activatedAt: now,
-        expiresAt,
-        updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: [userConsumableEffects.userId, userConsumableEffects.itemType],
-        set: { activatedAt: now, expiresAt, updatedAt: now },
-        where: lte(userConsumableEffects.expiresAt, now),
-      })
-      .returning({ expiresAt: userConsumableEffects.expiresAt });
+    const [session] = await tx
+      .select({ id: userSessions.id, fromPage: userSessions.dangerSightFromPage })
+      .from(userSessions)
+      .where(and(eq(userSessions.userId, userId), eq(userSessions.bookId, bookId)))
+      .for("update")
+      .limit(1);
 
-    if (!effect) {
-      throw new ConsumableError("consumables.alreadyActive", "Danger Sight is already active.");
+    if (session) {
+      const claimedFrom = session.fromPage;
+      const windowLive =
+        claimedFrom !== null &&
+        startPage >= claimedFrom &&
+        startPage <= claimedFrom + DANGER_SIGHT_DURATION_PAGES - 1;
+      if (windowLive) {
+        throw new ConsumableError("consumables.alreadyActive", "Danger Sight is already active.");
+      }
+
+      const remainingItems = await deductUserItem(tx, userId, DANGER_SIGHT, 1);
+      await tx
+        .update(userSessions)
+        .set({ dangerSightFromPage: startPage, updatedAt: new Date() })
+        .where(eq(userSessions.id, session.id));
+      return { fromPage: startPage, toPage, remainingItems };
     }
 
+    // No session yet — create one bound to the activation page. A concurrent
+    // insert loses the unique (user, book) race and reads as alreadyActive.
     const remainingItems = await deductUserItem(tx, userId, DANGER_SIGHT, 1);
-
-    return { ...toDangerSightStatus(effect.expiresAt), remainingItems };
+    const [inserted] = await tx
+      .insert(userSessions)
+      .values({ userId, bookId, pageId, dangerSightFromPage: startPage })
+      .onConflictDoNothing()
+      .returning({ id: userSessions.id });
+    if (!inserted) {
+      throw new ConsumableError("consumables.alreadyActive", "Danger Sight is already active.");
+    }
+    return { fromPage: startPage, toPage, remainingItems };
   });
 }
 
@@ -341,7 +416,10 @@ export async function purchaseConsumableBatch(
  * @param itemType - Consumable key to spend
  * @param amount - Quantity to deduct (defaults to 1)
  * @returns Remaining quantity after deduction
- * @throws Error if the user owns fewer than `amount` items
+ * @throws {ConsumableError} `consumables.noneLeft` when the user owns fewer
+ *   than `amount` items — a code-driven 400 (never a generic Error/500);
+ *   routes map it via {@link cConsumableError}. The English message is a
+ *   dev-facing fallback; clients render `consumables.errors.noneLeft`.
  */
 export async function deductUserItem(
   tx: DBTransaction,
@@ -358,7 +436,10 @@ export async function deductUserItem(
 
   if (!item || item.quantity < amount) {
     const def = getConsumable(itemType);
-    throw new Error(`Insufficient ${def.name}. You own ${item?.quantity ?? 0}, but ${amount} is required.`);
+    throw new ConsumableError(
+      "consumables.noneLeft",
+      `Insufficient ${def.name}. You own ${item?.quantity ?? 0}, but ${amount} is required.`,
+    );
   }
 
   const remaining = item.quantity - amount;
@@ -387,6 +468,10 @@ export interface DivergenceCheckResult {
  * Even if all branches have already been explored (unexploredActionIndices is empty), the scan
  * provides the critical diagnostic information that the reader has completely cleared this fork.
  * Therefore, the compass is intentionally consumed without refund upon successful scan.
+ *
+ * @throws {ConsumableError} `consumables.pageNotFound` when `pageId` does not
+ *   exist within `bookId` (client input → 404, never a 500);
+ *   `consumables.noneLeft` when the user owns zero compasses (400).
  */
 export async function checkDivergence(
   userId: string,
@@ -402,7 +487,12 @@ export async function checkDivergence(
       .limit(1);
 
     if (!page) {
-      throw new Error(`Page not found: ${pageId}`);
+      // Same code-driven 4xx as activateDangerSight — a page miss is client
+      // input (deleted/wrong-book page), not a server fault.
+      throw new ConsumableError(
+        "consumables.pageNotFound",
+        "That page could not be found in this story.",
+      );
     }
 
     // 2. Deduct 1 compass
@@ -466,6 +556,8 @@ const MAX_ANCHORS_PER_BOOK = 3;
  * Evicts all excess anchors so total count strictly remains <= MAX_ANCHORS_PER_BOOK.
  *
  * @param choicePrompt Optional concise text preview snippet (truncated to 40 chars in UI for backtrack menu preview)
+ * @throws {ConsumableError} `consumables.noneLeft` when the user owns zero
+ *   Memory Anchors (code-driven 400 via the route's `cConsumableError`).
  */
 export async function dropMemoryAnchor(
   userId: string,

@@ -1,7 +1,7 @@
 # Twistloom Consumable Items & Inventory Architecture (Backend SSOT)
 
-**Document version:** 2.1.0  
-**Status:** 💡 Implemented & Production Ready (SSOT Registry + Generic Inventory Ledger + Dual-Gate Scribe's Vault + Dedicated Service & Routes for All 4 Exploration/Tribute Consumables)  
+**Document version:** 2.3.0  
+**Status:** 💡 Implemented & Production Ready (SSOT Registry + Generic Inventory Ledger + Dual-Gate Scribe's Vault + Dedicated Service & Routes for All 4 Exploration/Tribute Consumables + 👁️ Danger Sight 15-Page Range Window + Semantic Out-of-Stock Error Contract `consumables.noneLeft` → HTTP 400)  
 **Parent System:** [Payments & Credits Architecture](../architecture/PAYMENTS_ARCHITECTURE_BACKEND.md) · [Broadcast (📣 Megaphone) Architecture](./BROADCAST_ARCHITECTURE.md)  
 **Companion Frontend Docs:**
 - [The Emporium Storefront Architecture](../../../Twistloom-web/docs/architecture/STOREFRONT_ARCHITECTURE.md) — Frontend catalog UI, tab filtering, anti-CLS modals, localization, and try-on preview
@@ -11,7 +11,7 @@
 **Implementation Source Code:**
 - Registry SSOT: [`src/config/consumables.ts`](../../src/config/consumables.ts)
 - Types: [`src/types/consumable.ts`](../../src/types/consumable.ts)
-- Schemas: [`src/db/schema.ts`](../../src/db/schema.ts) (`user_inventory`, `user_story_anchors`, `user_sessions.prism_pages_remaining`, `book_testimonials.curator_quill`)
+- Schemas: [`src/db/schema.ts`](../../src/db/schema.ts) (`user_inventory`, `user_story_anchors`, `user_sessions.prism_pages_remaining`, `user_sessions.danger_sight_from_page`, `book_testimonials.curator_quill`)
 - Services: [`src/services/consumables.ts`](../../src/services/consumables.ts) · [`src/services/easter-eggs.ts`](../../src/services/easter-eggs.ts)
 - Endpoints: [`src/routes/consumables.ts`](../../src/routes/consumables.ts) · [`src/routes/easter-eggs.ts`](../../src/routes/easter-eggs.ts) · [`src/routes/books.ts`](../../src/routes/books.ts) · [`src/routes/user.ts`](../../src/routes/user.ts) (`/inventory`)
 
@@ -153,6 +153,16 @@ export const CONSUMABLES_REGISTRY: ConsumableItemDefinition[] = [
     category: "exploration",
   },
   {
+    type: "item_danger_sight",
+    name: "Danger Sight",
+    description: "A crimson lens attuned to peril. Reveals hazardous-choice indicators on story actions for your next 15 pages.",
+    creditsPrice: 40,
+    available: true,
+    accountBound: false,
+    icon: "👁️",
+    category: "exploration",
+  },
+  {
     type: "item_curator_quill",
     name: "Curator's Quill",
     description: "Gilded scribe feather. Endorses an author on the Wall with a radiant golden calligraphy glow and tips 35 credits to their wallet.",
@@ -265,6 +275,7 @@ export type InventoryItemType =
   | "item_divergence_compass"
   | "item_memory_anchor"
   | "item_resonance_prism"
+  | "item_danger_sight"
   | "item_curator_quill"
   | "cyber_grid"
   | "gothic_bramble"
@@ -344,7 +355,10 @@ export async function deductUserItem(
 
   if (!item || item.quantity < amount) {
     const def = getConsumable(itemType);
-    throw new Error(`Insufficient ${def.name}. You own ${item?.quantity ?? 0}, but ${amount} is required.`);
+    throw new ConsumableError(
+      "consumables.noneLeft",
+      `Insufficient ${def.name}. You own ${item?.quantity ?? 0}, but ${amount} is required.`,
+    );
   }
 
   const remaining = item.quantity - amount;
@@ -362,6 +376,7 @@ export async function deductUserItem(
 
 1. **Row-Level Concurrency Guard:** `SELECT ... FOR UPDATE` locks the user's specific inventory row. Two simultaneous spend requests (e.g. double-tapping "Broadcast" or "Drop Anchor") are serialized; the second will observe the decremented balance and cleanly reject.
 2. **Atomic Feature Integration:** The caller passes its active `tx` transaction into `deductUserItem`. If the downstream feature action fails (e.g. broadcast moderation rejection, network drop), the entire transaction aborts and the item is returned automatically. No compensation or refund code paths are necessary.
+3. **Semantic Out-of-Stock Contract (DRY):** An insufficient-quantity failure throws `ConsumableError consumables.noneLeft` — never a generic `Error`, which used to surface as an unmapped HTTP 500 on every spend endpoint. Routes translate it through the single shared helper `cConsumableError(c, error)` (`src/services/consumables.ts`) → HTTP **400** `{ error, code }`, where `code` is the i18n suffix the client resolves under `consumables.errors` (en/id ship `noneLeft`). The helper's status table is typed `Record<ConsumableErrorCode, 400|404|409>`, so adding a code without a mapping is a compile error. Covered spend paths: Divergence Compass, Memory Anchor drop, Resonance Prism, Easter Egg crack, Curator's Quill testimonial, Danger Sight (pre-check + in-transaction race). **📣 Megaphone is the deliberate namespace exception:** `submitBroadcast` converts `noneLeft` into its own `broadcast.noMegaphone` (also HTTP 400, via `mapSubmitError`) so the composer keeps the dedicated broadcast error vocabulary; any non-`noneLeft` error from inside the deduct still propagates as a genuine 500.
 
 ---
 
@@ -373,9 +388,9 @@ All four exploration and tribute consumables are fully operational via dedicated
 - **Endpoint:** `POST /api/consumables/divergence-check` (`src/routes/consumables.ts`)
 - **Service:** `checkDivergence(userId, bookId, pageId)` (`src/services/consumables.ts`)
 - **Execution Mechanism:**
-  1. Inspects the current page's branching choices and extracts their destination page IDs.
+  1. Inspects the current page's branching choices and extracts their destination page IDs. A page miss (or malformed uuid, rejected up front) ⇒ `ConsumableError consumables.pageNotFound` (HTTP 404) / HTTP 400 — never a 500.
   2. Queries `userPageProgress` for the reader in the specified book to determine which destinations have never been recorded.
-  3. Inside a database transaction, calls `deductUserItem(tx, userId, 'item_divergence_compass', 1)`.
+  3. Inside a database transaction, calls `deductUserItem(tx, userId, 'item_divergence_compass', 1)` — zero owned compasses ⇒ `ConsumableError consumables.noneLeft` (HTTP 400 via `cConsumableError`), transaction rolls back with nothing written.
   4. Returns `{ success: true, unexploredActionIndices, unexploredActionTexts, remainingCompasses }`.
 
 ### 5.3.2 ⚓ Memory Anchor (`item_memory_anchor`)
@@ -384,8 +399,10 @@ All four exploration and tribute consumables are fully operational via dedicated
   - `POST /api/consumables/anchors` — plants a return anchor at the current fork
   - `GET /api/consumables/anchors?bookId=...` — queries active anchors for the book
   - `DELETE /api/consumables/anchors/:anchorId` — removes a planted anchor
+- **Input validation:** All three endpoints reject **malformed uuids** (`bookId`, `pageId`, `anchorId`) with HTTP 400 via `isValidUuid` **before** any query — a non-uuid never reaches Postgres (which would cast-error into a 500).
 - **Service:** `dropMemoryAnchor`, `getStoryAnchors`, `deleteStoryAnchor` (`src/services/consumables.ts`)
 - **Eviction Invariant:** Maximum 3 anchors per `(userId, bookId)`. If 3 anchors exist when dropping a new anchor, the oldest anchor is automatically pruned inside the transaction before inserting the new anchor and executing `deductUserItem(tx, userId, 'item_memory_anchor', 1)`.
+- **Out-of-stock:** Zero owned anchors ⇒ `ConsumableError consumables.noneLeft` (HTTP 400 via `cConsumableError`); the drop transaction rolls back untouched.
 
 ### 5.3.3 🔮 Resonance Prism (`item_resonance_prism`)
 - **Schema:** `user_sessions.prism_pages_remaining` (`integer`, default 0) in `src/db/schema.ts`.
@@ -393,15 +410,44 @@ All four exploration and tribute consumables are fully operational via dedicated
   - `POST /api/easter-eggs/prism/activate` — activates a prism for the book session
   - `GET /api/easter-eggs/prism/status?bookId=...` — checks active status and pages remaining
 - **Service:** `activateResonancePrism`, `getResonancePrismStatus` (`src/services/easter-eggs.ts`)
-- **Dynamic Drop Multiplier:** In `rollAndAwardEasterEgg` (`src/services/easter-eggs.ts`), if `session.prismPagesRemaining > 0`, the Easter Egg roll threshold is boosted by $1.5\times$ (+50% probability boost), and `prismPagesRemaining` is automatically decremented by 1 per page turn.
+- **Out-of-stock:** Zero owned prisms ⇒ `ConsumableError consumables.noneLeft` (HTTP 400 via `cConsumableError` on the activate route); the session update never runs.
+- **Dynamic Drop Multiplier:** In `checkEasterEgg` (`src/services/easter-eggs.ts`), if `session.prismPagesRemaining > 0`, the Easter Egg roll threshold is boosted by $1.5\times$ (+50% probability boost), and `prismPagesRemaining` is automatically decremented by 1 on each eligible roll.
 
-### 5.3.4 🪶 Curator's Quill (`item_curator_quill`)
+### 5.3.4 👁️ Danger Sight (`item_danger_sight`)
+- **Schema:** `user_sessions.danger_sight_from_page` (`integer`, nullable, default `NULL`) in `src/db/schema.ts`. The window is the **positional page range** `[from, from + DANGER_SIGHT_DURATION_PAGES - 1]` of the activated book — derived at read time, with **no per-page decrement** and no wall-clock expiry.
+- **Duration SSOT:** `DANGER_SIGHT_DURATION_PAGES = 15` (`src/config/consumables.ts`).
+- **Endpoints:** (`src/routes/consumables.ts`)
+  - `POST /api/consumables/danger-sight/activate` — body `{ bookId, pageId }` (both required; reader-context only)
+  - `GET /api/consumables/danger-sight/status?bookId=...` — returns `{ fromPage, toPage }`
+- **Service:** `activateDangerSight`, `getDangerSightStatus` (`src/services/consumables.ts`)
+- **Execution Mechanism (activation):**
+  1. Pre-check `getUserItemCount` — zero lenses ⇒ `ConsumableError consumables.noneLeft` (HTTP 400).
+  2. In one transaction: resolve the start page from `pages` by `(pageId, bookId)` (server-authoritative — the client never supplies the page number). A miss ⇒ `ConsumableError consumables.pageNotFound` (**HTTP 404** — deleted page, wrong book, or nonexistent book; client input, never a 500). Malformed uuids are rejected with HTTP 400 via `isValidUuid` **before** any query.
+  3. `SELECT … FOR UPDATE` the book's `user_sessions` row (serializes concurrent activations). If the stored range still covers the start page ⇒ `ConsumableError consumables.alreadyActive` (HTTP 409 — no stacking; a past-the-range row is re-claimable, i.e. positional lazy expiry).
+  4. `deductUserItem(tx, userId, 'item_danger_sight', 1)` and stamp `danger_sight_from_page = startPage`. A rollback reverts claim and deduct together.
+  5. Session miss ⇒ `INSERT … ON CONFLICT DO NOTHING` on the unique `(user_id, book_id)` key; a zero-row result (lost race) reads as `alreadyActive`.
+- **Status & client derivation:** `GET /status` is a pure read — it returns the stored range **even when the reader is already past `toPage`** (the endpoint does not know the current page; `null` only when no window is stored). The client derives `isActive`/`pagesRemaining` from its current page number against `[fromPage, toPage]` — no countdown timers, no polling, no server write on page turns. Non-null never implies active.
+- **Effect:** Presentational only — the reader gates `<HazardousActionBadge>` visibility on the in-range check (`StoryActionButton`); risk data always ships regardless.
+- **✅ Migration applied (2026-09-23):** Danger Sight previously stored a wall-clock window in `user_consumable_effects` (`expires_at`). The owner ran `bun db:generate` + `bun db:migrate` (AGENTS.md §3.5); `drizzle/0099_wealthy_gamma_corps.sql` **dropped `user_consumable_effects`** and **added `user_sessions.danger_sight_from_page`**. The SSOT is now exclusively the positional range column — no wall-clock state remains anywhere.
+- **Cutover re-credit (historical — ran before `0099`):** while `user_consumable_effects` still existed, every **still-unexpired** activation had to be re-credited so buyers did not lose a paid buff:
+  ```sql
+  -- Ran manually BEFORE the DROP in 0099 (source table now gone)
+  INSERT INTO user_inventory (user_id, item_type, quantity, last_purchased_at, updated_at)
+  SELECT user_id, 'item_danger_sight', 1, now(), now()
+  FROM user_consumable_effects
+  WHERE item_type = 'item_danger_sight' AND expires_at > now()
+  ON CONFLICT (user_id, item_type)
+  DO UPDATE SET quantity = user_inventory.quantity + 1, updated_at = now();
+  ```
+  The lens returns to inventory; the reader re-activates from a book page (the old table had no `book_id`/`page_id`, so a positional window could not be reconstructed server-side). Expired rows needed no action. ⚠️ If this step was skipped before the migration ran, the source table no longer exists — affected users must be compensated manually (e.g. grant lenses directly via `user_inventory`), since there is nothing left to reconstruct from.
+
+### 5.3.5 🪶 Curator's Quill (`item_curator_quill`)
 - **Schema:** `book_testimonials.curator_quill` (`boolean`, default false) in `src/db/schema.ts`.
 - **Endpoint:** `POST /api/books/:identifier/testimonials` (`src/routes/books.ts`)
 - **Execution Mechanism:**
   1. Accepts optional payload parameter `useCuratorQuill: boolean`.
   2. When enabled, executes an atomic PostgreSQL transaction:
-     - Deducts 1 `item_curator_quill` via `deductUserItem(tx, userId, 'item_curator_quill', 1)`.
+     - Deducts 1 `item_curator_quill` via `deductUserItem(tx, userId, 'item_curator_quill', 1)` — zero owned quills ⇒ `ConsumableError consumables.noneLeft` (HTTP 400 via `cConsumableError`), so the wallet credit and testimonial insert never run.
      - Credits $+35$ credits directly to the author's `creator_wallets` balance (and initializes wallet row if absent).
      - Inserts the testimonial with `curatorQuill: true`.
   3. All testimonial queries select `curatorQuill` to drive client gold badges and radiant borders.

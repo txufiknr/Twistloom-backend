@@ -30,8 +30,8 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { OAuth2Client } from 'google-auth-library';
 import { dbRead, dbWrite } from '../db/client.js';
-import { users, userAuth, userProviders } from '../db/schema.js';
-import { eq, and, ne } from 'drizzle-orm';
+import { users, userAuth, userProviders, refreshFamilies } from '../db/schema.js';
+import { eq, and, ne, sql } from 'drizzle-orm';
 import { hashPassword, verifyPassword } from '../utils/password.js';
 import { validatePasswordStrength } from '../utils/password-validation.js';
 import { checkAccountLockout, recordFailedLogin, resetFailedLoginAttempts } from '../utils/account-lockout.js';
@@ -45,9 +45,10 @@ import {
   formatSecurityDetailHtml,
 } from '../utils/email.js';
 import { createEmailVerificationToken, verifyEmailToken, isEmailVerified } from '../utils/email-verification.js';
-import { cApiError, cRateLimitError, cUnauthorizedError, cValidationError } from '../utils/error.js';
+import { cApiError, cRateLimitError, cUnauthorizedError, cValidationError, cForbiddenError } from '../utils/error.js';
 import { CURRENT_TERMS_VERSION } from '../config/legal.js';
 import { checkRateLimitByIP } from '../middleware/rate-limit.js';
+import { checkRateLimit } from '../utils/redis.js';
 import { generateId } from '../utils/uuid.js';
 import { createOrUpdateOAuthUser, setReferrerForNewUser, tryAwardReferralBonus } from '../services/user-controller.js';
 import { validateUsername } from '../utils/username.js';
@@ -56,6 +57,9 @@ import { requireAuth, invalidateCurrentSessionVerifyCache } from '../middleware/
 import { resolveAdminAccess } from '../middleware/admin-auth.js';
 import { logAuditEvent } from '../utils/audit-log.js';
 import { createSession, getUserSessions, logoutFromSpecificDevice, logoutFromAllOtherDevices, logoutFromAllDevices, deleteSessionById } from '../services/session-manager.js';
+import { revokeAllFamiliesForUser, revokeFamiliesForSession, createRefreshFamily, rotateRefreshToken } from '../services/token-family.js';
+import { issueAccessToken, getAccessTtlSeconds } from '../services/mobile-tokens.js';
+import { invalidateBearerCache, extractBearerToken } from '../middleware/bearer.js';
 import { sanitizeUserData, getUserForAuth, getUserIdByEmail } from '../services/user.js';
 import type { AppEnv } from '../hono/env.js';
 import { getClientIp } from '../hono/express-shim.js';
@@ -671,14 +675,261 @@ router.post('/resend-verification', async (c) => {
  * // Response (200)
  * { "message": "Logged out successfully" }
  */
+// ---------------------------------------------------------------------------
+// POST /api/auth/mobile/token  (Step 4 — native face issuance)
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/auth/mobile/token
+ *
+ * Issues a mobile access JWT + opaque refresh family after successful
+ * credential verification (mirrors `verify-credentials` validation order).
+ * Rate-limited by IP via the existing auth limiter. Response is additive —
+ * does not change `verify-credentials` (NB-1).
+ *
+ * @route POST /api/auth/mobile/token
+ * @description Issue mobile access + refresh tokens (password grant)
+ *
+ * @body {string} emailOrUsername - Login identifier
+ * @body {string} password - Account password
+ *
+ * @returns {Object} Token response
+ * @returns {string} accessToken - Short-lived HS256 JWT
+ * @returns {number} expiresIn - Access token TTL seconds
+ * @returns {string} refreshToken - Opaque refresh secret (shown once)
+ * @returns {string} tokenType - Always "Bearer"
+ * @returns {Object} user - Minimal user payload for the client
+ *
+ * Response (401): Invalid credentials
+ * Response (429): Rate limited / account locked
+ *
+ * @example
+ * // Request
+ * { "emailOrUsername": "user@example.com", "password": "..." }
+ *
+ * // Response (200)
+ * {
+ *   "accessToken": "eyJhbGciOi...",
+ *   "expiresIn": 900,
+ *   "refreshToken": "a1b2...",
+ *   "tokenType": "Bearer",
+ *   "user": { "userId": "...", "email": "...", "username": "..." }
+ * }
+ */
+router.post('/mobile/token', async (c) => {
+  try {
+    const ip = getClientIp(c);
+    // Redis-backed limit (AGENTS.md §3.9.C — not in-memory checkRateLimitByIP)
+    const limit = await checkRateLimit(`auth-mobile-token:${ip}`, {
+      maxRequests: 10,
+      windowSeconds: 60,
+    });
+    if (!limit.allowed) return cRateLimitError(c);
+
+    const { emailOrUsername, password } = c.get("body");
+    if (!emailOrUsername || !password) {
+      return cValidationError(c, 'Email/username and password are required');
+    }
+
+    const userData = await getUserForAuth(emailOrUsername);
+    if (!userData) return cUnauthorizedError(c, 'Invalid credentials');
+
+    const lockoutStatus = await checkAccountLockout(userData.userId);
+    if (lockoutStatus.isLocked) {
+      if (lockoutStatus.remainingTime === undefined) {
+        await resetFailedLoginAttempts(userData.userId);
+        return cRateLimitError(c, 'Account lock state inconsistent. Please try again.');
+      }
+      const minutesRemaining = Math.ceil(lockoutStatus.remainingTime / 60000);
+      return c.json({
+        error: `Account locked. Try again in ${minutesRemaining} minutes.`,
+        lockedUntil: new Date(Date.now() + lockoutStatus.remainingTime).toISOString(),
+      }, 429);
+    }
+
+    if (!userData.passwordHash) {
+      return cUnauthorizedError(c, 'This account uses OAuth login. Please sign in with Google.');
+    }
+
+    const isValid = await verifyPassword(password, userData.passwordHash);
+    if (!isValid) {
+      await recordFailedLogin(userData.userId);
+      return cUnauthorizedError(c, 'Invalid credentials');
+    }
+
+    await resetFailedLoginAttempts(userData.userId);
+
+    const [userRow] = await dbRead
+      .select({ tokenVersion: users.tokenVersion, email: users.email, name: users.name, username: users.username, imageUrl: users.imageUrl, isNewUser: users.isNewUser, bannedAt: users.bannedAt })
+      .from(users)
+      .where(eq(users.userId, userData.userId))
+      .limit(1);
+
+    if (!userRow) return cUnauthorizedError(c, 'Invalid credentials');
+    if (userRow.bannedAt) return cForbiddenError(c, 'Account banned');
+
+    // Atomic session + family creation: one transaction so a failure after
+    // session insert cannot leave an orphaned session without a family.
+    const { sessionId, accessToken, refreshToken, familyId } =
+      await dbWrite.transaction(async (tx) => {
+        const sid = await createSession(userData.userId, tx);
+        const [live] = await tx
+          .select({ tokenVersion: users.tokenVersion })
+          .from(users)
+          .where(eq(users.userId, userData.userId))
+          .limit(1);
+        if (!live) throw new Error('User disappeared during login');
+        const access = await issueAccessToken(userData.userId, sid, live.tokenVersion);
+        const fam = await createRefreshFamily(userData.userId, sid, live.tokenVersion, tx);
+        return {
+          sessionId: sid,
+          accessToken: access.token,
+          refreshToken: fam.refreshToken,
+          familyId: fam.familyId,
+        };
+      });
+
+    await revokePasswordResetTokens(userData.userId).catch(() => {});
+    const admin = await resolveAdminAccess(userData.userId);
+
+    await logAuditEvent(c, 'auth_mobile_token_issued', 'auth').catch(() => {});
+
+    return c.json({
+      accessToken,
+      expiresIn: getAccessTtlSeconds(),
+      refreshToken,
+      tokenType: 'Bearer',
+      familyId,
+      user: {
+        userId: userData.userId,
+        email: userRow.email,
+        name: userRow.name,
+        username: userRow.username,
+        imageUrl: userRow.imageUrl,
+        isNewUser: userRow.isNewUser,
+        isAdmin: admin.isAdmin,
+        sessionId,
+      },
+    });
+  } catch (error) {
+    console.error('[POST /api/auth/mobile/token] ❌', error);
+    return cApiError(c, 'Failed to issue mobile tokens', error, 500);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/auth/mobile/refresh  (Step 6 — rotation)
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/auth/mobile/refresh
+ *
+ * Rotates an opaque refresh secret (RFC 9700) and returns a new access JWT.
+ * Reuse of an already-used secret revokes the entire family.
+ *
+ * @route POST /api/auth/mobile/refresh
+ * @description Rotate refresh token + reissue access token
+ *
+ * @body {string} refreshToken - Opaque refresh secret
+ *
+ * @returns {Object} New token pair
+ * @returns {string} accessToken - New HS256 JWT
+ * @returns {number} expiresIn - Access TTL seconds
+ * @returns {string} refreshToken - Rotated opaque secret
+ *
+ * Response (401): invalid / revoked / reused / expired family
+ *
+ * @example
+ * // Request
+ * { "refreshToken": "a1b2..." }
+ *
+ * // Response (200)
+ * { "accessToken": "eyJ...", "expiresIn": 900, "refreshToken": "c3d4...", "tokenType": "Bearer" }
+ */
+router.post('/mobile/refresh', async (c) => {
+  try {
+    const ip = getClientIp(c);
+    const limit = await checkRateLimit(`auth-mobile-refresh:${ip}`, {
+      maxRequests: 30,
+      windowSeconds: 60,
+    });
+    if (!limit.allowed) return cRateLimitError(c);
+
+    const { refreshToken } = c.get("body");
+    if (!refreshToken || typeof refreshToken !== 'string') {
+      return cValidationError(c, 'refreshToken is required');
+    }
+
+    const rotated = await rotateRefreshToken(refreshToken);
+    if (!rotated.ok) {
+      return cUnauthorizedError(c, `Refresh token invalid (${rotated.reason})`);
+    }
+
+    const access = await issueAccessToken(rotated.userId, rotated.sessionId, rotated.tokenVersion);
+    await logAuditEvent(c, 'auth_mobile_token_refreshed', 'auth').catch(() => {});
+
+    return c.json({
+      accessToken: access.token,
+      expiresIn: access.expiresIn,
+      refreshToken: rotated.newRefreshToken,
+      tokenType: 'Bearer',
+    });
+  } catch (error) {
+    console.error('[POST /api/auth/mobile/refresh] ❌', error);
+    return cApiError(c, 'Failed to refresh mobile tokens', error, 500);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/auth/logout  (Step 8 — byte-identical cookie body + mobile revocation)
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/auth/logout
+ *
+ * Cookie path: clears session-verify cache and returns the fixed body
+ * `{ "message": "Logged out successfully" }` (NB-4 — byte-identical).
+ * When authenticated (cookie or bearer), also revokes refresh families bound
+ * to the current session (mobile face).
+ *
+ * @route POST /api/auth/logout
+ * @description Logout current session (cookie and/or mobile)
+ *
+ * @returns {Object} Logout response
+ * @returns {string} message - Confirmation message
+ *
+ * Response (401): Unauthorized (only if requireAuth is added later; currently open)
+ *
+ * @example
+ * // Response (200)
+ * { "message": "Logged out successfully" }
+ */
 router.post('/logout', async (c) => {
   try {
-    // Drop any cached session-verification so the next request re-verifies (P2.4).
     await invalidateCurrentSessionVerifyCache(c);
-    // Add backend cleanup if needed (invalidate refresh tokens, analytics, etc.)
+    const user = c.get("user");
+    const sessionId = user?.sessionId;
+    const userId = c.get("userId");
+
+    // Invalidate the presented bearer identity immediately (if any) so a
+    // warm short-TTL cache cannot serve a just-logged-out token.
+    const bearer = extractBearerToken(c.req.header("authorization"));
+    if (bearer) await invalidateBearerCache(bearer);
+
+    if (sessionId && userId) {
+      // Revoke families first (soft), then delete the session row.
+      // Session delete cascade hard-deletes remaining families (belt & suspenders).
+      await revokeFamiliesForSession(sessionId).catch(() => {});
+      await logoutFromSpecificDevice(userId, sessionId).catch(() => {});
+    } else if (sessionId) {
+      await revokeFamiliesForSession(sessionId).catch(() => {});
+    }
+
     return c.json({ message: 'Logged out successfully' });
   } catch (error) {
-    return cApiError(c, 'Failed to logout', error, 500);
+    console.error('[POST /api/auth/logout] ❌', error);
+    // Cookie face must still return the byte-identical body even if revocation fails.
+    return c.json({ message: 'Logged out successfully' });
   }
 });
 
@@ -907,6 +1158,19 @@ router.post('/logout-all', requireAuth, async (c) => {
     }
 
     const deletedCount = await logoutFromAllOtherDevices(userId, currentSessionId);
+    // Session delete cascades refresh families for each deleted session
+    // (ON DELETE CASCADE on refresh_families.session_id) — no separate hard
+    // DELETE of families needed. The remaining current session keeps its family.
+    try {
+      // Soft-revoke any orphaned families that might remain (defensive; cascade
+      // should already have removed them) without touching the current session.
+      await dbWrite
+        .update(refreshFamilies)
+        .set({ revokedAt: new Date(), updatedAt: new Date() })
+        .where(and(eq(refreshFamilies.userId, userId), ne(refreshFamilies.sessionId, currentSessionId)));
+    } catch {
+      // Non-critical: family cleanup failure shouldn't block cookie logout.
+    }
 
     await logAuditEvent(c, 'security_logout_all_devices', 'auth');
     return c.json({
@@ -954,6 +1218,7 @@ router.post('/logout-all-devices', requireAuth, async (c) => {
     await invalidateCurrentSessionVerifyCache(c);
     const userId = c.get("userId")!;
     const deletedCount = await logoutFromAllDevices(userId);
+    await revokeAllFamiliesForUser(userId).catch(() => {});
 
     await logAuditEvent(c, 'security_logout_all_devices', 'auth');
     return c.json({
@@ -1002,6 +1267,7 @@ router.post('/logout-session', requireAuth, async (c) => {
     }
 
     const deletedCount = await logoutFromSpecificDevice(userId, sessionId);
+    await revokeFamiliesForSession(sessionId).catch(() => {});
 
     if (deletedCount === 0) {
       return c.json({ error: 'Session not found' }, 404);
@@ -1265,15 +1531,25 @@ router.put('/password', requireAuth, async (c) => {
     const newPasswordHash = await hashPassword(newPassword);
     const now = new Date();
 
-    await dbWrite
-      .update(users)
-      .set({ passwordHash: newPasswordHash, updatedAt: now })
-      .where(eq(users.userId, userId));
+    // Credential change: bump tokenVersion + revoke refresh families in one
+    // transaction so outstanding mobile access/refresh tokens die with the
+    // password (Step 7). Cookie path is unaffected until EQ5 parity.
+    await dbWrite.transaction(async (tx) => {
+      await tx
+        .update(users)
+        .set({
+          passwordHash: newPasswordHash,
+          tokenVersion: sql`${users.tokenVersion} + 1`,
+        })
+        .where(eq(users.userId, userId));
 
-    await dbWrite
-      .update(userAuth)
-      .set({ failedLoginAttempts: 0, lockUntil: null, updatedAt: now })
-      .where(eq(userAuth.userId, userId));
+      await revokeAllFamiliesForUser(userId, tx);
+
+      await tx
+        .update(userAuth)
+        .set({ failedLoginAttempts: 0, lockUntil: null, updatedAt: now })
+        .where(eq(userAuth.userId, userId));
+    });
 
     // Security notification (always on) — non-blocking
     const [userRow] = await dbRead

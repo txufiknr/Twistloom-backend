@@ -4,6 +4,8 @@
 
 This guide explains how to migrate your Node.js + Express backend (Vercel serverless) to work with the new cookie-based authentication architecture used by the Next.js frontend.
 
+> **Scope / multi-platform note (2026-09-23):** This guide covers the **web cookie face** (browser httpOnly cookies). Native Flutter clients use a second credential presentation — short-lived bearer access tokens + rotating refresh secrets — against the same identity system (one identity store, two credential adapters; same pattern as Meta/Google/X). Cookie verification here must not regress when the bearer path lands. See [NATIVE_MOBILE_BEARER_AUTH_ROADMAP.md](roadmap/NATIVE_MOBILE_BEARER_AUTH_ROADMAP.md) and [DUAL_AUTH_ARCHITECTURE.md](architecture/DUAL_AUTH_ARCHITECTURE.md).
+
 ### What Changed in Frontend
 
 **Before (Old Architecture):**

@@ -2,6 +2,8 @@
 
 This document provides comprehensive documentation for all available middleware in the Twistloom backend application.
 
+> **Auth faces (2026-09-23):** `requireAuth` / `optionalAuth` / `verifyNextAuthToken` verify **Auth.js cookies**. Native Flutter clients present short-lived bearer access tokens (+ rotating refresh) against the same identity/resource server (one identity store, two credential adapters — dual credential, same pattern as Meta/Google/X). A global **bearer branch** in `src/middleware/bearer.ts` (wired in `app.ts`) verifies `Authorization: Bearer <mobile JWT>` (HS256 + `tokenVersion` + fresh `sid` session-row check + ban) and attaches the same `user` / `userId` context so `requireAuth` and all routes work unchanged. When no `Authorization` header is present, the middleware is a no-op and the cookie path continues byte-for-byte. See [DUAL_AUTH_ARCHITECTURE.md](../architecture/DUAL_AUTH_ARCHITECTURE.md) and [NATIVE_MOBILE_BEARER_AUTH_ROADMAP.md](../roadmap/NATIVE_MOBILE_BEARER_AUTH_ROADMAP.md).
+
 ## Overview
 
 The application uses Express.js middleware for authentication, guest user management, and request processing. Each middleware serves a specific purpose and is designed to handle different authentication scenarios.

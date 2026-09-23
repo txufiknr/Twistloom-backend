@@ -1,10 +1,106 @@
-# NextAuth v5 Dual Providers Architecture
+# Dual Auth Architecture (Providers + Credentials)
 
 ## Overview
 
-This document describes the dual authentication architecture for Twistloom, supporting both Google OAuth and Email/Password login using NextAuth v5.
+This document describes Twistloom’s **two orthogonal “dual” axes** and the **final implemented shape** as of 2026-09-23:
 
-## Architecture
+1. **Dual provider** (web face): Google OAuth + Email/Password via NextAuth v5 → one httpOnly session cookie.
+2. **Dual credential** (multi-platform): that cookie (browser) **plus** short-lived bearer access JWTs + rotating opaque refresh secrets (native Flutter) → **one identity store, two credential adapters, one resource server** accepting both while rejecting mixed conflicting identities.
+
+Cookie verification and `verify-credentials` remain the first-class browser path (non-breaking contract NB-1…NB-8 in the mobile roadmap). Mobile issuance/verification is additive and implemented behind `/api/auth/mobile/*` + a global bearer branch that no-ops when `Authorization` is absent.
+
+### Dual provider vs dual credential
+
+| Axis | What is dual | Face | Document |
+|------|--------------|------|----------|
+| **Dual provider** (web) | Google OAuth + email/password → one NextAuth cookie | First-party **web** | this file |
+| **Dual credential** (multi-platform) | httpOnly cookie (web) **+** short-lived bearer/refresh (native Flutter) → one identity/resource server | Web **and** native | [NATIVE_MOBILE_BEARER_AUTH_ROADMAP](../roadmap/NATIVE_MOBILE_BEARER_AUTH_ROADMAP.md) · Flutter [MOBILE_AUTH_CONTRACT](../../../Twistloom-flutter/docs/roadmap/MOBILE_AUTH_CONTRACT.md) |
+
+### Why this is industry standard?
+
+**Alternative C — first-party OAuth 2.0 resource server + Auth.js session for browser — is the industry-standard multi-platform shape, not a transitional workaround.** Real-world precedents:
+
+| Company | Browser face | Native / API face | Shared identity |
+|---------|--------------|-------------------|-----------------|
+| **Meta** | web cookies | Graph `access_token` | one account graph |
+| **Google** | first-party cookies | OAuth bearer for first-party APIs | one Google account |
+| **X (Twitter)** | web cookies | OAuth 1.0a / OAuth 2.0 API tokens | one account |
+| **Stripe** | dashboard session | restricted/live **secret keys** (service bearers) | one account |
+| **Most SaaS** | session cookie (Auth.js / Passport) | JWT access + rotating refresh (RFC 9700) | one users table |
+
+What every mature multi-platform product converges on:
+
+1. **One identity store** (users + sessions + credential material) — never two user tables.
+2. **Two credential adapters** at the edge: cookie verifier (Auth.js JWE) and bearer verifier (JWT signature + `tv`/`sid` claims + optional service-bearer allow-list).
+3. **One resource server** (this Hono API) that resolves both credential types onto the same `userId` before route guards (`requireAuth`).
+4. **Reject mixed conflicting identities**: a request may present *either* credential, never two different users’ credentials at once (we never merge cookie + bearer into one request identity).
+5. **Service bearers are a third, non-user class** (`CRON_SECRET`, webhooks) — exempt from the user-JWT branch so machine secrets never 401 as “invalid user token.”
+
+**Why not force everyone onto OAuth/PKCE only?** Full OIDC authorization-code + PKCE for first-party web is a deferred non-goal: NextAuth already issues a secure httpOnly cookie with zero client-side token storage; adding a browser bearer would *increase* XSS token-steal surface without improving the threat model. Managed IdPs (Auth0/Cognito/Supabase) are an ops choice, not an architecture requirement — self-hosted Auth.js + local JWT verification keeps data residency and avoids vendor lock-in while implementing the same industry pattern.
+
+**Opaque access tokens are a first-class Alternative C variant for v1** (Stripe-style server session lookup) if instant revoke outweighs local warm-path verify; Twistloom ships **JWT access + opaque rotating refresh** for M0 to match the signed Flutter contract (`sub`/`sid`/`tv`/`iss`/`aud`) and avoid a DB hit on every native API call. Both stay valid under C — freeze one **before** Flutter M0 ships.
+
+**Two credential faces exist forever.** This is accepted product surface, not tech debt: web will keep cookies (CSRF, XSS, SameSite) and native will keep tokens (secure storage, refresh rotation). Shared control plane = `users.token_version` + `auth_sessions` + `refresh_families`.
+
+## Implemented Dual-Credential Shape (2026-09-23)
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│                         Clients                                          │
+│  Next.js (Auth.js cookie)              Flutter (Bearer access JWT)       │
+│  Cookie: next-auth.session-token       Authorization: Bearer <jwt>       │
+│  via same-origin rewrite               + refresh token (opaque)          │
+└───────────────┬────────────────────────────────┬─────────────────────────┘
+                │                                │
+                ▼                                ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│  Global auth middleware (src/app.ts)                                     │
+│  1) bearerAuthMiddleware (src/middleware/bearer.ts)                       │
+│     - No Authorization header → no-op (cookie path)                      │
+│     - /api/cron/* + Bearer → skip (service-bearer registry)              │
+│     - Bearer <mobile JWT> → 15s identity LRU hit? else jose verify →     │
+│       tv + ban + fresh sid → set (cache key = SHA-256(raw token);        │
+│       CPU_OPTIMIZATIONS_ENABLED; logout → invalidateBearerCache)         │
+│  2) verifyNextAuthToken (cookie) only if userId not already set          │
+└───────────────┬──────────────────────────────────────────────────────────┘
+                │  c.set("userId" / "user") — same AuthUser shape
+                ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│  Resource server (requireAuth / optionalAuth routes)                     │
+│  One identity: users.user_id · token_version · auth_sessions · families  │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+### Endpoints (additive)
+
+| Method | Path | Auth | Role |
+|--------|------|------|------|
+| POST | `/api/auth/verify-credentials` | public + IP limit | **Frozen** web NextAuth contract (NB-1) |
+| POST | `/api/auth/mobile/token` | public + **Redis** IP limit | Password → access JWT + refresh family (ban → 403; session+family in **one transaction**) |
+| POST | `/api/auth/mobile/refresh` | public + **Redis** IP limit | Rotate refresh (RFC 9700) + new access; banned → fail closed + family revoke |
+| POST | `/api/auth/logout` | open (sets session) | Cookie body frozen; soft-revoke families + **delete session row** (cascade) + invalidate bearer identity cache |
+| POST | `/api/auth/logout-all-devices` | Bearer/cookie | Bumps `tv` + soft-revokes all families (cascade; no hard family DELETE) |
+| POST | `/api/auth/logout-session` / logout-all | Bearer/cookie | Session-scoped family revoke; logout-all soft-revokes others via cascade |
+| PUT | `/api/auth/password` | Bearer/cookie | Bumps `tv` + revokes families (credential change) |
+| POST | `/api/auth/reset-password` | token | Same `tv` bump + family revoke |
+
+### Claims & secrets
+
+- Access JWT: `sub`, `sid`, `tv`, `iss=twistloom-backend`, `aud=reader` (provisional until parent Q6 / Step 12), `exp` (default 15 min), `iat`, header `kid=m0-hs256`, alg allow-list `HS256`.
+- Signing key: **`MOBILE_ACCESS_SECRET`** (≥32 chars, **separate from `AUTH_SECRET`**). Dual-secret verify via `MOBILE_ACCESS_SECRET_PREVIOUS` during rotation.
+- Refresh: 256-bit opaque hex; store **SHA-256 only** in `refresh_families` (current hash unique-indexed; prior hashes append-only in GIN-indexed `usedHashes`). Rotate atomically; reuse of any hash in `usedHashes` → **revoke entire family** (EQ3=B default; EQ3=A idempotent window is a fast-follow).
+
+### Non-breaking guarantees (summary)
+
+- Cookie path unchanged when `Authorization` absent.
+- `verify-credentials` response shape frozen.
+- Logout cookie body byte-identical: `{ "message": "Logged out successfully" }`.
+- `/api/cron/*` `Authorization: Bearer <CRON_SECRET>` never enters user-JWT verify.
+- CORS already allows `Authorization` and no-Origin clients (`app.ts`).
+
+**Source of truth for the full contract:** [NATIVE_MOBILE_BEARER_AUTH_ROADMAP](../roadmap/NATIVE_MOBILE_BEARER_AUTH_ROADMAP.md) §3 NB-1…NB-8.
+
+## Architecture (web dual-provider detail)
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -273,21 +369,22 @@ Key Points:
    - Backend middleware detects no valid session
    - `req.userId` is not set (unauthenticated)
 
-**Optional backend cleanup (POST /api/auth/logout):**
+**Backend cleanup (`POST /api/auth/logout`) — implemented, not a placeholder:**
 
-The backend provides `POST /api/auth/logout` as an optional endpoint for:
+The backend endpoint is no longer optional bookkeeping. On every call (cookie or bearer face):
 
-- Future extensibility (refresh tokens, server-side sessions)
-- Analytics logging (logout events)
-- Cleanup operations (invalidate tokens, clear cache)
+1. Drops the current session-verify LRU entry (`invalidateCurrentSessionVerifyCache`).
+2. If an `Authorization: Bearer` token was presented, **immediately invalidates** the 15s bearer identity cache for that token (`extractBearerToken` → `invalidateBearerCache`) so a warm entry cannot outlive logout.
+3. If `sessionId` + `userId` are bound: soft-revokes `refresh_families` for the session, then **hard-deletes the `auth_sessions` row** (`logoutFromSpecificDevice`); `ON DELETE CASCADE` removes any remaining families.
+4. Returns the byte-identical body `{ "message": "Logged out successfully" }` on success **and** on catch (NB-3/NB-4 — never becomes an error oracle).
 
-Currently this is a placeholder since NextAuth handles all session management client-side. If you implement refresh tokens or server-side sessions in the future, this endpoint would be called from the frontend after NextAuth's `signOut()`.
+Frontend cookie clearing remains NextAuth `signOut()`; this endpoint is the server-side revocation half (required for the mobile face, safe for web).
 
 ### Summary
 
 - **Login:** NextAuth `signIn()` → Credentials provider → Backend `/verify-credentials` → Session cookie
-- **Logout:** NextAuth `signOut()` → Clears cookie (backend optional for cleanup)
-- **Session verification:** Backend middleware validates JWT cookie on every request
+- **Logout:** NextAuth `signOut()` clears the cookie; `POST /api/auth/logout` revokes server-side families + session row + bearer cache
+- **Session verification:** Backend middleware validates JWT cookie (or bearer JWT) on every request
 - **Both auth methods (Google + Email/Password)** create the same session cookie format
 
 ## Key Benefits
@@ -580,9 +677,16 @@ BACKEND_URL=http://localhost:3000
 
 **Backend `.env.local`:**
 ```bash
-AUTH_SECRET=your-secret-here (same as frontend)
+AUTH_SECRET=your-secret-here (same as frontend — cookie JWE only)
 FRONTEND_URL=http://localhost:3001
 AUTH_URL=http://localhost:3001
+
+# Mobile bearer (separate from AUTH_SECRET — min 32 chars)
+MOBILE_ACCESS_SECRET=generate_openssl_rand_base64_32
+# MOBILE_ACCESS_SECRET_PREVIOUS=   # dual-secret rotation window
+MOBILE_ACCESS_TTL_MINUTES=15
+MOBILE_REFRESH_TTL_DAYS=30
+MOBILE_ACCESS_AUD=reader          # provisional until parent Q6 / Step 12
 
 # Auth Rate Limiting (Optional)
 AUTH_RATE_LIMIT_MAX_ATTEMPTS=5
@@ -593,25 +697,21 @@ AUTH_RATE_LIMIT_WINDOW_MS=60000
 
 ### Backend Signup Endpoint
 
-**File: `src/routes/auth.ts`**
+**File: `src/routes/auth.ts`** (Hono — Express samples elsewhere in this doc are historical)
 
 ```typescript
-router.post('/signup', async (req, res) => {
-  // Rate limiting based on IP address
-  const ip = req.ip || req.socket.remoteAddress || 'unknown';
-  if (!checkRateLimitByIP(ip)) {
-    return res.status(429).json({ error: 'Too many requests. Please try again later.' });
-  }
+router.post('/signup', async (c) => {
+  const ip = getClientIp(c);
+  if (!checkRateLimitByIP(ip)) return cRateLimitError(c);
 
-  const { email, username, gender, password, receiveEmails, agreedToTerms } = req.body;
+  const { email, username, gender, password, receiveEmails, agreedToTerms } = c.get("body");
 
-  // Validate input
   if (!email || !username || !password || !gender) {
-    return res.status(400).json({ error: 'Email, username, password, and gender are required' });
+    return cValidationError(c, 'Email, username, password, and gender are required');
   }
 
   if (!agreedToTerms) {
-    return res.status(400).json({ error: 'You must agree to the terms' });
+    return cValidationError(c, 'You must agree to the terms');
   }
 
   // Check if email or username already exists
@@ -715,30 +815,48 @@ router.post('/forgot-password', async (req, res) => {
 
 ### Logout Endpoint
 
-**Backend Logout Endpoint**
-
-**File: `src/routes/auth.ts`**
+**File: `src/routes/auth.ts` (`POST /logout`, ~907-934)**
 
 ```typescript
-router.post('/logout', async (req, res) => {
+router.post('/logout', async (c) => {
   try {
-    // NextAuth handles session clearing on the frontend
-    // This endpoint is for any backend cleanup if needed
-    
-    // Add any backend cleanup logic here:
-    // - Invalidate refresh tokens (if implemented)
-    // - Log logout event for analytics
-    // - Clear server-side session data
-    
-    res.json({ message: 'Logged out successfully' });
+    await invalidateCurrentSessionVerifyCache(c);
+    const user = c.get("user");
+    const sessionId = user?.sessionId;
+    const userId = c.get("userId");
+
+    // Kill the warm 15s bearer identity cache for a presented token.
+    const bearer = extractBearerToken(c.req.header("authorization"));
+    if (bearer) await invalidateBearerCache(bearer);
+
+    if (sessionId && userId) {
+      await revokeFamiliesForSession(sessionId).catch(() => {});
+      await logoutFromSpecificDevice(userId, sessionId).catch(() => {});
+    } else if (sessionId) {
+      await revokeFamiliesForSession(sessionId).catch(() => {});
+    }
+
+    return c.json({ message: 'Logged out successfully' });
   } catch (error) {
-    console.error('Logout error:', error);
-    handleApiError(res, 'Failed to logout', error, 500);
+    // Cookie face must still return the byte-identical body even if revocation fails.
+    return c.json({ message: 'Logged out successfully' });
   }
 });
 ```
 
-**Note:** With NextAuth, logout is primarily handled on the frontend via `await signOut({ callbackUrl: '/' })`. This backend endpoint is provided for future extensibility (refresh tokens, analytics logging, etc.).
+**Behavior summary:**
+
+- Session-scoped family soft-revoke → session row hard-delete → `ON DELETE CASCADE` cleans remaining families.
+- Bearer identity LRU invalidated for the presented token (15s cache in `src/middleware/bearer.ts`).
+- Response body byte-identical on every path: `{ "message": "Logged out successfully" }`.
+- Idempotent: missing/invalid credentials still return 200 (never an oracle for token validity).
+- Frontend still calls `await signOut({ callbackUrl: '/' })` to clear the browser cookie.
+
+Related routes:
+
+- **`POST /logout-all`** — soft-revokes other sessions' families via cascade after `logoutFromAllOtherDevices`; no hard `DELETE` on `refresh_families`.
+- **`POST /logout-all-devices`** — bumps `users.tokenVersion`, revokes all families, deletes all sessions (invalidates all outstanding JWTs).
+- **`POST /logout-session`** — deletes one session by id + cascades its families.
 
 ## Security Considerations
 
@@ -746,6 +864,13 @@ router.post('/logout', async (req, res) => {
 - **Bcrypt with 12 salt rounds** - Industry-standard password hashing
 - **Never store plaintext passwords** - Always hash before storage
 - **Password requirements** - Enforce minimum length and complexity on frontend
+
+### Mobile / Bearer Security (implemented)
+- **Ban at issue + refresh** — `/mobile/token` returns `403 Account banned` before any write; `evaluateRotation` fails closed (`reason: "banned"`, family revoked)
+- **Atomic mobile login** — session + family inserts share one `dbWrite.transaction`
+- **15s bearer identity LRU** — key = SHA-256(raw token), value = `{userId, email, claims}` after full verify; gated by `CPU_OPTIMIZATIONS_ENABLED`; invalidated on logout
+- **Logout hard-deletes the session row** (cascade families) after soft-revoke; response body always `{ "message": "Logged out successfully" }`
+- **logout-all soft-revokes** families (`revokedAt`) — session deletes cascade; no hard `DELETE` on `refresh_families`
 
 ### Rate Limiting
 - **IP-based for auth endpoints** - Prevents brute force attacks
@@ -759,8 +884,9 @@ router.post('/logout', async (req, res) => {
 
 ### Session Security
 - **JWT verification** - Every request verifies JWT cookie
+- **Bearer identity LRU** - 15s TTL, key = SHA-256(raw token), gated by `CPU_OPTIMIZATIONS_ENABLED`; populated only after full verify (JWT + user load + fresh `sid`); invalidated on logout (`invalidateBearerCache`)
 - **Automatic expiration** - Sessions expire after configured TTL
-- **Revocation support** - Can revoke sessions if needed
+- **Revocation support** - `tokenVersion` bump, session-row delete (fresh `sid` check), family cascade revoke
 
 ## Testing
 
@@ -833,7 +959,6 @@ done
 ### Backend
 - [x] Add passwordHash field to users schema
 - [x] Add unique constraints to email and username
-- [x] Run database migration (`pnpm db:generate && pnpm db:migrate`)
 - [x] Create password hashing utilities
 - [x] Create credential verification endpoint
 - [x] Add IP-based rate limiting with LRU cache
@@ -841,10 +966,15 @@ done
 - [x] Register auth routes
 - [x] Implement signup endpoint
 - [x] Implement forgot-password endpoint
-- [x] Implement logout endpoint
-- [ ] Test credential verification endpoint
-- [ ] Test signup endpoint
-- [ ] Test rate limiting
+- [x] Implement logout endpoint (session delete + family cascade + bearer cache invalidation, 2026-09-23)
+- [x] Dual credential: mobile token issue/refresh + bearer middleware + family revoke (2026-09-23)
+- [x] Security audit corrections: ban at issue/refresh, atomic mobile login, 15s bearer identity LRU, logout-all cascade/soft-revoke (2026-09-23)
+- [x] `refresh_families` schema (owner still must run migration — AGENTS.md §3.5)
+- [x] Cookie-regression baseline tests + CI workflow
+- [ ] Full Step 10 integration suite (DB-backed)
+- [ ] Step 11 wire fixtures / Flutter live capture
+- [ ] Parent Q5 Apple Sign-in (Step 9)
+- [ ] Parent Q6 pen audiences (Step 12)
 
 ### Frontend
 - [ ] Add Credentials provider to NextAuth config
@@ -858,5 +988,6 @@ done
 
 - [NextAuth.js Documentation](https://next-auth.js.org/)
 - [NextAuth Credentials Provider](https://next-auth.js.org/providers/credentials)
-- [Bcrypt Documentation](https://github.com/kelektiv/node.bcrypt.js)
-- [LRU Cache Documentation](https://github.com/isaacs/node-lru-cache)
+- [RFC 9700 — OAuth 2.0 Security Best Current Practice (refresh rotation / reuse detection)](https://www.rfc-editor.org/rfc/rfc9700)
+- [NATIVE_MOBILE_BEARER_AUTH_ROADMAP](../roadmap/NATIVE_MOBILE_BEARER_AUTH_ROADMAP.md) — implementation plan + NB-1…NB-8 non-breaking contract
+- Flutter [MOBILE_AUTH_CONTRACT](../../../Twistloom-flutter/docs/roadmap/MOBILE_AUTH_CONTRACT.md)

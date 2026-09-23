@@ -1708,6 +1708,8 @@ const ACTIVITY_TITLE_KEY: Record<string, string> = {
   security_credits_added: 'securityCreditTopup',
   credits_consumed: 'securityCreditConsumed',
   credits_added: 'securityCreditTopup',
+  auth_mobile_token_issued: 'securityLogin',
+  auth_mobile_token_refreshed: 'securityLogin',
   quest_reward_claimed: 'workflowTriggered',
 };
 

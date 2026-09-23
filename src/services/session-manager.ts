@@ -19,12 +19,17 @@
  * ```
  */
 
-import { db } from '../db/client.js';
+import { db, type dbWrite } from '../db/client.js';
 import { authSessions, users } from '../db/schema.js';
 import { eq, and, desc, ne, sql } from 'drizzle-orm';
 import { LRUCache } from 'lru-cache';
 import { UAParser } from 'ua-parser-js';
 import { generateId } from '../utils/uuid.js';
+
+/** Drizzle transaction type shared by session helpers. */
+type SessionTx = Parameters<Parameters<typeof dbWrite.transaction>[0]>[0];
+/** DB executor: default client or a Drizzle transaction. */
+export type SessionExecutor = SessionTx | typeof db;
 
 /**
  * LRU cache for session ID existence checks
@@ -89,10 +94,14 @@ export async function sessionExists(sessionId: string): Promise<boolean> {
  * @param userId - The user to create a session for
  * @returns The generated session ID
  */
-export async function createSession(userId: string): Promise<string> {
+export async function createSession(
+  userId: string,
+  executor?: SessionExecutor,
+): Promise<string> {
   const sessionId = generateId();
+  const run = executor ?? db;
 
-  await db.insert(authSessions).values({
+  await run.insert(authSessions).values({
     id: sessionId,
     userId,
     lastActiveAt: new Date(),

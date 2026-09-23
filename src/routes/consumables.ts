@@ -23,6 +23,7 @@ import type { AppEnv } from "../hono/env.js";
 import { requireAuth } from "../middleware/nextauth.js";
 import { rateLimit } from "../middleware/rate-limit.js";
 import { cApiError, cValidationError } from "../utils/error.js";
+import { isValidUuid } from "../utils/uuid.js";
 import {
   purchaseConsumableBatch,
   getUserItemCount,
@@ -33,6 +34,7 @@ import {
   activateDangerSight,
   getDangerSightStatus,
   ConsumableError,
+  cConsumableError,
 } from "../services/consumables.js";
 import { CONSUMABLES_REGISTRY, CONSUMABLES_BY_TYPE } from "../config/consumables.js";
 import type { InventoryItemType } from "../types/consumable.js";
@@ -172,10 +174,19 @@ router.post(
       if (!pageId || typeof pageId !== "string") {
         return cValidationError(c, "pageId is required");
       }
+      if (!isValidUuid(bookId)) {
+        return cValidationError(c, "bookId must be a valid UUID");
+      }
+      if (!isValidUuid(pageId)) {
+        return cValidationError(c, "pageId must be a valid UUID");
+      }
 
       const result = await checkDivergence(userId, bookId, pageId);
       return c.json(result);
     } catch (error) {
+      if (error instanceof ConsumableError) {
+        return cConsumableError(c, error);
+      }
       console.error("[POST /api/consumables/divergence-check] ❌ Error:", error);
       return cApiError(c, "Failed to check divergence", error);
     }
@@ -223,6 +234,12 @@ router.post(
       if (!pageId || typeof pageId !== "string") {
         return cValidationError(c, "pageId is required");
       }
+      if (!isValidUuid(bookId)) {
+        return cValidationError(c, "bookId must be a valid UUID");
+      }
+      if (!isValidUuid(pageId)) {
+        return cValidationError(c, "pageId must be a valid UUID");
+      }
 
       const pageNumber = Number(rawPageNumber) || 1;
       const prompt = typeof choicePrompt === "string" ? choicePrompt : undefined;
@@ -230,6 +247,9 @@ router.post(
       const result = await dropMemoryAnchor(userId, bookId, pageId, pageNumber, prompt);
       return c.json(result);
     } catch (error) {
+      if (error instanceof ConsumableError) {
+        return cConsumableError(c, error);
+      }
       console.error("[POST /api/consumables/anchors] ❌ Error:", error);
       return cApiError(c, "Failed to drop Memory Anchor", error);
     }
@@ -252,6 +272,11 @@ router.get("/anchors", requireAuth, async (c) => {
 
     if (!bookId) {
       return cValidationError(c, "bookId is required query parameter");
+    }
+    // A malformed uuid would reach Postgres and surface as a cast error
+    // (500). Reject as a validation failure first (isValidUuid convention).
+    if (!isValidUuid(bookId)) {
+      return cValidationError(c, "bookId must be a valid UUID");
     }
 
     const anchors = await getStoryAnchors(userId, bookId);
@@ -278,6 +303,9 @@ router.delete("/anchors/:anchorId", requireAuth, async (c) => {
     if (!anchorId) {
       return cValidationError(c, "anchorId is required");
     }
+    if (!isValidUuid(anchorId)) {
+      return cValidationError(c, "anchorId must be a valid UUID");
+    }
 
     const result = await deleteStoryAnchor(userId, anchorId);
     return c.json(result);
@@ -290,17 +318,23 @@ router.delete("/anchors/:anchorId", requireAuth, async (c) => {
 /**
  * POST /api/consumables/danger-sight/activate
  *
- * Activates 1 Danger Sight: rejects with a code-driven conflict while a
- * 15-minute window is still running (no stacking / no double-spend), deducts
- * 1 `item_danger_sight`, and stamps `user_consumable_effects.expires_at`.
- * Account-global — no `bookId` required (unlike the Resonance Prism).
+ * Activates 1 Danger Sight for a book session: rejects with a code-driven
+ * conflict while the stored page range still covers the activation page (no
+ * stacking / no double-spend), deducts 1 `item_danger_sight`, and stamps
+ * `user_sessions.danger_sight_from_page` so the covered window becomes the
+ * positional range `[page, page + DANGER_SIGHT_DURATION_PAGES - 1]` of that
+ * book. Reader-context only — `bookId` + `pageId` are required (page numbers
+ * are meaningless outside one book, which is why Dashboard → Inventory shows
+ * the "activate in the reader" fallback instead of a Use handler).
  *
  * The error body is code-driven: the client translates `code` via next-intl
  * (`consumables.errors.<key>`); the English `error` field is fallback only.
  *
  * @route POST /api/consumables/danger-sight/activate
  * @auth Required
- * @returns `{ active, expiresAt, remainingSeconds, remainingItems }`
+ * @body {string} bookId - Book whose reading session the range binds to
+ * @body {string} pageId - Current page; its page number becomes the range start
+ * @returns `{ fromPage, toPage, remainingItems }`
  */
 router.post(
   "/danger-sight/activate",
@@ -314,12 +348,31 @@ router.post(
   async (c) => {
     try {
       const userId = c.get("userId")!;
-      const result = await activateDangerSight(userId);
+      const body = ((c.get("body") as Record<string, unknown>) ||
+        (await c.req.json().catch(() => ({})))) as { bookId?: unknown; pageId?: unknown };
+
+      const { bookId, pageId } = body;
+      if (!bookId || typeof bookId !== "string") {
+        return cValidationError(c, "bookId is required");
+      }
+      if (!pageId || typeof pageId !== "string") {
+        return cValidationError(c, "pageId is required");
+      }
+      // Malformed uuids would reach Postgres and surface as a cast error
+      // (500). Reject them here as validation failures, matching the
+      // isValidUuid convention used across books.ts/user.ts.
+      if (!isValidUuid(bookId)) {
+        return cValidationError(c, "bookId must be a valid UUID");
+      }
+      if (!isValidUuid(pageId)) {
+        return cValidationError(c, "pageId must be a valid UUID");
+      }
+
+      const result = await activateDangerSight(userId, bookId, pageId);
       return c.json(result);
     } catch (error) {
       if (error instanceof ConsumableError) {
-        const status: 400 | 409 = error.code === "consumables.alreadyActive" ? 409 : 400;
-        return c.json({ error: error.message, code: error.code }, status);
+        return cConsumableError(c, error);
       }
       console.error("[POST /api/consumables/danger-sight/activate] ❌ Error:", error);
       return cApiError(c, "Failed to activate Danger Sight", error);
@@ -330,18 +383,29 @@ router.post(
 /**
  * GET /api/consumables/danger-sight/status
  *
- * Reads the account-global Danger Sight buff window. The client derives its
- * local countdown from the server-issued `remainingSeconds` — no polling loop,
- * one `setTimeout` at expiry.
+ * Reads the Danger Sight page range for one book's reading session. The
+ * client derives the badge gate purely from its current page number against
+ * `[fromPage, toPage]` — no countdown timers, no polling loop, no per-page
+ * server write. The range is returned **as stored**, even when the reader is
+ * already past `toPage` (the server does not know the current page), so
+ * non-null never implies active — only the client's in-range check does.
  *
  * @route GET /api/consumables/danger-sight/status
  * @auth Required
- * @returns `{ active, expiresAt, remainingSeconds }`
+ * @query {string} bookId - Book whose session to read
+ * @returns `{ fromPage, toPage }` (both `null` only when no window is stored)
  */
 router.get("/danger-sight/status", requireAuth, async (c) => {
   try {
     const userId = c.get("userId")!;
-    const result = await getDangerSightStatus(userId);
+    const bookId = c.req.query("bookId");
+    if (!bookId) {
+      return cValidationError(c, "bookId is required query parameter");
+    }
+    if (!isValidUuid(bookId)) {
+      return cValidationError(c, "bookId must be a valid UUID");
+    }
+    const result = await getDangerSightStatus(userId, bookId);
     return c.json(result);
   } catch (error) {
     console.error("[GET /api/consumables/danger-sight/status] ❌ Error:", error);

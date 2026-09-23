@@ -83,7 +83,7 @@ export const CONSUMABLES_REGISTRY: ConsumableItemDefinition[] = [
     type: "item_danger_sight",
     name: "Danger Sight",
     description:
-      "A crimson lens attuned to peril. Reveals hazardous-choice indicators on story actions for 15 minutes.",
+      "A crimson lens attuned to peril. Reveals hazardous-choice indicators on story actions for your next 15 pages.",
     creditsPrice: 40,
     available: true,
     accountBound: false,
@@ -174,17 +174,19 @@ export const CONSUMABLES_REGISTRY: ConsumableItemDefinition[] = [
 ];
 
 /**
- * Duration of one Danger Sight activation, in seconds (15 minutes).
+ * Length of one Danger Sight activation, in pages (15 pages).
  *
- * SSOT for the buff window: the registry description mentions "15 minutes",
- * the `user_consumable_effects.expires_at` row is set to
- * `now + DANGER_SIGHT_DURATION_SECONDS` at activation, and the client-side
- * countdown derives from the server-issued remaining seconds — none of them
- * hardcode the number independently.
- * Account-global (unlike the page-based Resonance Prism), because the hazard
- * badge it reveals is presentational only and not tied to a book session.
+ * SSOT for the buff window: the registry description mentions "15 pages", the
+ * `user_sessions.danger_sight_from_page` column anchors a positional range of
+ * `[from, from + DANGER_SIGHT_DURATION_PAGES - 1]` in the activated book, and
+ * the client derives its in-range badge gate from the server-issued range —
+ * none of them hardcode the number independently. There is no per-page
+ * decrement: the range is written once at activation and read positionally.
+ *
+ * Bound to the activated book's reading session (like the Resonance Prism) —
+ * page numbers are only meaningful within one book.
  */
-export const DANGER_SIGHT_DURATION_SECONDS = 15 * 60;
+export const DANGER_SIGHT_DURATION_PAGES = 15;
 
 /** Fast lookup by `type`. */
 export const CONSUMABLES_BY_TYPE: Record<InventoryItemType, ConsumableItemDefinition> =

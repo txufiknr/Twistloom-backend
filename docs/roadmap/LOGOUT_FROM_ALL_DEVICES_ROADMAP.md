@@ -1,5 +1,7 @@
 # Logout from All Devices & Selective Logout Roadmap
 
+> **Multi-platform note (2026-09-23):** session versioning / `tokenVersion` revocation below is the shared control plane for both credential faces. Web continues to use Auth.js httpOnly cookies; native Flutter uses short-lived bearer access tokens + rotating refresh secrets (dual credential — one identity system, two credential presentations; same pattern as Meta/Google/X). Cookie-path enforcement and bearer-family revoke are implemented in [NATIVE_MOBILE_BEARER_AUTH_ROADMAP.md](NATIVE_MOBILE_BEARER_AUTH_ROADMAP.md) and [DUAL_AUTH_ARCHITECTURE.md](../architecture/DUAL_AUTH_ARCHITECTURE.md). Logout UI/flows in this document remain valid for web.
+
 ## Overview
 
 This document provides a comprehensive implementation plan for adding "logout from all devices" and "selective logout" functionality to the Twistloom backend using **JWT Session Version / Revocation Token** approach. This feature allows users to:

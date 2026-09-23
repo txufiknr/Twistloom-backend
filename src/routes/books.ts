@@ -108,7 +108,7 @@ import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
 import { requireNotSuspended, requireNotMuted, requireGenerationQuota } from "../middleware/trust-safety.js";
 import { rateLimit } from "../middleware/rate-limit.js";
 import { books, branches, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress, userCompletedBooks, uploadedImages, userActivityLogs, pages, bookTestimonials, pageReactions, userSessions, companionAnswers, creatorWallets } from "../db/schema.js";
-import { deductUserItem } from "../services/consumables.js";
+import { deductUserItem, ConsumableError, cConsumableError } from "../services/consumables.js";
 import { getErrorMessage, cApiError, cForbiddenError, cNotFoundError, cRateLimitError, cUnauthorizedError, cValidationError } from "../utils/error.js";
 import { sanitizeKeywords, cleanMultilineText } from '../utils/text-processing.js';
 import { stripHtml } from '../utils/sanitize-html.js';
@@ -8445,45 +8445,54 @@ router.post("/:identifier/testimonials", requireAuth, requireNotSuspended, requi
   }
   const isCuratorQuill = useCuratorQuill === true;
 
-  const created = await dbWrite.transaction(async (tx) => {
-    if (isCuratorQuill) {
-      // 1. Deduct 1 Curator's Quill from user inventory
-      await deductUserItem(tx, userId, "item_curator_quill", 1);
+  let created: { id: string };
+  try {
+    created = await dbWrite.transaction(async (tx) => {
+      if (isCuratorQuill) {
+        // 1. Deduct 1 Curator's Quill from user inventory
+        await deductUserItem(tx, userId, "item_curator_quill", 1);
 
-      // 2. Credit 35 credits to creator's wallet if book has an author
-      if (book.userId) {
-        await tx
-          .insert(creatorWallets)
-          .values({
-            creatorId: book.userId,
-            availableAmount: 35,
-            currency: "USD",
-          })
-          .onConflictDoUpdate({
-            target: creatorWallets.creatorId,
-            set: {
-              availableAmount: sql`${creatorWallets.availableAmount} + 35`,
-              updatedAt: new Date(),
-            },
-          });
+        // 2. Credit 35 credits to creator's wallet if book has an author
+        if (book.userId) {
+          await tx
+            .insert(creatorWallets)
+            .values({
+              creatorId: book.userId,
+              availableAmount: 35,
+              currency: "USD",
+            })
+            .onConflictDoUpdate({
+              target: creatorWallets.creatorId,
+              set: {
+                availableAmount: sql`${creatorWallets.availableAmount} + 35`,
+                updatedAt: new Date(),
+              },
+            });
+        }
       }
+
+      const [row] = await tx
+        .insert(bookTestimonials)
+        .values({
+          userId,
+          bookId: book.id,
+          rating: normalizedRating,
+          content: content.trim(),
+          status: "pending",
+          featured: false,
+          curatorQuill: isCuratorQuill,
+        })
+        .returning({ id: bookTestimonials.id });
+
+      return row;
+    });
+  } catch (error) {
+    // Out-of-stock on the quill spend is a code-driven 400, never a 500.
+    if (error instanceof ConsumableError) {
+      return cConsumableError(c, error);
     }
-
-    const [row] = await tx
-      .insert(bookTestimonials)
-      .values({
-        userId,
-        bookId: book.id,
-        rating: normalizedRating,
-        content: content.trim(),
-        status: "pending",
-        featured: false,
-        curatorQuill: isCuratorQuill,
-      })
-      .returning({ id: bookTestimonials.id });
-
-    return row;
-  });
+    throw error;
+  }
 
   const [testimonial] = await dbRead
     .select(testimonialWithAuthorSelect)

@@ -9,6 +9,8 @@
 - [Edge Cases](#edge-cases)
 - [Testing](#testing)
 
+> **Scope (2026-09-23):** CSRF applies to **browser credential faces** (httpOnly cookies). Native Flutter clients authenticate with short-lived bearer tokens (Authorization header) against the same identity system — dual credential, one resource server accepting both faces while rejecting mixed conflicting identities; no-Origin + `Authorization` is already allowed for native ([DUAL_AUTH_ARCHITECTURE.md](DUAL_AUTH_ARCHITECTURE.md), [NATIVE_MOBILE_BEARER_AUTH_ROADMAP.md](../roadmap/NATIVE_MOBILE_BEARER_AUTH_ROADMAP.md)). Do not “fix” CSRF by weakening cookie checks for the bearer path.
+
 ---
 
 ## Threat Model

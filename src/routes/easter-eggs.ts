@@ -20,6 +20,7 @@ import { requireAuth } from "../middleware/nextauth.js";
 import { rateLimit } from "../middleware/rate-limit.js";
 import { cApiError, cValidationError } from "../utils/error.js";
 import { checkEasterEgg, claimEasterEgg, crackEasterEgg, activateResonancePrism, getResonancePrismStatus } from "../services/easter-eggs.js";
+import { ConsumableError, cConsumableError } from "../services/consumables.js";
 
 const router = new Hono<AppEnv>();
 
@@ -125,6 +126,9 @@ router.post(
       const result = await crackEasterEgg(userId);
       return c.json(result);
     } catch (error) {
+      if (error instanceof ConsumableError) {
+        return cConsumableError(c, error);
+      }
       console.error("[POST /api/easter-eggs/crack] ❌ Error:", error);
       return cApiError(c, "Failed to crack Easter Egg", error);
     }
@@ -166,6 +170,9 @@ router.post(
       );
       return c.json(result);
     } catch (error) {
+      if (error instanceof ConsumableError) {
+        return cConsumableError(c, error);
+      }
       console.error("[POST /api/easter-eggs/prism/activate] ❌ Error:", error);
       return cApiError(c, "Failed to activate Resonance Prism", error);
     }

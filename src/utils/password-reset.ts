@@ -22,9 +22,10 @@
 
 import { dbRead, dbWrite } from '../db/client.js';
 import { users, userAuth } from '../db/schema.js';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { generateId } from '../utils/uuid.js';
 import { hashPassword } from './password.js';
+import { revokeAllFamiliesForUser } from '../services/token-family.js';
 
 /**
  * Creates a password reset token for a user
@@ -147,13 +148,19 @@ export async function resetPassword(token: string, newPassword: string): Promise
   const userId = auth[0].userId;
   const passwordHash = await hashPassword(newPassword);
 
-  // Update password and clear token in a single transaction for atomicity.
-  // If either update fails, everything rolls back — no partial state.
+  // Update password, bump tokenVersion (credential-change revocation), revoke
+  // refresh families, and clear the reset token — single transaction for atomicity.
+  // If any update fails, everything rolls back — no partial state.
   const result = await dbWrite.transaction(async (tx) => {
     await tx
       .update(users)
-      .set({ passwordHash })
+      .set({
+        passwordHash,
+        tokenVersion: sql`${users.tokenVersion} + 1`,
+      })
       .where(eq(users.userId, userId));
+
+    await revokeAllFamiliesForUser(userId, tx);
 
     return tx
       .update(userAuth)

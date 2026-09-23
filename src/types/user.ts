@@ -236,7 +236,9 @@ export type UserActivityType =
   'security_subscription_cancelled' |
   'security_subscription_renewed' |
   'security_trial_started' |
-  'security_profile_updated';
+  'security_profile_updated' |
+  'auth_mobile_token_issued' |
+  'auth_mobile_token_refreshed';
 
 export type CheckinClaimType = 'regular' | 'vip_2x';
 
