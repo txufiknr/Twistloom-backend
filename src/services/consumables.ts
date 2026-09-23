@@ -13,14 +13,132 @@
  * @see src/db/schema.ts (`user_inventory`)
  */
 
-import { and, eq, sql, asc, desc, inArray } from "drizzle-orm";
+import { and, eq, sql, asc, desc, inArray, lte } from "drizzle-orm";
 import { dbRead, dbWrite, type DBTransaction } from "../db/client.js";
-import { pages, userCounters, userInventory, userPageProgress, userStoryAnchors } from "../db/schema.js";
-import { getConsumable } from "../config/consumables.js";
+import { pages, userConsumableEffects, userCounters, userInventory, userPageProgress, userStoryAnchors } from "../db/schema.js";
+import { getConsumable, DANGER_SIGHT_DURATION_SECONDS } from "../config/consumables.js";
 import { executeWithCredits } from "./credits.js";
 import type { InventoryItemType } from "../types/consumable.js";
 
 const MEGAPHONE: InventoryItemType = "megaphone";
+const DANGER_SIGHT: InventoryItemType = "item_danger_sight";
+
+/**
+ * Every consumable activation/spend error returned to the client carries a
+ * `code` that is exactly the i18n key suffix the frontend resolves under
+ * `consumables.errors` (mirrors `BROADCAST_ERROR_CODES`). The English `error`
+ * string in the envelope is a dev-facing / last-resort fallback only.
+ * Keeping the vocabulary a const-derived union guarantees the constructor can
+ * only ever emit a known code, so server and i18n catalog cannot drift.
+ */
+export const CONSUMABLE_ERROR_CODES = [
+  "consumables.alreadyActive",
+  "consumables.noneLeft",
+] as const;
+
+export type ConsumableErrorCode = (typeof CONSUMABLE_ERROR_CODES)[number];
+
+/** Code-driven consumable error; mapped to HTTP by the route. */
+export class ConsumableError extends Error {
+  public readonly code: ConsumableErrorCode;
+
+  constructor(code: ConsumableErrorCode, message: string) {
+    super(message);
+    this.code = code;
+    this.name = "ConsumableError";
+  }
+}
+
+/** Shared Danger Sight payload for activate + status responses. */
+export interface DangerSightStatus {
+  active: boolean;
+  expiresAt: string | null;
+  /** Server-authoritative seconds left; the client derives its countdown from this. */
+  remainingSeconds: number;
+}
+
+export interface DangerSightActivationResult extends DangerSightStatus {
+  /** Inventory left after the deduct — lets callers update their count without a refetch. */
+  remainingItems: number;
+}
+
+function toDangerSightStatus(expiresAt: Date | null): DangerSightStatus {
+  const remainingMs = expiresAt ? expiresAt.getTime() - Date.now() : 0;
+  const remainingSeconds = Math.max(0, Math.floor(remainingMs / 1000));
+  return {
+    active: remainingSeconds > 0,
+    expiresAt: remainingSeconds > 0 && expiresAt ? expiresAt.toISOString() : null,
+    remainingSeconds,
+  };
+}
+
+/**
+ * Reads the account-global Danger Sight buff state (pure read; the effect
+ * row's `expiresAt` is the source of truth — no separate "active" flag to
+ * drift). A missing or past-dated `user_consumable_effects` row reads as
+ * inactive (lazy expiry).
+ */
+export async function getDangerSightStatus(userId: string): Promise<DangerSightStatus> {
+  const [row] = await dbRead
+    .select({ expiresAt: userConsumableEffects.expiresAt })
+    .from(userConsumableEffects)
+    .where(
+      and(
+        eq(userConsumableEffects.userId, userId),
+        eq(userConsumableEffects.itemType, DANGER_SIGHT),
+      ),
+    )
+    .limit(1);
+  return toDangerSightStatus(row?.expiresAt ?? null);
+}
+
+/**
+ * Activates 1 Danger Sight: atomically claims the user's
+ * `(user_id, item_type)` row in `user_consumable_effects` via
+ * `ON CONFLICT … WHERE expires_at <= now` (zero returned rows ⇒ a window is
+ * still live ⇒ `409 alreadyActive` — no stacking, no `users` row lock), then
+ * deducts 1 `item_danger_sight`, all in one transaction. A rollback on the
+ * deduct also reverts the claim, so the effect row and inventory can never
+ * diverge.
+ *
+ * @throws {ConsumableError} `consumables.alreadyActive` when the buff is live,
+ *   `consumables.noneLeft` when the user owns zero lenses.
+ */
+export async function activateDangerSight(userId: string): Promise<DangerSightActivationResult> {
+  const owned = await getUserItemCount(userId, DANGER_SIGHT);
+  if (owned < 1) {
+    throw new ConsumableError("consumables.noneLeft", "You have no Danger Sight lenses to activate.");
+  }
+
+  return dbWrite.transaction(async (tx) => {
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + DANGER_SIGHT_DURATION_SECONDS * 1000);
+
+    const [effect] = await tx
+      .insert(userConsumableEffects)
+      .values({
+        userId,
+        itemType: DANGER_SIGHT,
+        activatedAt: now,
+        expiresAt,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [userConsumableEffects.userId, userConsumableEffects.itemType],
+        set: { activatedAt: now, expiresAt, updatedAt: now },
+        where: lte(userConsumableEffects.expiresAt, now),
+      })
+      .returning({ expiresAt: userConsumableEffects.expiresAt });
+
+    if (!effect) {
+      throw new ConsumableError("consumables.alreadyActive", "Danger Sight is already active.");
+    }
+
+    const remainingItems = await deductUserItem(tx, userId, DANGER_SIGHT, 1);
+
+    return { ...toDangerSightStatus(effect.expiresAt), remainingItems };
+  });
+}
 
 /**
  * Returns the user's owned quantity of a consumable item (0 when unowned).

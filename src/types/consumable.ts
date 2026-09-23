@@ -17,6 +17,7 @@ export type InventoryItemType =
   | "item_divergence_compass"
   | "item_memory_anchor"
   | "item_resonance_prism"
+  | "item_danger_sight"
   | "item_curator_quill"
   // Scribe Vault Dual-Gated Frames (Step 10 Pillar 3)
   | "cyber_grid"

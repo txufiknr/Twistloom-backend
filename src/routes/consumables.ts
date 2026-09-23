@@ -23,7 +23,17 @@ import type { AppEnv } from "../hono/env.js";
 import { requireAuth } from "../middleware/nextauth.js";
 import { rateLimit } from "../middleware/rate-limit.js";
 import { cApiError, cValidationError } from "../utils/error.js";
-import { purchaseConsumableBatch, getUserItemCount, checkDivergence, dropMemoryAnchor, getStoryAnchors, deleteStoryAnchor } from "../services/consumables.js";
+import {
+  purchaseConsumableBatch,
+  getUserItemCount,
+  checkDivergence,
+  dropMemoryAnchor,
+  getStoryAnchors,
+  deleteStoryAnchor,
+  activateDangerSight,
+  getDangerSightStatus,
+  ConsumableError,
+} from "../services/consumables.js";
 import { CONSUMABLES_REGISTRY, CONSUMABLES_BY_TYPE } from "../config/consumables.js";
 import type { InventoryItemType } from "../types/consumable.js";
 import { CONSUMABLE_PURCHASE_RATE_LIMIT } from "../config/ai-rate-limits.js";
@@ -274,6 +284,68 @@ router.delete("/anchors/:anchorId", requireAuth, async (c) => {
   } catch (error) {
     console.error("[DELETE /api/consumables/anchors/:anchorId] ❌ Error:", error);
     return cApiError(c, "Failed to delete memory anchor", error);
+  }
+});
+
+/**
+ * POST /api/consumables/danger-sight/activate
+ *
+ * Activates 1 Danger Sight: rejects with a code-driven conflict while a
+ * 15-minute window is still running (no stacking / no double-spend), deducts
+ * 1 `item_danger_sight`, and stamps `user_consumable_effects.expires_at`.
+ * Account-global — no `bookId` required (unlike the Resonance Prism).
+ *
+ * The error body is code-driven: the client translates `code` via next-intl
+ * (`consumables.errors.<key>`); the English `error` field is fallback only.
+ *
+ * @route POST /api/consumables/danger-sight/activate
+ * @auth Required
+ * @returns `{ active, expiresAt, remainingSeconds, remainingItems }`
+ */
+router.post(
+  "/danger-sight/activate",
+  requireAuth,
+  rateLimit({
+    windowSeconds: 60,
+    maxRequests: 10,
+    message: "Please wait before activating another Danger Sight.",
+    prefix: "danger-sight-activate",
+  }),
+  async (c) => {
+    try {
+      const userId = c.get("userId")!;
+      const result = await activateDangerSight(userId);
+      return c.json(result);
+    } catch (error) {
+      if (error instanceof ConsumableError) {
+        const status: 400 | 409 = error.code === "consumables.alreadyActive" ? 409 : 400;
+        return c.json({ error: error.message, code: error.code }, status);
+      }
+      console.error("[POST /api/consumables/danger-sight/activate] ❌ Error:", error);
+      return cApiError(c, "Failed to activate Danger Sight", error);
+    }
+  }
+);
+
+/**
+ * GET /api/consumables/danger-sight/status
+ *
+ * Reads the account-global Danger Sight buff window. The client derives its
+ * local countdown from the server-issued `remainingSeconds` — no polling loop,
+ * one `setTimeout` at expiry.
+ *
+ * @route GET /api/consumables/danger-sight/status
+ * @auth Required
+ * @returns `{ active, expiresAt, remainingSeconds }`
+ */
+router.get("/danger-sight/status", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId")!;
+    const result = await getDangerSightStatus(userId);
+    return c.json(result);
+  } catch (error) {
+    console.error("[GET /api/consumables/danger-sight/status] ❌ Error:", error);
+    return cApiError(c, "Failed to get Danger Sight status", error);
   }
 });
 

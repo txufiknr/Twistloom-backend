@@ -70,18 +70,39 @@ export const AI_RATE_LIMITS: Record<AIChatProvider, AIProviderRateLimit> = {
    * | gemini-3.1-pro | Feb 19, 2026 | 2,097,152 tokens | 5 RPM | 100 RPD | Master Novelist: Unparalleled structural memory; catches deep emotional subtext, handles nonlinear plotting, and mimics specific author voices beautifully. |
    * | gemini-2.5-pro | Late 2025 | 2,097,152 tokens | 5 RPM | 100 RPD (Down to 25 RPD on some accounts) | Excellent Wordsmith: Exceptionally deep context tracking; highly descriptive prose but marginally less experimental with its metaphors than 3.1. |
    * | gemma-3-27b-it | Mar 12, 2025 | 131,072 tokens | ~30 RPM | ~1,500 RPD | Unfiltered Creative: Because open-weights lack commercial pipeline restrictions, it writes gritty, incredibly stylistic, and raw short-form narratives. |
+   * | gemini-3.7-flash | Aug 13, 2026 | 1,048,576 tokens | UNDOCUMENTED — see caution below | Google's newest-but-one Flash pick as of this table; benchmarked as a large step up over 3.6 on agentic/long-horizon tasks. gemini-3.8-flash (Sept 2, 2026) is newer still and NOT wired in anywhere in this file. |
+   * | gemini-3.6-flash | Jul 21, 2026 | 1,048,576 tokens | UNDOCUMENTED — see caution below | Currently the primary AI_CHAT_MODELS_WRITING.gemini pick. Google's iteration cadence on this line is now roughly monthly — expect this table to be stale again soon. |
    * | gemini-3.5-flash | May 19, 2026 | 1,048,576 tokens | 10 RPM | 250 RPD | Fast-Paced Action: Strong vocabulary upgrades over 2.5. Best Flash variant for punchy, rapid dialogue generation and high-stakes thriller drafting. |
    * | gemini-3-flash-preview | Dec 17, 2025 | 1,048,576 tokens | 10 RPM | 250 RPD (some sources say 1,500 RPD) | Brainstorming Partner: Highly adaptive for rapid outline prototyping or multi-branch plot development, though raw prose can lean generic. |
    * | gemma-3-4b-it | Mar 12, 2025 | 131,072 tokens | ~30 RPM | ~1,500 RPD | Indie Micro-Fiction: Compact, expressive, and snappy. Highly effective for short fairy tales or quick scene adjustments, though limited by lower absolute logic. |
-   * | gemini-2.5-flash | Mid 2025 | 1,048,576 tokens | 10 RPM | 250 RPD | Basic Co-Writer: Best used as an editor to check grammar or rewrite your blocks of text; struggles to generate thousands of original narrative words without looping. |
+   * | gemini-2.5-flash | Mid 2025 | 1,048,576 tokens | 10 RPM | 250 RPD | Basic Co-Writer: Best used as an editor to check grammar or rewrite your blocks of text; struggles to generate thousands of original narrative words without looping. CAUTION: officially past its published June 17, 2026 shutdown date — see the rate-limit comment below. |
    * | gemini-3.1-flash-lite | May 7, 2026 | 1,048,576 tokens | 15 RPM | 1,000 RPD | World-Building Index: Great for processing high-volume text fast, but write profile is heavily clinical. Best for generation of NPC barks or item lore descriptions. |
-   * | gemini-2.5-flash-lite | Mid 2025 | 1,000,000 tokens | 15 RPM | 1,000 RPD | The Glossary: Lowest creative voice depth; prose is predictable and basic. Perfect strictly for quick character names or background detail tables. |
+   * | gemini-2.5-flash-lite | Mid 2025 | 1,000,000 tokens | 15 RPM | 1,000 RPD | The Glossary: Lowest creative voice depth; prose is predictable and basic. Perfect strictly for quick character names or background detail tables. CAUTION: officially past its published July 22, 2026 shutdown date — see the rate-limit comment below. |
    * 
    * Verify in AI Studio:
    * @see https://console.cloud.google.com/apis/api/generativelanguage.googleapis.com/quotas
    * @see https://aistudio.google.com/rate-limit
    */
-  gemini:     { rpm: 10,  rpd: 250 }, // before: { rpm: 15, rpd: 1_500 },
+  // MAJOR CAUTION added 2026-09-22: every RPM/RPD figure in the table above for the
+  // 3.6/3.7 Flash rows (and arguably the older rows too) should be treated as
+  // unverifiable, not just possibly-stale. As of this table's last confirmed accuracy
+  // (2026-08-04), Google published free-tier RPM/RPD numbers on a docs page; sometime
+  // since, that page (ai.google.dev/gemini-api/docs/rate-limits) was rewritten to cover
+  // only spend-based paid-tier limits — it no longer contains the phrase "free tier" at
+  // all. Free-tier quotas are now undocumented and reportedly vary by project/account
+  // history, discoverable only by deliberately triggering a 429 and reading the quota
+  // value back. Multiple independent sources this month converge on a MUCH lower number
+  // than the 250 RPD below — around 20 RPD for current Flash-generation models (3.6/3.7/
+  // 3.8/3.5), with Flash-Lite models faring better (~500 RPD). That's roughly a 12x cut
+  // from what this config assumes. I can't confirm the exact number for THIS account —
+  // it may genuinely differ — but shipping on the old 250 assumption risks a wall of
+  // unexpected 429s the moment real traffic exceeds ~20/day on the primary Flash model.
+  // Tightened the rpd below to the more conservative, if still unverified, figure; if
+  // real usage shows a different actual ceiling, adjust from measurement, not guesswork,
+  // and treat the whole table above the same way going forward. Also worth doing: query
+  // https://aistudio.google.com/rate-limit directly for this project rather than trusting
+  // any hardcoded number here, including this one.
+  gemini:     { rpm: 10,  rpd: 20 }, // before: { rpm: 10, rpd: 250 }; before that: { rpm: 15, rpd: 1_500 }.
 
   // Trial key: 1,000 calls/month hard cap. No per-day sublimit documented.
   // rpmo (not rpd) gates this correctly — canUseAI() sums across the calendar month.
@@ -487,6 +508,15 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
     // 'gemini-3.1-pro', // Entirely blocked on the free tier. Unrivaled world-building and character memory. It naturally avoids cliché prose, catches subtle subtext, and introduces complex narrative framing.
     // 'gemini-3.1-pro-preview', // Entirely blocked on the free tier.
     // 'gemini-2.5-pro', // No longer available to new users. Strong emotional nuance, handles complex subplots well, and avoids clichés much better than the Flash models. It is highly reactive to complex prompt instructions regarding prose style and meter.
+    // ADDED 2026-09-22: gemini-3.7-flash (launched Aug 13, 2026) — confirmed still
+    // free-tier eligible via AI Studio/the Gemini API as of this month (multiple
+    // independent trackers, one as recent as 4 days old), same as 3.6 below. Placed
+    // ahead of 3.6 as the newer model. NOTE: gemini-3.8-flash exists too (Sept 2, 2026,
+    // also free-tier eligible, reportedly Google's new default in the Gemini app) but
+    // isn't added here — wasn't asked for, and every new model in this family arrives
+    // faster than its real-world fiction-writing quality can be evaluated against the
+    // last one. Worth a deliberate look, not a reflexive add.
+    'gemini-3.7-flash', // Substantial jump over 3.6 on agentic/long-horizon benchmarks per Google's own release notes; fiction-prose quality specifically not yet evaluated against 3.6 below.
     'gemini-3.6-flash', // The latest, highly efficient flagship Flash model.
     'gemini-3.5-flash', // Prose is clean, coherent, and highly adaptable to action, sci-fi, and fast-paced adventure writing.
     'gemini-3-flash-preview', // Vivid and highly descriptive. Phenomenal at sensory world-building.

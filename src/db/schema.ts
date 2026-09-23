@@ -2193,6 +2193,43 @@ export const userInventory = pgTable(
 );
 
 /**
+ * Active account-global consumable effect windows (👁️ Danger Sight today).
+ *
+ * One row per `(user_id, item_type)` encodes the no-stacking rule — the unique
+ * constraint plus an atomic `ON CONFLICT … WHERE expires_at <= now` upsert
+ * rejects live-window re-activation with `409 consumables.alreadyActive`
+ * without ever locking the hot `users` row. `expires_at` is the wall-clock
+ * SSOT: a past-dated row simply reads as inactive (lazy expiry, no cron).
+ * Adding another time-gated buff = new `item_type` + duration constant,
+ * zero schema migration.
+ *
+ * Intentionally NOT on `users` (per-buff column sprawl + false write
+ * contention) and NOT JSONB (effect state is queried/filtered, so it needs
+ * typed columns). Session-scoped counters (🔮 Prism →
+ * `user_sessions.prism_pages_remaining`) and instance placements (⚓ →
+ * `user_story_anchors`) have different lifecycles and stay where they are.
+ */
+export const userConsumableEffects = pgTable(
+  "user_consumable_effects",
+  {
+    id: id(),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    itemType: text("item_type").$type<InventoryItemType>().notNull(),
+    /** When this activation window was (re)claimed. */
+    activatedAt: timestamp("activated_at", { withTimezone: true }).notNull().defaultNow(),
+    /** Wall-clock end of the window; a past value means the effect is inactive. */
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    // One active window per (user, effect) — the no-stacking invariant.
+    unique("user_consumable_effects_user_type_unique").on(t.userId, t.itemType),
+    index("user_consumable_effects_user_idx").on(t.userId),
+  ]
+);
+
+/**
  * User Story Anchors (Memory Anchor exploration consumable).
  * @summary Temporal bookmarks planted at decision forks allowing instant return.
  *   Up to 3 anchors per user per book.

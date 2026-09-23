@@ -80,6 +80,17 @@ export const CONSUMABLES_REGISTRY: ConsumableItemDefinition[] = [
     category: "exploration",
   },
   {
+    type: "item_danger_sight",
+    name: "Danger Sight",
+    description:
+      "A crimson lens attuned to peril. Reveals hazardous-choice indicators on story actions for 15 minutes.",
+    creditsPrice: 40,
+    available: true,
+    accountBound: false,
+    icon: "👁️",
+    category: "exploration",
+  },
+  {
     type: "item_curator_quill",
     name: "Curator's Quill",
     description:
@@ -161,6 +172,19 @@ export const CONSUMABLES_REGISTRY: ConsumableItemDefinition[] = [
     },
   },
 ];
+
+/**
+ * Duration of one Danger Sight activation, in seconds (15 minutes).
+ *
+ * SSOT for the buff window: the registry description mentions "15 minutes",
+ * the `user_consumable_effects.expires_at` row is set to
+ * `now + DANGER_SIGHT_DURATION_SECONDS` at activation, and the client-side
+ * countdown derives from the server-issued remaining seconds — none of them
+ * hardcode the number independently.
+ * Account-global (unlike the page-based Resonance Prism), because the hazard
+ * badge it reveals is presentational only and not tied to a book session.
+ */
+export const DANGER_SIGHT_DURATION_SECONDS = 15 * 60;
 
 /** Fast lookup by `type`. */
 export const CONSUMABLES_BY_TYPE: Record<InventoryItemType, ConsumableItemDefinition> =

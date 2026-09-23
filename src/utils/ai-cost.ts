@@ -119,10 +119,22 @@ const AI_MODEL_COST_OVERRIDES: AICostOverride[] = [
   { match: "gpt-oss-20b", input: 0.075, output: 0.30 }, // FIXED (was 0.01/0.31). Groq-confirmed base rate; $0.0375 is the *cached*-input rate, not the listed rate — don't reintroduce that confusion.
 
   // Gemini tiers — confirmed directly against ai.google.dev/gemini-api/docs/pricing, 2026-08-04. Ordered specific-pattern-first.
+  // CAUTION added 2026-09-22: ai.google.dev/gemini-api/docs/deprecations officially lists
+  // gemini-2.5-flash's shutdown date as June 17, 2026 and gemini-2.5-flash-lite's as
+  // July 22, 2026 — both already past. Google's own release notes (Sept 2026) now say
+  // these models are "not deprecated" after all and will keep being served, but access
+  // is newly restricted to projects that have "actively used them in the past" — new
+  // projects are steered to gemini-3.5-flash-lite or gemini-3.8-flash instead. Prices
+  // below are probably still right if calls are still succeeding, but this generation's
+  // continued availability for THIS account isn't something either file can confirm —
+  // check the AI Studio dashboard for this project, not just whether the below still
+  // compiles.
   { match: "gemini-2.5-flash-lite", input: 0.10, output: 0.40 },
   { match: "gemini-2.5-flash", input: 0.30, output: 2.50 },
   { match: "gemini-3.1-flash-lite", input: 0.25, output: 1.50 }, // NEW — was missing entirely; this model is wired into AI_CHAT_MODELS_IDEA in ai-clients.ts and was silently falling through to the (wrong, higher) generic gemini default.
   { match: "gemini-3.5-flash", input: 1.50, output: 9.00 }, // NEW — same gap as above, for the model referenced in ai-clients.ts's comments as a May 2026 release.
+  { match: "gemini-3.6-flash", input: 0.75, output: 3.75 }, // ADDED 2026-09-22 — was missing entirely; this model is wired into AI_CHAT_MODELS_WRITING.gemini as the primary pick and was silently falling through to the generic gemini default ($0.30/$2.50, priced for 2.5 Flash — badly wrong for this model). Confirmed against Google's own Cloud pricing page (cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing) plus multiple independent trackers: this is Google's current *introductory* rate for 3.6/3.7/3.8 Flash alike, running through Dec 31 2026, then doubling to $1.50/$7.50 on Jan 1 2027 — the standard rate 3.6 Flash actually launched at back in July. Revisit this number after that date.
+  { match: "gemini-3.7-flash", input: 0.75, output: 3.75 }, // ADDED 2026-09-22 — same introductory rate as 3.6 Flash above (same Dec 31 2026 → Jan 1 2027 step-up to $1.50/$7.50). Note: gemini-3.8-flash also exists now (released 2026-09-02, same $0.75/$3.75 rate) and isn't wired into ai-clients.ts at all yet — add its own entry here first if it ever gets added there, don't assume it'll fall through to this or the 3.6 entry correctly.
   { match: "gemini-3-flash", input: 0.50, output: 3.00 }, // FIXED (was 0.30/2.50 — that's 2.5 Flash's price, not 3 Flash's). Matches ai-clients.ts's actual model id, gemini-3-flash-preview.
   // { match: "gemini-2.5-pro", input: 1.25, output: 10.00 }, // Confirmed, ≤200K-token tier (steps up to 2.50/15.00 above 200K — not modeled here, same simplification as before).
   { match: "gemini-3.1-pro", input: 2.00, output: 12.00 }, // FIXED (was 1.25/10.00, which is 2.5 Pro's rate). Confirmed ≤200K tier for gemini-3.1-pro-preview; steps up to 4.00/18.00 above 200K.
