@@ -509,6 +509,10 @@ export interface StreamUsage {
   promptTokens?: number;
   /** Of `promptTokens`, how many were served from a provider-side cache. */
   cachedTokens?: number;
+  /** Completion (output) tokens generated, when the provider reports them. */
+  completionTokens?: number;
+  /** Total tokens (prompt + completion), when the provider reports them. */
+  totalTokens?: number;
   /**
    * Why the generation stopped, as reported by the provider
    * (e.g. `stop`, `length`, `content_filter`, `unknown`).
@@ -530,22 +534,40 @@ export interface StreamUsage {
  */
 export type AIStreamGenerator = AsyncGenerator<string, StreamUsage | void, unknown>;
 
+export type RateLimitGrain = 'aggregate' | 'per-model';
+
 export type AIProviderRateLimit = {
   /** Requests per minute — used by RateLimiter.throttle() for inter-call spacing */
   rpm: number;
   /**
-   * Requests per day — used by canUseAIToday() for daily gate.
+   * Requests per day — used by checkAIQuota() for daily gate.
    * Where multiple models share a provider entry, this reflects the ceiling
    * across all models you'd realistically call; individual models may be lower.
    * The waterfall's 429 handling covers the gap.
    */
   rpd?: number;
   /**
-   * Requests per month — used by canUseAIToday() for monthly gate.
+   * Requests per month — used by checkAIQuota() for monthly gate.
    * Mutually exclusive with rpd in practice: set one or the other,
    * not both, unless the provider genuinely enforces separate daily AND monthly caps.
    */
   rpmo?: number;
+  /**
+   * How the provider partitions quota across models.
+   * `'aggregate'` (default): one shared bucket summed across all models.
+   * `'per-model'`: each model has its own bucket (Gemini, Groq, OVHcloud, ModelScope).
+   */
+  grain?: RateLimitGrain;
+  /** Who the quota attaches to (documentation today; multi-key headroom). */
+  scope?: 'api-key' | 'project' | 'organization';
+  /** Exact per-model ceilings when known (override provider-level rpd/rpmo). */
+  models?: Record<string, { rpm?: number; rpd?: number; rpmo?: number }>;
+  /** Daily token budget for token-metered providers (Cerebras, Aion Labs, LLM7). */
+  tpd?: number;
+  /** Per-minute token ceiling (optional; enforced via RateLimiter spacing). */
+  tpm?: number;
+  /** Window shape. Default: calendar UTC day/month. */
+  window?: 'utc-day' | 'utc-month' | 'provider-cycle';
 };
 
 // Extend the standard OpenAI type to support OpenRouter features

@@ -136,8 +136,28 @@ app.use(
 // Bearer branch first (Step 5): when Authorization: Bearer <mobile JWT> is
 // present (and path is not /api/cron/*), verify + attach userId from the
 // token. When absent, fall through to cookie verification (existing path).
+// Non-Bearer schemes on non-service paths 401 inside bearerAuthMiddleware
+// (no silent cookie fallback). Hybrid requests (bearer + cookie) dual-verify
+// below and 401 when identities conflict.
 app.use("/api/*", bearerAuthMiddleware);
 app.use("/api/*", async (c, next) => {
+  const bearerUserId = c.get("userId");
+  const hasAuthHeader = Boolean(c.req.header("authorization"));
+  const hasSessionCookie = /(?:^|;\s*)(?:__Secure-)?authjs\.session-token=/.test(
+    c.req.header("cookie") ?? "",
+  );
+
+  if (bearerUserId && hasAuthHeader && hasSessionCookie) {
+    // Conflict detection (roadmap Step 5): both credentials present → verify
+    // cookie too; different resolved identities must never silently prefer one.
+    const cookieUser = await verifyNextAuthToken(c);
+    if (cookieUser && cookieUser.id !== bearerUserId) {
+      return c.json({ success: false, error: "Conflicting credentials" }, 401);
+    }
+    await next();
+    return;
+  }
+
   if (c.get("userId")) {
     await next();
     return;

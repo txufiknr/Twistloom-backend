@@ -6,8 +6,18 @@
  * and attaches `userId` / `user` on the Hono context — same shape as the
  * cookie path so `requireAuth` and all routes work unchanged.
  *
- * Cookie path is untouched: when no Authorization header is present, this
- * middleware is a no-op and `verifyNextAuthToken` (cookie) continues to run.
+ * Cookie path is untouched when `Authorization` is **absent**: this middleware
+ * is a no-op and `verifyNextAuthToken` (cookie) continues to run.
+ *
+ * **Intentional hard-401 (no cookie fallback) for non-Bearer schemes:**
+ * a present `Authorization` header on a non-service path that is *not* a
+ * well-formed `Bearer <token>` (e.g. `Basic …`, bare `Bearer`, empty value)
+ * **claims bearer intent** and is rejected with `401 Invalid authorization
+ * scheme` (+ `WWW-Authenticate: Bearer`) — it never silently falls through to
+ * the cookie path. This prevents ambiguous dual-credential identity
+ * (mobile contract: reject mixed mechanisms rather than fall back). In-repo
+ * callers checked 2026-09-23: only `/api/cron/*` reads inbound `Authorization`
+ * (service-bearer exempt below); no known external `Basic`/`Token` clients.
  *
  * Service-bearer exemption: `/api/cron/*` uses `Authorization: Bearer <CRON_SECRET>`
  * (see `src/routes/cron.ts`). Those paths must skip user-JWT verification so
@@ -119,8 +129,11 @@ export async function bearerAuthMiddleware(c: Context, next: Next): Promise<void
 
   const token = extractBearerToken(authHeader);
   if (!token) {
-    await next();
-    return;
+    // Present Authorization on a non-service path but not a well-formed
+    // `Bearer <token>` (e.g. `Basic`, bare `Bearer`) claims bearer intent —
+    // reject with 401 and never fall back to the cookie path.
+    c.header("WWW-Authenticate", "Bearer");
+    return c.json({ success: false, error: "Invalid authorization scheme" }, 401);
   }
 
   // Short-TTL identity cache: skip JWT verify + DB when the same token was

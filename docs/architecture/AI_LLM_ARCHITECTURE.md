@@ -1,6 +1,6 @@
 # Twistloom — AI/LLM Architecture
 
-> **Revision:** v4 — current implementation audit
+> **Revision:** v5 — includes AI Quota Gate Reliability CQS implementation (2026-09-23)
 > **Stack:** TypeScript / Node.js · Next.js · PostgreSQL (Neon) · Redis (Upstash)
 > **Providers:** Gemini, Mistral, OpenRouter, Cerebras, Groq, NVIDIA NIM, Cloudflare, Cohere, OVHcloud, SambaNova, ModelScope, Z.ai, SiliconFlow, Aion Labs, Chutes, LLM7, Inception (18 chat providers + Jina embeddings)
 
@@ -903,13 +903,46 @@ All flow through `logAISuccess`. **Pending:** Surface cache hit rate in streamin
 
 ### Prompt Length Gate
 
-Before each provider attempt, `aiPrompt` validates prompt size:
+Before each provider attempt, `aiPrompt` validates prompt size (length only — quota
+is a separate read-only gate, see below):
 ```ts
 const totalPromptLength = systemPrompt.length + prompt.length + totalDocumentsLength;
 if (totalPromptLength > AI_MAX_PROMPT_LENGTH[provider]) {
   // skip this provider, try next in chain
 }
 ```
+
+### Quota Gate (CQS) — `checkAIQuota` / `admitAIQuota` / `settleAIQuota`
+
+As of the AI Quota Gate Reliability roadmap (2026-09-23), budget enforcement is split
+command–query style in `src/utils/ai-limiters.ts`:
+
+| Command | Side effects | Where |
+|---|---|---|
+| `checkAIQuota(provider, { model, candidateModels })` | None (read-only SQL + cooldown read) | Coarse provider pre-gate (`preGateProviderQuota`) and per-model pre-check in both model loops |
+| `admitAIQuota(provider, { model })` | Lua `INCR`+`EXPIRE`+ceiling (daily / monthly / `tpd`); DB fallback | Per model attempt, before any HTTP call |
+| `settleAIQuota` (alias of `incrementDailyUsageCount`) | Success-only upsert into `usage` | After a good output |
+
+Key properties:
+
+- **Grain-aware:** `grain: 'per-model'` (gemini, groq, ovhcloud, modelscope) sums only the
+  attempted model; `'aggregate'` sums all models. Seeded in `AI_RATE_LIMITS`.
+- **Redis = attempt authority** (`ai:quota-day:*` / `ai:quota-month:*` / `ai:quota-tokens:*`);
+  `usage.requests` stays success-only for analytics (Q4D).
+- **Dual cooldown** (`ai:cooldown:*`): `RATE_LIMITED` → short TTL (Retry-After or 30s);
+  `QUOTA_EXCEEDED` → TTL to UTC midnight. Set on first classified failure in both catch
+  paths and `buildModelRetryConfig.onRetry`; cleared on success.
+- **Tiered fail (Q2):** providers with `rpd ≤ 50` or `tpd` set fail-closed on DB error;
+  high-cap/uncapped fail-open with structured warn.
+- **Stream parity:** `throttle()` moved inside the model loop; stream `StreamUsage` now
+  captures `completionTokens`/`totalTokens` and forwards them to the ledger.
+- **Encapsulation:** internal `*Prompt` helpers are module-private; only `aiPrompt` /
+  `aiStreamSSE` dispatch providers (compile-time gate guarantee).
+
+Full design, open questions, and step-by-step status:
+[`docs/roadmap/AI_QUOTA_GATE_RELIABILITY_ROADMAP.md`](../roadmap/AI_QUOTA_GATE_RELIABILITY_ROADMAP.md)
+and §11 of
+[`docs/architecture/AI_ORCHESTRATION_ARCHITECTURE.md`](./AI_ORCHESTRATION_ARCHITECTURE.md).
 
 ---
 
@@ -1029,8 +1062,10 @@ the user selects an action:
 | File | Responsibility |
 |------|---------------|
 | `utils/prompt.ts` | Prompt building, generation orchestration, config |
-| `utils/ai-chat.ts` | Non-streaming provider abstraction, `aiPrompt` |
-| `utils/ai-chat-stream.ts` | Streaming SSE, `aiStreamSSE` |
+| `utils/ai-chat.ts` | Non-streaming provider abstraction, `aiPrompt`; length-only `assertPromptAllowed`; `preGateProviderQuota` |
+| `utils/ai-chat-stream.ts` | Streaming SSE, `aiStreamSSE`; per-model quota admit + in-loop throttle |
+| `utils/ai-limiters.ts` | CQS quota gate (`checkAIQuota`/`admitAIQuota`/`settleAIQuota`), dual cooldown, `RateLimiter`, `incrementDailyUsageCount` |
+| `config/ai-clients.ts` | `AI_RATE_LIMITS` (grain/scope/tpd/tpm/window) + client getters |
 | `utils/gemini.ts` | Gemini explicit cache (L1 + L2 + Gemini API) |
 | `utils/prompt-telemetry.ts` | TTFT + size + cache hit telemetry |
 | `services/cache.ts` | Redis `getFromCache` / `setCache` / `deleteCache` |

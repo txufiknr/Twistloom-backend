@@ -2,7 +2,7 @@ import type { AIChatProvider, AIDocument, AIJsonEvaluation, AIJsonProperty, AIPr
 import { AI_PROVIDER_API_KEYS, getCerebrasClient, getCloudflareClient, getCohereClient, getGeminiClient, getGroqClient, getInceptionClient, getMistralClient, getOpenRouterClient, getOvhcloudClient, getSambanovaClient, getOllamaClient, getModelscopeClient, getZaiClient, getSiliconflowClient, getAionlabsClient, getChutesClient, getLlm7Client } from "./ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT, EVALUATION_FALLBACK_LIMIT, EVALUATION_SCORING_OUTPUT_TOKEN, MAX_SCHEMA_LENGTH, NVIDIA_REQUEST_TIMEOUT_MS } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_EVALUATION, AI_CHAT_MODELS_WRITING, AI_MAX_PROMPT_LENGTH, AI_MAX_OUTPUT_TOKEN, AI_STREAM_DEFAULT_MODEL } from "../config/ai-clients.js";
-import { canUseAIToday, getRateLimiter, incrementDailyUsageCount } from './ai-limiters.js';
+import { checkAIQuota, admitAIQuota, getRateLimiter, incrementDailyUsageCount, setQuotaCooldown, clearQuotaCooldown } from './ai-limiters.js';
 import { requireEnv } from "./env.js";
 import { PROMPT_SYSTEM } from "./prompt.js";
 import { logAISuccess, logAIFailure, logAIPrompt } from './ai-logger.js';
@@ -72,6 +72,20 @@ async function promptWithFallback<T>(
       break;
     }
 
+    // 3b. Per-model quota gate: read-only check then atomic admit (CQS).
+    // On deny, skip this model WITHOUT burning _fallbackCounter (matches
+    // prompt-length skip behavior) so a healthy sibling model is tried.
+    const check = await checkAIQuota(provider, { model });
+    if (!check.allowed) {
+      console.log(`[${provider}] ⏩ Model ${model} quota denied (${check.reason}), trying next`);
+      continue;
+    }
+    const admit = await admitAIQuota(provider, { model });
+    if (!admit.admitted) {
+      console.log(`[${provider}] ⏩ Model ${model} admit denied (${admit.reason}), trying next`);
+      continue;
+    }
+
     try {
       // Rate limiting: Apply throttling before making API call
       await getRateLimiter(provider).throttle();
@@ -114,7 +128,7 @@ async function promptWithFallback<T>(
         
         // Logging: Log successful AI response
         logAISuccess(aiResponse, requestStartAt);
-        // Usage tracking: Increment daily usage counter with metrics
+        // Usage tracking: settle success-only analytics (attempt already counted at admit)
         await incrementDailyUsageCount(provider, options.context ?? 'ai-prompt', {
           model,
           inputTokens: num(usage?.promptTokens) ?? num(usage?.inputTokens),
@@ -123,6 +137,8 @@ async function promptWithFallback<T>(
           cachedTokens: num(usage?.cachedTokens),
           durationMs,
         });
+        // Clear any stale cooldown — a successful call proves the model is live.
+        await clearQuotaCooldown(provider, model);
         return aiResponse;
       }
 
@@ -132,6 +148,23 @@ async function promptWithFallback<T>(
       // Error handling: Classify error and decide on retry strategy.
       // Retryable errors were already retried by retryWithBackoff within the try block.
       const code = classifyGenAIError(provider, model, error);
+
+      // Dual-tier cooldown (roadmap Step 6): set on FIRST classified failure
+      // so in-loop retries and subsequent models skip immediately.
+      // - RATE_LIMITED  → short TTL (Retry-After or exponential backoff seconds)
+      // - QUOTA_EXCEEDED → TTL to UTC midnight (budget dead for the window)
+      if (code === 'RATE_LIMITED') {
+        const retryAfterHeader = extractRetryAfterSeconds(error);
+        const ttl = retryAfterHeader ?? Math.min(120, 2 ** 2); // 4s default, cap 120s
+        await setQuotaCooldown(provider, model, ttl);
+        console.warn(`[${provider}] Cooldown set for ${model} (RATE_LIMITED, ${ttl}s)`);
+      } else if (code === 'QUOTA_EXCEEDED') {
+        const now = new Date();
+        const nextMidnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+        const ttl = Math.max(1, Math.floor((nextMidnight - now.getTime()) / 1000));
+        await setQuotaCooldown(provider, model, ttl);
+        console.warn(`[${provider}] Cooldown set for ${model} (QUOTA_EXCEEDED, until UTC midnight, ${ttl}s)`);
+      }
 
       // Safety block handling with creative-contextual false-positive detection.
       // When a provider returns a safety block, evaluate whether it's a genuine
@@ -510,8 +543,26 @@ export async function assertPromptAllowed(
   if (totalPromptLength > maxPromptLength) {
     return { allowed: false, reason: `Prompt length (${totalPromptLength.toLocaleString()} chars) exceeds limit (${maxPromptLength.toLocaleString()} chars), skipping` };
   }
-  if (!(await canUseAIToday(provider))) {
-    return { allowed: false, reason: 'Daily request limit reached, skipping' };
+  // NOTE: daily/quota gate is intentionally NOT checked here — it runs per
+  // model attempt inside promptWithFallback / aiStreamSSE (roadmap Step 3).
+  // This function is now length-only so provider entry can't pre-burn quota
+  // or double-check before the model loop's authoritative check+admit.
+  return { allowed: true };
+}
+
+/**
+ * Coarse pre-gate: checks whether the provider has ANY remaining quota for
+ * the models this request may actually try (`candidateModels`). Read-only —
+ * no Redis INCR, no DB write. The authoritative per-attempt check+admit
+ * still runs inside the model loop.
+ */
+export async function preGateProviderQuota(
+  provider: AIChatProvider,
+  candidateModels: readonly string[],
+): Promise<{ allowed: boolean; reason?: string }> {
+  const result = await checkAIQuota(provider, { candidateModels });
+  if (!result.allowed) {
+    return { allowed: false, reason: `Quota exhausted (${result.reason}), skipping provider` };
   }
   return { allowed: true };
 }
@@ -527,9 +578,47 @@ export function buildModelRetryConfig(provider: AIChatProvider, model: string) {
     maxRetries: AI_CHAT_MODEL_RETRY_COUNT,
     shouldRetry: (err: unknown) => isGenAIErrorRetryable(classifyGenAIError(provider, model, err)),
     onRetry: (attempt: number, err: unknown) => {
-      console.warn(`[${provider}] 🔄 Retry ${attempt}/${AI_CHAT_MODEL_RETRY_COUNT} for model ${model}: ${classifyGenAIError(provider, model, err)}`);
+      const code = classifyGenAIError(provider, model, err);
+      console.warn(`[${provider}] 🔄 Retry ${attempt}/${AI_CHAT_MODEL_RETRY_COUNT} for model ${model}: ${code}`);
+      // Set dual-tier cooldown on FIRST retryable failure so the model loop
+      // and subsequent models can skip immediately (Step 6). RATE_LIMITED →
+      // short hold; QUOTA_EXCEEDED is non-retryable so won't reach here, but
+      // the catch path above still handles it for the outer orchestrator.
+      if (code === 'RATE_LIMITED') {
+        void setQuotaCooldown(provider, model, 30);
+      }
     },
   };
+}
+
+/**
+ * Best-effort extraction of Retry-After seconds from a provider error.
+ * Returns undefined when the header/field isn't present or isn't numeric.
+ */
+function extractRetryAfterSeconds(error: unknown): number | undefined {
+  if (error && typeof error === 'object') {
+    const e = error as Record<string, unknown>;
+    const headers = e['headers'] as Record<string, unknown> | undefined;
+    const ra = headers?.['retry-after'] ?? e['retryAfter'] ?? e['retry_after'];
+    if (typeof ra === 'string') {
+      const n = Number(ra);
+      if (Number.isFinite(n) && n > 0) return Math.min(3600, Math.floor(n));
+    }
+    if (typeof ra === 'number' && Number.isFinite(ra) && ra > 0) {
+      return Math.min(3600, Math.floor(ra));
+    }
+    // OpenAI-style error body: { error: { message: '... Retry after 12s' } }
+    const errBody = e['error'] as { message?: string } | undefined;
+    const msg = errBody?.message ?? (typeof e['message'] === 'string' ? e['message'] : undefined);
+    if (msg) {
+      const m = /retry after (\d+)/i.exec(msg);
+      if (m) {
+        const n = Number(m[1]);
+        if (Number.isFinite(n) && n > 0) return Math.min(3600, n);
+      }
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -612,7 +701,7 @@ export function mapCohereDocuments(documents?: AIDocument[]): Cohere.V2ChatReque
  * @param getClient - Singleton client getter (e.g. {@link getOpenRouterClient})
  * @returns A prompt function with the standard `(prompt, options) => Promise<AIResponse<string> | null>` signature
  */
-export function createOpenAICompatiblePrompt(
+function createOpenAICompatiblePrompt(
   provider: AIChatProvider,
   getClient: () => OpenAIClient
 ) {
@@ -667,9 +756,9 @@ export function createOpenAICompatiblePrompt(
 /**
  * @see structured JSON guide - https://developers.openai.com/api/docs/guides/structured-outputs
  */
-export const openrouterPrompt = createOpenAICompatiblePrompt('openrouter', getOpenRouterClient);
-export const cloudflarePrompt = createOpenAICompatiblePrompt('cloudflare', getCloudflareClient);
-export const inceptionPrompt = createOpenAICompatiblePrompt('inception', getInceptionClient);
+const openrouterPrompt = createOpenAICompatiblePrompt('openrouter', getOpenRouterClient);
+const cloudflarePrompt = createOpenAICompatiblePrompt('cloudflare', getCloudflareClient);
+const inceptionPrompt = createOpenAICompatiblePrompt('inception', getInceptionClient);
 
 /**
  * Providers wired 2026-08-13. All 9 are OpenAI Chat Completions–compatible —
@@ -684,15 +773,15 @@ export const inceptionPrompt = createOpenAICompatiblePrompt('inception', getInce
  * SDK appends that itself; the base URL Chutes publishes in its own docs
  * already includes the full path, which would double up if pasted as-is).
  */
-export const ovhcloudPrompt = createOpenAICompatiblePrompt('ovhcloud', getOvhcloudClient);
-export const sambanovaPrompt = createOpenAICompatiblePrompt('sambanova', getSambanovaClient);
-export const ollamaPrompt = createOpenAICompatiblePrompt('ollama', getOllamaClient);
-export const modelscopePrompt = createOpenAICompatiblePrompt('modelscope', getModelscopeClient);
-export const zaiPrompt = createOpenAICompatiblePrompt('zai', getZaiClient);
-export const siliconflowPrompt = createOpenAICompatiblePrompt('siliconflow', getSiliconflowClient);
-export const aionlabsPrompt = createOpenAICompatiblePrompt('aionlabs', getAionlabsClient);
-export const chutesPrompt = createOpenAICompatiblePrompt('chutes', getChutesClient);
-export const llm7Prompt = createOpenAICompatiblePrompt('llm7', getLlm7Client);
+const ovhcloudPrompt = createOpenAICompatiblePrompt('ovhcloud', getOvhcloudClient);
+const sambanovaPrompt = createOpenAICompatiblePrompt('sambanova', getSambanovaClient);
+const ollamaPrompt = createOpenAICompatiblePrompt('ollama', getOllamaClient);
+const modelscopePrompt = createOpenAICompatiblePrompt('modelscope', getModelscopeClient);
+const zaiPrompt = createOpenAICompatiblePrompt('zai', getZaiClient);
+const siliconflowPrompt = createOpenAICompatiblePrompt('siliconflow', getSiliconflowClient);
+const aionlabsPrompt = createOpenAICompatiblePrompt('aionlabs', getAionlabsClient);
+const chutesPrompt = createOpenAICompatiblePrompt('chutes', getChutesClient);
+const llm7Prompt = createOpenAICompatiblePrompt('llm7', getLlm7Client);
 
 /**
  * Sends a prompt to Google Gemini via the `generateContent` API and returns structured output.
@@ -983,7 +1072,7 @@ export async function geminiPromptViaInteractions(
  * @param options.stopSequences - Optional stop sequences (e.g. `['\\n\\n']` for non–Q&A summarization)
  * @returns {@link AIResponse} or `null` if every model fails
  */
-export async function geminiPrompt(
+async function geminiPrompt(
   prompt: string,
   options?: Partial<PromptWithFallbackOptions>
 ): Promise<AIResponse<string> | null> {
@@ -1013,7 +1102,7 @@ export async function geminiPrompt(
  * }
  * ```
  */
-export async function groqPrompt(
+async function groqPrompt(
   prompt: string,
   options?: Partial<PromptWithFallbackOptions>
 ): Promise<AIResponse<string> | null> {
@@ -1097,7 +1186,7 @@ export async function groqPrompt(
  * }
  * ```
  */
-export async function coherePrompt(
+async function coherePrompt(
   prompt: string,
   options?: Partial<PromptWithFallbackOptions>
 ): Promise<AIResponse<string> | null> {
@@ -1171,7 +1260,7 @@ export async function coherePrompt(
  * }
  * ```
  */
-export async function cerebrasPrompt(
+async function cerebrasPrompt(
   prompt: string,
   options?: Partial<PromptWithFallbackOptions>
 ): Promise<AIResponse<string> | null> {
@@ -1241,7 +1330,7 @@ export async function cerebrasPrompt(
  * }
  * ```
  */
-export async function mistralPrompt(
+async function mistralPrompt(
   prompt: string,
   options?: Partial<PromptWithFallbackOptions>
 ): Promise<AIResponse<string> | null> {
@@ -1322,7 +1411,7 @@ export async function mistralPrompt(
  * }
  * ```
  */
-export async function nvidiaPrompt(
+async function nvidiaPrompt(
   prompt: string,
   options?: Partial<PromptWithFallbackOptions>
 ): Promise<AIResponse<string> | null> {
@@ -1496,11 +1585,19 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
       const models = modelSelection[provider];
       if (!models || models.length === 0) continue; // Skip to next provider
 
-      // Validate prompt length (incl. documents) against the provider's max,
-      // and that its daily request budget isn't exhausted.
+      // Validate prompt length (incl. documents) against the provider's max.
       const gate = await assertPromptAllowed(provider, systemPrompt, prompt, documents);
       if (!gate.allowed) {
         console.log(`[${provider}] ⏩ ${gate.reason}`);
+        continue;
+      }
+
+      // Coarse pre-gate: read-only check against THIS request's candidateModels
+      // (not a hardcoded AI_CHAT_MODELS_* preset). Authoritative per-model
+      // check+admit still runs inside promptWithFallback's model loop.
+      const preGate = await preGateProviderQuota(provider, models);
+      if (!preGate.allowed) {
+        console.log(`[${provider}] ⏩ ${preGate.reason}`);
         continue;
       }
 

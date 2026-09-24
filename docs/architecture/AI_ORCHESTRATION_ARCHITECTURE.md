@@ -1,6 +1,6 @@
 # Twistloom — AI Orchestration Architecture
 
-> **Revision:** v3 — updated 2026-08-15 to reflect the Inception diffusion-LLM promotion (was v2, 2026-08-13 DRY refactor + 9-provider wiring pass).
+> **Revision:** v4 — 2026-09-23 AI Quota Gate Reliability CQS (check/admit/settle, dual cooldown, in-loop throttle + per-model gate). Prior: v3 2026-08-15 Inception promotion; v2 2026-08-13 DRY refactor + 9-provider wiring.
 > **Stack:** TypeScript / Node.js (Bun) · Hono · PostgreSQL (Neon) · Redis (Upstash)
 > **Primary sources:** `src/utils/ai-chat.ts` · `src/utils/ai-chat-stream.ts` · `src/types/ai-chat.ts` ·
 > `src/config/ai-chat.ts` · `src/config/ai-clients.ts` · `src/utils/ai-limiters.ts` · `src/utils/ai-clients.ts`
@@ -92,7 +92,7 @@ flowchart TB
 
     AIP -->|recursion for evaluator| AIP
 
-    AIP --> GL["<b>Guard layer</b><br/>prompt-length gate · canUseAIToday ·<br/>schema-complexity gate"]
+    AIP --> GL["<b>Guard layer</b><br/>prompt-length gate · checkAIQuota<br/>(read-only pre-gate) · schema-complexity gate"]
     ISS --> GL
 
     GL --> RL["<b>Rate limiting</b><br/>RateLimiter (queue-serialized)<br/>src/utils/ai-limiters.ts"]
@@ -202,7 +202,7 @@ flowchart LR
 
 | Map | Content | Consumed by |
 |---|---|---|
-| `AI_RATE_LIMITS` | per-provider `{ rpm, rpd?, rpmo? }` (see §11) | `RateLimiter` (rpm), `canUseAIToday` (rpd/rpmo) |
+| `AI_RATE_LIMITS` | per-provider `{ rpm, rpd?, rpmo?, grain?, tpd?, tpm?, window?, … }` (see §11) | `RateLimiter` (rpm), `checkAIQuota`/`admitAIQuota` (rpd/rpmo/tpd) |
 | `AI_MAX_PROMPT_LENGTH` | chars allowed for `systemPrompt + user + documents` (gemini 3.6M down to cloudflare 12K; inception 120K placeholder) | pre-call skip gate in both orchestrators |
 | `AI_MAX_OUTPUT_TOKEN` | optional per-model `max_tokens` **caps** (cohere/groq today) | `getMaxOutputToken()` clamps every request |
 | `AI_STREAM_DEFAULT_MODEL` | fallback model id per provider when a stream gets no `options.models` | stream generators |
@@ -266,8 +266,8 @@ flowchart TD
     Chain -- yes --> Len["promptLen = systemPrompt + prompt + Σ documents"]
     Len --> MaxLen{promptLen ≤ AI_MAX_PROMPT_LENGTH[provider]?}
     MaxLen -- no --> Skip2["⏩ prompt too long — skip"]
-    MaxLen -- yes --> Budget{canUseAIToday(provider)?}
-    Budget -- no --> Skip3["⏩ daily/monthly budget hit — skip"]
+    MaxLen -- yes --> Budget{preGateProviderQuota<br/>checkAIQuota read-only?}
+    Budget -- no --> Skip3["⏩ quota exhausted — skip provider"]
     Budget -- yes --> GemGate{gemini &&<br/>isSchemaTooComplex(schema)?}
     GemGate -- yes --> Skip4["⏩ constrained-decoder too complex — skip"]
     GemGate -- no --> Swtch{switch provider}
@@ -466,11 +466,13 @@ flowchart TD
     Models -- no --> Skip1
     Models -- yes --> Len{promptLen ≤ AI_MAX_PROMPT_LENGTH?}
     Len -- no --> Skip2
-    Len -- yes --> Budget{canUseAIToday?}
+    Len -- yes --> Budget{preGate checkAIQuota?}
     Budget -- no --> Skip3
-    Budget -- yes --> Throttle[getRateLimiter throttle]
-    Throttle --> Mloop{next model}
-    Mloop --> GemGate{gemini && schema complex?}
+    Budget -- yes --> Mloop{next model}
+    Mloop --> ModelGate["checkAIQuota + admitAIQuota<br/>(per-model, before HTTP)"]
+    ModelGate -- denied --> NextModel[continue to next model]
+    ModelGate -- admitted --> Throttle[getRateLimiter throttle]
+    Throttle --> GemGate{gemini && schema complex?}
     GemGate -- yes --> SkipGem
     GemGate -- no --> Setup["retryWithBackoff build generator + first .next()<br/>fresh connection per retry"]
     Setup --> StartEvt[emit start event provider/model]
@@ -483,12 +485,13 @@ flowchart TD
     UsageR --> EndEvt[emit end event]
     EndEvt --> Journal[TTFT telemetry + logAISuccess +<br/>incrementDailyUsageCount(context ?? 'ai-stream-sse')]
     Journal --> Resolve[aiUsed.resolve provider/model + break]
-    Chunk -- mid-stream error --> MidErr[emit error event<br/>continue to next model]
+    Chunk -- mid-stream error --> Cooldown["setQuotaCooldown dual-tier<br/>(RATE_LIMITED short / QUOTA_EXCEEDED → midnight)"]
+    Cooldown --> NextModel[continue to next model]
 ```
 
 **Orchestrator-level fallback trade-offs** (per its docstring): centralized error events, uniform
-`start`/`error` events, DRY across generators, and one throttle per provider — at the cost of a
-slightly heavier control loop.
+`start`/`error` events, DRY across generators, and **per-attempt throttle + quota admit inside the
+model loop** (step 3 of the quota-gate roadmap) — at the cost of a slightly heavier control loop.
 
 Details:
 
@@ -520,6 +523,21 @@ Details:
 
 All throttling lives in `src/utils/ai-limiters.ts` and is shared by chat and embeddings.
 
+The gate is **CQS-split** (Command–Query Separation) as of the AI Quota Gate Reliability
+roadmap (2026-09-23):
+
+| Command | Side effects | Call sites |
+|---|---|---|
+| `checkAIQuota(provider, { model, candidateModels })` | **None** — read-only SQL + cooldown read | `preGateProviderQuota` (provider entry), per-model pre-check in both model loops, `canUseAIToday` wrapper |
+| `admitAIQuota(provider, { model })` | Lua `INCR`+`EXPIRE`+ceiling (daily / monthly / `tpd`); DB `SUM` fallback | Per model attempt inside `promptWithFallback` and `aiStreamSSE` model loops — **before** any HTTP call |
+| `settleAIQuota` (alias of `incrementDailyUsageCount`) | Success-only Postgres upsert into `usage` | After a good output (tokens/duration/analytics SSOT) |
+
+Redis (`ai:quota:*` attempt counters) is the **real-time attempt authority** (Q4D);
+`usage.requests` stays success-only for analytics. Cooldown keys (`ai:cooldown:*`) are
+dual-tier: `RATE_LIMITED` → short TTL (Retry-After or 30s); `QUOTA_EXCEEDED` → TTL to
+UTC midnight, set in both catch paths and in `buildModelRetryConfig.onRetry`, cleared
+on success.
+
 ### 11a. `RateLimiter` — inter-call spacing (RPM)
 
 - `AI_RATE_LIMITS[provider].rpm` is reduced by the **8% safety buffer**
@@ -528,6 +546,8 @@ All throttling lives in `src/utils/ai-limiters.ts` and is shared by chat and emb
 - `throttle()` is **queue-serialized**: each caller chains onto the previous caller's promise, so
   concurrent callers take turns instead of all reading the same `lastCall` and firing together (the
   Phase-2 race fix from the orchestration roadmap).
+- **Placement:** throttle fires **inside the model loop** on both paths (stream moved from
+  provider-level to per-attempt in step 3), matching `promptWithFallback`'s existing spacing.
 
 ```mermaid
 flowchart LR
@@ -536,23 +556,41 @@ flowchart LR
     Q[serialized promise queue] --> Gate[read lastCall<br/>sleep until slot free] --> Fire[["provider API call"]]
 ```
 
-### 11b. `canUseAIToday` — daily / monthly budget (RPD / RPMO)
+### 11b. `checkAIQuota` / `canUseAIToday` — read-only budget gate
 
-- Reads the **`usage` table** (`SUM(requests)` where `date = today` for `rpd`; where the date is in
-  the current calendar month for `rpmo`) and returns `false` (skip) once the ceiling is hit.
-- Providers configured with **neither** (`mistral`, `cerebras`, `nvidia`, `inception`, …) always
-  pass — their real ceilings are token budgets or unverified placeholders, so the 429 handling
-  inside `promptWithFallback`/the stream orchestrator covers the gap.
-- **Fail-safe:** a DB error returns `false` (“block rather than overshoot”).
-- Both orchestrators call it **before** any HTTP round trip (aiPrompt: ai-chat.ts:1199;
-  aiStreamSSE: ai-chat-stream.ts:156).
+- **Grain-dispatched:** `grain: 'aggregate'` sums all models; `grain: 'per-model'` sums only the
+  attempted model (or allows if **any** entry in `candidateModels` remains under ceiling for a
+  coarse pre-gate). Seeded: gemini/groq/ovhcloud/modelscope `per-model`; nvidia and others `aggregate`.
+- Reads the **`usage` table** for `rpd`/`rpmo` ceilings, `total_tokens` for `tpd`, plus any active
+  cooldown key — then returns `{ allowed, reason }` with **zero side effects**.
+- `canUseAIToday(provider)` is a thin boolean wrapper over the read-only check (preserves
+  `src/cron/backfill-embeddings.ts:53` and any external boolean consumer).
+- **Fail-closed vs fail-open (Q2 tiered):** strictly capped providers (`rpd ≤ 50` or `tpd` present)
+  fail-closed on DB error; high-cap / uncapped aggregate providers fail-open with a structured warn.
+- Both orchestrators call a **coarse pre-gate** (`preGateProviderQuota` / inline
+  `checkAIQuota({ candidateModels })`) at provider entry, then the **authoritative per-model
+  `checkAIQuota` + `admitAIQuota`** inside the model loop before every HTTP attempt — a deny
+  there skips to the next model without burning the fallback counter.
+- `window: 'provider-cycle'` (Ollama label) is not evaluated on day gates; RPM throttle still applies.
 
-### 11c. `incrementDailyUsageCount` — the ledger
+### 11c. `admitAIQuota` — atomic reservation (Lua)
+
+Single Lua script per window: `INCR` → set `EXPIRE` when new → ceiling test → `DECR` on
+over-limit, one Upstash round-trip (replaces the two-step `INCR`/`EXPIRE` race). Applied to
+daily (`ai:quota-day:*`), monthly (`ai:quota-month:*`), and token-budget
+(`ai:quota-tokens:*`) keys as applicable. On Redis error, falls back to the same DB `SUM`
+ceiling check as `checkAIQuota` (tiered fail per Q2). Every admit fires `logQuotaDecision`
+(deny structured log + 80% near-limit warn).
+
+### 11d. `incrementDailyUsageCount` / `settleAIQuota` — the ledger
 
 Upserts into `usage (date, provider, model, requests, input_tokens, output_tokens, total_tokens,
-cached_tokens, duration_ms, context)` with
-`ON CONFLICT (date, provider, context, model) DO UPDATE`. This single table feeds
-`canUseAIToday`, the `dev:usage-cache-report` economics script, and cost telemetry.
+cached_tokens, duration_ms, context)` with `ON CONFLICT (date, provider, context, model) DO UPDATE`.
+PK `model` is sanitized to `options.model ?? 'default'` (NOT NULL). Success-only (Q4D): failed
+and 429'd attempts live only in Redis admit counters, never in `usage.requests`. This single
+table feeds `checkAIQuota`'s SQL fallback, the `dev:usage-cache-report` economics script, and
+cost telemetry. Optional index `(date, provider, model)` is defined in `src/db/schema.ts`
+(human migration pending).
 
 ---
 
@@ -675,7 +713,7 @@ flowchart TD
 
 | Old doc item | Was described as | Current state |
 |---|---|---|
-| ORCH Phase 1 — `canUseAIToday` was never called | `🔧` dead code | ✅ Wired in **both** orchestrators (ai-chat.ts:1199, ai-chat-stream.ts:156) |
+| ORCH Phase 1 — `canUseAIToday` was never called | `🔧` dead code | ✅ Read-only `checkAIQuota` + `canUseAIToday` wrapper wired in **both** orchestrators, with authoritative per-model `checkAIQuota`+`admitAIQuota` inside each model loop (quota-gate roadmap, 2026-09-23) |
 | ORCH Phase 2 — `RateLimiter` concurrency race | `🔧` race | ✅ Queue-serialized `throttle()` |
 | ORCH Phase 3 — OpenAI-compatible factory | `📋` proposed | ✅ `createOpenAICompatiblePrompt` + `createOpenAICompatibleStreamGenerator`, reused by openrouter/cloudflare/inception |
 | ORCH Phase 4/5 — add OpenRouter + Cloudflare | `📋` proposed | ✅ Live, both streaming + non-streaming |
@@ -749,14 +787,15 @@ drift as the files continue to change.*
 
 | Concern | File | Anchor |
 |---|---|---|
-| Non-streaming orchestrator + core | `src/utils/ai-chat.ts` | `aiPrompt` :1419 · `promptWithFallback` :40 · `createOpenAICompatiblePrompt` :593 · `isSchemaTooComplex` :1692 |
-| DRY helpers (new 2026-08-13) | `src/utils/ai-chat.ts` | `buildChatMessages` · `buildJsonSchemaObject` · `build{OpenAI,Mistral,Cohere}ResponseFormat` · `buildGeminiResponseJsonSchema` · `buildSamplingParams` · `resolveGeminiCachedContent` · `buildGeminiConfig` · `buildMistralPromptCacheKey` · `resolveStreamDefaultModel` · `sumDocumentChars` · `assertPromptAllowed` · `buildModelRetryConfig` · `extractDeltaText` · `nvidiaChatRequest` · `mapCohereDocuments` — all just after `getMaxOutputToken`, exported for `ai-chat-stream.ts` to import |
-| Streaming orchestrator + generators | `src/utils/ai-chat-stream.ts` | `aiStreamSSE` :89 · `createOpenAICompatibleStreamGenerator` :407 · `parseSSEStreamContent` :965 |
-| Types | `src/types/ai-chat.ts` | `AIChatProvider` :11 · `AIResponse` :66 · `AIModelSelection` :93 · `AIPromptOptions` :101 · `PromptWithFallbackOptions` :389 · `StreamUsage`/`AIStreamGenerator` :476/:488 |
-| Sampling config | `src/config/ai-chat.ts` | `AI_CHAT_CONFIG_DEFAULT` :39 · `AI_CHAT_CONFIG_CREATIVE` :58 · `AI_CHAT_MODEL_RETRY_COUNT` :31 |
-| Rate limits / lengths / models | `src/config/ai-clients.ts` | `AI_RATE_LIMITS` :62 · `AI_MAX_PROMPT_LENGTH` :298 · `AI_MAX_OUTPUT_TOKEN` :380 · `AI_STREAM_DEFAULT_MODEL` :404 · model pools :448+ (all include the 9 newer providers as of 2026-08) |
-| Throttling & budget | `src/utils/ai-limiters.ts` | `RateLimiter` :61 · `canUseAIToday` :277 · `incrementDailyUsageCount` :349 · **9 newer providers' limiters not yet added — §17.5** |
-| SDK clients | `src/utils/ai-clients.ts` | getters + `AI_PROVIDER_API_KEYS` :21 · `warmAIProviders` :138 · **9 newer providers' client getters not yet added — §17.5** |
+| Non-streaming orchestrator + core | `src/utils/ai-chat.ts` | `aiPrompt` · `promptWithFallback` · `assertPromptAllowed` (length-only) · `preGateProviderQuota` · `buildModelRetryConfig` · `isSchemaTooComplex` |
+| DRY helpers | `src/utils/ai-chat.ts` | `buildChatMessages` · `buildJsonSchemaObject` · `build{OpenAI,Mistral,Cohere}ResponseFormat` · `buildGeminiResponseJsonSchema` · `buildSamplingParams` · `resolveGeminiCachedContent` · `buildGeminiConfig` · `buildMistralPromptCacheKey` · `resolveStreamDefaultModel` · `sumDocumentChars` · `extractDeltaText` · `nvidiaChatRequest` · `mapCohereDocuments` — exported for `ai-chat-stream.ts` |
+| Provider `*Prompt` helpers | `src/utils/ai-chat.ts` | **Unexported** (module-private) since quota-gate step 4 — only `aiPrompt` dispatches; `geminiPromptViaInteractions` remains exported solely for its documented un-wired testing status |
+| Streaming orchestrator + generators | `src/utils/ai-chat-stream.ts` | `aiStreamSSE` · `createOpenAICompatibleStreamGenerator` · `parseSSEStreamContent` · per-model `checkAIQuota`+`admitAIQuota` + in-loop `throttle` + dual cooldown |
+| Types | `src/types/ai-chat.ts` | `AIChatProvider` · `AIResponse` · `AIModelSelection` · `AIPromptOptions` · `PromptWithFallbackOptions` · `StreamUsage` (+ `completionTokens`/`totalTokens`) / `AIStreamGenerator` · `RateLimitGrain` · `AIProviderRateLimit` |
+| Sampling config | `src/config/ai-chat.ts` | `AI_CHAT_CONFIG_DEFAULT` · `AI_CHAT_CONFIG_CREATIVE` · `AI_CHAT_MODEL_RETRY_COUNT` |
+| Rate limits / lengths / models | `src/config/ai-clients.ts` | `AI_RATE_LIMITS` (grain/scope/tpd/tpm/window seeded) · `AI_MAX_PROMPT_LENGTH` · `AI_MAX_OUTPUT_TOKEN` · `AI_STREAM_DEFAULT_MODEL` · model pools |
+| Throttling & budget (CQS) | `src/utils/ai-limiters.ts` | `RateLimiter` · `checkAIQuota` · `admitAIQuota` (Lua) · `settleAIQuota` · `canUseAIToday` wrapper · `setQuotaCooldown`/`clearQuotaCooldown` · `logQuotaDecision` · `incrementDailyUsageCount` · all provider limiters |
+| SDK clients | `src/utils/ai-clients.ts` | getters + `AI_PROVIDER_API_KEYS` · `warmAIProviders` |
 | Repair pipeline | `src/utils/ai-parser.ts` | `parseAISafely` + `getParseAdherenceStats` |
 | Errors / retry | `src/utils/error.ts` · `src/utils/retry.ts` | `classifyGenAIError` · `retryWithBackoff` |
 | Telemetry | `src/utils/prompt-telemetry.ts` · `src/utils/ai-logger.ts` · `src/utils/ai-cost.ts` | — |

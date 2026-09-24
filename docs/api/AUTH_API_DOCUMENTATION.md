@@ -682,13 +682,14 @@ The `refreshToken` is rotated — the previous secret is invalid immediately. Cl
   { "success": false, "error": "Refresh token invalid (reuse_detected)" }
   ```
   Banned users fail closed inside `evaluateRotation` with `reason: "banned"` — the family is revoked and rotation is refused (never returns a fresh pair for a banned account).
-- `429 Too Many Requests`: IP rate limit exceeded
+- `429 Too Many Requests`: IP rate limit or family-keyed secondary rate limit exceeded
+- **Redis-backed rate limiting** (serverless-safe, AGENTS.md §3.9.C): keyed by **IP** and by **refresh family id** (presented-hash bucket when the token maps to no family)
 - `500 Internal Server Error`: Server error
 
 **Reuse Detection (EQ3=B):** Presenting an already-used refresh secret marks the entire family revoked. All access tokens bound to that family's `tokenVersion` + session become unusable; the user must re-authenticate via `/mobile/token`.
 
 **Security Features:**
-- Redis-backed IP rate limiting
+- Redis-backed rate limiting (IP + family-id)
 - Mandatory rotation on every refresh
 - Family-level revocation on reuse (anti-theft)
 - **Ban fail-closed:** `evaluateRotation` rejects + revokes when `bannedAt` is set
@@ -856,7 +857,7 @@ Cookie: next-auth.session-token=...
 
 ### POST /api/auth/logout-all-devices
 
-Logs out from **all** devices including the current one. Deletes every session for the user, soft-revokes all mobile refresh families (`revokedAt` — session deletes cascade remaining rows; no hard `DELETE` on `refresh_families`), and increments `tokenVersion` on the user record (via `logoutFromAllDevices`), invalidating all existing JWTs and forcing re-login everywhere.
+Logs out from **all** devices including the current one. In **one transaction** (`logoutFromAllDevices`): deletes every session for the user and increments `tokenVersion` on the user record, invalidating all existing JWTs and forcing re-login everywhere. Session deletes hard-delete every bound `refresh_families` row via `ON DELETE CASCADE` (no separate family soft-revoke — a post-delete `revokedAt` update would match zero rows; no hard `DELETE` on `refresh_families` either).
 
 **Authentication:** Required (`requireAuth` — NextAuth JWT cookie **or** `Authorization: Bearer <access-token>`)
 
@@ -884,18 +885,17 @@ Cookie: next-auth.session-token=...
 **Security Features:**
 - Requires authentication via `requireAuth` middleware
 - Deletes ALL sessions belonging to the authenticated user
-- Soft-revokes ALL mobile refresh families for the user (`revokeAllFamiliesForUser` sets `revokedAt`; non-blocking on failure)
+- Session deletes cascade-remove ALL bound `refresh_families` rows (`ON DELETE CASCADE`); no separate family soft-revoke on this path
 - Increments `tokenVersion` to invalidate all existing JWTs
 - Invalidates LRU cache entries for all deleted sessions
 - Audit event: `security_logout_all_devices`
 
 **Database Operations:**
 1. Fetches all session IDs for the user (for cache invalidation)
-2. Deletes all sessions from `auth_sessions` table (cascade hard-deletes bound families)
-3. Soft-revokes any remaining `refresh_families` rows for the user (mobile face; non-critical)
-4. Increments `users.tokenVersion` to revoke all existing JWTs
-5. Invalidates cache entries for all deleted sessions
-6. Audit event: `security_logout_all_devices`
+2. Deletes all sessions from `auth_sessions` table (cascade hard-deletes all bound families)
+3. Increments `users.tokenVersion` to revoke all existing JWTs
+4. Invalidates cache entries for all deleted sessions
+5. Audit event: `security_logout_all_devices`
 
 ---
 
@@ -1379,7 +1379,7 @@ Changes the authenticated user's username.
 - `refresh_families_user_idx` on `userId` for bulk family revocation (logout-all, password change)
 - `refresh_families_session_idx` on `sessionId` for session-scoped family revocation
 
-> **Migration note:** `refresh_families` is schema-only in `src/db/schema.ts`. Run `bun db:generate` / `bun db:migrate` manually after review (AGENTS.md §3.5).
+> **Migration note:** `refresh_families` migration **applied** (`drizzle/0099_wealthy_gamma_corps.sql`, confirmed by owner 2026-09-23). Schema remains authoritative in `src/db/schema.ts`; future schema edits still require manual `bun db:generate` / `bun db:migrate` (AGENTS.md §3.5).
 
 ### Security Features
 
@@ -1406,7 +1406,7 @@ Changes the authenticated user's username.
 - Selective session revocation (logout single device or all devices)
 - `tokenVersion` mechanism for bulk JWT revocation (cookie + bearer)
 - Mobile refresh families: rotating opaque secrets, SHA-256 stored, family-level revocation on reuse
-- Password change / reset / logout-all-devices bump `tokenVersion` + revoke all `refresh_families` in one transaction
+- Password change / reset bump `tokenVersion` + soft-revoke all `refresh_families` in one transaction; logout-all-devices bumps `tokenVersion` + deletes all sessions (cascade removes families) in one transaction
 
 **Bearer Token Security:**
 - HS256 access JWT signed with `MOBILE_ACCESS_SECRET` (≥32 chars, separate from `AUTH_SECRET`)

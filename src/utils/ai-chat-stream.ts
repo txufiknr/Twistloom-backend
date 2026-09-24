@@ -2,10 +2,10 @@ import type { AIChatProvider, AIPromptOptions, AIStreamGenerator, PromptWithFall
 import { getCerebrasClient, getCloudflareClient, getCohereClient, getGeminiClient, getGroqClient, getInceptionClient, getMistralClient, getOpenRouterClient, getOvhcloudClient, getSambanovaClient, getOllamaClient, getModelscopeClient, getZaiClient, getSiliconflowClient, getAionlabsClient, getChutesClient, getLlm7Client } from "./ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_WRITING, AI_STREAM_DEFAULT_MODEL } from "../config/ai-clients.js";
-import { getRateLimiter, incrementDailyUsageCount } from './ai-limiters.js';
+import { getRateLimiter, incrementDailyUsageCount, checkAIQuota, admitAIQuota, setQuotaCooldown, clearQuotaCooldown } from './ai-limiters.js';
 import { PROMPT_SYSTEM } from "./prompt.js";
 import { logAIPrompt, logAISuccess } from './ai-logger.js';
-import { getErrorMessage } from "./error.js";
+import { getErrorMessage, classifyGenAIError } from "./error.js";
 import { retryWithBackoff } from "./retry.js";
 import { createTextChunkEvent, createErrorEvent, createProviderErrorEvent, createStartEvent, createEndEvent, handleBackpressure } from "./sse.js";
 import {
@@ -280,14 +280,19 @@ export async function aiStreamSSE(
             console.log(`[${provider}] ⏩ ${gate.reason}`);
             continue;
           }
+
+          // Coarse pre-gate: read-only check against THIS request's candidateModels.
+          // Authoritative per-model check+admit runs inside the model loop below.
+          const preCheck = await checkAIQuota(provider, { candidateModels: models });
+          if (!preCheck.allowed) {
+            console.log(`[${provider}] ⏩ Quota exhausted (${preCheck.reason}), skipping provider`);
+            continue;
+          }
           
           console.log(`[${provider}] 🧠 Starting SSE streaming task (${models.length} models)...`);
           
           const shouldLogPrompts = logPrompts;
           logAIPrompt(provider, '💬 Built user prompt', prompt, shouldLogPrompts);
-
-          // Apply rate limiting before streaming
-          await getRateLimiter(provider).throttle();
 
           // Try each model in the array for this provider
           for (const model of models) {
@@ -298,6 +303,24 @@ export async function aiStreamSSE(
               controller.close();
               return;
             }
+
+            // Per-model quota gate: read-only check then atomic admit (CQS).
+            // On deny, skip WITHOUT burning retries so a sibling model is tried.
+            const modelCheck = await checkAIQuota(provider, { model });
+            if (!modelCheck.allowed) {
+              console.log(`[${provider}] ⏩ Model ${model} quota denied (${modelCheck.reason}), trying next`);
+              continue;
+            }
+            const modelAdmit = await admitAIQuota(provider, { model });
+            if (!modelAdmit.admitted) {
+              console.log(`[${provider}] ⏩ Model ${model} admit denied (${modelAdmit.reason}), trying next`);
+              continue;
+            }
+
+            // Rate limiting: moved INSIDE the model loop (roadmap Step 3) so
+            // inter-model fallback attempts are spaced, matching non-streaming
+            // promptWithFallback behavior (ai-chat.ts:77).
+            await getRateLimiter(provider).throttle();
 
             const opts: Partial<PromptWithFallbackOptions> = {
               ...options,
@@ -512,13 +535,36 @@ export async function aiStreamSSE(
               await incrementDailyUsageCount(provider, context ?? 'ai-stream-sse', {
                 model,
                 inputTokens: usage?.promptTokens,
+                outputTokens: usage?.completionTokens,
+                totalTokens: usage?.totalTokens,
                 cachedTokens: usage?.cachedTokens,
                 durationMs,
               });
+              // Clear any stale cooldown — a successful stream proves the model is live.
+              await clearQuotaCooldown(provider, model);
               break; // Success - break out of model loop
             } catch (error) {
               console.log(`[${provider}] ⚠️ Model ${model} failed:`, getErrorMessage(error));
               controller.enqueue(encoder.encode(createProviderErrorEvent(`Model ${model} failed: ${getErrorMessage(error)}`)));
+
+              // Dual-tier cooldown on first classified failure (Step 6):
+              // RATE_LIMITED → short hold; QUOTA_EXCEEDED → until UTC midnight.
+              try {
+                const code = classifyGenAIError(provider, model, error);
+                if (code === 'RATE_LIMITED') {
+                  await setQuotaCooldown(provider, model, 30);
+                  console.warn(`[${provider}] Cooldown set for ${model} (RATE_LIMITED, 30s)`);
+                } else if (code === 'QUOTA_EXCEEDED') {
+                  const now = new Date();
+                  const nextMidnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+                  const ttl = Math.max(1, Math.floor((nextMidnight - now.getTime()) / 1000));
+                  await setQuotaCooldown(provider, model, ttl);
+                  console.warn(`[${provider}] Cooldown set for ${model} (QUOTA_EXCEEDED, until UTC midnight, ${ttl}s)`);
+                }
+              } catch {
+                // classification is best-effort; don't mask the original failure
+              }
+
               // Continue to next model in the array
             }
           }
@@ -595,6 +641,8 @@ function createOpenAICompatibleStreamGenerator(
       if (chunk.usage) {
         usageBuilder.setUsage({
           promptTokens: chunk.usage.prompt_tokens,
+          completionTokens: chunk.usage.completion_tokens,
+          totalTokens: chunk.usage.total_tokens,
           cachedTokens: chunk.usage.prompt_tokens_details?.cached_tokens ?? 0,
         });
       }
@@ -683,6 +731,8 @@ async function* geminiStreamGeneratorViaGenerateContent(
     if (chunk.usageMetadata) {
       usageBuilder.setUsage({
         promptTokens: chunk.usageMetadata.promptTokenCount,
+        completionTokens: chunk.usageMetadata.candidatesTokenCount,
+        totalTokens: chunk.usageMetadata.totalTokenCount,
         cachedTokens: chunk.usageMetadata.cachedContentTokenCount,
       });
     }
@@ -786,6 +836,8 @@ export async function* geminiStreamGeneratorViaInteractions(
       if (finalUsage) {
         usageBuilder.setUsage({
           promptTokens: finalUsage.total_input_tokens,
+          completionTokens: finalUsage.total_output_tokens,
+          totalTokens: finalUsage.total_tokens,
           cachedTokens: finalUsage.total_cached_tokens,
         });
       }
@@ -868,6 +920,8 @@ async function* groqStreamGenerator(
     if (chunkUsage) {
       usageBuilder.setUsage({
         promptTokens: chunkUsage.prompt_tokens,
+        completionTokens: chunkUsage.completion_tokens,
+        totalTokens: chunkUsage.total_tokens,
         cachedTokens: chunkUsage.prompt_tokens_details?.cached_tokens ?? 0,
       });
     }
@@ -932,10 +986,11 @@ async function* cohereStreamGenerator(
       // explicitly either, since it flows from response.usage by inference).
       // If your installed cohere-ai version exports a named Usage type,
       // feel free to swap this for it.
-      const chunkUsage = (chunk as { delta?: { usage?: { tokens?: { inputTokens?: number }; cachedTokens?: number } } }).delta?.usage;
+      const chunkUsage = (chunk as { delta?: { usage?: { tokens?: { inputTokens?: number; outputTokens?: number }; cachedTokens?: number } } }).delta?.usage;
       if (chunkUsage) {
         usageBuilder.setUsage({
           promptTokens: chunkUsage.tokens?.inputTokens,
+          completionTokens: chunkUsage.tokens?.outputTokens,
           cachedTokens: chunkUsage.cachedTokens,
         });
       }
@@ -985,8 +1040,12 @@ async function* cerebrasStreamGenerator(
     if ('usage' in chunkTyped && chunkTyped.usage) {
       // Same camelCase-normalization fix as cerebrasPrompt's non-streaming
       // extractUsage (ai-chat.ts) — Cerebras's wire fields are snake_case.
-      const rawUsage = chunkTyped.usage as { prompt_tokens?: number };
-      usageBuilder.setUsage({ promptTokens: rawUsage.prompt_tokens });
+      const rawUsage = chunkTyped.usage as { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+      usageBuilder.setUsage({
+        promptTokens: rawUsage.prompt_tokens,
+        completionTokens: rawUsage.completion_tokens,
+        totalTokens: rawUsage.total_tokens,
+      });
     }
     if ('choices' in chunkTyped) {
       const choices = chunkTyped.choices as Array<Cerebras.ChatCompletion.ChatChunkResponse.Choice> | null;
@@ -1060,9 +1119,13 @@ async function* mistralStreamGenerator(
 
     usageBuilder.setFinishReason(chunk.data.choices?.[0]?.finishReason);
 
-    const chunkUsage = (chunk.data as { usage?: { promptTokens?: number } }).usage;
+    const chunkUsage = (chunk.data as { usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number } }).usage;
     if (chunkUsage) {
-      usageBuilder.setUsage({ promptTokens: chunkUsage.promptTokens });
+      usageBuilder.setUsage({
+        promptTokens: chunkUsage.promptTokens,
+        completionTokens: chunkUsage.completionTokens,
+        totalTokens: chunkUsage.totalTokens,
+      });
     }
   }
 

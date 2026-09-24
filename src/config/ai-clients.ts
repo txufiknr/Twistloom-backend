@@ -102,11 +102,11 @@ export const AI_RATE_LIMITS: Record<AIChatProvider, AIProviderRateLimit> = {
   // and treat the whole table above the same way going forward. Also worth doing: query
   // https://aistudio.google.com/rate-limit directly for this project rather than trusting
   // any hardcoded number here, including this one.
-  gemini:     { rpm: 10,  rpd: 20 }, // before: { rpm: 10, rpd: 250 }; before that: { rpm: 15, rpd: 1_500 }.
+  gemini:     { rpm: 10,  rpd: 20, grain: 'per-model', scope: 'project' }, // before: { rpm: 10, rpd: 250 }; before that: { rpm: 15, rpd: 1_500 }.
 
   // Trial key: 1,000 calls/month hard cap. No per-day sublimit documented.
   // rpmo (not rpd) gates this correctly — canUseAI() sums across the calendar month.
-  cohere:     { rpm: 100, rpmo: 1_000 }, // before: { rpm: 100, rpd: 10_000 },
+  cohere:     { rpm: 100, rpmo: 1_000, scope: 'api-key', window: 'utc-month' }, // before: { rpm: 100, rpd: 10_000 },
 
   // Free "Experiment" tier: ~1 req/sec, ~1B tokens/month.
   // No published request-count daily cap — token budget is the real ceiling,
@@ -119,25 +119,51 @@ export const AI_RATE_LIMITS: Record<AIChatProvider, AIProviderRateLimit> = {
   // openai/gpt-oss-120b, etc.). llama-3.1-8b-instant has 14.4K RPD but is only
   // used as a last-resort volume fallback — setting 14.4K here would let the
   // daily gate stay open long after the primary models are actually exhausted.
-  // Waterfall's 429 handling covers the per-model gap when qwen3-32b (60 RPM)
-  // triggers a 429 on a model that's only rated at 30 RPM.
+  // CONFIRMED 2026-09-22 via console.groq.com/docs/rate-limits (official): Groq's
+  // limits are genuinely per-model (each model has its own RPM/TPM/RPD bucket, and
+  // they vary a lot — e.g. qwen/qwen3.8-27b is capped around 1K RPM while other
+  // models differ) AND scoped at the organization level, not per API key ("Rate
+  // limits apply at the organization level, not individual users" — verbatim from
+  // Groq's docs). So the single flat number below is, structurally, averaging over
+  // several genuinely different per-model ceilings — it's a deliberate
+  // simplification, not a fact about how Groq actually enforces this. (The old
+  // qwen3-32b/60-RPM example this comment used to cite is gone — that model was
+  // deprecated 07/17/26, see AI_CHAT_MODELS_WRITING.groq.)
   // See: https://console.groq.com/settings/limits
-  groq:       { rpm: 60,  rpd: 1_000 }, // before: { rpm: 30, rpd: 14_400 },
+  groq:       { rpm: 60,  rpd: 1_000, grain: 'per-model', scope: 'organization', tpm: 6_000 }, // before: { rpm: 30, rpd: 14_400 },
 
   // 1M tokens/day free; 8,192-token context cap on free tier.
   // At max prompt length (~8K tokens), token budget allows ~125 requests/day —
   // request-count rpd not meaningful here.
   // See: https://cloud.cerebras.ai/platform/org_2ypxv2rc6j554f4f22pntket/models
-  cerebras:   { rpm: 5, rpd: 2_400 },
+  // CAUTION added 2026-09-22: Cerebras's own model-catalog page currently carries a
+  // live notice that free-tier rate limits on zai-glm-4.7 and gpt-oss-120b — both
+  // wired into this waterfall (WRITING/TRANSLATION/EVALUATION) — have been
+  // "temporarily reduced" due to high demand, with no restoration date given.
+  //
+  // INTERIM FIX (roadmap Step 1): rpd 2_400 was a ~16x over-open gate vs the
+  // comment's own "~125–150 requests/day at 1M tokens/day" math. Tightened to a
+  // proxy rpd: 150 so the daily gate actually binds while tpd is not yet active.
+  // tpd: 1_000_000 seeds the real token budget; it only takes effect once
+  // StreamUsage carries completionTokens (Step 10), at which point rpd: 150
+  // should be retired in the same change set to avoid an ungated gap.
+  cerebras:   { rpm: 5, rpd: 150, tpd: 1_000_000 },
 
   // 40 RPM confirmed. RPD unclear: either renewable-rate or finite credit pool
   // depending on account type (see build.nvidia.com usage panel).
   // Omitting rpd until credit model is confirmed for your account.
   //
-  // UPDATED 2026-09-22: this rate figure is unaffected by the model swap
-  // below (same free NIM tier either way) — see AI_CHAT_MODELS_WRITING.nvidia
-  // for why the actual model string changed.
-  nvidia:     { rpm: 40 }, // before: { rpm: 40, rpd: 57_600 },
+  // CONFIRMED 2026-09-22: unlike Gemini and Groq (both genuinely per-model — see
+  // their comments above), NVIDIA NIM's free tier reads as ONE aggregate 40 RPM
+  // bucket shared across every model called with that key — multiple independent
+  // developer reports cite the identical "40 RPM" ceiling regardless of which
+  // specific model (DeepSeek V4, Nemotron Ultra 550B, Nemotron Super 120B, etc.)
+  // they were calling. That means having two models in AI_CHAT_MODELS_WRITING.nvidia
+  // doesn't add throughput the way it might on a per-model provider — it adds a
+  // fallback for quality/availability, but both draw from the same 40-per-minute
+  // pool. The flat per-provider shape below happens to model NVIDIA correctly for
+  // this reason — it would be wrong for Gemini or Groq.
+  nvidia:     { rpm: 40, grain: 'aggregate' }, // before: { rpm: 40, rpd: 57_600 },
 
   // 20 RPM / 1,000 RPD (requires one-time $10 credit top-up; 50 RPD without it).
   openrouter: { rpm: 20,  rpd: 1_000 },
@@ -168,7 +194,8 @@ export const AI_RATE_LIMITS: Record<AIChatProvider, AIProviderRateLimit> = {
   // A 2 RPM/IP anonymous tier also exists (no signup) if you ever need a
   // zero-setup emergency fallback, but 400 RPM authenticated is what you'd
   // actually build the waterfall against.
-  ovhcloud:   { rpm: 400 },
+  // grain: 'per-model' — OVHcloud's own docs state limits are per-project per-model.
+  ovhcloud:   { rpm: 400, grain: 'per-model', scope: 'project' },
 
   // Free tier = automatic whenever no payment method is linked to the
   // account (no opt-in needed, but also easy to accidentally lose by
@@ -192,7 +219,7 @@ export const AI_RATE_LIMITS: Record<AIChatProvider, AIProviderRateLimit> = {
   // failure-rate window on Ollama Cloud in April 2026. Free tier is also
   // restricted to lighter "level 1-2" models — don't route heavy models
   // like the 480B-class coder variants through this entry.
-  ollama:     { rpm: 10,  rpd: 50 },
+  ollama:     { rpm: 10,  rpd: 50, window: 'provider-cycle' },
 
   // 2,000 RPD total across all models, capped at 500 RPD per individual
   // model — using the safer per-model number as the ceiling here, same
@@ -201,7 +228,7 @@ export const AI_RATE_LIMITS: Record<AIChatProvider, AIProviderRateLimit> = {
   // real quota is exhausted). RPM isn't published; 30 is an estimate.
   // Registration may require an Alibaba Cloud account and possibly a
   // Chinese phone number — confirm before depending on this in prod.
-  modelscope: { rpm: 30,  rpd: 500 },
+  modelscope: { rpm: 30,  rpd: 500, grain: 'per-model' },
 
   // GLM-4.7-Flash / GLM-4.5-Flash free tier. Third-party figures disagree
   // sharply — anywhere from "1 concurrent request" to "~1,000 req/day" —
@@ -232,7 +259,7 @@ export const AI_RATE_LIMITS: Record<AIChatProvider, AIProviderRateLimit> = {
   // dark/mature narrative fiction — closest thematic fit to Twistloom of
   // any provider on this list — but commercial-use terms aren't clearly
   // published anywhere, so confirm that directly before leaning on it.
-  aionlabs:   { rpm: 15 },
+  aionlabs:   { rpm: 15, tpd: 20_000 },
 
   // No official ceiling published anywhere found ("no hard cap" per one
   // tracker, which isn't the same as an SLA) — 10 RPM / 200 RPD is an
@@ -271,7 +298,7 @@ export const AI_RATE_LIMITS: Record<AIChatProvider, AIProviderRateLimit> = {
   // describe it as "not recommended for production." Positioned as an
   // absolute last resort in the waterfall below, not a rung you'd expect
   // to hit often.
-  llm7:       { rpm: 60 },
+  llm7:       { rpm: 60, tpd: 1_000_000 },
 
   // Inception Labs Mercury (diffusion LLM). No hard published ceiling found
   // for the platform API — 60 RPM is a conservative placeholder pending the
@@ -432,7 +459,14 @@ export const AI_MAX_OUTPUT_TOKEN: Partial<Record<AIChatProvider, Record<string, 
     // is a hard per-request ceiling distinct from — and unrelated to — the
     // RPM/TPM/TPD rate limits tracked elsewhere; exceeding it errors the
     // request outright rather than truncating.
-    'llama-3.3-70b-versatile': 8192,
+    // FIXED 2026-09-22: llama-3.3-70b-versatile deprecated on Groq 08/16/26 (see
+    // AI_CHAT_MODELS_FAST.groq) — replaced this entry with the models actually wired
+    // in now. gpt-oss-120b/20b figures confirmed via Groq's own model listing;
+    // qwen3.8-27b's 16,384 max-output figure confirmed via Groq-specific trackers
+    // (not yet cross-checked against Groq's own docs page directly).
+    'openai/gpt-oss-120b': 65536,
+    'openai/gpt-oss-20b': 65536,
+    'qwen/qwen3.8-27b': 16384,
   },
 };
 
@@ -443,10 +477,25 @@ export const AI_MAX_OUTPUT_TOKEN: Partial<Record<AIChatProvider, Record<string, 
  * `options.models` array is provided for a provider.
  */
 export const AI_STREAM_DEFAULT_MODEL: Record<AIChatProvider, string> = {
+  // CONFIRMED 2026-09-22, not changed: per the user's own real-world reliability
+  // ranking observed through this waterfall in production — gemini-2.5-flash (#1,
+  // still most reliable), gemini-3-flash-preview, gemini-3.5-flash, gemini-3.6-flash
+  // (least reliable of that set) — 2.5-flash remains the right stream default despite
+  // its shaky documented lifecycle (see the AI_RATE_LIMITS.gemini caution above: it's
+  // officially past its published June 17, 2026 shutdown date, though Google says
+  // still-served for accounts with prior usage history). Real production behavior
+  // outranks a deprecation-docs concern here. gemini-3.7-flash/3.8-flash aren't
+  // factored in — no reliability track record yet, so promoting either over a
+  // confirmed #1 performer would be a guess, not a fix. Revisit once they've actually
+  // been run through the waterfall for a while.
   gemini: 'gemini-2.5-flash',
   cohere: 'command-r-08-2024',
   mistral: 'mistral-large-latest',
-  groq: 'llama-3.3-70b-versatile',
+  // FIXED 2026-09-22: llama-3.3-70b-versatile was deprecated on Groq 08/16/26 (see
+  // AI_CHAT_MODELS_FAST.groq for the full story — this exact stream default was
+  // silently broken for over a month). Replaced with Groq's own official recommended
+  // replacement.
+  groq: 'openai/gpt-oss-120b',
   cerebras: 'gpt-oss-120b',
   // UPDATED 2026-09-22: meta/llama-3.3-70b-instruct retired from NIM
   // 2026-08-26 (see AI_CHAT_MODELS_WRITING.nvidia below for the full story).
@@ -511,12 +560,14 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
     // ADDED 2026-09-22: gemini-3.7-flash (launched Aug 13, 2026) — confirmed still
     // free-tier eligible via AI Studio/the Gemini API as of this month (multiple
     // independent trackers, one as recent as 4 days old), same as 3.6 below. Placed
-    // ahead of 3.6 as the newer model. NOTE: gemini-3.8-flash exists too (Sept 2, 2026,
-    // also free-tier eligible, reportedly Google's new default in the Gemini app) but
-    // isn't added here — wasn't asked for, and every new model in this family arrives
-    // faster than its real-world fiction-writing quality can be evaluated against the
-    // last one. Worth a deliberate look, not a reflexive add.
+    // ahead of 3.6 as the newer model.
     'gemini-3.7-flash', // Substantial jump over 3.6 on agentic/long-horizon benchmarks per Google's own release notes; fiction-prose quality specifically not yet evaluated against 3.6 below.
+    // ADDED 2026-09-22: gemini-3.8-flash (launched Sept 2, 2026) — newest in the
+    // family as of this pass, also free-tier eligible, same $0.75/$3.75 introductory
+    // rate as 3.6/3.7. Reportedly Google's new default model in the consumer Gemini
+    // app. Placed first since "newest" has been the ordering principle for this array
+    // so far; no fiction-specific quality signal on it yet either.
+    'gemini-3.8-flash', // Newest Flash release in this family; agentic/coding gains reported over 3.7, prose quality vs. 3.6/3.7 for this use case not yet evaluated.
     'gemini-3.6-flash', // The latest, highly efficient flagship Flash model.
     'gemini-3.5-flash', // Prose is clean, coherent, and highly adaptable to action, sci-fi, and fast-paced adventure writing.
     'gemini-3-flash-preview', // Vivid and highly descriptive. Phenomenal at sensory world-building.
@@ -535,11 +586,17 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
     'zai-glm-4.7', // 200K tokens. Excellent JSON. Toggleable Reasoning. Fluid dialogue and strong plot pacing. Avoids the rigid, formulaic block-text styling that plagues GPT-OSS-120B. Acts as a powerful middle ground, effectively bridging the gap between the strict structural engineering of GPT-OSS-120B and the creative versatility of Llama-3.3-70B.
   ],
   groq: [
-    // TODO: deprecated Jul 17, 2026
-    'meta-llama/llama-4-scout-17b-16e-instruct', // 10M tokens. Very Good JSON. Retains the signature warmth, emotional nuance, and highly organic dialogue flow that made the Llama-3 series popular, but pairs it with unparalleled long-horizon memory tracking. MoE: excellent for continuity-heavy branching scenes.
-    'qwen/qwen3-32b', // Intricate atmospheric layering; 60 RPM (2x other models).
-
-    'qwen/qwen3.6-27b', // 262K+ tokens (Extendable up to 1M). Excellent JSON. Toggleable Reasoning. Prose leans closer to the structured nature of GPT-OSS-120B. It can write a highly logical mystery plot or complex political intrigue, but its natural dialogue and emotional nuance still won't feel quite as organic or warm as Meta's Llama-3.3.
+    // FIXED 2026-09-22 — confirmed directly against console.groq.com/docs/deprecations
+    // (Groq's own official page): THREE of this array's five entries were already
+    // dead. meta-llama/llama-4-scout-17b-16e-instruct and qwen/qwen3-32b were both
+    // deprecated 07/17/26 (Groq's recommended replacement for both: openai/gpt-oss-120b,
+    // already below). qwen/qwen3.6-27b was deprecated more recently still — 09/14/26,
+    // nine days before this fix — in favor of qwen/qwen3.8-27b, its official
+    // recommended replacement, added below. That's 3 of 5 WRITING.groq entries
+    // silently dead at once; every WRITING call that reached groq first tried three
+    // guaranteed failures before reaching a working model. Removed all three; added
+    // qwen3.8-27b since it's confirmed live with its own cost override (ai-cost.ts).
+    'qwen/qwen3.8-27b', // Confirmed live 2026-09-22, Groq's official successor to qwen3.6-27b: same 131K context, thinking/instruct modes, tool use, JSON mode. No fiction-writing track record yet on Groq specifically.
     'openai/gpt-oss-120b', // 128K tokens. Excellent JSON. Toggleable Reasoning. Sometimes feel "dry," structural, or overly analytical when tasked with creative storytelling. Deepest psychological complexity, best for sustained horror dread.
     'openai/gpt-oss-20b', // Structurally reliable fallback, same OpenAI lineage as 120B.
 
@@ -547,9 +604,7 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
     // openai/gpt-oss-20b ✅ // Strict Mode (strict: true)
     // openai/gpt-oss-120b ✅ // Strict Mode (strict: true)
     // openai/gpt-oss-safeguard-20b ✅ // Best-effort Mode (strict: false)
-    // qwen/qwen3-32b ✅
-    // qwen/qwen3.6-27b ✅
-    // meta-llama/llama-4-scout-17b-16e-instruct ✅ // Best-effort Mode (strict: false)
+    // qwen/qwen3.8-27b ✅
     // llama-3.3-70b-versatile ✅
     // llama-3.1-8b-instant ✅
   ],
@@ -585,7 +640,7 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
 
   // --- New additions (2026-08-04) ---
   ovhcloud: [
-    'Qwen3.6-27B', // 262K+ token context, strong multilingual/structured output[cite: 3].
+    'Qwen3.8-27B', // UPDATED 2026-09-22 — OVHcloud confirmed hosting both Qwen3.6-27B and Qwen3.8-27B live at the same $0.47/$3.19 rate (own catalog, checked directly); 3.8 is newer with no cost tradeoff, so no reason to stay on 3.6 here or in any of this file's other ovhcloud entries. 262K+ token context, strong multilingual/structured output.
     'gpt-oss-120b', // Independent rate-limit pool for reliable capacity[cite: 3].
   ],
   sambanova: [
@@ -655,12 +710,23 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
  */
 export const AI_CHAT_MODELS_FAST: AIModelSelection = {
   groq: [
-    // TODO: deprecated on Aug 16, 2026
-    'llama-3.3-70b-versatile', // Cinematic, fast-paced action, sharp dialogue, proven thriller prose.
-    'llama-3.1-8b-instant', // Fast/punchy action beats, distinct voice for erratic/poetic internal monologue; 14.4K RPD makes it a high-volume last resort.
+    // FIXED 2026-09-22 — confirmed against console.groq.com/docs/deprecations: BOTH
+    // entries below were dead, not just the first one the old TODO flagged.
+    // llama-3.3-70b-versatile and llama-3.1-8b-instant were both deprecated 08/16/26.
+    // That means every FAST-tier call that reached groq first was hitting two
+    // guaranteed failures before falling through to cerebras — this tier's fastest,
+    // lowest-latency provider was 100% non-functional. Replaced with Groq's own
+    // official recommended replacements for each.
+    'openai/gpt-oss-20b', // Groq's official recommended replacement for llama-3.1-8b-instant. Fast, cheap, structurally reliable; no fiction-speed track record on this specific tier yet.
+    'openai/gpt-oss-120b', // Groq's official recommended replacement for llama-3.3-70b-versatile (the other option, qwen/qwen3.8-27b, costs noticeably more per token on Groq — see ai-cost.ts — so kept out of the FAST/cheap tier specifically).
   ],
   cerebras: [
-    // TODO: is it really available now?
+    // RESOLVED 2026-09-22: confirmed still listed on Cerebras's own current Production
+    // Models table (inference-docs.cerebras.ai/models/overview). Their docs do also
+    // carry a "will be deprecated on May 27, 2026" warning banner for it — that date
+    // has already passed with the model still live and still in the production table,
+    // so the warning looks like it was never executed on / never cleaned up rather
+    // than a sign this is about to disappear. Worth a periodic re-check, not urgent.
     'llama3.1-8b', // Fast, punchy — closest in spirit to the old llama-3.3-70b pick.
   ],
   
@@ -672,7 +738,7 @@ export const AI_CHAT_MODELS_FAST: AIModelSelection = {
     'glm-4.5-air', // The 'air' variant is highly optimized for low-latency calls.
   ],
   ovhcloud: [
-    'Qwen3.6-27B', // Reliable throughput against the 400 RPM authenticated ceiling[cite: 3].
+    'Qwen3.8-27B', // UPDATED 2026-09-22 — see AI_CHAT_MODELS_IDEA.ovhcloud for why (3.8 replaces 3.6 at the same price). Reliable throughput against the 400 RPM authenticated ceiling.
   ],
   modelscope: [
     'Qwen/Qwen3.5-27B',
@@ -713,7 +779,7 @@ export const AI_CHAT_MODELS_IDEA: AIModelSelection = {
   ],
   groq: [
     'openai/gpt-oss-20b', // Structurally reliable fallback, same OpenAI lineage as 120B
-    'qwen/qwen3.6-27b',
+    'qwen/qwen3.8-27b', // FIXED 2026-09-22 — qwen/qwen3.6-27b deprecated on Groq 09/14/26; this is Groq's official recommended successor (same context/capabilities).
   ],
   cloudflare: [
     '@cf/mistral/mistral-7b-instruct-v0.1',
@@ -739,7 +805,7 @@ export const AI_CHAT_MODELS_IDEA: AIModelSelection = {
     'MiniMax-M2.7', // Excellent for rapid brainstorming without burning main provider quotas.
   ],
   ovhcloud: [
-    'Qwen3.6-27B', // 400 RPM authenticated pool provides great capacity for ideas[cite: 3].
+    'Qwen3.8-27B', // UPDATED 2026-09-22 — OVHcloud confirmed hosting both 3.6 and 3.8 at the same $0.47/$3.19 rate; 3.8 is newer, no reason to stay on 3.6. 400 RPM authenticated pool provides great capacity for ideas.
   ],
   modelscope: [
     'Qwen/Qwen3.5-27B', // 500 RPD per-model cap makes this a safe brainstorm fallback[cite: 3].
@@ -830,7 +896,11 @@ export const AI_CHAT_MODELS_TRANSLATION: AIModelSelection = {
   ],
   groq: [
     // Best for Continuity and Accuracy. Qwen3.6 is highly literal and accurate. It perfectly captures intricate plot instructions, tracks world-building glossaries, and manages a massive 262K book context effortlessly. Its prose is incredibly polished and clean, though slightly more clinical than GLM-4.7.
-    'qwen/qwen3.6-27b', // Features an elite multilingual vocabulary tokenizer. It processes complex character-based or non-Latin alphabets natively. It preserves its massive 262K native context window even when dealing entirely with translated lore. Incredible, highly precise translator, though it functions more like a masterful "localization machine" rather than a purely poetic writer.
+    // FIXED 2026-09-22 — qwen/qwen3.6-27b deprecated on Groq 09/14/26; swapped to
+    // Groq's official recommended successor, qwen/qwen3.8-27b (same capabilities
+    // this comment describes, per Groq's migration notes — not yet independently
+    // verified for translation quality specifically).
+    'qwen/qwen3.8-27b', // Features an elite multilingual vocabulary tokenizer. It processes complex character-based or non-Latin alphabets natively. It preserves its massive 262K native context window even when dealing entirely with translated lore. Incredible, highly precise translator, though it functions more like a masterful "localization machine" rather than a purely poetic writer.
   ],
   openrouter: [
     'google/gemini-2.5-flash', // Extremely strong prose quality, pacing, emotion, and instruction-following
@@ -860,7 +930,7 @@ export const AI_CHAT_MODELS_TRANSLATION: AIModelSelection = {
     'DeepSeek-V3.2', // Confirmed free tier[cite: 3]; DeepSeek architecture is remarkably strong at multilingual reasoning.
   ],
   ovhcloud: [
-    'Qwen3.6-27B', // Direct path to massive 262K-context Qwen variant[cite: 3].
+    'Qwen3.8-27B', // UPDATED 2026-09-22 — see AI_CHAT_MODELS_IDEA.ovhcloud for why. Direct path to massive 262K-context Qwen variant.
     'gpt-oss-120b', // Same model family already used via groq for translation[cite: 3].
   ],
   modelscope: [
@@ -903,7 +973,7 @@ export const AI_CHAT_MODELS_EVALUATION: AIModelSelection = {
     'openai/gpt-oss-120b', // Superior choice for complex JSON schema adherence and step-by-step reasoning.
     'openai/gpt-oss-safeguard-20b', // Fine-tuned from GPT-OSS, this model helps classify text content based on customizable policies
     'openai/gpt-oss-20b', // Structurally reliable fallback, same OpenAI lineage as 120B
-    'qwen/qwen3.6-27b', // Highly reliable bracket matching and field consistency.
+    'qwen/qwen3.8-27b', // FIXED 2026-09-22 — qwen/qwen3.6-27b deprecated on Groq 09/14/26; Groq's official recommended successor. Highly reliable bracket matching and field consistency (unverified for 3.8 specifically, carried over from the 3.6 assessment).
   ],
   openrouter: [
     'qwen/qwen3-30b-a3b', // Has known tokenization bias during constrained JSON decoding. Creative and imaginative with good character voice variety.
@@ -921,7 +991,7 @@ export const AI_CHAT_MODELS_EVALUATION: AIModelSelection = {
   // --- New additions (2026-08-04) ---
   ovhcloud: [
     'gpt-oss-120b', // A third independent rate-limit pool for schema adherence[cite: 3].
-    'Qwen3.6-27B', // Good throughput and bracket-matching.
+    'Qwen3.8-27B', // UPDATED 2026-09-22 — see AI_CHAT_MODELS_IDEA.ovhcloud for why. Good throughput and bracket-matching.
   ],
   sambanova: [
     'DeepSeek-V3.2', // DeepSeek's reasoning-heavy training translates well to structured-output scoring[cite: 3].

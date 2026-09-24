@@ -19,7 +19,7 @@
  * ```
  */
 
-import { db, type dbWrite } from '../db/client.js';
+import { db, dbWrite } from '../db/client.js';
 import { authSessions, users } from '../db/schema.js';
 import { eq, and, desc, ne, sql } from 'drizzle-orm';
 import { LRUCache } from 'lru-cache';
@@ -231,6 +231,12 @@ export async function logoutFromAllOtherDevices(
 /**
  * Logout from all devices (including current) by deleting every session and
  * incrementing `tokenVersion` to invalidate all existing JWTs.
+ *
+ * Session deletes hard-delete every bound `refresh_families` row via
+ * `ON DELETE CASCADE` (`sessionId` is NOT NULL and session-scoped), so no
+ * separate family soft-revoke is needed — a post-delete `revokedAt` update
+ * would match zero rows. Soft-revoke (`revokeAllFamiliesForUser`) remains
+ * meaningful on paths that do not delete session rows (password change/reset).
  * @param userId - The user ID
  * @returns Total number of sessions deleted
  *
@@ -241,29 +247,29 @@ export async function logoutFromAllOtherDevices(
  * ```
  */
 export async function logoutFromAllDevices(userId: string): Promise<number> {
-  // Get all sessions to invalidate cache
-  const allSessions = await db
+  const sessionIds = await db
     .select({ id: authSessions.id })
     .from(authSessions)
     .where(eq(authSessions.userId, userId));
 
-  // Delete all sessions for this user
-  const result = await db
-    .delete(authSessions)
-    .where(eq(authSessions.userId, userId));
+  const deletedCount = await dbWrite.transaction(async (tx) => {
+    const result = await tx
+      .delete(authSessions)
+      .where(eq(authSessions.userId, userId));
 
-  // Invalidate cache for all deleted sessions
-  for (const session of allSessions) {
+    await tx
+      .update(users)
+      .set({ tokenVersion: sql`${users.tokenVersion} + 1` })
+      .where(eq(users.userId, userId));
+
+    return result.rowCount || 0;
+  });
+
+  for (const session of sessionIds) {
     invalidateSessionCache(session.id);
   }
 
-  // Increment tokenVersion to invalidate all existing JWTs
-  await db
-    .update(users)
-    .set({ tokenVersion: sql`${users.tokenVersion} + 1` })
-    .where(eq(users.userId, userId));
-
-  return result.rowCount || 0;
+  return deletedCount;
 }
 
 /**

@@ -1,6 +1,6 @@
 # Native Mobile Bearer Auth Roadmap
 
-> **Status:** In Progress — backend Steps 2–8 landed & audit-corrected 2026-09-23; local `bun run check` + `bun test` green (66/66); **Step 10 full suite, Step 1 fixtures/owner gates (1/9/11/12), migration apply, and optional Google/mobile-me endpoints remain**
+> **Status:** In Progress — backend Steps 2–8 landed & audit-corrected 2026-09-23; R1–R4 + R11 residual shipped same day (Step 10 suite 22/22, `logoutFromAllDevices` tx, `refresh_families` migration **applied**, family-keyed refresh rate limit, non-Bearer 401 + hybrid conflict 401, DUAL_AUTH Express samples → Hono); local `bun run check` + `bun test` green; **Step 1 fixtures/owner gates (1/9/11/12) and optional Google/mobile-me endpoints remain**
 > **Date:** 2026-09-23 (architecture audit + implementation kickoff + security audit correction, same day)
 > **Owner:** txufiknr
 > **Parent gates:** Flutter [Q5 login/access](../../../Twistloom-flutter/docs/roadmap/TWISTLOOM_FLUTTER_APP_ROADMAP.md) · [Q6 session families](../../../Twistloom-flutter/docs/roadmap/TWISTLOOM_FLUTTER_APP_ROADMAP.md) · [MOBILE_AUTH_CONTRACT](../../../Twistloom-flutter/docs/roadmap/MOBILE_AUTH_CONTRACT.md) · Flutter [CHECKPOINT_02](../../../Twistloom-flutter/docs/checkpoints/CHECKPOINT_02_M0_FEASIBILITY.md) gaps **G-auth-1/2/3/4/5/6**, **A1**, **E1**
@@ -20,11 +20,11 @@
 | 3 | Cookie-regression test baseline + `test` script + CI harness (**pre-bearer gate**) | `P0` | ✅ Done (`bun test` + `.github/workflows/ci.yml` + envelope/logout/cron baseline; **full signed-cookie `requireAuth` cases live in Step 10**) |
 | 4 | Access-token issuance under `/api/auth/*` (email + Google; Apple gated) | `P0` | ✅ Done password path (`POST /api/auth/mobile/token` — ban 403 + atomic txn); **`/mobile/google` + `/mobile/me` not implemented (optional)** |
 | 5 | Bearer verification on the global API middleware path (G-auth-1) | `P0` | ✅ Done (`src/middleware/bearer.ts` + `app.ts` wiring; 15s SHA-256-keyed identity LRU, logout-invalidated) |
-| 6 | Refresh rotation + hashed session-family storage (G-auth-2) | `P0` | ✅ Done code (`POST /api/auth/mobile/refresh` + `refresh_families` schema + SQL `0099`; ban fails closed); **owner must confirm `db:migrate` applied** |
+| 6 | Refresh rotation + hashed session-family storage (G-auth-2) | `P0` | ✅ Done (`POST /api/auth/mobile/refresh` + `refresh_families` schema + SQL `0099` **applied**; ban fails closed; family-keyed secondary rate limit) |
 | 7 | Real revocation: enforce `tokenVersion` + fresh `sid` check (G-auth-4) | `P0` | ✅ Done (bearer `tv`+`sid`; password change/reset bump `tv` + revoke families; ban at issue + refresh); **cookie-path `tv` parity still EQ5** |
-| 8 | Logout / logout-others / logout-all wired for bearer families | `P0` | ✅ Done (cookie body frozen; logout deletes session row; logout-all cascade/soft-revoke); **`logoutFromAllDevices` delete+bump still two statements — see §9 residual** |
+| 8 | Logout / logout-others / logout-all wired for bearer families | `P0` | ✅ Done (cookie body frozen; logout deletes session row; **`logoutFromAllDevices` one transaction**: delete + `tv++`; cascade removes families) |
 | 9 | Apple Sign-in identity verification (or documented exception) | `P1` | ⬜ Planned (gated on parent Q5) |
-| 10 | Integration tests: full suite — cookie regression + bearer/refresh/revocation (G-auth-6) | `P0` | ⏳ Partial (unit + envelope/logout/cron green; **DB-backed bearer/refresh/revocation suite not written**) |
+| 10 | Integration tests: full suite — cookie regression + bearer/refresh/revocation (G-auth-6) | `P0` | ✅ Done local gate (`tests/bearer-auth-matrix.test.ts` 22/22 + baseline/unit green; **staging live capture still Step 11**) |
 | 11 | Wire-contract fixture registration + mobile live auth capture (E1) | `P0` | ⬜ Planned (needs deployed/staging backend + Flutter capture; sibling Flutter contract paths not present in this workspace) |
 | 12 | Pen/app-scoped audiences beyond provisional reader id (G-auth-3) | `P1` | ⬜ Planned (gated on parent Q6) |
 
@@ -47,19 +47,19 @@ The backend is now a **dual-credential** Auth.js cookie + mobile bearer service.
 - CORS already allows `Authorization` (`app.ts`) and **no-Origin** requests — native plumbing ready (Step 2 confirmed; still confirm Flutter HTTP stack sends no `Origin`).
 - Inbound `Authorization` consumers: user bearer (new branch) + static `CRON_SECRET` in `src/routes/cron.ts` (service-bearer registry — NB-2). Workflow/Stripe/Xendit use other headers.
 
-**Still open (not pre-implementation inventory):** Apple login (Step 9), `/mobile/google` + `/mobile/me` (optional), audience enforcement beyond provisional `aud` (Step 12), cookie-path `tv` parity (EQ5), full Step 10 DB integration suite, Step 11 live fixtures, parent Q5/Q6 owner answers.
+**Still open (not pre-implementation inventory):** Apple login (Step 9), `/mobile/google` + `/mobile/me` (optional), audience enforcement beyond provisional `aud` (Step 12), cookie-path `tv` parity (EQ5), Step 11 live fixtures, parent Q5/Q6 owner answers. **Step 10 local matrix is green** (`tests/bearer-auth-matrix.test.ts` 22/22); migration `0099` applied.
 
 ### Pain Points
 
 > **Status note (2026-09-23):** items 1–4 and 7 are **addressed by Steps 4–8** (implementation + audit correction). Remaining pain is product-gate and verification depth, not missing core plumbing.
 
 1. ~~**Flutter cannot authenticate**~~ — **closed:** issue + refresh + bearer verify landed (G-auth-1/2). Flutter integration still needs Step 11 fixtures.
-2. ~~**Revocation is incomplete**~~ — **closed for bearer:** `tv` + fresh `sid` + family revoke + logout session delete; residual = cookie-path `tv` (EQ5) + `logoutFromAllDevices` non-transactional delete/bump.
-3. ~~**Web cookie path must not regress / no tests**~~ — **partially closed:** baseline + CI exist; **full Step 10 suite still pending** (G-auth-6 not fully green).
-4. ~~**Ambiguous identity**~~ — **closed:** invalid bearer + valid cookie → 401; dual-credential conflict → 401.
+2. ~~**Revocation is incomplete**~~ — **closed for bearer:** `tv` + fresh `sid` + family revoke + logout session delete; residual = cookie-path `tv` (EQ5) only (`logoutFromAllDevices` now one transaction).
+3. ~~**Web cookie path must not regress / no tests**~~ — **closed for local gate:** baseline + CI + Step 10 bearer/cookie matrix green; **live staging capture still Step 11** (G-auth-6 evidence for M0).
+4. ~~**Ambiguous identity**~~ — **closed:** invalid bearer + valid cookie → 401; non-Bearer scheme → 401; dual-credential conflict → 401 (`app.ts` hybrid dual-verify).
 5. **Apple / audiences undecided** — G-auth-5 (parent Q5) and G-auth-3 (parent Q6) remain owner product gates.
 6. **Lost refresh response** — EQ3=B (forced re-auth) is the implemented default; **written mobile-product acceptance still required** as Step 1 artifact; EQ3=A is a fast-follow only.
-7. ~~**Serverless rate-limit gap**~~ — **closed for token/refresh:** Redis `checkRateLimit` on `/mobile/token` + `/mobile/refresh` (IP only; **family-id secondary limit not yet added**).
+7. ~~**Serverless rate-limit gap**~~ — **closed for token/refresh:** Redis `checkRateLimit` on `/mobile/token` + `/mobile/refresh` (**IP + family-id** secondary limit).
 
 ### Goal
 
@@ -373,7 +373,7 @@ if (authHeader !== undefined && !isServiceBearerPath(c.req.path)) {
 
 **Effort:** High (shipped)
 
-**Residual:** owner must confirm `bun db:migrate` has been applied in target environments (AGENTS.md §3.5 — agents never run migrations). Refresh rate limit is **IP-only** today; family-id secondary limit from this step is **not yet added**.
+**Residual:** none for migration — `refresh_families` migration **applied** (`drizzle/0099_wealthy_gamma_corps.sql`, owner-confirmed 2026-09-23). Refresh rate limit is **IP + family-id** (Redis `checkRateLimit`; family key via `peekFamilyIdByPresentedHash`, hash-bucket fallback for unknown tokens).
 
 - `POST` refresh: present refresh secret → lookup hash → validate family not revoked/expired and `tv` matches → **atomic rotate** in one Drizzle transaction (invalidate old hash, store new) → new access JWT.
 - **Family/session validation uses a fresh indexed DB read** — never `sessionExists`’s 10-min process-local LRU (`session-manager.ts:39-42`): on serverless, instance A’s delete does not invalidate instance B’s cache, which would accept revoked families cross-instance for up to 10 minutes. If a cache tier is desired, use Redis with a short negative TTL (AGENTS.md §3.2).
@@ -397,7 +397,7 @@ if (authHeader !== undefined && !isServiceBearerPath(c.req.path)) {
 - On **bearer** verify: reject if JWT `tv` ≠ current `users.token_version` **AND** reject if JWT `sid` session row no longer exists (**fresh read**). The `sid` check is what makes **single-device** logout (`logout-session`, `logout-all` others) kill outstanding access tokens — those flows do **not** bump `tv`, so `tv` alone would leave the revoked device valid until `exp`.
 - **Ban enforcement (audit correction):** banned users are rejected at **issue** (`/mobile/token` → 403 `Account banned` before any write) and at **refresh** (`evaluateRotation` fails closed with `reason: "banned"` + family revoke). Bearer verify already rejected banned users; the gap was that a ban could still mint a fresh session+family via mobile login.
 - ~~Password reset and `PUT /password` lack `tv` bump~~ — **fixed:** `resetPassword` and `PUT /password` bump `tokenVersion` + revoke families in one transaction.
-- On logout-all / ban / account deletion: bump `tokenVersion` + revoke families + delete sessions. **Residual:** `logoutFromAllDevices` still runs session-delete and `tv` bump as **two non-transactional statements** (`session-manager.ts:243-267`); route compensates with a separate `revokeAllFamiliesForUser`. **Do not extend this pattern** — fold into one tx in a follow-up (low risk, high correctness value).
+- On logout-all / ban / account deletion: bump `tokenVersion` + revoke families + delete sessions. `logoutFromAllDevices` now folds session-delete and `tv` bump into **one `dbWrite.transaction`** (`session-manager.ts`); session deletes cascade-remove all bound families, so no separate `revokeAllFamiliesForUser` runs on this path (a post-delete soft-revoke would match zero rows). Soft-revoke remains on password change/reset, which do not delete session rows.
 - `sessionExists` remains unsuitable as the verify-path authority (10-min process-local LRU); bearer `sid` check and refresh family validation use fresh reads.
 - **Revocation latency:** fresh `sid` + `tv` reads + **≤15s bearer identity LRU** (SHA-256 token key, logout-invalidated, `CPU_OPTIMIZATIONS_ENABLED`) → single-device/logout-all latency ≈ in-flight + ≤15s warm window on non-logout paths (logout invalidates immediately); ban latency ≤ 5-min process-local ban-cache bound.
 - Optionally later: enforce `tokenVersion` on cookie path for parity — **only after** Step 3 + Step 10 suites are green (EQ5).
@@ -413,7 +413,7 @@ if (authHeader !== undefined && !isServiceBearerPath(c.req.path)) {
 **Effort:** Medium
 
 - `POST /api/auth/logout`: accept **Bearer** (and/or cookie); soft-revoke families for the current `sid` **then hard-delete the session row** via `logoutFromSpecificDevice(userId, sessionId)` (`ON DELETE CASCADE` removes any remaining families); **immediately invalidate** the bearer identity LRU for the presented token (`extractBearerToken` → `invalidateBearerCache`); still invalidate verify cache for cookies. **Idempotent:** invalid/expired/absent credentials still return **200** — logout must not become an oracle for token validity. **Cookie-only requests (success *and* catch path) must keep the exact current body** `{ "message": "Logged out successfully" }` (web `signOut` / NB-3) — no bearer-only fields on this route.
-- `logout-all` / `logout-all-devices`: revoke **all** refresh families + `tokenVersion++` (already present for devices) + delete session rows — **one transaction** (Step 7). **Audit correction:** family cleanup uses a defensive **soft-revoke** (`revokedAt` update) relying on `ON DELETE CASCADE` from session deletes — **no hard `DELETE` of `refresh_families`** (was a two-statement race). Response shape unchanged enough for web.
+- `logout-all` / `logout-all-devices`: revoke **all** refresh families + `tokenVersion++` (already present for devices) + delete session rows — **one transaction** (Step 7). **Audit correction:** family cleanup relies on `ON DELETE CASCADE` from session deletes — **no hard `DELETE` of `refresh_families`** (was a two-statement race). On `logout-all-devices` every session is deleted, so cascade removes all families and no separate soft-revoke runs (a post-delete `revokedAt` update would match zero rows); on `logout-all` (others) a defensive soft-revoke pass covers any orphans while the current session's family remains. Response shape unchanged enough for web.
 - Mobile offline logout: client deletes local secrets; server may not see the call — contract already accepts that; do not claim instant server revocation offline.
 - Emit `logAuditEvent` for bearer logout actions.
 
@@ -477,7 +477,7 @@ if (authHeader !== undefined && !isServiceBearerPath(c.req.path)) {
 - Register real paths, request/response examples, error codes.
 - Mobile captures live issue/refresh/401 fixtures (public GETs already captured; auth still open).
 - Update G-auth-* gap register as each item lands with dated evidence.
-- **Adjacent doc debt (same PR if convenient):** ~~`AUTH_API_DOCUMENTATION.md` currently lists `gender` as required at signup~~ **fixed 2026-09-23** — now marked optional; `DUAL_AUTH_ARCHITECTURE.md` Express-era `req/res` samples remain historical (logout section replaced with real Hono handler) — track residual samples as separate cleanup, not a blocker.
+- **Adjacent doc debt (same PR if convenient):** ~~`AUTH_API_DOCUMENTATION.md` currently lists `gender` as required at signup~~ **fixed 2026-09-23** — now marked optional; ~~`DUAL_AUTH_ARCHITECTURE.md` Express-era `req/res` samples remain historical~~ **fixed 2026-09-23 (R11)** — verify-credentials / signup / forgot-password / reset-password / rate-limit / route-registration samples now real Hono handlers.
 
 **Non-breaking:** Docs + fixtures only.
 
@@ -608,10 +608,12 @@ Options from parent:
 5. ~~**CORS/CSRF already allow native no-Origin + `Authorization`**~~ — **confirmed Step 2**; residual = confirm Flutter sends no `Origin`.
 6. ~~**No JWT library in `package.json`**~~ — **resolved:** `jose` ^6.1.0 direct dependency.
 7. ~~**No `test` script, no CI, zero auth tests**~~ — **resolved for baseline:** script + CI + envelope/logout/cron/JWT/rotation unit tests; full matrix → Step 10.
-8. ~~**`checkRateLimitByIP` is in-memory**~~ — **resolved for token/refresh (Redis IP)**; residual = optional family-id limit on refresh.
+8. ~~**`checkRateLimitByIP` is in-memory**~~ — **resolved:** Redis IP + family-id limits on token/refresh.
 9. ~~**`resetPassword` / `PUT /password` no `tv` bump**~~ — **resolved:** both bump `tv` + revoke families in tx.
-10. **`logoutFromAllDevices` runs session-delete and `tv` bump as two non-transactional statements** — **still open** (`session-manager.ts:243-267`); fold into one transaction in a follow-up; do not extend the pattern.
+10. ~~**`logoutFromAllDevices` runs session-delete and `tv` bump as two non-transactional statements**~~ — **fixed 2026-09-23:** one `dbWrite.transaction` (delete sessions + `tv++`; cascade removes families — no separate soft-revoke, which would match zero rows post-delete); route no longer double-calls revoke.
 11. ~~**Cron `Authorization` would 401 under naive branch**~~ — **resolved:** service-bearer registry exempts `/api/cron/*` (NB-2).
+12. ~~**Non-Bearer `Authorization` silently fell through to cookie path**~~ — **fixed 2026-09-23:** present non-service header that is not `Bearer <token>` → 401 `Invalid authorization scheme`.
+13. ~~**Hybrid dual-credential conflict not dual-verified**~~ — **fixed 2026-09-23:** bearer + session cookie both present → verify cookie too; different identities → 401 `Conflicting credentials`.
 
 ---
 
@@ -619,7 +621,7 @@ Options from parent:
 
 Legend: ✅ Implemented & verified · ⏳ Partial / scoped down · ⬜ Future work · ⏩ Deferred
 
-**Scorecard (2026-09-23):** 7/12 summary items fully done (2–8); 2 partial (1, 10); 3 planned/gated (9, 11, 12). Local gate: `bun run check` clean · `bun test` 66/66.
+**Scorecard (2026-09-23, post R1–R4 + R11):** 9/12 summary items fully done (2–8, 10); 1 partial (1); 3 planned/gated (9, 11, 12). Residual ledger: R1–R4 + R11 ✅ done; R5–R10 open (owner gates / live capture / EQ5). Local gate: `bun run check` clean · `bun test` green (baseline + unit + Step 10 matrix 22/22).
 
 ### Completed
 
@@ -631,37 +633,38 @@ Legend: ✅ Implemented & verified · ⏳ Partial / scoped down · ⬜ Future wo
 - ✅ Non-breaking second pass (2026-09-23) — service-bearer exemption for cron, Twistloom-web evidence table + NB-1…NB-8, opaque/JWT decision framed, logout cookie body frozen.
 - ✅ **Security audit correction pass (2026-09-23, third pass)** — logout deletes session row + invalidates bearer cache; ban at `/mobile/token` (403) and refresh (fail-closed `banned` + family revoke); atomic mobile login transaction; 15s SHA-256-keyed bearer identity LRU (`CPU_OPTIMIZATIONS_ENABLED`); logout-all soft-revoke/cascade (no hard family DELETE); removed dead `revokeFamilyById`/`getActiveFamily`; removed `MOBILE_REFRESH_RECOVERY` from `.env.example`; real envelope + logout-route tests.
 - ✅ Step 2 — CORS/A1 confirmed (no code change required).
-- ✅ Step 3 — `"test": "bun test"`, `.github/workflows/ci.yml`, envelope + real `/logout` + cron baseline + `evaluateRotation` unit matrix (see Step 3 table for deferred signed-cookie cases → Step 10).
+- ✅ Step 3 — `"test": "bun test"`, `.github/workflows/ci.yml`, envelope + real `/logout` + cron baseline + `evaluateRotation` unit matrix.
 - ✅ Step 4 — `POST /api/auth/mobile/token` HS256 + opaque refresh family; Redis IP limit; ban 403 pre-write; atomic session+family transaction; `verify-credentials` untouched.
-- ✅ Step 5 — `src/middleware/bearer.ts` in global auth; `/api/cron/*` service-bearer exemption; `tv` + ban + fresh `sid`; 15s identity LRU with logout invalidation.
-- ✅ Step 6 — `refresh_families` schema + SQL `0099` generated + `POST /api/auth/mobile/refresh` atomic rotate; reuse → family revoke (EQ3=B); ban fails closed in `evaluateRotation`.
+- ✅ Step 5 — `src/middleware/bearer.ts` in global auth; `/api/cron/*` service-bearer exemption; `tv` + ban + fresh `sid`; 15s identity LRU with logout invalidation; **non-Bearer scheme 401**; **hybrid conflict 401**.
+- ✅ Step 6 — `refresh_families` schema + SQL `0099` **applied**; `POST /api/auth/mobile/refresh` atomic rotate; reuse → family revoke (EQ3=B); ban fails closed; **family-keyed Redis secondary limit**.
 - ✅ Step 7 — bearer `tv`/`sid`; `resetPassword` + `PUT /password` bump `tv` + revoke families; ban at issue + refresh.
-- ✅ Step 8 — logout soft-revoke + session delete + cascade + bearer-cache invalidation; logout-all soft-revoke via cascade; cookie body byte-identical on all paths.
+- ✅ Step 8 — logout soft-revoke + session delete + cascade + bearer-cache invalidation; **`logoutFromAllDevices` single transaction** (delete + `tv++`; cascade removes families); cookie body byte-identical on all paths.
+- ✅ Step 10 local gate — `tests/helpers/auth-session.ts` (Auth.js JWE factory plain + secure) + `tests/bearer-auth-matrix.test.ts` (no-auth, cron exempt, non-Bearer 401, forged/expired/wrong-secret 401, valid bearer + userId, sid revoked 401, banned 403, tv mismatch 401, cookie factory round-trip + `getAuthUser` decrypt, NB-4 logout body).
 - ✅ `jose` direct dependency + `MOBILE_ACCESS_SECRET` (+ `_PREVIOUS` dual-secret verify) in code and `.env.example`.
 
 ### In Progress / Residual (real remaining work)
 
 | # | Item | Type | Feasibility now |
 |---|------|------|-----------------|
-| R1 | **Step 10 full integration suite** (signed-cookie factory + global-app bearer/cookie/conflict/revocation matrix) | Engineering · P0 | **High — do next.** Pure test code; no product gate; closes G-auth-6 / M0 gate. |
-| R2 | **Confirm `refresh_families` migration applied** (`drizzle/0099` exists; run `bun db:migrate` in each env) | Owner ops · P0 | **High — minutes.** Blocks nothing in unit tests; blocks production mobile login. |
-| R3 | **`logoutFromAllDevices` → one transaction** (delete sessions + bump `tv` + revoke families) | Engineering · P1 | **High — small PR.** Known pattern; `password-reset`/`PUT /password` already show the tx shape. |
-| R4 | **Refresh family-id rate limit** (IP + family, per Step 6) | Engineering · P2 | **High — small.** Redis `checkRateLimit` already wired on the route. |
+| ~~R1~~ | ~~**Step 10 full integration suite**~~ | Engineering · P0 | **✅ Done 2026-09-23** — `tests/bearer-auth-matrix.test.ts` 22/22 + `tests/helpers/auth-session.ts`. |
+| ~~R2~~ | ~~**Confirm `refresh_families` migration applied**~~ | Owner ops · P0 | **✅ Done 2026-09-23** — owner confirmed `drizzle/0099` applied; AUTH_API + this ledger updated. |
+| ~~R3~~ | ~~**`logoutFromAllDevices` → one transaction**~~ | Engineering · P1 | **✅ Done 2026-09-23** — delete + `tv++` share `dbWrite.transaction`; cascade removes families (no post-delete soft-revoke — would match zero rows). |
+| ~~R4~~ | ~~**Refresh family-id rate limit**~~ | Engineering · P2 | **✅ Done 2026-09-23** — IP + family (or hash-bucket) Redis limits on `/mobile/refresh`. |
 | R5 | **Optional `POST /mobile/google` + `GET /mobile/me`** | Engineering · P1–P2 | **High if Flutter needs them for M0;** otherwise defer. Thin wraps of existing `handleAuth`/claims. |
 | R6 | **Step 1 residual: parent Q5/Q6 answers + written EQ3=B acceptance + wire fixtures** | Owner/product · P0 for 9/11/12 | **Blocked on owner.** Engineering can draft fixture JSON from live routes in parallel. |
 | R7 | **Step 11 E1 live capture** (staging + Flutter) | Cross-team · P0 for M0 exit | **Medium — needs deploy + test credentials.** Backend docs already updated. |
 | R8 | **Step 9 Apple** or written Q5 exception | Gated · P1 | **Blocked on Q5.** If exception: mark ⏩ Skipped same day (Low). If implement: Medium–High. |
 | R9 | **Step 12 pen audiences** or document shared-pair (Q6=B) | Gated · P1 | **Blocked on Q6.** Q6=B → Low (doc only); Q6=A → Medium (enforce `aud`). |
-| R10 | **EQ5 cookie-path `tv` parity** | Engineering after R1 | **Medium — only after Step 10 green.** Web regression risk; keep bearer-only until then. |
-| R11 | **DUAL_AUTH residual Express-era samples** (password/forgot sections still `req`/`res`) | Docs · P2 | **High — mechanical.** Not a blocker. |
+| R10 | **EQ5 cookie-path `tv` parity** | Engineering after R1 | **Medium — Step 10 local gate is green.** Web regression risk; keep bearer-only until EQ5 approved. |
+| ~~R11~~ | ~~**DUAL_AUTH residual Express-era samples**~~ | Docs · P2 | **✅ Done 2026-09-23** — verify-credentials / signup / forgot-password / reset-password samples replaced with real Hono handlers; rate-limit + route registration sections updated (`router.route`, `c.get("userId")`). |
 
 ### Future / Deferred
 
-- ⬜ Steps 1 residual, 9–12 (owner decisions, Apple, full suite completion, fixtures, audiences) — see R1–R11.
+- ⬜ Steps 1 residual, 9, 11–12 (owner decisions, Apple, live fixtures, audiences) — see R5–R10 (R11 docs cleanup done).
 - ⬜ Google mobile token endpoint + `/mobile/me` — backlog until Flutter requests them.
-- ⬜ Cookie-path `tokenVersion` enforcement parity — until Step 10 green and **EQ5** approved.
+- ⬜ Cookie-path `tokenVersion` enforcement parity — until **EQ5** approved (Step 10 local gate already green).
 - ⏩ Biometrics / secure local unlock UI — Flutter post-launch.
 - ⏩ Pen dual audiences — until parent Q6 / **EQ2** decided (Step 12).
 - ⏩ EQ3=A idempotent refresh window — only if mobile product rejects forced re-auth UX.
 
-**Gate:** Do not claim mobile auth integration, M0 exit, or M1 authenticated journeys until **Step 10 full suite** is green in CI and **Step 11 fixtures** exist with dated evidence. Core issue/refresh/verify/logout (Steps 4–8) are implemented; remaining risk is verification depth (R1), migration apply (R2), and owner gates (R6–R9). Owner stop → review → continue applies to further backend work.
+**Gate:** Do not claim mobile auth integration, M0 exit, or M1 authenticated journeys until **Step 11 fixtures** exist with dated evidence (Step 10 local matrix is green in-repo). Core issue/refresh/verify/logout (Steps 4–8) and R1–R4 + R11 are implemented; remaining risk is owner gates (R6–R9), live capture (R7), and optional endpoints (R5). Owner stop → review → continue applies to further backend work.

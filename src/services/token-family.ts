@@ -155,6 +155,26 @@ export async function createRefreshFamily(
 }
 
 /**
+ * Looks up a family id by presented refresh hash (current or already-used)
+ * without mutating state. Used for family-keyed rate limiting before rotate.
+ */
+export async function peekFamilyIdByPresentedHash(
+  presentedHash: string,
+): Promise<string | null> {
+  const [row] = await dbWrite
+    .select({ id: refreshFamilies.id })
+    .from(refreshFamilies)
+    .where(
+      or(
+        eq(refreshFamilies.refreshHash, presentedHash),
+        sql`${refreshFamilies.usedHashes} @> ARRAY[${presentedHash}]`,
+      ),
+    )
+    .limit(1);
+  return row?.id ?? null;
+}
+
+/**
  * Atomically rotates a refresh secret (RFC 9700).
  *
  * Lookup matches either the **current** `refreshHash` or any hash already

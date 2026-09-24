@@ -58,6 +58,9 @@ What every mature multi-platform product converges on:
 │  1) bearerAuthMiddleware (src/middleware/bearer.ts)                       │
 │     - No Authorization header → no-op (cookie path)                      │
 │     - /api/cron/* + Bearer → skip (service-bearer registry)              │
+│     - Non-Bearer scheme (Basic/bare Bearer) on non-service path →         │
+│       **401 Invalid authorization scheme** (intentional; no cookie        │
+│       fallback — present non-Bearer header claims bearer intent)          │
 │     - Bearer <mobile JWT> → 15s identity LRU hit? else jose verify →     │
 │       tv + ban + fresh sid → set (cache key = SHA-256(raw token);        │
 │       CPU_OPTIMIZATIONS_ENABLED; logout → invalidateBearerCache)         │
@@ -79,7 +82,7 @@ What every mature multi-platform product converges on:
 | POST | `/api/auth/mobile/token` | public + **Redis** IP limit | Password → access JWT + refresh family (ban → 403; session+family in **one transaction**) |
 | POST | `/api/auth/mobile/refresh` | public + **Redis** IP limit | Rotate refresh (RFC 9700) + new access; banned → fail closed + family revoke |
 | POST | `/api/auth/logout` | open (sets session) | Cookie body frozen; soft-revoke families + **delete session row** (cascade) + invalidate bearer identity cache |
-| POST | `/api/auth/logout-all-devices` | Bearer/cookie | Bumps `tv` + soft-revokes all families (cascade; no hard family DELETE) |
+| POST | `/api/auth/logout-all-devices` | Bearer/cookie | One tx: deletes all sessions (cascade removes families) + bumps `tv`; no separate family soft-revoke |
 | POST | `/api/auth/logout-session` / logout-all | Bearer/cookie | Session-scoped family revoke; logout-all soft-revokes others via cascade |
 | PUT | `/api/auth/password` | Bearer/cookie | Bumps `tv` + revokes families (credential change) |
 | POST | `/api/auth/reset-password` | token | Same `tv` bump + family revoke |
@@ -93,6 +96,7 @@ What every mature multi-platform product converges on:
 ### Non-breaking guarantees (summary)
 
 - Cookie path unchanged when `Authorization` absent.
+- **Intentional hard-401 (no cookie fallback) for non-Bearer schemes:** a present `Authorization` header on a non-service path that is *not* a well-formed `Bearer <token>` (e.g. `Basic`, bare `Bearer`) claims bearer intent → `401 Invalid authorization scheme` (+ `WWW-Authenticate: Bearer`), never silent cookie fallback. In-repo callers checked 2026-09-23: only `/api/cron/*` reads inbound `Authorization` (service-bearer exempt); no known external `Basic`/`Token` clients. Tested by `tests/bearer-auth-matrix.test.ts`.
 - `verify-credentials` response shape frozen.
 - Logout cookie body byte-identical: `{ "message": "Logged out successfully" }`.
 - `/api/cron/*` `Authorization: Bearer <CRON_SECRET>` never enters user-JWT verify.
@@ -339,7 +343,7 @@ Key Points:
 
 6. **Backend verifies session on subsequent requests:**
    - Backend middleware `verifyNextAuthToken()` validates JWT from cookie
-   - Sets `req.userId` for authenticated requests
+   - Sets `c.get("userId")` for authenticated requests
    - Routes use `requireAuth` or `optionalAuth` middleware
 
 **Google OAuth Login:**
@@ -367,7 +371,7 @@ Key Points:
 3. **Backend receives no session cookie:**
    - On next request, browser doesn't send session cookie
    - Backend middleware detects no valid session
-   - `req.userId` is not set (unauthenticated)
+   - `c.get("userId")` is not set (unauthenticated)
 
 **Backend cleanup (`POST /api/auth/logout`) — implemented, not a placeholder:**
 
@@ -450,48 +454,76 @@ export async function verifyPassword(password: string, hashedPassword: string): 
 
 ### 3. Credential Verification Endpoint
 
-**File: `src/routes/auth.ts`**
+**File: `src/routes/auth.ts`** (real Hono handler, mirrors `POST /verify-credentials`)
 
 Endpoint for NextAuth Credentials provider:
 ```typescript
-router.post('/verify-credentials', async (req, res) => {
-  // Rate limiting (IP-based, 5 attempts/minute)
-  const ip = req.ip || req.socket.remoteAddress || 'unknown'; // FIXED: Use socket.remoteAddress
-  if (!checkRateLimitByIP(ip)) {
-    return res.status(429).json({ error: 'Too many attempts. Please try again later.' });
+router.post('/verify-credentials', async (c) => {
+  try {
+    const ip = getClientIp(c);
+    if (!checkRateLimitByIP(ip)) return cRateLimitError(c);
+
+    const { emailOrUsername, password } = c.get("body");
+
+    if (!emailOrUsername || !password) {
+      return cValidationError(c, 'Email/username and password are required');
+    }
+
+    const userData = await getUserForAuth(emailOrUsername);
+    if (!userData) {
+      return cUnauthorizedError(c, 'Invalid credentials');
+    }
+
+    // Check account lockout
+    const lockoutStatus = await checkAccountLockout(userData.userId);
+    if (lockoutStatus.isLocked) {
+      if (lockoutStatus.remainingTime === undefined) {
+        await resetFailedLoginAttempts(userData.userId);
+        return cRateLimitError(c, 'Account lock state inconsistent. Please try again.');
+      }
+      const minutesRemaining = Math.ceil(lockoutStatus.remainingTime / 60000);
+      return c.json({
+        error: `Account locked. Try again in ${minutesRemaining} minutes.`,
+        lockedUntil: new Date(Date.now() + lockoutStatus.remainingTime).toISOString(),
+      }, 429);
+    }
+
+    if (!userData.passwordHash) {
+      return cUnauthorizedError(c, 'This account uses OAuth login. Please sign in with Google.');
+    }
+
+    const isValid = await verifyPassword(password, userData.passwordHash);
+    if (!isValid) {
+      await recordFailedLogin(userData.userId);
+      return cUnauthorizedError(c, 'Invalid credentials');
+    }
+
+    await resetFailedLoginAttempts(userData.userId);
+
+    // Session row for device tracking — embedded in the JWT by the frontend's
+    // jwt() callback so later requests can be selectively revoked.
+    const sessionId = await createSession(userData.userId);
+
+    // Successful login invalidates any outstanding password-reset tokens.
+    await revokePasswordResetTokens(userData.userId).catch(() => {});
+
+    const access = await resolveAdminAccess(userData.userId);
+
+    // NB-1 success payload shape is frozen — do not add/remove keys here.
+    return c.json({
+      userId: userData.userId,
+      email: userData.email,
+      name: userData.name,
+      username: userData.username,
+      imageUrl: userData.imageUrl,
+      isNewUser: userData.isNewUser,
+      isAdmin: access.isAdmin,
+      sessionId,
+    });
+  } catch (error) {
+    console.error('[POST /api/auth/verify-credentials] ❌ Credential verification error:', error);
+    return cApiError(c, 'Failed to verify credentials', error, 500);
   }
-
-  const { emailOrUsername, password } = req.body;
-
-  // Find user by email or username
-  const user = await dbRead
-    .select({ userId, email, username, name, image, passwordHash })
-    .from(users)
-    .where(or(eq(users.email, emailOrUsername), eq(users.username, emailOrUsername)))
-    .limit(1);
-
-  if (user.length === 0) { // FIXED: Removed redundant null check
-    return res.status(401).json({ error: 'Invalid credentials' });
-  }
-
-  // Check if user has password (OAuth-only users won't have passwordHash)
-  if (!user[0].passwordHash) {
-    return res.status(401).json({ error: 'This account uses OAuth login. Please sign in with Google.' });
-  }
-
-  // Verify password
-  const isValid = await verifyPassword(password, user[0].passwordHash);
-  if (!isValid) {
-    return res.status(401).json({ error: 'Invalid credentials' });
-  }
-
-  // Return user data for NextAuth (exclude passwordHash)
-  res.json({
-    userId: user[0].userId,
-    email: user[0].email,
-    name: user[0].name,
-    image: user[0].image,
-  });
 });
 ```
 
@@ -501,15 +533,29 @@ router.post('/verify-credentials', async (req, res) => {
 
 Two rate limiting strategies:
 
-1. **User-based (authenticated endpoints)**: Uses Upstash Redis, keyed by `req.userId`
-2. **IP-based (unauthenticated endpoints)**: Uses LRU cache, keyed by IP address
+1. **User-based (authenticated endpoints)**: Uses Upstash Redis, keyed by `c.get("userId")` (via `rateLimitByUser`)
+2. **IP-based (unauthenticated endpoints)**: Uses process LRU cache, keyed by IP address (`getClientIp(c)`)
 
 ```typescript
 // For unauthenticated endpoints (login, signup, forgot-password)
+// LRU: max 10,000 entries, TTL = AUTH_RATE_LIMIT_WINDOW_MS (default 60s)
+// Returns true to allow the attempt; false when rate limited (callers emit 429)
 export function checkRateLimitByIP(ip: string): boolean {
-  // LRU cache with max 10,000 entries, 1 minute TTL
-  // Configurable via environment variables
-  // Returns false if rate limited
+  const now = Date.now();
+  const record = ipRateLimitCache.get(ip);
+
+  if (!record || now > record.resetTime) {
+    ipRateLimitCache.set(ip, { count: 1, resetTime: now + IP_RATE_WINDOW });
+    return true;
+  }
+
+  if (record.count >= IP_RATE_LIMIT) {
+    return false; // Rate limited
+  }
+
+  record.count++;
+  ipRateLimitCache.set(ip, record);
+  return true;
 }
 ```
 
@@ -519,12 +565,12 @@ export function checkRateLimitByIP(ip: string): boolean {
 
 ### 5. Route Registration
 
-**File: `src/routes/index.ts`**
+**File: `src/routes/index.ts`** (Hono mounting, not Express `router.use`)
 
 ```typescript
 import authRouter from "./auth.js";
 
-router.use("/auth", authRouter);
+router.route("/auth", authRouter);
 ```
 
 ## Frontend Implementation Required
@@ -697,50 +743,80 @@ AUTH_RATE_LIMIT_WINDOW_MS=60000
 
 ### Backend Signup Endpoint
 
-**File: `src/routes/auth.ts`** (Hono — Express samples elsewhere in this doc are historical)
+**File: `src/routes/auth.ts`** (real Hono handler, mirrors `POST /signup`)
 
 ```typescript
 router.post('/signup', async (c) => {
-  const ip = getClientIp(c);
-  if (!checkRateLimitByIP(ip)) return cRateLimitError(c);
+  try {
+    const ip = getClientIp(c);
+    if (!checkRateLimitByIP(ip)) {
+      return c.json({ error: 'Too many requests. Please try again later.' }, 429);
+    }
 
-  const { email, username, gender, password, receiveEmails, agreedToTerms } = c.get("body");
+    const { password, receiveEmails: _receiveEmails, agreedToTerms, ageConfirmed, referrer } = c.get("body");
+    if (!password) return cValidationError(c, 'Password is required');
+    if (!agreedToTerms) return cValidationError(c, 'You must agree to the terms');
+    if (!ageConfirmed) return cValidationError(c, 'You must confirm you are at least 13 years old');
 
-  if (!email || !username || !password || !gender) {
-    return cValidationError(c, 'Email, username, password, and gender are required');
+    const passwordValidation = validatePasswordStrength(password);
+    if (!passwordValidation.valid) {
+      return c.json({
+        error: 'Password does not meet security requirements',
+        details: passwordValidation.errors,
+      }, 422);
+    }
+
+    const userData = await sanitizeUserData(c.get("body"), { res: c, createNew: true });
+    if (!userData) return;
+
+    if (isTemporaryEmail(userData.email)) {
+      return cValidationError(c, 'Temporary or disposable email addresses are not allowed.', undefined, 422);
+    }
+
+    const passwordHash = await hashPassword(password);
+    const newUser = await dbWrite.transaction(async (tx) => {
+      const [user] = await tx.insert(users).values({
+        userId: generateId(),
+        ...userData,
+        passwordHash,
+        termsAcceptedAt: new Date(),
+        termsVersion: CURRENT_TERMS_VERSION,
+        ageConfirmedAt: new Date(),
+      }).returning();
+      await tx.insert(userAuth).values({ userId: user.userId });
+      return user;
+    });
+
+    const verificationToken = await createEmailVerificationToken(newUser.userId);
+    const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`;
+    const verificationEmailSent = await sendVerificationEmail(
+      newUser.email,
+      verificationUrl,
+      verificationToken,
+      { userId: newUser.userId },
+    );
+
+    let referralApplied = false;
+    if (referrer && typeof referrer === 'string') {
+      referralApplied = await setReferrerForNewUser(c, newUser.userId, referrer, { handleResponse: false });
+    }
+
+    return c.json({
+      userId: newUser.userId,
+      message: verificationEmailSent
+        ? 'Account created. Please check your email to verify your account.'
+        : 'Account created. Verification email failed to send.',
+      verificationEmailSent,
+      referrer,
+      referralApplied,
+    }, 201);
+  } catch (error) {
+    console.error('[signup] ❌ Sign up error:', error);
+    return c.json({
+      message: 'If account was created, please check your email to verify.',
+      verificationEmailSent: false,
+    }, 200);
   }
-
-  if (!agreedToTerms) {
-    return cValidationError(c, 'You must agree to the terms');
-  }
-
-  // Check if email or username already exists
-  const existing = await dbRead
-    .select({ userId: users.userId })
-    .from(users)
-    .where(or(eq(users.email, email), eq(users.username, username)))
-    .limit(1);
-
-  if (existing && existing.length > 0) {
-    return res.status(409).json({ error: 'Email or username already exists' });
-  }
-
-  // Hash password
-  const passwordHash = await hashPassword(password);
-
-  // Create user
-  const newUser = await dbWrite
-    .insert(users)
-    .values({
-      userId: generateId(),
-      email,
-      username,
-      passwordHash,
-      gender,
-    })
-    .returning({ userId: users.userId });
-
-  res.status(201).json({ userId: newUser[0].userId });
 });
 ```
 
@@ -774,44 +850,108 @@ const handleSignup = async (signupData: SignupData) => {
 
 **Backend Forgot-Password Endpoint**
 
-**File: `src/routes/auth.ts`**
+**File: `src/routes/auth.ts`** (real Hono handler, mirrors `POST /forgot-password`)
 
 ```typescript
-router.post('/forgot-password', async (req, res) => {
-  // Rate limiting based on IP address
-  const ip = req.ip || req.socket.remoteAddress || 'unknown';
-  if (!checkRateLimitByIP(ip)) {
-    return res.status(429).json({ error: 'Too many requests. Please try again later.' });
+router.post('/forgot-password', async (c) => {
+  try {
+    const ip = getClientIp(c);
+    if (!checkRateLimitByIP(ip)) {
+      return c.json({ error: 'Too many requests. Please try again later.' }, 429);
+    }
+
+    const { email } = c.get("body");
+
+    if (!email) {
+      return cValidationError(c, 'Email is required');
+    }
+
+    let emailSent = false;
+    const token = await createPasswordResetToken(email);
+
+    if (token) {
+      const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${token}`;
+      emailSent = await sendPasswordResetEmail(email, resetUrl); // locale resolved by email lookup
+    }
+
+    // Always return success — prevents email enumeration
+    return c.json({
+      message: 'Password reset email sent if account exists',
+      emailSent,
+    });
+  } catch (error) {
+    console.error('[forgot] ❌ Forgot password error:', error);
+    // Still return success to prevent email enumeration
+    return c.json({
+      message: 'Password reset email sent if account exists',
+      emailSent: false,
+    });
   }
-
-  const { email } = req.body;
-
-  // Validate input
-  if (!email) {
-    return res.status(400).json({ error: 'Email is required' });
-  }
-
-  // Check if email exists (don't reveal if it doesn't to prevent email enumeration)
-  const user = await dbRead
-    .select({ userId: users.userId, email: users.email })
-    .from(users)
-    .where(eq(users.email, email))
-    .limit(1);
-
-  // If user exists, send password reset email
-  // For now, just return success to prevent email enumeration
-  if (user && user.length > 0) {
-    console.log(`Password reset requested for: ${email}`);
-    // Email sending logic would go here
-    // Example: await sendPasswordResetEmail(email, user[0].userId);
-  }
-
-  // Always return success (prevents email enumeration)
-  res.json({ message: 'Password reset email sent' });
 });
 ```
 
-**Note:** This is a placeholder implementation. The actual email sending logic needs to be implemented with an email service (e.g., Resend, SendGrid).
+**Note:** Email delivery is implemented via `sendPasswordResetEmail` (single-use token, 1h expiry). The success body is returned whether or not the account exists (anti-enumeration).
+
+**Backend Reset-Password Endpoint**
+
+**File: `src/routes/auth.ts`** (real Hono handler, mirrors `POST /reset-password`)
+
+```typescript
+router.post('/reset-password', async (c) => {
+  try {
+    const ip = getClientIp(c);
+    if (!checkRateLimitByIP(ip)) {
+      return c.json({ error: 'Too many requests. Please try again later.' }, 429);
+    }
+
+    const { token, password } = c.get("body");
+
+    if (!token || !password) {
+      return cValidationError(c, 'Token and password are required');
+    }
+
+    const passwordValidation = validatePasswordStrength(password);
+    if (!passwordValidation.valid) {
+      return c.json({
+        error: 'Password does not meet security requirements',
+        details: passwordValidation.errors,
+      }, 422);
+    }
+
+    const userId = await verifyPasswordResetToken(token);
+    if (!userId) {
+      return cValidationError(c, 'Invalid or expired reset token');
+    }
+
+    const success = await resetPassword(token, password);
+    if (!success) {
+      return cValidationError(c, 'Failed to reset password');
+    }
+
+    // Security notification (always on) — non-blocking
+    const [userRow] = await dbRead
+      .select({ email: users.email, name: users.name })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1);
+    if (userRow?.email) {
+      const detailHtml = formatSecurityDetailHtml({
+        at: new Date(),
+        ip,
+        userAgent: c.req.header('user-agent'),
+      });
+      sendEmailSafe('POST /auth/reset-password', () =>
+        sendPasswordChangedEmail(userRow.email, userRow.name || 'there', detailHtml, { userId }),
+      );
+    }
+
+    return c.json({ message: 'Password reset successfully' });
+  } catch (error) {
+    console.error('[reset] ❌ Reset password error:', error);
+    return cApiError(c, 'Failed to reset password', error, 500);
+  }
+});
+```
 
 ### Logout Endpoint
 
@@ -855,7 +995,7 @@ router.post('/logout', async (c) => {
 Related routes:
 
 - **`POST /logout-all`** — soft-revokes other sessions' families via cascade after `logoutFromAllOtherDevices`; no hard `DELETE` on `refresh_families`.
-- **`POST /logout-all-devices`** — bumps `users.tokenVersion`, revokes all families, deletes all sessions (invalidates all outstanding JWTs).
+- **`POST /logout-all-devices`** — **one transaction**: deletes all sessions (cascade removes their families) and bumps `users.tokenVersion` (invalidates all outstanding JWTs). No separate family soft-revoke — a post-delete `revokedAt` update would match zero rows.
 - **`POST /logout-session`** — deletes one session by id + cascades its families.
 
 ## Security Considerations
@@ -969,7 +1109,8 @@ done
 - [x] Implement logout endpoint (session delete + family cascade + bearer cache invalidation, 2026-09-23)
 - [x] Dual credential: mobile token issue/refresh + bearer middleware + family revoke (2026-09-23)
 - [x] Security audit corrections: ban at issue/refresh, atomic mobile login, 15s bearer identity LRU, logout-all cascade/soft-revoke (2026-09-23)
-- [x] `refresh_families` schema (owner still must run migration — AGENTS.md §3.5)
+- [x] `refresh_families` migration **applied** (`drizzle/0099`, owner-confirmed 2026-09-23)
+- [x] Step 10 local matrix green: non-Bearer 401, hybrid conflict 401, `logoutFromAllDevices` one transaction, family-keyed refresh rate limit (2026-09-23)
 - [x] Cookie-regression baseline tests + CI workflow
 - [ ] Full Step 10 integration suite (DB-backed)
 - [ ] Step 11 wire fixtures / Flutter live capture

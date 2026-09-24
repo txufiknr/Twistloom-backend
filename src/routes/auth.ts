@@ -57,10 +57,11 @@ import { requireAuth, invalidateCurrentSessionVerifyCache } from '../middleware/
 import { resolveAdminAccess } from '../middleware/admin-auth.js';
 import { logAuditEvent } from '../utils/audit-log.js';
 import { createSession, getUserSessions, logoutFromSpecificDevice, logoutFromAllOtherDevices, logoutFromAllDevices, deleteSessionById } from '../services/session-manager.js';
-import { revokeAllFamiliesForUser, revokeFamiliesForSession, createRefreshFamily, rotateRefreshToken } from '../services/token-family.js';
+import { revokeAllFamiliesForUser, revokeFamiliesForSession, createRefreshFamily, rotateRefreshToken, peekFamilyIdByPresentedHash } from '../services/token-family.js';
 import { issueAccessToken, getAccessTtlSeconds } from '../services/mobile-tokens.js';
 import { invalidateBearerCache, extractBearerToken } from '../middleware/bearer.js';
 import { sanitizeUserData, getUserForAuth, getUserIdByEmail } from '../services/user.js';
+import { hashSHA256 } from '../utils/hash.js';
 import type { AppEnv } from '../hono/env.js';
 import { getClientIp } from '../hono/express-shim.js';
 import type { DBUserForAuth } from '../types/schema.js';
@@ -860,6 +861,22 @@ router.post('/mobile/refresh', async (c) => {
       return cValidationError(c, 'refreshToken is required');
     }
 
+    // Secondary family-keyed limit (IP limit above; never in-memory — §3.9.C).
+    // Keys on family id when the presented hash maps to a family; otherwise
+    // falls back to the presented-hash bucket, which bounds distributed replay
+    // of a single unknown token. Distinct-token spray is bounded by the IP
+    // limit above, not by this key.
+    const presentedHash = await hashSHA256(refreshToken);
+    const familyId = await peekFamilyIdByPresentedHash(presentedHash);
+    const familyLimitKey = familyId
+      ? `auth-mobile-refresh-fam:${familyId}`
+      : `auth-mobile-refresh-tok:${presentedHash}`;
+    const familyLimit = await checkRateLimit(familyLimitKey, {
+      maxRequests: 30,
+      windowSeconds: 60,
+    });
+    if (!familyLimit.allowed) return cRateLimitError(c);
+
     const rotated = await rotateRefreshToken(refreshToken);
     if (!rotated.ok) {
       return cUnauthorizedError(c, `Refresh token invalid (${rotated.reason})`);
@@ -1218,7 +1235,6 @@ router.post('/logout-all-devices', requireAuth, async (c) => {
     await invalidateCurrentSessionVerifyCache(c);
     const userId = c.get("userId")!;
     const deletedCount = await logoutFromAllDevices(userId);
-    await revokeAllFamiliesForUser(userId).catch(() => {});
 
     await logAuditEvent(c, 'security_logout_all_devices', 'auth');
     return c.json({

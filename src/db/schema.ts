@@ -1001,6 +1001,10 @@ export const usage = pgTable(
   (t) => [
     // Composite primary key for date + provider + context + model
     primaryKey({ columns: [t.date, t.provider, t.context, t.model] }),
+    // Optional short index for per-model quota queries that filter
+    // date + provider + model without context (roadmap Step 9).
+    // Schema-only — human runs migration per AGENTS.md §3.5.
+    index('usage_date_provider_model_idx').on(t.date, t.provider, t.model),
   ]
 );
 

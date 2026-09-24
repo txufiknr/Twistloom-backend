@@ -15,7 +15,7 @@ This implementation uses an **orchestrator-level fallback strategy** where all f
 1. **Centralized Fallback Logic** - Model and provider fallback are handled at the orchestrator level
 2. **Single-Model Generators** - Each provider generator receives a single model to attempt
 3. **Centralized Error Handling** - Error events are sent uniformly from a single location
-4. **Efficient Rate Limiting** - Applied once per provider, not per model
+4. **Per-Attempt Rate Limiting & Quota** - Throttle + `checkAIQuota`/`admitAIQuota` inside the model loop
 5. **DRY Principle** - No duplicated fallback logic across 7 different provider generators
 
 ## Component Overview
@@ -25,7 +25,7 @@ This implementation uses an **orchestrator-level fallback strategy** where all f
 The main orchestrator function that:
 - Iterates through providers in priority order
 - For each provider, iterates through models in priority order
-- Applies rate limiting once per provider
+- Applies rate limiting and quota admission per model attempt (inside the model loop)
 - Sends SSE events (start, text chunks, end, error)
 - Handles cancellation via AbortSignal
 - Implements backpressure handling
@@ -170,17 +170,27 @@ if (controller.desiredSize !== null && controller.desiredSize <= 0) {
 
 ### Implementation
 
-Rate limiting is applied once per provider using the centralized rate limiter:
+Rate limiting and quota admission run **per model attempt inside the model loop**
+(aligned with non-streaming `promptWithFallback` as of the quota-gate roadmap, 2026-09-23):
 
 ```typescript
-await getRateLimiter(provider).throttle();
+for (const model of models) {
+  const check = await checkAIQuota(provider, { model });      // read-only
+  if (!check.allowed) continue;
+  const admit = await admitAIQuota(provider, { model });      // Lua atomic reserve
+  if (!admit.admitted) continue;
+  await getRateLimiter(provider).throttle();                  // RPM spacing
+  // ... attempt stream with this model
+}
 ```
 
 ### Efficiency
 
-- Applied once per provider, not per model
-- Uses the existing rate limiter infrastructure from `src/utils/ai-limiters.ts`
-- Consistent with non-streaming AI functions
+- **Throttle + quota admit fire per model attempt**, not once per provider — inter-model
+  fallbacks within one stream are now paced and gated identically to non-streaming.
+- A coarse read-only `checkAIQuota({ candidateModels })` still runs once at provider entry
+  to skip an entirely exhausted provider without entering the loop.
+- Uses the existing rate limiter + CQS quota infrastructure from `src/utils/ai-limiters.ts`.
 
 ## Model Fallback Mechanism
 
@@ -188,14 +198,15 @@ await getRateLimiter(provider).throttle();
 
 ```
 for (provider of providers) {
-  await getRateLimiter(provider).throttle();
-  
+  // coarse read-only pre-gate (candidateModels)
   for (model of models[provider]) {
+    // checkAIQuota + admitAIQuota (per-model)
+    await getRateLimiter(provider).throttle();
     try {
       // Attempt streaming with this model
-      // If successful, break out of both loops
+      // If successful, clearQuotaCooldown + incrementDailyUsageCount, break
     } catch (error) {
-      // Log error, try next model
+      // setQuotaCooldown dual-tier, try next model
     }
   }
 }
@@ -248,12 +259,13 @@ Start/end events are sent per model attempt:
 - Easier to debug fallback behavior
 - Better monitoring and logging
 
-### 5. Rate Limiting Efficiency
+### 5. Per-Attempt Throttle & Quota (correctness over micro-efficiency)
 
-Applied once per provider:
-- Avoids redundant rate limit checks across models
-- More efficient API usage
-- Consistent with rate limiter design
+Throttle + `checkAIQuota`/`admitAIQuota` run inside the model loop so inter-model
+fallbacks are paced and gated — not hoisted to provider entry (quota-gate step 3):
+- Matches non-streaming `promptWithFallback` spacing exactly
+- A denied model is skipped without burning the shared fallback counter
+- Coarse read-only pre-gate still avoids entering an entirely exhausted provider
 
 ### 6. DRY Principle
 
@@ -486,7 +498,7 @@ type AIChatModelSelection = {
 ### Cold Start Mitigation
 
 - Lazy initialization of provider clients
-- Rate limiting applied once per provider
+- Rate limiting + quota admit applied per model attempt (inside the model loop)
 - Minimal setup before streaming starts
 
 ### Memory Management

@@ -6,6 +6,7 @@ import { dbRead, dbWrite } from '../db/client.js';
 import { AI_RATE_LIMITS, AI_RATE_LIMIT_SAFETY_BUFFER_PERCENT } from "../config/ai-clients.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
 import { delay } from "./time.js";
+import { getRedisClient } from './redis.js';
 
 /**
  * Calculate rate limit configuration with safety buffer
@@ -337,89 +338,533 @@ export function getRateLimiter(provider: AIChatProvider): RateLimiter {
 }
 
 /**
- * Checks whether an AI provider can still be used based on its configured
- * rate limits. Supports daily (`rpd`) and monthly (`rpmo`) caps independently.
- * Providers with neither configured (mistral, cerebras, nvidia) always pass —
- * their real ceilings are token-budget-based and not tracked here.
- *
- * Both checks query the existing `usage` table with no schema changes:
- * - Daily: SUM(requests) WHERE date = today AND provider = X
- * - Monthly: SUM(requests) WHERE date >= month_start AND date < month_end AND provider = X
- *
- * Why monthly for Cohere: Cohere trial keys cap at 1,000 calls/month with no
- * per-day sublimit. A daily average (1000/30 ≈ 33) would be wrong in both
- * directions — blocking on a day where quota remains, allowing through on a day
- * where monthly quota is already exhausted. Summing the current month is exact.
- *
- * Note on ceiling values: rpd/rpmo in AI_RATE_LIMITS use the ceiling across all
- * models for that provider. Individual models may have lower limits — the
- * waterfall's 429 handling covers the per-model gap gracefully.
+ * Structured result of a read-only quota check.
  */
-export async function canUseAIToday(provider: AIChatProvider): Promise<boolean> {
-  const limits = AI_RATE_LIMITS[provider];
+export type QuotaCheckResult =
+  | { allowed: true; reason: 'ok' }
+  | { allowed: false; reason: 'daily' | 'monthly' | 'token-budget' | 'cooldown' | 'error'; resetAt?: Date; used?: number; limit?: number };
 
+/**
+ * Result of an atomic admission attempt.
+ */
+export type QuotaAdmitResult =
+  | { admitted: true }
+  | { admitted: false; reason: 'daily' | 'monthly' | 'token-budget' | 'cooldown' | 'error' };
+
+/** Seconds until the next UTC midnight — used for QUOTA_EXCEEDED cooldown TTLs. */
+function secondsUntilUtcMidnight(): number {
+  const now = new Date();
+  const next = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+  return Math.max(1, Math.floor((next - now.getTime()) / 1000));
+}
+
+/** Seconds until the first day of the next UTC month — for monthly cooldown TTLs. */
+function secondsUntilUtcMonthStart(): number {
+  const now = new Date();
+  const next = Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
+  return Math.max(1, Math.floor((next - now.getTime()) / 1000));
+}
+
+/**
+ * Cooldown Redis key for a provider/model pair. Model is omitted for
+ * aggregate-grain cooldowns (provider-level hold).
+ */
+function cooldownKey(provider: AIChatProvider, model?: string): string {
+  return model
+    ? `ai:cooldown:${provider}:${model}`
+    : `ai:cooldown:${provider}`;
+}
+
+/**
+ * Quota admit Redis key for a provider/model pair over a UTC-day window.
+ * Model segment is omitted for aggregate grain.
+ */
+function quotaDayKey(provider: AIChatProvider, model?: string): string {
+  const day = getTodayDate();
+  return model
+    ? `ai:quota:${provider}:${model}:${day}`
+    : `ai:quota:${provider}:${day}`;
+}
+
+/**
+ * Quota admit Redis key for a provider over the current UTC-month window.
+ */
+function quotaMonthKey(provider: AIChatProvider): string {
+  const { start } = getCurrentMonthBounds();
+  return `ai:quota:${provider}:m:${start.slice(0, 7)}`;
+}
+
+/**
+ * Reads an active cooldown for a provider/model, if any.
+ * Returns the remaining TTL in seconds when a cooldown is live, 0 otherwise.
+ */
+export async function getCooldownRemainingSeconds(
+  provider: AIChatProvider,
+  model?: string,
+): Promise<number> {
+  const redis = getRedisClient();
+  if (!redis) return 0;
   try {
-    // --- Daily cap check ---
-    if (limits.rpd) {
-      const today = getTodayDate(); // 'YYYY-MM-DD'
-      const rows = await dbRead
-        .select({ requests: sql`SUM(${usage.requests})`.mapWith(Number) })
-        .from(usage)
-        .where(and(eq(usage.date, today), eq(usage.provider, provider)))
-        .limit(1);
+    const key = cooldownKey(provider, model);
+    // Upstash: ttl returns -2 if key missing, -1 if no expire, >0 if remaining.
+    const ttl = await redis.ttl(key);
+    return typeof ttl === 'number' && ttl > 0 ? ttl : 0;
+  } catch {
+    return 0;
+  }
+}
 
-      const usedToday = rows?.[0]?.requests ?? 0;
-      if (usedToday >= limits.rpd) {
-        console.warn(`[${provider}] ⚠️ Daily limit reached (${usedToday}/${limits.rpd})`);
-        return false;
-      }
-    }
+/**
+ * Sets a cooldown hold on a provider/model.
+ *
+ * - `RATE_LIMITED` → short TTL (Retry-After or exponential backoff seconds).
+ * - `QUOTA_EXCEEDED` → TTL to UTC midnight (daily) or month start (monthly),
+ *   so the waterfall skips a known-dead quota for the rest of the window.
+ *
+ * @param provider - Provider to hold
+ * @param model - Specific model, or undefined for a provider-level hold
+ * @param ttlSeconds - Cooldown duration in seconds
+ */
+export async function setQuotaCooldown(
+  provider: AIChatProvider,
+  model: string | undefined,
+  ttlSeconds: number,
+): Promise<void> {
+  const redis = getRedisClient();
+  if (!redis || ttlSeconds <= 0) return;
+  try {
+    await redis.set(cooldownKey(provider, model), '1', { ex: ttlSeconds });
+  } catch (err) {
+    console.warn(`[${provider}] Failed to set cooldown:`, getErrorMessage(err));
+  }
+}
 
-    // --- Monthly cap check ---
-    if (limits.rpmo) {
-      const { start, end } = getCurrentMonthBounds();
-      const rows = await dbRead
+/**
+ * Clears a cooldown (e.g. after a successful call proves the hold was stale).
+ */
+export async function clearQuotaCooldown(
+  provider: AIChatProvider,
+  model?: string,
+): Promise<void> {
+  const redis = getRedisClient();
+  if (!redis) return;
+  try {
+    await redis.del(cooldownKey(provider, model));
+  } catch {
+    // best-effort
+  }
+}
+
+/**
+ * Computes the effective daily ceiling for a provider+model combination,
+ * honoring per-model overrides when `grain: 'per-model'`.
+ */
+function effectiveDailyCeiling(
+  provider: AIChatProvider,
+  model?: string,
+): number | undefined {
+  const limits = AI_RATE_LIMITS[provider];
+  if (model && limits.grain === 'per-model' && limits.models?.[model]?.rpd !== undefined) {
+    return limits.models[model].rpd;
+  }
+  return limits.rpd;
+}
+
+/**
+ * Computes the effective monthly ceiling for a provider+model combination.
+ */
+function effectiveMonthlyCeiling(
+  provider: AIChatProvider,
+  model?: string,
+): number | undefined {
+  const limits = AI_RATE_LIMITS[provider];
+  if (model && limits.grain === 'per-model' && limits.models?.[model]?.rpmo !== undefined) {
+    return limits.models[model].rpmo;
+  }
+  return limits.rpmo;
+}
+
+/**
+ * Reads the Postgres `usage` sum for the given grain (analytics SSOT fallback
+ * and the read-only check path). Performs NO writes and NO Redis INCR.
+ */
+async function readUsageSum(
+  provider: AIChatProvider,
+  opts: { model?: string; grain?: 'aggregate' | 'per-model'; window: 'day' | 'month' },
+): Promise<number> {
+  const limits = AI_RATE_LIMITS[provider];
+  const useModel = opts.grain === 'per-model' && opts.model;
+
+  if (opts.window === 'day') {
+    const today = getTodayDate();
+    const rows = useModel
+      ? await dbRead
+          .select({ requests: sql`SUM(${usage.requests})`.mapWith(Number) })
+          .from(usage)
+          .where(and(eq(usage.date, today), eq(usage.provider, provider), eq(usage.model, opts.model!)))
+          .limit(1)
+      : await dbRead
+          .select({ requests: sql`SUM(${usage.requests})`.mapWith(Number) })
+          .from(usage)
+          .where(and(eq(usage.date, today), eq(usage.provider, provider)))
+          .limit(1);
+    return rows?.[0]?.requests ?? 0;
+  }
+
+  // Monthly
+  const { start, end } = getCurrentMonthBounds();
+  const rows = useModel
+    ? await dbRead
         .select({ requests: sql`SUM(${usage.requests})`.mapWith(Number) })
         .from(usage)
         .where(and(
           sql`${usage.date} >= ${start}`,
           sql`${usage.date} < ${end}`,
-          eq(usage.provider, provider)
+          eq(usage.provider, provider),
+          eq(usage.model, opts.model!),
+        ))
+        .limit(1)
+    : await dbRead
+        .select({ requests: sql`SUM(${usage.requests})`.mapWith(Number) })
+        .from(usage)
+        .where(and(
+          sql`${usage.date} >= ${start}`,
+          sql`${usage.date} < ${end}`,
+          eq(usage.provider, provider),
         ))
         .limit(1);
+  void limits;
+  return rows?.[0]?.requests ?? 0;
+}
 
-      const usedThisMonth = rows?.[0]?.requests ?? 0;
-      if (usedThisMonth >= limits.rpmo) {
-        console.warn(`[${provider}] ⚠️ Monthly limit reached (${usedThisMonth}/${limits.rpmo})`);
-        return false;
-      }
+/**
+ * Reads the Postgres `usage` total_tokens sum for the given window.
+ * Only consulted when `tpd` is configured and stream usage capture is complete.
+ */
+async function readTokenSum(
+  provider: AIChatProvider,
+  window: 'day' | 'month',
+): Promise<number> {
+  if (window === 'day') {
+    const today = getTodayDate();
+    const rows = await dbRead
+      .select({ tokens: sql`SUM(${usage.totalTokens})`.mapWith(Number) })
+      .from(usage)
+      .where(and(eq(usage.date, today), eq(usage.provider, provider)))
+      .limit(1);
+    return rows?.[0]?.tokens ?? 0;
+  }
+  const { start, end } = getCurrentMonthBounds();
+  const rows = await dbRead
+    .select({ tokens: sql`SUM(${usage.totalTokens})`.mapWith(Number) })
+    .from(usage)
+    .where(and(
+      sql`${usage.date} >= ${start}`,
+      sql`${usage.date} < ${end}`,
+      eq(usage.provider, provider),
+    ))
+    .limit(1);
+  return rows?.[0]?.tokens ?? 0;
+}
+
+/**
+ * Observability: structured deny log + near-limit warn at ≥80%.
+ */
+function logQuotaDecision(
+  provider: AIChatProvider,
+  model: string | undefined,
+  grain: 'aggregate' | 'per-model',
+  outcome: 'allow' | 'deny',
+  reason: string,
+  used?: number,
+  limit?: number,
+  source: 'check' | 'admit' | 'cooldown' = 'check',
+): void {
+  const payload = { provider, model, grain, reason, used, limit, source };
+  if (outcome === 'deny') {
+    console.warn(`[Quota] DENY ${JSON.stringify(payload)}`);
+    return;
+  }
+  if (limit !== undefined && used !== undefined && limit > 0) {
+    const ratio = used / limit;
+    if (ratio >= 0.8) {
+      console.warn(`[Quota] NEAR-LIMIT ${JSON.stringify({ ...payload, pct: Math.round(ratio * 100) })}`);
     }
-
-    return true;
-  } catch (err) {
-    console.error(`[${provider}] ❌ Usage check error:`, getErrorMessage(err));
-    return false; // fail-safe: block rather than overshoot
   }
 }
 
 /**
+ * CQS **check** path — read-only quota evaluation.
+ *
+ * Performs NO Redis INCR and NO DB writes. Safe to call from pre-gates,
+ * boolean wrappers, and any path that may invoke check multiple times
+ * before a single `admitAIQuota`.
+ *
+ * Grain dispatch:
+ * - `aggregate` — SUM(requests) WHERE date, provider (all models share one bucket)
+ * - `per-model` + model — SUM WHERE date, provider, model
+ * - `per-model` without model — allow if any `candidateModels` entry is under ceiling
+ *   (coarse pre-gate; authoritative check is per attempt)
+ * - `tpd` — additionally SUM(total_tokens) >= tpd (effective after Step 10 usage capture)
+ * - `window: 'provider-cycle'` — not evaluated (always pass; RPM throttle still applies)
+ *
+ * Fail policy (Q2 tiered): DB error → fail-closed for strictly capped providers
+ * (`rpd ≤ 50` or `tpd` present), fail-open with structured warn otherwise.
+ *
+ * @param provider - Provider to check
+ * @param opts.model - Specific model for per-model grain
+ * @param opts.candidateModels - Models this request may actually try (for coarse pre-gate)
+ */
+export async function checkAIQuota(
+  provider: AIChatProvider,
+  opts?: { model?: string; candidateModels?: readonly string[] },
+): Promise<QuotaCheckResult> {
+  const limits = AI_RATE_LIMITS[provider];
+  const grain = limits.grain ?? 'aggregate';
+  const model = opts?.model;
+
+  // provider-cycle windows are not evaluated by the day/month gate.
+  if (limits.window === 'provider-cycle') {
+    return { allowed: true, reason: 'ok' };
+  }
+
+  try {
+    // --- Cooldown check (set by step 6 dual-tier cooldown) ---
+    const cooldownTtl = await getCooldownRemainingSeconds(provider, model);
+    if (cooldownTtl > 0) {
+      logQuotaDecision(provider, model, grain, 'deny', 'cooldown', undefined, undefined, 'cooldown');
+      return { allowed: false, reason: 'cooldown', resetAt: new Date(Date.now() + cooldownTtl * 1000) };
+    }
+
+    // --- Daily cap ---
+    const dailyCeiling = effectiveDailyCeiling(provider, model);
+    if (dailyCeiling !== undefined) {
+      if (grain === 'per-model' && !model) {
+        // Coarse pre-gate: allow if ANY candidate model remains under ceiling.
+        const candidates = opts?.candidateModels ?? [];
+        if (candidates.length > 0) {
+          let anyOpen = false;
+          for (const m of candidates) {
+            const used = await readUsageSum(provider, { model: m, grain: 'per-model', window: 'day' });
+            const ceil = effectiveDailyCeiling(provider, m) ?? dailyCeiling;
+            if (used < ceil) { anyOpen = true; break; }
+          }
+          if (!anyOpen) {
+            logQuotaDecision(provider, undefined, grain, 'deny', 'daily');
+            return { allowed: false, reason: 'daily', used: dailyCeiling, limit: dailyCeiling };
+          }
+        }
+        // No candidates provided → fall through to aggregate-style check below.
+      }
+      if (model || grain === 'aggregate') {
+        const used = await readUsageSum(provider, { model, grain, window: 'day' });
+        if (used >= dailyCeiling) {
+          logQuotaDecision(provider, model, grain, 'deny', 'daily', used, dailyCeiling);
+          return { allowed: false, reason: 'daily', used, limit: dailyCeiling };
+        }
+        logQuotaDecision(provider, model, grain, 'allow', 'ok', used, dailyCeiling);
+      }
+    }
+
+    // --- Monthly cap ---
+    const monthlyCeiling = effectiveMonthlyCeiling(provider, model);
+    if (monthlyCeiling !== undefined) {
+      const used = await readUsageSum(provider, { model, grain, window: 'month' });
+      if (used >= monthlyCeiling) {
+        logQuotaDecision(provider, model, grain, 'deny', 'monthly', used, monthlyCeiling);
+        return { allowed: false, reason: 'monthly', used, limit: monthlyCeiling };
+      }
+      logQuotaDecision(provider, model, grain, 'allow', 'ok', used, monthlyCeiling);
+    }
+
+    // --- Token budget (tpd) — only when configured; requires complete usage capture (Step 10) ---
+    if (limits.tpd !== undefined) {
+      const usedTokens = await readTokenSum(provider, 'day');
+      if (usedTokens >= limits.tpd) {
+        logQuotaDecision(provider, model, grain, 'deny', 'token-budget', usedTokens, limits.tpd);
+        return { allowed: false, reason: 'token-budget', used: usedTokens, limit: limits.tpd };
+      }
+      logQuotaDecision(provider, model, grain, 'allow', 'ok', usedTokens, limits.tpd);
+    }
+
+    return { allowed: true, reason: 'ok' };
+  } catch (err) {
+    console.error(`[${provider}] ❌ Quota check error:`, getErrorMessage(err));
+    // Q2 tiered fail policy:
+    // - Strictly capped (rpd ≤ 50 or tpd set): fail-closed to protect free-tier caps.
+    // - High/uncapped: fail-open with structured warn so a DB blip doesn't 100% outage the waterfall.
+    const strictCap = (limits.rpd !== undefined && limits.rpd <= 50) || limits.tpd !== undefined;
+    if (strictCap) {
+      return { allowed: false, reason: 'error' };
+    }
+    console.warn(`[Quota] FAIL-OPEN ${JSON.stringify({ provider, reason: 'db-error' })}`);
+    return { allowed: true, reason: 'ok' };
+  }
+}
+
+/**
+ * Thin boolean wrapper — preserves existing boolean call sites
+ * (`backfill-embeddings.ts:53`, roadmap references). Read-only: no side effects.
+ */
+export async function canUseAIToday(provider: AIChatProvider): Promise<boolean> {
+  return (await checkAIQuota(provider)).allowed;
+}
+
+/**
+ * CQS **admit** path — atomic Redis Lua `INCR` + `EXPIRE` + ceiling check.
+ *
+ * One round-trip; fixes the INCR/EXPIRE TTL-leak window and the DECR race of
+ * the naive INCR→check→DECR pattern. Redis is the real-time **attempt**
+ * authority: every admitted HTTP attempt (including 429/quota failures)
+ * increments this counter, matching what the provider counts.
+ *
+ * On Redis error: falls back to a DB `SUM` conditional admit (today's query).
+ *
+ * @param provider - Provider to admit against
+ * @param opts.model - Specific model for per-model grain
+ * @returns `{ admitted: true }` when the caller may proceed; otherwise a deny reason.
+ */
+export async function admitAIQuota(
+  provider: AIChatProvider,
+  opts?: { model?: string },
+): Promise<QuotaAdmitResult> {
+  const limits = AI_RATE_LIMITS[provider];
+  const grain = limits.grain ?? 'aggregate';
+  const model = opts?.model;
+
+  if (limits.window === 'provider-cycle') {
+    return { admitted: true };
+  }
+
+  // Cooldown still gates admission (belt-and-suspenders after check).
+  const cooldownTtl = await getCooldownRemainingSeconds(provider, model);
+  if (cooldownTtl > 0) {
+    return { admitted: false, reason: 'cooldown' };
+  }
+
+  const dailyCeiling = effectiveDailyCeiling(provider, model);
+  const monthlyCeiling = effectiveMonthlyCeiling(provider, model);
+  const useModelKey = grain === 'per-model' && model;
+
+  const redis = getRedisClient();
+  if (redis) {
+    try {
+      // Lua: INCR, EXPIRE if new, ceiling test, DECR on over-limit — atomic.
+      const ADMIT_LUA = `
+        local v = redis.call('INCR', KEYS[1])
+        if v == 1 then redis.call('EXPIRE', KEYS[1], ARGV[2]) end
+        if tonumber(v) > tonumber(ARGV[1]) then
+          redis.call('DECR', KEYS[1])
+          return 0
+        end
+        return 1
+      `;
+
+      if (dailyCeiling !== undefined) {
+        const key = quotaDayKey(provider, useModelKey ? model : undefined);
+        const ttl = secondsUntilUtcMidnight();
+        const ok = await (redis as unknown as { eval(script: string, keys: string[], args: string[]): Promise<unknown> }).eval(ADMIT_LUA, [key], [String(dailyCeiling), String(ttl)]);
+        if (ok === 0 || ok === '0') {
+          logQuotaDecision(provider, model, grain, 'deny', 'daily', dailyCeiling, dailyCeiling, 'admit');
+          return { admitted: false, reason: 'daily' };
+        }
+      }
+
+      if (monthlyCeiling !== undefined) {
+        const key = quotaMonthKey(provider);
+        const ttl = secondsUntilUtcMonthStart();
+        const ok = await (redis as unknown as { eval(script: string, keys: string[], args: string[]): Promise<unknown> }).eval(ADMIT_LUA, [key], [String(monthlyCeiling), String(ttl)]);
+        if (ok === 0 || ok === '0') {
+          logQuotaDecision(provider, model, grain, 'deny', 'monthly', monthlyCeiling, monthlyCeiling, 'admit');
+          return { admitted: false, reason: 'monthly' };
+        }
+      }
+
+      // Token-budget admit: Redis token counter (best-effort; falls back to DB check).
+      if (limits.tpd !== undefined) {
+        const tkey = `ai:quota-tokens:${provider}:${getTodayDate()}`;
+        const ok = await (redis as unknown as { eval(script: string, keys: string[], args: string[]): Promise<unknown> }).eval(ADMIT_LUA, [tkey], [String(limits.tpd), String(secondsUntilUtcMidnight())]);
+        if (ok === 0 || ok === '0') {
+          logQuotaDecision(provider, model, grain, 'deny', 'token-budget', limits.tpd, limits.tpd, 'admit');
+          return { admitted: false, reason: 'token-budget' };
+        }
+      }
+
+      return { admitted: true };
+    } catch (err) {
+      console.warn(`[${provider}] Redis admit failed, falling back to DB:`, getErrorMessage(err));
+      // fall through to DB fallback
+    }
+  }
+
+  // DB fallback — conditional admit using today's SUM (byte-for-byte legacy query shape).
+  try {
+    if (dailyCeiling !== undefined) {
+      const used = await readUsageSum(provider, { model, grain, window: 'day' });
+      if (used >= dailyCeiling) {
+        logQuotaDecision(provider, model, grain, 'deny', 'daily', used, dailyCeiling, 'admit');
+        return { admitted: false, reason: 'daily' };
+      }
+    }
+    if (monthlyCeiling !== undefined) {
+      const used = await readUsageSum(provider, { model, grain, window: 'month' });
+      if (used >= monthlyCeiling) {
+        logQuotaDecision(provider, model, grain, 'deny', 'monthly', used, monthlyCeiling, 'admit');
+        return { admitted: false, reason: 'monthly' };
+      }
+    }
+    return { admitted: true };
+  } catch (err) {
+    console.error(`[${provider}] ❌ Admit DB fallback error:`, getErrorMessage(err));
+    const strictCap = (limits.rpd !== undefined && limits.rpd <= 50) || limits.tpd !== undefined;
+    return strictCap
+      ? { admitted: false, reason: 'error' }
+      : { admitted: true };
+  }
+}
+
+/**
+ * CQS **settle** path — records a successful request's tokens/duration into
+ * `usage` (analytics SSOT). Does NOT re-increment attempt counts (those live
+ * in Redis via `admitAIQuota`). Success-only: called only after a good output.
+ *
+ * Thin alias over `incrementDailyUsageCount` for CQS call-site clarity.
+ */
+export async function settleAIQuota(
+  provider: AIChatProvider,
+  context: string,
+  options?: {
+    model?: string;
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+    cachedTokens?: number;
+    durationMs?: number;
+  },
+): Promise<void> {
+  return incrementDailyUsageCount(provider, context, options);
+}
+
+/**
  * Increments daily usage count for a specific AI provider, model, and context
- * 
- * Records request count and optionally token/duration metrics for cost analysis
- * and performance monitoring.
- * 
+ *
+ * Records a **successful** request and optionally token/duration metrics for
+ * cost analysis and performance monitoring. Attempt counts (including failures)
+ * are tracked separately in Redis via `admitAIQuota` — this function is the
+ * success-only analytics write (see roadmap Q4 decision).
+ *
  * @param provider - The AI provider to increment usage for
  * @param context - The usage context (e.g., 'story-page', 'ai-stream-sse', etc.)
  * @param options - Optional metrics: model, inputTokens, outputTokens, totalTokens, cachedTokens, durationMs
- * 
+ *
  * @example
  * ```typescript
  * // Minimal increment (count only)
- * await incrementDailyUsageCount('gemini', 'summary');
- * 
+ * await incrementDailyUsageCount('gemini', 'summary', { model: 'gemini-2.5-flash' });
+ *
  * // With full metrics
  * await incrementDailyUsageCount('groq', 'story-page', {
- *   model: 'llama-3.3-70b-versatile',
+ *   model: 'openai/gpt-oss-120b',
  *   inputTokens: 450,
  *   outputTokens: 120,
  *   totalTokens: 570,
@@ -442,7 +887,9 @@ export async function incrementDailyUsageCount(
   try {
     const today = getTodayDate();
     const {
-      model = null,
+      // PK columns are NOT NULL — sanitize missing model to 'default'
+      // so inserts without an explicit model never violate the composite PK.
+      model = 'default',
       inputTokens = null,
       outputTokens = null,
       totalTokens = null,

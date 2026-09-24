@@ -44,7 +44,7 @@ const AI_COST_PER_MILLION_PREVIEW: Record<AIChatProvider, { input: number; outpu
   gemini:    { input: 0.30, output: 2.50 }, // gemini-2.5-flash — confirmed directly against ai.google.dev/gemini-api/docs/pricing (Standard tier). Unchanged; a third-party tracker briefly suggested $0.15/$1.25, but that's Gemini's *Batch*-tier rate, not Standard — don't let that resurface here.
   cohere:    { input: 0.15, output: 0.60 }, // FIXED (was 0.20/1.00, labeled "estimate"). command-r-08-2024's actual published rate, confirmed by two independent trackers.
   mistral:   { input: 1.00, output: 2.00 }, // mistral-medium-latest — UNVERIFIED this pass. The one 2026-relevant data point found (Mistral Medium 3's May 2025 launch price) was $0.40/$2.00, notably lower on input than this entry. Could mean this is stale, or that "latest" now points to a costlier successor tier — couldn't confirm either way. Check mistral.ai/pricing directly before trusting this number for a real budget.
-  groq:      { input: 0.59, output: 0.79 }, // llama-3.3-70b-versatile — confirmed current across five independent trackers.
+  groq:      { input: 0.15, output: 0.60 }, // UPDATED 2026-09-22 — was priced for llama-3.3-70b-versatile ($0.59/$0.79), which Groq deprecated 08/16/26 and which no longer appears anywhere in ai-clients.ts's groq entries (see AI_CHAT_MODELS_FAST.groq/WRITING.groq for the full story). Repriced to match gpt-oss-120b, now the dominant model actually wired into groq across this waterfall (stream default, WRITING, FAST).
   cerebras:  { input: 0.35, output: 0.75 }, // FIXED (was 0.60/0.30 — backwards, and priced against a model Cerebras may no longer self-serve). Repriced against gpt-oss-120b, which is what's actually wired into cerebras's WRITING/EVALUATION entries in ai-clients.ts today. One tracker (dated May 2026) states Llama 3.3 70B has moved to Dedicated-Endpoints-only (custom/sales pricing, no public rate) on Cerebras — if that's still true, don't reintroduce a llama-3.3-70b override scoped to cerebras without confirming it's back on the public rate card.
   nvidia:    { input: 0.15, output: 0.60 }, // FIXED (was 0.60/0.30 — backwards, and not grounded in anything). NVIDIA does not publish a direct per-token rate for build.nvidia.com hosted models — it's a free-developer-credits program, with production pricing routed through NVIDIA AI Enterprise licensing ($4,500/GPU/year) instead. This number is an inferred proxy from comparable Nemotron-tier pricing seen via third-party pass-through (OpenRouter). Treat it as a rough placeholder, not a real NVIDIA rate.
   openrouter:{ input: 0.30, output: 1.20 }, // blended price (varies wildly) — unchanged, not re-verified this pass; still the most honest single number for an aggregator whose actual per-model rate depends entirely on which upstream host you land on.
@@ -148,16 +148,32 @@ const AI_MODEL_COST_OVERRIDES: AICostOverride[] = [
   { match: "mistral-7b", input: 0.20, output: 0.60 },
 
   // Llama tiers — provider-scoped where hosts genuinely diverge.
-  { match: "llama-3.3-70b", provider: "groq", input: 0.59, output: 0.79 },
+  // REMOVED 2026-09-22: `{ match: "llama-3.3-70b", provider: "groq", input: 0.59, output: 0.79 }`
+  // used to live here. Groq deprecated llama-3.3-70b-versatile 08/16/26 and it no
+  // longer appears anywhere in ai-clients.ts's groq entries — this override could
+  // never match again. The global (non-provider-scoped) fallback two lines below is
+  // left in place since it may still be needed for llama-3.3-70b-style model strings
+  // on other providers (e.g. OpenRouter's meta-llama/llama-3.3-70b-instruct:free).
   { match: "llama-3.3-nemotron-super-49b", provider: "nvidia", input: 0.10, output: 0.40 }, // UPDATED 2026-09-22 — this entry previously matched "llama-3.3-70b" and priced meta/llama-3.3-70b-instruct, now retired from NIM's hosted endpoint (2026-08-26; see ai-clients.ts). Renamed to match the model that replaced it. Same "NVIDIA doesn't publish a direct build.nvidia.com rate" caveat as the nvidia provider default above — this is triangulated from third-party pass-through pricing for this exact model (OpenRouter lists $0.10/$0.40), not a NIM-specific rate. Substring-matches both the v1 and v1.5 tags. qwen/qwen3-next-80b-a3b-instruct (the other new nvidia WRITING entry in ai-clients.ts) has no override yet and intentionally falls through to the nvidia provider default — same "no confirmed rate" situation, not worth a second guess on top of a guess.
   { match: "llama-3.3-70b", input: 0.59, output: 0.79 }, // fallback for any other host.
   { match: "llama-3.1-8b", input: 0.05, output: 0.08 }, // FIXED input (was 0.03). Groq-confirmed.
   { match: "llama3.1-8b", provider: "cerebras", input: 0.10, output: 0.10 }, // RELABELED — this dotless spelling was previously commented "NVIDIA legacy alias", but the model id actually wired into ai-clients.ts under this exact string is cerebras's AI_CHAT_MODELS_FAST entry (which itself carries a "TODO: is it really available now?" comment — same uncertainty applies here). Price is Cerebras's original 2024 launch rate; may no longer be on their current public rate card at all.
   { match: "llama-4-maverick", input: 0.20, output: 0.80 }, // Not re-verified this pass.
-  { match: "llama-4-scout", input: 0.11, output: 0.34 }, // Refined from 0.10/0.40 — Groq-confirmed exact figures.
+  // REMOVED 2026-09-22: `{ match: "llama-4-scout", input: 0.11, output: 0.34 }` used
+  // to live here. meta-llama/llama-4-scout-17b-16e-instruct was deprecated by Groq
+  // (the only provider that used it in this file) 07/17/26 and was removed from
+  // ai-clients.ts entirely — no successor of the same name exists, so unlike the
+  // llama-3.3-70b entry above, there's no other provider this could plausibly still
+  // match. Genuinely dead weight, not kept.
 
-  // Qwen — NEW. Groq's self-serve catalog includes this one with a confirmed rate; qwen3.6-27b (also used elsewhere in ai-clients.ts) has no confirmed rate anywhere found, so it's deliberately left unlisted rather than guessed — it'll fall through to the hosting provider's default.
-  { match: "qwen3-32b", provider: "groq", input: 0.29, output: 0.59 },
+  // Qwen — the qwen3.6-27b entry that used to live here ("no confirmed rate anywhere
+  // found") is gone: Groq deprecated qwen/qwen3.6-27b 09/14/26 in favor of
+  // qwen/qwen3.8-27b (now wired into ai-clients.ts's WRITING/IDEA/TRANSLATION/
+  // EVALUATION groq arrays), and the old qwen3-32b/groq override below it is also
+  // gone — that model was deprecated by Groq 07/17/26 and removed from ai-clients.ts
+  // too. Both replaced with confirmed rates for what's actually in use now.
+  { match: "qwen3.8-27b", provider: "groq", input: 0.80, output: 4.00 }, // ADDED 2026-09-22 — confirmed via Groq-specific trackers (typingmind, computeprices), not yet cross-checked against Groq's own docs page directly.
+  { match: "qwen3.8-27b", provider: "ovhcloud", input: 0.47, output: 3.19 }, // ADDED 2026-09-22 — confirmed directly against OVHcloud's own published catalog rate; same price OVHcloud lists for Qwen3.6-27B, the model this replaces in ai-clients.ts's ovhcloud entries.
 
   // GLM / Z.ai family — NEW section.
   { match: "glm-4.7-flash", input: 0, output: 0 }, // Confirmed genuinely free on the official Z.ai API (not a rate-limited trial — $0 input, cached input, and output). This is the model actually wired into ai-clients.ts's zai entries.
@@ -237,8 +253,8 @@ function resolveCostTier(
  *
  * @example
  * ```typescript
- * const cost = estimateCost('groq', 'llama-3.3-70b-versatile', 450, 120);
- * // ≈ (0.59/1e6 * 450) + (0.79/1e6 * 120) ≈ 0.000360
+ * const cost = estimateCost('groq', 'openai/gpt-oss-120b', 450, 120);
+ * // ≈ (0.15/1e6 * 450) + (0.60/1e6 * 120) ≈ 0.0000398
  * ```
  */
 export function estimateCost(
