@@ -554,7 +554,7 @@ export const userAuth = pgTable(
  * Enables dual-auth (credentials + Google) with the ability to link/unlink independently.
  *
  * One row per provider per user (composite PK).
- * provider_account_id stores the Google `sub` for OAuth providers (null for credentials).
+ * provider_account_id stores the Google/Apple `sub` for OAuth providers (null for credentials).
  *
  * @example
  * {
@@ -568,7 +568,7 @@ export const userProviders = pgTable(
   "user_providers",
   {
     userId: userId().references(() => users.userId, { onDelete: "cascade" }),
-    provider: text("provider").$type<'credentials' | 'google'>().notNull(),
+    provider: text("provider").$type<'credentials' | 'google' | 'apple'>().notNull(),
     providerAccountId: text("provider_account_id"),
     createdAt,
   },

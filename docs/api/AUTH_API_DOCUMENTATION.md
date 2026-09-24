@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Authentication API provides endpoints for user registration, credential verification, Google OAuth, password management, email verification, session management, and native mobile bearer token issue/refresh. This API works in conjunction with NextAuth v5 to provide a complete authentication solution supporting Google OAuth, Email/Password, and native mobile bearer authentication.
+The Authentication API provides endpoints for user registration, credential verification, Google OAuth, password management, email verification, session management, and native mobile bearer token issue/refresh (email/password, Google, and Apple identity-token exchanges). This API works in conjunction with NextAuth v5 to provide a complete authentication solution supporting Google OAuth, Email/Password, Sign in with Apple, and native mobile bearer authentication.
 
 **Base URL:** `/api/auth`
 
@@ -12,9 +12,9 @@ The Authentication API provides endpoints for user registration, credential veri
 - NextAuth v5 handles session creation and cookie management
 - Backend validates credentials and manages user data
 - Email/Password and Google OAuth authentication methods supported
-- Native mobile clients use `POST /mobile/token` + `POST /mobile/refresh` for bearer access tokens (HS256 JWT) with rotating opaque refresh secrets
+- Native mobile clients use `POST /mobile/token`, `POST /mobile/google`, or `POST /mobile/apple` + `POST /mobile/refresh` for bearer access tokens (HS256 JWT) with rotating opaque refresh secrets (shared SSOT `issueMobileLoginPair`)
 
-**Authentication faces (multi-platform):** protected endpoints accept **NextAuth JWT cookies** (web) and **Bearer access tokens** (native Flutter). One identity store, two credential adapters — dual credential. Cookie verification remains first-class; bearer issue/refresh routes (`POST /mobile/token`, `POST /mobile/refresh`) are implemented and documented below. Verified bearer identities may be cached in a **15s process LRU** keyed by SHA-256(raw token) (gated by `CPU_OPTIMIZATIONS_ENABLED`); logout invalidates the presented token immediately. See [DUAL_AUTH_ARCHITECTURE.md](../architecture/DUAL_AUTH_ARCHITECTURE.md) for architecture details.
+**Authentication faces (multi-platform):** protected endpoints accept **NextAuth JWT cookies** (web) and **Bearer access tokens** (native Flutter). One identity store, two credential adapters — dual credential. Cookie verification remains first-class; bearer issue/refresh routes (`POST /mobile/token`, `POST /mobile/google`, `POST /mobile/apple`, `POST /mobile/refresh`) are implemented and documented below. Verified bearer identities may be cached in a **15s process LRU** keyed by SHA-256(raw token) (gated by `CPU_OPTIMIZATIONS_ENABLED`); logout invalidates the presented token immediately. See [DUAL_AUTH_ARCHITECTURE.md](../architecture/DUAL_AUTH_ARCHITECTURE.md) for architecture details.
 
 ---
 
@@ -35,6 +35,8 @@ The Authentication API provides endpoints for user registration, credential veri
    - [Google OAuth](#post-apiauthgoogle-oauth)
 6. [Mobile Bearer Tokens](#mobile-bearer-tokens)
    - [Issue Tokens](#post-apiauthmobiletoken)
+   - [Issue Tokens with Google](#post-apiauthmobilegoogle)
+   - [Issue Tokens with Apple](#post-apiauthmobileapple)
    - [Refresh Tokens](#post-apiauthmobilerefresh)
 7. [Session Management](#session-management)
    - [Get Active Sessions](#get-apiauthsessions)
@@ -564,7 +566,9 @@ Native Flutter clients authenticate with short-lived HS256 access JWTs and rotat
 
 **Refresh secrets:** 256-bit opaque hex, stored as SHA-256 hash in `refresh_families`. Rotation is mandatory on every refresh; reuse of an already-used secret revokes the entire family (EQ3=B default).
 
-**Environment variables:** `MOBILE_ACCESS_SECRET` (≥32 chars, separate from `AUTH_SECRET`), optional `MOBILE_ACCESS_SECRET_PREVIOUS` (dual-secret rotation window), `MOBILE_ACCESS_TTL_MINUTES` (default 15), `MOBILE_REFRESH_TTL_DAYS` (default 30), `MOBILE_ACCESS_AUD` (default `reader`).
+**Environment variables:** `MOBILE_ACCESS_SECRET` (≥32 chars, separate from `AUTH_SECRET`), optional `MOBILE_ACCESS_SECRET_PREVIOUS` (dual-secret rotation window), `MOBILE_ACCESS_TTL_MINUTES` (default 15), `MOBILE_REFRESH_TTL_DAYS` (default 30), `MOBILE_ACCESS_AUD` (default `reader`). OAuth exchanges also require `GOOGLE_CLIENT_ID` (Google ID-token audience) and `APPLE_CLIENT_ID` (Apple identity-token audience; bundle id `com.twistloom.app`).
+
+All three issuance routes (`/mobile/token`, `/mobile/google`, `/mobile/apple`) share Redis IP rate limiting (`auth-mobile-token:${ip}`, 10/60s) and the SSOT `issueMobileLoginPair` response shape (`accessToken`, `expiresIn`, `refreshToken`, `tokenType`, `familyId`, `user`).
 
 ---
 
@@ -656,7 +660,7 @@ Rotates an opaque refresh secret (RFC 9700) and returns a new access JWT. Reuse 
 **Request Body:**
 ```json
 {
-  "refreshToken": "string"  // Opaque refresh secret from /mobile/token or prior refresh
+  "refreshToken": "string"  // Opaque refresh secret from /mobile/token, /mobile/google, /mobile/apple, or prior refresh
 }
 ```
 
@@ -701,6 +705,89 @@ The `refreshToken` is rotated — the previous secret is invalid immediately. Cl
 2. Banned → revoke family + 401; presented hash only in `usedHashes` (already rotated) → reuse → revokes family → returns 401
 3. Rotates secret (appends presented hash to `usedHashes`, writes new current hash + expiry)
 4. Issues new access JWT from family's stored claims
+
+---
+
+### POST /api/auth/mobile/google
+
+Exchanges a Google ID token (from the native `google_sign_in` SDK) for a mobile access JWT and rotating refresh secret. Upserts the account by stable Google subject (`sub`) with `provider: google`, then reuses the shared `issueMobileLoginPair` issuance path.
+
+**Authentication:** Not required (public endpoint)
+
+**Rate Limiting:** Upstash Redis — 10 requests / 60s per IP (`auth-mobile-token:${ip}`). Fails open if Redis is unavailable.
+
+**Environment:** `GOOGLE_CLIENT_ID` must be set (ID-token `aud` verification). Tokens with `email_verified != true` are rejected.
+
+**Request Body:**
+```json
+{
+  "idToken": "string"  // Google ID token from google_sign_in (audience = GOOGLE_CLIENT_ID)
+}
+```
+
+**Response (200 OK):** same shape as [`POST /mobile/token`](#post-apiauthmobiletoken) (`accessToken`, `expiresIn`, `refreshToken`, `tokenType`, `familyId`, `user`).
+
+**Error Responses:**
+- `400 Bad Request`: idToken is required / malformed
+- `401 Unauthorized`: Invalid Google token, unverified email, or verification failure
+  ```json
+  { "success": false, "error": "Invalid Google ID token" }
+  ```
+- `403 Forbidden`: Account is banned
+- `429 Too Many Requests`: IP rate limit exceeded
+- `500 Internal Server Error`: Server error (including `GOOGLE_CLIENT_ID` unconfigured)
+
+**Security Features:**
+- Google ID token verified server-side (issuer, audience, expiry, signature) — never trusted from the client claim alone
+- Sub-first stable-provider linking (`createOrUpdateOAuthUser`); never merges solely on untrusted matching email
+- Shared Redis IP rate limit across all mobile issuance routes
+- Same ban-before-write + atomic session/family transaction as the password path (SSOT `issueMobileLoginPair`)
+- Audit event: `auth_mobile_token_issued`
+
+---
+
+### POST /api/auth/mobile/apple
+
+Exchanges an Apple identity token (from `sign_in_with_apple` / ASAuthorization) for a mobile access JWT and rotating refresh secret. Upserts the account by stable Apple subject with `provider: apple`, then reuses `issueMobileLoginPair`.
+
+**Authentication:** Not required (public endpoint)
+
+**Rate Limiting:** Upstash Redis — 10 requests / 60s per IP (`auth-mobile-token:${ip}`). Fails open if Redis is unavailable.
+
+**Environment:** `APPLE_CLIENT_ID` must be set (identity-token `aud`; bundle id `com.twistloom.app`).
+
+**Request Body:**
+```json
+{
+  "identityToken": "string",  // Apple identity token (RS256) from sign_in_with_apple
+  "givenName": "string",      // optional — first sign-in only
+  "familyName": "string"      // optional — first sign-in only
+}
+```
+
+**Response (200 OK):** same shape as [`POST /mobile/token`](#post-apiauthmobiletoken).
+
+**Error Responses:**
+- `400 Bad Request`: identityToken is required
+- `401 Unauthorized`: Invalid Apple identity token or unverified Apple email
+  ```json
+  { "success": false, "error": "Apple email address is not verified." }
+  ```
+- `400/401`: Apple did not share an email and account creation needs one
+  ```json
+  { "success": false, "error": "Apple did not share an email for this account. Allow email sharing or use an existing linked sign-in." }
+  ```
+- `403 Forbidden`: Account is banned
+- `429 Too Many Requests`: IP rate limit exceeded
+- `500 Internal Server Error`: Server error (including `APPLE_CLIENT_ID` unconfigured or Apple JWKS fetch failure)
+
+**Security Features:**
+- Apple identity token verified against Apple JWKS (lazy `createRemoteJWKSet`) with issuer `https://appleid.apple.com`, audience `APPLE_CLIENT_ID`, expiry checks
+- `email_verified` must be true (relay/private emails accepted when Apple marks them verified)
+- Optional `givenName`/`familyName` stored only when provided (Apple sends them on first authorize only)
+- Sub-first stable-provider linking; never merges solely on email
+- Shared Redis IP rate limit + SSOT issuance path
+- Audit event: `auth_mobile_token_issued`
 
 ---
 
@@ -1612,7 +1699,7 @@ Backend handles:
 - User data management
 - Password and email operations
 - Device session tracking and revocation
-- Mobile bearer token issue / refresh / revocation (`/mobile/token`, `/mobile/refresh`, `refresh_families`)
+- Mobile bearer token issue / refresh / revocation (`/mobile/token`, `/mobile/google`, `/mobile/apple`, `/mobile/refresh`, `refresh_families`, `issueMobileLoginPair`)
 
 ### Mobile Bearer Integration (Flutter)
 

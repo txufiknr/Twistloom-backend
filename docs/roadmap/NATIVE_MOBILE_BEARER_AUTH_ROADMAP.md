@@ -1,13 +1,14 @@
 # Native Mobile Bearer Auth Roadmap
 
-> **Status:** In Progress — backend Steps 2–8 landed & audit-corrected 2026-09-23; R1–R4 + R11 residual shipped same day (Step 10 suite 22/22, `logoutFromAllDevices` tx, `refresh_families` migration **applied**, family-keyed refresh rate limit, non-Bearer 401 + hybrid conflict 401, DUAL_AUTH Express samples → Hono); local `bun run check` + `bun test` green; **Step 1 fixtures/owner gates (1/9/11/12) and optional Google/mobile-me endpoints remain**
-> **Date:** 2026-09-23 (architecture audit + implementation kickoff + security audit correction, same day)
+> **Status:** In Progress — backend Steps 2–9 landed & audit-corrected (Steps 2–8 on 2026-09-23; **Step 4 Google + Step 9 Apple OAuth mobile exchanges on 2026-09-24** via shared `issueMobileLoginPair` + `POST /mobile/{google,apple}` + `src/services/apple-auth.ts`, 9 new issuance tests; R1–R4 + R11 residual shipped 2026-09-23 (Step 10 suite 22/22, `logoutFromAllDevices` tx, `refresh_families` migration **applied**, family-keyed refresh rate limit, non-Bearer 401 + hybrid conflict 401, DUAL_AUTH Express samples → Hono); local `bun run check` + `bun test` green (**97 tests** incl. `tests/mobile-oauth-issuance.test.ts`); **Step 1 fixtures/owner gates (1/9 residual owner answer/11/12) and optional `/mobile/me` remain**
+> **Date:** 2026-09-24 (mobile OAuth issuance: Google + Apple); prior 2026-09-23 (architecture audit + implementation kickoff + security audit correction)
 > **Owner:** txufiknr
 > **Parent gates:** Flutter [Q5 login/access](../../../Twistloom-flutter/docs/roadmap/TWISTLOOM_FLUTTER_APP_ROADMAP.md) · [Q6 session families](../../../Twistloom-flutter/docs/roadmap/TWISTLOOM_FLUTTER_APP_ROADMAP.md) · [MOBILE_AUTH_CONTRACT](../../../Twistloom-flutter/docs/roadmap/MOBILE_AUTH_CONTRACT.md) · Flutter [CHECKPOINT_02](../../../Twistloom-flutter/docs/checkpoints/CHECKPOINT_02_M0_FEASIBILITY.md) gaps **G-auth-1/2/3/4/5/6**, **A1**, **E1**
-> **This document is the plan + status ledger.** Backend Steps 2–8 are implemented (see §9); remaining work is explicitly listed there. Stop → review → continue on the owner's command.
+> **This document is the plan + status ledger.** Backend Steps 2–9 are implemented (see §9); remaining work is explicitly listed there. Stop → review → continue on the owner's command.
 > **Audit revision (2026-09-23):** cookie-regression baseline + CI now precede the middleware change (Step 3); Redis-backed rate limiting mandated for token/refresh; bearer verify now requires a fresh `sid` session-row check (not only `tokenVersion`); `jose` dependency and secret-rotation plan made explicit; local open questions renamed **EQ1–EQ5** to eliminate collision with parent Q5/Q6; steps resequenced (CORS and test harness first).
 > **Non-breaking revision (2026-09-23, second pass):** found and fixed a **critical** flaw in the first draft — “any `Authorization` header claims bearer intent” would have **hard-failed all cron jobs**, because `POST /api/cron/*` already authenticates with `Authorization: Bearer <CRON_SECRET>` (`src/routes/cron.ts:37`) through the same global `app.ts:134` middleware. Step 5 now mandates a **service-bearer allow-list** (path/exemption registry) so machine secrets never enter the user-JWT branch. Twistloom-web non-breaking claims are now **evidence-backed** (see §3 Non-Breaking Contract) rather than assumed.
 > **Audit correction (2026-09-23, third pass):** post-implementation security audit of Steps 4–8 found and fixed: (1) **`POST /logout` now hard-deletes the session row** (`logoutFromSpecificDevice`, cascade removes families) after a soft-revoke pass — previously cache-clear-only; (2) **ban enforced at `/mobile/token`** (403 `Account banned` before any write) **and at refresh** (`evaluateRotation` fails closed with `reason: "banned"` + revokes family); (3) **mobile login is atomic** — session + family inserts share one `dbWrite.transaction`; (4) **bearer identity LRU** (15s TTL, SHA-256(raw token) key, gated by `CPU_OPTIMIZATIONS_ENABLED`) with immediate invalidation on logout; (5) **logout-all soft-revokes** families relying on `ON DELETE CASCADE` instead of a hard `DELETE`; (6) dead `revokeFamilyById` / `getActiveFamily` removed; (7) `MOBILE_REFRESH_RECOVERY` removed from `.env.example`; (8) real envelope + logout-route tests added to `tests/auth-cookie-baseline.test.ts`. §9 Completion Status and Steps 4/6/7/8 below reflect these corrections.
+> **Mobile OAuth issuance revision (2026-09-24, fourth pass):** dual mobile auth slice authorized by owner — `POST /api/auth/mobile/google` and `POST /api/auth/mobile/apple` added; password/Google/Apple issuance unified in SSOT `issueMobileLoginPair` (`src/services/mobile-login.ts`); `createOrUpdateOAuthUser` parameterized with sub-first stable-provider linking (`provider: google | apple`); Apple identity tokens verified in `src/services/apple-auth.ts` (lazy JWKS, issuer/audience/expiry/`email_verified` rules, optional given/family name, unverified-email and missing-email failures); shared Redis IP limit `auth-mobile-token:${ip}` 10/60s across all three issuance routes; `userProviders.provider` union includes `apple` (additive schema, no migration); `.env.example` `APPLE_CLIENT_ID` (bundle id `com.twistloom.app`). New `tests/mobile-oauth-issuance.test.ts` (9 tests). Cookie/web paths untouched (NB-1/NB-3 still hold).
 
 ---
 
@@ -18,12 +19,12 @@
 | 1 | Finalize M0 auth fixtures and owner decisions (parent Q5/Q6, durations, recovery, rotation, rate-limit substrate) | `P0` | ⏳ Partial (engineering defaults recorded: EQ3=B, EQ4=A, ≤15s LRU, Redis limits; **parent Q5/Q6 + written EQ3 acceptance still open**) |
 | 2 | Origin/CORS/credential posture for native clients (A1) | `P0` | ✅ Done (confirmed already-permitting; no code change) |
 | 3 | Cookie-regression test baseline + `test` script + CI harness (**pre-bearer gate**) | `P0` | ✅ Done (`bun test` + `.github/workflows/ci.yml` + envelope/logout/cron baseline; **full signed-cookie `requireAuth` cases live in Step 10**) |
-| 4 | Access-token issuance under `/api/auth/*` (email + Google; Apple gated) | `P0` | ✅ Done password path (`POST /api/auth/mobile/token` — ban 403 + atomic txn); **`/mobile/google` + `/mobile/me` not implemented (optional)** |
+| 4 | Access-token issuance under `/api/auth/*` (email + Google + Apple) | `P0` | ✅ Done (`POST /api/auth/mobile/token` ban 403 + atomic txn; **`/mobile/google` + `/mobile/apple` landed 2026-09-24**); **`/mobile/me` not implemented (optional)** |
 | 5 | Bearer verification on the global API middleware path (G-auth-1) | `P0` | ✅ Done (`src/middleware/bearer.ts` + `app.ts` wiring; 15s SHA-256-keyed identity LRU, logout-invalidated) |
 | 6 | Refresh rotation + hashed session-family storage (G-auth-2) | `P0` | ✅ Done (`POST /api/auth/mobile/refresh` + `refresh_families` schema + SQL `0099` **applied**; ban fails closed; family-keyed secondary rate limit) |
 | 7 | Real revocation: enforce `tokenVersion` + fresh `sid` check (G-auth-4) | `P0` | ✅ Done (bearer `tv`+`sid`; password change/reset bump `tv` + revoke families; ban at issue + refresh); **cookie-path `tv` parity still EQ5** |
 | 8 | Logout / logout-others / logout-all wired for bearer families | `P0` | ✅ Done (cookie body frozen; logout deletes session row; **`logoutFromAllDevices` one transaction**: delete + `tv++`; cascade removes families) |
-| 9 | Apple Sign-in identity verification (or documented exception) | `P1` | ⬜ Planned (gated on parent Q5) |
+| 9 | Apple Sign-in identity verification (or documented exception) | `P1` | ✅ Done (`POST /api/auth/mobile/apple` + `src/services/apple-auth.ts` 2026-09-24; needs deployed `APPLE_CLIENT_ID` + device capture for live proof) |
 | 10 | Integration tests: full suite — cookie regression + bearer/refresh/revocation (G-auth-6) | `P0` | ✅ Done local gate (`tests/bearer-auth-matrix.test.ts` 22/22 + baseline/unit green; **staging live capture still Step 11**) |
 | 11 | Wire-contract fixture registration + mobile live auth capture (E1) | `P0` | ⬜ Planned (needs deployed/staging backend + Flutter capture; sibling Flutter contract paths not present in this workspace) |
 | 12 | Pen/app-scoped audiences beyond provisional reader id (G-auth-3) | `P1` | ⬜ Planned (gated on parent Q6) |
@@ -47,7 +48,7 @@ The backend is now a **dual-credential** Auth.js cookie + mobile bearer service.
 - CORS already allows `Authorization` (`app.ts`) and **no-Origin** requests — native plumbing ready (Step 2 confirmed; still confirm Flutter HTTP stack sends no `Origin`).
 - Inbound `Authorization` consumers: user bearer (new branch) + static `CRON_SECRET` in `src/routes/cron.ts` (service-bearer registry — NB-2). Workflow/Stripe/Xendit use other headers.
 
-**Still open (not pre-implementation inventory):** Apple login (Step 9), `/mobile/google` + `/mobile/me` (optional), audience enforcement beyond provisional `aud` (Step 12), cookie-path `tv` parity (EQ5), Step 11 live fixtures, parent Q5/Q6 owner answers. **Step 10 local matrix is green** (`tests/bearer-auth-matrix.test.ts` 22/22); migration `0099` applied.
+**Still open (not pre-implementation inventory):** `/mobile/me` (optional), audience enforcement beyond provisional `aud` (Step 12), cookie-path `tv` parity (EQ5), Step 11 live fixtures, parent Q5/Q6 owner answers (Apple code exists; written Q5 acceptance still an artifact). **Step 10 local matrix is green** (`tests/bearer-auth-matrix.test.ts` 22/22 + `tests/mobile-oauth-issuance.test.ts` 9/9; suite 97); migration `0099` applied.
 
 ### Pain Points
 
@@ -57,7 +58,7 @@ The backend is now a **dual-credential** Auth.js cookie + mobile bearer service.
 2. ~~**Revocation is incomplete**~~ — **closed for bearer:** `tv` + fresh `sid` + family revoke + logout session delete; residual = cookie-path `tv` (EQ5) only (`logoutFromAllDevices` now one transaction).
 3. ~~**Web cookie path must not regress / no tests**~~ — **closed for local gate:** baseline + CI + Step 10 bearer/cookie matrix green; **live staging capture still Step 11** (G-auth-6 evidence for M0).
 4. ~~**Ambiguous identity**~~ — **closed:** invalid bearer + valid cookie → 401; non-Bearer scheme → 401; dual-credential conflict → 401 (`app.ts` hybrid dual-verify).
-5. **Apple / audiences undecided** — G-auth-5 (parent Q5) and G-auth-3 (parent Q6) remain owner product gates.
+5. **Audiences undecided** — G-auth-3 (parent Q6) remains an owner product gate. Apple issuance (G-auth-5 / Q5) is implemented at source level (2026-09-24); written Q5 confirmation + live capture still open.
 6. **Lost refresh response** — EQ3=B (forced re-auth) is the implemented default; **written mobile-product acceptance still required** as Step 1 artifact; EQ3=A is a fast-follow only.
 7. ~~**Serverless rate-limit gap**~~ — **closed for token/refresh:** Redis `checkRateLimit` on `/mobile/token` + `/mobile/refresh` (**IP + family-id** secondary limit).
 
@@ -287,24 +288,27 @@ Harness notes:
 
 ---
 
-### Step 4: Access-token issuance under `/api/auth/*` — ✅ Done (password path); Google/me optional backlog
+### Step 4: Access-token issuance under `/api/auth/*` — ✅ Done (password + Google + Apple); `/mobile/me` optional backlog
 
-**Files:** `src/routes/auth.ts` (`POST /mobile/token`) · `src/services/mobile-tokens.ts` · `src/services/token-family.ts` · `package.json` (`jose` ^6.1.0) · `.env.example` (`MOBILE_ACCESS_SECRET`)
+**Files:** `src/routes/auth.ts` (`POST /mobile/token`, `POST /mobile/google`, `POST /mobile/apple`) · **NEW** `src/services/mobile-login.ts` (SSOT `issueMobileLoginPair`) · `src/services/mobile-tokens.ts` · `src/services/token-family.ts` · `src/services/apple-auth.ts` (2026-09-24) · `src/services/user-controller.ts` (`createOrUpdateOAuthUser` provider parameter) · `src/db/schema.ts` (`userProviders.provider` + `apple`) · `package.json` (`jose` ^6.1.0) · `.env.example` (`MOBILE_ACCESS_SECRET`, `APPLE_CLIENT_ID`)
 
-**Effort:** High (shipped) · **Optional remaining:** `POST /api/auth/mobile/google`, `GET /api/auth/mobile/me`
+**Effort:** High (shipped) · **Optional remaining:** `GET /api/auth/mobile/me`
 
 **Implemented surface:**
 
 | Method | Path | Auth | Role |
 |--------|------|------|------|
 | POST | `/api/auth/mobile/token` | public + **Redis** IP rate limit | Email/password → access + refresh (ban 403 pre-write; atomic session+family txn) |
-| POST | `/api/auth/mobile/google` | — | **Not implemented** — wrap `handleGoogleAuth` when needed (backlog) |
+| POST | `/api/auth/mobile/google` | public + **Redis** IP rate limit | Google ID token (`GOOGLE_CLIENT_ID` aud, `email_verified`) → sub-first provider upsert → `issueMobileLoginPair` |
+| POST | `/api/auth/mobile/apple` | public + **Redis** IP rate limit | Apple identity token (`APPLE_CLIENT_ID` aud, verified email, optional given/family name) → provider upsert → `issueMobileLoginPair` |
 | GET | `/api/auth/mobile/me` | — | **Not implemented** — optional typed identity for session restore (backlog) |
+
+Shared issuance (`issueMobileLoginPair`, 2026-09-24): one code path for ban re-check, atomic session+family transaction, access JWT, refresh family, admin resolution and `auth_mobile_token_issued` audit — consumed by all three routes. Rate limit helper `limitMobileIssuanceByIp` keys `auth-mobile-token:${ip}` (10/60s, fails open). OAuth-only accounts rejected at `/mobile/token` with "This account uses social login. Please continue with Google or Apple."
 
 Requirements:
 
 - **Do not change** `POST /api/auth/verify-credentials` success JSON used by web NextAuth (`auth.ts:228-249`).
-- Reuse lockout (`checkAccountLockout` / `recordFailedLogin`), disposable-email and password rules.
+- Reuse lockout (`checkAccountLockout` / `recordFailedLogin`), disposable-email and password rules (password path); Google/Apple paths do not consume password lockout counters.
 - Access JWT via **`jose`**: `sub` (userId), `sid` (sessionId), `aud` (provisional `reader`), `iss`, `exp` (±30–60s skew leeway on verify), `tv` (`tokenVersion`), alg allow-list (`algorithms: ['HS256']` for M0 per EQ4; `kid` header emitted now to keep rotation non-breaking).
 - **`aud` is provisional until Step 12:** carried and format-validated, but does **not** gate route access until parent Q6 = A is confirmed (EQ2). Reader tokens are accepted on reader+pen routes until then; object-level permissions still apply.
 - Refresh: 256-bit opaque random; store **SHA-256** hash (reuse `hashSHA256` from `src/utils/hash.ts`), family id, userId, sessionId, `expiresAt`, append-only `usedHashes` for rotation + reuse detection; never return server hash to client.
@@ -312,9 +316,11 @@ Requirements:
 - **Ban check before any write:** select `bannedAt` with `tokenVersion`; banned users → **403 `{ "success": false, "error": "Account banned" }`** (audit correction; `auth.ts:769`).
 - **Atomic session + family:** wrap `createSession(userId, tx)` + `createRefreshFamily(..., tx)` in one `dbWrite.transaction` so a mid-login failure cannot leave an orphaned session without a family (`auth.ts:771-791`).
 - **Rate limiting:** use Redis-backed `checkRateLimit` (`src/utils/redis.ts`) keyed by IP — **not** the in-memory `checkRateLimitByIP` (AGENTS.md §3.9.C; in-memory counters reset on serverless cold start).
+- **Apple verification (2026-09-24):** `verifyAppleIdentityToken` — lazy `createRemoteJWKSet` (Apple JWKS), issuer `https://appleid.apple.com`, audience `APPLE_CLIENT_ID`, exp/iat leeway; `email_verified` must be true ("Apple email address is not verified."); missing email on account create → "Apple did not share an email for this account. Allow email sharing or use an existing linked sign-in."; optional `givenName`/`familyName` stored only when present.
+- **Google linking:** `createOrUpdateOAuthUser` links by stable `provider` + subject first; never merges solely on untrusted matching email.
 - Emit `logAuditEvent` on successful issuance (metadata only — no tokens, no PII beyond userId).
 
-**Non-breaking:** Web Google/credentials flows unchanged.
+**Non-breaking:** Web Google/credentials flows unchanged; new routes are additive.
 
 ---
 
@@ -421,17 +427,18 @@ if (authHeader !== undefined && !isServiceBearerPath(c.req.path)) {
 
 ---
 
-### Step 9: Apple Sign-in identity verification — ⬜ Planned
+### Step 9: Apple Sign-in identity verification — ✅ Done (2026-09-24; live device/env proof pending)
 
-**Files:** `src/routes/auth.ts` (new) · env `APPLE_*` client id/team · link/unlink patterns like Google (`auth.ts:1396+`)
+**Files:** `src/routes/auth.ts` (`POST /mobile/apple`) · **NEW** `src/services/apple-auth.ts` · `src/services/user-controller.ts` (`provider: 'apple'` linking) · `src/db/schema.ts` (`userProviders.provider` union) · env `APPLE_CLIENT_ID`
 
-**Effort:** Medium–High · **Gate:** owner **parent Q5** Apple commitment (EQ1)
+**Effort:** Medium (shipped as mobile exchange; not a browser RedirectHandler OAuth flow) · **Gate:** deployed `APPLE_CLIENT_ID` + device capture still owner-gated (written parent Q5 confirmation remains an artifact)
 
-- Verify Apple ID token: issuer, audience, expiry, nonce as applicable; link by **stable provider subject**, never merge on email alone.
-- Support private relay email for new accounts.
-- If Q5 = documented exception (email+Google only on iOS), mark this step **⏩ Skipped** with the written exception in the contract.
+- Verify Apple identity token (RS256 via lazy Apple JWKS): issuer, audience (`APPLE_CLIENT_ID`), expiry, `email_verified`; link by **stable provider subject**, never merge on email alone (`createOrUpdateOAuthUser` sub-first).
+- Reject unverified Apple emails; missing-email create failure returns an actionable message (relay-email guidance).
+- Support private relay / `optional` profile names (`givenName`/`familyName`) for new accounts.
+- **Not done (intentionally):** browser RedirectHandler OAuth code flow with `response_mode=form_post` — native app uses identity-token (ASAuthorization) exchange instead; documented so reviewers do not expect `GET /mobile/apple` redirect endpoints.
 
-**Non-breaking:** Existing Google/credentials link flows unchanged.
+Existing Google/credentials link flows unchanged; `userProviders.provider` union is additive (no migration).
 
 ---
 
@@ -500,15 +507,15 @@ if (authHeader !== undefined && !isServiceBearerPath(c.req.path)) {
 
 > Local engineering questions are prefixed **EQ** to avoid collision with **parent Q5/Q6** (owner product gates). EQ1/EQ2 *carry* the parent answers into this roadmap.
 
-### EQ1. Login providers and Apple commitment (carries **parent Q5**) — ⬜ Open
+### EQ1. Login providers and Apple commitment (carries **parent Q5**) — ⏳ Partially answered by implementation
 
 Options from parent:
 
-- **(A)** Public discovery/reading; login for saves/generation; email/password + Google + **Apple on iOS** — **Recommendation** if App Store Sign-in rules apply to the account feature set.
+- **(A)** Public discovery/reading; login for saves/generation; email/password + Google + **Apple on iOS** — **Recommendation** if App Store Sign-in rules apply to the account feature set. — **Code implemented this option (2026-09-24):** password + Google + Apple mobile exchanges all exist.
 - **(B)** Sign-in required for all reading — heavier anonymous UX impact.
 - **(C)** Email/password only — fastest backend, weaker product parity.
 
-**Recommendation:** Option A (or A with a **written** Apple exception if Apple login is out of scope for v1). Blocks Step 9 and mobile onboarding copy.
+**Status:** Option A is implemented at source level (F02/F83). **Written parent Q5 confirmation** and deployed `APPLE_CLIENT_ID` / `GOOGLE_CLIENT_ID` + device capture remain before this EQ can be marked fully decided. Blocks nothing in backend code now; blocks M0 live-fixture claims and store submission evidence.
 
 ---
 
@@ -560,28 +567,31 @@ Options from parent:
 | **NEW** `src/middleware/bearer.ts` | Bearer parse (**any `Authorization` presence claims intent**) + JWT verify + `tv` + fresh `sid` + mixed-credential reject |
 | **NEW** `src/services/mobile-tokens.ts` | Sign/verify access JWT (`jose`, `kid`, alg allow-list, skew leeway); hash/rotate refresh; family revoke |
 | **NEW** `src/services/token-family.ts` | Optional if split from mobile-tokens |
-| `src/routes/auth.ts` | Existing — additive mobile token/refresh/logout-bearer handlers; reuse `verify-credentials` helpers, `handleGoogleAuth`; password-change paths gain `tv` bump |
+| `src/routes/auth.ts` | Existing — additive mobile token/refresh/logout-bearer handlers + **`POST /mobile/google` + `POST /mobile/apple` (2026-09-24)**; reuse `verify-credentials` helpers, `handleGoogleAuth`; password-change paths gain `tv` bump |
+| **NEW** `src/services/mobile-login.ts` | SSOT `issueMobileLoginPair` shared by password/Google/Apple issuance (2026-09-24) |
+| **NEW** `src/services/apple-auth.ts` | Apple identity-token verify (lazy JWKS, claim asserts, test JWKS injection) (2026-09-24) |
+| `src/services/user-controller.ts` | `OAuthProviderKind` + sub-first `createOrUpdateOAuthUser` / `findUserIdByProviderAccount` / `refreshOAuthProfileFields` (2026-09-24) |
 | `src/routes/index.ts` | Mount if new sub-router |
 | `src/services/session-manager.ts` | Family ↔ `auth_sessions`; transactional delete+bump+revoke; **do not use `sessionExists` LRU as revocation authority** |
 | `src/utils/password-reset.ts` | `resetPassword` must bump `tokenVersion` + revoke refresh families (same tx) |
 | `src/utils/redis.ts` | Reuse `checkRateLimit` for token/refresh IP + family limits (**not** in-memory `checkRateLimitByIP`) |
-| `src/db/schema.ts` | **NEW** refresh-family / hash columns or table; **human** runs `db:generate`/`db:migrate` (AGENTS.md §3.5) |
+| `src/db/schema.ts` | **NEW** refresh-family / hash columns or table + `userProviders.provider` + `apple` (2026-09-24, additive); **human** runs `db:generate`/`db:migrate` (AGENTS.md §3.5) |
 | `src/hono/env.ts` | Context types if needed (`src/types/express.d.ts` only if `AuthUser` gains fields — context bindings live in `env.ts`) |
 | `package.json` | **Add `jose` dependency**; **add `"test": "bun test"` script** |
 | **NEW** `.github/workflows/ci.yml` | PR gate: `bun run check` + `bun test` for auth-touching paths |
 | **NEW** `tests/auth-cookie-baseline.test.ts` | Step 3 envelope + logout + cron baseline (**shipped**) |
 | **PLANNED** `tests/helpers/auth-session.ts` | Signed test-cookie factory for Step 10 global-app matrix (**not yet written**) |
-| `tests/` | Step 10 bearer/refresh/revocation suite (**partial — unit green, DB matrix open**) |
-| `docs/api/AUTH_API_DOCUMENTATION.md` | Document new routes; fix gender-required drift while editing |
+| `tests/` | Step 10 bearer/refresh/revocation suite (**local green**) + **`tests/mobile-oauth-issuance.test.ts` (9/9, 2026-09-24)** |
+| `docs/api/AUTH_API_DOCUMENTATION.md` | Document new routes; fix gender-required drift while editing; **`/mobile/google` + `/mobile/apple` sections added 2026-09-24** |
 | `docs/roadmap/AUTH_ENHANCEMENT_ROADMAP.md` | Cross-link this roadmap (cookie-era hardening ≠ mobile bearer) |
-| `.env.example` | `MOBILE_ACCESS_SECRET` (+ rotation note); no Apple until parent Q5 |
+| `.env.example` | `MOBILE_ACCESS_SECRET` (+ rotation note); **`APPLE_CLIENT_ID` (bundle id `com.twistloom.app`, 2026-09-24)**; `GOOGLE_CLIENT_ID` for Google ID-token audience |
 
 ### Existing auth surface (reference only — do not reshape for web)
 
 | File | Note |
 |------|------|
 | `src/routes/auth.ts:183` | `POST /verify-credentials` — web contract; no tokens (unchanged, NB-1/NB-3) |
-| `src/routes/auth.ts` (`handleGoogleAuth`) | Google ID token verify — reuse inside optional `/mobile/google` (not yet wrapped) |
+| `src/routes/auth.ts` (`handleGoogleAuth`) | Google ID token verify — web NextAuth path; mobile uses dedicated `POST /mobile/google` + `issueMobileLoginPair` (wrapped 2026-09-24) |
 | `src/routes/auth.ts` (`POST /logout`) | Session delete + family cascade + bearer-cache invalidation; byte-identical body (post-audit) |
 | `src/routes/cron.ts:31-60` | Only current inbound Bearer pattern (static `CRON_SECRET`) — **service-bearer registry member; must not enter user-JWT branch** |
 | `src/middleware/nextauth.ts:68-87` | 60s session-verify cache (G-auth-4 bound) |
@@ -621,7 +631,7 @@ Options from parent:
 
 Legend: ✅ Implemented & verified · ⏳ Partial / scoped down · ⬜ Future work · ⏩ Deferred
 
-**Scorecard (2026-09-23, post R1–R4 + R11):** 9/12 summary items fully done (2–8, 10); 1 partial (1); 3 planned/gated (9, 11, 12). Residual ledger: R1–R4 + R11 ✅ done; R5–R10 open (owner gates / live capture / EQ5). Local gate: `bun run check` clean · `bun test` green (baseline + unit + Step 10 matrix 22/22).
+**Scorecard (2026-09-24, post mobile OAuth issuance):** 11/12 summary items fully done (2–10); 1 partial (1); 1 planned/gated (11); 1 gated (12). Residual ledger: R1–R4 + R11 ✅ done; **R5 Google half ✅ done** (Apple `/mobile/google` + `/mobile/apple` landed; `/mobile/me` remains); R6–R10 open (owner gates / live capture / EQ5). Local gate: `bun run check` clean · `bun test` green (baseline + unit + Step 10 matrix 22/22 + mobile-oauth-issuance 9/9 = **97**).
 
 ### Completed
 
@@ -641,6 +651,7 @@ Legend: ✅ Implemented & verified · ⏳ Partial / scoped down · ⬜ Future wo
 - ✅ Step 8 — logout soft-revoke + session delete + cascade + bearer-cache invalidation; **`logoutFromAllDevices` single transaction** (delete + `tv++`; cascade removes families); cookie body byte-identical on all paths.
 - ✅ Step 10 local gate — `tests/helpers/auth-session.ts` (Auth.js JWE factory plain + secure) + `tests/bearer-auth-matrix.test.ts` (no-auth, cron exempt, non-Bearer 401, forged/expired/wrong-secret 401, valid bearer + userId, sid revoked 401, banned 403, tv mismatch 401, cookie factory round-trip + `getAuthUser` decrypt, NB-4 logout body).
 - ✅ `jose` direct dependency + `MOBILE_ACCESS_SECRET` (+ `_PREVIOUS` dual-secret verify) in code and `.env.example`.
+- ✅ Step 4 Google + Step 9 Apple mobile issuance (2026-09-24) — `POST /api/auth/mobile/google` + `POST /api/auth/mobile/apple`; SSOT `issueMobileLoginPair`; parameterized sub-first `createOrUpdateOAuthUser`; `src/services/apple-auth.ts` (lazy JWKS + claim asserts + test injection); shared Redis IP limit across issuance routes; `userProviders.provider` + `apple` (additive); `.env.example` `APPLE_CLIENT_ID`; `tests/mobile-oauth-issuance.test.ts` 9/9 green.
 
 ### In Progress / Residual (real remaining work)
 
@@ -650,21 +661,22 @@ Legend: ✅ Implemented & verified · ⏳ Partial / scoped down · ⬜ Future wo
 | ~~R2~~ | ~~**Confirm `refresh_families` migration applied**~~ | Owner ops · P0 | **✅ Done 2026-09-23** — owner confirmed `drizzle/0099` applied; AUTH_API + this ledger updated. |
 | ~~R3~~ | ~~**`logoutFromAllDevices` → one transaction**~~ | Engineering · P1 | **✅ Done 2026-09-23** — delete + `tv++` share `dbWrite.transaction`; cascade removes families (no post-delete soft-revoke — would match zero rows). |
 | ~~R4~~ | ~~**Refresh family-id rate limit**~~ | Engineering · P2 | **✅ Done 2026-09-23** — IP + family (or hash-bucket) Redis limits on `/mobile/refresh`. |
-| R5 | **Optional `POST /mobile/google` + `GET /mobile/me`** | Engineering · P1–P2 | **High if Flutter needs them for M0;** otherwise defer. Thin wraps of existing `handleAuth`/claims. |
-| R6 | **Step 1 residual: parent Q5/Q6 answers + written EQ3=B acceptance + wire fixtures** | Owner/product · P0 for 9/11/12 | **Blocked on owner.** Engineering can draft fixture JSON from live routes in parallel. |
-| R7 | **Step 11 E1 live capture** (staging + Flutter) | Cross-team · P0 for M0 exit | **Medium — needs deploy + test credentials.** Backend docs already updated. |
-| R8 | **Step 9 Apple** or written Q5 exception | Gated · P1 | **Blocked on Q5.** If exception: mark ⏩ Skipped same day (Low). If implement: Medium–High. |
+| ~~R5~~ | ~~**Optional `POST /mobile/google` + `GET /mobile/me`**~~ | Engineering · P1–P2 | **Google ✅ Done 2026-09-24** (`POST /mobile/google` + `POST /mobile/apple` via `issueMobileLoginPair`). **`GET /mobile/me` remains optional backlog** (P2) until Flutter requests it. |
+| R6 | **Step 1 residual: parent Q5/Q6 answers + written EQ3=B acceptance + wire fixtures** | Owner/product · P0 for 11/12 | **Blocked on owner.** Engineering can draft fixture JSON from live routes in parallel. Apple/Google code implements Q5=A shape; written confirmation still an artifact. |
+| R7 | **Step 11 E1 live capture** (staging + Flutter) | Cross-team · P0 for M0 exit | **Medium — needs deploy + test credentials + deployed `GOOGLE_CLIENT_ID`/`APPLE_CLIENT_ID`.** Backend docs already updated. |
+| R8 | ~~**Step 9 Apple** or written Q5 exception~~ | Gated · P1 | **✅ Code Done 2026-09-24** — written Q5 confirmation folded into R6; live device proof folded into R7. |
 | R9 | **Step 12 pen audiences** or document shared-pair (Q6=B) | Gated · P1 | **Blocked on Q6.** Q6=B → Low (doc only); Q6=A → Medium (enforce `aud`). |
 | R10 | **EQ5 cookie-path `tv` parity** | Engineering after R1 | **Medium — Step 10 local gate is green.** Web regression risk; keep bearer-only until EQ5 approved. |
 | ~~R11~~ | ~~**DUAL_AUTH residual Express-era samples**~~ | Docs · P2 | **✅ Done 2026-09-23** — verify-credentials / signup / forgot-password / reset-password samples replaced with real Hono handlers; rate-limit + route registration sections updated (`router.route`, `c.get("userId")`). |
 
 ### Future / Deferred
 
-- ⬜ Steps 1 residual, 9, 11–12 (owner decisions, Apple, live fixtures, audiences) — see R5–R10 (R11 docs cleanup done).
-- ⬜ Google mobile token endpoint + `/mobile/me` — backlog until Flutter requests them.
+- ⬜ Steps 1 residual, 11–12 (owner decisions, live fixtures, audiences) + optional `/mobile/me` — see R5–R9 (R8 Apple code landed 2026-09-24; R11 docs cleanup done).
+- ⬜ Optional `GET /mobile/me` — backlog until Flutter requests it.
 - ⬜ Cookie-path `tokenVersion` enforcement parity — until **EQ5** approved (Step 10 local gate already green).
 - ⏩ Biometrics / secure local unlock UI — Flutter post-launch.
 - ⏩ Pen dual audiences — until parent Q6 / **EQ2** decided (Step 12).
 - ⏩ EQ3=A idempotent refresh window — only if mobile product rejects forced re-auth UX.
+- ⏩ Apple browser RedirectHandler OAuth flow — native app uses identity-token exchange instead (documented in Step 9).
 
-**Gate:** Do not claim mobile auth integration, M0 exit, or M1 authenticated journeys until **Step 11 fixtures** exist with dated evidence (Step 10 local matrix is green in-repo). Core issue/refresh/verify/logout (Steps 4–8) and R1–R4 + R11 are implemented; remaining risk is owner gates (R6–R9), live capture (R7), and optional endpoints (R5). Owner stop → review → continue applies to further backend work.
+**Gate:** Do not claim mobile auth integration, M0 exit, or M1 authenticated journeys until **Step 11 fixtures** exist with dated evidence (Step 10 local matrix + mobile-oauth-issuance tests are green in-repo). Core issue/refresh/verify/logout (Steps 4–9) and R1–R5 + R8 + R11 are implemented; remaining risk is owner gates (R6/R9), live capture with deployed client IDs (R7), `/mobile/me` (R5 remainder), and EQ5/R10. Owner stop → review → continue applies to further backend work.

@@ -10,6 +10,10 @@
  *   Email login     → POST /verify-credentials  → returns user + isNewUser
  *   Google OAuth    → POST /google-oauth        → verifies id_token, upserts user, returns user + isNewUser
  *   One Tap         → POST /google-one-tap      → same as /google-oauth (different entry point)
+ *   Mobile password → POST /mobile/token        → password grant → native access/refresh pair
+ *   Mobile Google   → POST /mobile/google       → Google ID token → native access/refresh pair
+ *   Mobile Apple    → POST /mobile/apple        → Apple identity token → native access/refresh pair
+ *   Mobile refresh  → POST /mobile/refresh      → rotate opaque refresh secret
  *   Signup          → POST /signup              → creates account, sends verification email
  *   Forgot password → POST /forgot-password     → sends password reset email
  *   Reset password  → POST /reset-password      → resets password with token
@@ -51,14 +55,16 @@ import { checkRateLimitByIP } from '../middleware/rate-limit.js';
 import { checkRateLimit } from '../utils/redis.js';
 import { generateId } from '../utils/uuid.js';
 import { createOrUpdateOAuthUser, setReferrerForNewUser, tryAwardReferralBonus } from '../services/user-controller.js';
+import { issueMobileLoginPair, type MobileTokenPairResponse } from '../services/mobile-login.js';
+import { verifyAppleIdentityToken, type AppleUserProfile } from '../services/apple-auth.js';
 import { validateUsername } from '../utils/username.js';
 import { isTemp as isTemporaryEmail } from 'tempmail-checker';
 import { requireAuth, invalidateCurrentSessionVerifyCache } from '../middleware/nextauth.js';
 import { resolveAdminAccess } from '../middleware/admin-auth.js';
 import { logAuditEvent } from '../utils/audit-log.js';
 import { createSession, getUserSessions, logoutFromSpecificDevice, logoutFromAllOtherDevices, logoutFromAllDevices, deleteSessionById } from '../services/session-manager.js';
-import { revokeAllFamiliesForUser, revokeFamiliesForSession, createRefreshFamily, rotateRefreshToken, peekFamilyIdByPresentedHash } from '../services/token-family.js';
-import { issueAccessToken, getAccessTtlSeconds } from '../services/mobile-tokens.js';
+import { revokeAllFamiliesForUser, revokeFamiliesForSession, rotateRefreshToken, peekFamilyIdByPresentedHash } from '../services/token-family.js';
+import { issueAccessToken } from '../services/mobile-tokens.js';
 import { invalidateBearerCache, extractBearerToken } from '../middleware/bearer.js';
 import { sanitizeUserData, getUserForAuth, getUserIdByEmail } from '../services/user.js';
 import { hashSHA256 } from '../utils/hash.js';
@@ -749,7 +755,7 @@ router.post('/mobile/token', async (c) => {
     }
 
     if (!userData.passwordHash) {
-      return cUnauthorizedError(c, 'This account uses OAuth login. Please sign in with Google.');
+      return cUnauthorizedError(c, 'This account uses social login. Please continue with Google or Apple.');
     }
 
     const isValid = await verifyPassword(password, userData.passwordHash);
@@ -760,61 +766,175 @@ router.post('/mobile/token', async (c) => {
 
     await resetFailedLoginAttempts(userData.userId);
 
-    const [userRow] = await dbRead
-      .select({ tokenVersion: users.tokenVersion, email: users.email, name: users.name, username: users.username, imageUrl: users.imageUrl, isNewUser: users.isNewUser, bannedAt: users.bannedAt })
-      .from(users)
-      .where(eq(users.userId, userData.userId))
-      .limit(1);
-
-    if (!userRow) return cUnauthorizedError(c, 'Invalid credentials');
-    if (userRow.bannedAt) return cForbiddenError(c, 'Account banned');
-
-    // Atomic session + family creation: one transaction so a failure after
-    // session insert cannot leave an orphaned session without a family.
-    const { sessionId, accessToken, refreshToken, familyId } =
-      await dbWrite.transaction(async (tx) => {
-        const sid = await createSession(userData.userId, tx);
-        const [live] = await tx
-          .select({ tokenVersion: users.tokenVersion })
-          .from(users)
-          .where(eq(users.userId, userData.userId))
-          .limit(1);
-        if (!live) throw new Error('User disappeared during login');
-        const access = await issueAccessToken(userData.userId, sid, live.tokenVersion);
-        const fam = await createRefreshFamily(userData.userId, sid, live.tokenVersion, tx);
-        return {
-          sessionId: sid,
-          accessToken: access.token,
-          refreshToken: fam.refreshToken,
-          familyId: fam.familyId,
-        };
-      });
+    // SSOT: same session + access JWT + refresh family issuance as OAuth mobile.
+    const issued = await issueMobileLoginPair(userData.userId);
+    if (!issued.ok) {
+      if (issued.reason === 'banned') return cForbiddenError(c, 'Account banned');
+      return cUnauthorizedError(c, 'Invalid credentials');
+    }
 
     await revokePasswordResetTokens(userData.userId).catch(() => {});
-    const admin = await resolveAdminAccess(userData.userId);
-
     await logAuditEvent(c, 'auth_mobile_token_issued', 'auth').catch(() => {});
 
-    return c.json({
-      accessToken,
-      expiresIn: getAccessTtlSeconds(),
-      refreshToken,
-      tokenType: 'Bearer',
-      familyId,
-      user: {
-        userId: userData.userId,
-        email: userRow.email,
-        name: userRow.name,
-        username: userRow.username,
-        imageUrl: userRow.imageUrl,
-        isNewUser: userRow.isNewUser,
-        isAdmin: admin.isAdmin,
-        sessionId,
-      },
-    });
+    return c.json(issued.pair);
   } catch (error) {
     console.error('[POST /api/auth/mobile/token] ❌', error);
     return cApiError(c, 'Failed to issue mobile tokens', error, 500);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Shared mobile OAuth exchange helpers (Google / Apple → token pair)
+// ---------------------------------------------------------------------------
+
+/** Redis IP limit shared by all mobile issuance routes (AGENTS.md §3.9.C). */
+async function limitMobileIssuanceByIp(c: Context<AppEnv>): Promise<Response | null> {
+  const ip = getClientIp(c);
+  const limit = await checkRateLimit(`auth-mobile-token:${ip}`, {
+    maxRequests: 10,
+    windowSeconds: 60,
+  });
+  return limit.allowed ? null : cRateLimitError(c);
+}
+
+/** Maps a successful {@link issueMobileLoginPair} to the HTTP response. */
+function mobileLoginJson(
+  c: Context<AppEnv>,
+  pair: MobileTokenPairResponse,
+): Response {
+  return c.json(pair);
+}
+
+/**
+ * POST /api/auth/mobile/google
+ *
+ * Exchanges a Google ID token (native Google Sign-In) for the native bearer
+ * pair. Verifies with the same `google-auth-library` path as web One Tap,
+ * upserts the account (`provider: google`), then reuses {@link issueMobileLoginPair}.
+ *
+ * @route POST /api/auth/mobile/google
+ * @body {string} idToken - Google ID token from the device SDK
+ * @returns Same shape as POST /mobile/token
+ */
+router.post('/mobile/google', async (c) => {
+  try {
+    const limited = await limitMobileIssuanceByIp(c);
+    if (limited) return limited;
+
+    const { idToken } = c.get('body') as { idToken?: unknown };
+    if (!idToken || typeof idToken !== 'string') {
+      return cValidationError(c, 'idToken is required');
+    }
+
+    const ticket = await googleClient.verifyIdToken({
+      idToken,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+    const payload = ticket.getPayload();
+    if (!payload?.email) return cUnauthorizedError(c, 'Invalid token payload');
+    if (!payload.email_verified) {
+      return cUnauthorizedError(c, 'Google email address is not verified');
+    }
+
+    const { email, name, picture: image, sub } = payload;
+    const userId = await createOrUpdateOAuthUser({
+      email,
+      name,
+      image,
+      sub,
+      provider: 'google',
+    });
+
+    const issued = await issueMobileLoginPair(userId);
+    if (!issued.ok) {
+      if (issued.reason === 'banned') return cForbiddenError(c, 'Account banned');
+      return cUnauthorizedError(c, 'Invalid credentials');
+    }
+
+    await logAuditEvent(c, 'auth_mobile_token_issued', 'auth').catch(() => {});
+    return mobileLoginJson(c, issued.pair);
+  } catch (error) {
+    console.error('[POST /api/auth/mobile/google] ❌', error);
+    return cApiError(c, 'Google sign-in failed', error, 401);
+  }
+});
+
+/**
+ * POST /api/auth/mobile/apple
+ *
+ * Exchanges an Apple identity token (Sign in with Apple) for the native
+ * bearer pair. RS256 is verified against Apple JWKS with audience
+ * `APPLE_CLIENT_ID`. Link is by stable Apple `sub` first; email (including
+ * Private Relay) is optional once the subject is linked. First-login
+ * `givenName`/`familyName` are accepted for new-account display names only.
+ *
+ * @route POST /api/auth/mobile/apple
+ * @body {string} identityToken - Apple identity token (RS256)
+ * @body {string} [givenName] - First name from the first authorization only
+ * @body {string} [familyName] - Last name from the first authorization only
+ * @returns Same shape as POST /mobile/token
+ */
+router.post('/mobile/apple', async (c) => {
+  try {
+    const limited = await limitMobileIssuanceByIp(c);
+    if (limited) return limited;
+
+    const body = c.get('body') as {
+      identityToken?: unknown;
+      givenName?: unknown;
+      familyName?: unknown;
+    };
+    if (!body.identityToken || typeof body.identityToken !== 'string') {
+      return cValidationError(c, 'identityToken is required');
+    }
+
+    const profile: AppleUserProfile = {
+      givenName: typeof body.givenName === 'string' ? body.givenName : undefined,
+      familyName: typeof body.familyName === 'string' ? body.familyName : undefined,
+    };
+
+    const verified = await verifyAppleIdentityToken(body.identityToken, profile);
+    if (!verified.ok) {
+      return cUnauthorizedError(c, `Apple sign-in failed (${verified.reason})`);
+    }
+
+    const { sub, email, emailVerified, name } = verified.identity;
+    // Explicit unverified email is rejected; missing email still allows a
+    // subject-linked returning user (createOrUpdateOAuthUser resolves sub first).
+    if (email && !emailVerified) {
+      return cUnauthorizedError(c, 'Apple email address is not verified');
+    }
+
+    let userId: string;
+    try {
+      userId = await createOrUpdateOAuthUser({
+        email,
+        name,
+        sub,
+        provider: 'apple',
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes('requires a verified email')) {
+        return cUnauthorizedError(
+          c,
+          'Apple did not share an email for this account. Allow email sharing or use an existing linked sign-in.',
+        );
+      }
+      throw err;
+    }
+
+    const issued = await issueMobileLoginPair(userId);
+    if (!issued.ok) {
+      if (issued.reason === 'banned') return cForbiddenError(c, 'Account banned');
+      return cUnauthorizedError(c, 'Invalid credentials');
+    }
+
+    await logAuditEvent(c, 'auth_mobile_token_issued', 'auth').catch(() => {});
+    return mobileLoginJson(c, issued.pair);
+  } catch (error) {
+    console.error('[POST /api/auth/mobile/apple] ❌', error);
+    return cApiError(c, 'Apple sign-in failed', error, 401);
   }
 });
 

@@ -1,0 +1,1 @@
+CREATE INDEX "usage_date_provider_model_idx" ON "usage" USING btree ("date","provider","model");

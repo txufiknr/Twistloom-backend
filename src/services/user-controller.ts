@@ -200,8 +200,34 @@ export function getEnrichedUserById(userId: string) {
 // createOrUpdateOAuthUser
 // ---------------------------------------------------------------------------
 
+/** OAuth providers that may own a `user_providers` row. */
+export type OAuthProviderKind = 'google' | 'apple';
+
 /**
- * Creates or updates a user from OAuth provider data (Google OAuth / One Tap).
+ * Finds a user id already linked to [provider] + [sub] (stable subject).
+ *
+ * Primary identity key for Apple (email may be Private Relay or withheld) and
+ * a fast path for Google returning users. Returns `null` when unlinked.
+ */
+export async function findUserIdByProviderAccount(
+  provider: OAuthProviderKind,
+  sub: string,
+): Promise<string | null> {
+  const [row] = await dbWrite
+    .select({ userId: userProviders.userId })
+    .from(userProviders)
+    .where(
+      and(
+        eq(userProviders.provider, provider),
+        eq(userProviders.providerAccountId, sub),
+      ),
+    )
+    .limit(1);
+  return row?.userId ?? null;
+}
+
+/**
+ * Creates or updates a user from OAuth provider data (Google / Apple / One Tap).
  *
  * **Create path** (new user — email not in DB):
  *   Calls {@link sanitizeUserData} with `createNew: true` which:
@@ -215,17 +241,46 @@ export function getEnrichedUserById(userId: string) {
  *   Does NOT touch `username` (may have been customised by the user),
  *   `email` (immutable after creation), or any other fields.
  *
+ * **Provider linking:** `provider` defaults to `google` (web One Tap/OAuth);
+ * mobile Apple exchange passes `apple`. Link rows are keyed by
+ * `(userId, provider)` with a unique `(provider, providerAccountId)` so one
+ * Apple/Google subject cannot attach to two users.
+ *
  * @param oAuthUser.email - User email from OAuth provider
  * @param oAuthUser.name - User display name from OAuth provider (optional)
  * @param oAuthUser.image - User profile image URL from OAuth provider (optional)
+ * @param oAuthUser.sub - Stable provider subject id (optional; enables link row)
+ * @param oAuthUser.provider - `google` (default) or `apple`
  * @returns The user ID (existing or newly created)
+ * @throws When `provider` is `apple`, `sub` is set, but `email` is missing and
+ *   no prior provider link exists (cannot create a unique account without an
+ *   email; Private Relay still supplies a stable relay address when shared).
  */
 export async function createOrUpdateOAuthUser(oAuthUser: {
-  email: string;
+  email?: string;
   name?: string;
   image?: string;
   sub?: string;
+  provider?: OAuthProviderKind;
 }): Promise<string> {
+  const provider: OAuthProviderKind = oAuthUser.provider ?? 'google';
+
+  // Subject-first: Apple (and Google) returning users resolve by stable sub
+  // before any email merge, so a changed/withheld email cannot fork identity.
+  if (oAuthUser.sub) {
+    const linkedId = await findUserIdByProviderAccount(provider, oAuthUser.sub);
+    if (linkedId) {
+      await refreshOAuthProfileFields(linkedId, oAuthUser, provider);
+      return linkedId;
+    }
+  }
+
+  if (!oAuthUser.email) {
+    throw new Error(
+      `OAuth ${provider} sign-in requires a verified email to create an account (sub missing link)`,
+    );
+  }
+
   const cleanEmail = sanitizeTextForDB(String(oAuthUser.email).trim().toLowerCase());
 
   // ── Returning user path ────────────────────────────────────────────────────
@@ -260,19 +315,19 @@ export async function createOrUpdateOAuthUser(oAuthUser: {
       invalidateByEmail(cleanEmail);
     }
 
-    // Upsert Google provider — insert if first sign-in, no-op if already recorded
+    // Upsert provider link — insert if first sign-in, no-op if already recorded
     if (oAuthUser.sub) {
       await dbWrite
         .insert(userProviders)
         .values({
           userId: existingUserId,
-          provider: 'google',
+          provider,
           providerAccountId: oAuthUser.sub,
         })
         .onConflictDoNothing({ target: [userProviders.userId, userProviders.provider] });
     }
 
-    // Ensure emailVerified is set for existing user signing in via verified Google OAuth
+    // Ensure emailVerified is set for existing user signing in via verified OAuth
     await dbWrite
       .insert(userAuth)
       .values({
@@ -349,7 +404,7 @@ export async function createOrUpdateOAuthUser(oAuthUser: {
 
     await tx.insert(userProviders).values({
       userId: user.userId,
-      provider: 'google',
+      provider,
       providerAccountId: oAuthUser.sub ?? null,
     });
 
@@ -362,6 +417,38 @@ export async function createOrUpdateOAuthUser(oAuthUser: {
 
   console.log(`[user-controller] ✅ Created new OAuth user: ${newUser.userId}`);
   return newUser.userId;
+}
+
+/**
+ * Best-effort display-name/picture refresh for a subject-linked returning
+ * user (email merge skipped). Never throws — profile drift must not block
+ * sign-in once the stable provider subject already resolves.
+ */
+async function refreshOAuthProfileFields(
+  userId: string,
+  oAuthUser: { name?: string; image?: string },
+  provider: OAuthProviderKind,
+): Promise<void> {
+  try {
+    const updateData: Partial<Pick<DBNewUser, 'name' | 'imageUrl'>> = {};
+    if (oAuthUser.name?.trim()) updateData.name = oAuthUser.name.trim();
+    // Same policy as the email return path: never overwrite a custom avatar
+    // from OAuth picture on subsequent subject-linked logins.
+    if (Object.keys(updateData).length) {
+      await dbWrite
+        .update(users)
+        .set({ ...updateData, lastActive: new Date(), updatedAt: new Date() })
+        .where(eq(users.userId, userId));
+    }
+    console.log(
+      `[user-controller] ✅ Subject-linked ${provider} user refreshed: ${userId}`,
+    );
+  } catch (err) {
+    console.error(
+      `[user-controller] ⚠️ Profile refresh failed for ${provider} ${userId}:`,
+      err,
+    );
+  }
 }
 
 /**
