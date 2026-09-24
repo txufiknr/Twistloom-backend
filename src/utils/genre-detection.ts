@@ -142,6 +142,7 @@ export const GENRE_KEYWORD_MAP = {
       'mythology',
       'fairy-tale',
       'quest',
+      'quests',
       // Indonesian aliases
       'mitologi',
       'dongeng',
@@ -151,10 +152,13 @@ export const GENRE_KEYWORD_MAP = {
       'sword',
       'swords',
       'kingdom',
+      'kingdoms',
       'wizard',
+      'wizards',
       'elf',
       'elves',
       'orc',
+      'orcs',
       // Indonesian aliases
       'pedang',
       'kerajaan',
@@ -185,6 +189,21 @@ export const GENRE_KEYWORD_MAP = {
       'dystopian',
       'futuristic',
       'android',
+      'androids',
+      // "hack"/"hacker"/"hacking" are genre-ambiguous ("life hacking", a
+      // hacking cough, a clever "hack") so they're kept at medium rather
+      // than high/explicit — they can help confirm a cyberpunk signal
+      // alongside other evidence, but can never single-handedly classify
+      // something as scifi.
+      'hack',
+      'hacker',
+      'hacking',
+      // Indonesian alias for "hacker"
+      'peretas',
+      // "wasteland" is genre-ambiguous (post-apocalyptic scifi vs. the
+      // literary/metaphorical sense, e.g. a "cultural wasteland") — kept at
+      // medium for the same reason.
+      'wasteland',
       // Indonesian aliases
       'distopia',
       'futuristik',
@@ -193,9 +212,13 @@ export const GENRE_KEYWORD_MAP = {
     low: [
       'space',
       'implant',
+      'implants',
       'spaceship',
+      'spaceships',
       'laser',
+      'lasers',
       'cyborg',
+      'cyborgs',
       // Indonesian aliases
       'luar-angkasa',
     ],
@@ -221,6 +244,7 @@ export const GENRE_KEYWORD_MAP = {
       'ghosts',
       'demon',
       'demons',
+      'demonic',
       'possession',
       // Indonesian aliases
       'hantu',
@@ -232,7 +256,15 @@ export const GENRE_KEYWORD_MAP = {
       'paranormal',
       'undead',
       'zombie',
+      'zombies',
       'vampire',
+      'vampires',
+      // "asylum" is genre-ambiguous (mental institution vs. political/
+      // refugee asylum — a completely unrelated, often serious drama
+      // subject) so it's kept at medium rather than high: enough to help
+      // confirm a haunted-asylum horror premise alongside other evidence,
+      // never enough on its own to mislabel an asylum-seeker story.
+      'asylum',
       // Indonesian aliases
       'supranatural',
     ],
@@ -240,6 +272,7 @@ export const GENRE_KEYWORD_MAP = {
       'fear',
       'dark',
       'nightmare',
+      'nightmares',
       'creepy',
       'eerie',
     ],
@@ -257,19 +290,31 @@ export const GENRE_KEYWORD_MAP = {
     ],
     high: [
       'detective',
+      'detectives',
       'noir',
       'espionage',
       'suspense',
       'investigation',
+      'murder',
+      'murders',
+      'hitman',
+      'hitmen',
       // Indonesian aliases
       'detektif',
     ],
     medium: [
       'crime',
       'spy',
+      'spies',
       'heist',
+      'heists',
       'conspiracy',
       'whodunit',
+      // "killer" is genre-ambiguous ("killer app", "killer deal") so it's
+      // kept at medium rather than high — enough to help confirm a real
+      // thriller/horror signal, never enough by itself.
+      'killer',
+      'killers',
       // Indonesian aliases
       'kriminal',
       'mata-mata',
@@ -277,10 +322,13 @@ export const GENRE_KEYWORD_MAP = {
     ],
     low: [
       'secret',
+      'secrets',
       'chase',
       'pursuit',
       'clue',
+      'clues',
       'alibi',
+      'alibis',
     ],
   },
 
@@ -309,6 +357,7 @@ export const GENRE_KEYWORD_MAP = {
       'historical',
       'family',
       'relationship',
+      'relationships',
       'friendship',
       // Indonesian aliases
       'sejarah',
@@ -317,6 +366,7 @@ export const GENRE_KEYWORD_MAP = {
       'emotional',
       'love',
       'betrayal',
+      'betrayals',
       'grief',
       'hope',
       // Indonesian aliases
