@@ -63,7 +63,7 @@ const AI_COST_PER_MILLION_PREVIEW: Record<AIChatProvider, { input: number; outpu
   aionlabs:  { input: 0.50, output: 1.50 }, // Estimate — no published rate card found for Aion Labs' paid tier (their site documents the free tier's ~20K token/day allowance but not what happens beyond it). Rough placeholder based on comparable boutique/specialized-model pricing; low confidence.
   chutes:    { input: 0.30, output: 1.20 }, // UPDATED 2026-09-22: "no official rate card found" (the old framing) is no longer true — confirmed live against llm.chutes.ai/v1/models that Chutes publishes real per-model USD pricing, and it spans a huge range across the 13-model catalog (as low as $0.0245/$0.0978 for unsloth/Mistral-Nemo-Instruct-2407-TEE, as high as $3/$15 for moonshotai/Kimi-K3-TEE). This flat figure is now only the fallback for any chutes model NOT covered by a specific override below — the model actually wired into ai-clients.ts has its own override (see below) with the real confirmed rate, so this number rarely gets used in practice. Left as a mid-range guess for anything else.
   llm7:      { input: 0,    output: 0 },    // Not an estimate — LLM7.io has no paid tier at all; it's free-only by construction (an unofficial mirror with no billing path). This accurately reflects that Twistloom will never be invoiced for it, but also means checkDailyCostSpike() structurally can't catch a problem via this provider — its risk is reliability/ToS, not cost. See ai-clients.ts's AI_RATE_LIMITS comment for that caveat.
-  inception: { input: 0,    output: 0 },    // Unconfirmed — Inception Labs is running an API-credits burn campaign; real per-token price appears once the burn ends. $0 placeholder keeps checkDailyCostSpike() from firing on a provider whose true invoice is unknowable right now (same rationale as llm7).
+  inception: { input: 0.25, output: 0.75 }, // UPDATED 2026-09-22 — the old $0 framing ("API-credits burn campaign") was wrong: confirmed via Inception's own blog that free access is a ONE-TIME 10-million-token grant per account on signup, not an ongoing free rate — unlike llm7 (true $0, no paid tier ever exists), Inception has a real per-token invoice waiting once that grant is spent. Priced at mercury-2's confirmed real rate so checkDailyCostSpike() can actually do its job here once the free grant runs out, instead of staying blind to a real cost the way a $0 placeholder would.
 };
 
 /**
@@ -199,13 +199,21 @@ const AI_MODEL_COST_OVERRIDES: AICostOverride[] = [
   // would just be duplicating the default for no benefit.
 
   // Cloudflare
-  { match: "mistral-7b-instruct", input: 0.01, output: 0.01 },
+  // REMOVED 2026-09-22: `{ match: "mistral-7b-instruct", input: 0.01, output: 0.01 }`
+  // used to live here, priced for @cf/mistral/mistral-7b-instruct-v0.1 — Cloudflare
+  // deprecated that model 2026-05-30 (see ai-clients.ts's AI_CHAT_MODELS_WRITING.cloudflare
+  // for the full story) and it no longer appears anywhere in this file. Replaced with
+  // overrides for the three models Cloudflare's own migration notice recommended instead.
+  { match: "glm-4.7-flash", provider: "cloudflare", input: 0.07, output: 0.40 }, // ADDED 2026-09-22 — Cloudflare Workers AI's published rate for @cf/zai-org/glm-4.7-flash (matches the same model's OpenRouter-listed price, so likely a pass-through rather than a Cloudflare-specific markup — unconfirmed which).
+  { match: "gemma-4-26b-a4b-it", provider: "cloudflare", input: 0.10, output: 0.30 }, // ADDED 2026-09-22 — estimate. Cloudflare hasn't published this specific model's Workers AI rate anywhere I could confirm; proxied from comparable efficient open-vision-model pricing on Workers AI. Low confidence — replace with Cloudflare's own published number once available.
+  { match: "kimi-k2.6", provider: "cloudflare", input: 0.15, output: 0.60 }, // ADDED 2026-09-22 — estimate, same low-confidence caveat as gemma-4-26b-a4b-it above; no Cloudflare-specific published rate found for this exact model yet.
 
-  // Inception (diffusion LLM) — mercury-coder-small. $0 while Inception Labs
-  // runs its API-credits burn campaign; provider-scoped so the entry only
-  // ever charges the diffusion provider (an autoregressive model deliberately
-  // named "mercury-*" elsewhere would otherwise inherit this placeholder).
-  { match: "mercury-coder-small", provider: "inception", input: 0, output: 0 },
+  // Inception (diffusion LLM) — mercury-2 as of the 2026-09-22 model-name fix
+  // (was mercury-coder-small; see ai-clients.ts). Free up to a one-time 10M-token
+  // account grant, then bills at mercury-2's real rate — provider-scoped so this
+  // only ever charges the diffusion provider (an autoregressive model deliberately
+  // named "mercury-*" elsewhere would otherwise inherit it).
+  { match: "mercury-2", provider: "inception", input: 0.25, output: 0.75 },
 ];
 
 /**

@@ -506,7 +506,14 @@ export const AI_STREAM_DEFAULT_MODEL: Record<AIChatProvider, string> = {
   // will stream ahead of the actual answer.
   nvidia: 'nvidia/llama-3.3-nemotron-super-49b-v1.5',
   openrouter: 'deepseek/deepseek-r1',
-  cloudflare: '@cf/meta/llama-3.1-8b-instruct',
+  // FIXED 2026-09-22: confirmed against Cloudflare's own official changelog
+  // (developers.cloudflare.com/changelog, "Planned model deprecations on
+  // Workers AI", posted 2026-05-08) — @cf/meta/llama-3.1-8b-instruct was
+  // deprecated 2026-05-30, over three months before this fix. See
+  // AI_CHAT_MODELS_WRITING.cloudflare for the full story — this exact model
+  // was silently dead in four places across this file at once. Replaced
+  // with Cloudflare's own official recommended replacement.
+  cloudflare: '@cf/google/gemma-4-26b-a4b-it',
   jina: 'jina-embeddings-v5-text-small',
   ovhcloud: 'gpt-oss-120b',
   sambanova: 'DeepSeek-V3.2',
@@ -523,7 +530,14 @@ export const AI_STREAM_DEFAULT_MODEL: Record<AIChatProvider, string> = {
   // alone may not fix a 402.
   chutes: 'unsloth/Mistral-Nemo-Instruct-2407-TEE',
   llm7: 'default',
-  inception: 'mercury-coder-small',
+  // FIXED 2026-09-22: `mercury-coder-small` (without a `-beta` suffix) isn't
+  // confirmed as a currently-valid Inception model ID — the working examples
+  // found for that exact coder variant all use `mercury-coder-small-beta`,
+  // and Inception's own current SDKs/docs (agno, others) default to
+  // `mercury-2` as the current model, not the year-and-a-half-old Mercury
+  // Coder line. Swapped to `mercury-2`, Inception's own documented default.
+  // See AI_CHAT_MODELS_WRITING.inception for the cost-framing correction too.
+  inception: 'mercury-2',
 }
 
 /**
@@ -629,10 +643,25 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
     'qwen/qwen3-next-80b-a3b-instruct', // 262K native context (extensible to ~1M via YaRN rope scaling). Plain instruct variant — no thinking-mode toggle to worry about, unlike the nemotron pick above (the separate qwen3-next-80b-a3b-thinking variant is the one with reasoning traces). MoE (80B total / 3B active params), Apache 2.0. Intricate, heavily detailed — good fit for massive lore.
   ],
   cloudflare: [
-    '@cf/mistral/mistral-7b-instruct-v0.1', // Raw European tone hosted directly on the edge.
-    '@cf/meta/llama-3.1-8b-instruct', // Punchy, fast, and excellent for sudden jump-scare pacing.
+    // FIXED 2026-09-22 — confirmed directly against Cloudflare's own official
+    // changelog (developers.cloudflare.com/changelog, "Planned model
+    // deprecations on Workers AI", 2026-05-08): @cf/mistral/mistral-7b-instruct-v0.1,
+    // @cf/meta/llama-3.1-8b-instruct, AND @cf/google/gemma-3-12b-it were ALL
+    // deprecated on 2026-05-30 — three of this array's four entries, dead for
+    // nearly four months. That's the same failure pattern as the Groq and
+    // OVHcloud incidents earlier this session: every WRITING call reaching
+    // cloudflare was very likely hitting three guaranteed failures before
+    // (maybe) landing on the one surviving entry. Replaced with Cloudflare's
+    // own officially-named recommended replacements for this exact
+    // deprecation wave, not a guess.
+    '@cf/zai-org/glm-4.7-flash', // Cloudflare's official recommended replacement for the retired mistral-7b-instruct-v0.1 slot — fast multilingual model, multi-turn tool calling.
+    '@cf/moonshotai/kimi-k2.6', // Cloudflare's official recommended replacement for the retired gemma-3-12b-it slot — capable tool-calling/vision model built for agentic workloads; untested here for fiction-prose quality specifically.
+    '@cf/google/gemma-4-26b-a4b-it', // Cloudflare's official recommended replacement for the retired llama-3.1-8b-instruct slot (same slot as the fixed AI_STREAM_DEFAULT_MODEL.cloudflare) — efficient, vision-capable, tool calling.
+    // NOT independently confirmed dead or alive this pass — old (Feb 2024
+    // vintage) and absent from the specific deprecation notice checked above,
+    // but not verified against Cloudflare's live catalog either. Kept, not
+    // removed, but flagged as lower-confidence than the three fixes above.
     '@cf/qwen/qwen1.5-14b-chat-awq', // Great for intricate physical environment descriptions.
-    '@cf/google/gemma-3-12b-it',
   ],
   cohere: [
     'command-r-08-2024' // Reads like an academic summary. Use only as a last resort for prose.
@@ -696,8 +725,17 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
   // (diffusion models don't "attend to" prior page text) is mitigated by the
   // 9-stage parse pipeline + evaluator recursion; see
   // docs/roadmap/AI_DIFFUSION_TOKEN_SAVING_EXECUTION_ROADMAP.md Step 6.
+  // FIXED 2026-09-22: `mercury-coder-small` swapped to `mercury-2` — see
+  // AI_STREAM_DEFAULT_MODEL.inception for why (the coder-small variant's
+  // confirmed-working ID has a `-beta` suffix this file never had, and
+  // Inception's own current docs default to mercury-2 anyway). Also
+  // correcting the framing below: Inception's "free" access isn't an
+  // ongoing rate — it's a one-time 10 million token grant per account on
+  // signup (confirmed via Inception's own blog), after which mercury-2
+  // bills at its real $0.25/$0.75 per-1M-token rate (see ai-cost.ts, no
+  // longer a $0 placeholder for the reasons the old comment there gave).
   inception: [
-    'mercury-coder-small', // Diffusion decoder; $0 during Inception's API-credits burn campaign.
+    'mercury-2', // Diffusion decoder; free up to a one-time 10M-token account grant, real per-token pricing after that.
   ],
   llm7: [
     'default', // Unaffiliated mirror with no SLA; absolute last resort[cite: 3].
@@ -782,9 +820,12 @@ export const AI_CHAT_MODELS_IDEA: AIModelSelection = {
     'qwen/qwen3.8-27b', // FIXED 2026-09-22 — qwen/qwen3.6-27b deprecated on Groq 09/14/26; this is Groq's official recommended successor (same context/capabilities).
   ],
   cloudflare: [
-    '@cf/mistral/mistral-7b-instruct-v0.1',
-    '@cf/meta/llama-3.1-8b-instruct',
-    '@cf/qwen/qwen1.5-7b-chat-awq',
+    // FIXED 2026-09-22 — see AI_CHAT_MODELS_WRITING.cloudflare for the full
+    // story: both entries below were officially deprecated by Cloudflare on
+    // 2026-05-30, confirmed against their own changelog.
+    '@cf/zai-org/glm-4.7-flash', // Cloudflare's official recommended replacement for mistral-7b-instruct-v0.1.
+    '@cf/google/gemma-4-26b-a4b-it', // Cloudflare's official recommended replacement for llama-3.1-8b-instruct.
+    '@cf/qwen/qwen1.5-7b-chat-awq', // Not independently confirmed dead or alive this pass — see the same caveat on the Qwen1.5 entry in WRITING.cloudflare.
   ],
   // UPDATED 2026-09-22: meta/llama-3.3-70b-instruct retired from NIM
   // 2026-08-26 — see AI_CHAT_MODELS_WRITING.nvidia above for the full story.
@@ -836,8 +877,10 @@ export const AI_CHAT_MODELS_IDEA: AIModelSelection = {
  * diffusion decoders are roughly an order of magnitude cheaper per token than
  * autoregressive decoders.
  *
- * PROMOTED 2026-08-15: `mercury-coder-small` now also lives in
- * AI_CHAT_MODELS_WRITING as the $0 bottom writing rung (see its entry there).
+ * PROMOTED 2026-08-15: Inception's Mercury model (mercury-2 as of the
+ * 2026-09-22 naming fix — see AI_CHAT_MODELS_WRITING.inception) now also
+ * lives in AI_CHAT_MODELS_WRITING as the bottom writing rung (see its entry
+ * there for current cost framing).
  * This selection is kept as a dedicated pool for two reasons: it is what the
  * Step-6 trial harness (`tests/test-diffusion-adherence.ts`) drives, and it
  * remains the *isolated* way to route single-shot IDEA/THEME-scale diffusion
@@ -848,8 +891,13 @@ export const AI_CHAT_MODELS_IDEA: AIModelSelection = {
  * the mitigation once live.
  */
 export const AI_CHAT_MODELS_DIFFUSION: AIModelSelection = {
+  // FIXED 2026-09-22: swapped mercury-coder-small → mercury-2 — see
+  // AI_STREAM_DEFAULT_MODEL.inception for the full reasoning. NOTE: if
+  // tests/test-diffusion-adherence.ts (the Step-6 trial harness this pool
+  // feeds) hardcodes the model string separately rather than importing this
+  // constant, that file needs the same edit — not in hand to check here.
   inception: [
-    'mercury-coder-small', // $0 during Inception's API-credits burn campaign[cite: 3].
+    'mercury-2', // Free up to a one-time 10M-token account grant, real per-token pricing after that[cite: 3].
   ],
 };
 
@@ -912,9 +960,14 @@ export const AI_CHAT_MODELS_TRANSLATION: AIModelSelection = {
     'meta-llama/llama-3.3-70b-instruct:free', // High-octane cinematic action and dialogue.
   ],
   cloudflare: [
+    // NOT independently confirmed dead or alive this pass — see the same
+    // caveat on the Qwen1.5 entry in WRITING.cloudflare.
     '@cf/qwen/qwen1.5-14b-chat-awq', // Qwen is notoriously strong at multilingual tasks.
-    '@cf/mistral/mistral-7b-instruct-v0.1',
-    '@cf/meta/llama-3.1-8b-instruct'
+    // FIXED 2026-09-22 — both entries below were officially deprecated by
+    // Cloudflare on 2026-05-30; see AI_CHAT_MODELS_WRITING.cloudflare for the
+    // full story and source.
+    '@cf/zai-org/glm-4.7-flash', // Cloudflare's official recommended replacement for mistral-7b-instruct-v0.1; also strong multilingual per Cloudflare's own model description.
+    '@cf/google/gemma-4-26b-a4b-it', // Cloudflare's official recommended replacement for llama-3.1-8b-instruct.
   ],
   // Possesses enough language complexity to grasp context, maintain story continuity, and accurately translate dialogue.
   // Optimized for 10 core languages: English, French, Spanish, Italian, German, Portuguese, Japanese, Korean, Chinese, Arabic.
