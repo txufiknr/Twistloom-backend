@@ -172,7 +172,7 @@ import { getBookModeCreditCostForUser, getCreditCostForUser, calculateBranchSwit
 import { getJourneyForks, reconstructFork, resolveCurrentPageId, narrateForkAlternative } from "../services/time-travel.js";
 import { savedPaths } from "../db/schema.js";
 import { CREDIT_ERRORS } from "../config/errors.js";
-import { getRefundForStep, isAtPointOfNoReturn, BOOK_GENERATION_COST } from "../config/generation-refund.js";
+import { getRefundForStep, isAtPointOfNoReturn } from "../config/generation-refund.js";
 import { triggerBookGenerationWorkflow, isGenerationStale } from "../services/book-creation.js";
 import { cancelGitHubWorkflowRuns } from "../utils/github-workflow.js";
 import { requireEnv } from "../utils/env.js";
@@ -1116,6 +1116,7 @@ router.post('/:bookId/cancel', requireAuth, async (c) => {
       .select({
         bookUserId:       books.userId,
         bookStatus:       books.status,
+        mode:             books.mode,
         generationStatus: bookGenerations.generationStatus,
         generationStep:   bookGenerations.generationStep,
         isRefunded:       bookGenerations.isRefunded,
@@ -1212,9 +1213,11 @@ router.post('/:bookId/cancel', requireAuth, async (c) => {
 
     // ── Calculate stage-based refund ──────────────────────────────────────────
     //
-    // Refund depends on the generation step the workflow had reached.
+    // Refund depends on the generation step the workflow had reached, as a
+    // fraction of what the user actually paid for the book's mode.
     // Early stages get a full refund; later stages get a partial refund.
-    const refundAmount = getRefundForStep(data.generationStep ?? null);
+    const chargedCost = getBookModeCreditCostForUser(userId, data.mode);
+    const refundAmount = getRefundForStep(data.generationStep ?? null, data.mode, userId);
 
     // ── Refund credits ────────────────────────────────────────────────────────
     //
@@ -1225,7 +1228,7 @@ router.post('/:bookId/cancel', requireAuth, async (c) => {
       if (refundAmount && refundAmount > 0) {
         await addCredits(userId, refundAmount, {
           context:  'book_creation_cancelled',
-          metadata: { bookId, generationStep: data.generationStep, originalCost: BOOK_GENERATION_COST, refundAmount },
+            metadata: { bookId, generationStep: data.generationStep, originalCost: chargedCost, refundAmount },
         });
       }
 
@@ -1236,7 +1239,7 @@ router.post('/:bookId/cancel', requireAuth, async (c) => {
         .where(eq(bookGenerations.bookId, bookId));
 
       const refundMsg = refundAmount
-        ? `${refundAmount}/${BOOK_GENERATION_COST} credits refunded`
+        ? `${refundAmount}/${chargedCost} credits refunded`
         : 'no refund (generation had not started)';
       console.log(`[POST /api/books/:bookId/cancel] ✅ Book ${bookId} cancelled, ${refundMsg} for user ${userId}`);
     } catch (refundError) {

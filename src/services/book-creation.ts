@@ -584,6 +584,7 @@ async function updateBookGenerationStatusCore(
           .select({
             userId: books.userId,
             generationStep: bookGenerations.generationStep,
+            mode: bookGenerations.mode,
             isRefunded: bookGenerations.isRefunded,
           })
           .from(bookGenerations)
@@ -593,7 +594,7 @@ async function updateBookGenerationStatusCore(
           .limit(1);
 
         if (current && !current.isRefunded) {
-          const refundAmount = getRefundForStep(current.generationStep ?? null) ?? 0;
+          const refundAmount = getRefundForStep(current.generationStep ?? null, current.mode, current.userId) ?? 0;
           if (current.userId && refundAmount > 0) {
             await addCredits(current.userId, refundAmount, {
               context: 'book_generation_failed',
