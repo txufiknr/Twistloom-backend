@@ -148,7 +148,7 @@ import type { ActionProgressEvent, CandidateGenerationStatus } from "../types/ca
 import { GITHUB_REPO_CONFIG } from "../config/env.js";
 import { pollForCandidateGeneration, sendSSEEvent } from "../utils/sse.js";
 import type { StoryMC } from "../types/character.js";
-import { triggerCandidateGenerationWorkflow, validateAndRetrievePageForGeneration } from "../utils/candidate-generation.js";
+import { releaseGenerationClaim, triggerCandidateGenerationWorkflow, validateAndRetrievePageForGeneration } from "../utils/candidate-generation.js";
 import { SSE_POLLING_CONFIG } from "../config/candidate-generation.js";
 import { getPsychologicalProfileResult } from "../services/psychological-profile.js";
 import { getLockedPaths } from "../services/locked-paths.js";
@@ -5637,8 +5637,9 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
         ?? dbPage.actions?.find((a) => a.destinationPageIds?.length);
       if (completedNovelAction) {
         if (dbPage.isGeneratingStartedAt) {
-          await dbWrite.update(pages).set({ isGeneratingStartedAt: null }).where(eq(pages.id, dbPage.id));
-          dbPage.isGeneratingStartedAt = null;
+          // Compare-and-clear: release only the claim we observed, never a fresher one.
+          const released = await releaseGenerationClaim(dbPage.id, dbPage.isGeneratingStartedAt, 'GET /candidates/status');
+          if (released) dbPage.isGeneratingStartedAt = null;
         }
         if (dbPage.actions.length > 1) {
           await dbWrite.update(pages).set({ actions: [completedNovelAction] }).where(eq(pages.id, dbPage.id));

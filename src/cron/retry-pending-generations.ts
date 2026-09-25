@@ -38,9 +38,23 @@ import { requireEnv } from "../utils/env.js";
 import { getErrorMessage } from "../utils/error.js";
 import { delay } from "../utils/time.js";
 
-export async function retryPendingGenerations(): Promise<string[]> {
+/**
+ * A page processed by this run together with the generation claim observed when
+ * processing began.
+ *
+ * `claimAt` is what lets cleanup release **only** the watermark this run was handed:
+ * a claim re-taken by a fresh dispatcher while the run was working has a different
+ * timestamp and must survive, otherwise the next poll would dispatch a duplicate
+ * workflow while a run is still in flight. `null` means nobody held a claim.
+ */
+export interface ProcessedPageClaim {
+  pageId: string;
+  claimAt: Date | null;
+}
+
+export async function retryPendingGenerations(): Promise<ProcessedPageClaim[]> {
   const startedAt = Date.now();
-  const processedPageIds: string[] = [];
+  const processedPages: ProcessedPageClaim[] = [];
 
   if (MAX_BRANCHING_PREGENERATION_LIMIT > 0) {
     console.log("[retryPendingGenerations] 🔄 Starting retry of pending generations...");
@@ -154,7 +168,7 @@ export async function retryPendingGenerations(): Promise<string[]> {
       }
       
       totalProcessed++;
-      processedPageIds.push(pageData.id);
+      processedPages.push({ pageId: pageData.id, claimAt: dbPage.isGeneratingStartedAt ?? null });
       
       // Small delay between pages to prevent overwhelming AI API
       await delay(500);
@@ -225,13 +239,13 @@ export async function retryPendingGenerations(): Promise<string[]> {
     actionsRegenerated: totalSuccess,
     actionsStillPending: totalFailed
   });
-  return processedPageIds;
+  return processedPages;
 }
 
 /**
  * Processes a specific page for manual trigger
  */
-async function processSpecificPage(bookId: string, pageId: string, triggeredBy?: string, maxDepth?: number): Promise<string | null> {
+async function processSpecificPage(bookId: string, pageId: string, triggeredBy?: string, maxDepth?: number): Promise<ProcessedPageClaim | null> {
   const startedAt = Date.now();
 
   try {
@@ -239,6 +253,9 @@ async function processSpecificPage(bookId: string, pageId: string, triggeredBy?:
 
     // Lazy imports for better memory usage and startup time
     const { getBookFromDB, getPageFromDB, mapToUserStoryPage } = await import("../services/book.js");
+    // dbWrite: this read seeds the compare-and-clear claim, so it must not be served
+    // by a lagging read replica that could report NULL while the primary still holds it.
+    const { dbWrite } = await import("../db/client.js");
 
     // Verify book is not a pen book
     const dbBook = await getBookFromDB(bookId);
@@ -248,7 +265,7 @@ async function processSpecificPage(bookId: string, pageId: string, triggeredBy?:
     }
 
     // Fetch full page data
-    const dbPage = await getPageFromDB(pageId, { bookIdentifier: bookId });
+    const dbPage = await getPageFromDB(pageId, { bookIdentifier: bookId, client: dbWrite });
     if (!dbPage) {
       console.warn(`[processSpecificPage] ⚠️ Page ${pageId} not found, skipping`);
       return null;
@@ -258,12 +275,11 @@ async function processSpecificPage(bookId: string, pageId: string, triggeredBy?:
     if (dbBook?.mode === 'novel' && dbPage.actions?.some(a => a.destinationPageIds?.length)) {
       console.log(`[processSpecificPage] ⏭️ Novel mode page ${pageId} already has destination in DB, skipping candidate generation`);
       if (dbPage.isGeneratingStartedAt) {
-        const { dbWrite } = await import("../db/client.js");
-        const { pages } = await import("../db/schema.js");
-        const { eq } = await import("drizzle-orm");
-        await dbWrite.update(pages).set({ isGeneratingStartedAt: null }).where(eq(pages.id, pageId));
+        const { releaseGenerationClaim } = await import("../utils/candidate-generation.js");
+        // Compare-and-clear: never erase a fresher claim taken by another dispatcher.
+        await releaseGenerationClaim(pageId, dbPage.isGeneratingStartedAt, 'processSpecificPage');
       }
-      return pageId;
+      return { pageId, claimAt: null };
     }
 
     // Convert null fields to undefined for type compatibility
@@ -347,7 +363,7 @@ async function processSpecificPage(bookId: string, pageId: string, triggeredBy?:
       actionsStillPending: generationResult.pendingAfter,
       beforeAfter: `${pendingBefore} → ${generationResult.pendingAfter}`
     });
-    return pageId;
+    return { pageId, claimAt: dbPage.isGeneratingStartedAt ?? null };
   } catch (error) {
     console.error(`[processSpecificPage] ❌ Manual trigger failed for book ${bookId}, page ${pageId}:`, getErrorMessage(error));
     throw error;
@@ -437,44 +453,77 @@ async function processPageGeneration(params: {
 }
 
 /**
- * Cleanup function to reset isGeneratingStartedAt for processed pages
- * 
- * This function resets the isGeneratingStartedAt field to null for specific pages
- * that have been processed, ensuring they are not stuck in a generating state.
- * 
- * @param pageIds - Array of page IDs to reset isGeneratingStartedAt for
- * 
+ * Cleanup function to reset isGeneratingStartedAt for pages processed by this run
+ *
+ * Releases the generation claim **only** where the stored watermark still equals the
+ * claim this run observed when it started processing the page (compare-and-clear).
+ * A page whose claim changed hands while the run was working — e.g. a fresh
+ * dispatcher that queued another workflow — is left untouched, so the next poll does
+ * not dispatch a duplicate while that run is in flight.
+ *
+ * @param processedPages - Pages handled by this run, each with its observed claim
+ *
  * Idempotency:
- * - Safe to run multiple times: only updates specified pages
- * - Uses consistent query: WHERE id IN (pageIds)
- * - Atomic operations: single UPDATE statement
+ * - Safe to run multiple times: a second pass sees `NULL` and matches nothing
+ * - Per-page conditional UPDATE (at most `MAX_BRANCHING_PREGENERATION_LIMIT` statements)
  * - No side effects: only resets timestamp, doesn't modify other data
  */
-async function cleanupGeneratingStartedAt(pageIds: string[]): Promise<void> {
+async function cleanupGeneratingStartedAt(processedPages: ProcessedPageClaim[]): Promise<void> {
   const startedAt = Date.now();
   
   try {
-    if (pageIds.length === 0) {
-      console.log("[cleanupGeneratingStartedAt] ✨ No pages to cleanup");
+    const withClaim = processedPages.filter((entry) => entry.claimAt !== null);
+    if (withClaim.length === 0) {
+      console.log("[cleanupGeneratingStartedAt] ✨ No generation claims to cleanup");
       return;
     }
     
-    console.log(`[cleanupGeneratingStartedAt] 🧹 Starting cleanup of isGeneratingStartedAt for ${pageIds.length} pages...`);
+    console.log(`[cleanupGeneratingStartedAt] 🧹 Releasing generation claims observed at start for ${withClaim.length} pages...`);
     
     // Lazy imports for better memory usage and startup time
     const { dbWrite } = await import("../db/client.js");
     const { pages } = await import("../db/schema.js");
-    const { inArray } = await import("drizzle-orm");
+    const { eq, and } = await import("drizzle-orm");
     
-    // Reset isGeneratingStartedAt to null for specified pages
-    const result = await dbWrite
-      .update(pages)
-      .set({ isGeneratingStartedAt: null })
-      .where(inArray(pages.id, pageIds));
-    
+    let pagesUpdated = 0;
+    for (const { pageId, claimAt } of withClaim) {
+      if (!claimAt) continue;
+      const result = await dbWrite
+        .update(pages)
+        .set({ isGeneratingStartedAt: null })
+        .where(and(eq(pages.id, pageId), eq(pages.isGeneratingStartedAt, claimAt)));
+      const updated = result.rowCount || 0;
+      pagesUpdated += updated;
+      if (updated === 0) {
+        // Diagnostic only: classify the no-op (already released vs a real takeover).
+        // Best-effort — a failed read must never abort the cleanup loop.
+        let current: Date | null = null;
+        let classifyFailed = false;
+        try {
+          const rows = await dbWrite
+            .select({ current: pages.isGeneratingStartedAt })
+            .from(pages)
+            .where(eq(pages.id, pageId))
+            .limit(1);
+          current = rows[0]?.current ?? null;
+        } catch (readError) {
+          classifyFailed = true;
+          console.warn(`[cleanupGeneratingStartedAt] ⚠️ Could not read the current claim on page ${pageId} to classify the no-op release:`, getErrorMessage(readError));
+        }
+        if (classifyFailed) {
+          console.log(`[cleanupGeneratingStartedAt] ⏭️ Claim ${claimAt.toISOString()} on page ${pageId} no longer matches the stored value — left untouched`);
+        } else if (current) {
+          console.log(`[cleanupGeneratingStartedAt] ⏭️ Claim on page ${pageId} changed hands during the run (now ${current.toISOString()}) — left untouched`);
+        } else {
+          console.log(`[cleanupGeneratingStartedAt] ⏭️ Claim on page ${pageId} already released during the run — nothing to clear`);
+        }
+      }
+    }
+
     const durationMs = Date.now() - startedAt;
     console.log(`[cleanupGeneratingStartedAt] ✅ Cleanup completed in ${durationMs}ms:`, {
-      pagesUpdated: result.rowCount || 0
+      pagesEvaluated: withClaim.length,
+      pagesUpdated
     });
   } catch (error) {
     console.error("[cleanupGeneratingStartedAt] ❌ Cleanup failed:", getErrorMessage(error));
@@ -542,19 +591,19 @@ async function main(): Promise<void> {
     const triggeredMaxDepthStr = process.env.TRIGGERED_MAX_DEPTH?.trim();
     const triggeredMaxDepth = triggeredMaxDepthStr ? parseInt(triggeredMaxDepthStr, 10) : undefined;
     
-    let processedPageIds: string[] = [];
+    let processedClaims: ProcessedPageClaim[] = [];
     
     if (triggeredBookId && triggeredPageId) {
       console.log(`[retry-pending-generations] 🎯 On-demand trigger detected`);
-      const processedPageId = await processSpecificPage(triggeredBookId, triggeredPageId, triggeredByUser, triggeredMaxDepth);
-      if (processedPageId) processedPageIds.push(processedPageId);
+      const processedClaim = await processSpecificPage(triggeredBookId, triggeredPageId, triggeredByUser, triggeredMaxDepth);
+      if (processedClaim) processedClaims.push(processedClaim);
     } else {
       console.log(`[retry-pending-generations] 🔄 Scheduled batch processing`);
-      processedPageIds = await retryPendingGenerations();
+      processedClaims = await retryPendingGenerations();
     }
     
-    // Cleanup: Reset isGeneratingStartedAt to null for processed pages only
-    await cleanupGeneratingStartedAt(processedPageIds);
+    // Cleanup: release the generation claims this run observed (compare-and-clear)
+    await cleanupGeneratingStartedAt(processedClaims);
     
     // Global cleanup: Reset isGeneratingStartedAt for stuck generations
     await cleanupStuckGenerations();

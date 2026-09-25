@@ -70,7 +70,7 @@ import { LOCK_KEYS, withLock } from './distributed-lock.js';
 import { createNonRetryableError, type ErrorWithCustomProperties, retryWithBackoffOrNull } from './retry.js';
 import { generateNextPages } from './prompt.js';
 import { dispatchGitHubWorkflow } from './github-workflow.js';
-import { ALLOW_DEEPER_LEVEL_UNTIL_PAGE, MAX_CANDIDATE_PAGE_PER_ACTION, MAX_GENERATION_DURATION_MS, MAX_GENERATION_PARALLEL_DURATION_MS } from '../config/candidate-generation.js';
+import { ALLOW_DEEPER_LEVEL_UNTIL_PAGE, CLAIM_RELEASE_RETRY_DELAY_MS, MAX_CANDIDATE_PAGE_PER_ACTION, MAX_GENERATION_DURATION_MS, MAX_GENERATION_PARALLEL_DURATION_MS } from '../config/candidate-generation.js';
 import { formatDuration } from './formatter.js';
 import { delay } from './time.js';
 import { isValidUuid } from './uuid.js';
@@ -943,6 +943,56 @@ export async function ensureCandidatesForPageWithStrategy(
 
   // Use distributed lock to prevent concurrent processing of the same page
   const lockKey = LOCK_KEYS.CANDIDATE_GENERATION(page.id);
+
+  // Claim written by THIS run while holding the lock (null until the locked body sets it).
+  // Declared outside `withLock` so the `finally` below can give it back on every exit path
+  // — success, early return, or a thrown error — while still releasing only the exact
+  // value this run wrote (a claim re-taken by another dispatcher survives untouched).
+  // This is the one release `cleanupGeneratingStartedAt` cannot backstop (it only knows the
+  // pre-run claim), so a failed attempt is retried once before being given up with a log.
+  let ownGenerationClaimAt: Date | null = null;
+  const releaseOwnGenerationClaim = async (): Promise<void> => {
+    const expected = ownGenerationClaimAt;
+    if (!expected) return;
+    // Null BEFORE attempting so the `.finally()` backstop can never double-fire.
+    ownGenerationClaimAt = null;
+
+    /**
+     * Issues one compare-and-clear release of this run's claim.
+     *
+     * @param attempt - 1-based attempt number, for logs only
+     * @returns `true` when the claim was cleared; `false` when there was nothing to clear
+     *   (already released or changed hands — both correct, non-retryable outcomes);
+     *   `null` when the attempt threw and is worth retrying
+     */
+    const attemptRelease = async (attempt: number): Promise<boolean | null> => {
+      try {
+        return await releaseGenerationClaim(page.id, expected, 'ensureCandidatesForPageWithStrategy');
+      } catch (releaseError: unknown) {
+        // Never fail an already-persisted generation over the release — `withLock` must
+        // still return the page — but a swallowed error would gate a pending page until
+        // the 30-minute stuck reset, so it is retried once below.
+        console.error(`[ensureCandidatesForPageWithStrategy] ⚠️ Failed to release generation claim for page ${page.id} (attempt ${attempt}):`, getErrorMessage(releaseError));
+        return null;
+      }
+    };
+
+    let released = await attemptRelease(1);
+    if (released === null) {
+      await delay(CLAIM_RELEASE_RETRY_DELAY_MS);
+      released = await attemptRelease(2);
+    }
+
+    if (released === true) {
+      console.log(`[ensureCandidatesForPageWithStrategy] 🔓 Cleared isGeneratingStartedAt for page ${page.id}`);
+    } else if (released === null) {
+      console.error(
+        `[ensureCandidatesForPageWithStrategy] ❌ Gave up releasing generation claim for page ${page.id} after 2 attempts — ` +
+        `a done page clears on the next poll, a pending page stays gated until cleanupStuckGenerations (${Math.round(MAX_GENERATION_DURATION_MS / 60_000)} min)`
+      );
+    }
+  };
+
   const lockResult = await withLock<UserStoryPage | null>(lockKey, async () => {
     // Read current page state (no transaction - avoids idle timeout during AI generation)
     const currentDBPage = await getPageFromDB(page.id, { client: dbWrite });
@@ -956,7 +1006,7 @@ export async function ensureCandidatesForPageWithStrategy(
     if (currentBook.mode === 'novel' && initialDBActions.some(action => action.destinationPageIds?.length)) {
       console.log(`[ensureCandidatesForPage] ⏩ Novel mode page ${page.id} already has destination in database (lock check), skipping generation`);
       if (currentDBPage.isGeneratingStartedAt) {
-        await dbWrite.update(pages).set({ isGeneratingStartedAt: null }).where(eq(pages.id, page.id));
+        await releaseGenerationClaim(page.id, currentDBPage.isGeneratingStartedAt, 'ensureCandidatesForPageWithStrategy');
       }
       return currentPage;
     }
@@ -964,15 +1014,19 @@ export async function ensureCandidatesForPageWithStrategy(
     const recheckedPendingDBActions = initialDBActions.filter(action => !action.destinationPageIds?.length);
     if (recheckedPendingDBActions.length === 0) {
       console.log(`[ensureCandidatesForPage] ⏩ Actions already processed by another instance`);
+      // Nothing left to generate: release the claim observed at lock entry (compare-and-clear,
+      // so a claim taken by a newer dispatcher after our read is preserved).
+      await releaseGenerationClaim(page.id, currentDBPage.isGeneratingStartedAt, 'ensureCandidatesForPageWithStrategy');
       return currentPage;
     }
 
     // Mark page as generating under lock to make the state visible to other readers
     // Note: perform update inside the lock so only the lock owner sets the flag
     // Use a timestamp so we can detect stale generators later (`null` when not generating)
+    ownGenerationClaimAt = new Date();
     await dbWrite
       .update(pages)
-      .set({ isGeneratingStartedAt: new Date() })
+      .set({ isGeneratingStartedAt: ownGenerationClaimAt })
       .where(eq(pages.id, page.id));
     console.log(`[ensureCandidatesForPage] 🔒 Set isGeneratingStartedAt for page ${page.id} (lock owner)`);
 
@@ -1318,19 +1372,24 @@ export async function ensureCandidatesForPageWithStrategy(
     console.log(`[ensureCandidatesForPageWithStrategy] ✅ Pre-generated pages: ${succeededCount}/${updatedDBActions.length} actions${pendingAfter > 0 ? '' : ' (COMPLETED)'}`);
     if (pendingAfter > 0) console.warn(`[ensureCandidatesForPageWithStrategy] ⚠️ ${pendingAfter} still pending for candidate page generation`);
 
-    // Final cleanup write
+    // Final cleanup write: persist the reconciled actions first (unconditional — a lost
+    // action write would be data loss), then release the claim this run acquired.
+    // The release is compare-and-clear so a claim re-taken while we were generating
+    // (e.g. a duplicate dispatch queued behind us) survives and still gates new dispatches.
     const [updatedPage] = await dbWrite.update(pages)
       .set({
         actions: updatedDBActions,
-        isGeneratingStartedAt: null,
         updatedAt: new Date()
       })
       .where(eq(pages.id, page.id))
       .returning();
 
-    console.log(`[ensureCandidatesForPageWithStrategy] 🔓 Cleared isGeneratingStartedAt for page ${page.id}`);
+    await releaseOwnGenerationClaim();
     return updatedPage ? await mapToUserStoryPage(updatedPage, userId) : null;
-  }, Math.floor(MAX_GENERATION_DURATION_MS / 1000));
+  }, Math.floor(MAX_GENERATION_DURATION_MS / 1000))
+    // Give back the claim this run took on EVERY exit path — including a thrown error
+    // inside the locked body — while never touching anyone else's (compare-and-clear).
+    .finally(() => releaseOwnGenerationClaim());
 
   // If lock succeeded, return its result
   if (lockResult) return lockResult || page;
@@ -1347,6 +1406,82 @@ export async function ensureCandidatesForPageWithStrategy(
 }
 
 /**
+ * Releases a page's generation claim **only** when the stored value still equals the
+ * claim the caller observed or created (compare-and-clear).
+ *
+ * `pages.isGeneratingStartedAt` is a mutual-exclusion watermark: it is *acquired* by an
+ * atomic conditional UPDATE (`... WHERE is_generating_started_at IS NULL`) and must be
+ * *released* with the same discipline. An unconditional `SET ... = NULL WHERE id = ?`
+ * can erase a fresh claim taken by another dispatcher after this caller read the row,
+ * which re-opens the gate for a duplicate workflow dispatch while a run is still in
+ * flight. Passing the exact expected value makes that interleaving a no-op instead.
+ *
+ * @param pageId - Page whose claim should be released
+ * @param expectedClaim - The timestamp this caller created or last observed. A `null` /
+ *   `undefined` value means this caller never held a claim, so no query is issued.
+ * @param context - Logging prefix (defaults to the helper name)
+ * @returns `true` when the claim was still present and has been cleared; `false` when
+ *   there was nothing to release, the claim changed hands, or the row was already null
+ * @throws Propagates driver errors from the UPDATE (callers on non-critical paths should
+ *   wrap the call in try/catch). The follow-up read used to classify a no-op release is
+ *   best-effort and never throws.
+ *
+ * @example
+ * ```typescript
+ * const claimedAt = new Date();
+ * const won = await dbWrite.update(pages).set({ isGeneratingStartedAt: claimedAt })
+ *   .where(and(eq(pages.id, pageId), isNull(pages.isGeneratingStartedAt)));
+ * // ... later, on failure:
+ * await releaseGenerationClaim(pageId, claimedAt, 'GET /candidates/status');
+ * ```
+ */
+export async function releaseGenerationClaim(
+  pageId: string,
+  expectedClaim: Date | null | undefined,
+  context = 'releaseGenerationClaim',
+): Promise<boolean> {
+  // This caller never held a claim — never touch the column.
+  if (!expectedClaim) return false;
+
+  const result = await dbWrite
+    .update(pages)
+    .set({ isGeneratingStartedAt: null })
+    .where(and(
+      eq(pages.id, pageId),
+      eq(pages.isGeneratingStartedAt, expectedClaim),
+    ));
+
+  const released = (result.rowCount ?? 0) > 0;
+  if (!released) {
+    // Diagnostic only — classify the no-op for logs. A failed read must never turn an
+    // already-finished release into a thrown error for the caller.
+    let current: Date | null = null;
+    let classifyFailed = false;
+    try {
+      const rows = await dbWrite
+        .select({ current: pages.isGeneratingStartedAt })
+        .from(pages)
+        .where(eq(pages.id, pageId))
+        .limit(1);
+      current = rows[0]?.current ?? null;
+    } catch (readError) {
+      classifyFailed = true;
+      console.warn(`[${context}] ⚠️ Could not read the current claim on page ${pageId} to classify the no-op release:`, getErrorMessage(readError));
+    }
+    if (classifyFailed) {
+      console.log(`[${context}] ⏭️ Claim ${expectedClaim.toISOString()} on page ${pageId} no longer matches the stored value — left untouched`);
+    } else if (current) {
+      // "column already NULL" (normal: someone else released it first) vs a genuinely
+      // foreign claim — only the latter signals a duplicate-dispatch risk.
+      console.log(`[${context}] ⏭️ Claim ${expectedClaim.toISOString()} on page ${pageId} changed hands (re-claimed by another dispatcher at ${current.toISOString()}) — left untouched`);
+    } else {
+      console.log(`[${context}] ⏭️ Claim on page ${pageId} already released elsewhere — nothing to clear`);
+    }
+  }
+  return released;
+}
+
+/**
  * Triggers GitHub workflow for on-demand candidate generation
  * 
  * This function dispatches the retry-pending-generations workflow via GitHub REST API,
@@ -1354,9 +1489,12 @@ export async function ensureCandidatesForPageWithStrategy(
  * 
  * This is the recommended approach for Node server deployments where Vercel's waitUntil is unavailable.
  * 
- * **Idempotency**: This function is idempotent per pageId - it checks if generation is already
- * in progress (isGeneratingStartedAt not null) and returns early if so. It sets isGeneratingStartedAt
- * to now() before triggering the workflow to prevent duplicate triggers.
+ * **Idempotency**: This function is idempotent per pageId - the earlier `isGeneratingStartedAt`
+ * read is only a fast path; the authoritative gate is an atomic Compare-And-Set
+ * (`... WHERE is_generating_started_at IS NULL`) so exactly one caller across warm
+ * instances wins the claim and dispatches. Failure paths release the claim through
+ * {@link releaseGenerationClaim} (compare-and-clear) so this invocation can never erase
+ * a claim that was re-taken by another dispatcher in the meantime.
  * 
  * **Retry Logic**: Uses dispatchGitHubWorkflow utility for transient failures (network errors, rate limits).
  * Retries up to 3 times with exponential backoff (1s, 2s, 4s). Only retries on specific HTTP status codes:
@@ -1409,6 +1547,10 @@ export async function triggerCandidateGenerationWorkflow(params: {
   
   console.log(`[${context}] 🚀 Triggered GitHub workflow for "${bookTitle}" page ${pageId} with maxDepth:`, maxDepth);
 
+  // Exact timestamp this invocation wrote when it wins the CAS. Non-null only after the
+  // claim is ours, so failure paths can release precisely what they acquired.
+  let claimedAt: Date | null = null;
+
   try {
     // Check if generation is already in progress (idempotency check)
     const dbPage = await getPageFromDB(pageId, { client: dbWrite });
@@ -1421,7 +1563,7 @@ export async function triggerCandidateGenerationWorkflow(params: {
     if (dbBook?.mode === 'novel' && dbPage.actions?.some(a => a.destinationPageIds?.length)) {
       console.log(`[${context}] ⏭️ Novel mode page ${pageId} already has destination in DB, skipping workflow trigger`);
       if (dbPage.isGeneratingStartedAt) {
-        await dbWrite.update(pages).set({ isGeneratingStartedAt: null }).where(eq(pages.id, pageId));
+        await releaseGenerationClaim(pageId, dbPage.isGeneratingStartedAt, context);
       }
       return { success: true, alreadyInProgress: false };
     }
@@ -1445,6 +1587,7 @@ export async function triggerCandidateGenerationWorkflow(params: {
       console.log(`[${context}] ⏳ Generation claimed or already in progress for page ${pageId}`);
       return { success: true, alreadyInProgress: true };
     }
+    claimedAt = isGeneratingStartedAt;
     console.log(`[${context}] ⏰ Set isGeneratingStartedAt for page ${pageId}:`, isGeneratingStartedAt);
 
     // Trigger workflow via reusable utility
@@ -1469,10 +1612,10 @@ export async function triggerCandidateGenerationWorkflow(params: {
     );
 
     if (!dispatchResult.success) {
-      // Reset isGeneratingStartedAt on failure to allow retry
-      await dbWrite.update(pages)
-        .set({ isGeneratingStartedAt: null })
-        .where(eq(pages.id, pageId));
+      // Release our claim on failure so the next poll can retry. Compare-and-clear:
+      // if the dispatch actually reached GitHub (ambiguous timeout) and a later caller
+      // has already re-claimed, its claim survives untouched.
+      await releaseGenerationClaim(pageId, claimedAt, context);
       
       if (dispatchResult.disabled) {
         console.error(`[${context}] 🚫 GitHub workflow is disabled - generation cannot proceed`);
@@ -1486,13 +1629,14 @@ export async function triggerCandidateGenerationWorkflow(params: {
   } catch (error) {
     const errorMessage = getErrorMessage(error);
     console.error(`[${context}] ❌ Failed to trigger GitHub workflow:`, errorMessage);
-    // Reset isGeneratingStartedAt on error to allow retry
-    try {
-      await dbWrite.update(pages)
-        .set({ isGeneratingStartedAt: null })
-        .where(eq(pages.id, pageId));
-    } catch (resetError) {
-      console.error(`[${context}] ⚠️ Failed to reset isGeneratingStartedAt:`, getErrorMessage(resetError));
+    // Release OUR claim (if we ever took one) to allow a retry. Failures raised before
+    // the CAS — e.g. a page read error — must not touch a claim held by someone else.
+    if (claimedAt) {
+      try {
+        await releaseGenerationClaim(pageId, claimedAt, context);
+      } catch (resetError) {
+        console.error(`[${context}] ⚠️ Failed to reset isGeneratingStartedAt:`, getErrorMessage(resetError));
+      }
     }
     return { success: false, error: errorMessage };
   }
@@ -1528,8 +1672,24 @@ async function checkAndResetStuckGeneration(dbPage: DBPage): Promise<{ isGenerat
   if (isGenerating) return currentState;
 
   try {
-    // Reset stale generation flag and mutate the caller object to reflect the update
-    await dbWrite.update(pages).set({ isGeneratingStartedAt: null }).where(eq(pages.id, dbPage.id));
+    // Compare-and-clear: release ONLY the exact claim we observed. If another dispatcher
+    // cleared and re-claimed the page while we were deciding, the conditional UPDATE
+    // matches 0 rows and that fresh claim survives instead of being erased.
+    const released = await releaseGenerationClaim(dbPage.id, isGeneratingStartedAt, 'checkAndResetStuckGeneration');
+    if (!released) {
+      const rows = await dbWrite
+        .select({ current: pages.isGeneratingStartedAt })
+        .from(pages)
+        .where(eq(pages.id, dbPage.id))
+        .limit(1);
+      const current = rows[0]?.current ?? null;
+      if (current) {
+        console.warn(`[checkAndResetStuckGeneration] 🔁 Claim on page ${dbPage.id} was re-claimed (started at ${current}) — treating as actively generating`);
+        dbPage.isGeneratingStartedAt = current;
+        return { ...currentState, isGenerating: true };
+      }
+      // Column already null: someone else released it, nothing left to clear.
+    }
     dbPage.isGeneratingStartedAt = null;
 
     if (isDone) {
@@ -1589,8 +1749,9 @@ export async function validateAndRetrievePageForGeneration(
     const completedAction = dbPage.actions?.find(a => a.destinationPageIds?.length);
     if (completedAction) {
       if (dbPage.isGeneratingStartedAt) {
-        await dbWrite.update(pages).set({ isGeneratingStartedAt: null }).where(eq(pages.id, dbPage.id));
-        dbPage.isGeneratingStartedAt = null;
+        // Compare-and-clear: only drop the claim we actually observed.
+        const released = await releaseGenerationClaim(dbPage.id, dbPage.isGeneratingStartedAt, 'validateAndRetrievePageForGeneration');
+        if (released) dbPage.isGeneratingStartedAt = null;
       }
       if (dbPage.actions.length > 1) {
         await dbWrite.update(pages).set({ actions: [completedAction] }).where(eq(pages.id, dbPage.id));

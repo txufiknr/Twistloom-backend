@@ -4,6 +4,15 @@ import type { SSEPollingConfig } from "../utils/sse.js";
 export const MAX_GENERATION_DURATION_MS = 30 * 60 * 1000; // 30 minutes
 export const MAX_GENERATION_PARALLEL_DURATION_MS = 780_000; // 13 minutes for cron jobs (20s buffer)
 
+/**
+ * Delay before the single retry of a failed `isGeneratingStartedAt` claim release.
+ *
+ * A swallowed release error leaves a *pending* page gated until the 30-minute stuck
+ * reset, so the lock owner retries once before giving up. Short on purpose: this runs
+ * on the generation hot path's exit, and only when the first attempt threw.
+ */
+export const CLAIM_RELEASE_RETRY_DELAY_MS = 500;
+
 /** Limit to prevent too many exponential pre-generation */
 export const DEFAULT_CANDIDATE_PAGE_PER_ACTION = 2;
 export const MAX_CANDIDATE_PAGE_PER_ACTION = 3; // only for 'multiverse' book mode

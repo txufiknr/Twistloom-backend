@@ -26,6 +26,17 @@ on:
         required: false
         type: number
 
+# Deduplicate concurrent runs per target page. `dispatchGitHubWorkflow()` retries transient
+# HTTP failures (network errors, 429, 502/503/504), so a single page can be dispatched
+# more than once; without a concurrency group both copies would run in parallel and race
+# the same generation. Runs are queued rather than cancelled (`cancel-in-progress: false`)
+# so an in-flight generation is never killed mid-flight; a second pending run for the same
+# page is dropped by GitHub's one-pending-run rule. Scheduled runs have no page id and get
+# a per-run group, so they never block or cancel on-demand runs.
+concurrency:
+  group: candidate-gen-${{ github.event.inputs.page_id || github.run_id }}
+  cancel-in-progress: false
+
 jobs:
   retry-pending-generations:
     # If input is provided, results in "Candidate Generations for {book_title}". Otherwise, results in "Routine Candidate Generations".

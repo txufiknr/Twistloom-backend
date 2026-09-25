@@ -78,13 +78,15 @@ Consequently, the architecture employs **multi-layered guardrails** to prevent d
 
 ## 3. The Three-State Polling Machine
 
-The primary frontend entry point is `GET /api/books/:identifier/:pageId/candidates/status` (`src/routes/books.ts`). It operates as a deterministic three-state machine:
+The primary frontend entry point is `GET /api/books/:identifier/:pageId/candidates/status` (`src/routes/books.ts`). It operates as a deterministic three-state machine (plus one transient combination, documented below the table):
 
 | `isGenerating` | `isDone` | System Behaviour |
 |:---:|:---:|---|
 | **`false`** | **`true`** | **Complete**: All required actions have `destinationPageIds`. Returns completed actions and destination IDs. Clears stale `action_progress` rows in the database. |
 | **`true`** | **`false`** | **In Progress**: Workflow is currently active (`isGeneratingStartedAt` is set and $< 30$ minutes old). Returns `isGenerating: true` with live per-action progress from the `action_progress` table. |
 | **`false`** | **`false`** | **Needs Generation**: Page has pending actions and no active worker. Dispatches GitHub Actions workflow via `triggerCandidateGenerationWorkflow`, sets `isGeneratingStartedAt` atomically, and transitions to `isGenerating: true`. |
+
+> **Transient fourth combination — `isGenerating: true` with `isDone: true`.** A status poll may report this for a few requests when its compare-and-clear release no-ops because another client's `?trigger=true` dispatched a fresh run in the read→update window. A run *is* genuinely in flight, so the response is truthful; it resolves to `false | true` as soon as that run's owner releases its claim (typically on the run's exit, or the next poll for a no-op run).
 
 ### Fast Read-Only Poll Coalescing
 To prevent database query storms from concurrent polling clients, `candidates/status` implements an in-memory short-circuit coalescing cache (`src/utils/poll-coalesce.ts`). Unauthenticated or read-only polling requests (`trigger=false`) within the coalescing window receive cached status responses with zero database queries. Requests with `?trigger=true` bypass the coalescing cache to ensure immediate workflow dispatch evaluation.
@@ -101,13 +103,13 @@ flowchart TD
     L1 -- "Novel mode & destination in DB" --> RET1[Early Return: isDone=true<br/>0 workflow triggers · 0 AI calls]
     L1 -- "Not novel or no destination" --> L2{Layer 2: Pre-Dispatch<br/>Novel Guard & CAS?}
 
-    L2 -- "Novel destination exists" --> RET2[Skip dispatch<br/>Clean isGeneratingStartedAt]
+    L2 -- "Novel destination exists" --> RET2[Skip dispatch<br/>Release claim]
     L2 -- "CAS locked / already running" --> RET3[alreadyInProgress: true<br/>Skip dispatch]
     L2 -- "Acquired CAS lock" --> DISPATCH[Dispatch GitHub Workflow]
 
     DISPATCH --> CRON[Worker: retry-pending-generations.ts]
     CRON --> L3{Layer 3: Worker Entry Guard<br/>Novel destination in DB?}
-    L3 -- "Yes" --> RET4[Skip generation<br/>Clear lock]
+    L3 -- "Yes" --> RET4[Skip generation<br/>Release claim]
     L3 -- "No" --> L4{Layer 4: Pre-Execution Validation<br/>validateCandidateGeneration}
 
     L4 -- "Novel destination exists" --> RET5[canGenerate: false<br/>Exit worker]
@@ -133,8 +135,9 @@ if (dbBook.mode === 'novel') {
     ?? dbPage.actions?.find((a) => a.destinationPageIds?.length);
   if (completedNovelAction) {
     if (dbPage.isGeneratingStartedAt) {
-      await dbWrite.update(pages).set({ isGeneratingStartedAt: null }).where(eq(pages.id, dbPage.id));
-      dbPage.isGeneratingStartedAt = null;
+      // Compare-and-clear: release only the claim we observed, never a fresher one.
+      const released = await releaseGenerationClaim(dbPage.id, dbPage.isGeneratingStartedAt, 'GET /candidates/status');
+      if (released) dbPage.isGeneratingStartedAt = null;
     }
     if (dbPage.actions.length > 1) {
       await dbWrite.update(pages).set({ actions: [completedNovelAction] }).where(eq(pages.id, dbPage.id));
@@ -163,7 +166,7 @@ if (dbBook.mode === 'novel') {
 }
 ```
 - **Bypasses workflow dispatch completely**, even with `?trigger=true`.
-- Clears lingering `isGeneratingStartedAt` locks.
+- Releases lingering `isGeneratingStartedAt` claims **conditionally** (see [Claim Release Discipline](#claim-release-discipline-compare-and-clear)).
 - Sanitizes multiple actions down to the 1 canon action with destination.
 - Cleans up `action_progress` table.
 
@@ -171,7 +174,7 @@ if (dbBook.mode === 'novel') {
 
 ### Layer 2: Pre-Dispatch Novel Guard & Atomic CAS Lock (`src/utils/candidate-generation.ts`)
 Inside `triggerCandidateGenerationWorkflow`:
-1. **Novel check**: Re-queries `dbBook.mode` and checks `dbPage.actions` for existing destinations before touching the GitHub API. If found, clears `isGeneratingStartedAt` and returns `{ success: true, alreadyInProgress: false }`.
+1. **Novel check**: Re-queries `dbBook.mode` and checks `dbPage.actions` for existing destinations before touching the GitHub API. If found, it releases the observed claim conditionally (compare-and-clear) and returns `{ success: true, alreadyInProgress: false }`.
 2. **Compare-And-Set (CAS) Watermark**:
    ```typescript
    const updateResult = await dbWrite.update(pages)
@@ -184,15 +187,63 @@ Inside `triggerCandidateGenerationWorkflow`:
    if ((updateResult.rowCount ?? 0) === 0) {
      return { success: true, alreadyInProgress: true };
    }
+   const claimedAt = isGeneratingStartedAt;
    ```
-   Ensures that only **one single caller** can claim generation rights on a page across concurrent requests.
-3. **Dispatch Rate Gate**: `tryAcquireWorkflowDispatchGate` rate-limits outbound GitHub API calls to prevent flooding during traffic spikes.
+   Ensures that only **one single caller** can claim generation rights on a page across concurrent requests. Measured on the production driver (drizzle + `@neondatabase/serverless`): 6 concurrent CAS attempts on a single row produce exactly 1 winner, so the per-instance coalescing cache is dampening only — the DB is the source of truth.
+3. **Conditional claim release**: if the GitHub dispatch fails, or an exception is thrown before dispatch completes, the caller releases **only** the claim it just took (`releaseGenerationClaim(pageId, claimedAt)`), leaving any claim taken by another dispatcher untouched. On success the claim is held until the worker releases it (Layer 6 / [Claim Release Discipline](#claim-release-discipline-compare-and-clear)).
+
+> **Correction**: `tryAcquireWorkflowDispatchGate` is **not** part of this path. That gate (`src/services/book.ts`) guards *book-level* `on-demand-book-creation.yml` dispatches (`POST /api/books/async` and friends) against terminal/alive book-generation records. Candidate dispatch has no per-process rate gate; duplicate-dispatch suppression instead comes from the CAS above plus the workflow `concurrency` group (below).
+
+---
+
+### Claim Release Discipline (Compare-and-Clear)
+
+`pages.isGeneratingStartedAt` is a mutual-exclusion watermark: it is **acquired** by the atomic CAS above and must be **released** with the same discipline. Every release goes through `releaseGenerationClaim(pageId, expectedClaim, context)`, which issues `UPDATE ... SET is_generating_started_at = NULL WHERE id = $1 AND is_generating_started_at = $2`.
+
+An unconditional `SET ... = NULL WHERE id = $1` can erase a *fresher* claim taken by another dispatcher after the caller read the row — reopening the dispatch gate while a run is still in flight and producing a duplicate workflow run.
+
+| Claim writer | Release point |
+|---|---|
+| Dispatcher (CAS in `triggerCandidateGenerationWorkflow`) | Dispatch failure / pre-dispatch error, novel-done short-circuit |
+| Lock owner (`ensureCandidatesForPageWithStrategy`) | Final cleanup write, plus `.finally()` on every exit path (success, early return, thrown error) — **retried once** on error (see below) |
+| Poll route (novel-done branch in `src/routes/books.ts`) | The claim observed in that request |
+| Cron (`src/cron/retry-pending-generations.ts`) | Per-page claim observed at processing start (`cleanupGeneratingStartedAt`) |
+| Stuck reset (`checkAndResetStuckGeneration`, 30-minute backstop) | Age-conditioned claim observed in the same read |
+
+Because the release is a conditional no-op when the value has changed hands, cleanup passes are **idempotent**: a second pass matches nothing.
+
+#### Release classification & failure handling
+
+- **Claim reads are pinned to the primary.** Every value that is later used as the compare-and-clear operand is read through `dbWrite` — `validateAndRetrievePageForGeneration`, the dispatch CAS read, the lock body's re-read, `retryPendingGenerations`, and `processSpecificPage`. A replica-served `NULL` would make the release miss and strand a live claim.
+- **A 0-row release is classified, not assumed.** The helper re-reads the column (best-effort, never throws): `already released elsewhere` when it is `NULL`, `changed hands` when it holds a different timestamp. Only the latter signals a real takeover / duplicate-dispatch risk, so the logs can be trusted during an incident.
+- **Errors never break the caller.** A failed release must not abort a run that already persisted its pages: the lock owner keeps `withLock`'s result intact and retries once after `CLAIM_RELEASE_RETRY_DELAY_MS` (500 ms) before giving up.
+
+#### Self-heal ladder
+
+If a release is ultimately lost (error on both attempts, process killed mid-write), the claim clears itself in escalating order:
+
+1. **Immediate retry** — the lock owner's second attempt (`releaseOwnGenerationClaim`), covering transient DB errors.
+2. **Next status poll** — a *done* page reaches `checkAndResetStuckGeneration`, whose compare-and-clear matches the current claim and releases it on the spot.
+3. **Cron cleanup** — `cleanupGeneratingStartedAt` releases the claim observed at processing start for every page the run touched.
+4. **30-minute backstop** — `cleanupStuckGenerations` / `checkAndResetStuckGeneration` clear any claim older than `MAX_GENERATION_DURATION_MS`.
+
+Steps 2–4 are what bound the one gap cron cleanup cannot close on its own: it knows only the *pre-run* claim, never the timestamp the lock owner wrote during the run.
+
+**Workflow-level dedupe**: `dispatchGitHubWorkflow` (`src/utils/github-workflow.ts`) retries transient HTTP failures (network error, 429, 502/503/504), so a single page can be dispatched more than once. `.github/workflows/retry-pending-generations.yml` therefore sets:
+
+```yaml
+concurrency:
+  group: candidate-gen-${{ github.event.inputs.page_id || github.run_id }}
+  cancel-in-progress: false
+```
+
+Concurrent runs for the same page are **queued, never cancelled**, so an in-flight generation is never killed mid-flight, and GitHub's one-pending-run rule drops the extra copy. Scheduled runs carry no `page_id` and fall back to `github.run_id`, so they never block or cancel on-demand runs.
 
 ---
 
 ### Layer 3: Background Worker Entry Guards (`src/cron/retry-pending-generations.ts`)
 When the GitHub Actions runner boots up:
-- In `processSpecificPage`: Checks `if (dbBook?.mode === 'novel' && dbPage.actions?.some(a => a.destinationPageIds?.length))` and exits immediately, clearing any stale `isGeneratingStartedAt`.
+- In `processSpecificPage`: Checks `if (dbBook?.mode === 'novel' && dbPage.actions?.some(a => a.destinationPageIds?.length))` and exits immediately, releasing the observed `isGeneratingStartedAt` claim conditionally (compare-and-clear).
 - In `processPageGeneration`: Validates before candidate generation that novel pages with destinations are marked finished (`pendingAfter: 0`).
 
 ---
@@ -223,11 +274,12 @@ In `ensureCandidatesForPageWithStrategy`:
    ```typescript
    if (currentBook.mode === 'novel' && initialDBActions.some(action => action.destinationPageIds?.length)) {
      if (currentDBPage.isGeneratingStartedAt) {
-       await dbWrite.update(pages).set({ isGeneratingStartedAt: null }).where(eq(pages.id, page.id));
+       await releaseGenerationClaim(page.id, currentDBPage.isGeneratingStartedAt, 'ensureCandidatesForPageWithStrategy');
      }
      return currentPage; // Return without calling AI
    }
    ```
+   Releases the claim observed at lock entry — never a fresher claim taken after that read.
 
 ---
 
@@ -376,6 +428,7 @@ sequenceDiagram
     DB-->>API: Actions pending, isGeneratingStartedAt=null
     API->>DB: Atomic CAS (set isGeneratingStartedAt)
     API->>GHA: Dispatch workflow_dispatch (retry-pending-generations.yml)
+    Note over GHA: concurrency group `candidate-gen-{pageId}`<br/>retry-duplicates queue instead of running in parallel
     API-->>R: isGenerating: true, completedActions: 0
     GHA->>DB: Fetch page & lock
     loop For each pending action (parallel)
@@ -383,7 +436,7 @@ sequenceDiagram
         AI-->>GHA: Generated page + stateDelta
         GHA->>DB: persistPageWithState() + upsert action_progress
     end
-    GHA->>DB: Set isGeneratingStartedAt=null
+    GHA->>DB: Release claim (compare-and-clear)
     R->>API: GET /candidates/status (polling)
     API->>DB: Check page
     DB-->>API: All actions completed
@@ -405,7 +458,7 @@ sequenceDiagram
     DB-->>API: dbBook.mode === 'novel' & action has destinationPageIds
     Note over API: Layer 1 Guard: Early Return Triggered!
     opt isGeneratingStartedAt was lingering
-        API->>DB: Clear isGeneratingStartedAt
+        API->>DB: Release observed claim (compare-and-clear)
     end
     opt dbPage had extra actions
         API->>DB: Sanitize dbPage.actions to single completed action
