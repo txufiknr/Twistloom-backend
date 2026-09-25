@@ -32,7 +32,7 @@ import { computeVisitStats, mapActionToSelectedAction, markPageVisited } from ".
 import { sendSystemBroadcast, type SystemBroadcastI18nPayload } from "./broadcast.js";
 import { FREE_ACTION_SELECTION_UNTIL_PAGE, PHASE_EARLY_CEILING, PHASE_LATE_FLOOR, PHASE_FINALE_FLOOR } from "../config/story.js";
 import { buildCustomActionAction } from "../utils/custom-action.js";
-import type { BookAuthor, BookMode, BookPageVisit, BookSortOption, BookStats, BookTranslation, EnrichedBookData, EnrichedBookFirstPage, EnrichedBookGeneration, EnrichedBookSession, VisitBookPageParams, VisitBookPageResult } from "../types/book.js";
+import type { BookAuthor, BookMode, BookPageVisit, BookSortOption, BookSource, BookStats, BookTranslation, EnrichedBookData, EnrichedBookFirstPage, EnrichedBookGeneration, EnrichedBookSession, VisitBookPageParams, VisitBookPageResult } from "../types/book.js";
 import type { Action, ActionHintType, ActionType, Ending, SelectedAction, StoryPhase } from "../types/story.js";
 
 /**
@@ -455,6 +455,23 @@ export function buildModeFilterCondition(mode?: BookMode) {
 }
 
 /**
+ * Builds authoring-origin filter condition (`source` query param).
+ *
+ * Distinct from the `pen` *sort option* (a public showcase category requiring
+ * visibility=public + authoringStatus=complete): this is an owner-scoped
+ * filter that composes with any sort — e.g. `sortBy=creations&source=pen`.
+ *
+ * @param source - Authoring origin (spark|pen)
+ * @returns SQL condition or null if no source filter
+ */
+export function buildSourceFilterCondition(source?: BookSource) {
+  if (!source) {
+    return null;
+  }
+  return source === 'pen' ? eq(books.isPenBook, true) : eq(books.isPenBook, false);
+}
+
+/**
  * Builds rating filter condition (minimum/maximum threshold + optional rating count gate).
  *
  * Uses the denormalized `books.rating` / `books.ratingCount` columns (O(1) reads),
@@ -702,6 +719,8 @@ export function buildBookQuery<T>(
     gender?: string;
     /** Mode filter (novel|interactive|multiverse) */
     mode?: BookMode;
+    /** Authoring-origin filter (spark = AI-generated, pen = human-authored); absent = no filter */
+    source?: BookSource;
     /** Minimum rating threshold (inclusive), 1-5 — "X★ & up" */
     minRating?: number;
     /** Maximum rating threshold (inclusive), 1-5 — "below X" */
@@ -716,7 +735,7 @@ export function buildBookQuery<T>(
     followingFirst?: boolean;
   }
 ) {
-  const { baseQuery, baseCondition, search, bookSortBy, tags, language, lastUpdated, minAge, maxAge, gender, mode, minRating, maxRating, minRatingCount, currentUserId, collection, followingFirst } = params;
+  const { baseQuery, baseCondition, search, bookSortBy, tags, language, lastUpdated, minAge, maxAge, gender, mode, source, minRating, maxRating, minRatingCount, currentUserId, collection, followingFirst } = params;
 
   // Build filter conditions using shared helpers
   const timeCondition      = buildTimeFilterCondition(lastUpdated);
@@ -726,6 +745,7 @@ export function buildBookQuery<T>(
   const ageRangeCondition  = buildAgeRangeFilterCondition(minAge, maxAge);
   const genderCondition    = buildGenderFilterCondition(gender);
   const modeCondition      = buildModeFilterCondition(mode);
+  const sourceCondition    = buildSourceFilterCondition(source);
   const ratingCondition    = buildRatingFilterCondition(minRating, maxRating, minRatingCount);
 
   // Combine all conditions with base condition
@@ -738,6 +758,7 @@ export function buildBookQuery<T>(
     ageRangeCondition,
     genderCondition,
     modeCondition,
+    sourceCondition,
     ratingCondition
   );
 

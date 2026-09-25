@@ -44,6 +44,19 @@ export const bookStatuses = ['active', 'archived', 'draft'] as const;
 export type BookStatus = typeof bookStatuses[number];
 
 /**
+ * Authoring-origin filter for the explore endpoint (`source` query param).
+ *
+ * - `spark`: AI-generated books (`is_pen_book = false`).
+ * - `pen`: Human-authored books written in the Pen editor (`is_pen_book = true`).
+ *
+ * Owner-scoped and composable with any sort (e.g. `sortBy=creations`) —
+ * distinct from the `pen` *sort option*, which is a public showcase category
+ * (visibility=public + authoringStatus=complete). Absent param = no filter.
+ */
+export const bookSources = ['spark', 'pen'] as const;
+export type BookSource = typeof bookSources[number];
+
+/**
  * Statuses reported while a book is being generated.
  *
  * - `pending`: Generation is queued but has not started.

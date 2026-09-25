@@ -135,8 +135,8 @@ import { updateBook, updateBookVisibility, insertBook, uploadBookCoverImage, upl
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
 import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookPage, enrichBooksWithUserData } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache } from "../services/cache.js";
-import type { BookCreationStatus, BookGenerationPayload, BookMode, BookSortOption, BookStatus, BookVisibility, EnrichedBookData } from "../types/book.js";
-import { bookStatuses, bookVisibilities, bookModes, lastUpdatedFilterOptions, storyGenerationSteps } from "../types/book.js";
+import type { BookCreationStatus, BookGenerationPayload, BookMode, BookSortOption, BookSource, BookStatus, BookVisibility, EnrichedBookData } from "../types/book.js";
+import { bookStatuses, bookVisibilities, bookModes, bookSources, lastUpdatedFilterOptions, storyGenerationSteps } from "../types/book.js";
 import { createBookCore, createBookValidate, handleBookCreationError, updateBookGenerationStatus } from "../services/book-creation.js";
 import { executeWithCredits, addCredits } from "../services/credits.js";
 import { logUserActivity, updateUserLastActivity } from "../services/user.js";
@@ -2605,6 +2605,10 @@ router.get("/:id/similar", optionalAuth, async (c) => {
  * @query minRatingCount - Minimum number of approved ratings (e.g. 5) to gate on;
  *                 combine with rating for "4★ & up by at least 5 people"
  * @query status - Filter by comma-separated statuses (only applies with sortBy=creations). Values: active, draft, archived. E.g., "active,draft"
+ * @query source - Filter by authoring origin: spark (AI-generated) | pen (human-authored in the Pen editor).
+ *                 Absent = no filter. Distinct from sortBy=pen (public Pen showcase category).
+ *                 Note: when present, the request bypasses the shared page-1 browse cache and the
+ *                 unfiltered grandTotal shortcut (see shouldCache / noNarrowingFilters guards).
  * @returns Paginated list of books
  * 
  * @remarks
@@ -2744,6 +2748,16 @@ router.get("/explore", optionalAuth, async (c) => {
       sanitizedMode = mode as BookMode;
     }
 
+    // Validate authoring-origin source filter if provided (spark | pen)
+    const sourceParam = c.req.query().source as string | undefined;
+    let sanitizedSource: BookSource | undefined;
+    if (sourceParam) {
+      if (!bookSources.includes(sourceParam as BookSource)) {
+        return cValidationError(c, `Invalid source value. Must be one of: ${bookSources.join(', ')}`);
+      }
+      sanitizedSource = sourceParam as BookSource;
+    }
+
     // Validate lastUpdated filter if provided
     if (lastUpdated && !isValidLastUpdatedFilter(lastUpdated)) {
       return cValidationError(c, `Invalid lastUpdated value. Must be: ${lastUpdatedFilterOptions.join(', ')}`);
@@ -2850,6 +2864,7 @@ router.get("/explore", optionalAuth, async (c) => {
       !ageRange &&
       !gender &&
       !mode &&
+      !sanitizedSource &&
       !statusFilter &&
       !ratingParam &&
       !ratingCountParam &&
@@ -2867,8 +2882,11 @@ router.get("/explore", optionalAuth, async (c) => {
       grandTotalFromQuery = (grandTotalResult?.count as number) ?? 0;
     }
 
-    // Cache strategy: don't cache user-specific or filtered queries
-    const shouldCache = page === 1 && !profileUserId && !isCreations && !isPenDrafts && !search && tagsArray.length === 0 && !language && !lastUpdated && !ageRange && !gender && !mode && !statusFilter && !ratingParam && !ratingCountParam && bookSortBy !== 'reads' && bookSortBy !== 'favorites' && bookSortBy !== 'recommendations' && bookSortBy !== 'for-you';
+    // Cache strategy: don't cache user-specific or filtered queries.
+    // `sanitizedSource` must be listed here: the per-sort cache key below is
+    // sort-only (not query-string keyed), so a source-filtered page would
+    // otherwise poison the shared public browse slot for the TTL.
+    const shouldCache = page === 1 && !profileUserId && !isCreations && !isPenDrafts && !search && tagsArray.length === 0 && !language && !lastUpdated && !ageRange && !gender && !mode && !sanitizedSource && !statusFilter && !ratingParam && !ratingCountParam && bookSortBy !== 'reads' && bookSortBy !== 'favorites' && bookSortBy !== 'recommendations' && bookSortBy !== 'for-you';
     //
     // Per-sort cache key (see CACHE_KEYS.EXPLORE_PAGE_1_BY_SORT). Each public
     // sort option caches page 1 under its OWN key. This fixes a cache-key
@@ -2911,6 +2929,7 @@ router.get("/explore", optionalAuth, async (c) => {
         maxAge,
         gender: sanitizedGender,
         mode: sanitizedMode,
+        source: sanitizedSource,
         minRating,
         maxRating,
         minRatingCount,
@@ -2954,6 +2973,7 @@ router.get("/explore", optionalAuth, async (c) => {
         maxAge,
         gender: sanitizedGender,
         mode: sanitizedMode,
+        source: sanitizedSource,
         minRating,
         maxRating,
         minRatingCount,
