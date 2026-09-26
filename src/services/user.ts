@@ -1148,7 +1148,8 @@ function sanitizeFieldValue(
   field: 'name' | 'bio' | 'imageUrl' | 'gender',
   value: unknown,
 ): string | undefined {
-  if (typeof value !== 'string' || !value) return undefined;
+  // Explicitly empty bios clear the field; omission must preserve it.
+  if (typeof value !== 'string' || (!value && field !== 'bio')) return undefined;
 
   switch (field) {
     case 'name':

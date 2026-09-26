@@ -67,7 +67,7 @@ import { requireNotSuspended, requireNotMuted } from "../middleware/trust-safety
 import { users, books, userAuth, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, userSessions, userCompletedBooks, userComments, transactions, userProviders, userFeedbacks, bookTestimonials, uploadedImages, userReports, moderationReports, moderationAppeals, userEnforcementActions, userBlocks, platformTestimonials, pages, userInventory, posts, customActions } from "../db/schema.js";
 import type { ReportTargetType, ReportType } from "../types/trust-safety.js";
 import { getOrFetchUserEnforcementStatus, getOrCreateUserTrustProfile, getUserTrustSafetyOverview, submitUserAppeal, getUserAppeals } from "../services/trust-safety.js";
-import { isUserVipActive } from "../services/subscription.js";
+import { isUserVipActive, hasActiveVipSubscription } from "../services/subscription.js";
 import { getErrorMessage, cApiError, cNotFoundError, cConflictError, cValidationError, cUnauthorizedError, cForbiddenError } from "../utils/error.js";
 import { eq, and, desc, sql, gte } from "drizzle-orm";
 import { calculatePaginationMeta, extractPaginationParams } from "../utils/pagination.js";
@@ -248,6 +248,7 @@ router.get('/', requireAuth, async (c: Context<AppEnv>) => {
         maxCheckinStreak: streaks.longestStreak,
         stats,
         subscription: { tier },
+        isVip: await hasActiveVipSubscription(userId),
         linkedMethods: providers.map(p => p.provider),
       }
     });
@@ -861,6 +862,7 @@ router.put('/', requireAuth, async (c: Context<AppEnv>) => {
         ...putRest,
         hasReferrer: !!referrerId,
         subscription: { tier: putTier },
+        isVip: await hasActiveVipSubscription(userId),
       },
     });
   } catch (error) {

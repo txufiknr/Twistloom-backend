@@ -17,7 +17,6 @@ export const avatarFrames = [
   'silver',
   'gold',
   'platinum',
-  'obsidian',
   'mythic',
   // ── Archetype Resonance Frames (6) ──
   'worldwalker',

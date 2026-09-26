@@ -378,7 +378,12 @@ export function normalizeGender(gender?: string | null): Gender {
   const normalized = safeString(gender, { trim: true, lowercase: true, minLength: 1 });
   if (!normalized) return 'unknown';
   
-  return normalized.startsWith('f') ? 'female' : 'male';
+  // Exact canonical values prevent unknown/declined answers becoming male.
+  switch (normalized) {
+    case 'female': return 'female';
+    case 'male': return 'male';
+    default: return 'unknown';
+  }
 }
 
 /**
