@@ -15,7 +15,10 @@ import type { Context } from "hono";
 import type { DBNewUser, DBNewUserActivityLog, DBUserActivityLog, DBUserForAuth } from "../types/schema.js";
 import { type AvatarFrame, avatarFrames, PROFILE_TITLES, type ProfileTitle, type CheckinClaimType, type CheckinPostResponse, type CheckinStatusResponse, type Gender } from "../types/user.js";
 import { type DBClient, dbRead, dbWrite } from "../db/client.js";
-import { users, books, posts, userComments, userAuth, userCheckins, userActivityLogs, userSocialLinks } from "../db/schema.js";
+import { users, books, posts, userComments, userAuth, userCheckins, userActivityLogs, userSocialLinks, userAchievements, userInventory } from "../db/schema.js";
+import { CONSUMABLES_REGISTRY } from "../config/consumables.js";
+import { ACHIEVEMENT_REGISTRY } from "../config/achievements.js";
+import type { InventoryItemType } from "../types/consumable.js";
 import { eq, and, gt, ne, sql, desc, or, inArray } from "drizzle-orm";
 import { debounceAsync } from "../utils/debounce.js";
 import { sanitizeTextForDB, cleanSingleLineText, cleanMultilineText, camelCase } from '../utils/text-processing.js';
@@ -1185,6 +1188,82 @@ export type SanitizeProfileResult =
   | { data: Partial<DBNewUser>; errorResponse?: never }
   | { data?: never; errorResponse: Response };
 
+/**
+ * Scribe's Vault avatar frames — derived from the consumables registry so this
+ * equip gate can never drift from what the Store actually sells.
+ */
+const VAULT_FRAME_TYPES: ReadonlySet<string> = new Set(
+  CONSUMABLES_REGISTRY.filter((item) => item.category === "vault").map((item) => item.type),
+);
+
+/**
+ * Narrow a validated frame id to the inventory item type it must be owned as.
+ * Sound by construction: every member of {@link VAULT_FRAME_TYPES} is an
+ * `InventoryItemType` (both come from `CONSUMABLES_REGISTRY`).
+ */
+function isVaultInventoryItem(frame: string): frame is InventoryItemType {
+  return VAULT_FRAME_TYPES.has(frame);
+}
+
+/**
+ * Achievement-tier frames, highest prestige first — mirrors the client's
+ * `TIER_ORDER` so the picker's lock state and this gate agree.
+ */
+const ACHIEVEMENT_FRAME_TIERS: readonly string[] = ["mythic", "platinum", "gold", "silver", "bronze"];
+
+/** Achievement id → tier, built once for O(1) lookups during equip checks. */
+const ACHIEVEMENT_TIER_BY_ID: ReadonlyMap<string, string> = new Map(
+  ACHIEVEMENT_REGISTRY.map((rule) => [rule.id, rule.tier]),
+);
+
+/**
+ * Server-authoritative equip gate for an avatar frame.
+ *
+ * Returns a rejection reason, or `null` when the frame may be worn:
+ * - **Vault frames** require a `user_inventory` row with `quantity > 0` — the
+ *   server half of the Store's dual gate (honor checkpoint + purchase). The
+ *   client picker only hides unowned frames, so this check is the real one.
+ * - **Achievement tier frames** require the reader to have unlocked at least
+ *   that tier: their best unlocked tier and everything below it are wearable,
+ *   exactly mirroring the picker's `tierIndex < highestUnlockedIndex` lock.
+ * - **Archetype / feat frames** are free and gated only by the whitelist in
+ *   `avatarFrames` (plus the VIP rule for `mythic`, applied by the caller).
+ */
+async function getAvatarFrameEquipRejection(userId: string, frame: string): Promise<string | null> {
+  if (isVaultInventoryItem(frame)) {
+    const [owned] = await dbRead
+      .select({ quantity: userInventory.quantity })
+      .from(userInventory)
+      .where(and(eq(userInventory.userId, userId), eq(userInventory.itemType, frame)))
+      .limit(1);
+    if (!owned || owned.quantity <= 0) {
+      return "This Scribe's Vault avatar frame is not in your inventory yet. Purchase it from the Store first.";
+    }
+    return null;
+  }
+
+  const frameTierIndex = ACHIEVEMENT_FRAME_TIERS.indexOf(frame);
+  if (frameTierIndex === -1) return null;
+
+  const unlocked = await dbRead
+    .select({ achievementId: userAchievements.achievementId })
+    .from(userAchievements)
+    .where(eq(userAchievements.userId, userId));
+
+  let bestUnlockedTierIndex = ACHIEVEMENT_FRAME_TIERS.length;
+  for (const row of unlocked) {
+    const tier = ACHIEVEMENT_TIER_BY_ID.get(row.achievementId);
+    if (!tier) continue;
+    const tierIndex = ACHIEVEMENT_FRAME_TIERS.indexOf(tier);
+    if (tierIndex !== -1 && tierIndex < bestUnlockedTierIndex) bestUnlockedTierIndex = tierIndex;
+  }
+
+  if (frameTierIndex < bestUnlockedTierIndex) {
+    return "Unlock a higher achievement tier before wearing this avatar frame.";
+  }
+  return null;
+}
+
 export async function sanitizeProfileUpdate(
   userId: string,
   payload: Record<'name' | 'bio' | 'imageUrl' | 'gender' | 'username' | 'avatarFrame' | 'profileTitle' | 'pinnedStoryIds' | 'featuredStoryId' | 'featuredStoryNote' | 'favoriteStoryIds' | 'loreStatus', unknown>,
@@ -1219,6 +1298,10 @@ export async function sanitizeProfileUpdate(
         return {
           errorResponse: cForbiddenError(res, 'The Mythic avatar frame is exclusive to VIP members.'),
         };
+      }
+      const rejection = await getAvatarFrameEquipRejection(userId, payload.avatarFrame);
+      if (rejection) {
+        return { errorResponse: cForbiddenError(res, rejection) };
       }
       updateData.avatarFrame = payload.avatarFrame as AvatarFrame;
     }

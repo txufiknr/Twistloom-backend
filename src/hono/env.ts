@@ -17,6 +17,10 @@ import type { UploadedFile } from "../types/hono.js";
  *
  * - `userId`   : resolved authenticated user id (set by the auth middleware)
  * - `user`     : resolved {@link AuthUser} (set by the auth middleware)
+ * - `isVip`    : active-VIP entitlement for the authenticated user (set by the
+ *                VIP middleware — `resolveVipStatus` / `requireVip`; `undefined`
+ *                when no VIP middleware ran, so handlers can tell "not resolved"
+ *                from "resolved as non-VIP")
  * - `headerLanguage` : parsed Accept-Language code (set by the locale middleware)
  * - `file`     : parsed multipart file (set by the upload middleware)
  * - `bookContentRating` : content rating for age-gating (set by route handlers)
@@ -25,6 +29,7 @@ import type { UploadedFile } from "../types/hono.js";
 export interface AppVariables {
   userId?: string;
   user?: AuthUser;
+  isVip?: boolean;
   headerLanguage?: string | null;
   file?: UploadedFile;
   bookContentRating?: 'general' | 'teen' | 'mature' | 'adult';

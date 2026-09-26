@@ -61,6 +61,7 @@ import type { FeedbackCategory, LikeTargetType, Source, User, UserAchievement, U
 import { feedbackCategories, sources } from "../types/user.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { requireAuth, optionalAuth } from "../middleware/nextauth.js";
+import { resolveVipStatus } from "../middleware/vip.js";
 import { logAuditEvent } from "../utils/audit-log.js";
 import { requireNotSuspended, requireNotMuted } from "../middleware/trust-safety.js";
 import { users, books, userAuth, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, userSessions, userCompletedBooks, userComments, transactions, userProviders, userFeedbacks, bookTestimonials, uploadedImages, userReports, moderationReports, moderationAppeals, userEnforcementActions, userBlocks, platformTestimonials, pages, userInventory, posts, customActions } from "../db/schema.js";
@@ -2535,7 +2536,10 @@ router.post("/checkin", requireAuth, (c) => handleCheckIn(c));
  * 
  * VIP-only double claim that awards 2x the daily check-in credits.
  * Can be claimed in addition to the regular check-in on the same day.
- * Requires VIP subscription tier; returns 403 if the user is not VIP.
+ * Requires VIP subscription tier; returns 400 (`success: false`) if the user is not VIP.
+ * The entitlement check intentionally lives inside `performDailyCheckIn`'s write
+ * transaction (`services/user.ts`), not in middleware, so it is evaluated under
+ * the same row locks as the claim insert (TOCTOU-safe against VIP expiry races).
  * 
  * @route POST /user/checkin/double
  * @description VIP double claim — 2x daily check-in credits
@@ -4762,6 +4766,11 @@ router.post('/beta-duties/:dutyId/claim', requireAuth, async (c: Context<AppEnv>
  * Returns the public user's aggregate longitudinal Reader Mind Matrix across all completed stories.
  * VIP-gated (owner-side): the matrix owner must have an active VIP subscription.
  * Privacy-gated by user's showMindMatrixOnProfile preference.
+ *
+ * Note: the VIP subject here is the **profile owner**, not the viewer, so the
+ * `resolveVipStatus` middleware (which gates the authenticated caller) does not
+ * apply. The single row fetch below serves both the entitlement predicate
+ * (`isUserVipActive` SSOT) and the privacy preference in one query.
  */
 router.get('/users/:identifier/mind-matrix', optionalAuth, async (c: Context<AppEnv>) => {
   try {
@@ -4802,18 +4811,14 @@ router.get('/users/:identifier/mind-matrix', optionalAuth, async (c: Context<App
  * GET /api/user/mind-matrix
  *
  * Returns the authenticated user's own aggregate longitudinal Reader Mind Matrix.
- * VIP-gated: requires an active VIP subscription.
+ * VIP-gated (soft): requires an active VIP subscription — non-VIP callers get
+ * HTTP 200 with `locked: true` so the client can render the upsell state.
  */
-router.get('/user/mind-matrix', requireAuth, async (c: Context<AppEnv>) => {
+router.get('/user/mind-matrix', requireAuth, resolveVipStatus, async (c: Context<AppEnv>) => {
   try {
     const userId = c.get('userId')!;
-    const [ownerRow] = await dbRead
-      .select({ tier: users.tier, vipExpiresAt: users.vipExpiresAt })
-      .from(users)
-      .where(eq(users.userId, userId))
-      .limit(1);
 
-    if (!isUserVipActive(ownerRow)) {
+    if (!c.get('isVip')) {
       return c.json({ success: true, matrix: null, locked: true });
     }
 

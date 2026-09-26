@@ -2,7 +2,7 @@
 
 **Scope:** Gateway-agnostic payment system — Stripe (international USD) + Xendit (Indonesian IDR), credits system, VIP subscriptions, VIP free trial  
 **Stack:** Hono.js 4.12+ · PostgreSQL 18 (Neon) · Drizzle ORM 0.45+ · Stripe Node SDK `^22.2.0` · Xendit REST API (raw fetch)  
-**Last updated:** August 2026  
+**Last updated:** September 2026  
 
 ---
 
@@ -49,11 +49,14 @@ graph LR
     Xendit -->|callback webhooks<br/>x-callback-token| API
     Cron["GitHub Actions<br/>vip-expiration.yml<br/>(daily, 03:00 UTC)"] -->|invokes| CronScript["vip-expiration.ts"]
     CronScript -->|downgrades expired VIPs| DB
+    Sweep["GitHub Actions<br/>sweep-credit-reservations.yml<br/>(every 10 min)"] -->|invokes| SweepScript["sweep-credit-reservations.ts"]
+    SweepScript -->|refunds leaked credit reservations| DB
 
     style Stripe fill:#635BFF,color:#fff
     style Xendit fill:#47C78A,color:#fff
     style DB fill:#336791,color:#fff
     style Cron fill:#2088FF,color:#fff
+    style Sweep fill:#2088FF,color:#fff
 ```
 
 **Core design principle: the backend is the single source of truth.** The frontend never computes VIP status, credit balances, or trial eligibility locally — it always asks the backend and renders what comes back. Stripe and Xendit are the actual sources of truth for subscription state; the backend's job is to stay in sync with both via webhooks.
@@ -357,6 +360,113 @@ const result = await executeWithCredits(userId, CREDIT_COSTS.STORY_GENERATION, a
 ```
 
 Credit consumption and the operation it pays for happen inside the same DB transaction boundary, with a `correlationId` returned so the caller can issue a `refundCreditsIdempotent()` if the downstream operation fails *after* credits were already deducted.
+
+### Two-phase credit reservations & the leak sweeper
+
+Long AI generations must never hold a row lock across an LLM call, so story actions use a **two-phase reservation** (roadmap §3.1) instead of `executeWithCredits`' single-transaction model:
+
+| Phase | Function | What happens |
+|---|---|---|
+| 1. Reserve | `reserveCredits()` (`src/services/credits.ts:646`) | Millisecond-scale transaction: deduct balance + insert a transient `type='reserve'` row. A zero balance is rejected **before** any provider token is spent (generate-then-charge would be a free-token abuse vector). |
+| 2. Generate | caller's AI work | No transaction open, no row locks held. |
+| 3a. Success | `settleReservation()` (`credits.ts:715`) | Short transaction: guarded flip `reserve → usage` + persistence. All-or-nothing — if the flip loses the race, everything rolls back. |
+| 3b. Failure | `releaseReservation()` (`credits.ts:763`) | Claims the reserve row and inserts a **persistent** `refund` row; retries 3× with backoff. |
+
+```mermaid
+sequenceDiagram
+    participant R as Route
+    participant C as credits.ts
+    participant L as LLM provider
+    participant DB as PostgreSQL
+
+    R->>C: reserveCredits()
+    C->>DB: deduct + insert type='reserve' (ms-scale tx)
+    C-->>R: reservation
+    R->>L: generate — NO transaction, NO locks
+    alt normal path
+        R->>C: settleReservation()
+        C->>DB: flip reserve→usage + persist (short tx)
+    else failure
+        R->>C: releaseReservation() — 3 retries
+        C->>DB: claim reserve + insert refund row
+    else process killed between reserve and settle/release
+        Note over DB: reserve row + deducted credits<br/>held with NO self-heal path
+    end
+```
+
+#### Why the sweeper is needed at all
+
+The third branch above is the **leak**: a serverless timeout (`maxDuration` kill), OOM, or cold-start crash between phase 1 and phase 3 leaves the `type='reserve'` row — and with it the author's deducted credits — held indefinitely. Two facts mean *nothing else* ever cleans it up:
+
+1. `releaseReservation()` **deliberately swallows** the error after 3 failed attempts (`credits.ts:779-785`) so the caller's original error still propagates. Its own log line says: *"leak sweeper will refund it after CREDIT_RESERVATION_TTL_MS"*.
+2. `sweepExpiredCreditReservations()` (`src/services/credit-reservations.ts:44`) has exactly **one caller** — the cron entrypoint `src/cron/sweep-credit-reservations.ts`. No request-path code invokes it. (Verified by codebase-wide grep.)
+
+**Risk if the sweeper is disabled** — the exposure is one-sided (under-refund, never over-spend):
+
+| Consequence | Why it matters |
+|---|---|
+| Permanent user balance loss | 1–5 credits per incident, small individually but cumulative and **irreversible** — there is no other refund path |
+| "Charged but got nothing" support cases | The visible symptom is a user with a stuck balance unable to act — a trust problem, not just an accounting one |
+| Ledger asymmetry | The negative `reserve` row persists forever with no matching `refund` row — the exact imbalance the two-phase design was built to eliminate |
+| Reserve rows accumulate | They pile up in the idempotent-reuse lookup `reserveCredits` runs on every charge (`credits.ts:672-682`) |
+
+#### Currently implemented approach
+
+| Aspect | Value |
+|---|---|
+| Trigger | `.github/workflows/sweep-credit-reservations.yml` (GitHub Actions, `schedule` + `workflow_dispatch`) |
+| Cadence | `*/10 * * * *` — every 10 minutes |
+| Expiry (TTL) | `CREDIT_RESERVATION_TTL_MS` = 15 min (`src/config/credits.ts:166`) — must exceed the longest legitimate generation with margin |
+| Batch limit | `CREDIT_RESERVATION_SWEEP_LIMIT` = 200 rows/run (`credits.ts:169`) |
+| Job | checkout → `bun install` → `bun run build` → `bun dist/cron/sweep-credit-reservations.js` |
+| Idempotency | Guarded claim `UPDATE … WHERE type='reserve'` (`credits.ts:580-624`) — a fourth idempotency layer alongside the three in [§10](#10-idempotency--concurrency); safe to run repeatedly and concurrently |
+| Worst-case hold | TTL + cadence = **25 minutes** |
+| Failure signal | Non-zero exit when `failed > 0` → red Actions run |
+
+Cadence is a latency knob, not a correctness one — leaks are crash-frequency, and a stuck user can't spend those credits anyway:
+
+| Cadence | Worst-case stuck time |
+|---|---|
+| 10 min (current) | 25 min |
+| 30 min | 45 min |
+| 60 min | 75 min |
+
+#### Known flaws of the current approach
+
+1. **Build-per-query waste** — 144 runs/day × (checkout + `bun install` + full TypeScript build) to execute an ~80 ms query.
+2. **GitHub Actions cron reliability** — scheduling is best-effort (jitter of minutes on busy repos), and GitHub **auto-disables scheduled workflows after 60 days of repository inactivity**. Either failure mode stops the sweeper *silently*.
+3. **Alerting gap** — `src/cron/sweep-credit-reservations.ts` throws only on `failed > 0` (refund transaction errors). A healthy system and a chronically leaking one are both green: `scanned > 0` is logged but never alerted.
+4. **No dedicated sweep index** — the query filters `type='reserve' AND created_at < cutoff` but `transactions` only has separate `transactions_type_idx` and `transactions_created_idx` (`src/db/schema.ts:1577,1579`). A partial index `ON (created_at) WHERE type='reserve'` would keep it O(leaked rows) regardless of ledger growth. *(Recommended fix — not applied; any schema change is a human-reviewed migration.)*
+5. **Dead metadata field** — `reserveCredits` writes `metadata.expiresAt` (`credits.ts:666,692`) but the sweeper only ever compares `created_at` against `now() - TTL`. The field is currently documentation, not logic — either the query or the field should go.
+6. **Cadence ≠ precision** — `*/10` on GitHub Actions fires late regularly, so "25 minutes" is a floor, not a guarantee.
+
+#### Alternatives
+
+| # | Option | Mechanics | Pros | Cons |
+|---|---|---|---|---|
+| 1 | **Request-path opportunistic sweep** | Before `reserveCredits()`, run `sweepExpiredCreditReservations({ limit: 20 })` behind an Upstash `SET NX EX` throttle (≈once/5 min, fail-open on Redis outage) | Zero new infrastructure; refunds *active* users within minutes; self-scales with traffic; matches the existing Redis-lock patterns | Idle users' stuck credits wait for the backup run; one extra (fail-open) Redis check on the charge path |
+| 2 | **HTTP cron endpoint** | New `POST`+`GET /api/cron/sweep-credit-reservations` reusing the existing `CRON_SECRET` middleware (`src/routes/cron.ts:31`) and `runCreditReservationSweep()`; invoked by an external scheduler | No repo checkout or build; sub-second execution; reuses existing secured cron infra (precedent: `/api/cron/mature-earnings`, `/api/cron/process-disbursements`) | **Vercel Cron sends GET** but the cron router is POST-only today; Vercel Cron is **daily-only on Hobby**; Vercel cron has no built-in retries or failure alerts (would lose Actions failure emails) |
+| 3 | **Relax the GH Actions cadence** | `*/10` → `0 * * * *` (hourly) | One-line change; 6× fewer builds | Still exposed to GH jitter + 60-day auto-disable; still 24 builds/day |
+| 4 | **pg_cron on Neon** | Server-side SQL job every N minutes | Immune to CI and platform outages; hardest to accidentally disable | Requires porting `claimAndRefundReservationTx` (claim + balance restore + refund insert) to SQL — duplicated logic across TS and SQL is a DRY/consistency hazard |
+
+Option 2's trigger is pluggable — it is *not* inherently a GitHub Actions feature:
+
+| Trigger | GH Actions? | Achievable cadence | Build needed |
+|---|---|---|---|
+| GH Actions `curl` (no checkout) | Yes, but trivial | `*/10` | No |
+| Vercel Cron (`vercel.json` `crons`) | No | Hobby: **once/day** · Pro: **once/minute** | No |
+| Upstash QStash (already in stack — `src/services/forum-queue.ts`) | No | every minute (free tier 500 msg/day ≈ enough for a 10-min cadence) | No |
+| External scheduler (cron-job.org, etc.) | No | every minute | No |
+
+#### Recommendation
+
+| Plan / state | Recommended configuration |
+|---|---|
+| **Today (Vercel Hobby)** | Option 1 (request-path sweep, Redis-throttled) as primary **+** option 3 (hourly GH Actions) as backup for idle users |
+| **After upgrading to Vercel Pro** | Option 1 **+** option 2 via **Vercel Cron** (`*/10`, per-minute precision) — removes the repo checkout/build entirely and eliminates both GH cron jitter and the 60-day auto-disable risk. Option 2 then ranks **first**, ahead of the current approach. |
+| **Either way** | Alert on `scanned > 0` (leak rate), not only `failed > 0` — today a chronic leak and a healthy system are indistinguishable in CI |
+
+Options 1 and 2 are complementary, not competing: the request path handles active users fastest, and the scheduled endpoint covers users whose credits are stuck while they're away. Options 3 and 4 are fallbacks if neither is adopted.
 
 ---
 
@@ -819,6 +929,7 @@ src/
 │   ├── subscription.ts       VIP_SUBSCRIPTION, VIP_BENEFITS, VIP_TRIAL
 │   └── xendit.ts             XENDIT_CONFIG, IDR prices, helper functions
 ├── cron/
+│   ├── sweep-credit-reservations.ts  Leak sweeper entrypoint (refund leaked reserves)
 │   └── vip-expiration.ts     Daily downgrade job
 ├── db/
 │   └── schema.ts             users, subscriptions, subscriptionTransactions,
@@ -826,7 +937,8 @@ src/
 ├── routes/
 │   └── payments.ts           All /payments/* endpoints + Stripe & Xendit webhooks
 ├── services/
-│   ├── credits.ts            addCredits, awardCredits, consumeCredits, refunds
+│   ├── credit-reservations.ts sweepExpiredCreditReservations() — leak sweeper query
+│   ├── credits.ts            addCredits, awardCredits, consumeCredits, refunds, reserve/settle/release
 │   ├── subscription.ts       createSubscription, renewSubscription,
 │   │                          cancelSubscription, isTrialEligible (gateway-agnostic)
 │   ├── xendit.ts             Xendit business logic, webhook handlers
@@ -847,6 +959,8 @@ src/
     ├── xendit.ts             Raw HTTP fetch helpers (Invoice, Customer, Recurring)
     └── email.ts              sendTrialEndingEmail + other transactional emails
 ```
+
+Outside `src/`, the credit-reservation leak sweeper is scheduled by `.github/workflows/sweep-credit-reservations.yml` (GitHub Actions, `*/10 * * * *`) — see [§4 leak sweeper](#two-phase-credit-reservations--the-leak-sweeper).
 
 ---
 
@@ -1010,6 +1124,10 @@ router.post("/razorpay/webhook", async (c) => {
 | High | `isDuplicateTx` shared across branches | **Fixed** — each webhook handler function scoped independently in `stripe-webhook-handlers.ts` |
 | High | Subscription event idempotency | **Resolved** — service-layer `isUniqueViolation` catches + webhook delivery dedup already provide full coverage |
 | Low | `dbRead`/`dbWrite` inconsistency in zero-amount path | **Fixed** — `refundCreditsIdempotent` zero-amount path now uses `dbRead` at `credits.ts:383` |
+| Medium | Leak sweeper alerting gap — cron exits non-zero only on `failed > 0`, so a chronic leak (`scanned > 0`) stays green forever | **Open** — documented in [§4 leak sweeper](#two-phase-credit-reservations--the-leak-sweeper) |
+| Medium | Sweeper depends on GitHub Actions cron — best-effort jitter + auto-disable after 60 days of repo inactivity stop it silently | **Open** — documented in [§4 leak sweeper](#two-phase-credit-reservations--the-leak-sweeper) |
+| Low | No partial index `ON (created_at) WHERE type='reserve'` for the sweep query (relies on separate type/created_at indexes) | **Open** — documented in [§4 leak sweeper](#two-phase-credit-reservations--the-leak-sweeper); schema change not applied |
+| Low | `metadata.expiresAt` written by `reserveCredits` but never read — sweeper filters on `created_at` only | **Open** — documented in [§4 leak sweeper](#two-phase-credit-reservations--the-leak-sweeper) |
 
 ### Deferred
 
