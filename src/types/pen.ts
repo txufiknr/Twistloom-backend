@@ -218,6 +218,8 @@ export type PenDraftSummary = {
   isEnding?: boolean;
   /** Plain-text preview snippet for popover hover. */
   textPreview?: string | null;
+  /** Optimistic-concurrency version of the row (hardening roadmap Step 4). */
+  version: number;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -234,6 +236,13 @@ export type PenDraftUpdates = {
   imageUrl?: string | null;
   /** Client wall-clock (ms epoch, ISO string) of the most recent keystroke — last-write-wins key. */
   draftUpdatedAt?: string;
+  /**
+   * Version the client loaded (hardening roadmap Step 4). When present the
+   * write is guarded by `WHERE version = $1` and a mismatch throws
+   * `PenDraftVersionConflictError` (409) instead of last-write-wins; when
+   * omitted, legacy wall-clock semantics apply (non-breaking migration).
+   */
+  version?: number;
 };
 
 /** Rolled-up authorship of a published page (`pages.authorshipOrigin`). */

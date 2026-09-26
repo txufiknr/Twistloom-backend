@@ -203,6 +203,13 @@ export type Book = {
   imageUrl?: string;
   /** ImageKit file ID for deletion */
   imageId?: string;
+  /**
+   * Cover provenance: `true` once the owner uploaded their own cover via
+   * `PUT /api/books/:id/cover-image`. The AI auto-cover pipeline never
+   * overwrites an owner-chosen cover (guarded by a conditional CAS UPDATE
+   * in `generateAndUpdateBookCoverImage`). Stays `false` after AI covers.
+   */
+  coverUploadedByUser: boolean;
   /** Trending score for book discovery */
   trendingScore: number;
   /** Keywords for book discovery (e.g. ['cardiff mosque', 'peel street mosque']) */

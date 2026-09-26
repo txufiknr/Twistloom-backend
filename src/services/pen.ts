@@ -10,7 +10,7 @@
 
 import { eq, and, desc, isNull, sql } from "drizzle-orm";
 import { penSessions, penEdits, penDrafts, penNotes, branches, pages, books, storyStates, uploadedImages } from "../db/schema.js";
-import { dbRead, dbWrite, type DBClient } from "../db/client.js";
+import { dbRead, dbWrite, type DBClient, type DBTransaction } from "../db/client.js";
 import { getBookFromDB, getBookPages, deleteStoryPage, updateBook } from "./book.js";
 import { getTriggeredLoreEntries, listLoreEntries } from "./lore.js";
 import type { DBBook, DBPenSession, DBPenDraft } from "../types/schema.js";
@@ -28,17 +28,19 @@ import type { Gender } from "../types/user.js";
 import { getBranchPath } from "../utils/branch-traversal.js";
 import { processCharacterUpdates, isMainCharacterValid } from "../utils/characters.js";
 import { getStoryStateWithBranch } from "./story-branch.js";
-import { buildPenContinuePrompt, PEN_CONTINUE_SCHEMA, PEN_CONTINUE_REQUIRED_FIELDS, buildPenEssentialsAutofillPrompt, PEN_ESSENTIALS_SCHEMA, PEN_ESSENTIALS_REQUIRED_FIELDS, PEN_ESSENTIALS_REVIEW_SCHEMA, buildPenStateProposalPrompt, PEN_STATE_PROPOSAL_SCHEMA, PEN_STATE_PROPOSAL_REQUIRED_FIELDS, buildPenTransformPrompt, PEN_TRANSFORM_SCHEMA, PEN_TRANSFORM_REQUIRED_FIELDS, buildPenCastDetectPrompt, PEN_CAST_DETECT_SCHEMA, PEN_CAST_DETECT_REQUIRED_FIELDS, buildPenDialogueMarkerPrompt, PEN_DIALOGUE_MARKER_SCHEMA, PEN_DIALOGUE_MARKER_REQUIRED_FIELDS, PEN_CONTEXT_PAGES, type PenContinueCommonParams } from "../utils/pen-prompt.js";
-import type { PenContinueResult as PenContinueAIOutput, PenEssentialsAutofillResult as PenEssentialsAIOutput, PenStateProposalResult as PenStateProposalAIOutput, PenStateProposalOutlineBeat, PenTransformResult as PenTransformAIOutput, PenCastDetectAIOutput, PenDialogueMarkerAIOutput } from "../utils/pen-prompt.js";
+import { buildPenContinuePrompt, PEN_CONTINUE_SCHEMA, PEN_CONTINUE_REQUIRED_FIELDS, buildPenStateProposalPrompt, PEN_STATE_PROPOSAL_SCHEMA, PEN_STATE_PROPOSAL_REQUIRED_FIELDS, buildPenTransformPrompt, PEN_TRANSFORM_SCHEMA, PEN_TRANSFORM_REQUIRED_FIELDS, buildPenCastDetectPrompt, PEN_CAST_DETECT_SCHEMA, PEN_CAST_DETECT_REQUIRED_FIELDS, buildPenDialogueMarkerPrompt, PEN_DIALOGUE_MARKER_SCHEMA, PEN_DIALOGUE_MARKER_REQUIRED_FIELDS, PEN_CONTEXT_PAGES, type PenContinueCommonParams } from "../utils/pen-prompt.js";
+import type { PenContinueResult as PenContinueAIOutput, PenStateProposalResult as PenStateProposalAIOutput, PenStateProposalOutlineBeat, PenTransformResult as PenTransformAIOutput, PenCastDetectAIOutput, PenDialogueMarkerAIOutput } from "../utils/pen-prompt.js";
 import { aiPrompt, createAIOptionsWithSchema } from "../utils/ai-chat.js";
+import { aiStreamSSE, extractSseTextDeltas } from "../utils/ai-chat-stream.js";
+import { parseAISafely, createJsonTextFieldExtractor } from "../utils/ai-parser.js";
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 import type { PenContinueLength } from "../config/story.js";
-import { PEN_DRAFT_CAST_LIMIT, PEN_CONTINUE_MAX_TOKENS, penContinueLengthForAssistance, PEN_ESSENTIALS_MAX_TOKENS, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TOKENS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_FINALIZE_PROPOSE_MAX_ITEM_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TRAITS, PEN_DRAFT_BUFFER_MAX_CHARS, getMaxPenDrafts, PEN_DRAFT_LABEL_MAX_LENGTH, PEN_DRAFT_ACTION_TEXT_MAX_LENGTH, PEN_DRAFT_ACTION_HINT_MAX_LENGTH, PEN_TRANSFORM_MAX_TOKENS, PEN_TRANSFORM_SELECTION_MAX_LENGTH, PEN_PAGE_EDIT_DIFF_TOLERANCE, PEN_MIN_ENDING_PAGE, PEN_TA_LATENT_BRANCH_COUNT, PEN_TA_PROMOTE_LATENT_BRANCHES, PEN_TA_GATE2_CANON_CHECK, PEN_DEFAULT_IMPORTED_MC } from "../config/story.js";
+import { PEN_DRAFT_CAST_LIMIT, PEN_CONTINUE_MAX_TOKENS, penContinueLengthForAssistance, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TOKENS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_FINALIZE_PROPOSE_MAX_ITEM_LENGTH, PEN_FINALIZE_PROPOSE_MAX_TRAITS, PEN_DRAFT_BUFFER_MAX_CHARS, getMaxPenDrafts, PEN_DRAFT_LABEL_MAX_LENGTH, PEN_DRAFT_ACTION_TEXT_MAX_LENGTH, PEN_DRAFT_ACTION_HINT_MAX_LENGTH, PEN_TRANSFORM_MAX_TOKENS, PEN_TRANSFORM_SELECTION_MAX_LENGTH, PEN_PAGE_EDIT_DIFF_TOLERANCE, PEN_MIN_ENDING_PAGE, PEN_TA_LATENT_BRANCH_COUNT, PEN_TA_PROMOTE_LATENT_BRANCHES, PEN_TA_GATE2_CANON_CHECK, PEN_DEFAULT_IMPORTED_MC } from "../config/story.js";
 import { generateId } from "../utils/uuid.js";
 import { hasActiveVipSubscription } from "./subscription.js";
-import { executeWithCredits } from "./credits.js";
+import { withCreditReservation } from "./credits.js";
 import { persistPageWithState, insertStoryPage, getPageFromDB, mapToPersistedStoryPage } from "./book.js";
 import { insertStoryState } from "./story.js";
 import { advanceStoryState, createEmptyStoryState, createInitialHiddenState, processPlotFlagUpdates, processFactUpdates } from "../utils/story.js";
@@ -149,6 +151,7 @@ function toPenDraftSummary(draft: DBPenDraft, canonVersion: number): PenDraftSum
     isStale,
     isEnding: draft.isEnding ?? false,
     textPreview,
+    version: draft.version,
     createdAt: draft.createdAt,
     updatedAt: draft.updatedAt,
   };
@@ -250,6 +253,19 @@ export class PenDraftNotActiveError extends Error {
   constructor(message = "This draft is not the active draft — switch to it first") {
     super(message);
     this.name = "PenDraftNotActiveError";
+  }
+}
+
+/**
+ * Error thrown when a version-aware draft write asserts a base version that no
+ * longer matches the stored row (hardening roadmap Step 4). Mapped to HTTP 409
+ * by the PATCH route so the client can re-hydrate instead of clobbering a
+ * concurrent writer.
+ */
+export class PenDraftVersionConflictError extends Error {
+  constructor(message = "Draft was updated elsewhere — reload to get the latest version") {
+    super(message);
+    this.name = "PenDraftVersionConflictError";
   }
 }
 
@@ -739,9 +755,18 @@ export async function activateSessionDraft(
 }
 
 /**
- * Autosave heartbeat for a single draft slot (ownership verified). Buffer/html
- * writes are dropped when `draftUpdatedAt` is not newer than the stored row's
- * `updatedAt` (last-write-wins); label / cast / essentials apply unconditionally.
+ * Autosave heartbeat for a single draft slot (ownership verified).
+ *
+ * Version-aware (hardening roadmap Step 4): when `updates.version` is provided
+ * the write runs as one atomic `UPDATE … WHERE version = $baseVersion
+ * RETURNING` — a mismatch throws `PenDraftVersionConflictError` (409), which
+ * also closes the read-then-write TOCTOU of the row fetched above. Every
+ * successful write bumps `version` (AI continue / finalize reset do too), so
+ * the version is the authoritative content-revision signal.
+ *
+ * Legacy clients (no `version`) keep wall-clock last-write-wins for
+ * buffer/html: writes are dropped when `draftUpdatedAt` is not newer than the
+ * stored row's `updatedAt`. Label / cast / essentials apply unconditionally.
  * Returns the updated draft row.
  */
 export async function updateSessionDraft(
@@ -783,34 +808,58 @@ export async function updateSessionDraft(
     values.imageUrl = updates.imageUrl;
   }
 
-  // Buffer/html: last-write-wins against the client's keystroke timestamp.
-  const clientTs = updates.draftUpdatedAt !== undefined ? Date.parse(updates.draftUpdatedAt) : Date.now();
-  const applyDraftWrite = !Number.isNaN(clientTs) && clientTs > existing.updatedAt.getTime();
-  if (applyDraftWrite) {
+  if (updates.version !== undefined) {
+    // Version-aware: the WHERE-version predicate below arbitrates staleness,
+    // so buffer/html is applied unconditionally — the client clock is not
+    // trusted (roadmap Step 4 deletes the wall-clock guard for these clients).
     if (updates.draftBuffer !== undefined) values.draftBuffer = updates.draftBuffer;
     if (updates.draftHtml !== undefined) values.draftHtml = updates.draftHtml;
+  } else {
+    // Legacy: last-write-wins against the client's keystroke timestamp.
+    const clientTs = updates.draftUpdatedAt !== undefined ? Date.parse(updates.draftUpdatedAt) : Date.now();
+    const applyDraftWrite = !Number.isNaN(clientTs) && clientTs > existing.updatedAt.getTime();
+    if (applyDraftWrite) {
+      if (updates.draftBuffer !== undefined) values.draftBuffer = updates.draftBuffer;
+      if (updates.draftHtml !== undefined) values.draftHtml = updates.draftHtml;
+    }
   }
 
   // Skip fields whose value is identical to what is already stored, so an autosave
   // that re-sends unchanged content triggers no redundant DB write (P5.1). This
-  // is the dominant cost on high-frequency pen autosave bursts.
+  // is the dominant cost on high-frequency pen autosave bursts. A version-aware
+  // no-op also returns here (no conflict) — the caller adopts `existing.version`.
+  // Step 11: primitives (strings incl. the 100K draftBuffer/draftHtml, numbers,
+  // booleans, null) compare with `===`; JSON.stringify only runs for object/array
+  // (jsonb) values — serializing a changed string just to learn it's unequal was
+  // the dominant autosave GC cost.
   for (const key of Object.keys(values) as (keyof typeof values)[]) {
     const next = (values as Record<string, unknown>)[key];
     const prev = (existing as unknown as Record<string, unknown>)[key];
+    const nextIsObject = typeof next === 'object' && next !== null;
+    const prevIsObject = typeof prev === 'object' && prev !== null;
     const unchanged =
       next === prev ||
-      (next !== undefined && prev !== undefined && JSON.stringify(next) === JSON.stringify(prev));
+      (nextIsObject && prevIsObject && JSON.stringify(next) === JSON.stringify(prev));
     if (unchanged) delete (values as Record<string, unknown>)[key];
   }
 
   if (Object.keys(values).length === 0) return existing;
 
+  const predicates = [eq(penDrafts.id, draftId), eq(penDrafts.sessionId, sessionId)];
+  if (updates.version !== undefined) {
+    predicates.push(eq(penDrafts.version, updates.version));
+  }
+
   const [updated] = await dbWrite
     .update(penDrafts)
-    .set({ ...values, updatedAt: new Date() })
-    .where(and(eq(penDrafts.id, draftId), eq(penDrafts.sessionId, sessionId)))
+    .set({ ...values, updatedAt: new Date(), version: sql`${penDrafts.version} + 1` })
+    .where(and(...predicates))
     .returning();
-  if (!updated) throw new PenSessionNotFoundError();
+  if (!updated) {
+    // Version-aware miss ⇒ the row moved past the client's base version.
+    if (updates.version !== undefined) throw new PenDraftVersionConflictError();
+    throw new PenSessionNotFoundError();
+  }
   return updated;
 }
 
@@ -892,10 +941,15 @@ export class PenContinueError extends Error {
  */
 const stripHtmlTags = htmlToPlainText;
 
-/** Body of `POST /api/pen/sessions/:id/continue`. Discriminated by `type`. */
+/**
+ * Body of `POST /api/pen/sessions/:id/continue`. Discriminated by `type`.
+ * `correlationId` (optional) is the client's per-attempt idempotency key for
+ * the credit reservation (roadmap §3.1): a retry carrying the same id reuses
+ * the in-flight reserve instead of double-charging.
+ */
 export type PenContinueInput =
-  | { type: "storyteller"; prose: string; directionHint?: string; authoringPov?: AuthoringPov; assistanceLevel?: number }
-  | { type: "text_adventure"; command: string; authoringPov?: AuthoringPov; assistanceLevel?: number };
+  | { type: "storyteller"; prose: string; directionHint?: string; authoringPov?: AuthoringPov; assistanceLevel?: number; correlationId?: string }
+  | { type: "text_adventure"; command: string; authoringPov?: AuthoringPov; assistanceLevel?: number; correlationId?: string };
 
 /** Result of a `/continue` request. */
 export type PenContinueOutput = {
@@ -905,6 +959,8 @@ export type PenContinueOutput = {
   edit: PenEdit;
   /** The full draft buffer after appending. */
   draft: DraftSpan[];
+  /** Post-write draft version — lets the client rebase its autosave base without a 409 (Step 4). */
+  version: number;
 };
 
 /**
@@ -969,9 +1025,10 @@ function detectLoreContradiction(text: string, lore: LoreEntry[]): boolean {
  * "what-if" resolution of the SAME player command, produced by the same prompt
  * pipeline with a divergence steer. Returns an empty array when `count` is 0.
  *
- * Runs inside the caller's credits transaction so the AI spend is already
- * authorized. Individual failures are swallowed (logged) — latent branches are
- * an enhancement, never a blocker for the main continuation.
+ * Roadmap Step 2: all siblings are requested **concurrently** and run **outside
+ * any DB transaction** (Step 1 moved every LLM call out of the credits tx).
+ * Individual failures are swallowed (logged) — latent branches are an
+ * enhancement, never a blocker for the main continuation.
  *
  * @param shared - The assembled prompt context (state, lore, prose, etc.) shared with the primary continuation.
  * @param command - The player's command text being resolved.
@@ -985,38 +1042,109 @@ async function generateLatentBranches(params: {
   continueLength: PenContinueLength;
   count: number;
   authoringPov?: AuthoringPov;
+  /** Client-disconnect cancellation (hardening roadmap Step 9). */
+  signal?: AbortSignal;
 }): Promise<PenLatentBranch[]> {
   if (params.count <= 0) return [];
-  const branches: PenLatentBranch[] = [];
-  for (let i = 0; i < params.count; i++) {
-    try {
-      const { systemPrompt, userPrompt } = buildPenContinuePrompt({
-        ...params.shared,
-        command: params.command,
-        authoringPov: params.authoringPov,
-        length: params.continueLength,
-        latentBranchIndex: i,
-      });
-      const promptConfig: AIPromptForJson<PenContinueAIOutput> = {
-        schema: PEN_CONTINUE_SCHEMA,
-        requiredFields: PEN_CONTINUE_REQUIRED_FIELDS,
-        fallbackField: "text",
-        baseOptions: {
-          modelSelection: AI_CHAT_MODELS_WRITING,
-          context: "pen-continue-latent",
-          systemPrompt,
-          config: { ...AI_CHAT_CONFIG_DEFAULT, maxOutputToken: PEN_CONTINUE_MAX_TOKENS[params.continueLength] },
-        },
-      };
-      const { result } = await aiPrompt<PenContinueAIOutput>(userPrompt, createAIOptionsWithSchema(promptConfig));
-      if (result?.text && result.text.trim().length > 0) {
-        branches.push({ id: generateId(), text: result.text.trim() });
+  const branches = await Promise.all(
+    Array.from({ length: params.count }, async (_, i) => {
+      try {
+        const { systemPrompt, userPrompt } = buildPenContinuePrompt({
+          ...params.shared,
+          command: params.command,
+          authoringPov: params.authoringPov,
+          length: params.continueLength,
+          latentBranchIndex: i,
+        });
+        const promptConfig: AIPromptForJson<PenContinueAIOutput> = {
+          schema: PEN_CONTINUE_SCHEMA,
+          requiredFields: PEN_CONTINUE_REQUIRED_FIELDS,
+          fallbackField: "text",
+          baseOptions: {
+            modelSelection: AI_CHAT_MODELS_WRITING,
+            context: "pen-continue-latent",
+            systemPrompt,
+            config: { ...AI_CHAT_CONFIG_DEFAULT, maxOutputToken: PEN_CONTINUE_MAX_TOKENS[params.continueLength] },
+          },
+        };
+        const { result } = await aiPrompt<PenContinueAIOutput>(userPrompt, {
+          ...createAIOptionsWithSchema(promptConfig),
+          signal: params.signal,
+        });
+        if (result?.text && result.text.trim().length > 0) {
+          return { id: generateId(), text: result.text.trim() };
+        }
+        return null;
+      } catch (err) {
+        console.warn(`[continuePenDraft] latent branch ${i} generation failed:`, err);
+        return null;
       }
-    } catch (err) {
-      console.warn(`[continuePenDraft] latent branch ${i} generation failed:`, err);
+    })
+  );
+  return branches.filter((branch): branch is PenLatentBranch => branch !== null);
+}
+
+/**
+ * Streaming options for {@link continuePenDraft} (hardening roadmap Step 3).
+ *
+ * Providing `onToken` swaps the buffered `aiPrompt` call for the
+ * `aiStreamSSE` pipeline so the route can forward live preview deltas; the
+ * final `PenContinueOutput` (and the credit charge) is identical either way.
+ */
+export type PenContinueStreamOptions = {
+  /** Client-disconnect/cancellation signal threaded into the LLM calls (Step 9). */
+  signal?: AbortSignal;
+  /** Live preview: decoded increments of the continuation's `text` field. */
+  onToken?: (delta: string) => void;
+  /** Provider fallback discarded the attempt — drop the live preview so far. */
+  onTokenReset?: () => void;
+};
+
+/**
+ * Streaming AI call for `/continue` (hardening roadmap Step 3).
+ *
+ * Runs {@link aiStreamSSE} with the same schema-JSON options as the buffered
+ * path, decodes the growing `text` field into live preview deltas via
+ * `onToken` (and `onTokenReset` on provider-fallback boundaries), then parses
+ * the completed raw output through the SAME {@link parseAISafely} pipeline
+ * `aiPrompt` uses — so required-field/fallback semantics are identical.
+ * Runs entirely OUTSIDE any DB transaction (Step 1 invariant). Returns
+ * `undefined` when every provider failed, which the caller turns into
+ * `PenContinueError` → `releaseReservation`.
+ */
+async function streamContinueOutput(
+  userPrompt: string,
+  promptConfig: AIPromptForJson<PenContinueAIOutput>,
+  options: PenContinueStreamOptions,
+): Promise<PenContinueAIOutput | undefined> {
+  const aiStream = await aiStreamSSE(
+    userPrompt,
+    { ...createAIOptionsWithSchema(promptConfig) },
+    options.signal,
+  );
+  const extractor = createJsonTextFieldExtractor("text");
+  const raw = await extractSseTextDeltas(
+    aiStream.stream,
+    (delta) => {
+      const inc = extractor.push(delta);
+      if (inc) options.onToken?.(inc);
+    },
+    () => {
+      extractor.reset();
+      options.onTokenReset?.();
+    },
+  );
+  if (!raw) return undefined;
+  const parsed = await parseAISafely<PenContinueAIOutput>(
+    { output: raw, provider: "none" },
+    {
+      logContext: "pen-continue-stream",
+      schema: promptConfig.schema,
+      requiredFields: promptConfig.requiredFields,
+      fallbackField: promptConfig.fallbackField,
     }
-  }
-  return branches;
+  );
+  return parsed;
 }
 
 /**
@@ -1036,6 +1164,11 @@ async function generateLatentBranches(params: {
  * @param sessionId - The session to continue
  * @param draftId - The draft slot to append to (must be the active draft)
  * @param input - Discriminated body: storyteller prose or text-adventure command
+ * @param options - `signal`: client-disconnect/cancellation signal threaded
+ *                  into the LLM calls so an aborted request stops token spend
+ *                  and falls through to `releaseReservation` (Step 9);
+ *                  `onToken`/`onTokenReset`: live preview callbacks that
+ *                  switch generation to the SSE pipeline (Step 3)
  * @throws PenSessionNotFoundError / PenBookOwnershipError if not owned
  * @throws PenDraftNotActiveError if `draftId` is not the active draft
  * @throws PenContinueError if the AI returns no usable text
@@ -1044,7 +1177,8 @@ export async function continuePenDraft(
   userId: string,
   sessionId: string,
   draftId: string,
-  input: PenContinueInput
+  input: PenContinueInput,
+  options: PenContinueStreamOptions = {}
 ): Promise<PenContinueOutput> {
   const session = await getPenSessionById(userId, sessionId);
   const book: DBBook | null = await getBookFromDB(session.bookId);
@@ -1203,142 +1337,183 @@ export async function continuePenDraft(
     },
   };
 
-  const { result } = await executeWithCredits(
+  // Roadmap Step 1 (reserve → generate → settle): the charge commits in a
+  // millisecond-scale reserve transaction BEFORE any provider token is spent
+  // (a zero-balance request still fails first), but every LLM call below runs
+  // with NO transaction open — neither the users row lock nor a pool
+  // connection is held across generation. Failures refund through a
+  // persistent `refund` row instead of an implicit rollback.
+  const branched = book.mode === "interactive" || book.mode === "multiverse";
+
+  const generate = async () => {
+    // B6: latent sibling branches for a Text Adventure continuation in a
+    // branching (interactive/multiverse) book — alternate "what-if"
+    // resolutions of the same command, hidden until explored. Novel stays
+    // linear (no branching contract) so it is skipped.
+    //
+    // Roadmap Step 2: main generation and the siblings run CONCURRENTLY
+    // (Promise.all), cutting TA continue wall time from ~3× to ~1×
+    // generation latency. A sibling failure still just yields fewer siblings.
+    const latentPromise: Promise<PenLatentBranch[]> =
+      input.type === "text_adventure" && branched && PEN_TA_LATENT_BRANCH_COUNT > 0
+        ? generateLatentBranches({
+            shared,
+            command: authorInput,
+            continueLength,
+            count: PEN_TA_LATENT_BRANCH_COUNT,
+            authoringPov,
+            signal: options.signal,
+          })
+        : Promise.resolve([]);
+
+    // Step 3: streaming mode swaps the buffered aiPrompt for aiStreamSSE and
+    // forwards decoded `text` deltas to `onToken` (live preview). Latent
+    // siblings stay buffered — they are hidden until explored, so there is
+    // nothing to preview.
+    const outputPromise: Promise<PenContinueAIOutput | undefined> = options.onToken
+      ? streamContinueOutput(userPrompt, promptConfig, options)
+      : aiPrompt<PenContinueAIOutput>(userPrompt, {
+          ...createAIOptionsWithSchema(promptConfig),
+          signal: options.signal,
+        }).then((r) => r.result);
+    const [output, latentSiblings] = await Promise.all([outputPromise, latentPromise]);
+
+    if (!output || typeof output.text !== "string" || output.text.trim().length === 0) {
+      throw new PenContinueError("AI returned no continuation text");
+    }
+
+    const issues = Array.isArray(output.issues) && output.issues.length > 0
+      ? output.issues.filter((i) => i && typeof i.expected === "string" && typeof i.found === "string")
+      : [];
+
+    // Clean AI output is considered validated against the current canon version;
+    // self-reported issues (or any flagged output) leave the span dirty.
+    let clean = issues.length === 0;
+
+    // Gate 2 (§18.8 / roadmap §6): best-effort deterministic canon cross-check
+    // of the continuation against the triggered story-bible entries. A flagged
+    // contradiction downgrades the span to `dirty` so the finalize delta gate
+    // re-checks it authoritatively.
+    if (clean && PEN_TA_GATE2_CANON_CHECK && input.type === "text_adventure" && detectLoreContradiction(output.text, lore)) {
+      clean = false;
+    }
+
+    const span: DraftSpan = {
+      id: generateId(),
+      text: output.text.trim(),
+      origin: "ai",
+      validationState: clean ? "validated" : "dirty",
+      validatedAgainst: clean ? book.canonVersion : undefined,
+      authoringPov: authoringPov ?? null,
+      ...(latentSiblings.length ? { latentSiblings } : {}),
+    };
+
+    return { span, latentSiblings };
+  };
+
+  // Persist phase — a SHORT transaction (no AI inside). The draft row is
+  // re-read FOR UPDATE so the BE8 buffer bound and the append both see the
+  // freshest state: a concurrent append can neither slip past the cap nor be
+  // overwritten (the old flow read the buffer before a long in-tx generation).
+  const persist = async (
+    { span, latentSiblings }: { span: DraftSpan; latentSiblings: PenLatentBranch[] },
+    tx: DBTransaction
+  ) => {
+    const [current] = await tx
+      .select()
+      .from(penDrafts)
+      .where(and(eq(penDrafts.id, draftId), eq(penDrafts.sessionId, sessionId)))
+      .for("update")
+      .limit(1);
+    if (!current) throw new PenSessionNotFoundError();
+
+    // BE8: bound the buffer's total size so long sessions can't grow an
+    // unbounded JSONB payload (bloats session reads + finalize rollup). The
+    // latent-sibling payload is counted too, since it lives on the span.
+    const existingTotal = (current.draftBuffer ?? []).reduce((sum, s) => sum + (s.text?.length ?? 0), 0);
+    const latentTotal = latentSiblings.reduce((sum, b) => sum + b.text.length, 0);
+    if (existingTotal + span.text.length + latentTotal > PEN_DRAFT_BUFFER_MAX_CHARS) {
+      throw new PenContinueError("Draft is at its maximum size — finalize or trim before continuing");
+    }
+    const nextBuffer = [...(current.draftBuffer ?? []), span];
+
+    const [updated] = await tx
+      .update(penDrafts)
+      // version bump: content changed outside updateSessionDraft — a concurrent
+      // version-aware autosave must 409 instead of clobbering the AI output.
+      .set({ draftBuffer: nextBuffer, updatedAt: new Date(), version: sql`${penDrafts.version} + 1` })
+      .where(and(eq(penDrafts.id, draftId), eq(penDrafts.sessionId, sessionId)))
+      .returning();
+    if (!updated) throw new PenSessionNotFoundError();
+
+    const [updatedSession] = await tx
+      .update(penSessions)
+      .set({
+        status: "active",
+        ...(typeof input.assistanceLevel === "number" ? { assistanceLevel } : {}),
+        updatedAt: new Date(),
+      })
+      .where(and(eq(penSessions.id, sessionId), eq(penSessions.userId, userId)))
+      .returning();
+    if (!updatedSession) throw new PenSessionNotFoundError();
+
+    const edit: PenEdit = {
+      id: generateId(),
+      sessionId,
+      userId,
+      bookId: book.id,
+      pageId: null,
+      editType: "ai_continued",
+      authorInput: authorInput || null,
+      aiOutput: span.text,
+      finalText: span.text,
+      contextPageId: session.currentPageId,
+      charOffsetStart: null,
+      charOffsetEnd: null,
+      authoringMode: session.authoringMode,
+      authoringPov: authoringPov ?? null,
+      createdAt: new Date(),
+    };
+
+    await tx.insert(penEdits).values({
+      id: edit.id,
+      sessionId: edit.sessionId,
+      userId: edit.userId,
+      bookId: edit.bookId,
+      pageId: null,
+      draftId,
+      editType: edit.editType,
+      authorInput: edit.authorInput,
+      aiOutput: edit.aiOutput,
+      finalText: edit.finalText,
+      contextPageId: edit.contextPageId,
+      authoringMode: edit.authoringMode,
+      authoringPov: edit.authoringPov,
+      createdAt: edit.createdAt,
+    });
+
+    return { updated, span, edit };
+  };
+
+  const result = await withCreditReservation(
     userId,
     continueCreditKey({ assistanceLevel }),
-    async (tx) => {
-      const [current] = await tx
-        .select()
-        .from(penDrafts)
-        .where(and(eq(penDrafts.id, draftId), eq(penDrafts.sessionId, sessionId)))
-        .limit(1);
-      if (!current) throw new PenSessionNotFoundError();
-
-      // Credit enforcement precedes generation: executeWithCredits deducts
-      // (and throws INSUFFICIENT_CREDITS) before this callback runs, so a
-      // zero-balance user never spends provider tokens on a rejected request
-      // (roadmap §13 sketch: generate inside the credits transaction).
-      const aiResponse = await aiPrompt<PenContinueAIOutput>(userPrompt, createAIOptionsWithSchema(promptConfig));
-      const output = aiResponse.result;
-
-      if (!output || typeof output.text !== "string" || output.text.trim().length === 0) {
-        throw new PenContinueError("AI returned no continuation text");
-      }
-
-      const issues = Array.isArray(output.issues) && output.issues.length > 0
-        ? output.issues.filter((i) => i && typeof i.expected === "string" && typeof i.found === "string")
-        : [];
-
-      // Clean AI output is considered validated against the current canon version;
-      // self-reported issues (or any flagged output) leave the span dirty.
-      let clean = issues.length === 0;
-
-      // Gate 2 (§18.8 / roadmap §6): best-effort deterministic canon cross-check
-      // of the continuation against the triggered story-bible entries. A flagged
-      // contradiction downgrades the span to `dirty` so the finalize delta gate
-      // re-checks it authoritatively.
-      if (clean && PEN_TA_GATE2_CANON_CHECK && input.type === "text_adventure" && detectLoreContradiction(output.text, lore)) {
-        clean = false;
-      }
-
-      // B6: lazily generate latent sibling branches for a Text Adventure
-      // continuation in a branching (interactive/multiverse) book. Each is an
-      // alternate "what-if" resolution of the same command, hidden until
-      // explored. Novel stays linear (no branching contract) so it is skipped.
-      const branched = book.mode === "interactive" || book.mode === "multiverse";
-      let latentSiblings: PenLatentBranch[] = [];
-      if (input.type === "text_adventure" && branched && PEN_TA_LATENT_BRANCH_COUNT > 0) {
-        latentSiblings = await generateLatentBranches({
-          shared,
-          command: authorInput,
-          continueLength,
-          count: PEN_TA_LATENT_BRANCH_COUNT,
-          authoringPov,
-        });
-      }
-
-      const span: DraftSpan = {
-        id: generateId(),
-        text: output.text.trim(),
-        origin: "ai",
-        validationState: clean ? "validated" : "dirty",
-        validatedAgainst: clean ? book.canonVersion : undefined,
-        authoringPov: authoringPov ?? null,
-        ...(latentSiblings.length ? { latentSiblings } : {}),
-      };
-
-      // BE8: bound the buffer's total size so long sessions can't grow an
-      // unbounded JSONB payload (bloats session reads + finalize rollup). The
-      // latent-sibling payload is counted too, since it lives on the span.
-      const existingTotal = (current.draftBuffer ?? []).reduce((sum, s) => sum + (s.text?.length ?? 0), 0);
-      const latentTotal = latentSiblings.reduce((sum, b) => sum + b.text.length, 0);
-      if (existingTotal + span.text.length + latentTotal > PEN_DRAFT_BUFFER_MAX_CHARS) {
-        throw new PenContinueError("Draft is at its maximum size — finalize or trim before continuing");
-      }
-      const nextBuffer = [...(current.draftBuffer ?? []), span];
-
-      const [updated] = await tx
-        .update(penDrafts)
-        .set({ draftBuffer: nextBuffer, updatedAt: new Date() })
-        .where(and(eq(penDrafts.id, draftId), eq(penDrafts.sessionId, sessionId)))
-        .returning();
-      if (!updated) throw new PenSessionNotFoundError();
-
-      const [updatedSession] = await tx
-        .update(penSessions)
-        .set({
-          status: "active",
-          ...(typeof input.assistanceLevel === "number" ? { assistanceLevel } : {}),
-          updatedAt: new Date(),
-        })
-        .where(and(eq(penSessions.id, sessionId), eq(penSessions.userId, userId)))
-        .returning();
-      if (!updatedSession) throw new PenSessionNotFoundError();
-
-      const edit: PenEdit = {
-        id: generateId(),
-        sessionId,
-        userId,
-        bookId: book.id,
-        pageId: null,
-        editType: "ai_continued",
-        authorInput: authorInput || null,
-        aiOutput: span.text,
-        finalText: span.text,
-        contextPageId: session.currentPageId,
-        charOffsetStart: null,
-        charOffsetEnd: null,
-        authoringMode: session.authoringMode,
-        authoringPov: authoringPov ?? null,
-        createdAt: new Date(),
-      };
-
-      await tx.insert(penEdits).values({
-        id: edit.id,
-        sessionId: edit.sessionId,
-        userId: edit.userId,
-        bookId: edit.bookId,
-        pageId: null,
-        draftId,
-        editType: edit.editType,
-        authorInput: edit.authorInput,
-        aiOutput: edit.aiOutput,
-        finalText: edit.finalText,
-        contextPageId: edit.contextPageId,
-        authoringMode: edit.authoringMode,
-        authoringPov: edit.authoringPov,
-        createdAt: edit.createdAt,
-      });
-
-      return { updated, span, edit };
-    },
-    { context: "pen_continue", metadata: { sessionId, bookId: book.id } }
+    generate,
+    persist,
+    {
+      context: "pen_continue",
+      metadata: { sessionId, bookId: book.id },
+      correlationId: input.correlationId,
+    }
   );
 
   return {
     span: result.span,
     edit: result.edit,
     draft: result.updated.draftBuffer,
+    // Post-AI draft version so the client can keep its optimistic-concurrency
+    // base in sync without a 409 round-trip on the next autosave (Step 4).
+    version: result.updated.version,
   };
 }
 
@@ -1353,7 +1528,9 @@ export class PenTransformError extends Error {
 /**
  * Transforms or expands a selected text block in the draft surface (POST /api/pen/sessions/:id/transform).
  *
- * Runs inside executeWithCredits('PEN_TRANSFORM') (1 credit).
+ * Charged 1 credit via withCreditReservation('PEN_TRANSFORM') — reserve
+ * deducts first, the LLM call runs outside any transaction, failures refund
+ * (roadmap Step 1).
  * Writes an audit row to `pen_edits` with `editType: 'ai_revised'`.
  */
 export async function transformPenSelection(
@@ -1494,10 +1671,11 @@ export async function transformPenSelection(
     },
   };
 
-  const { result } = await executeWithCredits(
+  const result = await withCreditReservation(
     userId,
     "PEN_TRANSFORM",
-    async (tx) => {
+    // Generate phase — LLM call with NO transaction open (roadmap Step 1).
+    async () => {
       const aiResponse = await aiPrompt<PenTransformAIOutput>(userPrompt, createAIOptionsWithSchema(promptConfig));
       const output = aiResponse.result;
 
@@ -1509,6 +1687,14 @@ export async function transformPenSelection(
         ? output.issues.filter((i: { expected?: unknown; found?: unknown }) => i && typeof i.expected === "string" && typeof i.found === "string")
         : [];
 
+      return {
+        transformedText: output.transformedText.trim(),
+        rationale: output.rationale?.trim() || undefined,
+        issues: issues.length > 0 ? issues : undefined,
+      };
+    },
+    // Persist phase — short transaction: audit row only.
+    async (transformed, tx) => {
       const edit: PenEdit = {
         id: generateId(),
         sessionId,
@@ -1517,8 +1703,8 @@ export async function transformPenSelection(
         pageId: null,
         editType: "ai_revised",
         authorInput: `[${input.action}${input.subAction ? `:${input.subAction}` : ""}] ${selectionText}`,
-        aiOutput: output.transformedText.trim(),
-        finalText: output.transformedText.trim(),
+        aiOutput: transformed.transformedText,
+        finalText: transformed.transformedText,
         contextPageId: session.currentPageId,
         charOffsetStart: input.selection.from ?? null,
         charOffsetEnd: input.selection.to ?? null,
@@ -1544,58 +1730,12 @@ export async function transformPenSelection(
         createdAt: edit.createdAt,
       });
 
-      return {
-        transformedText: output.transformedText.trim(),
-        rationale: output.rationale?.trim() || undefined,
-        issues: issues.length > 0 ? issues : undefined,
-      };
+      return transformed;
     }
   );
 
   return result;
 }
-
-/** Errors thrown while running an essentials auto-fill request. */
-export class PenEssentialsAutofillError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "PenEssentialsAutofillError";
-  }
-}
-
-/** Body of `POST /api/pen/sessions/:id/essentials/autofill`. */
-export type PenEssentialsAutofillInput = {
-  /**
-   * The current in-progress draft prose (plain text).
-   *
-   * The server's active draft only updates on `/continue`/`/finalize`/autosave,
-   * so live keystrokes live client-side — the freshest story signal must travel
-   * with the request, exactly like `/continue`'s `prose`.
-   */
-  draftText?: string;
-  /**
-   * Autofill mode:
-   * - `fill_empty` (default): propose values ONLY for fields the author left
-   *   blank; already-filled fields are never second-guessed.
-   * - `review_all`: propose the most fitting value for EVERY field, revising
-   *   the author's existing values only when the draft/canon clearly supports
-   *   a better fit. The frontend shows the diffs for per-field acceptance.
-   */
-  mode?: "fill_empty" | "review_all";
-};
-
-/** Valid `mode` values for an essentials auto-fill request. */
-export type PenEssentialsAutofillMode = NonNullable<PenEssentialsAutofillInput["mode"]>;
-
-/** Result of an essentials auto-fill request. */
-export type PenEssentialsAutofillOutput = {
-  /**
-   * A COMPLETE scene-essentials proposal. The service never mutates the
-   * session — the frontend applies only the currently-blank fields and persists
-   * them through the existing debounced PATCH path.
-   */
-  essentials: PenDraftSceneEssentials;
-};
 
 /** Clamps a proposed `keyEvents`/`keyObjects` array (trim, dedupe, cap). */
 function coerceEssentialsList(value: unknown, maxItems: number, maxItemLength: number): string[] {
@@ -1611,61 +1751,6 @@ function coerceEssentialsList(value: unknown, maxItems: number, maxItemLength: n
     if (out.length >= maxItems) break;
   }
   return out;
-}
-
-/** Clamps a free-text proposal field (`calendarDate`/`timeOfDay`) to a string or undefined. */
-function coerceEssentialsText(value: unknown, maxLength: number): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  if (!trimmed) return undefined;
-  return trimmed.slice(0, maxLength);
-}
-
-/**
- * Coerces the raw auto-fill output into a validated `PenDraftSceneEssentials`
- * proposal. Every field is defensively validated so a malformed/hallucinated
- * AI response can never break `/finalize`:
- * - `mood`/`weather` must land in the canonical enums (`coerceMood`/`coerceWeather`).
- * - `placeName` is resolved back to a real bible place id by case-insensitive
- *   name (then value) match; unknown names are dropped entirely.
- * - List/text fields are trimmed, deduped, and length-capped.
- * Blank fields stay `undefined` so the frontend merge + `/finalize` inheritance
- * behave exactly like author-typed blanks.
- */
-function coerceEssentialsProposal(
-  output: PenEssentialsAIOutput,
-  placeOptions: Array<{ value: string; name: string }>,
-): PenDraftSceneEssentials {
-  const essentials: PenDraftSceneEssentials = {};
-
-  const mood = coerceMood(typeof output.mood === "string" ? output.mood : undefined, undefined);
-  if (mood) essentials.mood = mood;
-
-  const weather = coerceWeather(typeof output.weather === "string" ? output.weather : undefined, undefined);
-  if (weather) essentials.weather = weather;
-
-  const calendarDate = coerceEssentialsText(output.calendarDate, PEN_ESSENTIALS_MAX_FIELD_LENGTH);
-  if (calendarDate) essentials.calendarDate = calendarDate;
-
-  const timeOfDay = coerceEssentialsText(output.timeOfDay, PEN_ESSENTIALS_MAX_FIELD_LENGTH);
-  if (timeOfDay) essentials.timeOfDay = timeOfDay;
-
-  const placeName = typeof output.placeName === "string" ? output.placeName.trim() : "";
-  if (placeName) {
-    const lower = placeName.toLowerCase();
-    const match =
-      placeOptions.find((p) => p.name.toLowerCase() === lower) ??
-      placeOptions.find((p) => p.value.toLowerCase() === lower);
-    if (match) essentials.placeId = match.value;
-  }
-
-  const keyEvents = coerceEssentialsList(output.keyEvents, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH);
-  if (keyEvents.length > 0) essentials.keyEvents = keyEvents;
-
-  const keyObjects = coerceEssentialsList(output.keyObjects, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_ITEM_LENGTH);
-  if (keyObjects.length > 0) essentials.keyObjects = keyObjects;
-
-  return essentials;
 }
 
 /**
@@ -1697,160 +1782,6 @@ async function buildPenPlaceOptions(
   return [];
 }
 
-/**
- * Runs the `/continue`-style auto-fill generation for an owned pen session
- * (§2.i / §10 Decision M): one structured-output AI call proposes the blank
- * scene essentials from the draft + canon, clamped server-side, and an audit
- * `PenEdit` row (`editType: 'plan'`) is written. The session is never mutated
- * here — persisting the accepted proposal stays the frontend's job via PATCH.
- *
- * @param userId - The authenticated user's id (ownership guard)
- * @param sessionId - The session to autofill
- * @param input - `{ draftText }` — the current in-progress draft prose (plain text)
- * @throws PenSessionNotFoundError / PenBookOwnershipError if not owned
- * @throws PenEssentialsAutofillError if the session is closed or the AI returns unusable output
- */
-export async function autofillSceneEssentials(
-  userId: string,
-  sessionId: string,
-  input: PenEssentialsAutofillInput
-): Promise<PenEssentialsAutofillOutput> {
-  const session = await getPenSessionById(userId, sessionId);
-  const book: DBBook | null = await getBookFromDB(session.bookId);
-  if (!book) throw new PenEssentialsAutofillError("Book not found for this session");
-
-  if (session.status !== "active") {
-    throw new PenEssentialsAutofillError("Session is not active; reopen it before autofilling");
-  }
-
-  // Story state + recent prose from the last published page, when one exists
-  // (mirrors `/continue`).
-  let state: StoryState | null = null;
-  let pageTexts: string[] = [];
-  let momentum: string | null = null;
-  let sceneType: string | null = null;
-  let lastPage: PersistedStoryPage | undefined;
-
-  if (session.currentPageId) {
-    state = await getStoryStateWithBranch(book.id, session.currentPageId);
-    const branch = await getBranchPath(session.currentPageId);
-    pageTexts = branch.pages.map((p) => p.text).filter(Boolean);
-    lastPage = branch.pages[branch.pages.length - 1];
-    momentum = lastPage?.momentum ?? null;
-    sceneType = lastPage?.sceneType ?? null;
-  } else if (book.ending) {
-    state = {
-      ...createEmptyStoryState("", 1, book.totalPages ?? 1),
-      viableEnding: book.ending,
-      hiddenState: createInitialHiddenState(),
-    };
-  }
-
-  const mcName = book.mc?.knownName || book.mc?.name || "";
-  const language = book.language || "en";
-
-  // Known places constrain the place proposal (ownership already verified
-  // above). A place suggestion is only accepted when its name resolves to one
-  // of these ids. BQ3: lore bible first, story-state places as the fallback.
-  const placeOptions = await buildPenPlaceOptions(userId, book.id, state);
-
-  // Trigger-keyword lore injection — same haystack contract as `/continue`.
-  const loreHaystack = [state?.contextHistory ?? "", ...pageTexts, input.draftText ?? ""].join("\n");
-  const lore = await getTriggeredLoreEntries(book.id, loreHaystack);
-
-  const { systemPrompt, userPrompt } = buildPenEssentialsAutofillPrompt({
-    state,
-    lore,
-    pageTexts,
-    mcName,
-    language,
-    bookSummary: book.summary ?? null,
-    storyStartDate: book.storyStartDate ?? null,
-    momentum,
-    sceneType,
-    essentials: inheritSceneEssentials(session.draftSceneEssentials, lastPage),
-    draftText: input.draftText?.trim() ?? "",
-    placeOptions,
-    mode: input.mode ?? "fill_empty",
-  });
-
-  const promptConfig: AIPromptForJson<PenEssentialsAIOutput> = {
-    schema: (input.mode ?? "fill_empty") === "review_all" ? PEN_ESSENTIALS_REVIEW_SCHEMA : PEN_ESSENTIALS_SCHEMA,
-    requiredFields: PEN_ESSENTIALS_REQUIRED_FIELDS,
-    fallbackField: "keyEvents",
-    baseOptions: {
-      modelSelection: AI_CHAT_MODELS_WRITING,
-      context: "pen-essentials-autofill",
-      systemPrompt,
-      config: { ...AI_CHAT_CONFIG_DEFAULT, maxOutputToken: PEN_ESSENTIALS_MAX_TOKENS },
-    },
-  };
-
-  const { result } = await executeWithCredits(
-    userId,
-    "PEN_ESSENTIALS_AUTOFILL",
-    async (tx) => {
-      const [current] = await tx
-        .select()
-        .from(penSessions)
-        .where(and(eq(penSessions.id, sessionId), eq(penSessions.userId, userId)))
-        .limit(1);
-      if (!current) throw new PenSessionNotFoundError();
-
-      const aiResponse = await aiPrompt<PenEssentialsAIOutput>(userPrompt, createAIOptionsWithSchema(promptConfig));
-      const output = aiResponse.result;
-
-      if (!output || typeof output !== "object") {
-        throw new PenEssentialsAutofillError("AI returned no scene essentials");
-      }
-
-      const essentials = coerceEssentialsProposal(output, placeOptions);
-
-      // Audit trail — the `plan` edit type was reserved for exactly this kind
-      // of author-facing AI suggestion (types/pen.ts). Nothing is persisted to
-      // the session; the author accepts via the panel and the debounced PATCH.
-      const edit: PenEdit = {
-        id: generateId(),
-        sessionId,
-        userId,
-        bookId: book.id,
-        pageId: null,
-        editType: "plan",
-        authorInput: input.draftText?.trim() || null,
-        aiOutput: JSON.stringify(essentials),
-        finalText: null,
-        contextPageId: session.currentPageId,
-        charOffsetStart: null,
-        charOffsetEnd: null,
-        authoringMode: session.authoringMode,
-        authoringPov: null,
-        createdAt: new Date(),
-      };
-
-      await tx.insert(penEdits).values({
-        id: edit.id,
-        sessionId: edit.sessionId,
-        userId: edit.userId,
-        bookId: edit.bookId,
-        pageId: null,
-        editType: edit.editType,
-        authorInput: edit.authorInput,
-        aiOutput: edit.aiOutput,
-        finalText: null,
-        contextPageId: edit.contextPageId,
-        authoringMode: edit.authoringMode,
-        authoringPov: null,
-        createdAt: edit.createdAt,
-      });
-
-      return essentials;
-    },
-    { context: "pen_essentials_autofill", metadata: { sessionId, bookId: book.id } }
-  );
-
-  return { essentials: result };
-}
-
 /** Errors thrown while running a `/cast/detect` request. */
 export class PenCastDetectError extends Error {
   constructor(message: string) {
@@ -1863,7 +1794,9 @@ export class PenCastDetectError extends Error {
  * Scans story text from the draft to infer all characters present on the scene,
  * their roles, focus weights, and propose new lore entities.
  *
- * Runs inside executeWithCredits('PEN_DETECT_CAST') (1 credit).
+ * Charged 1 credit via withCreditReservation('PEN_DETECT_CAST') — reserve
+ * deducts first, the LLM call runs outside any transaction, failures refund
+ * (roadmap Step 1).
  * Writes an audit row to `pen_edits` with `editType: 'plan'`.
  */
 export async function detectSceneCast(
@@ -1975,17 +1908,11 @@ export async function detectSceneCast(
     },
   };
 
-  const { result } = await executeWithCredits(
+  const result = await withCreditReservation(
     userId,
     "PEN_DETECT_CAST",
-    async (tx) => {
-      const [current] = await tx
-        .select()
-        .from(penSessions)
-        .where(and(eq(penSessions.id, sessionId), eq(penSessions.userId, userId)))
-        .limit(1);
-      if (!current) throw new PenSessionNotFoundError();
-
+    // Generate phase — LLM call with NO transaction open (roadmap Step 1).
+    async () => {
       const aiResponse = await aiPrompt<PenCastDetectAIOutput>(userPrompt, createAIOptionsWithSchema(promptConfig));
       const output = aiResponse.result;
 
@@ -2033,6 +1960,17 @@ export async function detectSceneCast(
           isNew,
         });
       }
+
+      return detected;
+    },
+    // Persist phase — short transaction: session existence check + audit row.
+    async (detected, tx) => {
+      const [current] = await tx
+        .select()
+        .from(penSessions)
+        .where(and(eq(penSessions.id, sessionId), eq(penSessions.userId, userId)))
+        .limit(1);
+      if (!current) throw new PenSessionNotFoundError();
 
       const edit: PenEdit = {
         id: generateId(),
@@ -2187,9 +2125,9 @@ function coerceStateProposalInjury(
  * Coerces a raw state proposal (AI output OR author-adopted arrays) into
  * validated `InventoryItem[]` / `Injury[]` full replacements plus the scene
  * fields. Every field is defensively validated so a malformed/hallucinated AI
- * response or a hand-edited adoption can never break `/finalize` (mirrors
- * {@link coerceEssentialsProposal}). Invalid scene values drop to `undefined`
- * so the finalize falls back to the inherited page value.
+ * response or a hand-edited adoption can never break `/finalize`. Invalid
+ * scene values drop to `undefined` so the finalize falls back to the
+ * inherited page value.
  */
 function coerceStateProposal(
   output: PenStateProposalAIOutput,
@@ -2438,17 +2376,14 @@ export async function proposePenStateUpdates(
     },
   };
 
-  const { result } = await executeWithCredits(
+  const result = await withCreditReservation(
     userId,
     "PEN_FINALIZE_PROPOSE",
-    async (tx) => {
-      const [current] = await tx
-        .select()
-        .from(penSessions)
-        .where(and(eq(penSessions.id, sessionId), eq(penSessions.userId, userId)))
-        .limit(1);
-      if (!current) throw new PenSessionNotFoundError();
-
+    // Generate phase — LLM call with NO transaction open (roadmap Step 1).
+    // PEN_FINALIZE_PROPOSE costs 0, so the old flow wrapped an AI call in a
+    // pointless dbWrite.transaction; the reservation helper opens no
+    // transaction at all for cost-0 actions until the persist phase below.
+    async () => {
       const aiResponse = await aiPrompt<PenStateProposalAIOutput>(userPrompt, createAIOptionsWithSchema(promptConfig));
       const output = aiResponse.result;
 
@@ -2456,7 +2391,16 @@ export async function proposePenStateUpdates(
         throw new PenStateProposalError("AI returned no state proposal");
       }
 
-      const proposal = coerceStateProposal(output, state, expectedPageNumber, book.ending?.outline);
+      return coerceStateProposal(output, state, expectedPageNumber, book.ending?.outline);
+    },
+    // Persist phase — short transaction: session existence check + audit row.
+    async (proposal, tx) => {
+      const [current] = await tx
+        .select()
+        .from(penSessions)
+        .where(and(eq(penSessions.id, sessionId), eq(penSessions.userId, userId)))
+        .limit(1);
+      if (!current) throw new PenSessionNotFoundError();
 
       // Audit trail — the `plan` edit type was reserved for author-facing AI
       // suggestions (types/pen.ts). Nothing is persisted to the session; the
@@ -2853,7 +2797,7 @@ async function autoPrefixDialogueMarkers(
       },
     };
 
-    // Free (0 credits) — no need for executeWithCredits wrapper.
+    // Free (0 credits) — no reservation/charge wrapper needed.
     const aiResponse = await aiPrompt<PenDialogueMarkerAIOutput>(
       prompt.userPrompt,
       createAIOptionsWithSchema(promptConfig),
@@ -3392,7 +3336,8 @@ export async function finalizePenDraft(
 
   // ── Phase C: roll up pen_edits spans + offsets, clear the draft ───────────
   //
-  // TODO(orphan-window): the page + story-state INSERT above (Phase B,
+  // KNOWN WINDOW (orphan-window, mitigated — hardening roadmap Step 8): the
+  // page + story-state INSERT above (Phase B,
   // persistPageWithState) commits OUTSIDE this transaction, so there is no
   // atomicity between "child page inserted" and "session advanced to it".
   //
@@ -3418,8 +3363,9 @@ export async function finalizePenDraft(
   // in book.ts). Re-threading a `tx` through insertStoryState/persistPageWithState
   // would couple finalize to every engine write path — high blast radius.
   //
-  // ── Best proposed fix (Option A — favors the house "cleanup contract") ───
-  // Mirror persistPageWithState's own orphan cleanup instead of a shared tx:
+  // ── Fix (Option A — favors the house "cleanup contract") ──────────────────
+  // IMPLEMENTED (hardening roadmap Step 8) in the Phase C catch below:
+  // mirror persistPageWithState's own orphan cleanup instead of a shared tx:
   //   try { await dbWrite.transaction(Phase C) }
   //   catch (err) {
   //     // Compensate: remove the child that never got "adopted" by the session,
@@ -3429,12 +3375,14 @@ export async function finalizePenDraft(
   //     try { await deleteStoryPage(newPage.id); } catch { /* reconciliation */ }
   //     throw err;
   //   }
-  // This makes the whole user action all-or-nothing and keeps Phase B's retry
-  // contract intact. Residual risk: if the compensation delete ALSO fails on a
-  // network partition, the page becomes a classic orphan — detectable by the
-  // periodic reconciliation job the engine already assumes ("no state, never
-  // linked as a destination", book.ts). It must not be erased if the author
-  // initiated another publish meanwhile (guard on session.status/currentPageId).
+  // This makes Phase B+C all-or-nothing on the ERROR path and keeps Phase B's
+  // retry contract intact. Residual risk: (1) process death between Phase B's
+  // commit and Phase C's commit never runs the catch — the stranded page is a
+  // classic orphan; (2) if the compensation delete ALSO fails on a network
+  // partition — same outcome. Both are detectable by the periodic
+  // reconciliation job the engine already assumes ("no state, never linked as
+  // a destination", book.ts). The delete is guarded so it must not erase a page
+  // the author's concurrent publish has since adopted (session.status/currentPageId).
   //
   // ── Alternative B (strongest, more work) ─────────────────────────────────
   // Add an in-progress publish marker to penSessions (e.g. `pendingPublishId`
@@ -3510,9 +3458,11 @@ export async function finalizePenDraft(
 
     // The published draft slot is cleared (multi-draft workspace): the editor
     // auto-creates a fresh slot under the new page on the next keystroke.
+    // version bump keeps the optimistic-concurrency invariant (every content
+    // write advances version) for the cleared row.
     await tx
       .update(penDrafts)
-      .set({ draftBuffer: [], draftHtml: null, draftCharactersPresent: [], draftSceneEssentials: null, actionText: null, isEnding: false, imageUrl: null, updatedAt: new Date() })
+      .set({ draftBuffer: [], draftHtml: null, draftCharactersPresent: [], draftSceneEssentials: null, actionText: null, isEnding: false, imageUrl: null, updatedAt: new Date(), version: sql`${penDrafts.version} + 1` })
       .where(and(eq(penDrafts.id, draftId), eq(penDrafts.sessionId, sessionId)));
 
     // §6.6 reverse-edge (B3/E3/E4, D-4 core): record this child as the
@@ -3587,8 +3537,9 @@ export async function finalizePenDraft(
     }
     });
   } catch (error) {
-    // BE4 (Option A — compensation delete): Phase B's page/state INSERT
-    // committed OUTSIDE this transaction (see TODO(orphan-window) above), so a
+    // BE4 (Option A — compensation delete, hardening roadmap Step 8): Phase B's
+    // page/state INSERT committed OUTSIDE this transaction (see the orphan-window
+    // analysis above), so a
     // Phase C failure leaves a new child row in `pages` while the session still
     // points at the old parent. Delete the un-adopted child so a client retry
     // publishes cleanly instead of creating a duplicate sibling. Guard: never

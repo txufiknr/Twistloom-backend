@@ -701,6 +701,19 @@ export const books = pgTable(
     hook: text("hook"),
     summary: text("summary"),
     imageId: text("image_id").references(() => uploadedImages.imageId, { onDelete: "set null" }), // Cover image
+    /**
+     * Cover provenance: `true` once the book owner uploads their own cover via
+     * `PUT /api/books/:id/cover-image`. The AI auto-cover pipeline
+     * (`generateAndUpdateBookCoverImage`) must never overwrite an
+     * owner-chosen cover — it re-reads this flag fresh AND guards its write
+     * with a conditional `WHERE cover_uploaded_by_user = false` UPDATE (CAS),
+     * so a user upload racing the (seconds-long) AI generation always wins.
+     * Stays `false` after an AI cover so originals/backfill may still fill a
+     * missing cover. Would only reset via a future "remove cover" flow
+     * (none exists today; only `imageId` writers are the owner PUT and the
+     * AI pipeline).
+     */
+    coverUploadedByUser: boolean("cover_uploaded_by_user").notNull().default(false),
     trendingScore: real("trending_score").default(0),
     isOriginal: boolean("is_original").notNull().default(false),
     isPenBook: boolean("is_pen_book").notNull().default(false),
@@ -3284,6 +3297,13 @@ export const penDrafts = pgTable(
     isEnding: boolean("is_ending").notNull().default(false),
     /** Author-uploaded page hero image URL (nullable). On /finalize, copied to pages.image_url. */
     imageUrl: text("image_url"),
+    /**
+     * Optimistic-concurrency counter (hardening roadmap Step 4). Bumped on
+     * every draft-row write (autosave PATCH, AI continue, finalize reset);
+     * version-aware clients assert the version they loaded and get 409 on
+     * mismatch instead of silently last-write-wins over each other.
+     */
+    version: integer("version").notNull().default(0),
     createdAt,
     updatedAt,
   },

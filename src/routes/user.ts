@@ -66,6 +66,7 @@ import { requireNotSuspended, requireNotMuted } from "../middleware/trust-safety
 import { users, books, userAuth, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, userSessions, userCompletedBooks, userComments, transactions, userProviders, userFeedbacks, bookTestimonials, uploadedImages, userReports, moderationReports, moderationAppeals, userEnforcementActions, userBlocks, platformTestimonials, pages, userInventory, posts, customActions } from "../db/schema.js";
 import type { ReportTargetType, ReportType } from "../types/trust-safety.js";
 import { getOrFetchUserEnforcementStatus, getOrCreateUserTrustProfile, getUserTrustSafetyOverview, submitUserAppeal, getUserAppeals } from "../services/trust-safety.js";
+import { isUserVipActive } from "../services/subscription.js";
 import { getErrorMessage, cApiError, cNotFoundError, cConflictError, cValidationError, cUnauthorizedError, cForbiddenError } from "../utils/error.js";
 import { eq, and, desc, sql, gte } from "drizzle-orm";
 import { calculatePaginationMeta, extractPaginationParams } from "../utils/pagination.js";
@@ -4759,6 +4760,7 @@ router.post('/beta-duties/:dutyId/claim', requireAuth, async (c: Context<AppEnv>
  * GET /api/users/:identifier/mind-matrix
  *
  * Returns the public user's aggregate longitudinal Reader Mind Matrix across all completed stories.
+ * VIP-gated (owner-side): the matrix owner must have an active VIP subscription.
  * Privacy-gated by user's showMindMatrixOnProfile preference.
  */
 router.get('/users/:identifier/mind-matrix', optionalAuth, async (c: Context<AppEnv>) => {
@@ -4770,10 +4772,15 @@ router.get('/users/:identifier/mind-matrix', optionalAuth, async (c: Context<App
     const isOwner = viewerId === resolved.userId;
 
     const [userRow] = await dbRead
-      .select({ privacyPreferences: users.privacyPreferences })
+      .select({ privacyPreferences: users.privacyPreferences, tier: users.tier, vipExpiresAt: users.vipExpiresAt })
       .from(users)
       .where(eq(users.userId, resolved.userId))
       .limit(1);
+
+    if (!isUserVipActive(userRow)) {
+      c.header('Cache-Control', 'private, no-cache');
+      return c.json({ success: true, matrix: null, isPrivate: false, locked: true });
+    }
 
     const isPublic = userRow?.privacyPreferences?.showMindMatrixOnProfile !== false;
 
@@ -4795,10 +4802,21 @@ router.get('/users/:identifier/mind-matrix', optionalAuth, async (c: Context<App
  * GET /api/user/mind-matrix
  *
  * Returns the authenticated user's own aggregate longitudinal Reader Mind Matrix.
+ * VIP-gated: requires an active VIP subscription.
  */
 router.get('/user/mind-matrix', requireAuth, async (c: Context<AppEnv>) => {
   try {
     const userId = c.get('userId')!;
+    const [ownerRow] = await dbRead
+      .select({ tier: users.tier, vipExpiresAt: users.vipExpiresAt })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1);
+
+    if (!isUserVipActive(ownerRow)) {
+      return c.json({ success: true, matrix: null, locked: true });
+    }
+
     const matrix = await getUserMindMatrix(userId);
     return c.json({ success: true, matrix });
   } catch (error) {

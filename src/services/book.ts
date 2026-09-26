@@ -2592,6 +2592,7 @@ export function mapBookFromDb(dbBook: DBBook): Book {
     hook: dbBook.hook || '',
     summary: dbBook.summary || '',
     imageId: dbBook.imageId || undefined,
+    coverUploadedByUser: dbBook.coverUploadedByUser ?? false,
     trendingScore: dbBook.trendingScore || 0,
     keywords: dbBook.keywords,
     status: dbBook.status || 'active',
@@ -2819,12 +2820,33 @@ export async function uploadBookCoverImage(
 }
 
 /**
+ * Sentinel error: the conditional (CAS) cover UPDATE matched zero rows because
+ * the book owner uploaded their own cover concurrently (or the book row was
+ * removed). Thrown inside the persist+update transaction so both statements
+ * roll back together — never surfaces to callers of the cover pipeline.
+ */
+class CoverSlotLostError extends Error {
+  constructor(bookId: string) {
+    super(`Cover slot for book ${bookId} lost to a concurrent owner upload`);
+    this.name = 'CoverSlotLostError';
+  }
+}
+
+/**
  * Generates AI cover image and updates book with new image
  * 
  * This function:
+ * - Skips entirely if the owner has already uploaded their own cover
+ *   (`coverUploadedByUser`) — checked with a fresh DB read, because the
+ *   `book` argument is a workflow-start snapshot that predates any mid-run
+ *   user upload
  * - Generates cover image using AI based on book content and state
  * - Uploads the generated image to ImageKit
- * - Updates the book record with new image URL and ID
+ * - Atomically persists the upload record + takes the book's cover slot with
+ *   a conditional UPDATE (`WHERE cover_uploaded_by_user = false`) so a user
+ *   upload racing this seconds-long generation always wins — on a lost race
+ *   the transaction rolls back and our own image is discarded instead of
+ *   overwriting, and ImageKit-deleting, the owner's upload
  * - Deletes old image from ImageKit (with fallback to deletion queue)
  * 
  * @param book - Book object with metadata for image generation
@@ -2837,31 +2859,79 @@ export async function uploadBookCoverImage(
  * ```
  */
 export async function generateAndUpdateBookCoverImage(book: Book, state?: StoryState): Promise<void> {
+  // Owner-chosen covers are sacred — re-read provenance fresh before
+  // spending an image generation on a lost cause.
+  const [current] = await dbRead
+    .select({ coverUploadedByUser: books.coverUploadedByUser })
+    .from(books)
+    .where(eq(books.id, book.id))
+    .limit(1);
+  if (current?.coverUploadedByUser) {
+    console.log(`[generateAndUpdateBookCoverImage] ⏭️ Skipping AI cover for ${book.id}: owner uploaded their own cover`);
+    return;
+  }
+
   const buffers = await generateCoverImages(book, state, 1); // TODO: 3 selectable images for premium users
   if (buffers.length === 0) return; // Cover image generation failed
 
   const oldImageId = book.imageId;
   const uploadResult = await uploadBookCoverImage(book, buffers[0]); // Direct buffer upload
-  
-  if (uploadResult) {
-    // TODO: make it all atomic with db transaction
 
-    if (book.userId) {
-      await persistUploadedImage({
-        imageId: uploadResult.fileId!,
-        imageUrl: uploadResult.url!,
-        type: 'cover',
-        userId: book.userId,
-      });
+  if (!uploadResult?.fileId) {
+    if (uploadResult) {
+      console.warn(`[generateAndUpdateBookCoverImage] ⚠️ Cover upload for ${book.id} returned no fileId; book not updated`);
     }
+    return;
+  }
+  const newImageId = uploadResult.fileId;
 
-    // Update book with new image ID
-    await updateBook(book.id, { imageId: uploadResult.fileId });
-    
-    // Delete old image from ImageKit (with fallback to deletion queue)
-    if (oldImageId) {
-      await deleteFileFromImageKit(oldImageId);
+  // Persist the upload record and claim the cover slot atomically. The CAS
+  // closes the window left by the fresh read above: if the owner's concurrent
+  // PUT commits between our read and our write, this UPDATE matches zero rows,
+  // the transaction rolls back, and we discard our own image.
+  let ownerSlug: string | null;
+  try {
+    ownerSlug = await dbWrite.transaction(async (tx): Promise<string | null> => {
+      if (book.userId) {
+        await persistUploadedImage({
+          imageId: newImageId,
+          imageUrl: uploadResult.url!,
+          type: 'cover',
+          userId: book.userId,
+          client: tx,
+        });
+      }
+
+      const [updated] = await tx
+        .update(books)
+        .set({ imageId: newImageId, updatedAt: new Date() })
+        .where(and(eq(books.id, book.id), eq(books.coverUploadedByUser, false)))
+        .returning({ id: books.id, slug: books.slug });
+      if (!updated) {
+        throw new CoverSlotLostError(book.id);
+      }
+      return updated.slug;
+    });
+  } catch (error) {
+    if (!(error instanceof CoverSlotLostError)) {
+      throw error;
     }
+    console.log(`[generateAndUpdateBookCoverImage] ⏭️ Owner uploaded a cover mid-generation for ${book.id}; discarding AI cover`);
+    await deleteFileFromImageKit(newImageId);
+    return;
+  }
+
+  // Same cache invalidation as updateBook's invalidateCache branch
+  invalidateBookCache(book.id);
+  invalidateEnrichedBookCache(book.id);
+  if (ownerSlug) {
+    invalidateEnrichedBookCache(ownerSlug);
+  }
+  await invalidatePageOneCache(book.id);
+
+  // Delete old image from ImageKit (with fallback to deletion queue)
+  if (oldImageId) {
+    await deleteFileFromImageKit(oldImageId);
   }
 }
 

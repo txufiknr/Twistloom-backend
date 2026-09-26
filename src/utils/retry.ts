@@ -42,6 +42,11 @@ export function isTransientHttpStatus(status: number): boolean {
  * @returns True when retrying may help; false for permanent failures
  */
 export function isTransientFetchFailure(error: unknown): boolean {
+  // Caller-initiated aborts (client disconnect / cancellation signal) are
+  // permanent — the signal is already fired, so retrying a request whose
+  // signal is dead only delays the cancellation. Timeouts surface as
+  // `TimeoutError` (or a "timeout" message) and still retry as before.
+  if (error instanceof Error && error.name === "AbortError") return false;
   const message = getErrorMessage(error).toLowerCase();
   const statusMatch = message.match(/http error status received: (\d{3})/);
   if (statusMatch) {

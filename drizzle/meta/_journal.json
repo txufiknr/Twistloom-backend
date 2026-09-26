@@ -701,6 +701,20 @@
       "when": 1790220295754,
       "tag": "0100_wakeful_wendigo",
       "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1790328469217,
+      "tag": "0101_clammy_human_cannonball",
+      "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1790388006795,
+      "tag": "0102_great_prodigy",
+      "breakpoints": true
     }
   ]
 }

@@ -1091,3 +1091,155 @@ function parseSanitizedJson<T>(rawOutput: string): T {
     throw new Error("Sanitized string isolated, but JSON parsing failed.", { cause: error });
   }
 }
+
+/** Incremental single-field JSON text extractor (see {@link createJsonTextFieldExtractor}). */
+export type JsonTextFieldExtractor = {
+  /** Feed the next raw text delta; returns the decoded field increments (may be `''`). */
+  push(delta: string): string;
+  /** Discard all state — used when a provider fallback invalidates the attempt. */
+  reset(): void;
+};
+
+/**
+ * Streams out one top-level JSON string field as the raw model output grows
+ * (hardening roadmap Step 3 — pen `/continue` live `token` preview).
+ *
+ * The model streams a JSON object such as `{"text": "...", "issues": []}`;
+ * this decodes the growing `"text"` value incrementally so the caller can
+ * render tokens before the object completes. Deliberately approximate — it is
+ * a PREVIEW only: the authoritative output is the completed raw string, which
+ * callers hand to {@link parseAISafely} once the stream ends.
+ *
+ * Behavior:
+ * - Classification: leading whitespace-only input is held; an optional
+ *   markdown fence (```` ```json ```` line) is skipped; a body starting with
+ *   `{` switches to JSON mode, anything else is passed through verbatim as
+ *   raw text (non-JSON model output still previews).
+ * - Escapes (`\" \\ \/ \b \f \n \r \t \uXXXX`) are decoded incrementally; a
+ *   trailing partial escape is held until its continuation arrives.
+ * - After the field's closing quote, `push` returns `''` (sibling fields such
+ *   as `issues` are never previewed).
+ * - `reset()` restarts from scratch (provider-fallback boundary).
+ *
+ * Note: the field scan is a simple regex over the accumulated buffer, so a
+ * `"fieldName": "` sequence appearing inside a *different* string value could
+ * theoretically match early. Preview-only consequence: a brief wrong fragment
+ * that the authoritative `parseAISafely` result replaces.
+ */
+export function createJsonTextFieldExtractor(fieldName: string): JsonTextFieldExtractor {
+  type Mode = 'unknown' | 'json' | 'raw' | 'done';
+  const fieldRe = new RegExp(`"${fieldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"\\s*:\\s*"`);
+
+  let mode: Mode = 'unknown';
+  let buf = '';      // unknown: unclassified input | json: input since last feed | raw: ''
+  let pending = '';  // json: unconsumed raw string tail (may hold a partial escape)
+  let fieldFound = false;
+
+  /** Decode one raw JSON string tail; holds back an incomplete escape. */
+  const feed = (tail: string): { out: string; rest: string } => {
+    let out = '';
+    let i = 0;
+    outer: while (i < tail.length) {
+      const ch = tail[i];
+      if (ch === '"') {
+        mode = 'done';
+        return { out, rest: '' };
+      }
+      if (ch !== '\\') {
+        out += ch;
+        i++;
+        continue;
+      }
+      const esc = tail[i + 1];
+      if (esc === undefined) break outer; // lone trailing backslash — hold
+      switch (esc) {
+        case '"': out += '"'; i += 2; break;
+        case '\\': out += '\\'; i += 2; break;
+        case '/': out += '/'; i += 2; break;
+        case 'b': out += '\b'; i += 2; break;
+        case 'f': out += '\f'; i += 2; break;
+        case 'n': out += '\n'; i += 2; break;
+        case 'r': out += '\r'; i += 2; break;
+        case 't': out += '\t'; i += 2; break;
+        case 'u': {
+          if (tail.length < i + 6) break outer; // partial \uXXXX — hold
+          const hex = tail.slice(i + 2, i + 6);
+          out += /^[0-9a-fA-F]{4}$/.test(hex) ? String.fromCharCode(parseInt(hex, 16)) : '';
+          i += 6;
+          break;
+        }
+        default:
+          out += esc;
+          i += 2;
+          break;
+      }
+    }
+    return { out, rest: tail.slice(i) };
+  };
+
+  /** Classify buffered input once enough of it has arrived. */
+  const classify = (
+    b: string,
+  ): { kind: 'hold' } | { kind: 'raw'; text: string } | { kind: 'json'; text: string } => {
+    const start = b.search(/\S/);
+    if (start === -1) return { kind: 'hold' };
+    if (b.slice(start).startsWith('```')) {
+      const nl = b.indexOf('\n', start);
+      if (nl === -1) return { kind: 'hold' }; // fence line incomplete — hold
+      return classify(b.slice(nl + 1));
+    }
+    const bodyStart = b.search(/\S/);
+    if (bodyStart === -1) return { kind: 'hold' };
+    return b[bodyStart] === '{'
+      ? { kind: 'json', text: b.slice(bodyStart) }
+      : { kind: 'raw', text: b };
+  };
+
+  /** In JSON mode: locate the field if needed, then decode whatever is new. */
+  const drain = (): string => {
+    if (!fieldFound) {
+      const m = fieldRe.exec(buf);
+      if (!m) return '';
+      fieldFound = true;
+      const tail = buf.slice(m.index + m[0].length);
+      buf = '';
+      const { out, rest } = feed(tail);
+      pending = rest;
+      return out;
+    }
+    const input = pending + buf;
+    buf = '';
+    const { out, rest } = feed(input);
+    pending = rest;
+    return out;
+  };
+
+  return {
+    push(delta: string): string {
+      if (mode === 'done') return '';
+      if (mode === 'raw') return delta;
+
+      if (mode === 'unknown') {
+        buf += delta;
+        const verdict = classify(buf);
+        if (verdict.kind === 'hold') return '';
+        if (verdict.kind === 'raw') {
+          mode = 'raw';
+          buf = '';
+          return verdict.text;
+        }
+        mode = 'json';
+        buf = verdict.text;
+      } else {
+        buf += delta;
+      }
+      return drain();
+    },
+    reset(): void {
+      mode = 'unknown';
+      buf = '';
+      pending = '';
+      fieldFound = false;
+    },
+  };
+}

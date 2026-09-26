@@ -113,7 +113,7 @@ import { getErrorMessage, cApiError, cForbiddenError, cNotFoundError, cRateLimit
 import { sanitizeKeywords, cleanMultilineText } from '../utils/text-processing.js';
 import { stripHtml } from '../utils/sanitize-html.js';
 import { coalescePoll, getCoalesced, setCoalesced, POLL_RETRY_AFTER_SECONDS } from "../utils/poll-coalesce.js";
-import { eq, and, or, desc, asc, sql, ne, inArray, arrayOverlaps, isNull } from "drizzle-orm";
+import { eq, and, or, desc, sql, ne, inArray, arrayOverlaps, isNull } from "drizzle-orm";
 import { hashSHA256 } from "../utils/hash.js";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
 import { getBook, getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage, tryAcquireWorkflowDispatchGate, getAllBookEndings, insertUserCompletedBook } from "../services/book.js";
@@ -129,7 +129,7 @@ import { imageUploadMiddleware } from "../middleware/upload.js";
 import { deleteFileFromImageKit, isBase64Upload, persistUploadedImage } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, calculatePaginationMeta, type PaginatedResponse } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
-import { validateSearchQuery, validateLanguageCode, isValidLanguageCode, validateAgeRange, validateGender, validateRatingFilter, validateRatingCountFilter, createRelevanceExpression, buildTokenizedSearchCondition, wordJaccardSimilarity, trigramSimilarity, jaccardSimilarity } from "../utils/search.js";
+import { validateSearchQuery, validateLanguageCode, isValidLanguageCode, validateAgeRange, validateGender, validateRatingFilter, validateRatingCountFilter, createRelevanceExpression, buildTokenizedSearchCondition, intentJaccardSimilarity, trigramSimilarity, jaccardSimilarity } from "../utils/search.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { updateBook, updateBookVisibility, insertBook, uploadBookCoverImage, uploadBookCharacterAvatarImage, sanitizeBookTextField, sanitizeBookEnding, sanitizeMainCharacter, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage, mapBookFromDb, invalidatePopularTagsCache, invalidateBookCache, invalidateEnrichedBookCache, invalidatePageOneCache, loadParagraphCommentCounts, loadCommunityActions, isValidSlug, RESERVED_BOOK_SLUGS, slugExists } from "../services/book.js";
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
@@ -167,7 +167,7 @@ import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clien
 import { BOOK_MIN_PAGES, PEN_AUTHORING_MODES, PEN_DEFAULT_AUTHORING_MODE, PEN_DEFAULT_BOOK_MODE, PEN_DEFAULT_TITLE, PEN_PLACEHOLDER_MC, PEN_DEFAULT_IMPORTED_MC, PEN_SUMMARY_MAX_LENGTH, PEN_TARGET_PAGES_MAX, PEN_TARGET_PAGES_MIN, PEN_TITLE_MAX_LENGTH, PEN_TITLE_MIN_LENGTH, COMMENT_CONTENT_MAX_LENGTH } from "../config/story.js";
 import type { CustomActionValidationResult, CustomActionPreviewResponse, CustomActionSubmitResponse } from "../types/custom-action.js";
 import type { AIPromptForJson } from "../types/ai-chat.js";
-import { MAX_BRANCHING_PREGENERATION_DEPTH, COMPANION_CACHE_JACCARD_THRESHOLD, COMPANION_CACHE_CANDIDATE_SCAN_LIMIT } from "../config/story.js";
+import { MAX_BRANCHING_PREGENERATION_DEPTH, COMPANION_CACHE_JACCARD_THRESHOLD, COMPANION_CACHE_CANDIDATE_SCAN_LIMIT, COMPANION_SUGGESTIONS_QUERY_MAX_CHARS, COMPANION_HISTORY_LIMIT } from "../config/story.js";
 import { getBookModeCreditCostForUser, getCreditCostForUser, calculateBranchSwitchCost } from "../config/credits.js";
 import { getJourneyForks, reconstructFork, resolveCurrentPageId, narrateForkAlternative } from "../services/time-travel.js";
 import { savedPaths } from "../db/schema.js";
@@ -184,7 +184,15 @@ import { isValidReactionEmoji, REACTION_IDS, reactionIdList, REACTION_EMOJI_MAP 
 import { generateRandomCharacter } from "../utils/characters.js";
 import { COMPANION_SYSTEM, COMPANION_RESULT_SCHEMA, COMPANION_RESULT_REQUIRED_FIELDS, buildCompanionUserPrompt, buildCompanionPageContext, type CompanionResult, type CompanionChatTurn, type CompanionSemanticContext } from "../utils/companion-prompt.js";
 import { validateCompanionQuestion } from "../utils/prompt-security.js";
-import { getCachedSuggestions, setCachedSuggestions, invalidateSuggestionsCache } from "../services/companion-cache.js";
+import { getCachedSuggestions, setCachedSuggestions, getCachedPageQuestions, setCachedPageQuestions } from "../services/companion-cache.js";
+import {
+  chargeCompanionAsk,
+  refundCompanionAsk,
+  persistCompanionTurn,
+  recordCompanionCacheHit,
+  normalizeCompanionResult,
+  type CompanionAnswerPayload,
+} from "../services/companion-ask.js";
 import { streamCompanionAnswerSSE, companionAnswerIsComplete } from "../utils/companion-stream.js";
 import { retrieveSimilarPages, retrieveBookCluesForQuery } from "../services/vector-memory.js";
 import { assembleBookPages, sanitizeDownloadFilename } from "../services/book-export.js";
@@ -1944,7 +1952,9 @@ router.post("/:id/frontmatter/images", requireAuth, imageUploadMiddleware(), asy
  * Uploads or replaces a book's cover image. Accepts multipart file upload
  * (imageFile), URL string, or base64-encoded image data.
  * Uploads to ImageKit, persists the upload record, updates the book's
- * imageId, and cleans up the old cover image from ImageKit.
+ * imageId and stamps `coverUploadedByUser = true` (provenance guard that
+ * stops the AI auto-cover pipeline from overwriting an owner-chosen cover),
+ * and cleans up the old cover image from ImageKit.
  * 
  * @param id - Book ID
  * @param imageFile - Cover image file (multipart) (optional)
@@ -2038,7 +2048,7 @@ router.put("/:id/cover-image", requireAuth, imageUploadMiddleware(), async (c) =
             client: tx,
           });
         }
-        await updateBook(book.id, { imageId: newImageId }, { client: tx, invalidateCache: false });
+        await updateBook(book.id, { imageId: newImageId, coverUploadedByUser: true }, { client: tx, invalidateCache: false });
       });
     } catch (error) {
       if (newImageId) {
@@ -6033,10 +6043,12 @@ router.post("/:identifier/:pageId/actions/hint", requireAuth, rateLimit(ACTION_H
  * The exact normalized-question hash match is preferred (cheap, indexed). When
  * no exact hit exists, it falls back to a Jaccard word-similarity scan over the
  * most recent answers on the same page and returns the closest match only if
- * its similarity exceeds {@link COMPANION_CACHE_JACCARD_THRESHOLD} (0.9). This
+ * its similarity exceeds {@link COMPANION_CACHE_JACCARD_THRESHOLD}. This
  * lets near-identical rephrasings (e.g. "Why did Marcus take the key?" vs
  * "Why did Marcus take the iron key?") reuse a prior answer instead of
  * re-generating one, while still treating loosely-related questions as distinct.
+ * The comparison is intent-normalized (P17 v1) so pure framing differences
+ * ("How come Marcus took the key?" vs "Why did Marcus take the key?") also hit.
  *
  * @param rawQuestion - The reader's raw question (normalized internally).
  * @param bookId - Book the question belongs to.
@@ -6066,7 +6078,7 @@ async function findCompanionCacheHit(
     .limit(1);
   if (exact) return exact;
 
-  // Fallback: nearest Jaccard-similar question on the same page (> 0.9).
+  // Fallback: nearest intent-Jaccard-similar question on the same page (sim > COMPANION_CACHE_JACCARD_THRESHOLD).
   const candidates = await dbRead
     .select()
     .from(companionAnswers)
@@ -6079,7 +6091,10 @@ async function findCompanionCacheHit(
   let best: (typeof companionAnswers.$inferSelect) | undefined;
   let bestSim = 0;
   for (const c of candidates) {
-    const sim = wordJaccardSimilarity(normQuery, c.question.toLowerCase().trim().replace(/[^\p{L}\p{N}\s]/gu, " "));
+    // intentJaccardSimilarity = max(raw, stopword/particle-stripped), so
+    // framing-word paraphrases ("How come…" vs "Why did…") can match without
+    // ever lowering an already-passing raw score (P17 v1).
+    const sim = intentJaccardSimilarity(normQuery, c.question.toLowerCase().trim().replace(/[^\p{L}\p{N}\s]/gu, " "));
     if (sim > bestSim) {
       bestSim = sim;
       best = c;
@@ -6105,7 +6120,7 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
     const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
     const validation = validateCompanionQuestion(typeof body?.question === "string" ? body.question : "", isVip);
     if (!validation.valid) {
-      return cValidationError(c, validation.reason || "Invalid question");
+      return cValidationError(c, validation.reason || "Invalid question", undefined, undefined, "companion.invalidQuestion");
     }
     const rawQuestion = validation.sanitized;
     const sessionId = typeof body?.sessionId === 'string' && isValidUuid(body.sessionId)
@@ -6131,57 +6146,34 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
 
     // Resolve book and verify page belongs to it
     const book = await resolveBook(bookIdentifier);
-    if (!book) return cNotFoundError(c, "Book not found");
+    if (!book) return cNotFoundError(c, "Book not found", undefined, "companion.notFound");
     const dbPage = await getPageFromDB(pageId, { bookIdentifier: book.id });
-    if (!dbPage) return cNotFoundError(c, "Page not found");
+    if (!dbPage) return cNotFoundError(c, "Page not found", undefined, "companion.notFound");
 
     // Load story state for this page (branch-aware)
     const storyState = await getStoryStateWithBranch(book.id, pageId, { persistState: true });
 
     // Build companion page context from story state
     if (!storyState) {
-      return cNotFoundError(c, "Story state not available for this page");
+      return cNotFoundError(c, "Story state not available for this page", undefined, "companion.notFound");
     }
 
     const questionHash = await hashSHA256(rawQuestion.toLowerCase().trim());
 
-    // 1. Check cache first (exact question, or near-identical via Jaccard > 0.9, on exact book & page — standalone single-turn queries only)
+    // 1. Check cache first (exact question, or near-identical via intent-normalized Jaccard > COMPANION_CACHE_JACCARD_THRESHOLD, on exact book & page — standalone single-turn queries only)
     const hasHistory = history && history.length > 0;
     if (!hasHistory) {
       const cached = await findCompanionCacheHit(rawQuestion, book.id, pageId);
 
       if (cached) {
         console.log(`[POST /companion/ask] ⚡ Cache HIT for book ${book.id} on page ${pageId}`);
-        // Deduct 1 credit even on cache hit as per business rules
-        await executeWithCredits(
-          userId,
-          "COMPANION_ASK",
-          async () => cached,
-          {
-            context: "companion_ask_cache",
-            metadata: { bookId: book.id, pageId, question: rawQuestion.slice(0, 100) },
-          }
+        // Deduct 1 credit even on cache hit as per business rules, and ensure a
+        // history row exists under the active user/session (shared bookkeeping).
+        await recordCompanionCacheHit(
+          { userId, sessionId, bookId: book.id, pageId, question: rawQuestion, questionHash },
+          cached,
+          "companion_ask_cache",
         );
-
-        // Ensure a session record exists for the current user's history
-        if (cached.userId !== userId || cached.sessionId !== sessionId) {
-          try {
-            await dbWrite.insert(companionAnswers).values({
-              sessionId,
-              userId,
-              bookId: book.id,
-              pageId,
-              question: rawQuestion,
-              answer: cached.answer,
-              sources: cached.sources,
-              suggestedFollowUps: cached.suggestedFollowUps,
-              questionHash,
-              costCredits: getCreditCostForUser(userId, 'COMPANION_ASK'),
-            }).onConflictDoNothing();
-          } catch {
-            // Ignore conflict
-          }
-        }
 
         return c.json({
           sessionId: sessionId || cached.sessionId,
@@ -6238,63 +6230,52 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
       },
     };
 
-    // Execute with credit gate
-    const { result } = await executeWithCredits(
-      userId,
-      "COMPANION_ASK",
-      async () => {
-        const aiResponse = await aiPrompt<CompanionResult>(
-          userPrompt,
-          {
-            ...createAIOptionsWithSchema(promptConfig),
-            // Completeness guard (mirrors the SSE path): reject truncated / empty
-            // companion answers so aiPrompt falls through to the next provider
-            // instead of serving a cut-off response. The finish-reason check is
-            // enabled alongside this opt-in validator.
-            validateOutput: companionAnswerIsComplete,
-          },
-        );
-        return aiResponse.result;
-      },
-      {
-        context: "companion_ask",
-        metadata: { bookId: book.id, pageId, question: rawQuestion.slice(0, 100) },
-      }
-    );
+    // Charge in a SHORT transaction, then generate OUTSIDE any transaction:
+    // wrapping the 10–60 s AI call in one open transaction (as
+    // executeWithCredits would) holds the credit-row FOR UPDATE lock and a
+    // pooled connection for the whole call, blocking every other credit
+    // operation for this user. On failure the committed charge is refunded so
+    // the reader never pays for a failed ask (see services/companion-ask.ts).
+    const chargeContext = "companion_ask";
+    const correlationId = await chargeCompanionAsk(userId, chargeContext, {
+      bookId: book.id,
+      pageId,
+      question: rawQuestion.slice(0, 100),
+    });
 
-    // Normalize the result — handle both string and structured responses
-    const answer = typeof result === "string" ? result : (result?.answer ?? "I couldn't find an answer based on the current story context.");
-    const sources = typeof result === "string" ? [] : (result?.sources ?? []);
-    const suggestedFollowUps = typeof result === "string" ? [] : (result?.suggestedFollowUps ?? []);
-
-    // Persist answer to cache
+    let payload: CompanionAnswerPayload;
     try {
-      await dbWrite.insert(companionAnswers).values({
-        sessionId,
-        userId,
-        bookId: book.id,
-        pageId,
-        question: rawQuestion,
-        answer,
-        sources,
-        suggestedFollowUps,
-        questionHash,
-        costCredits: getCreditCostForUser(userId, 'COMPANION_ASK'),
-      }).onConflictDoNothing();
-
-      // Invalidate suggestions cache for this page
-      await invalidateSuggestionsCache(book.id, pageId);
-    } catch (insertError) {
-      console.warn(`[POST /companion/ask] ⚠️ Failed to cache companion answer:`, insertError);
+      const aiResponse = await aiPrompt<CompanionResult>(
+        userPrompt,
+        {
+          ...createAIOptionsWithSchema(promptConfig),
+          // Completeness guard (mirrors the SSE path): reject truncated / empty
+          // companion answers so aiPrompt falls through to the next provider
+          // instead of serving a cut-off response. The finish-reason check is
+          // enabled alongside this opt-in validator.
+          validateOutput: companionAnswerIsComplete,
+        },
+      );
+      payload = normalizeCompanionResult(aiResponse.result);
+    } catch (generationError) {
+      await refundCompanionAsk(userId, correlationId, chargeContext);
+      throw generationError;
     }
+
+    // Persist answer to cache (best-effort) + invalidate suggestions for this page
+    await persistCompanionTurn(
+      { userId, sessionId, bookId: book.id, pageId, question: rawQuestion, questionHash },
+      payload,
+      "[POST /companion/ask]",
+    );
 
     console.log(`[POST /companion/ask] ✅ User ${userId} asked "${rawQuestion.slice(0, 50)}..." on page ${pageId} (session: ${sessionId})`);
 
     return c.json({
       sessionId,
-      answer,
-      sources,
-      suggestedFollowUps,
+      answer: payload.answer,
+      sources: payload.sources,
+      suggestedFollowUps: payload.suggestedFollowUps,
       cached: false,
     });
 
@@ -6306,10 +6287,11 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
       return c.json({
         error: "Insufficient credits",
         message: `You need at least ${getCreditCostForUser(c.get("userId"), 'COMPANION_ASK')} credit to ask a companion question`,
+        code: "companion.insufficientCredits",
       }, 402);
     }
 
-    return cApiError(c, "Failed to answer companion question", error);
+    return cApiError(c, "Failed to answer companion question", error, 500, "companion.generationFailed");
   }
 });
 
@@ -6320,6 +6302,13 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
  * Retrieves the authenticated user's companion conversation sessions and
  * Q&A history across the entire book.
  *
+ * The optional `:pageId` segment is a compatibility alias: the data scope is the
+ * whole book on BOTH routes, because a conversation session spans pages
+ * (restoring a session requires every turn, and the frontend query key is
+ * book-scoped). The segment is validated but never used to filter.
+ *
+ * The response is bounded to the most recent `COMPANION_HISTORY_LIMIT` turns.
+ *
  * @route GET /api/books/:identifier/companion/history
  * @route GET /api/books/:identifier/:pageId/companion/history
  * @authentication Required
@@ -6327,14 +6316,24 @@ router.post("/:identifier/:pageId/companion/ask", requireAuth, rateLimit(COMPANI
  */
 const getCompanionHistoryHandler = async (c: Context) => {
   try {
-    const { identifier } = c.req.param();
+    const { identifier, pageId: pageIdParam } = c.req.param();
     const userId = c.get("userId")!;
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+    const pageId = Array.isArray(pageIdParam) ? pageIdParam[0] : pageIdParam;
+
+    // `:pageId` is validated for contract strictness but never filters (see JSDoc).
+    if (pageId && !isValidUuid(pageId)) {
+      return cValidationError(c, "Invalid pageId: must be a valid UUID");
+    }
 
     const book = await resolveBook(bookIdentifier);
     if (!book) return cNotFoundError(c, "Book not found");
 
-    const answers = await dbRead
+    // Bounded: fetch only the most recent COMPANION_HISTORY_LIMIT turns
+    // (descending), then restore ascending order for session grouping — payload
+    // size stays O(limit) no matter how long the reader's history grows, while
+    // sessions/messages keep the exact shape and ordering of the unbounded query.
+    const answers = (await dbRead
       .select({
         id: companionAnswers.id,
         sessionId: companionAnswers.sessionId,
@@ -6354,7 +6353,9 @@ const getCompanionHistoryHandler = async (c: Context) => {
           eq(companionAnswers.bookId, book.id)
         )
       )
-      .orderBy(asc(companionAnswers.createdAt));
+      .orderBy(desc(companionAnswers.createdAt))
+      .limit(COMPANION_HISTORY_LIMIT))
+      .reverse();
 
     // Group into sessions by sessionId (or id for legacy rows)
     const sessionMap = new Map<string, {
@@ -6434,12 +6435,21 @@ router.get("/:identifier/:pageId/companion/history", requireAuth, getCompanionHi
  * @query q - Optional search/ask input query
  * @query limit - Max questions to return (default 5)
  */
-router.get("/:identifier/:pageId/companion/suggestions", optionalAuth, async (c) => {
+// Free, unauthenticated read — but a cache MISS costs a story-state build plus a
+// candidate query, so bound bursts (keyed by userId, or IP for guests via ipFallback).
+// why: 60/min covers typing-paced, 200 ms-debounced keystrokes with headroom while
+// the generation-stamped cache absorbs repeat queries.
+router.get("/:identifier/:pageId/companion/suggestions", optionalAuth, rateLimit({ windowSeconds: 60, maxRequests: 60, message: "Too many suggestion requests. Please slow down.", prefix: "companion-suggestions" }, { ipFallback: true }), async (c) => {
   try {
     const { identifier, pageId: pageIdParam } = c.req.param();
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
     const pageId = Array.isArray(pageIdParam) ? pageIdParam[0] : pageIdParam;
-    const query = typeof c.req.query("q") === "string" ? c.req.query("q")!.trim() : "";
+    const rawQuery = typeof c.req.query("q") === "string" ? c.req.query("q")!.trim() : "";
+    // Bound `q` (truncate, never reject — this endpoint is fed by the search box),
+    // so oversized URLs cannot blow up cache-key cardinality.
+    const query = rawQuery.length > COMPANION_SUGGESTIONS_QUERY_MAX_CHARS
+      ? rawQuery.slice(0, COMPANION_SUGGESTIONS_QUERY_MAX_CHARS)
+      : rawQuery;
     const limitParam = parseInt(c.req.query("limit") || "5", 10);
     const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 10) : 5;
 
@@ -6459,60 +6469,80 @@ router.get("/:identifier/:pageId/companion/suggestions", optionalAuth, async (c)
       return c.json({ questions: cachedQuestions });
     }
 
-    // Gather allowed page IDs for spoiler safety (current page + all past ancestor pages along the branch)
-    const storyState = await getStoryStateWithBranch(book.id, pageId, { persistState: false });
-    const allowedPageIds = new Set<string>([pageId]);
-    if (storyState?.actionsHistory) {
-      for (const action of storyState.actionsHistory) {
-        if (action.pageId && isValidUuid(action.pageId)) {
-          allowedPageIds.add(action.pageId);
+    // Page-level candidate pool — the q-independent work (story-state build +
+    // candidate query) is shared across keystrokes: built at most once per cache
+    // generation, so a typing burst reuses the pool instead of paying both costs
+    // on every keystroke.
+    let uniqueItems = await getCachedPageQuestions(book.id, pageId);
+
+    if (!uniqueItems) {
+      // Gather allowed page IDs for spoiler safety (current page + all past ancestor pages along the branch)
+      const storyState = await getStoryStateWithBranch(book.id, pageId, { persistState: false });
+      const allowedPageIds = new Set<string>([pageId]);
+      if (storyState?.actionsHistory) {
+        for (const action of storyState.actionsHistory) {
+          if (action.pageId && isValidUuid(action.pageId)) {
+            allowedPageIds.add(action.pageId);
+          }
         }
       }
+
+      // Fetch candidate historical questions asked on this book up to the current
+      // page. Bounded scan: frequency/recency stats are computed over the most
+      // recent 100 answers on allowed pages (deliberate — keeps the query O(100)
+      // regardless of book length; "frequently asked" therefore means
+      // "frequently asked recently").
+      const candidates = await dbRead
+        .select({
+          question: companionAnswers.question,
+          pageId: companionAnswers.pageId,
+          createdAt: companionAnswers.createdAt,
+        })
+        .from(companionAnswers)
+        .where(
+          and(
+            eq(companionAnswers.bookId, book.id),
+            inArray(companionAnswers.pageId, Array.from(allowedPageIds))
+          )
+        )
+        .orderBy(desc(companionAnswers.createdAt))
+        .limit(100);
+
+      if (candidates.length === 0) {
+        uniqueItems = [];
+        await setCachedPageQuestions(book.id, pageId, uniqueItems);
+        await setCachedSuggestions(book.id, pageId, query, limit, []);
+        return c.json({ questions: [] });
+      }
+
+      // Group & normalize distinct questions
+      const questionStats = new Map<string, { original: string; count: number; lastAsked: number }>();
+      for (const row of candidates) {
+        const trimmed = (row.question || "").trim();
+        if (!trimmed || trimmed.length < 5) continue;
+        const lower = trimmed.toLowerCase();
+        const existing = questionStats.get(lower);
+        const rowTime = row.createdAt ? new Date(row.createdAt).getTime() : 0;
+
+        if (!existing) {
+          questionStats.set(lower, { original: trimmed, count: 1, lastAsked: rowTime });
+        } else {
+          existing.count += 1;
+          if (rowTime > existing.lastAsked) {
+            existing.lastAsked = rowTime;
+            existing.original = trimmed;
+          }
+        }
+      }
+
+      uniqueItems = Array.from(questionStats.values());
+      await setCachedPageQuestions(book.id, pageId, uniqueItems);
     }
 
-    // Fetch candidate historical questions asked on this book up to the current page
-    const candidates = await dbRead
-      .select({
-        question: companionAnswers.question,
-        pageId: companionAnswers.pageId,
-        createdAt: companionAnswers.createdAt,
-      })
-      .from(companionAnswers)
-      .where(
-        and(
-          eq(companionAnswers.bookId, book.id),
-          inArray(companionAnswers.pageId, Array.from(allowedPageIds))
-        )
-      )
-      .orderBy(desc(companionAnswers.createdAt))
-      .limit(100);
-
-    if (candidates.length === 0) {
+    if (uniqueItems.length === 0) {
       await setCachedSuggestions(book.id, pageId, query, limit, []);
       return c.json({ questions: [] });
     }
-
-    // Group & normalize distinct questions
-    const questionStats = new Map<string, { original: string; count: number; lastAsked: number }>();
-    for (const row of candidates) {
-      const trimmed = (row.question || "").trim();
-      if (!trimmed || trimmed.length < 5) continue;
-      const lower = trimmed.toLowerCase();
-      const existing = questionStats.get(lower);
-      const rowTime = row.createdAt ? new Date(row.createdAt).getTime() : 0;
-
-      if (!existing) {
-        questionStats.set(lower, { original: trimmed, count: 1, lastAsked: rowTime });
-      } else {
-        existing.count += 1;
-        if (rowTime > existing.lastAsked) {
-          existing.lastAsked = rowTime;
-          existing.original = trimmed;
-        }
-      }
-    }
-
-    const uniqueItems = Array.from(questionStats.values());
 
     // 1. If query is empty: Rank by frequency (popularity) then recency
     if (!query) {
@@ -6534,7 +6564,9 @@ router.get("/:identifier/:pageId/companion/suggestions", optionalAuth, async (c)
       const qText = item.original;
       const qTextLower = qText.toLowerCase();
 
-      const wordSim = wordJaccardSimilarity(query, qText);
+      // Intent-normalized word Jaccard (P17 v1): max(raw, stopword/particle-stripped)
+      // so framing-word paraphrases rank together; trigram/char stay raw for typos.
+      const wordSim = intentJaccardSimilarity(query, qText);
       const trigramSim = trigramSimilarity(query, qText);
       const charSim = jaccardSimilarity(query, qText);
       const isSub = qTextLower.includes(queryLower) || queryLower.includes(qTextLower);
@@ -6594,7 +6626,7 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(
     const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
     const validation = validateCompanionQuestion(typeof body?.question === "string" ? body.question : "", isVip);
     if (!validation.valid) {
-      return cValidationError(c, validation.reason || "Invalid question");
+      return cValidationError(c, validation.reason || "Invalid question", undefined, undefined, "companion.invalidQuestion");
     }
     const rawQuestion = validation.sanitized;
     const sessionId = typeof body?.sessionId === 'string' && isValidUuid(body.sessionId)
@@ -6619,52 +6651,30 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(
     }
 
     const book = await resolveBook(bookIdentifier);
-    if (!book) return cNotFoundError(c, "Book not found");
+    if (!book) return cNotFoundError(c, "Book not found", undefined, "companion.notFound");
     const dbPage = await getPageFromDB(pageId, { bookIdentifier: book.id });
-    if (!dbPage) return cNotFoundError(c, "Page not found");
+    if (!dbPage) return cNotFoundError(c, "Page not found", undefined, "companion.notFound");
 
     const storyState = await getStoryStateWithBranch(book.id, pageId, { persistState: true });
     if (!storyState) {
-      return cNotFoundError(c, "Story state not available for this page");
+      return cNotFoundError(c, "Story state not available for this page", undefined, "companion.notFound");
     }
 
     const questionHash = await hashSHA256(rawQuestion.toLowerCase().trim());
 
-    // Check cache first (exact question, or near-identical via Jaccard > 0.9, on exact book & page — standalone single-turn queries only)
+    // Check cache first (exact question, or near-identical via intent-normalized Jaccard > COMPANION_CACHE_JACCARD_THRESHOLD, on exact book & page — standalone single-turn queries only)
     const hasHistory = history && history.length > 0;
     if (!hasHistory) {
       const cached = await findCompanionCacheHit(rawQuestion, book.id, pageId);
 
       if (cached) {
-        await executeWithCredits(
-          userId,
-          "COMPANION_ASK",
-          async () => cached,
-          {
-            context: "companion_ask_cache_stream",
-            metadata: { bookId: book.id, pageId, question: rawQuestion.slice(0, 100) },
-          }
+        // Charge (short tx) + ensure a history row exists under the active
+        // user/session (shared bookkeeping — see services/companion-ask.ts).
+        await recordCompanionCacheHit(
+          { userId, sessionId, bookId: book.id, pageId, question: rawQuestion, questionHash },
+          cached,
+          "companion_ask_cache_stream",
         );
-
-        // Ensure a session record exists for the current user's history
-        if (cached.userId !== userId || cached.sessionId !== sessionId) {
-          try {
-            await dbWrite.insert(companionAnswers).values({
-              sessionId,
-              userId,
-              bookId: book.id,
-              pageId,
-              question: rawQuestion,
-              answer: cached.answer,
-              sources: cached.sources,
-              suggestedFollowUps: cached.suggestedFollowUps,
-              questionHash,
-              costCredits: getCreditCostForUser(userId, 'COMPANION_ASK'),
-            }).onConflictDoNothing();
-          } catch {
-            // Ignore conflict
-          }
-        }
 
         // Read the post-deduction balance so the client can update its local
         // credit display authoritatively (no extra user refetch needed).
@@ -6723,81 +6733,88 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(
     const userPrompt = buildCompanionUserPrompt(companionContext, rawQuestion, language, mcName, history, `comp:${book.id}:${pageIdParam}`);
 
     return streamSSE(c, async (stream) => {
+      // Charge FIRST, in a short transaction — generation below must not hold
+      // the credit-row FOR UPDATE lock and a pooled connection for the whole
+      // stream duration (see services/companion-ask.ts module header).
+      const chargeContext = "companion_ask";
+      let correlationId: string;
       try {
-        const { result } = await executeWithCredits(
-          userId,
-          "COMPANION_ASK",
-          async () => {
-            const { result: companionResult } = await streamCompanionAnswerSSE({
-              userPrompt,
-              signal: c.req.raw.signal,
-              onChunk: async (chunk) => {
-                await stream.writeSSE({
-                  event: "chunk",
-                  data: JSON.stringify({ content: chunk }),
-                });
-              },
-              onProviderError: async (message) => {
-                await stream.writeSSE({
-                  event: "provider_error",
-                  data: JSON.stringify({ message: message ?? "Falling back to another provider" }),
-                });
-              },
+        correlationId = await chargeCompanionAsk(userId, chargeContext, {
+          bookId: book.id,
+          pageId,
+          question: rawQuestion.slice(0, 100),
+        });
+      } catch (chargeError) {
+        // Insufficient credits / fraud flag — the stream already started, so
+        // surface it as a terminal in-stream `error` event (pre-stream failures
+        // never reach here: they throw before streamSSE and hit the outer catch).
+        const errorMessage = getErrorMessage(chargeError);
+        const insufficient = errorMessage.includes(CREDIT_ERRORS.INSUFFICIENT_CREDITS);
+        await stream.writeSSE({
+          event: "error",
+          data: JSON.stringify({
+            message: insufficient ? "Insufficient credits" : errorMessage,
+            code: insufficient ? "companion.insufficientCredits" : "companion.generationFailed",
+          }),
+        });
+        return;
+      }
+
+      try {
+        const { result: companionResult } = await streamCompanionAnswerSSE({
+          userPrompt,
+          signal: c.req.raw.signal,
+          onChunk: async (chunk) => {
+            await stream.writeSSE({
+              event: "chunk",
+              data: JSON.stringify({ content: chunk }),
             });
-            return companionResult;
           },
-          {
-            context: "companion_ask",
-            metadata: { bookId: book.id, pageId, question: rawQuestion.slice(0, 100) },
-          }
-        );
+          onProviderError: async (message) => {
+            await stream.writeSSE({
+              event: "provider_error",
+              data: JSON.stringify({ message: message ?? "Falling back to another provider" }),
+            });
+          },
+        });
 
         // Read the post-deduction balance so the client can update its local
         // credit display authoritatively (no extra user refetch needed).
         const [creditRow] = await dbRead.select({ credits: users.credits }).from(users).where(eq(users.userId, userId)).limit(1);
         const creditsRemaining = creditRow?.credits ?? 0;
 
-        const answer = typeof result === "string" ? result : (result?.answer ?? "I couldn't find an answer based on the current story context.");
-        const sources = typeof result === "string" ? [] : (result?.sources ?? []);
-        const suggestedFollowUps = typeof result === "string" ? [] : (result?.suggestedFollowUps ?? []);
+        const payload = normalizeCompanionResult(companionResult);
 
-        // Cache the newly generated answer
-        try {
-          await dbWrite.insert(companionAnswers).values({
-            sessionId,
-            userId,
-            bookId: book.id,
-            pageId,
-            question: rawQuestion,
-            answer,
-            sources,
-            suggestedFollowUps,
-            questionHash,
-            costCredits: getCreditCostForUser(userId, 'COMPANION_ASK'),
-          }).onConflictDoNothing();
-
-          // Invalidate suggestions cache for this page
-          await invalidateSuggestionsCache(book.id, pageId);
-        } catch (insertError) {
-          console.warn(`[POST /companion/ask/stream] ⚠️ Failed to cache companion answer:`, insertError);
-        }
+        // Persist the newly generated answer (best-effort) + invalidate suggestions
+        await persistCompanionTurn(
+          { userId, sessionId, bookId: book.id, pageId, question: rawQuestion, questionHash },
+          payload,
+          "[POST /companion/ask/stream]",
+        );
 
         await stream.writeSSE({
           event: "done",
           data: JSON.stringify({
             sessionId,
-            answer,
-            sources,
-            suggestedFollowUps,
+            answer: payload.answer,
+            sources: payload.sources,
+            suggestedFollowUps: payload.suggestedFollowUps,
             cached: false,
             creditsRemaining,
           }),
         });
       } catch (streamErr) {
         const errorMessage = getErrorMessage(streamErr);
+        // The charge already committed but its generation failed — refund so the
+        // reader never pays for a failed stream (soft failures net to zero).
+        await refundCompanionAsk(userId, correlationId, chargeContext);
+        const insufficient = errorMessage.includes(CREDIT_ERRORS.INSUFFICIENT_CREDITS);
         await stream.writeSSE({
           event: "error",
-          data: JSON.stringify({ message: errorMessage }),
+          data: JSON.stringify({
+            message: insufficient ? "Insufficient credits" : errorMessage,
+            code: insufficient ? "companion.insufficientCredits" : "companion.generationFailed",
+          }),
         });
       }
     });
@@ -6807,9 +6824,10 @@ router.post("/:identifier/:pageId/companion/ask/stream", requireAuth, rateLimit(
       return c.json({
         error: "Insufficient credits",
         message: `You need at least ${getCreditCostForUser(c.get("userId"), 'COMPANION_ASK')} credit to ask a companion question`,
+        code: "companion.insufficientCredits",
       }, 402);
     }
-    return cApiError(c, "Failed to start companion stream", error);
+    return cApiError(c, "Failed to start companion stream", error, 500, "companion.generationFailed");
   }
 });
 

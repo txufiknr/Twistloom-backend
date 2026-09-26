@@ -1222,11 +1222,20 @@ async function* nvidiaStreamGenerator(
  * @param onChunk - optional callback invoked once per raw byte chunk *before*
  *   extraction (the piping variant uses it to forward bytes to the client);
  *   may be async. Omit for accumulate-only parsing.
+ * @param onTextDelta - optional callback invoked with each clean-text append
+ *   as it lands (used by pen's streaming `/continue` to forward live preview
+ *   deltas — hardening roadmap Step 3). Fires only for text that survives the
+ *   boundary-reset rules below.
+ * @param onReset - optional callback fired whenever accumulated text is
+ *   discarded on a `start`/`provider_error`/`error` boundary, so a live
+ *   preview consumer can drop its partial output too.
  * @returns the accumulated clean text (untrimmed)
  */
 async function extractSseText(
   stream: ReadableStream<Uint8Array>,
   onChunk?: (chunk: Uint8Array) => Promise<unknown> | unknown,
+  onTextDelta?: (delta: string) => void,
+  onReset?: () => void,
 ): Promise<string> {
   let text = "";
   let lineBuffer = "";
@@ -1263,12 +1272,16 @@ async function extractSseText(
           currentEventType === 'provider_error'
         ) {
           text = '';
+          onReset?.();
         }
       } else if (trimmed.startsWith('data: ')) {
         const rawJson = trimmed.slice(6);
         try {
           const data = JSON.parse(rawJson);
-          if (typeof data.content === 'string') text += data.content;
+          if (typeof data.content === 'string') {
+            text += data.content;
+            onTextDelta?.(data.content);
+          }
         } catch {
           // Skip partial or non-JSON SSE lines
         }
@@ -1281,13 +1294,35 @@ async function extractSseText(
     const rawJson = lineBuffer.trim().slice(6);
     try {
       const data = JSON.parse(rawJson);
-      if (typeof data.content === 'string') text += data.content;
+      if (typeof data.content === 'string') {
+        text += data.content;
+        onTextDelta?.(data.content);
+      }
     } catch {
       // Ignore trailing partial chunk
     }
   }
 
   return text;
+}
+
+/**
+ * Accumulates an SSE stream's clean text AND reports each append live.
+ *
+ * Streaming twin of {@link parseSSEStreamContent} for consumers that need
+ * incremental visibility (pen's streaming `/continue` `token` preview,
+ * hardening roadmap Step 3): `onDelta` fires with each `data.content` append,
+ * `onReset` fires when a `start`/`provider_error`/`error` boundary discards
+ * the accumulated text so the consumer can drop its live preview. The return
+ * value is exactly what {@link pipeSSEStreamAndExtractText} would return —
+ * only the successful attempt's text.
+ */
+export async function extractSseTextDeltas(
+  stream: ReadableStream<Uint8Array>,
+  onDelta: (delta: string) => void,
+  onReset?: () => void,
+): Promise<string> {
+  return (await extractSseText(stream, undefined, onDelta, onReset)).trim();
 }
 
 /**

@@ -123,20 +123,13 @@ export const CREDIT_COSTS_BASE = {
   PEN_FUTURE_NOTE: 0,
   /** Scene plan generation. */
   PEN_SCENE_PLAN: 1,
-  /**
-   * Page Essentials auto-fill — one constrained structured-output call that
-   * proposes the blank scene fields (mood/weather/date/time/keys/place) from
-   * the draft. Cheaper than a prose tier because the response is a tiny JSON
-   * form over a fixed enum space.
-   */
-  PEN_ESSENTIALS_AUTOFILL: 1,
   /** Finalize delta-verification — charged only when an LLM judgment runs. */
   PEN_FINALIZE_VERIFY: 0,
   /**
    * Finalize state-proposal — the pre-publish structured-output call that
    * computes the next page's inventory/injuries as an "adopt as canon"
-   * proposal (§2.i / §10). Constrained JSON over the same enum space as
-   * essentials auto-fill, so it stays free alongside finalize.
+   * proposal (§2.i / §10). Constrained JSON over a fixed enum space, so it
+   * stays free alongside finalize.
    */
   PEN_FINALIZE_PROPOSE: 0,
   /**
@@ -161,6 +154,19 @@ export const BRANCH_SWITCH_BASE_COST = CREDIT_COSTS_BASE.CHOOSE_OTHER_ACTION;
 
 /** Maximum cost cap for deep branch switching (5 credits). */
 export const BRANCH_SWITCH_MAX_COST = CREDIT_COSTS_BASE.STORY_GENERATION;
+
+/**
+ * How long a `type='reserve'` credit reservation may stay unsettled before the
+ * leak sweeper refunds it (roadmap §3.1 step 4). Bounds the window in which a
+ * process crash between reserve and settle holds the author's credits hostage.
+ *
+ * Must exceed the longest legitimate generation (continue + parallel latent
+ * branches, finalize verify/propose) with a wide safety margin.
+ */
+export const CREDIT_RESERVATION_TTL_MS = 15 * 60 * 1000;
+
+/** Max leaked reservations refunded per sweeper run (bounds batch size). */
+export const CREDIT_RESERVATION_SWEEP_LIMIT = 200;
 
 /**
  * Credit costs for various actions.

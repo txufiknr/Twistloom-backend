@@ -685,13 +685,11 @@ export const PEN_TA_PROMOTE_LATENT_BRANCHES = true;
  */
 export const PEN_TA_GATE2_CANON_CHECK = true;
 
-/** Output-token budget for the Page Essentials auto-fill (§10 Decision M — a constrained JSON classification task, so a small cap suffices). */
-export const PEN_ESSENTIALS_MAX_TOKENS = 400;
-/** Maximum number of `keyEvents` / `keyObjects` items the auto-fill may propose. */
+/** Maximum number of `keyEvents` / `keyObjects` items a scene-essentials proposal may return. */
 export const PEN_ESSENTIALS_MAX_LIST_ITEMS = 8;
-/** Maximum length of a single `keyEvents` / `keyObjects` item the auto-fill may propose. */
+/** Maximum length of a single `keyEvents` / `keyObjects` item in a scene-essentials proposal. */
 export const PEN_ESSENTIALS_MAX_ITEM_LENGTH = 120;
-/** Maximum length of a free-text `calendarDate` / `timeOfDay` value the auto-fill may propose. */
+/** Maximum length of a free-text `calendarDate` / `timeOfDay` value in a scene-essentials proposal. */
 export const PEN_ESSENTIALS_MAX_FIELD_LENGTH = 64;
 
 /** Output-token budget for the finalize state proposal (constrained JSON over the existing inventory/injury enum space). */
@@ -720,8 +718,8 @@ export const PEN_DIRECTION_HINT_MAX_LENGTH = 500;
 export const PEN_CONTINUE_PROSE_MAX_LENGTH = 50_000;
 
 /**
- * Maximum length (chars) of the live draft text accepted by essentials
- * auto-fill and finalize state-proposal (`draftText`) (BE2).
+ * Maximum length (chars) of the live draft text accepted by the finalize
+ * state-proposal (`draftText`) and other draft-driven AI routes (BE2).
  */
 export const PEN_DRAFT_TEXT_MAX_LENGTH = 50_000;
 
@@ -785,6 +783,24 @@ export const COMPANION_ASK_MAX_CHARS_VIP = 400;
 
 export const getMaxCompanionAskChars = (isVip: boolean): number =>
   isVip ? COMPANION_ASK_MAX_CHARS_VIP : COMPANION_ASK_MAX_CHARS;
+
+/**
+ * Companion suggestions: maximum accepted length for the `q` search/ask input.
+ *
+ * Matches the VIP ask ceiling so any question the ask input can produce is also
+ * accepted here. Longer values are truncated (never rejected — this is a read
+ * endpoint fed by the search box) so oversized URLs cannot blow up cache-key
+ * cardinality.
+ */
+export const COMPANION_SUGGESTIONS_QUERY_MAX_CHARS = COMPANION_ASK_MAX_CHARS_VIP;
+
+/**
+ * Companion history: maximum Q&A turns returned by
+ * `GET /companion/history`. Bounds payload size regardless of how long the
+ * reader's history grows; sessions are built from the most recent turns
+ * (oldest turns beyond the bound are dropped).
+ */
+export const COMPANION_HISTORY_LIMIT = 200;
 
 /**
  * Companion answer cache: minimum Jaccard word-similarity (0–1) required for a

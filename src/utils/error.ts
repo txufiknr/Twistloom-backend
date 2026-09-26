@@ -23,6 +23,14 @@ import { edgeGroup } from './edge-group.js';
 export interface ErrorResponse {
   success: false;
   error: string;
+  /**
+   * Optional self-describing machine code (`<namespace>.<key>`, e.g.
+   * `companion.insufficientCredits`) that the CLIENT translates via
+   * `resolveApiErrorMessage` into `messages/<locale>.json` →
+   * `<namespace>.errors.<key>`. Per AGENTS §9 the server never localizes;
+   * `error` remains English dev/internal + last-resort fallback only.
+   */
+  code?: string;
   details?: string | object;
 }
 
@@ -537,12 +545,16 @@ export { isUndiciAbortError };
 
 /**
  * Handles API errors with consistent logging and JSON response on a Hono context.
+ *
+ * @param code - Optional client-translatable machine code (`<namespace>.<key>`),
+ *   forwarded verbatim in the body (see {@link ErrorResponse.code}).
  */
 export function cApiError(
   c: Context,
   message: string,
   error?: unknown,
   statusCode?: number,
+  code?: string,
 ) {
   if (error) console.error(`[cApiError] ❌ ${message}:`, error);
 
@@ -550,6 +562,9 @@ export function cApiError(
     success: false,
     error: getErrorMessage(error, message),
   };
+  if (code) {
+    errorResponse.code = code;
+  }
 
   if (error && IS_DEVELOPMENT) {
     if (typeof error === "object" && error !== null) {
@@ -563,13 +578,13 @@ export function cApiError(
 }
 
 /** Validation error (400) on a Hono context. */
-export function cValidationError(c: Context, message: string, error?: unknown, statusCode?: number) {
-  return cApiError(c, message, error, statusCode ?? 400);
+export function cValidationError(c: Context, message: string, error?: unknown, statusCode?: number, code?: string) {
+  return cApiError(c, message, error, statusCode ?? 400, code);
 }
 
 /** Not found error (404) on a Hono context. */
-export function cNotFoundError(c: Context, message: string, error?: unknown) {
-  return cApiError(c, message, error, 404);
+export function cNotFoundError(c: Context, message: string, error?: unknown, code?: string) {
+  return cApiError(c, message, error, 404, code);
 }
 
 /** Unauthorized error (401) on a Hono context. */

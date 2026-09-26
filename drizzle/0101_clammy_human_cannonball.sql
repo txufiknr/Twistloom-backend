@@ -1,0 +1,1 @@
+ALTER TABLE "books" ADD COLUMN "cover_uploaded_by_user" boolean DEFAULT false NOT NULL;

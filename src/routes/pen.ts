@@ -8,12 +8,14 @@
 
 import { Hono } from "hono";
 import type { Context } from "hono";
+import { streamSSE } from "hono/streaming";
 import type { AppEnv } from "../hono/env.js";
 import { requireAuth } from "../middleware/nextauth.js";
 import { requireNotSuspended, requireGenerationQuota } from "../middleware/trust-safety.js";
 import { rateLimit } from "../middleware/rate-limit.js";
-import { PEN_CONTINUE_RATE_LIMIT, PEN_ESSENTIALS_RATE_LIMIT, PEN_FINALIZE_PROPOSE_RATE_LIMIT, PEN_TRANSFORM_RATE_LIMIT, PEN_CAST_DETECT_RATE_LIMIT } from "../config/ai-rate-limits.js";
+import { PEN_CONTINUE_RATE_LIMIT, PEN_FINALIZE_PROPOSE_RATE_LIMIT, PEN_TRANSFORM_RATE_LIMIT, PEN_CAST_DETECT_RATE_LIMIT } from "../config/ai-rate-limits.js";
 import { cApiError, cNotFoundError, cValidationError } from "../utils/error.js";
+import { formatSSEEvent } from "../utils/sse.js";
 import { dbWrite } from "../db/client.js";
 import { isBase64Upload, uploadImageKit, persistUploadedImage } from "../services/image.js";
 import { PEN_ASSISTANCE_LEVEL_MAX, PEN_ASSISTANCE_LEVEL_MIN, PEN_AUTHORING_MODES, PEN_AUTHORING_POVS, PEN_DRAFT_BUFFER_MAX_CHARS, PEN_DRAFT_CAST_LIMIT, PEN_DRAFT_HTML_MAX_LENGTH, PEN_DRAFT_IMAGE_MAX_BYTES, PEN_DRAFT_SPAN_MAX_LENGTH, PEN_DRAFT_TEXT_MAX_LENGTH, PEN_DIRECTION_HINT_MAX_LENGTH, PEN_ESSENTIALS_MAX_LIST_ITEMS, PEN_ESSENTIALS_MAX_FIELD_LENGTH, PEN_FINALIZE_MAX_ACTIONS, PEN_FINALIZE_PROPOSE_MAX_INVENTORY_ITEMS, PEN_FINALIZE_PROPOSE_MAX_INJURIES, PEN_SCENE_FOCUS_MAX, PEN_SCENE_FOCUS_MIN, PEN_SESSION_STATUSES, PEN_CONTINUE_PROSE_MAX_LENGTH, PEN_DRAFT_LABEL_MAX_LENGTH, PEN_DRAFT_ACTION_TEXT_MAX_LENGTH, PEN_DRAFT_ACTION_HINT_MAX_LENGTH, PEN_TRANSFORM_SELECTION_MAX_LENGTH, PEN_ENDING_OUTLINE_MAX_ITEMS } from "../config/story.js";
@@ -33,7 +35,6 @@ import {
   continuePenDraft,
   transformPenSelection,
   finalizePenDraft,
-  autofillSceneEssentials,
   detectSceneCast,
   proposePenStateUpdates,
   getPenSessionState,
@@ -56,16 +57,16 @@ import {
   PenContinueError,
   PenTransformError,
   PenFinalizeError,
-  PenEssentialsAutofillError,
   PenCastDetectError,
   PenStateProposalError,
   PenDraftLimitError,
   PenDraftNotActiveError,
+  PenDraftVersionConflictError,
   PenNoteNotFoundError,
   uploadPenDraftImage,
   PenImageUploadError,
 } from "../services/pen.js";
-import type { PenContinueInput, PenFinalizeInput, PenEssentialsAutofillInput, PenStateProposalInput } from "../services/pen.js";
+import type { PenContinueInput, PenFinalizeInput, PenStateProposalInput } from "../services/pen.js";
 import type { AuthoringMode, AuthoringPov, DraftSpan, PenDraftCharacter, PenDraftSceneEssentials, PenSessionStatus, PenBlockAction, PenCastDetectInput } from "../types/pen.js";
 import { penBlockActions } from "../types/pen.js";
 import { characterSceneRoles } from "../types/story.js";
@@ -631,9 +632,11 @@ router.post("/sessions/:id/drafts/:draftId/activate", requireAuth, async (c) => 
  * PATCH /api/pen/sessions/:id/drafts/:draftId
  * Autosave heartbeat for a single draft slot (roadmap §6.1). Allowed fields:
  * `{ label?, draftBuffer?, draftHtml?, draftCharactersPresent?,
- * draftSceneEssentials?, draftUpdatedAt? }`. Buffer/html writes are dropped
- * when `draftUpdatedAt` is not newer than the stored row's `updatedAt`
- * (last-write-wins). Returns `{ draft }` (the updated row).
+ * draftSceneEssentials?, draftUpdatedAt?, version? }`. Legacy clients get
+ * wall-clock last-write-wins for buffer/html (dropped when `draftUpdatedAt` is
+ * not newer than the stored row's `updatedAt`); version-aware clients assert
+ * `version` and receive 409 on mismatch (hardening roadmap Step 4).
+ * Returns `{ draft }` (the updated row, including the bumped `version`).
  */
 router.patch("/sessions/:id/drafts/:draftId", requireAuth, async (c) => {
   try {
@@ -646,7 +649,7 @@ router.patch("/sessions/:id/drafts/:draftId", requireAuth, async (c) => {
     if (!body || typeof body !== "object") {
       return cValidationError(c, "Request body must be a JSON object");
     }
-    const { label, actionText, draftBuffer, draftHtml, draftCharactersPresent, draftSceneEssentials, isEnding, imageUrl, draftUpdatedAt } = body as {
+    const { label, actionText, draftBuffer, draftHtml, draftCharactersPresent, draftSceneEssentials, isEnding, imageUrl, draftUpdatedAt, version } = body as {
       label?: unknown;
       actionText?: unknown;
       draftBuffer?: unknown;
@@ -656,6 +659,7 @@ router.patch("/sessions/:id/drafts/:draftId", requireAuth, async (c) => {
       isEnding?: unknown;
       imageUrl?: unknown;
       draftUpdatedAt?: unknown;
+      version?: unknown;
     };
 
     if (label !== undefined && typeof label !== "string") {
@@ -699,6 +703,9 @@ router.patch("/sessions/:id/drafts/:draftId", requireAuth, async (c) => {
     if (draftUpdatedAt !== undefined && (typeof draftUpdatedAt !== "string" || Number.isNaN(Date.parse(draftUpdatedAt)))) {
       return cValidationError(c, "draftUpdatedAt must be a valid date string");
     }
+    if (version !== undefined && (typeof version !== "number" || !Number.isInteger(version) || version < 0)) {
+      return cValidationError(c, "version must be a non-negative integer");
+    }
     if (imageUrl !== undefined && imageUrl !== null && typeof imageUrl !== "string") {
       return cValidationError(c, "imageUrl must be a string or null");
     }
@@ -713,9 +720,11 @@ router.patch("/sessions/:id/drafts/:draftId", requireAuth, async (c) => {
       isEnding: typeof isEnding === "boolean" ? isEnding : undefined,
       imageUrl: imageUrl === null ? null : typeof imageUrl === "string" ? imageUrl : undefined,
       draftUpdatedAt: typeof draftUpdatedAt === "string" ? draftUpdatedAt : undefined,
+      version: typeof version === "number" ? version : undefined,
     });
     return c.json({ draft });
   } catch (error) {
+    if (error instanceof PenDraftVersionConflictError) return cApiError(c, error.message, undefined, 409);
     if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
     return cApiError(c, "Failed to update pen draft", error);
   }
@@ -743,6 +752,25 @@ router.delete("/sessions/:id/drafts/:draftId", requireAuth, async (c) => {
 });
 
 /**
+ * Maps `/continue` domain errors to a status + message (hardening roadmap
+ * Step 3). Shared by the JSON response and the SSE `error` event so the two
+ * paths can never drift. Returns `null` for unmapped errors (callers fall
+ * back to the generic 500 envelope).
+ */
+function continueErrorResponse(
+  error: unknown
+): { status: 403 | 404 | 409 | 422 | 499; message: string } | null {
+  if (error instanceof DOMException && error.name === "AbortError") {
+    return { status: 499, message: "Request aborted" };
+  }
+  if (error instanceof PenSessionNotFoundError) return { status: 404, message: error.message };
+  if (error instanceof PenBookOwnershipError) return { status: 403, message: error.message };
+  if (error instanceof PenDraftNotActiveError) return { status: 409, message: error.message };
+  if (error instanceof PenContinueError) return { status: 422, message: error.message };
+  return null;
+}
+
+/**
  * POST /api/pen/sessions/:id/continue
  * Runs the single-request validate-and-generate continuation for an active
  * session the user owns. Body (discriminated by `type`):
@@ -751,7 +779,13 @@ router.delete("/sessions/:id/drafts/:draftId", requireAuth, async (c) => {
  * `assistanceLevel?` (0..1) snaps to the continuation-length tier (short/medium/
  * long, §8) — it chooses how many words the AI appends and the credit cost, and
  * is persisted onto the session so the default stays convergent with what the
- * author last used. Returns { span, edit, draft } where span is validated/dirty.
+ * author last used. Returns { span, edit, draft, version } where span is
+ * validated/dirty and version is the post-write draft version (Step 4 sync).
+ *
+ * Streaming variant (`?stream=1`, hardening roadmap Step 3): identical
+ * guards/contract, but token deltas are forwarded as SSE `token` events,
+ * provider-fallback boundaries as `token_reset`, and the final payload as the
+ * closing `result` event. The plain JSON POST remains the default contract.
  */
 router.post("/sessions/:id/continue", requireAuth, rateLimit(PEN_CONTINUE_RATE_LIMIT), requireNotSuspended, requireGenerationQuota, async (c) => {
   try {
@@ -782,11 +816,22 @@ router.post("/sessions/:id/continue", requireAuth, rateLimit(PEN_CONTINUE_RATE_L
       return cValidationError(c, "assistanceLevel must be a number between 0 and 1");
     }
 
+    // Optional per-attempt idempotency key for the credit reservation
+    // (roadmap §3.1): a retry with the same id reuses the in-flight reserve
+    // instead of double-charging.
+    let correlationId: string | undefined;
+    if (raw.correlationId !== undefined) {
+      if (typeof raw.correlationId !== "string" || raw.correlationId.trim().length === 0 || raw.correlationId.length > 128) {
+        return cValidationError(c, "correlationId must be a non-empty string of at most 128 characters");
+      }
+      correlationId = raw.correlationId;
+    }
+
     if (raw.type === "text_adventure") {
       if (typeof raw.command !== "string" || raw.command.trim().length === 0) {
         return cValidationError(c, "command is required for text_adventure");
       }
-      input = { type: "text_adventure", command: raw.command, authoringPov: authoringPov ?? undefined, assistanceLevel };
+      input = { type: "text_adventure", command: raw.command, authoringPov: authoringPov ?? undefined, assistanceLevel, correlationId };
     } else if (raw.type === "storyteller") {
       if (typeof raw.prose !== "string" || raw.prose.trim().length === 0) {
         return cValidationError(c, "prose is required for storyteller");
@@ -806,6 +851,7 @@ router.post("/sessions/:id/continue", requireAuth, rateLimit(PEN_CONTINUE_RATE_L
         directionHint: typeof raw.directionHint === "string" ? raw.directionHint : undefined,
         authoringPov: authoringPov ?? undefined,
         assistanceLevel,
+        correlationId,
       };
     } else {
       return cValidationError(c, "type must be 'storyteller' or 'text_adventure'");
@@ -823,13 +869,49 @@ router.post("/sessions/:id/continue", requireAuth, rateLimit(PEN_CONTINUE_RATE_L
       return cValidationError(c, "No active draft to continue — create one first");
     }
 
-    const result = await continuePenDraft(userId, sessionId, draftId, input);
+    // Step 3: streaming variant. Same guards, same single credit reservation,
+    // same final payload — deltas arrive as `token` events and the closing
+    // `result` event carries the PenContinueOutput the JSON path returns.
+    if (c.req.query("stream") === "1") {
+      return streamSSE(c, async (stream) => {
+        // Serialize writes: onToken fires from inside the awaited generation
+        // loop, so every enqueue is chained rather than fired concurrently.
+        let writeChain: Promise<unknown> = Promise.resolve();
+        const enqueue = (event: string, data: unknown): void => {
+          writeChain = writeChain
+            .then(() => stream.write(formatSSEEvent({ event, data: JSON.stringify(data) })))
+            .catch(() => {
+              // Stream already closed (client gone) — nothing left to write.
+            });
+        };
+        try {
+          const result = await continuePenDraft(userId, sessionId, draftId, input, {
+            // Step 9: client disconnect cancels the LLM calls (and releases
+            // the reservation) just like the JSON path.
+            signal: c.req.raw.signal,
+            onToken: (delta) => enqueue("token", { delta }),
+            onTokenReset: () => enqueue("token_reset", {}),
+          });
+          enqueue("result", result);
+          await writeChain;
+        } catch (error) {
+          const mapped = continueErrorResponse(error);
+          // Abort (client gone) or unmapped — stay quiet on a dead stream.
+          if (!mapped || mapped.status === 499) return;
+          enqueue("error", { error: mapped.message, status: mapped.status });
+          await writeChain;
+        }
+      });
+    }
+
+    // Step 9: the request's abort signal cancels the LLM calls when the
+    // client disconnects (stop button / navigation) — generation stops,
+    // the reservation releases, and no tokens are spent for nobody.
+    const result = await continuePenDraft(userId, sessionId, draftId, input, { signal: c.req.raw.signal });
     return c.json(result);
   } catch (error) {
-    if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
-    if (error instanceof PenBookOwnershipError) return cApiError(c, error.message, undefined, 403);
-    if (error instanceof PenDraftNotActiveError) return cApiError(c, error.message, undefined, 409);
-    if (error instanceof PenContinueError) return cApiError(c, error.message, undefined, 422);
+    const mapped = continueErrorResponse(error);
+    if (mapped) return cApiError(c, mapped.message, undefined, mapped.status);
     return cApiError(c, "Failed to continue pen draft", error);
   }
 });
@@ -908,50 +990,6 @@ router.post("/sessions/:id/transform", requireAuth, rateLimit(PEN_TRANSFORM_RATE
     if (error instanceof PenBookOwnershipError) return cApiError(c, error.message, undefined, 403);
     if (error instanceof PenTransformError) return cApiError(c, error.message, undefined, 422);
     return cApiError(c, "Failed to transform pen selection", error);
-  }
-});
-
-/**
- * POST /api/pen/sessions/:id/essentials/autofill
- * AI-fill the blank Page Essentials fields (mood/weather/date/time/keys/place)
- * for the next page, from the session's canon + recent prose + the author's
- * current in-progress draft.
- *
- * Body: `{ draftText?, mode? }` — the current draft prose (plain text) and the
- * autofill mode (`fill_empty` | `review_all`, default `fill_empty`). The service
- * never mutates the session: it returns a COMPLETE proposal and the frontend
- * applies only the currently-blank fields (fill mode) or shows per-field diffs
- * for acceptance (review mode), persisting via the normal debounced
- * `PATCH /sessions/:id`. Every proposed value is clamped server-side (enum
- * mood/weather, bible-place resolution, length caps). Charges
- * `PEN_ESSENTIALS_AUTOFILL` (1 credit) and writes a `plan` audit row.
- */
-router.post("/sessions/:id/essentials/autofill", requireAuth, rateLimit(PEN_ESSENTIALS_RATE_LIMIT), requireNotSuspended, requireGenerationQuota, async (c) => {
-  try {
-    const userId = c.get("userId");
-    if (!userId) return cApiError(c, "Authentication required", undefined, 401);
-    const sessionId = c.req.param("id");
-    const body = await readJsonBody(c);
-
-    const input: PenEssentialsAutofillInput = {};
-    const raw = body as { draftText?: unknown; mode?: unknown } | null | undefined;
-    if (raw && typeof raw.draftText === "string") {
-      if (raw.draftText.length > PEN_DRAFT_TEXT_MAX_LENGTH) {
-        return cValidationError(c, `draftText must be at most ${PEN_DRAFT_TEXT_MAX_LENGTH} characters`);
-      }
-      input.draftText = raw.draftText;
-    }
-    if (raw && (raw.mode === "fill_empty" || raw.mode === "review_all")) {
-      input.mode = raw.mode;
-    }
-
-    const result = await autofillSceneEssentials(userId, sessionId, input);
-    return c.json(result);
-  } catch (error) {
-    if (error instanceof PenSessionNotFoundError) return cNotFoundError(c, error.message);
-    if (error instanceof PenBookOwnershipError) return cApiError(c, error.message, undefined, 403);
-    if (error instanceof PenEssentialsAutofillError) return cApiError(c, error.message, undefined, 422);
-    return cApiError(c, "Failed to autofill scene essentials", error);
   }
 });
 
@@ -1320,10 +1358,12 @@ router.post("/sessions/:id/images", requireAuth, async (c) => {
         });
 
         const { penDrafts } = await import("../db/schema.js");
-        const { eq, and: drizzleAnd } = await import("drizzle-orm");
+        const { eq, and: drizzleAnd, sql } = await import("drizzle-orm");
         await dbWrite
           .update(penDrafts)
-          .set({ imageUrl: uploadResult.url, updatedAt: new Date() })
+          // version bump: content write outside updateSessionDraft must advance
+          // the optimistic-concurrency counter (hardening roadmap Step 4).
+          .set({ imageUrl: uploadResult.url, updatedAt: new Date(), version: sql`${penDrafts.version} + 1` })
           .where(drizzleAnd(eq(penDrafts.id, draftId), eq(penDrafts.sessionId, sessionId)));
       } catch (dbError) {
         // Best-effort rollback — delete the ImageKit file if DB persist fails.

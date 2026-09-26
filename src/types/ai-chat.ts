@@ -107,6 +107,14 @@ export type AIPromptOptions = Partial<AIPromptDocuments> & {
   outputFormat?: string;
   /** Usage context string for logging and rate limiting (e.g., 'story-page') */
   context?: string;
+  /**
+   * Optional AbortSignal for cooperative cancellation (hardening roadmap
+   * Step 9). Forwarded to provider HTTP requests that support it; once
+   * aborted, the provider/model fallback loops short-circuit instead of
+   * burning tokens on output nobody will see. Callers (e.g. the pen
+   * `/continue` route) typically pass the request's disconnect signal.
+   */
+  signal?: AbortSignal;
   /** Additional configuration for the AI model */
   config?: AIChatConfig;
   /** Whether to parse the output as JSON */

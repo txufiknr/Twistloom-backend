@@ -1,0 +1,54 @@
+name: Sweep Credit Reservations
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'   # Every 10 minutes (reservations expire after 15 minutes)
+  workflow_dispatch:          # Allow manual triggering
+
+jobs:
+  sweep:
+    name: Refund Leaked Credit Reservations
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Setup Bun runtime
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # Cache Bun packages to speed up future runs
+      - name: Setup Bun cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      # Install project dependencies
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Build TypeScript to JavaScript
+      - name: Build project
+        run: bun run build
+
+      # Ensure compiled file exists before running
+      - name: Verify build
+        run: test -f dist/cron/sweep-credit-reservations.js
+
+      # Execute reservation sweeper cron job
+      - name: Run reservation sweeper
+        run: bun dist/cron/sweep-credit-reservations.js
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_READ_URL: ${{ secrets.DATABASE_READ_URL || secrets.DATABASE_URL }}
+          NODE_ENV: production
+        timeout-minutes: 5  # Sweeper only touches stale rows

@@ -31,8 +31,11 @@ export interface CreditPack {
  * - reward: Free credits awarded (daily check-in, promotions)
  * - conversion: Wallet balance converted to credits (amountCents = IDR amount)
  * - first_purchase_bonus: One-time bonus for first-time purchasers (idempotent via row existence)
+ * - reserve: Two-phase reservation hold (roadmap §3.1) — deducts the balance up
+ *   front, then flips to `usage` when the generation settles, or to `usage` +
+ *   a paired `refund` row when it is released / swept. Transient by design.
  */
-export type TransactionType = "purchase" | "usage" | "refund" | "reward" | "conversion" | "first_purchase_bonus";
+export type TransactionType = "purchase" | "usage" | "refund" | "reward" | "conversion" | "first_purchase_bonus" | "reserve";
 
 /**
  * Options shared by credit consumption, addition, and refund helpers.
@@ -64,4 +67,26 @@ export interface ConsumeCreditsResult<T> {
   correlationId: string;
   /** Primary key of the consumption `transactions` row */
   transactionId: string;
+}
+
+/**
+ * A two-phase credit reservation (reserve → generate → settle/release).
+ *
+ * Returned by `reserveCredits`. The balance was already deducted in a
+ * millisecond-scale transaction; `transactionId` references the transient
+ * `type: 'reserve'` row that `settleReservation` flips to `usage` (or that
+ * `releaseReservation` / the leak sweeper converts to `usage` + a persisted
+ * `refund` row).
+ */
+export interface CreditReservation {
+  /** User whose balance was held */
+  userId: string;
+  /** Resolved cost held by this reservation (0 for free/demo actions) */
+  cost: number;
+  /** Idempotency key — a retry with the same id reuses this reservation */
+  correlationId: string;
+  /** PK of the `type: 'reserve'` transactions row; `null` when cost is 0 */
+  transactionId: string | null;
+  /** Caller context/metadata forwarded to settle/release bookkeeping */
+  options: ConsumeCreditsOptions;
 }

@@ -213,28 +213,11 @@ export const PEN_CONTINUE_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
 );
 
 /**
- * POST /api/pen/sessions/:id/essentials/autofill — AI-fill the blank Page
- * Essentials fields from the draft.
- *
- * Charges `PEN_ESSENTIALS_AUTOFILL` (1 credit) via `executeWithCredits`, so the
- * credit check already gates spend; this ceiling bounds burst + retry churn
- * around a charged generation (roadmap §8: even a cheap action needs a rate
- * limit, not credits alone).
- *
- * why: 1-credit structured-output generation — the credit check gates it, but
- * the limit stops a client hammering past a fresh model before its balance (or
- * the credit check) catches up.
- */
-export const PEN_ESSENTIALS_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
-  "PEN_ESSENTIALS", 10, 60, "pen-essentials"
-);
-
-/**
  * POST /api/pen/sessions/:id/finalize/propose — AI-compute the next page's
  * inventory/injuries as an "adopt as canon" proposal (§2.i / §10).
  *
  * Free (`PEN_FINALIZE_PROPOSE` = 0) but still an LLM structured-output call, so
- * it gets the same spend-shape guard as essentials auto-fill.
+ * it gets a spend-shape guard identical to the charged generation routes.
  */
 export const PEN_FINALIZE_PROPOSE_RATE_LIMIT: AIRateLimitConfig = buildRateLimit(
   "PEN_FINALIZE_PROPOSE", 10, 60, "pen-finalize-propose"

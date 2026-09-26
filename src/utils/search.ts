@@ -424,6 +424,164 @@ export function wordJaccardSimilarity(str1: string, str2: string): number {
 }
 
 /**
+ * Tokens that may legitimately open a question (EN/ID interrogatives and
+ * auxiliaries). Used as a *leading-run* strip so a question that degenerates to
+ * a single content word after stopword removal keeps its framing removed.
+ */
+const INTENT_LEADING_TOKENS: ReadonlySet<string> = new Set([
+  // English
+  'why', 'what', 'how', 'who', 'whom', 'whose', 'when', 'where', 'which',
+  'did', 'do', 'does', 'is', 'are', 'was', 'were', 'has', 'have', 'had',
+  'can', 'could', 'would', 'will', 'should', 'shall', 'may', 'might', 'must',
+  // Indonesian
+  'kenapa', 'mengapa', 'apa', 'siapa', 'mana', 'kapan', 'bagaimana', 'dimana',
+  'adakah', 'bolehkah', 'tidakkah',
+]);
+
+/**
+ * Function words carrying no entity signal, removed before intent comparison.
+ *
+ * Deliberately **excludes negation** (EN `not`/`no`/`never`/`without`, ID
+ * `tidak`/`bukan`/`jangan`/`belum`/`tanpa`): dropping it would make
+ * "Why didn't Marcus kill Elena?" normalize to the same token set as
+ * "Why did Marcus kill Elena?" and let the near-identical cache path serve an
+ * answer for the opposite claim.
+ */
+const INTENT_STOPWORDS: ReadonlySet<string> = new Set([
+  ...INTENT_LEADING_TOKENS,
+  // English function words
+  'a', 'an', 'the', 'and', 'or', 'but', 'of', 'to', 'in', 'on', 'at', 'by',
+  'for', 'with', 'from', 'into', 'upon', 'about', 'is', 'are', 'was', 'were',
+  'be', 'been', 'being', 'am', 'has', 'have', 'had', 'do', 'does', 'did',
+  'will', 'would', 'can', 'could', 'should', 'shall', 'may', 'might', 'must',
+  'it', 'its', 'he', 'she', 'they', 'them', 'we', 'you', 'i', 'me', 'my',
+  'mine', 'our', 'your', 'their', 'this', 'that', 'these', 'those', 'as',
+  'if', 'then', 'than', 'when', 'where', 'why', 'how', 'who', 'whom', 'whose',
+  'which', 'there', 'here', 'yes',
+  // Indonesian function words (negation intentionally absent — see above)
+  'dan', 'atau', 'tetapi', 'tapi', 'namun', 'sedangkan', 'sementara',
+  'karena', 'sebab', 'sehingga', 'maka', 'lalu', 'kemudian', 'ketika',
+  'bahwa', 'agar', 'supaya', 'kalau', 'jika', 'bila', 'apabila', 'meskipun',
+  'walaupun', 'sambil', 'seraya', 'di', 'ke', 'dari', 'pada', 'dalam',
+  'dengan', 'untuk', 'bagi', 'oleh', 'terhadap', 'tentang', 'sampai',
+  'sepanjang', 'sejak', 'seperti', 'daripada', 'antara', 'melalui', 'saya',
+  'aku', 'ku', 'kita', 'kami', 'kamu', 'kau', 'engkau', 'anda', 'dia', 'ia',
+  'mereka', 'ini', 'itu', 'yang', 'siapa', 'apa', 'mana', 'kapan',
+  'bagaimana', 'mengapa', 'kenapa', 'adalah', 'ialah', 'merupakan',
+  'menjadi', 'ada', 'boleh', 'bisa', 'dapat', 'harus', 'mesti', 'akan',
+  'sudah', 'telah', 'sedang', 'masih', 'pun', 'kah', 'lah', 'tah',
+]);
+
+/** Below this token count the fully-stripped form is considered degenerate. */
+const MIN_INTENT_TOKEN_COUNT = 2;
+
+/**
+ * Detaches the Indonesian question particle `-kah` from a word
+ * (`apakah` → `apa`, `benarkah` → `benar`).
+ *
+ * Only `-kah` is handled: `-lah` / `-tah` also attach to ordinary content
+ * nouns (`wajah`, `kuliah`) where stripping would corrupt the token. Words
+ * whose stem would shrink below 3 characters are left untouched (`salah`,
+ * `entah`).
+ */
+function stripIndonesianQuestionParticle(word: string): string {
+  if (word.length <= 5 || !word.endsWith('kah')) return word;
+  const stem = word.slice(0, -3);
+  return stem.length >= 3 ? stem : word;
+}
+
+/**
+ * Tokenizes a question into its intent-bearing tokens for similarity
+ * comparison (P17 — Intent Normalization & Stopword/Particle Stripping).
+ *
+ * Pipeline: lowercase → strip punctuation → detach ID `-kah` particle →
+ * drop EN/ID function words (negation preserved). When that leaves fewer than
+ * {@link MIN_INTENT_TOKEN_COUNT} tokens the result is degenerate, so the
+ * function falls back to a *leading interrogative strip* only, and finally to
+ * the plain token list — normalization must never empty a query.
+ *
+ * Use this for **similarity scoring only**, never for display text or for the
+ * stored `questionHash`.
+ *
+ * @param text - Raw question (query or historical candidate)
+ * @returns Normalized tokens; `[]` only for punctuation-only input
+ *
+ * @example
+ * ```typescript
+ * tokenizeForIntent('Why did Marcus take the key?')
+ * // => ['marcus', 'take', 'key']
+ * tokenizeForIntent('Kenapa Marcus mengambil kunci?')
+ * // => ['marcus', 'mengambil', 'kunci']
+ * tokenizeForIntent('Why?')
+ * // => ['why']  (floor guard: never empties the query)
+ * ```
+ */
+export function tokenizeForIntent(text: string): string[] {
+  const words = text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(stripIndonesianQuestionParticle);
+
+  if (words.length === 0) return [];
+
+  const contentOnly = words.filter((word) => !INTENT_STOPWORDS.has(word));
+  if (contentOnly.length >= MIN_INTENT_TOKEN_COUNT) return contentOnly;
+
+  // Floor guard 1: keep the framing strip, drop only the leading run.
+  const leadingStripped: string[] = [];
+  for (const word of words) {
+    if (leadingStripped.length === 0 && INTENT_LEADING_TOKENS.has(word)) continue;
+    leadingStripped.push(word);
+  }
+  if (leadingStripped.length > 0) return leadingStripped;
+
+  // Floor guard 2: everything stripped away (e.g. "Why?") — keep as-is.
+  return words;
+}
+
+/**
+ * Space-joined form of {@link tokenizeForIntent} — the normalized query string
+ * used when both sides of a similarity comparison must share one shape.
+ *
+ * @param text - Raw question
+ * @returns Normalized question text
+ *
+ * @example
+ * ```typescript
+ * normalizeForIntent('What caused Marcus to take the key?')
+ * // => 'caused marcus take key'
+ * ```
+ */
+export function normalizeForIntent(text: string): string {
+  return tokenizeForIntent(text).join(' ');
+}
+
+/**
+ * Word-level Jaccard similarity that never regresses against the raw form:
+ * the score is the maximum of the raw comparison and the intent-normalized
+ * comparison ({@link tokenizeForIntent}).
+ *
+ * Taking the `max` means normalization can only *add* matches (framing-word
+ * paraphrases like "How come…" vs "Why did…"), so existing thresholds
+ * (`0.25` suggestions, `COMPANION_CACHE_JACCARD_THRESHOLD` cache) stay valid
+ * without retuning.
+ *
+ * @param a - First question
+ * @param b - Second question
+ * @returns Similarity score between 0 and 1
+ */
+export function intentJaccardSimilarity(a: string, b: string): number {
+  const rawScore = wordJaccardSimilarity(a, b);
+  const normScore = wordJaccardSimilarity(
+    tokenizeForIntent(a).join(' '),
+    tokenizeForIntent(b).join(' '),
+  );
+  return Math.max(rawScore, normScore);
+}
+
+/**
  * Generates trigrams from a string for fuzzy matching
  * A trigram is a sequence of 3 consecutive characters
  * 

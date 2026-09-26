@@ -63,6 +63,9 @@ async function promptWithFallback<T>(
 
   // 3️⃣ Model iteration: Try each model in order until one succeeds
   for (let i = 0; i < models.length; i++) {
+    // Hardening roadmap Step 9: caller aborted (e.g. client disconnected) —
+    // stop burning attempts; the caller sees "no output" and rolls back cleanly.
+    if (options.signal?.aborted) return null;
     const model = models[i];
 
     // 3a. Fallback limit: Check shared counter across all providers
@@ -145,6 +148,12 @@ async function promptWithFallback<T>(
       // Empty response handling: Log when no content is received
       logAIFailure(provider, model, 'No output content received');
     } catch (error) {
+      // Hardening roadmap Step 9: a caller-initiated abort is permanent —
+      // skip quota classification/cooldown and report "no output" instead of
+      // falling through to the next model with a dead signal.
+      if (options.signal?.aborted || (error instanceof Error && error.name === "AbortError")) {
+        return null;
+      }
       // Error handling: Classify error and decide on retry strategy.
       // Retryable errors were already retried by retryWithBackoff within the try block.
       const code = classifyGenAIError(provider, model, error);
@@ -1567,6 +1576,9 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
 
   // Try each provider in order
   for (const provider of providers) {
+    // Hardening roadmap Step 9: caller aborted — end the provider fallback
+    // chain immediately instead of retrying every provider with a dead signal.
+    if (options.signal?.aborted) break;
     const isFirstIteration = providers.indexOf(provider) === 0;
     let result: AIResponse<string> | null = null;
 
