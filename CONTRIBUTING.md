@@ -195,6 +195,8 @@ The backend requires key configuration variables in `.env.local`:
 | `STRIPE_SECRET_KEY` | Stripe secret API key (Billing) | `sk_test_...` |
 | `STRIPE_WEBHOOK_SECRET` | Stripe webhook signature secret | `whsec_...` |
 | `RESEND_API_KEY` | Resend API key for transactional emails | `re_...` |
+| `QSTASH_TOKEN` | Upstash QStash API token — registers background schedules / publishes forum events | `pys_...` (optional unless you run `bun qstash:setup`) |
+| `CRON_SECRET` | Bearer secret protecting `/api/cron/*` endpoints | Random 32+ char string (must match what QStash forwards) |
 
 ---
 
@@ -212,6 +214,8 @@ bun run db:studio        # Open Drizzle Studio visual database inspector
 bun run db:triggers      # Apply PostgreSQL performance triggers
 bun run db:reset         # Reset database (clear, migrate, and rebuild triggers)
 ```
+
+> **ℹ️ Scheduling is separate from triggers**: `bun run db:triggers` only creates **PostgreSQL** triggers (database-only, safe for CI/fresh checkouts). Background *schedules* — Upstash QStash invoking `/api/cron/*` endpoints, e.g. the credit-reservation leak sweeper — are registered with `bun qstash:setup` / `bun qstash:setup:prod` (`src/cron/ensure-qstash-schedules.ts`, an idempotent `Upstash-Schedule-Id` upsert). It is intentionally **not** chained into `db:reset`, since it performs outbound HTTP and needs `QSTASH_TOKEN` + `CRON_SECRET`.
 
 ### Schema Best Practices:
 1. **Denormalized Counters**: Fields like `likesCount`, `readCount`, and `favoritesCount` on the `books` table are updated automatically by PostgreSQL triggers. Do not manually increment these counters in application code.

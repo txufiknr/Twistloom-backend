@@ -47,7 +47,9 @@
     "start:cron:forum-ban": "bun dist/cron/forum-ban-reconciliation.js",
     "start:cron:cleanup": "bun dist/cron/cleanup.js",
     "start:cron:email-weekly": "bun dist/cron/email-weekly-recommendations.js",
-    "start:cron:email-monthly": "bun dist/cron/email-monthly-summary.js"
+    "start:cron:email-monthly": "bun dist/cron/email-monthly-summary.js",
+    "qstash:setup": "bun --env-file=.env.local src/cron/ensure-qstash-schedules.ts",
+    "qstash:setup:prod": "bun --env-file=.env.production src/cron/ensure-qstash-schedules.ts"
   },
   "author": {
     "name": "Taufik Nur Rahmanda",

@@ -721,6 +721,15 @@ bun db:reset:prod                # Reset database in production
 
 > `db:*` commands run Drizzle Kit under **Node.js** (not Bun) — see [DB migrations under Node.js](#db-migrations-run-under-nodejs-drizzle-kit).
 
+### **Background Schedulers (Upstash QStash)**
+```bash
+bun qstash:setup                 # Create/update QStash schedules from .env.local
+bun qstash:setup:prod            # Create/update QStash schedules from .env.production
+bun qstash:setup:prod --dry-run  # Print the exact QStash requests without sending them
+```
+
+Background work that must run more than once a day — e.g. the **credit-reservation leak sweeper** (`POST /api/cron/sweep-credit-reservations`, every 10 min) — is triggered by **Upstash QStash**, because Vercel Cron is limited to one run per day on the Hobby plan. Registration is an **upsert keyed by `Upstash-Schedule-Id`** (`src/cron/ensure-qstash-schedules.ts`), so re-running the script never creates duplicates (the free tier allows 10 schedules). It requires `QSTASH_TOKEN`, `CRON_SECRET`, and `BACKEND_URL` (or `VERCEL_URL`), and is deliberately **not** part of `bun db:triggers` / `bun db:reset` — those stay database-only. Details: [`docs/architecture/PAYMENTS_ARCHITECTURE_BACKEND.md`](docs/architecture/PAYMENTS_ARCHITECTURE_BACKEND.md) §4.
+
 ### **Quality Assurance**
 ```bash
 bun check                        # Run lint, import validation, and typecheck

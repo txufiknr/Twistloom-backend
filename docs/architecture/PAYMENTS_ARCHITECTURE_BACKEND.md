@@ -478,7 +478,11 @@ Three redundant layers, in the order they fire for a given leaked row:
 **Operational runbook**
 
 ```bash
-# 1. Create (or upsert) the schedule — Upstash-Schedule-Id makes this idempotent
+# 1. Preferred: idempotent registration script (upsert keyed by Upstash-Schedule-Id)
+bun qstash:setup:prod             # add --dry-run to print the request without sending
+#    (bun qstash:setup targets .env.local instead; needs QSTASH_TOKEN + CRON_SECRET + BACKEND_URL)
+
+# Manual equivalent — same upsert semantics (Upstash-Schedule-Id updates in place)
 curl -XPOST "https://qstash.upstash.io/v2/schedules/https://<backend-host>/api/cron/sweep-credit-reservations" \
   -H "Authorization: Bearer $QSTASH_TOKEN" \
   -H "Content-Type: application/json" \
@@ -979,6 +983,7 @@ src/
 │   └── xendit.ts             XENDIT_CONFIG, IDR prices, helper functions
 ├── cron/
 │   ├── sweep-credit-reservations.ts  Leak sweeper entrypoint (refund leaked reserves)
+│   └── ensure-qstash-schedules.ts    Idempotent QStash schedule upsert (`bun qstash:setup[:prod]`)
 │   └── vip-expiration.ts     Daily downgrade job
 ├── db/
 │   └── schema.ts             users, subscriptions, subscriptionTransactions,
