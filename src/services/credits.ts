@@ -42,6 +42,7 @@ import { retryWithBackoffOrNull } from '../utils/retry.js';
 import type { ConsumeCreditsOptions, ConsumeCreditsResult, CreditReservation, TransactionType } from '../types/credits.js';
 import { PAYMENT_GATEWAY, type PaymentGateway } from '../types/payment.js';
 import { requireNoFraudFlags } from './fraud-detection.js';
+import { sweepExpiredReservationsOpportunistically } from './credit-reservations.js';
 
 // ---------------------------------------------------------------------------
 // consumeCredits
@@ -662,6 +663,14 @@ export async function reserveCredits(
   if (cost === 0) {
     return { userId, cost: 0, correlationId, transactionId: null, options };
   }
+
+  // Opportunistic leak sweep (roadmap §3.1 step 4): refunds reservations a
+  // crashed run left held — including this user's own — BEFORE we deduct, so
+  // restored credits are available to this very charge. Redis-throttled to
+  // ≈1 run / 5 min and fail-open: it can never fail or block a charge.
+  // The scheduled sweeper (QStash → POST /api/cron/sweep-credit-reservations)
+  // covers backlogs and users who never retry.
+  await sweepExpiredReservationsOpportunistically();
 
   const expiresAt = new Date(Date.now() + CREDIT_RESERVATION_TTL_MS).toISOString();
 

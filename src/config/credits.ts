@@ -169,6 +169,21 @@ export const CREDIT_RESERVATION_TTL_MS = 15 * 60 * 1000;
 export const CREDIT_RESERVATION_SWEEP_LIMIT = 200;
 
 /**
+ * Max leaked reservations refunded by the **opportunistic request-path sweep**
+ * (`sweepExpiredReservationsOpportunistically`) per trigger. Deliberately small
+ * so a backlog can never add meaningful latency to a user's charge — anything
+ * beyond this batch waits for the scheduled sweeper.
+ */
+export const CREDIT_RESERVATION_OPPORTUNISTIC_SWEEP_LIMIT = 20;
+
+/**
+ * Minimum seconds between opportunistic sweeps, enforced with a Redis `SET NX EX`
+ * throttle. Bounds the sweep to ≈1 run / 5 min per deployment regardless of
+ * charge traffic. Fails open (skips the sweep) when Redis is unavailable.
+ */
+export const CREDIT_RESERVATION_OPPORTUNISTIC_SWEEP_INTERVAL_SECONDS = 5 * 60;
+
+/**
  * Credit costs for various actions.
  *
  * Equals {@link CREDIT_COSTS_BASE} normally; all values are `0` when

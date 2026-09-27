@@ -11,12 +11,14 @@
  */
 
 import { Hono } from "hono";
+import type { Context } from "hono";
 import type { AppEnv } from "../hono/env.js";
 import { cApiError } from "../utils/error.js";
 import { constantTimeEqual } from "../utils/crypto.js";
 import { maturePendingEarnings } from "../services/maturation.js";
 import { processPendingPayouts } from "../services/disbursement.js";
 import { evaluateTrustScores } from "../cron/evaluate-trust.js";
+import { runCreditReservationSweep } from "../services/credit-reservations.js";
 
 const router = new Hono<AppEnv>();
 
@@ -133,5 +135,48 @@ router.post("/evaluate-trust", async (c) => {
     return cApiError(c, "Failed to evaluate trust scores", error);
   }
 });
+
+/**
+ * POST|GET /api/cron/sweep-credit-reservations
+ *
+ * Refunds leaked `type='reserve'` credit reservations older than
+ * CREDIT_RESERVATION_TTL_MS — the safety net for a process crash between
+ * `reserveCredits` and settle/release (roadmap §3.1 step 4).
+ *
+ * Both methods are registered deliberately:
+ * - `POST` — the Upstash QStash schedule (current trigger, every 10 min).
+ * - `GET`  — Vercel Cron sends GET, ready for the Pro-plan migration.
+ *
+ * Responds 500 when any refund fails so the scheduler retries (QStash: 3
+ * retries on the free plan, then the DLQ). `scanned > 0` still returns 200 —
+ * it means leaks happened but were successfully refunded.
+ *
+ * @see docs/architecture/PAYMENTS_ARCHITECTURE_BACKEND.md — §4 leak sweeper
+ */
+async function handleSweepCreditReservations(c: Context<AppEnv>) {
+  try {
+    const result = await runCreditReservationSweep();
+    const timestamp = new Date().toISOString();
+
+    if (result.failed > 0) {
+      return c.json(
+        {
+          success: false,
+          error: `Failed to refund ${result.failed} credit reservation(s) — will retry on the next run`,
+          data: result,
+          timestamp,
+        },
+        500
+      );
+    }
+
+    return c.json({ success: true, data: result, timestamp });
+  } catch (error) {
+    return cApiError(c, "Failed to sweep credit reservations", error);
+  }
+}
+
+router.post("/sweep-credit-reservations", handleSweepCreditReservations);
+router.get("/sweep-credit-reservations", handleSweepCreditReservations);
 
 export default router;

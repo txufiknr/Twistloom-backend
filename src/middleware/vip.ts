@@ -26,7 +26,7 @@
  *   in the handler instead — middleware cannot know the subject before the
  *   route resolves `:identifier`.
  *
- * @see docs/architecture/MIDDLEWARE_ARCHITECTURE.md §6
+ * @see docs/architecture/MIDDLEWARE_ARCHITECTURE.md §6.15
  */
 
 import { createMiddleware } from "hono/factory";

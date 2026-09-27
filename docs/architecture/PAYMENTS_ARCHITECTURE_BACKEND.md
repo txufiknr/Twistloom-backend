@@ -49,8 +49,9 @@ graph LR
     Xendit -->|callback webhooks<br/>x-callback-token| API
     Cron["GitHub Actions<br/>vip-expiration.yml<br/>(daily, 03:00 UTC)"] -->|invokes| CronScript["vip-expiration.ts"]
     CronScript -->|downgrades expired VIPs| DB
-    Sweep["GitHub Actions<br/>sweep-credit-reservations.yml<br/>(every 10 min)"] -->|invokes| SweepScript["sweep-credit-reservations.ts"]
-    SweepScript -->|refunds leaked credit reservations| DB
+    Sweep["Upstash QStash schedule<br/>(every 10 min, UTC)"] -->|invokes| SweepEndpoint["POST /api/cron/<br/>sweep-credit-reservations"]
+    SweepEndpoint -->|refunds leaked credit reservations| DB
+    API -.->|opportunistic sweep<br/>(Redis-throttled, pre-charge)| SweepEndpoint
 
     style Stripe fill:#635BFF,color:#fff
     style Xendit fill:#47C78A,color:#fff
@@ -367,10 +368,10 @@ Long AI generations must never hold a row lock across an LLM call, so story acti
 
 | Phase | Function | What happens |
 |---|---|---|
-| 1. Reserve | `reserveCredits()` (`src/services/credits.ts:646`) | Millisecond-scale transaction: deduct balance + insert a transient `type='reserve'` row. A zero balance is rejected **before** any provider token is spent (generate-then-charge would be a free-token abuse vector). |
+| 1. Reserve | `reserveCredits()` (`src/services/credits.ts:647`) | Millisecond-scale transaction: deduct balance + insert a transient `type='reserve'` row. A zero balance is rejected **before** any provider token is spent (generate-then-charge would be a free-token abuse vector). |
 | 2. Generate | caller's AI work | No transaction open, no row locks held. |
-| 3a. Success | `settleReservation()` (`credits.ts:715`) | Short transaction: guarded flip `reserve → usage` + persistence. All-or-nothing — if the flip loses the race, everything rolls back. |
-| 3b. Failure | `releaseReservation()` (`credits.ts:763`) | Claims the reserve row and inserts a **persistent** `refund` row; retries 3× with backoff. |
+| 3a. Success | `settleReservation()` (`credits.ts:724`) | Short transaction: guarded flip `reserve → usage` + persistence. All-or-nothing — if the flip loses the race, everything rolls back. |
+| 3b. Failure | `releaseReservation()` (`credits.ts:772`) | Claims the reserve row and inserts a **persistent** `refund` row; retries 3× with backoff. |
 
 ```mermaid
 sequenceDiagram
@@ -398,8 +399,8 @@ sequenceDiagram
 
 The third branch above is the **leak**: a serverless timeout (`maxDuration` kill), OOM, or cold-start crash between phase 1 and phase 3 leaves the `type='reserve'` row — and with it the author's deducted credits — held indefinitely. Two facts mean *nothing else* ever cleans it up:
 
-1. `releaseReservation()` **deliberately swallows** the error after 3 failed attempts (`credits.ts:779-785`) so the caller's original error still propagates. Its own log line says: *"leak sweeper will refund it after CREDIT_RESERVATION_TTL_MS"*.
-2. `sweepExpiredCreditReservations()` (`src/services/credit-reservations.ts:44`) has exactly **one caller** — the cron entrypoint `src/cron/sweep-credit-reservations.ts`. No request-path code invokes it. (Verified by codebase-wide grep.)
+1. `releaseReservation()` **deliberately swallows** the error after 3 failed attempts (`credits.ts:780-792`) so the caller's original error still propagates. Its own log line says: *"leak sweeper will refund it after CREDIT_RESERVATION_TTL_MS"*.
+2. A crashed process cannot run its own release — nothing in the *crash path* self-heals. Only the sweeper refunds stale rows, and only because it is wired in somewhere. It is currently wired in **twice**: `sweepExpiredReservationsOpportunistically()` (charge path, `credits.ts:673`) and `runCreditReservationSweep()` via `POST|GET /api/cron/sweep-credit-reservations` (`src/routes/cron.ts:139`). Remove both callers and the leak becomes permanent again.
 
 **Risk if the sweeper is disabled** — the exposure is one-sided (under-refund, never over-spend):
 
@@ -408,65 +409,113 @@ The third branch above is the **leak**: a serverless timeout (`maxDuration` kill
 | Permanent user balance loss | 1–5 credits per incident, small individually but cumulative and **irreversible** — there is no other refund path |
 | "Charged but got nothing" support cases | The visible symptom is a user with a stuck balance unable to act — a trust problem, not just an accounting one |
 | Ledger asymmetry | The negative `reserve` row persists forever with no matching `refund` row — the exact imbalance the two-phase design was built to eliminate |
-| Reserve rows accumulate | They pile up in the idempotent-reuse lookup `reserveCredits` runs on every charge (`credits.ts:672-682`) |
+| Reserve rows accumulate | They pile up in the idempotent-reuse lookup `reserveCredits` runs on every charge (`credits.ts:678-692`) |
 
-#### Currently implemented approach
+#### Currently implemented approach (two redundant triggers)
 
 | Aspect | Value |
 |---|---|
-| Trigger | `.github/workflows/sweep-credit-reservations.yml` (GitHub Actions, `schedule` + `workflow_dispatch`) |
-| Cadence | `*/10 * * * *` — every 10 minutes |
+| **Trigger 1 — opportunistic** | `sweepExpiredReservationsOpportunistically()` called by `reserveCredits()` **before** the deduction (`src/services/credits.ts:673`) — so a user's own leaked reservation is restored before this charge is applied |
+| **Trigger 1 throttle** | Upstash Redis `SET NX EX` key `credit-reservation-sweep:last-run` → at most **1 run / 5 min** deployment-wide (`CREDIT_RESERVATION_OPPORTUNISTIC_SWEEP_INTERVAL_SECONDS`); fail-open — Redis outage skips the sweep, never fails the charge |
+| **Trigger 1 batch** | `CREDIT_RESERVATION_OPPORTUNISTIC_SWEEP_LIMIT` = 20 rows (backlog waits for trigger 2) |
+| **Trigger 2 — scheduled** | Upstash QStash schedule → `POST /api/cron/sweep-credit-reservations` (`src/routes/cron.ts`, `CRON_SECRET` forwarded via `Upstash-Forward-Authorization: Bearer <CRON_SECRET>`) |
+| **Trigger 2 cadence** | `*/10 * * * *` — every 10 min, UTC, 1-min resolution |
+| **HTTP contract** | `200 { success: true, data }` on success; **`500` when `failed > 0`** → QStash retries (3 free) then the DLQ. `GET` is registered too so a future **Vercel Cron** trigger (which sends GET) works unchanged |
+| **Manual backfill** | `bun --env-file=.env.local src/cron/sweep-credit-reservations.ts` (exits non-zero on `failed > 0`) |
 | Expiry (TTL) | `CREDIT_RESERVATION_TTL_MS` = 15 min (`src/config/credits.ts:166`) — must exceed the longest legitimate generation with margin |
-| Batch limit | `CREDIT_RESERVATION_SWEEP_LIMIT` = 200 rows/run (`credits.ts:169`) |
-| Job | checkout → `bun install` → `bun run build` → `bun dist/cron/sweep-credit-reservations.js` |
-| Idempotency | Guarded claim `UPDATE … WHERE type='reserve'` (`credits.ts:580-624`) — a fourth idempotency layer alongside the three in [§10](#10-idempotency--concurrency); safe to run repeatedly and concurrently |
-| Worst-case hold | TTL + cadence = **25 minutes** |
-| Failure signal | Non-zero exit when `failed > 0` → red Actions run |
+| Scheduled batch limit | `CREDIT_RESERVATION_SWEEP_LIMIT` = 200 rows/run (`credits.ts:169`) |
+| Idempotency | Guarded claim `UPDATE … WHERE type='reserve'` (`credits.ts:581-646`) — a fourth idempotency layer alongside the three in [§10](#10-idempotency--concurrency); safe to run repeatedly and concurrently |
+| Worst-case hold | Active user ≈ TTL + ≤5 min (throttle) ≈ **20 min**; walk-away user TTL + cadence = **25 minutes** |
+| Failure signal | `500` from the endpoint → QStash retry → DLQ (the manual CLI exits non-zero) |
 
 Cadence is a latency knob, not a correctness one — leaks are crash-frequency, and a stuck user can't spend those credits anyway:
 
 | Cadence | Worst-case stuck time |
 |---|---|
-| 10 min (current) | 25 min |
+| 10 min (scheduled trigger) | 25 min |
 | 30 min | 45 min |
 | 60 min | 75 min |
 
-#### Known flaws of the current approach
+#### Known flaws & resolution status
 
-1. **Build-per-query waste** — 144 runs/day × (checkout + `bun install` + full TypeScript build) to execute an ~80 ms query.
-2. **GitHub Actions cron reliability** — scheduling is best-effort (jitter of minutes on busy repos), and GitHub **auto-disables scheduled workflows after 60 days of repository inactivity**. Either failure mode stops the sweeper *silently*.
-3. **Alerting gap** — `src/cron/sweep-credit-reservations.ts` throws only on `failed > 0` (refund transaction errors). A healthy system and a chronically leaking one are both green: `scanned > 0` is logged but never alerted.
-4. **No dedicated sweep index** — the query filters `type='reserve' AND created_at < cutoff` but `transactions` only has separate `transactions_type_idx` and `transactions_created_idx` (`src/db/schema.ts:1577,1579`). A partial index `ON (created_at) WHERE type='reserve'` would keep it O(leaked rows) regardless of ledger growth. *(Recommended fix — not applied; any schema change is a human-reviewed migration.)*
-5. **Dead metadata field** — `reserveCredits` writes `metadata.expiresAt` (`credits.ts:666,692`) but the sweeper only ever compares `created_at` against `now() - TTL`. The field is currently documentation, not logic — either the query or the field should go.
-6. **Cadence ≠ precision** — `*/10` on GitHub Actions fires late regularly, so "25 minutes" is a floor, not a guarantee.
+The original design had six flaws; the 2026-09 migration (request-path sweep + QStash-triggered endpoint, GitHub workflow deleted) resolved three of them.
 
-#### Alternatives
+| # | Flaw | Status |
+|---|---|---|
+| 1 | **Build-per-query waste** — 144 runs/day × (checkout + `bun install` + full TypeScript build) to execute an ~80 ms query | ✅ **Resolved** — `.github/workflows/sweep-credit-reservations.yml` deleted; the scheduled trigger is now an HTTP call, the charge path an in-process function |
+| 2 | **GitHub Actions cron reliability** — best-effort jitter, plus GitHub **auto-disables scheduled workflows after 60 days of repo inactivity**, stopping the sweeper *silently* | ✅ **Resolved** — QStash schedule (1-min precision, 3 retries, DLQ, `Upstash-Schedule-Id` upsert) + the Redis-throttled request-path sweep as an independent second trigger |
+| 3 | **Alerting gap** — the cron throws only on `failed > 0`; a chronic leak (`scanned > 0`) and a healthy system are both green | ⏳ **Partially resolved** — `failed > 0` now surfaces as an HTTP 500 → QStash retry → DLQ instead of a buried CI log. A `scanned > 0` **leak-rate** alert is still TODO |
+| 4 | **No dedicated sweep index** — the query filters `type='reserve' AND created_at < cutoff` but `transactions` only has separate `transactions_type_idx` and `transactions_created_idx` (`src/db/schema.ts:1577,1579`) | ⏳ **Open** — a partial index `ON (created_at) WHERE type='reserve'` would keep it O(leaked rows) regardless of ledger growth. Schema change not applied (human-reviewed migration) |
+| 5 | **Dead metadata field** — `reserveCredits` writes `metadata.expiresAt` (`credits.ts:675,701`) but the sweeper only compares `created_at` against `now() - TTL` | ⏳ **Open** — either the query or the field should go |
+| 6 | **Cadence ≠ precision** — `*/10` on GitHub Actions fires late regularly, so "25 minutes" was a floor, not a guarantee | ✅ **Resolved** — QStash evaluates cron in UTC with 1-minute resolution |
 
-| # | Option | Mechanics | Pros | Cons |
-|---|---|---|---|---|
-| 1 | **Request-path opportunistic sweep** | Before `reserveCredits()`, run `sweepExpiredCreditReservations({ limit: 20 })` behind an Upstash `SET NX EX` throttle (≈once/5 min, fail-open on Redis outage) | Zero new infrastructure; refunds *active* users within minutes; self-scales with traffic; matches the existing Redis-lock patterns | Idle users' stuck credits wait for the backup run; one extra (fail-open) Redis check on the charge path |
-| 2 | **HTTP cron endpoint** | New `POST`+`GET /api/cron/sweep-credit-reservations` reusing the existing `CRON_SECRET` middleware (`src/routes/cron.ts:31`) and `runCreditReservationSweep()`; invoked by an external scheduler | No repo checkout or build; sub-second execution; reuses existing secured cron infra (precedent: `/api/cron/mature-earnings`, `/api/cron/process-disbursements`) | **Vercel Cron sends GET** but the cron router is POST-only today; Vercel Cron is **daily-only on Hobby**; Vercel cron has no built-in retries or failure alerts (would lose Actions failure emails) |
-| 3 | **Relax the GH Actions cadence** | `*/10` → `0 * * * *` (hourly) | One-line change; 6× fewer builds | Still exposed to GH jitter + 60-day auto-disable; still 24 builds/day |
-| 4 | **pg_cron on Neon** | Server-side SQL job every N minutes | Immune to CI and platform outages; hardest to accidentally disable | Requires porting `claimAndRefundReservationTx` (claim + balance restore + refund insert) to SQL — duplicated logic across TS and SQL is a DRY/consistency hazard |
+#### Alternatives considered
 
-Option 2's trigger is pluggable — it is *not* inherently a GitHub Actions feature:
+| # | Option | Mechanics | Pros | Cons | Decision |
+|---|---|---|---|---|---|
+| 1 | **Request-path opportunistic sweep** | Before `reserveCredits()`, run `sweepExpiredCreditReservations({ limit: 20 })` behind an Upstash `SET NX EX` throttle (≈once/5 min, fail-open on Redis outage) | Zero new infrastructure; refunds *active* users within minutes; self-scales with traffic; matches the existing Redis-lock patterns | Idle users' stuck credits wait for the backup run; one extra (fail-open) Redis check on the charge path | ✅ **Implemented** (`sweepExpiredReservationsOpportunistically()`) |
+| 2 | **HTTP cron endpoint** | `POST`+`GET /api/cron/sweep-credit-reservations` reusing the existing `CRON_SECRET` middleware (`src/routes/cron.ts:31`) and `runCreditReservationSweep()`; invoked by an external scheduler | No repo checkout or build; sub-second execution; reuses existing secured cron infra (precedent: `/api/cron/mature-earnings`, `/api/cron/process-disbursements`) | Vercel Cron is **daily-only on Hobby** (and sends **GET**); Vercel cron has no built-in retries | ✅ **Implemented**, triggered by **QStash** (Hobby-compatible, 1-min precision, retries + DLQ) |
+| 3 | **Relax the GH Actions cadence** | `*/10` → `0 * * * *` (hourly) | One-line change; 6× fewer builds | Still exposed to GH jitter + 60-day auto-disable; still 24 builds/day | ❌ Not chosen |
+| 4 | **pg_cron on Neon** | Server-side SQL job every N minutes | Immune to CI and platform outages; hardest to accidentally disable | Requires porting `claimAndRefundReservationTx` (claim + balance restore + refund insert) to SQL — duplicated logic across TS and SQL is a DRY/consistency hazard | ❌ Not chosen |
 
-| Trigger | GH Actions? | Achievable cadence | Build needed |
+Options 1 and 2 are complementary, not competing: the request path handles active users fastest, and the scheduled endpoint covers users whose credits are stuck while they're away. The trigger for option 2 is pluggable:
+
+| Trigger | Achievable cadence | Build needed | Status |
 |---|---|---|---|
-| GH Actions `curl` (no checkout) | Yes, but trivial | `*/10` | No |
-| Vercel Cron (`vercel.json` `crons`) | No | Hobby: **once/day** · Pro: **once/minute** | No |
-| Upstash QStash (already in stack — `src/services/forum-queue.ts`) | No | every minute (free tier 500 msg/day ≈ enough for a 10-min cadence) | No |
-| External scheduler (cron-job.org, etc.) | No | every minute | No |
+| **Upstash QStash** (already in stack — `src/services/forum-queue.ts`) | every minute (free tier 1,000 msg/day ≈ 144 needed for `*/10`; 10 schedules, 3 retries, DLQ; schedules don't consume the 1-topic budget) | No | ✅ **Current trigger** |
+| Vercel Cron (`vercel.json` `crons`) | Hobby: **once/day** · Pro: **once/minute** | No | ⏳ Future — GET handler already registered |
+| External scheduler (cron-job.org, etc.) | every minute | No | Fallback |
+| GH Actions `curl` (no checkout) | `*/10` | No | ❌ Removed (workflow deleted) |
 
-#### Recommendation
+#### Decided approach (implemented 2026-09)
 
-| Plan / state | Recommended configuration |
-|---|---|
-| **Today (Vercel Hobby)** | Option 1 (request-path sweep, Redis-throttled) as primary **+** option 3 (hourly GH Actions) as backup for idle users |
-| **After upgrading to Vercel Pro** | Option 1 **+** option 2 via **Vercel Cron** (`*/10`, per-minute precision) — removes the repo checkout/build entirely and eliminates both GH cron jitter and the 60-day auto-disable risk. Option 2 then ranks **first**, ahead of the current approach. |
-| **Either way** | Alert on `scanned > 0` (leak rate), not only `failed > 0` — today a chronic leak and a healthy system are indistinguishable in CI |
+Three redundant layers, in the order they fire for a given leaked row:
 
-Options 1 and 2 are complementary, not competing: the request path handles active users fastest, and the scheduled endpoint covers users whose credits are stuck while they're away. Options 3 and 4 are fallbacks if neither is adopted.
+1. **Opportunistic sweep on the charge path** — `reserveCredits()` calls `sweepExpiredReservationsOpportunistically()` before deducting, throttled by a Redis `SET NX EX` key to 1 run / 5 min deployment-wide and bounded to 20 rows. Fail-open: an unavailable Redis or a failed sweep is logged and swallowed, so a sweep problem can never fail or delay a charge.
+2. **Scheduled sweep** — Upstash QStash invokes `POST /api/cron/sweep-credit-reservations` every 10 min (`CRON_SECRET` forwarded as `Upstash-Forward-Authorization`). Handles walk-away users and backlogs; answers `500` when any refund fails so QStash retries and finally parks the message in the DLQ.
+3. **Manual backfill** — `bun --env-file=.env.local src/cron/sweep-credit-reservations.ts` for local runs or incident recovery (exits non-zero on `failed > 0`).
+
+**Operational runbook**
+
+```bash
+# 1. Create (or upsert) the schedule — Upstash-Schedule-Id makes this idempotent
+curl -XPOST "https://qstash.upstash.io/v2/schedules/https://<backend-host>/api/cron/sweep-credit-reservations" \
+  -H "Authorization: Bearer $QSTASH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Upstash-Cron: */10 * * * *" \
+  -H "Upstash-Method: POST" \
+  -H "Upstash-Retries: 3" \
+  -H "Upstash-Schedule-Id: credit-reservation-sweep" \
+  -H "Upstash-Forward-Authorization: Bearer $CRON_SECRET" \
+  -d '{}'
+
+# 2. Verify (must return 200 + counts; 401/403 = CRON_SECRET mismatch)
+curl -XPOST "https://<backend-host>/api/cron/sweep-credit-reservations" \
+  -H "Authorization: Bearer $CRON_SECRET"
+
+# 3. Inspect / remove the schedule
+curl "https://qstash.upstash.io/v2/schedules" -H "Authorization: Bearer $QSTASH_TOKEN"
+curl -XDELETE "https://qstash.upstash.io/v2/schedules/credit-reservation-sweep" \
+  -H "Authorization: Bearer $QSTASH_TOKEN"
+```
+
+Manual backfill for gaps:
+
+```bash
+bun --env-file=.env.local src/cron/sweep-credit-reservations.ts
+```
+
+Why QStash now and Vercel Cron later: Vercel **Hobby** allows only one cron run per day (±59 min), which makes the platform's native scheduler useless for this sweeper; QStash is already provisioned for the forum queue (`.env.example:174-175`), gives per-minute precision, built-in retries, and a DLQ — at zero marginal cost (144 of 1,000 free messages/day, and schedules don't consume the single-topic budget).
+
+#### Future enhancements (Vercel Pro and beyond)
+
+| # | Enhancement | Trigger | Notes |
+|---|---|---|---|
+| 1 | **Switch the scheduled trigger to Vercel Cron** | Team upgrades to Vercel Pro | Add `{"crons":[{"path":"/api/cron/sweep-credit-reservations","schedule":"*/10 * * * *"}]}` to `vercel.json`. The `GET` handler already exists for exactly this. Either keep QStash as the retrying/DLQ'd trigger (recommended — Vercel Cron has no retries or failure alerts) or `DELETE` the schedule and rely on Vercel alone |
+| 2 | **Leak-rate alerting** | When a monitoring channel exists | Alert on `scanned > 0` (a leak happened) and on `failed > 0`/500 (a refund failed), not only on a red build. Candidates: QStash `FailureCallback`, a `GET /api/cron/*` dashboard, or email via Resend (`src/services/forum-queue.ts` precedent) |
+| 3 | **Partial sweep index** | Next schema migration window | `CREATE INDEX … ON transactions (created_at) WHERE type = 'reserve'` keeps the sweep O(leaked rows) regardless of ledger growth. Human-reviewed migration — `bun db:generate` is never run automatically |
+| 4 | **Delete or use `metadata.expiresAt`** | Same migration window | Either filter the sweep on it (`expiresAt < now()`) or drop the write from `reserveCredits` — today it is dead weight (`credits.ts:675,701`) |
+| 5 | **pg_cron fallback** | If QStash and Vercel Cron are ever unavailable | Keeps the safety net inside the database, at the cost of porting the claim/refund logic to SQL (see alternative 4's DRY caveat) |
 
 ---
 
@@ -935,9 +984,11 @@ src/
 │   └── schema.ts             users, subscriptions, subscriptionTransactions,
 │                              transactions, webhookDeliveries (gateway-agnostic)
 ├── routes/
-│   └── payments.ts           All /payments/* endpoints + Stripe & Xendit webhooks
+│   ├── payments.ts           All /payments/* endpoints + Stripe & Xendit webhooks
+│   └── cron.ts               Secured cron endpoints (CRON_SECRET) incl. POST|GET /sweep-credit-reservations
 ├── services/
-│   ├── credit-reservations.ts sweepExpiredCreditReservations() — leak sweeper query
+│   ├── credit-reservations.ts  sweepExpiredCreditReservations() query + runCreditReservationSweep()
+│   │                           + sweepExpiredReservationsOpportunistically() — leak sweeper triggers
 │   ├── credits.ts            addCredits, awardCredits, consumeCredits, refunds, reserve/settle/release
 │   ├── subscription.ts       createSubscription, renewSubscription,
 │   │                          cancelSubscription, isTrialEligible (gateway-agnostic)
@@ -960,7 +1011,7 @@ src/
     └── email.ts              sendTrialEndingEmail + other transactional emails
 ```
 
-Outside `src/`, the credit-reservation leak sweeper is scheduled by `.github/workflows/sweep-credit-reservations.yml` (GitHub Actions, `*/10 * * * *`) — see [§4 leak sweeper](#two-phase-credit-reservations--the-leak-sweeper).
+The credit-reservation leak sweeper fires from three places — opportunistically on the charge path (`sweepExpiredReservationsOpportunistically()` in `src/services/credit-reservations.ts`), on schedule via an **Upstash QStash** cron that `POST`s `/api/cron/sweep-credit-reservations` (`src/routes/cron.ts`), and manually via `src/cron/sweep-credit-reservations.ts`. The former `.github/workflows/sweep-credit-reservations.yml` GitHub Actions job has been **deleted** — see [§4 leak sweeper](#two-phase-credit-reservations--the-leak-sweeper).
 
 ---
 
@@ -1112,7 +1163,7 @@ router.post("/razorpay/webhook", async (c) => {
 | High | URL construction duplicated 4× (DRY violation) | **Fixed** — extracted `buildReturnUrls()` helper at `payments.ts:57-84` |
 | High | Xendit subscription checkouts not rate-limited | **Fixed** — rate limit applied before gateway branch at `payments.ts:611` |
 | High | `subscription-plans` leaks full config object | **Fixed** — only whitelisted fields returned at `payments.ts:1426-1458` |
-| Medium | `awardCredits()` missing row lock (race condition) | **Fixed** — `SELECT ... FOR UPDATE` at `credits.ts:620-626` |
+| Medium | `awardCredits()` missing row lock (race condition) | **Fixed** — `SELECT ... FOR UPDATE` at `credits.ts:916-923` |
 | Medium | `providerSubscriptionId` lookups without gateway filter | **Fixed** — `eq(subscriptions.gateway, gateway)` added to `updateSubscription`, `renewSubscription`, `cancelSubscription` at `subscription.ts:200-203, 238-241, 344-346` |
 | Medium | `isTrialEligible` missing gateway gate | **Fixed** — returns `false` for non-Stripe gateways at `subscription.ts:482-484` |
 | Low | `catch (error: any)` / `error: unknown` consistency | **Fixed** — all `catch` blocks now use `unknown` type |
@@ -1124,10 +1175,10 @@ router.post("/razorpay/webhook", async (c) => {
 | High | `isDuplicateTx` shared across branches | **Fixed** — each webhook handler function scoped independently in `stripe-webhook-handlers.ts` |
 | High | Subscription event idempotency | **Resolved** — service-layer `isUniqueViolation` catches + webhook delivery dedup already provide full coverage |
 | Low | `dbRead`/`dbWrite` inconsistency in zero-amount path | **Fixed** — `refundCreditsIdempotent` zero-amount path now uses `dbRead` at `credits.ts:383` |
-| Medium | Leak sweeper alerting gap — cron exits non-zero only on `failed > 0`, so a chronic leak (`scanned > 0`) stays green forever | **Open** — documented in [§4 leak sweeper](#two-phase-credit-reservations--the-leak-sweeper) |
-| Medium | Sweeper depends on GitHub Actions cron — best-effort jitter + auto-disable after 60 days of repo inactivity stop it silently | **Open** — documented in [§4 leak sweeper](#two-phase-credit-reservations--the-leak-sweeper) |
-| Low | No partial index `ON (created_at) WHERE type='reserve'` for the sweep query (relies on separate type/created_at indexes) | **Open** — documented in [§4 leak sweeper](#two-phase-credit-reservations--the-leak-sweeper); schema change not applied |
-| Low | `metadata.expiresAt` written by `reserveCredits` but never read — sweeper filters on `created_at` only | **Open** — documented in [§4 leak sweeper](#two-phase-credit-reservations--the-leak-sweeper) |
+| Medium | Leak sweeper alerting gap — only `failed > 0` surfaces, so a chronic leak (`scanned > 0`) stays green | **Partial** — `failed > 0` now returns HTTP 500 → QStash retry → DLQ; a `scanned > 0` leak-rate alert still TODO ([§4 future enhancements](#future-enhancements-vercel-pro-and-beyond)) |
+| Medium | Sweeper depends on GitHub Actions cron — best-effort jitter + auto-disable after 60 days of repo inactivity stop it silently | **Resolved** — GH workflow deleted; QStash schedule (1-min precision, retries, DLQ) + Redis-throttled request-path sweep ([§4 leak sweeper](#two-phase-credit-reservations--the-leak-sweeper)) |
+| Low | No partial index `ON (created_at) WHERE type='reserve'` for the sweep query (relies on separate type/created_at indexes) | **Open** — documented in [§4 future enhancements](#future-enhancements-vercel-pro-and-beyond); schema change not applied |
+| Low | `metadata.expiresAt` written by `reserveCredits` but never read — sweeper filters on `created_at` only | **Open** — documented in [§4 future enhancements](#future-enhancements-vercel-pro-and-beyond) |
 
 ### Deferred
 

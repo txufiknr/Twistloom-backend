@@ -84,6 +84,7 @@ please write a comprehensive roadmap MD for this in @docs/roadmap\ , grounded on
 [ ] instead of 1 big failing request (schema too complex for gemini or prompt token exceeds) should we using multi-turn request for generating single big page json? ask AI to generate each json key and append sequentially in each turn, will that solve the problem?
 [ ] agentic mcp: TWISTLOOM_AGENT_MCP_ROADMAP.md
 [ ] claude: TODO-ai-gateway-decouple.md
+[ ] create QStash schedule — runbook curl is in §4 (needs your QSTASH_TOKEN/host).
 
 ---
 
