@@ -118,6 +118,7 @@ import { hashSHA256 } from "../utils/hash.js";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
 import { getBook, getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage, tryAcquireWorkflowDispatchGate, getAllBookEndings, insertUserCompletedBook } from "../services/book.js";
 import { getBookAnalytics } from "../services/analytics.js";
+import { getModerationThresholds } from "../services/admin-settings.js";
 import { hasActiveVipSubscription } from "../services/subscription.js";
 import { getPreviewBookPage } from "../services/book-preview.js";
 import { shouldUseCache, getFreshPromptForUser, trackPromptView, savePromptToCache } from "../services/prompt-cache.js";
@@ -8487,6 +8488,15 @@ router.post("/:identifier/testimonials", requireAuth, requireNotSuspended, requi
   }
   const isCuratorQuill = useCuratorQuill === true;
 
+  // Auto-reject low-scored testimonials per admin moderation threshold
+  // ("Testimonials with score below this threshold are automatically rejected").
+  // Rating-less testimonials stay pending for manual review.
+  const { autoRejectTestimonialScore } = await getModerationThresholds();
+  const initialStatus: "pending" | "rejected" =
+    normalizedRating !== null && normalizedRating < autoRejectTestimonialScore
+      ? "rejected"
+      : "pending";
+
   let created: { id: string };
   try {
     created = await dbWrite.transaction(async (tx) => {
@@ -8520,7 +8530,7 @@ router.post("/:identifier/testimonials", requireAuth, requireNotSuspended, requi
           bookId: book.id,
           rating: normalizedRating,
           content: content.trim(),
-          status: "pending",
+          status: initialStatus,
           featured: false,
           curatorQuill: isCuratorQuill,
         })

@@ -20,17 +20,20 @@
  */
 
 import { Hono } from "hono";
-import { eq, desc, and, or, inArray, sql, gte, lte, isNotNull, isNull, ilike, count, countDistinct, avg, sum } from "drizzle-orm";
+import { eq, desc, and, or, ne, inArray, sql, gte, lte, isNotNull, isNull, ilike, count, countDistinct, avg, sum } from "drizzle-orm";
 import { requireAuth } from "../middleware/nextauth.js";
 import { requireSuperAdmin, requirePermission, resolveAdminAccess, normalizePermissions, isSuperAdminUserId, ADMIN_PERMISSIONS } from "../middleware/admin-auth.js";
 import { cApiError, cValidationError, cNotFoundError } from "../utils/error.js";
 import { reconstructStoryState } from "../utils/branch-traversal.js";
 import { getBookAnalytics, getCommunityAnalytics } from "../services/analytics.js";
 import { getAdminBusinessMetrics } from "../services/admin-business-analytics.js";
+import { DEFAULT_ADMIN_SETTINGS, getAdminSettingsMap } from "../services/admin-settings.js";
+import { estimateCost } from "../utils/ai-cost.js";
+import type { AIChatProvider } from "../types/ai-chat.js";
 import { getBookFromDB, getPageFromDB, invalidateEnrichedBookCache } from "../services/book.js";
 import { getStoryState } from "../services/story.js";
 import { dbRead, dbWrite } from "../db/client.js";
-import { socialMentions, bookTestimonials, adminUsers, adminSettings, usage, users, userFeedbacks, books, portalBlogPosts, platformTestimonials, pages, userPageProgress, creatorPayouts, creatorPayoutEvents, creatorWallets, creatorPayoutMethods, creatorKycVerifications, transactions, subscriptions } from "../db/schema.js";
+import { socialMentions, bookTestimonials, adminUsers, adminSettings, usage, users, userFeedbacks, books, portalBlogPosts, platformTestimonials, pages, userPageProgress, creatorPayouts, creatorPayoutEvents, creatorWallets, creatorPayoutMethods, creatorKycVerifications, transactions, subscriptions, userComments, authSessions } from "../db/schema.js";
 import type { AppEnv } from "../hono/env.js";
 import { bookStatuses, bookVisibilities, type BookStatus, type BookVisibility } from "../types/book.js";
 import { feedbackAdminStatuses, feedbackCategories, type FeedbackAdminStatus, type FeedbackCategory } from "../types/user.js";
@@ -1164,43 +1167,140 @@ router.delete("/admins/:userId",
 // ============================================================================
 
 /**
+ * Parses the optional `provider` query param into a de-duplicated provider
+ * list. Accepts a single value (`gemini`) or a comma-separated list
+ * (`gemini,groq,openrouter`). Returns `null` when no filter applies.
+ */
+function parseUsageProviderFilter(provider: string | undefined): AIChatProvider[] | null {
+  if (typeof provider !== "string" || provider.length === 0) return null;
+  const list = Array.from(new Set(provider.split(",").map((p) => p.trim()).filter(Boolean)));
+  return list.length > 0 ? (list as AIChatProvider[]) : null;
+}
+
+/** Builds the drizzle WHERE conditions for a date window + provider filter. */
+function usageWindowConditions(startISO: string, endISO: string, providers: AIChatProvider[] | null) {
+  const conditions = [gte(usage.date, startISO), lte(usage.date, endISO)];
+  if (providers && providers.length === 1) {
+    conditions.push(eq(usage.provider, providers[0]));
+  } else if (providers && providers.length > 1) {
+    conditions.push(inArray(usage.provider, providers));
+  }
+  return conditions;
+}
+
+/** Summary aggregate for a set of usage rows (KPI cards). */
+interface UsageWindowSummary {
+  requests: number;
+  totalTokens: number;
+  /** Summed wall-clock duration across the window (ms) */
+  durationMs: number;
+  /** Summed duration / requests (null when no requests) */
+  avgDurationMs: number | null;
+  /** Estimated USD cost via `utils/ai-cost.ts` pricing SSOT */
+  estCostUsd: number;
+}
+
+function summarizeUsageRows(
+  rows: Array<{
+    requests: number;
+    inputTokens: number | null;
+    outputTokens: number | null;
+    totalTokens: number | null;
+    durationMs: number | null;
+    provider: AIChatProvider;
+    model: string | null;
+  }>,
+): UsageWindowSummary {
+  let requests = 0;
+  let totalTokens = 0;
+  let durationMs = 0;
+  let estCostUsd = 0;
+  for (const r of rows) {
+    requests += r.requests;
+    totalTokens += r.totalTokens ?? 0;
+    durationMs += r.durationMs ?? 0;
+    estCostUsd += estimateCost(r.provider, r.model, r.inputTokens, r.outputTokens);
+  }
+  return {
+    requests,
+    totalTokens,
+    durationMs,
+    avgDurationMs: requests > 0 ? Math.round(durationMs / requests) : null,
+    estCostUsd: Math.round(estCostUsd * 1_000_000) / 1_000_000,
+  };
+}
+
+/**
  * GET /admin/usage/chart
  *
- * Returns aggregated AI usage data for charting. Supports date range, provider
- * filter, and granularity (data is stored per-day; week granularity is
- * computed client-side).
+ * Returns aggregated AI usage data for charting. Supports date range, a
+ * single provider or comma-separated multi-provider filter, and per-record
+ * estimated USD cost (from the `utils/ai-cost.ts` pricing SSOT). Granularity
+ * (day/week) is computed client-side.
  *
  * @param from - Start date (ISO string, default: 30 days ago)
  * @param to - End date (ISO string, default: today)
- * @param provider - Optional provider filter
- * @returns Array of daily usage records
+ * @param provider - Optional provider filter (single value or comma-separated list)
+ * @param summary - When "true", also returns `summary` (this window) and
+ *                  `previousSummary` (equal-length window immediately before)
+ *                  for KPI period deltas
+ * @returns { from, to, records, summary?, previousSummary? }
  */
 router.get("/usage/chart",
   requireAuth,
   requirePermission("usage"),
   async (c) => {
     try {
-      const { from, to, provider } = c.req.query();
+      const { from, to, provider, summary } = c.req.query();
 
       const now = new Date();
       const fromDate = from ? new Date(from) : new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
       const toDate = to ? new Date(to) : now;
 
-      const conditions = [
-        gte(usage.date, fromDate.toISOString().split("T")[0]),
-        lte(usage.date, toDate.toISOString().split("T")[0]),
-      ];
-      if (typeof provider === "string" && provider.length > 0) {
-        conditions.push(eq(usage.provider, provider as (typeof usage.$inferSelect)["provider"]));
-      }
+      const fromDateStr = fromDate.toISOString().split("T")[0];
+      const toDateStr = toDate.toISOString().split("T")[0];
+      const providers = parseUsageProviderFilter(provider);
 
       const rows = await dbRead
         .select()
         .from(usage)
-        .where(and(...conditions))
+        .where(and(...usageWindowConditions(fromDateStr, toDateStr, providers)))
         .orderBy(usage.date);
 
-      return c.json({ from: fromDate.toISOString(), to: toDate.toISOString(), records: rows });
+      const records = rows.map((r) => ({
+        ...r,
+        estCostUsd: estimateCost(r.provider, r.model, r.inputTokens, r.outputTokens),
+      }));
+
+      const response: Record<string, unknown> = {
+        from: fromDate.toISOString(),
+        to: toDate.toISOString(),
+        records,
+      };
+
+      if (summary === "true") {
+        // Previous window = equal number of days immediately before `from`.
+        const windowMs = toDate.getTime() - fromDate.getTime();
+        const prevToDate = new Date(fromDate.getTime() - 24 * 60 * 60 * 1000);
+        const prevFromDate = new Date(prevToDate.getTime() - windowMs);
+        const prevRows = await dbRead
+          .select()
+          .from(usage)
+          .where(
+            and(
+              ...usageWindowConditions(
+                prevFromDate.toISOString().split("T")[0],
+                prevToDate.toISOString().split("T")[0],
+                providers,
+              ),
+            ),
+          );
+
+        response.summary = summarizeUsageRows(rows);
+        response.previousSummary = summarizeUsageRows(prevRows);
+      }
+
+      return c.json(response);
     } catch (error) {
       return cApiError(c, "Failed to fetch usage chart data", error);
     }
@@ -1217,7 +1317,7 @@ router.get("/usage/chart",
  *
  * @param from - Start date (YYYY-MM-DD)
  * @param to - End date (YYYY-MM-DD)
- * @param provider - Optional provider filter
+ * @param provider - Optional provider filter (single value or comma-separated list)
  * @param limit - Maximum rows to return (default: 50, max: 200)
  * @param offset - Number of rows to skip (default: 0)
  * @returns { total, limit, offset, usage } row envelope
@@ -1238,8 +1338,11 @@ router.get("/usage",
       if (typeof to === "string" && to.length > 0) {
         conditions.push(lte(usage.date, to));
       }
-      if (typeof provider === "string" && provider.length > 0) {
-        conditions.push(eq(usage.provider, provider as (typeof usage.$inferSelect)["provider"]));
+      const providers = parseUsageProviderFilter(provider);
+      if (providers && providers.length === 1) {
+        conditions.push(eq(usage.provider, providers[0]));
+      } else if (providers && providers.length > 1) {
+        conditions.push(inArray(usage.provider, providers));
       }
 
       const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
@@ -2089,6 +2192,88 @@ router.get("/books",
   }
 );
 
+/**
+ * PATCH /admin/books/:id  (B4 — admin book moderation)
+ *
+ * Admin override of a book's `status` and/or `visibility`. Accepts the book
+ * `id` or `slug` as the identifier. Only fields present in the body are
+ * updated; both are validated against their allowed enum values.
+ *
+ * @body { status?: BookStatus, visibility?: BookVisibility }
+ * @returns { id, slug, status, visibility, updatedAt } or 404/400
+ */
+router.patch("/books/:id",
+  requireAuth,
+  requirePermission("books"),
+  async (c) => {
+    try {
+      const { id } = c.req.param();
+      if (!id) {
+        return cValidationError(c, "id is required");
+      }
+
+      const body = c.get("body") as { status?: string; visibility?: string } | undefined;
+      const status = body?.status;
+      const visibility = body?.visibility;
+
+      if (status === undefined && visibility === undefined) {
+        return cValidationError(c, "At least one of status or visibility is required");
+      }
+      if (status !== undefined && !bookStatuses.includes(status as BookStatus)) {
+        return cValidationError(c, `Invalid status. Must be one of: ${bookStatuses.join(", ")}`);
+      }
+      if (visibility !== undefined && !bookVisibilities.includes(visibility as BookVisibility)) {
+        return cValidationError(c, `Invalid visibility. Must be one of: ${bookVisibilities.join(", ")}`);
+      }
+
+      const [existing] = await dbRead
+        .select({ id: books.id })
+        .from(books)
+        .where(or(eq(books.id, id), eq(books.slug, id)))
+        .limit(1);
+      if (!existing) {
+        return cNotFoundError(c, "Book not found");
+      }
+
+      const updatePayload: { status?: BookStatus; visibility?: BookVisibility; updatedAt: Date } = {
+        updatedAt: new Date(),
+      };
+      if (status !== undefined) updatePayload.status = status as BookStatus;
+      if (visibility !== undefined) updatePayload.visibility = visibility as BookVisibility;
+
+      const [updated] = await dbWrite
+        .update(books)
+        .set(updatePayload)
+        .where(eq(books.id, existing.id))
+        .returning({
+          id: books.id,
+          slug: books.slug,
+          status: books.status,
+          visibility: books.visibility,
+          updatedAt: books.updatedAt,
+        });
+
+      console.log(
+        `[admin] 📚 Book moderated by admin: ${existing.id} (${Object.entries({ status, visibility })
+          .filter(([, v]) => v !== undefined)
+          .map(([k, v]) => `${k}=${v}`)
+          .join(", ")})`,
+      );
+      // Public book detail is cached — drop it so the override is visible immediately.
+      try {
+        const { invalidateEnrichedBookCache } = await import("../services/book.js");
+        invalidateEnrichedBookCache(existing.id);
+      } catch (cacheError) {
+        console.error(`[admin] ⚠️ Failed to invalidate book cache for ${existing.id}:`, cacheError);
+      }
+
+      return c.json(updated);
+    } catch (error) {
+      return cApiError(c, "Failed to update book", error);
+    }
+  }
+);
+
 // ============================================================================
 // USERS ADMIN ROUTES (P4)
 // ============================================================================
@@ -2156,6 +2341,203 @@ router.get("/users",
 );
 
 /**
+ * GET /admin/users/:userId
+ *
+ * Single-user detail for the admin user detail page (P4): profile row plus
+ * light aggregate counters. Transactions and auth sessions are separate
+ * sub-resource endpoints below.
+ *
+ * @returns { user, counts } or 404
+ */
+router.get("/users/:userId",
+  requireAuth,
+  requirePermission("users"),
+  async (c) => {
+    try {
+      const { userId } = c.req.param();
+      if (!userId) {
+        return cValidationError(c, "userId is required");
+      }
+
+      const [user] = await dbRead
+        .select({
+          userId: users.userId,
+          name: users.name,
+          username: users.username,
+          email: users.email,
+          imageUrl: users.imageUrl,
+          tier: users.tier,
+          credits: users.credits,
+          isNewUser: users.isNewUser,
+          lastActive: users.lastActive,
+          createdAt: users.createdAt,
+          bannedAt: users.bannedAt,
+        })
+        .from(users)
+        .where(eq(users.userId, userId))
+        .limit(1);
+
+      if (!user) {
+        return cNotFoundError(c, "User not found");
+      }
+
+      const [bookCountRows, txCountRows, sessionCountRows] = await Promise.all([
+        dbRead
+          .select({ count: sql<number>`count(*)` })
+          .from(books)
+          .where(eq(books.userId, userId)),
+        dbRead
+          .select({ count: sql<number>`count(*)` })
+          .from(transactions)
+          .where(eq(transactions.userId, userId)),
+        dbRead
+          .select({ count: sql<number>`count(*)` })
+          .from(authSessions)
+          .where(eq(authSessions.userId, userId)),
+      ]);
+
+      return c.json({
+        user,
+        counts: {
+          books: Number(bookCountRows[0]?.count ?? 0),
+          transactions: Number(txCountRows[0]?.count ?? 0),
+          sessions: Number(sessionCountRows[0]?.count ?? 0),
+        },
+      });
+    } catch (error) {
+      return cApiError(c, "Failed to fetch user detail", error);
+    }
+  }
+);
+
+/**
+ * GET /admin/users/:userId/transactions
+ *
+ * Paginated payment/credit ledger for one user (mirrors the formatting of
+ * `GET /admin/payments/transactions`, scoped to a single account).
+ *
+ * @param limit - Maximum rows (default: 20, max: 100)
+ * @param offset - Rows to skip
+ * @param type - Optional transaction type filter (e.g. "purchase")
+ * @returns { total, limit, offset, transactions }
+ */
+router.get("/users/:userId/transactions",
+  requireAuth,
+  requirePermission("users"),
+  async (c) => {
+    try {
+      const { userId } = c.req.param();
+      const { type, limit = "20", offset = "0" } = c.req.query();
+      if (!userId) {
+        return cValidationError(c, "userId is required");
+      }
+
+      const limitNum = Math.min(Math.max(Number(limit) || 20, 1), 100);
+      const offsetNum = Math.max(Number(offset) || 0, 0);
+
+      const existingUser = await dbRead
+        .select({ userId: users.userId })
+        .from(users)
+        .where(eq(users.userId, userId))
+        .limit(1);
+      if (!existingUser) {
+        return cNotFoundError(c, "User not found");
+      }
+
+      const conditions = [eq(transactions.userId, userId)];
+      if (typeof type === "string" && type.length > 0) {
+        conditions.push(eq(transactions.type, type as (typeof transactions.$inferSelect)["type"]));
+      }
+      const whereClause = and(...conditions);
+
+      const [countResult, rows] = await Promise.all([
+        dbRead.select({ total: count() }).from(transactions).where(whereClause),
+        dbRead
+          .select({
+            id: transactions.id,
+            type: transactions.type,
+            credits: transactions.credits,
+            amountCents: transactions.amountCents,
+            gateway: transactions.gateway,
+            providerPaymentId: transactions.providerPaymentId,
+            context: transactions.context,
+            metadata: transactions.metadata,
+            createdAt: transactions.createdAt,
+          })
+          .from(transactions)
+          .where(whereClause)
+          .orderBy(desc(transactions.createdAt))
+          .limit(limitNum)
+          .offset(offsetNum),
+      ]);
+
+      const formatted = rows.map((r) => ({
+        ...r,
+        amountFormatted: formatPaymentAmount(r.amountCents, r.gateway),
+        currency: getGatewayCurrency(r.gateway),
+      }));
+
+      return c.json({
+        total: Number(countResult[0]?.total ?? 0),
+        limit: limitNum,
+        offset: offsetNum,
+        transactions: formatted,
+      });
+    } catch (error) {
+      return cApiError(c, "Failed to fetch user transactions", error);
+    }
+  }
+);
+
+/**
+ * GET /admin/users/:userId/sessions
+ *
+ * Active auth (device) sessions for one user — newest activity first.
+ * Session IDs are deliberately omitted: the id is embedded in the JWT payload
+ * and must not be exfiltrated to the admin UI.
+ *
+ * @returns { sessions: [...] } or 404
+ */
+router.get("/users/:userId/sessions",
+  requireAuth,
+  requirePermission("users"),
+  async (c) => {
+    try {
+      const { userId } = c.req.param();
+      if (!userId) {
+        return cValidationError(c, "userId is required");
+      }
+
+      const [user] = await dbRead
+        .select({ userId: users.userId })
+        .from(users)
+        .where(eq(users.userId, userId))
+        .limit(1);
+      if (!user) {
+        return cNotFoundError(c, "User not found");
+      }
+
+      const sessions = await dbRead
+        .select({
+          deviceName: authSessions.deviceName,
+          userAgent: authSessions.userAgent,
+          ipAddress: authSessions.ipAddress,
+          lastActiveAt: authSessions.lastActiveAt,
+          createdAt: authSessions.createdAt,
+        })
+        .from(authSessions)
+        .where(eq(authSessions.userId, userId))
+        .orderBy(desc(authSessions.lastActiveAt))
+        .limit(50);
+
+      return c.json({ sessions });
+    } catch (error) {
+      return cApiError(c, "Failed to fetch user sessions", error);
+    }
+  }
+);
+
+/**
  * PATCH /admin/users/:userId/ban
  *
  * Sets banned_at, bumps token_version, deletes auth sessions (immediate lockout).
@@ -2216,23 +2598,25 @@ router.patch(
         createdBy: adminId,
       });
 
-      // Best-effort session wipe (tokenVersion already invalidates JWTs)
-      try {
-        const { logoutFromAllDevices } = await import("../services/session-manager.js");
-        await logoutFromAllDevices(userId);
-      } catch (err) {
-        console.error(`[admin] ⚠️ Ban session wipe failed for ${userId}:`, err);
+      // Load configurable ban policy (used for session wipe + content takedowns)
+      const appliedTakedowns: string[] = [];
+      const settings = await getAdminSettingsMap();
+
+      // Revoke active sessions — only when ban.revoke_sessions is enabled.
+      // Auth lockout (banned_at → 403) applies regardless; this controls whether
+      // stored sessions are actively deleted.
+      if (settings["ban.revoke_sessions"] === true) {
+        try {
+          const { logoutFromAllDevices } = await import("../services/session-manager.js");
+          await logoutFromAllDevices(userId);
+          appliedTakedowns.push("revoke_sessions");
+        } catch (err) {
+          console.error(`[admin] ⚠️ Ban session wipe failed for ${userId}:`, err);
+        }
       }
 
       // Apply configurable content takedowns based on admin settings
-      const appliedTakedowns: string[] = [];
       try {
-        const settingsRows = await dbRead.select().from(adminSettings);
-        const settings: Record<string, unknown> = {};
-        for (const row of settingsRows) {
-          settings[row.key] = row.value;
-        }
-
         // Hide books from public pages
         if (settings["ban.hide_books"] === true) {
           await dbWrite
@@ -2245,10 +2629,12 @@ router.patch(
 
         // Anonymize comments (replace with [deleted])
         if (settings["ban.anonymize_comments"] === true) {
-          // Comments table not imported - skip if not available
-          // await dbWrite.update(comments).set({ content: "[deleted]" }).where(eq(comments.userId, userId));
+          await dbWrite
+            .update(userComments)
+            .set({ content: "[deleted]", updatedAt: new Date() })
+            .where(and(eq(userComments.userId, userId), ne(userComments.content, "[deleted]")));
           appliedTakedowns.push("anonymize_comments");
-          console.log(`[admin] 💬 Comments anonymization queued for banned user: ${userId}`);
+          console.log(`[admin] 💬 Comments anonymized for banned user: ${userId}`);
         }
 
         // Reject pending testimonials
@@ -2259,11 +2645,6 @@ router.patch(
             .where(eq(bookTestimonials.userId, userId));
           appliedTakedowns.push("reject_testimonials");
           console.log(`[admin] ⭐ Testimonials rejected for banned user: ${userId}`);
-        }
-
-        // Revoke sessions (already done above via logoutFromAllDevices)
-        if (settings["ban.revoke_sessions"] === true) {
-          appliedTakedowns.push("revoke_sessions");
         }
       } catch (takedownError) {
         console.error(`[admin] ⚠️ Content takedown partially failed for ${userId}:`, takedownError);
@@ -3003,15 +3384,8 @@ router.get("/payouts/stats",
 
 /**
  * Default settings seed (used for upsert on first access).
+ * Defined in `services/admin-settings.ts` (SSOT shared with moderation consumers).
  */
-const DEFAULT_ADMIN_SETTINGS: Record<string, unknown> = {
-  "ban.hide_books": false,
-  "ban.anonymize_comments": false,
-  "ban.reject_testimonials": false,
-  "ban.revoke_sessions": false,
-  "moderation.auto_reject_testimonial_score": 3.0,
-  "moderation.auto_approve_mention_score": 4.0,
-};
 
 /**
  * GET /admin/settings

@@ -364,6 +364,13 @@ export async function runSocialMentionCollection(): Promise<void> {
 
     console.log(`[social-ingest] 🔨 Processing ${unifiedCollection.length} raw inbound nodes for validation...`);
     const { extractAndResolveTwistloomLink } = await import("../services/social/extract-twistloom-link.js");
+    // Auto-approve threshold: mentions whose normalized relevance (0-5) is
+    // strictly above the admin setting skip the pending queue ("Social mentions
+    // with score above this threshold are auto-approved").
+    const { getModerationThresholds, normalizeMentionRelevance } = await import(
+      "../services/admin-settings.js"
+    );
+    const { autoApproveMentionScore } = await getModerationThresholds();
     let insertedCount = 0;
     let skippedEmptyCount = 0;
     let errorCount = 0;
@@ -403,6 +410,7 @@ export async function runSocialMentionCollection(): Promise<void> {
         }
 
         // Deduplication handled automatically during the standard writing query logic block
+        const normalizedRelevance = normalizeMentionRelevance(heuristics.relevance);
         await dbWrite
           .insert(socialMentions)
           .values({
@@ -415,7 +423,8 @@ export async function runSocialMentionCollection(): Promise<void> {
             score: mention.score,
             sentimentScore: heuristics.sentiment,
             relevanceScore: heuristics.relevance,
-            status: "pending", // Queued for user curation
+            status:
+              normalizedRelevance > autoApproveMentionScore ? "approved" : "pending",
             publishedAt: mention.publishedAt,
             relatedBookId,
             relatedPageId,
