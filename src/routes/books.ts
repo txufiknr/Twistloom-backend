@@ -118,6 +118,7 @@ import { hashSHA256 } from "../utils/hash.js";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
 import { getBook, getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage, tryAcquireWorkflowDispatchGate, getAllBookEndings, insertUserCompletedBook } from "../services/book.js";
 import { getBookAnalytics } from "../services/analytics.js";
+import { getBookPageCacheControl } from "../services/book-page-cache.js";
 import { getModerationThresholds } from "../services/admin-settings.js";
 import { hasActiveVipSubscription } from "../services/subscription.js";
 import { getPreviewBookPage } from "../services/book-preview.js";
@@ -7851,12 +7852,6 @@ router.get("/:identifier/:pageId", optionalAuth, async (c) => {
 
     const { visitDetails, book, dbPage, sourceAction, isUserTakeAction } = result;
 
-    // Access control: reject if book is archived or private and user is not the owner
-    if ((book.status === 'archived' || book.visibility === 'private') && (!c.get("userId") || c.get("userId") !== book.userId)) {
-      if (!c.get("userId")) return cUnauthorizedError(c, "Authentication required to view this book");
-      return cForbiddenError(c, "You do not have access to this book");
-    }
-
     // Return enriched page with only frontend-relevant fields
     // Handle translation if Accept-Language header is provided and differs from book language
     const page = await mapToEnrichedPage(dbPage, {
@@ -7875,13 +7870,13 @@ router.get("/:identifier/:pageId", optionalAuth, async (c) => {
     const etagInput = `${lastModified.getTime()}-${userId}-${translate}-${headerLanguage || 'en'}`;
     const etag = `"${etagInput}"`;
 
-    // Check If-None-Match header (ETag includes translation params)
-    if (c.req.header('If-None-Match') === etag) return c.body(null, 304);
-
-    // Set caching headers
+    // Apply the user-aware policy before either a 200 or conditional 304.
+    c.header('Cache-Control', getBookPageCacheControl(userId));
     c.header('Last-Modified', lastModified.toUTCString());
     c.header('ETag', etag);
-    c.header('Cache-Control', 'public, max-age=60'); // 1 minute (pages update more frequently)
+
+    // Check If-None-Match header (ETag includes translation params)
+    if (c.req.header('If-None-Match') === etag) return c.body(null, 304);
 
     return c.json({
       page,

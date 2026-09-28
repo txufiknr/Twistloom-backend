@@ -18,6 +18,7 @@ import { cacheControl } from "./middleware/cache.js";
 import { rateLimitByUser } from "./middleware/rate-limit.js";
 import { verifyNextAuthToken } from "./middleware/nextauth.js";
 import { bearerAuthMiddleware } from "./middleware/bearer.js";
+import { createCookieBearerIdentityMiddleware } from "./middleware/cookie-bearer-identity.js";
 import routes from "./routes/index.js";
 import { APP_NAME, VERSION } from "./config/constants.js";
 import { IS_PRODUCTION } from "./config/env.js";
@@ -140,35 +141,10 @@ app.use(
 // (no silent cookie fallback). Hybrid requests (bearer + cookie) dual-verify
 // below and 401 when identities conflict.
 app.use("/api/*", bearerAuthMiddleware);
-app.use("/api/*", async (c, next) => {
-  const bearerUserId = c.get("userId");
-  const hasAuthHeader = Boolean(c.req.header("authorization"));
-  const hasSessionCookie = /(?:^|;\s*)(?:__Secure-)?authjs\.session-token=/.test(
-    c.req.header("cookie") ?? "",
-  );
-
-  if (bearerUserId && hasAuthHeader && hasSessionCookie) {
-    // Conflict detection (roadmap Step 5): both credentials present → verify
-    // cookie too; different resolved identities must never silently prefer one.
-    const cookieUser = await verifyNextAuthToken(c);
-    if (cookieUser && cookieUser.id !== bearerUserId) {
-      return c.json({ success: false, error: "Conflicting credentials" }, 401);
-    }
-    await next();
-    return;
-  }
-
-  if (c.get("userId")) {
-    await next();
-    return;
-  }
-  const user = await verifyNextAuthToken(c);
-  if (user) {
-    c.set("user", user);
-    c.set("userId", user.id);
-  }
-  await next();
-});
+app.use(
+  "/api/*",
+  createCookieBearerIdentityMiddleware(verifyNextAuthToken),
+);
 
 // Parse JSON request bodies once per request (replaces express.json()).
 app.use("*", parseJsonBody);

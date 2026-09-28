@@ -5,7 +5,7 @@
  * - no Authorization → cookie path / pass-through
  * - service-bearer (`/api/cron/*`) exemption
  * - non-Bearer schemes → 401 (no silent cookie fallback)
- * - forged / expired / wrong-secret bearer → 401
+ * - forged / expired / wrong-secret / wrong-audience bearer → 401
  * - valid bearer identity attaches userId (DB legs mocked)
  * - Auth.js signed-cookie factory round-trip (plain + secure variants)
  *
@@ -14,9 +14,12 @@
  */
 
 import { describe, expect, it, beforeAll, afterAll, mock } from "bun:test";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { initAuthConfig, getAuthUser } from "@hono/auth-js";
 import { SignJWT } from "jose";
+import type { AppEnv } from "../src/hono/env.js";
+import type { AuthUser } from "../src/types/express.js";
+import { createCookieBearerIdentityMiddleware } from "../src/middleware/cookie-bearer-identity.js";
 
 import {
   createSignedSessionCookie,
@@ -92,8 +95,42 @@ function buildCookieApp(): Hono {
   return app;
 }
 
+const resolveTestCookieUser = mock(async (c: Context<AppEnv>): Promise<AuthUser | null> => {
+  const cookieHeader = c.req.header("cookie") ?? "";
+  const cookiePart = cookieHeader
+    .split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith("authjs.session-token=") || part.startsWith("__Secure-authjs.session-token="));
+  if (!cookiePart) return null;
+
+  const separator = cookiePart.indexOf("=");
+  const cookieName = cookiePart.slice(0, separator);
+  const token = decodeURIComponent(cookiePart.slice(separator + 1));
+  const variant = cookieName.startsWith("__Secure-") ? "secure" : "plain";
+  const decoded = await decodeSignedSessionToken(token, { variant });
+  if (!decoded?.email) return null;
+
+  return {
+    id: decoded.email.split("@")[0],
+    email: decoded.email,
+    sessionId: decoded.sessionId,
+  };
+});
+
+function buildCookieBearerApp(): Hono<AppEnv> {
+  const app = new Hono<AppEnv>();
+  app.use("/api/*", bearerAuthMiddleware);
+  app.use(
+    "/api/*",
+    createCookieBearerIdentityMiddleware(resolveTestCookieUser),
+  );
+  app.get("/api/whoami", (c) => c.json({ userId: c.get("userId") ?? null }));
+  return app;
+}
+
 const bearerApp = buildBearerApp();
 const cookieApp = buildCookieApp();
+const cookieBearerApp = buildCookieBearerApp();
 
 async function bearerHeaders(token: string): Promise<Record<string, string>> {
   return { Authorization: `Bearer ${token}` };
@@ -117,6 +154,19 @@ async function expiredToken(): Promise<string> {
     .setAudience("reader")
     .setIssuedAt(now - 7200)
     .setExpirationTime(now - 3600)
+    .sign(secret);
+}
+
+async function wrongAudienceToken(): Promise<string> {
+  const secret = new TextEncoder().encode(TEST_MOBILE_SECRET);
+  const now = Math.floor(Date.now() / 1000);
+  return new SignJWT({ sid: "sess-wrong-audience", tv: 7 })
+    .setProtectedHeader({ alg: "HS256", kid: "m0-hs256", typ: "JWT" })
+    .setSubject("user-step10")
+    .setIssuer("twistloom-backend")
+    .setAudience("pen")
+    .setIssuedAt(now)
+    .setExpirationTime(now + 900)
     .sign(secret);
 }
 
@@ -237,6 +287,23 @@ describe("Bearer middleware matrix (Step 10)", () => {
     }
   });
 
+  it("rejects a correctly signed token with the wrong audience before user lookup", async () => {
+    loadUserForBearer.mockClear();
+    const token = await wrongAudienceToken();
+
+    expect(await actualMobileTokens.verifyAccessToken(token)).toEqual({
+      ok: false,
+      reason: "wrong_audience",
+    });
+
+    const res = await bearerApp.request("/api/whoami", {
+      headers: await bearerHeaders(token),
+    });
+    expect(res.status).toBe(401);
+    expect(res.headers.get("WWW-Authenticate")).toContain("invalid_token");
+    expect(loadUserForBearer).not.toHaveBeenCalled();
+  });
+
   it("rejects expired token with 401 Token expired", async () => {
     const res = await bearerApp.request("/api/whoami", {
       headers: await bearerHeaders(await expiredToken()),
@@ -293,6 +360,62 @@ describe("Bearer middleware matrix (Step 10)", () => {
     expect(res.status).toBe(401);
     const body = await res.json();
     expect(body).toEqual({ success: false, error: "Token revoked" });
+  });
+});
+
+describe("Cookie and bearer identity middleware composition", () => {
+  it("preserves cookie-only authentication with an Auth.js signed cookie", async () => {
+    const { cookieHeader } = await createSignedSessionCookie({
+      email: "cookie-only@example.com",
+      sessionId: "sess-cookie-only",
+      variant: "plain",
+    });
+
+    const res = await cookieBearerApp.request("/api/whoami", {
+      headers: { Cookie: cookieHeader },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ userId: "cookie-only" });
+  });
+
+  it("accepts matching bearer and Auth.js cookie identities", async () => {
+    const { cookieHeader } = await createSignedSessionCookie({
+      email: "user-step10@example.com",
+      sessionId: "sess-cookie-match",
+      variant: "plain",
+    });
+
+    const res = await cookieBearerApp.request("/api/whoami", {
+      headers: {
+        ...(await bearerHeaders(await validToken())),
+        Cookie: cookieHeader,
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ userId: "user-step10" });
+  });
+
+  it("rejects conflicting bearer and Auth.js cookie identities", async () => {
+    const { cookieHeader } = await createSignedSessionCookie({
+      email: "different-user@example.com",
+      sessionId: "sess-cookie-conflict",
+      variant: "plain",
+    });
+
+    const res = await cookieBearerApp.request("/api/whoami", {
+      headers: {
+        ...(await bearerHeaders(await validToken())),
+        Cookie: cookieHeader,
+      },
+    });
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({
+      success: false,
+      error: "Conflicting credentials",
+    });
   });
 });
 

@@ -27,6 +27,7 @@ import { dbRead } from "../db/client.js";
 import { createRelevanceExpression } from "../utils/search.js";
 import { getEnrichedBook, getPageActionsFromDB, getPageFromDB } from "./book.js";
 import { cNotFoundError, cForbiddenError } from "../utils/error.js";
+import { getBookPageAccessError } from "./book-page-access.js";
 import { getClientIp } from "../hono/express-shim.js";
 import { computeVisitStats, mapActionToSelectedAction, markPageVisited } from "./story.js";
 import { sendSystemBroadcast, type SystemBroadcastI18nPayload } from "./broadcast.js";
@@ -1135,6 +1136,8 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
  *          already been sent (error / not-found paths).
  *
  * Behaviour:
+ * - Rejects anonymous/non-owner access to private or archived books before
+ *   either prefetch returns or visit/progress/credit mutations can run.
  * - Page 1: No action validation required, marks as visited without action.
  * - Page > 1: Validates action exists on parent page and that the user
  *   hasn't previously chosen a different action (unless consumeCredits).
@@ -1186,6 +1189,9 @@ export async function visitBookPage(
     console.error(`[visit] ❌ Book not found:`, bookId);
     return { errorResponse: cNotFoundError(res, `Book not found`) };
   }
+
+  const accessError = getBookPageAccessError(res, book, userId);
+  if (accessError) return { errorResponse: accessError };
 
   if (isUserTakeAction) {
     console.log(`[visit] 🐑 User actually visited "${book.title}" page ${pageNumber}:`, { pageId, branchId });
