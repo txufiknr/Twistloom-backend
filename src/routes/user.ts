@@ -2426,6 +2426,8 @@ router.get("/following", requireAuth, async (c: Context<AppEnv>) => {
  * @returns {number} regularClaimAmount - Regular daily claim amount
  * @returns {number} vipClaimAmount - VIP daily claim amount
  * @returns {string[]} claimedRewards - Array of claimed reward types today
+ * @returns {boolean} freezeLedgerUsed - Weekly Streak Freeze consumed this Mon–Sun window (monotonic)
+ * @returns {number} freezeActiveCount - Streak Freeze budget left this week (0–1)
  * 
  * @example
  * // Request
@@ -2436,50 +2438,35 @@ router.get("/following", requireAuth, async (c: Context<AppEnv>) => {
  *   "canCheckIn": true,
  *   "lastCheckInDate": "2026-05-03",
  *   "totalCheckIns": 12,
- *   "totalCreditsClaimed": 360,
+ *   "totalCreditsClaimed": 60,
  *   "currentStreak": 5,
  *   "longestStreak": 12,
  *   "todayCycleDay": 4,
  *   "recentCheckIns": [
  *     {
  *       "checkInDate": "2026-05-03",
- *       "creditsClaimed": 30,
+ *       "creditsClaimed": 5,
  *       "createdAt": "2026-05-03T00:00:00.000Z"
  *     }
  *   ],
  *   "isVip": false,
- *   "regularClaimAmount": 30,
- *   "vipClaimAmount": 60,
- *   "claimedRewards": []
+ *   "regularClaimAmount": 5,
+ *   "vipClaimAmount": 10,
+ *   "claimedRewards": [],
+ *   "freezeLedgerUsed": false,
+ *   "freezeActiveCount": 1
  * }
  * 
- * // Response (unauthenticated)
+ * // Response (unauthenticated — HTTP 401, code-driven per AGENTS §9)
  * {
- *   "eligible": false,
- *   "lastCheckIn": null,
- *   "streak": 0,
- *   "totalCheckIns": 0,
- *   "creditsClaimed": 0,
- *   "recentCheckIns": []
+ *   "success": false,
+ *   "error": "Authentication required",
+ *   "code": "dailyCheckin.unauthenticated"
  * }
  */
-router.get("/checkin/status", optionalAuth, async (c: Context<AppEnv>) => {
+router.get("/checkin/status", requireAuth, async (c: Context<AppEnv>) => {
   try {
-    const userId = c.get("userId");
-
-    // Return null response for unauthenticated users (handles auth timing race conditions)
-    if (!userId) {
-      console.log(`[GET /user/checkin/status] 👀 No userId, returning null check-in status`);
-      return c.json({
-        eligible: false,
-        lastCheckIn: null,
-        streak: 0,
-        totalCheckIns: 0,
-        creditsClaimed: 0,
-        recentCheckIns: [],
-      });
-    }
-
+    const userId = c.get("userId")!;
     const status = await getCheckInStatus(userId);
     const response = c.json(status);
 
@@ -2496,8 +2483,9 @@ router.get("/checkin/status", optionalAuth, async (c: Context<AppEnv>) => {
  * POST /user/checkin
  * 
  * Performs daily check-in and awards free credits to the authenticated user.
- * Each check-in awards free credits (configurable via DAILY_CHECKIN_CREDITS, default 30).
- * Users can only check-in once per UTC day.
+ * Days 1–6 award DAILY_CHECKIN_BONUS (5 credits); day 7 awards DAILY_CHECKIN_BIG_BONUS (20 credits).
+ * Users can only check-in once per UTC day — a duplicate claim returns
+ * HTTP 409 Conflict with code `dailyCheckin.alreadyClaimed`.
  * 
  * @route POST /user/checkin
  * @description Perform daily check-in and claim free credits
@@ -2507,28 +2495,30 @@ router.get("/checkin/status", optionalAuth, async (c: Context<AppEnv>) => {
  * 
  * @returns {Object} Check-in response
  * @returns {boolean} success - Whether check-in was successful
- * @returns {number} creditsAwarded - Number of credits awarded (30 or 0 if already checked in)
+ * @returns {number} creditsAwarded - Credits awarded (5 for days 1–6, 20 for day 7, or 0 if already claimed)
  * @returns {string} checkInDate - Check-in date in YYYY-MM-DD format
  * @returns {string} message - Status message
+ * @returns {string} code - Machine-readable failure code on rejections (AGENTS §9)
  * 
  * @example
  * // Request
  * POST /user/checkin
  * 
- * // Response (successful check-in)
+ * // Response (successful check-in — HTTP 201)
  * {
  *   "success": true,
- *   "creditsAwarded": 30,
+ *   "creditsAwarded": 5,
  *   "checkInDate": "2026-05-04",
- *   "message": "Successfully claimed 30 daily credits"
+ *   "message": "Successfully claimed 5 daily credits"
  * }
  * 
- * // Response (already checked in)
+ * // Response (already checked in — HTTP 409 Conflict)
  * {
  *   "success": false,
  *   "creditsAwarded": 0,
  *   "checkInDate": "2026-05-04",
- *   "message": "Already checked in today"
+ *   "message": "Already claimed daily credits today",
+ *   "code": "dailyCheckin.alreadyClaimed"
  * }
  */
 router.post("/checkin", requireAuth, (c) => handleCheckIn(c));
@@ -2538,7 +2528,8 @@ router.post("/checkin", requireAuth, (c) => handleCheckIn(c));
  * 
  * VIP-only double claim that awards 2x the daily check-in credits.
  * Can be claimed in addition to the regular check-in on the same day.
- * Requires VIP subscription tier; returns 400 (`success: false`) if the user is not VIP.
+ * Requires VIP subscription tier; returns 400 (`success: false`, code `dailyCheckin.vipOnly`) if the user is not VIP.
+ * A duplicate VIP 2x claim for the same UTC day returns 409 (`dailyCheckin.alreadyClaimed`).
  * The entitlement check intentionally lives inside `performDailyCheckIn`'s write
  * transaction (`services/user.ts`), not in middleware, so it is evaluated under
  * the same row locks as the claim insert (TOCTOU-safe against VIP expiry races).
@@ -2559,22 +2550,23 @@ router.post("/checkin", requireAuth, (c) => handleCheckIn(c));
  * // Request
  * POST /user/checkin/double
  * 
- * // Response (successful VIP double claim)
+ * // Response (successful VIP double claim — HTTP 201)
  * {
  *   "success": true,
- *   "creditsAwarded": 30,
+ *   "creditsAwarded": 10,
  *   "checkInDate": "2026-05-04",
- *   "message": "Successfully claimed 30 VIP 2x daily credits"
+ *   "message": "Successfully claimed 10 VIP 2x daily credits"
  * }
  * 
- * // Response (not a VIP user)
+ * // Response (not a VIP user — HTTP 400)
  * {
  *   "success": false,
  *   "creditsAwarded": 0,
  *   "currentStreak": 0,
  *   "totalCreditsClaimed": 0,
  *   "checkInDate": "2026-05-04",
- *   "message": "VIP 2x claim is only available to VIP subscribers"
+ *   "message": "VIP 2x claim is only available to VIP subscribers",
+ *   "code": "dailyCheckin.vipOnly"
  * }
  */
 router.post("/checkin/double", requireAuth, (c) => handleCheckIn(c, 'vip_2x'));

@@ -254,6 +254,12 @@ export interface CheckinPostResponse {
   message: string;
   currentStreak: number;
   totalCreditsClaimed: number;
+  /**
+   * Machine-readable failure code (`<namespace>.<key>`, AGENTS §9) present on
+   * rejected claims (e.g. `dailyCheckin.alreadyClaimed` → HTTP 409); the
+   * client resolves it to `dailyCheckin.errors.<key>`.
+   */
+  code?: string;
 }
 
 export interface CheckinStatusResponse {

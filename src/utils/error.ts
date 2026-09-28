@@ -587,9 +587,9 @@ export function cNotFoundError(c: Context, message: string, error?: unknown, cod
   return cApiError(c, message, error, 404, code);
 }
 
-/** Unauthorized error (401) on a Hono context. */
-export function cUnauthorizedError(c: Context, message: string, error?: unknown) {
-  return cApiError(c, message, error, 401);
+/** Unauthorized error (401) on a Hono context, with optional client-translatable code. */
+export function cUnauthorizedError(c: Context, message: string, error?: unknown, code?: string) {
+  return cApiError(c, message, error, 401, code);
 }
 
 /** Forbidden error (403) on a Hono context. */

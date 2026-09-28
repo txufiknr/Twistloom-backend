@@ -601,6 +601,7 @@ export async function performDailyCheckIn(userId: string, claimType: CheckinClai
             totalCreditsClaimed: 0,
             checkInDate: todayUTC,
             message: "VIP 2x claim is only available to active VIP subscribers",
+            code: "dailyCheckin.vipOnly",
           } satisfies CheckinPostResponse;
         }
       }
@@ -624,6 +625,8 @@ export async function performDailyCheckIn(userId: string, claimType: CheckinClai
           totalCreditsClaimed: 0,
           checkInDate: todayUTC,
           message: `Already claimed ${claimType === 'vip_2x' ? 'VIP 2x' : 'daily'} credits today`,
+          // Self-describing conflict code — handleCheckIn maps it to HTTP 409.
+          code: "dailyCheckin.alreadyClaimed",
         } satisfies CheckinPostResponse;
       }
 

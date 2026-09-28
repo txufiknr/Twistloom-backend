@@ -738,6 +738,12 @@ export async function handleCheckIn(
 
     if (result.success) {
       c.status(201);
+    } else if (result.code === 'dailyCheckin.alreadyClaimed') {
+      // 409 Conflict (roadmap Q3-A): today's claim slot is already taken —
+      // REST convention per MDN. The body keeps the existing rejection shape
+      // (A4.2) so existing clients read `success`/`message` unchanged.
+      console.log(`[checkin] ⚠️ User ${userId} conflict on ${label}`);
+      c.status(409);
     } else {
       console.log(`[checkin] ❌ User ${userId} failed ${label}`);
       c.status(400);
