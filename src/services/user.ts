@@ -28,6 +28,7 @@ import { getCurrentUTCDay } from "../utils/time.js";
 import { requireEnv } from "../utils/env.js";
 import { VIP_BENEFITS } from "../config/subscription.js";
 import { isUserVipActive, hasActiveVipSubscription } from "./subscription.js";
+import { computeBackwardsStreak, computeStreaks } from "./checkin-streak.js";
 import { LRUCache } from 'lru-cache';
 import { convertEmailToName, convertNameOrEmailToUsername, sanitizeUsername, validateUsername } from "../utils/username.js";
 import { normalizeGender } from "../utils/parser.js";
@@ -494,75 +495,6 @@ export function invalidateByEmail(email: string) {
 }
 
 /**
- * Gets today's check-in record for a user if it exists
- * 
- * @param userId - The user ID to check
- * @returns Promise resolving to today's check-in record or null
- */
-async function getTodayCheckIn(userId: string): Promise<{
-  checkInDate: string;
-  creditsClaimed: number;
-  claimTypes: CheckinClaimType[];
-} | null> {
-  const todayUTC = getCurrentUTCDay();
-  
-  const todayCheckIns = await dbRead
-    .select({
-      checkInDate: userCheckins.checkInDate,
-      creditsClaimed: userCheckins.creditsClaimed,
-      claimType: userCheckins.claimType,
-    })
-    .from(userCheckins)
-    .where(and(
-      eq(userCheckins.userId, userId),
-      eq(userCheckins.checkInDate, todayUTC)
-    ));
-  
-  if (todayCheckIns.length === 0) return null;
-  
-  return {
-    checkInDate: todayUTC,
-    creditsClaimed: todayCheckIns.reduce((s, r) => s + r.creditsClaimed, 0),
-    claimTypes: todayCheckIns.map(r => r.claimType),
-  };
-}
-
-/**
- * Gets the last check-in date for a user
- * 
- * @param userId - The user ID to check
- * @returns Promise resolving to last check-in date or null
- */
-async function getLastCheckInDate(userId: string): Promise<string | null> {
-  const lastCheckIn = await dbRead
-    .select({ checkInDate: userCheckins.checkInDate })
-    .from(userCheckins)
-    .where(eq(userCheckins.userId, userId))
-    .orderBy(desc(userCheckins.checkInDate))
-    .limit(1);
-  
-  return lastCheckIn.length > 0 ? lastCheckIn[0].checkInDate : null;
-}
-
-/**
- * Shifts a YYYY-MM-DD date string by a number of days (positive or negative).
- *
- * @param iso - Date in YYYY-MM-DD format
- * @param days - Number of days to shift (negative goes back in time)
- * @returns Shifted date in YYYY-MM-DD format
- *
- * @example
- * shiftIsoDate('2026-08-03', -1) // '2026-08-02'
- * shiftIsoDate('2026-08-03', 1)  // '2026-08-04'
- */
-function shiftIsoDate(iso: string, days: number): string {
-  const [year, month, day] = iso.split('-').map(Number);
-  const shifted = new Date(Date.UTC(year, month - 1, day));
-  shifted.setUTCDate(shifted.getUTCDate() + days);
-  return shifted.toISOString().slice(0, 10);
-}
-
-/**
  * Computes a user's current and longest check-in streaks directly from their
  * check-in history.
  *
@@ -573,9 +505,10 @@ function shiftIsoDate(iso: string, days: number): string {
  * 1 Aug, now 3 Aug — no trigger fires, the counter stays stale).
  *
  * - `activeStreak`: consecutive check-in days ending at today if the user
- *   already checked in today, otherwise ending at yesterday (a streak stays
- *   "alive" only until a full day is missed). Returns 0 after any skipped day.
- * - `longestStreak`: the longest run of consecutive check-in days in history.
+ *   already checked in today, otherwise ending at yesterday. One skipped day
+ *   is bridged by the grace token (invariant I4); two skipped days reset it.
+ * - `longestStreak`: the best grace-protected run anywhere in history —
+ *   always >= `activeStreak`.
  * - `isCheckedInToday`: whether a check-in exists for the current UTC day.
  * - `lastCheckInDate`: the most recent check-in date (YYYY-MM-DD) or null.
  *
@@ -601,39 +534,13 @@ export async function getCheckInStreaks(userId: string): Promise<{
     .where(eq(userCheckins.userId, userId))
     .orderBy(desc(userCheckins.checkInDate));
 
-  const todayIso = getCurrentUTCDay();
-  const dateSet = new Set(dates.map(d => d.checkInDate));
-  const isCheckedInToday = dateSet.has(todayIso);
-
-  // Active streak: walk days backwards from today (if checked in today) or
-  // from yesterday (today not yet claimed). A 1-day grace period (streak freeze)
-  // preserves the streak if a single day is skipped within the rolling window.
-  let activeStreak = 0;
-  const startOffset = isCheckedInToday ? 0 : 1;
-  let graceDaysRemaining = 1; // 1 free streak freeze per rolling window
-  for (let i = startOffset; i <= 366; i++) {
-    const targetDate = shiftIsoDate(todayIso, -i);
-    if (dateSet.has(targetDate)) {
-      activeStreak++;
-    } else if (graceDaysRemaining > 0) {
-      // Grace day bridges this single gap; streak continues across the skipped day
-      graceDaysRemaining--;
-    } else {
-      break;
-    }
-  }
-
-  // Longest streak: scan the full history ascending, counting consecutive runs.
-  let longestStreak = 0;
-  let run = 0;
-  let prevIso: string | null = null;
-  const ascendingDates = [...dates].sort((a, b) => a.checkInDate.localeCompare(b.checkInDate));
-  for (const { checkInDate } of ascendingDates) {
-    if (prevIso === null || checkInDate === shiftIsoDate(prevIso, 1)) run++;
-    else run = 1;
-    if (run > longestStreak) longestStreak = run;
-    prevIso = checkInDate;
-  }
+  // Pure derivation shared with getCheckInStatus/performDailyCheckIn — the one
+  // grace definition (invariant I4) lives in checkin-streak.ts so the read and
+  // write paths can never drift apart (F-1/F-3 fix).
+  const { activeStreak, longestStreak, isCheckedInToday } = computeStreaks(
+    dates.map(d => d.checkInDate),
+    getCurrentUTCDay(),
+  );
 
   return {
     activeStreak,
@@ -641,51 +548,6 @@ export async function getCheckInStreaks(userId: string): Promise<{
     isCheckedInToday,
     lastCheckInDate: dates[0]?.checkInDate ?? null,
   };
-}
-
-/**
- * Checks if user can perform daily check-in today
- * 
- * @param userId - The user ID to check
- * @returns Promise resolving to check-in status object
- * 
- * @example
- * ```typescript
- * const status = await checkCanCheckIn('user123');
- * if (status.canCheckIn) {
- *   console.log('User can check-in today');
- * } else {
- *   console.log('Already checked in today');
- * }
- * ```
- */
-export async function checkCanCheckIn(userId: string): Promise<{
-  canCheckIn: boolean;
-  lastCheckInDate: string | null;
-  claimTypes: CheckinClaimType[];
-}> {
-  try {
-    const todayCheckIn = await getTodayCheckIn(userId);
-    
-    if (todayCheckIn) {
-      return {
-        canCheckIn: false,
-        lastCheckInDate: todayCheckIn.checkInDate,
-        claimTypes: todayCheckIn.claimTypes,
-      };
-    }
-    
-    const lastCheckInDate = await getLastCheckInDate(userId);
-    
-    return {
-      canCheckIn: true,
-      lastCheckInDate,
-      claimTypes: [],
-    };
-  } catch (error) {
-    console.error("[user] ❌ Failed to check check-in status:", getErrorMessage(error));
-    throw error;
-  }
 }
 
 /**
@@ -776,21 +638,10 @@ export async function performDailyCheckIn(userId: string, claimType: CheckinClai
         .orderBy(desc(userCheckins.checkInDate));
 
       const dateSet = new Set(recent.map(r => r.checkInDate));
-      const utcToday = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()));
-      let prevStreak = 0;
-      let graceLeft = 1;
-      for (let i = 1; i <= 366; i++) {
-        const d = new Date(utcToday);
-        d.setUTCDate(d.getUTCDate() - i);
-        const iso = d.toISOString().slice(0, 10);
-        if (dateSet.has(iso)) {
-          prevStreak++;
-        } else if (graceLeft > 0) {
-          graceLeft--;
-        } else {
-          break;
-        }
-      }
+      // Yesterday-anchored grace walk (startOffset 1): today's rows are
+      // excluded above, and the single grace token (I4) lives in
+      // checkin-streak.ts — same definition as every read path (F-3).
+      const prevStreak = computeBackwardsStreak(dateSet, todayUTC, 1);
 
       const nextIndex = (prevStreak % DAILY_CHECKIN_DAYS) + 1;
       // Base bonus: days 1-6 => DAILY_CHECKIN_BONUS each, day 7 => DAILY_CHECKIN_BIG_BONUS
@@ -862,8 +713,32 @@ export async function performDailyCheckIn(userId: string, claimType: CheckinClai
  */
 export async function getCheckInStatus(userId: string): Promise<CheckinStatusResponse> {
   try {
-    // Check if user can check-in today
-    const canCheckInStatus = await checkCanCheckIn(userId);
+    // Three indexed reads serve the whole payload (F-7 consolidation):
+    //   1. historyByDate — ONE grouped scan of the full check-in history,
+    //      feeding streaks, totals, lastCheckInDate, recentCheckIns and the
+    //      weekly window (previously 4 separate `user_checkins` scans).
+    //   2. todayRows — today's claim types (canCheckIn / claimedRewards).
+    //   3. tier — VIP status.
+    const todayIso = getCurrentUTCDay();
+
+    const historyByDate = await dbRead
+      .select({
+        checkInDate: userCheckins.checkInDate,
+        creditsClaimed: sql<number>`SUM(${userCheckins.creditsClaimed})::int`,
+        createdAt: sql<Date>`MIN(${userCheckins.createdAt})`,
+      })
+      .from(userCheckins)
+      .where(eq(userCheckins.userId, userId))
+      .groupBy(userCheckins.checkInDate)
+      .orderBy(desc(userCheckins.checkInDate));
+
+    const todayRows = await dbRead
+      .select({ claimType: userCheckins.claimType })
+      .from(userCheckins)
+      .where(and(
+        eq(userCheckins.userId, userId),
+        eq(userCheckins.checkInDate, todayIso),
+      ));
 
     // Get user tier for VIP status
     const [userResult] = await dbRead
@@ -874,50 +749,31 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
 
     const isVip = userResult && userResult.tier === 'vip';
 
-    // Get check-in history (last 30 days)
-    const thirtyDaysAgo = new Date(Date.now() - (30 * 24 * 60 * 60 * 1000));
-    const cutoffDate = thirtyDaysAgo.toISOString().split('T')[0];
-
-    const checkInHistory = await dbRead
-      .select({
-        checkInDate: userCheckins.checkInDate,
-        creditsClaimed: sql<number>`SUM(${userCheckins.creditsClaimed})::int`,
-        createdAt: sql<Date>`MIN(${userCheckins.createdAt})`,
-      })
-      .from(userCheckins)
-      .where(and(
-        eq(userCheckins.userId, userId),
-        sql`${userCheckins.checkInDate} >= ${cutoffDate}`
-      ))
-      .groupBy(userCheckins.checkInDate)
-      .orderBy(desc(userCheckins.checkInDate))
-      .limit(30);
-
-    // Get total check-ins and credits claimed
-    const totals = await dbRead
-      .select({
-        totalCheckIns: sql<number>`COUNT(DISTINCT ${userCheckins.checkInDate})::int`,
-        totalCreditsClaimed: sql<number>`SUM(${userCheckins.creditsClaimed})::int`,
-      })
-      .from(userCheckins)
-      .where(eq(userCheckins.userId, userId))
-      .limit(1);
-
-    // Get live streaks from the check-in history (never read the trigger-backed
-    // user_counters streak columns — they can go stale when a day is skipped).
-    const streaks = await getCheckInStreaks(userId);
-
-    // Raw consecutive day count from the check-in history.
-    const rawStreak = streaks.activeStreak;
+    // Derived read models — no re-query. Streaks never read the trigger-backed
+    // user_counters columns (they go stale when a day is skipped); they come
+    // from the same shared pure helpers as every other path (invariant I4).
+    const dateSet = new Set(historyByDate.map(r => r.checkInDate));
+    const { activeStreak: rawStreak, longestStreak } = computeStreaks(dateSet, todayIso);
 
     // Raw streak displayed as-is (grid uses todayCycleDay, not currentStreak)
     const displayStreak = rawStreak;
 
+    // Recent window: identical to the previous dedicated 30-day-cutoff
+    // GROUP BY + LIMIT 30 query — filter the already desc-sorted grouped scan.
+    const thirtyDaysAgo = new Date(Date.now() - (30 * 24 * 60 * 60 * 1000));
+    const cutoffDate = thirtyDaysAgo.toISOString().split('T')[0];
+    const recentCheckIns = historyByDate
+      .filter(r => r.checkInDate >= cutoffDate)
+      .slice(0, 30);
+
+    const totalCheckIns = historyByDate.length;
+    const totalCreditsClaimed = historyByDate.reduce((sum, r) => sum + r.creditsClaimed, 0);
+
     // Determine claimed rewards directly from today's check-in rows
-    const claimedRewards: CheckinClaimType[] = canCheckInStatus.claimTypes;
+    const claimedRewards: CheckinClaimType[] = todayRows.map(r => r.claimType);
 
     // Compute which claim types are still available after today's activity
-    let effectiveCanCheckIn = canCheckInStatus.canCheckIn;
+    let effectiveCanCheckIn = todayRows.length === 0;
     if (!effectiveCanCheckIn) {
       const maxClaimTypes = isVip ? 2 : 1;
       effectiveCanCheckIn = claimedRewards.length < maxClaimTypes;
@@ -953,7 +809,7 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
       ? ((rawStreak - 1) % DAILY_CHECKIN_DAYS)
       : (rawStreak % DAILY_CHECKIN_DAYS);
 
-    // ── Reading Rhythm (Step 7) ─────────────────────────────────────────
+    // ── Reading Rhythm (F-2 split: deficit gauge vs freeze ledger) ───────
     // Compute weekly progress from the most recent Mon–Sun window.
     const now = new Date();
     const dayOfWeek = now.getUTCDay(); // 0=Sun, 1=Mon, ..., 6=Sat
@@ -964,7 +820,7 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
     ));
     const weekStartStr = weekStart.toISOString().slice(0, 10);
 
-    const weeklyCheckins = checkInHistory.filter(r => r.checkInDate >= weekStartStr);
+    const weeklyCheckins = historyByDate.filter(r => r.checkInDate >= weekStartStr);
     const weeklyProgress = weeklyCheckins.length;
     const weeklyGoal = 5; // default — will be user-configurable later
 
@@ -972,6 +828,19 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
     const GRACE_DAYS_PER_WEEK = 1;
     const graceDaysUsed = Math.min(missedDays, GRACE_DAYS_PER_WEEK);
     const graceDaysRemaining = Math.max(0, GRACE_DAYS_PER_WEEK - graceDaysUsed);
+
+    // Freeze ledger (shield badge, roadmap Q1 Option B): monotonic within the
+    // Mon–Sun window — once a day strictly before today is missed, the freeze
+    // stays "used" for the rest of the week even after a catch-up claim flips
+    // the progress deficit above back to 0. The deficit fields keep their
+    // verified meaning for `rhythmRating` (architecture doc §5.4).
+    const checkinsBeforeToday = weeklyCheckins.filter(r => r.checkInDate < todayIso).length;
+    const missedBeforeToday = Math.max(0, daysSinceMonday - checkinsBeforeToday);
+    const freezeLedgerUsed = missedBeforeToday > 0;
+    const freezeActiveCount = Math.max(
+      0,
+      GRACE_DAYS_PER_WEEK - Math.min(missedBeforeToday, GRACE_DAYS_PER_WEEK),
+    );
 
     const rhythmRating =
       weeklyProgress >= weeklyGoal ? 'excellent' :
@@ -981,13 +850,13 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
 
     const statusResult: CheckinStatusResponse = {
       canCheckIn: effectiveCanCheckIn,
-      lastCheckInDate: canCheckInStatus.lastCheckInDate,
-      totalCheckIns: totals[0]?.totalCheckIns || 0,
-      totalCreditsClaimed: totals[0]?.totalCreditsClaimed || 0,
+      lastCheckInDate: historyByDate[0]?.checkInDate ?? null,
+      totalCheckIns,
+      totalCreditsClaimed,
       currentStreak: displayStreak,
-      longestStreak: streaks.longestStreak,
+      longestStreak,
       todayCycleDay,
-      recentCheckIns: checkInHistory,
+      recentCheckIns,
       isVip,
       regularClaimAmount,
       vipClaimAmount,
@@ -996,6 +865,8 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
       weeklyGoal,
       graceDaysRemaining,
       rhythmRating,
+      freezeLedgerUsed,
+      freezeActiveCount,
     };
 
     console.log(`[getCheckInStatus] ${effectiveCanCheckIn ? '🌟' : 'ℹ️'} User ${userId} check-in status retrieved:`, statusResult);

@@ -278,6 +278,15 @@ export interface CheckinStatusResponse {
   graceDaysRemaining: number;
   /** Reading Rhythm: 'excellent' (≥goal), 'good' (≥goal-1), or 'missed'. */
   rhythmRating: 'excellent' | 'good' | 'missed';
+  /**
+   * Weekly Streak Freeze ledger: true once any day strictly before today was
+   * missed this Mon–Sun window. Monotonic within the week — unlike
+   * `graceDaysRemaining` (a recomputed progress deficit), it never flips back
+   * to false after a catch-up claim. Drives the shield badge.
+   */
+  freezeLedgerUsed: boolean;
+  /** Weekly Streak Freeze budget still available this week (0–1). */
+  freezeActiveCount: number;
 }
 
 export type UserComment = {
