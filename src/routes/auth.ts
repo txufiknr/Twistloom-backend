@@ -14,7 +14,7 @@
  *   Mobile Google   → POST /mobile/google       → Google ID token → native access/refresh pair
  *   Mobile Apple    → POST /mobile/apple        → Apple identity token → native access/refresh pair
  *   Mobile refresh  → POST /mobile/refresh      → rotate opaque refresh secret
- *   Signup          → POST /signup              → creates account, sends verification email
+ *   Signup          → POST /signup              → creates account, sends verification email, issues native token pair
  *   Forgot password → POST /forgot-password     → sends password reset email
  *   Reset password  → POST /reset-password      → resets password with token
  *   Verify email    → POST /verify-email        → verifies email with token
@@ -299,6 +299,16 @@ router.post('/verify-credentials', async (c) => {
  * @returns {string|undefined} referrer - Referrer identifier if provided
  * @returns {boolean} referralApplied - Whether referral was successfully applied
  * @returns {boolean} isNewUser - Onboarding pending flag (canonical DB value, always true at creation)
+ * @returns {string} [accessToken] - Signed access JWT (omitted when issuance degrades)
+ * @returns {string} [refreshToken] - Opaque rotating refresh secret (omitted when issuance degrades)
+ *
+ * On success the body also carries the full `MobileTokenPairResponse`
+ * (`accessToken`, `expiresIn`, `refreshToken`, `tokenType`, `familyId`,
+ * `user`) issued through `issueMobileLoginPair` — the same SSOT as
+ * `POST /mobile/token` — so mobile clients are signed in by signup itself
+ * (Q1-A). If issuance fails (user row vanished / banned — impossible for a
+ * just-created row in practice) the response falls back to the plain
+ * creation body above rather than an error.
  *
  * @example
  * // Request
@@ -379,17 +389,42 @@ router.post('/signup', async (c) => {
       referralApplied = await setReferrerForNewUser(c, newUser.userId, referrer, { handleResponse: false });
     }
 
+    const message = verificationEmailSent
+      ? 'Account created. Please check your email to verify your account.'
+      : 'Account created. Verification email failed to send.';
+
+    // Q1-A (USER_ONBOARDING_WIZARD_ROADMAP): mobile signup = account creation +
+    // first session. Uses the same issueMobileLoginPair SSOT as POST
+    // /mobile/token so the app signs in atomically and can open the welcome
+    // wizard from the in-band isNewUser claim with no second exchange.
+    // Issuance failure degrades to the plain 201 creation body (not the
+    // catch-all 200 below): the account already exists either way, and a 201
+    // without tokens keeps non-interactive/legacy callers working.
+    const issued = await issueMobileLoginPair(newUser.userId).catch(() => null);
+    if (!issued?.ok) {
+      return c.json({
+        userId: newUser.userId,
+        message,
+        verificationEmailSent,
+        referrer,
+        referralApplied,
+        // Canonical DB value (users.is_new_user DEFAULT true) — lets clients seed
+        // the JWT isNewUser claim at signup→auto-login without a GET /api/user round-trip.
+        isNewUser: newUser.isNewUser,
+      }, 201);
+    }
+
     return c.json({
+      ...issued.pair,
       userId: newUser.userId,
-      message: verificationEmailSent
-        ? 'Account created. Please check your email to verify your account.'
-        : 'Account created. Verification email failed to send.',
+      message,
       verificationEmailSent,
       referrer,
       referralApplied,
-      // Canonical DB value (users.is_new_user DEFAULT true) — lets clients seed
-      // the JWT isNewUser claim at signup→auto-login without a GET /api/user round-trip.
-      isNewUser: newUser.isNewUser,
+      // Re-read from the DB inside issuance — same canonical value as the
+      // embedded user payload, kept as a top-level field for parity with the
+      // pre-Q1-A response shape.
+      isNewUser: issued.pair.user.isNewUser,
     }, 201);
   } catch (error) {
     console.error('[signup] ❌ Sign up error:', error);
