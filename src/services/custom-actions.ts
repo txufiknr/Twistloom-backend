@@ -18,7 +18,7 @@ import { acquireLock, releaseLock } from "../utils/distributed-lock.js";
 import { buildCustomActionAction } from "../utils/custom-action.js";
 import type { Book } from "../types/book.js";
 import type { CandidateGenerationPage } from "../types/candidate-generation.js";
-import { CUSTOM_ACTION_DISABLED_PHASES, CUSTOM_ACTION_SECURITY_PATTERNS, CUSTOM_ACTION_DENYLIST_KEYWORDS, CUSTOM_ACTION_VALID_TEXT_PATTERN, MIN_CUSTOM_ACTION_CHARS, getMaxCustomActionChars, matchesCreativeWhitelist } from "../config/custom-actions.js";
+import { CUSTOM_ACTION_DISABLED_PHASES, CUSTOM_ACTION_SECURITY_PATTERNS, CUSTOM_ACTION_DENYLIST_KEYWORDS, CUSTOM_ACTION_VALID_TEXT_PATTERN, MIN_CUSTOM_ACTION_CHARS, MAX_CUSTOM_ACTION_CHARS, getMaxCustomActionChars, matchesCreativeWhitelist } from "../config/custom-actions.js";
 import type { PlaceMemory } from "../types/places.js";
 import type { ObjectItem } from "../types/character.js";
 import type { AIJsonProperty } from "../types/ai-chat.js";
@@ -40,7 +40,7 @@ export function runGate0(
   _userId: string,
   _bookId: string,
   _currentPageId: string,
-): { passed: boolean; message?: string } {
+): { passed: boolean; message?: string; code?: string } {
   const { isFinale, phase } = getStoryStateInfo(state);
 
   // 1. Story phase gate — disable during finale
@@ -48,6 +48,9 @@ export function runGate0(
     return {
       passed: false,
       message: "Custom actions are not available during the finale.",
+      // Machine-readable code (AGENTS A9): the client renders
+      // `customActions.errors.finale`, keeping this English string as fallback only.
+      code: "customActions.finale",
     };
   }
 
@@ -403,12 +406,25 @@ export function buildCanonicalAction(
 // USER-FACING MESSAGE MAPPER
 // ============================================================================
 
+/** Every category that can reach the reader-facing rejection surface. */
+type RejectionCategoryLike =
+  | CustomActionRejectionCategory
+  | 'injection_attempt'
+  | 'denylist'
+  | 'length'
+  | 'invalid_characters'
+  | 'empty';
+
 /**
  * Map an internal rejection category to a bland, non-specific reader-facing message.
  * Never surface the internal category name or the specific regex/keyword that fired.
+ *
+ * @param maxChars Tier-aware upper bound (free 60 / VIP 120) so the English
+ *   fallback never hardcodes the free-tier limit for VIP callers.
  */
 export function getRejectionMessage(
-  category?: CustomActionRejectionCategory | 'injection_attempt' | 'denylist' | 'length' | 'invalid_characters' | 'empty',
+  category?: RejectionCategoryLike,
+  maxChars: number = MAX_CUSTOM_ACTION_CHARS,
 ): string {
   switch (category) {
     case 'content_policy':
@@ -424,13 +440,47 @@ export function getRejectionMessage(
     case 'length':
     case 'invalid_characters':
     case 'empty':
-      return 'Please use standard text between 3 and 60 characters.';
+      return `Please use standard text between ${MIN_CUSTOM_ACTION_CHARS} and ${maxChars} characters.`;
     case 'implausible':
     case 'tonally_wrong':
       // These should normally be allow_as_attempt, so no message needed
       return '';
     default:
       return 'That action could not be processed.';
+  }
+}
+
+/**
+ * Machine-readable rejection code (`<namespace>.<key>`, AGENTS A9) that the
+ * client resolves to `customActions.errors.<key>` via resolveApiErrorMessage.
+ * The `message` from getRejectionMessage stays as the dev/fallback string only.
+ *
+ * Soft-retry categories (implausible, tonally_wrong) return undefined: they
+ * carry no message and the reader sees the generic fallback string.
+ */
+export function getRejectionCode(
+  category?: RejectionCategoryLike,
+): string | undefined {
+  switch (category) {
+    case 'content_policy':
+      return 'customActions.contentPolicy';
+    case 'world_inconsistent':
+      return 'customActions.worldInconsistent';
+    case 'bypasses_thread':
+      return 'customActions.bypassesThread';
+    case 'bypasses_ending':
+      return 'customActions.bypassesEnding';
+    case 'injection_attempt':
+    case 'denylist':
+      return 'customActions.denied';
+    case 'length':
+      return 'customActions.length';
+    case 'invalid_characters':
+      return 'customActions.invalidCharacters';
+    case 'empty':
+      return 'customActions.empty';
+    default:
+      return undefined;
   }
 }
 

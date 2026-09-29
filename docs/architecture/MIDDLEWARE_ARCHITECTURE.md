@@ -1,8 +1,8 @@
 # Middleware Architecture
 
-> Living architecture document · Twistloom Backend · 2026-09-26
+> Living architecture document · Twistloom Backend · 2026-09-29
 > Scope: every HTTP middleware in the Hono request pipeline — global layers wired in `src/app.ts`, route-level gates in `src/middleware/*`, their ordering, rejection contracts, context variables, and composition patterns.
-> Status: **Implemented & verified** · last verified against the working tree on 2026-09-26
+> Status: **Implemented & verified** · last verified against the working tree on 2026-09-29
 > Anchor contract: source files cite this document's `§N` sections in their doc comments — see the Section Anchor Map at the end. Renumbering requires updating those comments in the same change.
 > Companion: [DUAL_AUTH_ARCHITECTURE.md](./DUAL_AUTH_ARCHITECTURE.md) (cookie + bearer identity) · [CSRF_PROTECTION.md](./CSRF_PROTECTION.md) · [PAYMENTS_ARCHITECTURE_BACKEND.md](./PAYMENTS_ARCHITECTURE_BACKEND.md) (credit transaction boundaries)
 
@@ -40,7 +40,7 @@ This document covers middleware only. It does not cover the *credit transaction*
 |---|---|---|---|---|
 | **Composition model** | **Two-tier: fixed global pipeline + per-route chains** (Hono idiomatic) | Express-style everything-in-`app.use`; framework-agnostic interceptor registry | AGENTS.md §2 mandates runtime-agnostic Hono with typed `AppEnv`. Route chains make the gate set *visible at the route definition* — a reviewer sees `requireAuth, requireNotSuspended, rateLimit(...)` on one line instead of inferring it from global config. Scales to 328 authenticated routes without a global "apply to X paths" matcher table. | Ordering discipline is manual: nothing stops a route from omitting a gate (mitigated by §3 invariant 1 and §5's selection guide). |
 | **Auth placement** | **Resolve identity before body parsing** (`bearerAuthMiddleware` + cookie resolver at `app.ts:142-171`, `parseJsonBody` at `app.ts:174`) | Auth after body parsing | `@hono/auth-js` `getAuthUser()` wraps `c.req.raw` into a new `Request`; if the body stream was already consumed it throws *"Response body object should not be disturbed or locked"*. Auth-first keeps the stream pristine. | Handlers cannot read `c.get("body")` inside a middleware that runs before line 174 — auth middleware must use headers/cookies only (they do). |
-| **Gate semantics** | **Hard gates reject (401/403); soft gates resolve and let the handler answer** — explicit pair per entitlement (`requireVip` vs `resolveVipStatus`) | One `requireVip` that always 403s; boolean flags checked ad-hoc in handlers | Mind Matrix returns HTTP 200 `{ locked: true }` so the frontend can render an upsell state instead of an error (§6.15). A single rejecting middleware would break that contract; a single "always soft" flag would leak VIP content paths to non-VIP code. Separating the two makes the contract legible in the chain. | Two exports per entitlement to learn; a route that picks the wrong one changes its status-code contract (§5 decision table prevents this). |
+| **Gate semantics** | **Hard gates reject (401/403); soft gates resolve and let the handler answer** — VIP is soft-only in middleware (`resolveVipStatus`); hard VIP 403s are handler-level with feature-specific copy (the `requireVip` pair was removed as dead code, §6.15) | A dedicated always-403 VIP middleware (never adopted); boolean flags checked ad-hoc in handlers | Mind Matrix returns HTTP 200 `{ locked: true }` so the frontend can render an upsell state instead of an error (§6.15). A single rejecting middleware would break that contract, and its generic message never became part of a live contract. Making the hard-vs-soft choice explicit keeps status codes legible. | The hard case costs an explicit `hasActiveVipSubscription` call in the handler (§5 decision table). |
 | **Entitlement SSOT** | **`isUserVipActive` / `hasActiveVipSubscription` in `src/services/subscription.ts`** are the only predicates for VIP | Inline `tier === 'vip'` comparisons in routes | AGENTS.md §1.7 (DRY as a safety rule): one predicate means an expiry-policy change cannot half-apply. Middleware and handlers read the same rule. | One extra query (or one row slice) per gated request; acceptable because VIP gates sit on low-frequency feature routes, not poll endpoints. |
 | **Failure policy** | **Auth fails closed; rate limiting fails open** | Fail-closed rate limiting; fail-open auth | Availability at 10M concurrent: a Redis outage must not 500 the product (`rate-limit.ts:126-130`, `wall-rate-limit.ts:68-71`), but a verification failure must never grant identity. This mirrors AGENTS.md §3.2 ("fail open gracefully" for rate limits specifically). | A Redis outage removes throttling until recovery — accepted, documented in §7. |
 | **Caching on the hot path** | **Short-TTL process LRUs for session verification (60s), bearer identity (15s), ban status (5m)** keyed by token **hash** | Verify crypto on every request; cache plaintext tokens | Fluid Active CPU optimization roadmap: JWE decryption was the largest per-request CPU cost on `/touch`, `/status`, `/candidates/status`. Hash-keying keeps tokens out of memory dumps. | Bounded trust window: a just-revoked session may pass for ≤60s (identical to NextAuth's own short-lived tokens; logout invalidates immediately via `invalidateCurrentSessionVerifyCache`). |
@@ -75,7 +75,7 @@ flowchart TB
     subgraph Route["Route-level chains — src/routes/*.ts"]
         G1["Auth gates: requireAuth / optionalAuth / requireVerifiedEmail"]
         G2["Safety gates: requireNotSuspended / requireNotMuted / requireGenerationQuota"]
-        G3["Entitlement gates: requireVip / resolveVipStatus"]
+        G3["Entitlement gates: resolveVipStatus (soft VIP)"]
         G4["Admin gates: requireSuperAdmin / requirePermission"]
         G5["Parsers & limits: imageUploadMiddleware / rateLimit / wallCreateRateLimit"]
         H["Route handler → src/services/* → dbRead/dbWrite"]
@@ -84,7 +84,6 @@ flowchart TB
     Client --> S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S7 --> S8 --> S9 --> S10 --> S11
     S11 --> G1 --> G2 --> G3 --> G4 --> G5 --> H
     G2 -.->|"403 account_suspended"| Rej["JSON error response<br/>app.onError normalizes HTTPException"]
-    G3 -.->|"403 vip.required"| Rej
     G1 -.->|"401"| Rej
     S5 -.->|"403"| Rej
     S11 -.->|"429 + Retry-After"| Rej
@@ -203,7 +202,7 @@ Chain ordering rule of thumb (detailed in §5): **identity → throttle → stan
 | generates AI content | `+ requireGenerationQuota` | enforces probation daily caps |
 | burns provider tokens or money | `+ rateLimit({...})` with a **unique `prefix`** | shared prefixes double-count in Redis (`rate-limit.ts:96-103`) |
 | is an admin surface | `requireSuperAdmin` or `requirePermission("key")` | super admin = `SYSTEM_USER_ID` only |
-| exposes a VIP-only feature with a **hard** contract | `requireAuth, requireVip` | 403 `code: "vip.required"` |
+| exposes a VIP-only feature with a **hard** contract | `requireAuth` + handler-level `hasActiveVipSubscription` | 403 with feature-specific copy (`code: "vip.required"` reserved; former `requireVip` removed as dead code) |
 | exposes a VIP-only feature with a **soft** upsell contract | `requireAuth, resolveVipStatus` + handler `if (!c.get("isVip"))` | 200 `{ locked: true }` |
 | gates *another user's* resource by *their* entitlement | none — call `hasActiveVipSubscription(ownerId)` in the handler | middleware only knows the caller (§6.15) |
 | gates access by content rating | `requireAgeGate` **after** setting `bookContentRating` | see gap G-2 — currently unwired |
@@ -215,7 +214,7 @@ Chain ordering rule of thumb (detailed in §5): **identity → throttle → stan
 ```mermaid
 flowchart TB
     Q["Entitlement needed?"] --> R{"Does the API contract<br/>let a non-holder see an error?"}
-    R -->|Yes, 401/403| Hard["Hard gate in the chain<br/>requireAuth + requireVip / requirePermission / requireNotSuspended"]
+    R -->|Yes, 401/403| Hard["Hard gate in the chain<br/>requireAuth + requirePermission / requireNotSuspended<br/>(VIP hard 403s are handler-level)"]
     R -->|No, handler must answer 200| Soft["Soft resolver in the chain<br/>resolveVipStatus → c.get('isVip')"]
     R -->|Subject is the resource owner,<br/>not the caller| Inline["Handler-level SSOT call<br/>hasActiveVipSubscription(ownerId)"]
     Hard --> Out1["Handler never runs"]
@@ -237,8 +236,13 @@ router.post("/generate", requireAuth, rateLimit(GENERATE_RATE_LIMIT), requireNot
 // Admin capability
 router.get("/admin/blog", requireAuth, requirePermission("blog"), handler);
 
-// VIP feature, hard rejection
-router.post("/vip-action", requireAuth, requireVip, handler);
+// VIP feature, hard rejection — evaluated in the handler (feature-specific 403 copy)
+router.post("/vip-action", requireAuth, async (c) => {
+  if (!(await hasActiveVipSubscription(c.get("userId")!))) {
+    return cApiError(c, "This feature requires an active VIP subscription", undefined, 403, "vip.required");
+  }
+  return handler(c);
+});
 
 // VIP feature, soft lock (keeps HTTP 200)
 router.get("/vip-feature", requireAuth, resolveVipStatus, handler);
@@ -271,7 +275,7 @@ Route-level usage counts below come from a source scan on 2026-09-26 (import lin
 | 6.12 | `rateLimit` / `rateLimitByUser` / `checkRateLimitByIP` | `src/middleware/rate-limit.ts` | global + route | 429 |
 | 6.13 | `wallCreateRateLimit` | `src/middleware/wall-rate-limit.ts` | route (1 usage) | 429 |
 | 6.14 | `requireNotSuspended` / `requireNotMuted` / `requireGenerationQuota` | `src/middleware/trust-safety.ts` | route (32 / 20 / 6) | 403, 429 |
-| 6.15 | `resolveVipStatus` / `requireVip` | `src/middleware/vip.ts` | route (1 / 0) | 401, 403 (hard only) |
+| 6.15 | `resolveVipStatus` | `src/middleware/vip.ts` | route (1) | none (never rejects) |
 | 6.16 | `requireAdmin` / `requireSuperAdmin` / `requirePermission` | `src/middleware/admin-auth.ts` | route (0 / 9 / 59) | 401, 403 |
 | 6.17 | `requireAgeGate` / `evaluateAgeGate` | `src/middleware/age-gate.ts` | route (0 — see G-2) | 403 |
 | 6.18 | `imageUploadMiddleware` / `audioUploadMiddleware` | `src/middleware/upload.ts` | route (3 / 1) | 400, 413 |
@@ -595,12 +599,12 @@ router.post("/books/async",  requireAuth, rateLimit(BOOK_ASYNC_RATE_LIMIT), requ
 
 ---
 
-### 6.15 VIP entitlement gates — `resolveVipStatus` / `requireVip`
+### 6.15 VIP entitlement gates — `resolveVipStatus`
 
-**Purpose.** Reusable VIP gating with an explicit **soft/hard** pair, both resolving through the SSOT `hasActiveVipSubscription` → `isUserVipActive` (`services/subscription.ts:412-449`), which requires `tier === 'vip'` **and** unexpired `vipExpiresAt`.
+**Purpose.** Reusable VIP soft gating, resolving through the SSOT `hasActiveVipSubscription` → `isUserVipActive` (`services/subscription.ts:412-449`), which requires `tier === 'vip'` **and** unexpired `vipExpiresAt`.
 
 - **`resolveVipStatus` (soft)** — never rejects; sets `c.set("isVip", boolean)` (`false` for anonymous). The handler renders its own locked/upsell payload while keeping HTTP 200.
-- **`requireVip` (hard)** — 401 when no identity, then 403 `{ success: false, error, code: "vip.required" }` when not an active VIP; sets `c.set("isVip", true)` on success. Standalone-safe, but convention is `requireAuth, requireVip`.
+- **Hard 403 contracts** are decided in the route handler via `hasActiveVipSubscription` (feature-specific copy/code). The former `requireVip` middleware was **removed as dead code (2026-09-29)** — it had zero call sites, so its generic `vip.required` message was never part of a live API contract.
 
 ```mermaid
 flowchart TB
@@ -608,13 +612,6 @@ flowchart TB
         S1["userId?"] --> S2["hasActiveVipSubscription(userId)"]
         S2 --> S3["c.set('isVip', bool)"] --> S4["next() always"]
         S1 -->|"anonymous"| S5["c.set('isVip', false)"] --> S4
-    end
-    subgraph Hard["requireVip"]
-        H1["userId?"] -->|No| HX["401 Authentication required"]
-        H1 -->|Yes| H2["hasActiveVipSubscription(userId)"]
-        H2 --> H3{"isVip?"}
-        H3 -->|No| HY["403 code: vip.required"]
-        H3 -->|Yes| H4["c.set('isVip', true) → next()"]
     end
     subgraph Owner["Owner-scoped gate (no middleware)"]
         O1["handler resolves :identifier"] --> O2["single row read:<br/>privacyPreferences + tier + vipExpiresAt"]
@@ -635,15 +632,14 @@ router.get("/user/mind-matrix", requireAuth, resolveVipStatus, async (c) => {
   return c.json({ success: true, matrix: await getUserMindMatrix(c.get("userId")!) });
 });
 
-// Hard: future VIP-only mutation
-router.post("/vip-action", requireAuth, requireVip, handler);
+// Hard 403: decided in the handler with feature-specific copy (§5.3 recipe)
 
 // Owner-scoped: middleware cannot know the subject → handler-level SSOT call
 // (GET /api/users/:identifier/mind-matrix uses optionalAuth + one combined row read,
 //  because the row also carries showMindMatrixOnProfile.)
 ```
 
-**Why two call sites stay out of middleware (TOCTOU):** `POST /user/checkin/double` evaluates VIP **inside** `performDailyCheckIn`'s `dbWrite.transaction` (`services/user.ts:726-744`) so entitlement is checked under the same locks as the claim-row insert; middleware runs outside the transaction and cannot provide that guarantee. Likewise `POST /:identifier/export` keeps a handler-level `hasActiveVipSubscription` check to preserve its feature-specific message ("Manuscript Studio export is an exclusive VIP perk.") — adopting `requireVip` there would replace that copy with the generic message (tracked as G-3).
+**Why two call sites stay out of middleware (TOCTOU):** `POST /user/checkin/double` evaluates VIP **inside** `performDailyCheckIn`'s `dbWrite.transaction` (`services/user.ts:726-744`) so entitlement is checked under the same locks as the claim-row insert; middleware runs outside the transaction and cannot provide that guarantee. Likewise `POST /:identifier/export` keeps a handler-level `hasActiveVipSubscription` check to preserve its feature-specific message ("Manuscript Studio export is an exclusive VIP perk.") — a generic middleware message would replace that copy (tracked as G-3); `requireVip` was subsequently removed as dead code (zero call sites, 2026-09-29).
 
 ---
 
@@ -769,7 +765,7 @@ router.post("/audio",          requireAuth, audioUploadMiddleware("audioFile"), 
 | 10 | Suspension/ban mid-session | `requireNotSuspended` → **403** `account_suspended` + `activeActions` | Client shows enforcement notice; safe-haven routes still 200 |
 | 11 | Community mute | `requireNotMuted` → **403** `community_muted` | Reads/comments elsewhere unaffected |
 | 12 | Probation generation cap reached | `requireGenerationQuota` → **429** `generation_quota_exceeded` + `dailyLimit` | Client shows "tomorrow" messaging |
-| 13 | Non-VIP on a **hard** VIP route | `requireVip` → **403** `code:"vip.required"` | Client shows upgrade sheet |
+| 13 | Non-VIP on a **hard** VIP contract (handler-level check) | handler + `hasActiveVipSubscription` → **403** feature-specific copy (e.g. export) | Client shows upgrade sheet |
 | 14 | Non-VIP on a **soft** VIP route (Mind Matrix) | handler → **200** `{ matrix:null, locked:true }` | Client renders locked/upsell state — not an error |
 | 15 | Malformed JSON body / >10 MB | `parseJsonBody` → **400** / **413** | Client fixes payload; `body` remains unset |
 | 16 | Upload MIME/size/magic-byte violation | `upload.ts` → **400** / **413** | Client re-encodes image (SVG rejected by policy) |
@@ -826,7 +822,7 @@ Transport security, authentication, CSRF, throttling and admin authorization are
 |---|---|---|
 | `nextauth.ts` | `requireAuth`, `optionalAuth`, `requireVerifiedEmail`, `verifyNextAuthToken`, `invalidateCurrentSessionVerifyCache`, `invalidateUserBanCache` | Cookie identity resolution + route auth guards |
 | `bearer.ts` | `bearerAuthMiddleware`, `extractBearerToken`, `isServiceBearerPath`, bearer identity LRU helpers | Mobile JWT identity adapter |
-| `vip.ts` | `resolveVipStatus`, `requireVip` | Soft/hard VIP entitlement gates (§6.15) |
+| `vip.ts` | `resolveVipStatus` | Soft VIP entitlement resolver; hard VIP 403s are handler-level (§6.15) |
 | `trust-safety.ts` | `requireNotSuspended`, `requireNotMuted`, `requireGenerationQuota` (+ re-exports of enforcement cache helpers) | Progressive-discipline capability gates |
 | `admin-auth.ts` | `requireAdmin`, `requireSuperAdmin`, `requirePermission`, `resolveAdminAccess`, `ADMIN_PERMISSIONS` | Admin membership + capability gates |
 | `rate-limit.ts` | `rateLimit`, `rateLimitByUser`, `checkRateLimitByIP` | Redis sliding-window + in-memory IP throttling |
@@ -859,6 +855,7 @@ Transport security, authentication, CSRF, throttling and admin authorization are
 | Lint (touched files) | **Implemented & verified** | `bunx eslint src/middleware/vip.ts src/routes/user.ts src/hono/env.ts` clean on 2026-09-26 |
 | Import-extension rule | **Implemented & verified** | `bun run lint:imports` → "All relative imports have .js extensions (320 files scanned)" on 2026-09-26 |
 | Usage-count evidence | **Implemented & verified** | Source scan 2026-09-26 (counts in §6; import lines excluded) |
+| Dead-code removal (`requireVip`) | **Implemented & verified** | `bun run typecheck`, `bun run lint`, `bun run lint:imports` (326 files) all green on 2026-09-29 after removing the zero-call-site `requireVip` middleware |
 | Unit/integration tests for middleware | **Not claimed** | No middleware-specific test suite found; no tests were run or added for this change |
 | Manual/E2E (auth, CSRF, rate-limit, VIP paths) | **Not claimed** | End-to-end gate behavior was not exercised in this session; claims rest on code reading |
 
@@ -867,7 +864,7 @@ Transport security, authentication, CSRF, throttling and admin authorization are
 ## 11. FAQ
 
 ### FAQ 1. Why isn't there a single combined `requireAuthVIP` middleware?
-Because the two concerns compose differently per route: Mind Matrix's public surface uses `optionalAuth` and gates the **profile owner's** VIP, which a caller-scoped middleware cannot know, while its own surface needs a *soft* 200 `{ locked: true }` response that a rejecting middleware would break. Separate `requireAuth` + (`requireVip` | `resolveVipStatus`) keeps 401-vs-403 semantics visible and matches the codebase's single-purpose gate vocabulary (§5.2).
+Because the two concerns compose differently per route: Mind Matrix's public surface uses `optionalAuth` and gates the **profile owner's** VIP, which a caller-scoped middleware cannot know, while its own surface needs a *soft* 200 `{ locked: true }` response that a rejecting middleware would break. Separate `requireAuth` + `resolveVipStatus` (soft) — with hard VIP 403s as explicit handler-level `hasActiveVipSubscription` calls — keeps 401-vs-403 semantics visible and matches the codebase's single-purpose gate vocabulary (§5.2).
 
 ### FAQ 2. What happens if Upstash Redis is down?
 Rate limiting fails **open** — the request is allowed and a warning is logged (`rate-limit.ts:126-130`, `wall-rate-limit.ts:68-71`). Authentication and CSRF are unaffected (they don't depend on Redis). This is the AGENTS.md §3.2 availability rule: never block legitimate traffic because a throttle backend is unavailable.
@@ -884,8 +881,8 @@ The handler's. `cacheControl` runs `next()` first and returns without touching t
 ### FAQ 6. Can a gate write to the database?
 No (§3 invariant 8). Gates read (`dbRead`) for decisions; all writes happen in handlers inside `executeWithCredits` transactions (AGENTS.md §3.3). Enforcement-cache invalidation happens from admin flows, not from gates.
 
-### FAQ 7. Why does `POST /user/checkin/double` not use `requireVip`?
-Its VIP check lives inside `performDailyCheckIn`'s write transaction (`services/user.ts:726-744`) so entitlement is evaluated under the same locks as the claim-row insert. Middleware runs outside that transaction and would introduce a check-then-act race against VIP expiry and the once-per-day claim guard. Its contract is also `400 { success:false, message }`, not `403`.
+### FAQ 7. Why does `POST /user/checkin/double` evaluate VIP inside the service?
+Its VIP check lives inside `performDailyCheckIn`'s write transaction (`services/user.ts:726-744`) so entitlement is evaluated under the same locks as the claim-row insert. Middleware runs outside that transaction and would introduce a check-then-act race against VIP expiry and the once-per-day claim guard. Its contract is also `400 { success:false, message }`, not `403`. (The former `requireVip` middleware — once the model for such hard gates — was removed 2026-09-29 as dead code; see §6.15.)
 
 ### FAQ 8. What evidence exists for middleware behavior?
 Code reading plus typecheck/lint/import-check runs (§10). No middleware test suite exists and no E2E gate exercise was performed — those rows are explicitly **Not claimed**.
@@ -898,7 +895,7 @@ Code reading plus typecheck/lint/import-check runs (§10). No middleware test su
 |---|---|---|---|---|
 | G-1 | `docs/middleware/MIDDLEWARE_GUIDE.md` is **legacy drift**: documents Express `req.user`/`res.json` handlers and a non-existent `src/middleware/guest.ts` | Misleads agents into writing Express-style middleware and inventing guest gates | Supersede with a pointer to this doc (or delete) in a docs-only change | Documented drift |
 | G-2 | `requireAgeGate` / `evaluateAgeGate` are implemented but **wired to zero routes**; `age_restricted` appears only inside `age-gate.ts` | Content-rating policy exists in code but protects no endpoint | Trust & Safety §TS.10 follow-up; wire after product decision on which reads are gated | Implemented, unwired |
-| G-3 | `POST /:identifier/export` keeps an inline VIP check to preserve feature-specific 403 copy | Duplication of the entitlement pattern; generic `requireVip` message would change UX copy | Adopt `requireVip` only once the frontend keys on `code` instead of message text | Documented, intentional |
+| G-3 | `POST /:identifier/export` keeps an inline VIP check to preserve feature-specific 403 copy | Duplication of the entitlement pattern; a generic middleware message would change UX copy (the former `requireVip` was removed as dead code 2026-09-29) | Keep handler-level copy until the frontend keys on `code` for this endpoint | Documented, intentional |
 | G-4 | `requireAdmin` is exported but used by zero routes (routes use `requireSuperAdmin`/`requirePermission`) | Dead export invites "which admin gate?" confusion | Remove or adopt deliberately in an admin-audit change | Documented |
 | G-5 | No automated test asserting route-chain composition (e.g. `requireAuth` precedes gates that read `userId`) | Ordering regressions are only caught in review | Add a chain-composition test when a middleware test harness is introduced | Not started |
 | G-6 | 4 source files cite `docs/architecture/TRUST_AND_SAFETY_ARCHITECTURE.md §…` but that file does not exist anywhere in the repo (`src/middleware/age-gate.ts:17`, `src/services/evaluate-trust.ts:12`, `src/services/fraud-detection.ts:13`, `src/services/trust-score.ts:16`) | Dangling anchor references — readers land on a missing doc | Restore or rewrite the cited doc, then re-point the comments | Documented drift |
@@ -911,7 +908,7 @@ Code reading plus typecheck/lint/import-check runs (§10). No middleware test su
 
 | Anchor | Section | Cited by |
 |---|---|---|
-| §6.15 | VIP entitlement gates — `resolveVipStatus` / `requireVip` | `src/middleware/vip.ts:29` |
+| §6.15 | VIP entitlement gates — `resolveVipStatus` | `src/middleware/vip.ts:31` |
 | §5.2 | Hard vs soft gates | (reserved — selection-guide reference) |
 | §7 | Failure Modes & Recovery Matrix | (reserved — incident reference) |
 

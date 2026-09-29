@@ -67,7 +67,7 @@ import { requireNotSuspended, requireNotMuted } from "../middleware/trust-safety
 import { users, books, userAuth, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, userSessions, userCompletedBooks, userComments, transactions, userProviders, userFeedbacks, bookTestimonials, uploadedImages, userReports, moderationReports, moderationAppeals, userEnforcementActions, userBlocks, platformTestimonials, pages, userInventory, posts, customActions } from "../db/schema.js";
 import type { ReportTargetType, ReportType } from "../types/trust-safety.js";
 import { getOrFetchUserEnforcementStatus, getOrCreateUserTrustProfile, getUserTrustSafetyOverview, submitUserAppeal, getUserAppeals } from "../services/trust-safety.js";
-import { isUserVipActive, hasActiveVipSubscription } from "../services/subscription.js";
+import { isUserVipActive } from "../services/subscription.js";
 import { getErrorMessage, cApiError, cNotFoundError, cConflictError, cValidationError, cUnauthorizedError, cForbiddenError } from "../utils/error.js";
 import { eq, and, desc, sql, gte } from "drizzle-orm";
 import { calculatePaginationMeta, extractPaginationParams } from "../utils/pagination.js";
@@ -212,7 +212,9 @@ router.get('/', requireAuth, async (c: Context<AppEnv>) => {
     // Normalize: move tier into subscription sub-object for consistent API shape
     // with GET /api/users/:identifier. The frontend reads user.subscription.tier
     // for VIP gating — keeping it as a single authoritative field prevents SSOT drift.
-    const { tier, ...restUser } = user;
+    // vipExpiresAt is destructured out (never serialized) but consumed below by
+    // the VIP SSOT so the boolean flag needs no follow-up query.
+    const { tier, vipExpiresAt, ...restUser } = user;
     const stats: UserStats = {
       readsCount: user.readsCount,
       likedBooksCount: user.likedBooksCount,
@@ -248,7 +250,9 @@ router.get('/', requireAuth, async (c: Context<AppEnv>) => {
         maxCheckinStreak: streaks.longestStreak,
         stats,
         subscription: { tier },
-        isVip: await hasActiveVipSubscription(userId),
+        // tier AND unexpired vipExpiresAt via the subscription SSOT, computed
+        // from the row already fetched above (no extra round-trip).
+        isVip: isUserVipActive({ tier, vipExpiresAt }),
         linkedMethods: providers.map(p => p.provider),
       }
     });
@@ -667,21 +671,30 @@ router.post('/', requireAuth, async (c: Context<AppEnv>) => {
     if (sanitizeResult.errorResponse) return sanitizeResult.errorResponse;
     const updateData = sanitizeResult.data;
 
-    // 2. Avatar base64 → ImageKit (same path as PUT /user)
+    // 2. Avatar base64 → ImageKit (same path as PUT /user) — BEST-EFFORT: an
+    // optional photo must never abort the mandatory onboarding transaction
+    // (KI-5). On failure, log and continue without the image; name, username,
+    // survey, referrer, preferences and the welcome email all proceed. The
+    // base64 is always stripped from updateData so it can never reach the DB —
+    // on success the persistUploadedImage trigger sets users.image_url.
     if (updateData.imageUrl?.startsWith('data:')) {
-      const uploadResult = await uploadUserImage(updateData.imageUrl, userId);
-      if (!uploadResult?.url) {
-        console.warn('[POST /api/user] ⚠️ Failed to upload profile image');
-        return cApiError(c, 'Failed to upload profile image', new Error('ImageKit upload returned no URL'));
+      try {
+        const uploadResult = await uploadUserImage(updateData.imageUrl, userId);
+        if (uploadResult?.url) {
+          await persistUploadedImage({
+            imageId: uploadResult.fileId!,
+            imageUrl: uploadResult.url!,
+            type: 'user',
+            userId,
+          });
+        } else {
+          console.warn('[POST /api/user] ⚠️ Avatar upload returned no URL - completing onboarding without image');
+        }
+      } catch (uploadError) {
+        console.warn('[POST /api/user] ⚠️ Avatar upload failed - completing onboarding without image:', uploadError);
+      } finally {
+        delete updateData.imageUrl;
       }
-      await persistUploadedImage({
-        imageId: uploadResult.fileId!,
-        imageUrl: uploadResult.url!,
-        type: 'user',
-        userId,
-      });
-      // Trigger sets users.image_url
-      delete updateData.imageUrl;
     }
 
     // 3. Complete onboarding
@@ -818,7 +831,7 @@ router.put('/', requireAuth, async (c: Context<AppEnv>) => {
       const uploadResult = await uploadUserImage(updateData.imageUrl, userId);
       if (!uploadResult?.url) {
         console.warn('[PUT /api/user] ⚠️ Failed to upload profile image - ImageKit upload returned no URL');
-        return cApiError(c, 'Failed to upload profile image', new Error('ImageKit upload returned no URL'));
+        return cApiError(c, 'Failed to upload profile image', new Error('ImageKit upload returned no URL'), 500, 'user.avatarUploadFailed');
       }
 
       // Old user images are cleaned up by daily cron (cleanupStaleUserUploads).
@@ -853,7 +866,7 @@ router.put('/', requireAuth, async (c: Context<AppEnv>) => {
     // Rename userId → id for frontend consistency
     // Normalize: move tier into subscription sub-object (consistent with GET /api/user)
     // Expose hasReferrer (boolean SSOT); never leak raw referrerId UUID to clients
-    const { userId: id, tier: putTier, referrerId, ...putRest } = user;
+    const { userId: id, tier: putTier, vipExpiresAt: putVipExpiresAt, referrerId, ...putRest } = user;
     await logAuditEvent(c, 'security_profile_updated', 'user');
     return c.json({
       success: true,
@@ -862,7 +875,8 @@ router.put('/', requireAuth, async (c: Context<AppEnv>) => {
         ...putRest,
         hasReferrer: !!referrerId,
         subscription: { tier: putTier },
-        isVip: await hasActiveVipSubscription(userId),
+        // From the RETURNING() row above - no re-fetch (SSOT: subscription.ts).
+        isVip: isUserVipActive({ tier: putTier, vipExpiresAt: putVipExpiresAt }),
       },
     });
   } catch (error) {

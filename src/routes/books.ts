@@ -154,7 +154,8 @@ import { releaseGenerationClaim, triggerCandidateGenerationWorkflow, validateAnd
 import { SSE_POLLING_CONFIG } from "../config/candidate-generation.js";
 import { getPsychologicalProfileResult } from "../services/psychological-profile.js";
 import { getLockedPaths } from "../services/locked-paths.js";
-import { runGate0, runGate1, buildCustomActionValidationPrompt, buildCanonicalAction, getRejectionMessage, CUSTOM_ACTION_VALIDATION_SCHEMA_DEFINITION, CUSTOM_ACTION_VALIDATION_REQUIRED_FIELDS, CUSTOM_ACTION_GENERATION_STALE_MS } from "../services/custom-actions.js";
+import { runGate0, runGate1, buildCustomActionValidationPrompt, buildCanonicalAction, getRejectionMessage, getRejectionCode, CUSTOM_ACTION_VALIDATION_SCHEMA_DEFINITION, CUSTOM_ACTION_VALIDATION_REQUIRED_FIELDS, CUSTOM_ACTION_GENERATION_STALE_MS } from "../services/custom-actions.js";
+import { getMaxCustomActionChars } from "../config/custom-actions.js";
 import { recordViolationEvent } from "../services/trust-safety.js";
 import { loadOwnCustomActions, mapCustomActionRowToAction } from "../services/book.js";
 import { customActions } from "../db/schema.js";
@@ -7967,6 +7968,7 @@ router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, rateLimi
       return c.json({
         outcome: 'reject',
         message: gate0Result.message,
+        code: gate0Result.code,
       } satisfies CustomActionPreviewResponse);
     }
 
@@ -7987,7 +7989,8 @@ router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, rateLimi
       }
       return c.json({
         outcome: 'reject',
-        message: getRejectionMessage(gate1Result.category),
+        message: getRejectionMessage(gate1Result.category, getMaxCustomActionChars(isVip)),
+        code: getRejectionCode(gate1Result.category),
       } satisfies CustomActionPreviewResponse);
     }
 
@@ -8036,6 +8039,7 @@ router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, rateLimi
         outcome: 'reject',
         rejectionCategory: result.rejectionCategory,
         message: getRejectionMessage(result.rejectionCategory),
+        code: getRejectionCode(result.rejectionCategory),
       } satisfies CustomActionPreviewResponse);
     }
 
@@ -8183,6 +8187,7 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit
     if (!gate0Result.passed) {
       return c.json({
         message: gate0Result.message,
+        code: gate0Result.code,
       }, 400);
     }
 
@@ -8202,7 +8207,8 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit
         }).catch((err) => console.error('[custom-actions] ⚠️ Failed to log violation:', err));
       }
       return c.json({
-        message: getRejectionMessage(gate1Result.category),
+        message: getRejectionMessage(gate1Result.category, getMaxCustomActionChars(isVip)),
+        code: getRejectionCode(gate1Result.category),
       }, 400);
     }
 
@@ -8256,6 +8262,7 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit
 
       return c.json({
         message: getRejectionMessage(result.rejectionCategory),
+        code: getRejectionCode(result.rejectionCategory),
       }, 400);
     }
 

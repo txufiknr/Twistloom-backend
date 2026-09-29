@@ -69,6 +69,9 @@ export function getEnrichedUserSelect() {
     avatarFrame: users.avatarFrame,
     profileTitle: users.profileTitle,
     tier: users.tier,
+    // Expiry half of the VIP SSOT (subscription.ts isUserVipActive); consumed
+    // by GET /user to compute the boolean `isVip` without a second query.
+    vipExpiresAt: users.vipExpiresAt,
     credits: users.credits,
     lastActive: users.lastActive,
     createdAt: users.createdAt,
@@ -163,7 +166,6 @@ export function getEnrichedUserSelect() {
  * .limit(1);
  */
 export function getEnrichedUserBaseQuery() {
-  console.log('[user-controller] 👤 getEnrichedUserBaseQuery called');
   return dbRead
     .select(getEnrichedUserSelect())
     .from(users)
@@ -180,7 +182,6 @@ export function getEnrichedUserBaseQuery() {
  * const [userData] = await getEnrichedUser(whereCondition);
  */
 export function getEnrichedUser(where: SQL) {
-  console.log('[user-controller] 👤 getEnrichedUser called');
   return getEnrichedUserBaseQuery().where(where).limit(1);
 }
 

@@ -161,9 +161,12 @@ Registers a new user account with email/password authentication. Creates both us
   "message": "Account created. Please check your email to verify your account.",
   "verificationEmailSent": true,
   "referrer": "referrer-uuid",
-  "referralApplied": true
+  "referralApplied": true,
+  "isNewUser": true
 }
 ```
+
+`isNewUser` is the canonical `users.is_new_user` value from the inserted row (`DEFAULT true`). It is included so clients can seed the NextAuth JWT `isNewUser` claim at signup→auto-login without an extra `GET /api/user` round-trip — consistent with every sign-in response (`verify-credentials`, `google-oauth`, `google-one-tap`, `/mobile/*`).
 
 **Error Responses:**
 - `400 Bad Request`: Invalid input, weak password, terms not agreed, or age not confirmed

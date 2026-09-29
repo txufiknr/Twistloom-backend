@@ -18,7 +18,7 @@ import type { UploadedFile } from "../types/hono.js";
  * - `userId`   : resolved authenticated user id (set by the auth middleware)
  * - `user`     : resolved {@link AuthUser} (set by the auth middleware)
  * - `isVip`    : active-VIP entitlement for the authenticated user (set by the
- *                VIP middleware — `resolveVipStatus` / `requireVip`; `undefined`
+ *                VIP middleware — `resolveVipStatus`; `undefined`
  *                when no VIP middleware ran, so handlers can tell "not resolved"
  *                from "resolved as non-VIP")
  * - `headerLanguage` : parsed Accept-Language code (set by the locale middleware)

@@ -298,6 +298,7 @@ router.post('/verify-credentials', async (c) => {
  * @returns {boolean} verificationEmailSent - Whether verification email was sent
  * @returns {string|undefined} referrer - Referrer identifier if provided
  * @returns {boolean} referralApplied - Whether referral was successfully applied
+ * @returns {boolean} isNewUser - Onboarding pending flag (canonical DB value, always true at creation)
  *
  * @example
  * // Request
@@ -314,7 +315,8 @@ router.post('/verify-credentials', async (c) => {
  *   "userId": "user-uuid",
  *   "message": "Account created. Please check your email to verify your account.",
  *   "verificationEmailSent": true,
- *   "referralApplied": false
+ *   "referralApplied": false,
+ *   "isNewUser": true
  * }
  */
 router.post('/signup', async (c) => {
@@ -385,6 +387,9 @@ router.post('/signup', async (c) => {
       verificationEmailSent,
       referrer,
       referralApplied,
+      // Canonical DB value (users.is_new_user DEFAULT true) — lets clients seed
+      // the JWT isNewUser claim at signup→auto-login without a GET /api/user round-trip.
+      isNewUser: newUser.isNewUser,
     }, 201);
   } catch (error) {
     console.error('[signup] ❌ Sign up error:', error);

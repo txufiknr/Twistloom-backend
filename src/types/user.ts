@@ -328,6 +328,8 @@ export type UserAchievement = {
 export type EnrichedUserSelect = Omit<User, 'stats' | 'subscription' | 'isFollowing' | 'isBlocked' | 'hasReferrer' | 'profileMetadata'> & UserStats & UserSubscription & {
   hasReferrer: boolean;
   isBanned: boolean;
+  /** VIP expiry half of the subscription SSOT (nullable column). */
+  vipExpiresAt: Date | null;
   // Profile metadata — typed columns
   pinnedStoryIds: string[] | null;
   featuredStoryId: string | null;

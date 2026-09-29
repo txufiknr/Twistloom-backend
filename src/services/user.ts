@@ -743,14 +743,15 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
         eq(userCheckins.checkInDate, todayIso),
       ));
 
-    // Get user tier for VIP status
+    // VIP status via the subscription SSOT (tier + unexpired vipExpiresAt) so
+    // this read path agrees with performDailyCheckIn's claim-time gate below.
     const [userResult] = await dbRead
-      .select({ tier: users.tier })
+      .select({ tier: users.tier, vipExpiresAt: users.vipExpiresAt })
       .from(users)
       .where(eq(users.userId, userId))
       .limit(1);
 
-    const isVip = userResult && userResult.tier === 'vip';
+    const isVip = isUserVipActive(userResult);
 
     // Derived read models — no re-query. Streaks never read the trigger-backed
     // user_counters columns (they go stale when a day is skipped); they come
@@ -1257,7 +1258,7 @@ export async function sanitizeProfileUpdate(
 
     if (!validation.valid) {
       return {
-        errorResponse: cValidationError(res, 'Invalid username', validation.errors, 422),
+        errorResponse: cValidationError(res, 'Invalid username', validation.errors, 422, 'user.usernameInvalid'),
       };
     }
 
@@ -1270,7 +1271,7 @@ export async function sanitizeProfileUpdate(
 
     if (conflict && conflict.userId !== userId) {
       return {
-        errorResponse: cConflictError(res, 'That username is already taken. Please choose another.'),
+        errorResponse: cConflictError(res, 'That username is already taken. Please choose another.', undefined, 'user.usernameTaken'),
       };
     }
 

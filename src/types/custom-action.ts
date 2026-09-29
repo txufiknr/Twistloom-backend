@@ -89,6 +89,13 @@ export interface CustomActionPreviewResponse {
     canonicalIntent: string;
     cost: number;
   };
+  /**
+   * Machine-readable rejection code (`<namespace>.<key>`, AGENTS A9); the
+   * client resolves it to `customActions.errors.<key>` and treats `message`
+   * as the English fallback only.
+   */
+  code?: string;
+  /** Dev/internal + last-resort fallback English string. */
   message?: string;
 }
 
@@ -103,6 +110,8 @@ export interface CustomActionSubmitResponse {
     pollingIntervalMs: number;
     maxPollingTimeMs: number;
   };
+  /** Rejection code (AGENTS A9) - see CustomActionPreviewResponse.code. */
+  code?: string;
   message?: string;
 }
 

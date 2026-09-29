@@ -602,7 +602,7 @@ export function cRateLimitError(c: Context, message?: string, error?: unknown) {
   return cApiError(c, message ?? "Too many attempts. Please try again later.", error, 429);
 }
 
-/** Conflict error (409) on a Hono context. */
-export function cConflictError(c: Context, message: string, error?: unknown) {
-  return cApiError(c, message, error, 409);
+/** Conflict error (409) on a Hono context, with optional client-translatable code. */
+export function cConflictError(c: Context, message: string, error?: unknown, code?: string) {
+  return cApiError(c, message, error, 409, code);
 }
