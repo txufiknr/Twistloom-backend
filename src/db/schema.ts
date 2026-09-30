@@ -2237,6 +2237,22 @@ export const customActions = pgTable(
     index("custom_actions_book_idx").on(t.bookId),
     index("custom_actions_user_idx").on(t.userId),
     index("custom_actions_outcome_idx").on(t.outcome),
+    // Recency windows (audit D2): the orphaned-generation batch sweep filters
+    // `createdAt < unstartedThreshold` and the retention prune scans
+    // `createdAt < cutoff` — both need a chronological index, not a seq scan.
+    index("custom_actions_created_at_idx").on(t.createdAt),
+    // Concurrent-submit dedup: at most one unfulfilled, non-rejected action per
+    // user+book+page. The submit route's pre-check (on the replica, before the
+    // AI validation) is UX only — this constraint is the authority, so two tabs
+    // racing inside that window cannot both charge and both insert (audit R1).
+    // Same pattern as books_user_idempotency_key_unique (finding F-1). The
+    // predicate mirrors the route's active-row predicate exactly.
+    // Q2 partition compatible: every UNIQUE constraint must include the
+    // partition key, and `book_id` here is the leading column — so a future
+    // `PARTITION BY HASH (book_id)` conversion needs no index rework.
+    uniqueIndex("custom_actions_active_book_page_user_unique")
+      .on(t.bookId, t.pageId, t.userId)
+      .where(sql`${t.nextPageId} IS NULL AND ${t.outcome} <> 'reject'`),
   ]
 );
 

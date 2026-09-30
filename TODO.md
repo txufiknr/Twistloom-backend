@@ -84,7 +84,13 @@ please write a comprehensive roadmap MD for this in @docs/roadmap\ , grounded on
 [ ] instead of 1 big failing request (schema too complex for gemini or prompt token exceeds) should we using multi-turn request for generating single big page json? ask AI to generate each json key and append sequentially in each turn, will that solve the problem?
 [ ] agentic mcp: TWISTLOOM_AGENT_MCP_ROADMAP.md
 [ ] claude: TODO-ai-gateway-decouple.md
-[ ] create QStash schedule — runbook curl is in §4 (needs your QSTASH_TOKEN/host).
+[ ] create QStash schedules — `bun qstash:setup:prod` registers both (credit-reservation `*/10`, custom-action `*/5`); runbook curl is in §4 (needs your QSTASH_TOKEN/host).
+[ ] QSTASH_TOKEN (+ CRON_SECRET, BACKEND_URL) before `bun qstash:setup`.
+[ ] google play & app store env vars
+[ ] OG-5 Play sandbox pass (answer before OG-1/OG-2 — one purchased item settles both): does REST `purchases.products.consume` accept a purchase the client already acknowledged? does `purchaseState` stay `0` after a consume (else a replay answers `denied` for a pack that was granted)? — `docs/roadmap/OWNER_GATES_REGISTER.md`
+[ ] flutter: App Store `finishTransaction` — the Apple half of OG-5; Play now finalizes server-side (`finalizeStorePurchase`)
+[ ] flutter: consume retry is lost once acknowledged — `pendingCompletePurchase` drops the purchase when `acknowledgePurchase` succeeds, so a failed `consumeAsync` is never retried (OG-5 follow-up a)
+[ ] flutter: `completeConfirmedPurchase` calls `consumePurchase` unconditionally — must skip subscriptions (VIP), consume only consumables (OG-5 follow-up b)
 
 ---
 

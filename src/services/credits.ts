@@ -481,7 +481,12 @@ export async function refundCreditsIdempotent(
  * or treat them as fire-and-forget side effects.
  *
  * @param userId    - User to charge
- * @param costKey   - Key into `CREDIT_COSTS` (or a raw numeric cost)
+ * @param costKey   - Key into `CREDIT_COSTS`, **or** a raw numeric cost. The two
+ *                    shapes take different demo paths on purpose: a key is
+ *                    resolved by `getCreditCostForUser`, which is zero for the
+ *                    demo account *or* while `FEATURE_FREE_DEMO` is on; a number
+ *                    (credit-priced store purchases) is zero for `isDemoUser`
+ *                    alone and ignores the flag — see `FEATURE_FREE_DEMO`.
  * @param operation - Async callback receiving the open transaction; must use `tx` for all DB work
  * @param options   - Context, metadata, correlation ID
  * @returns `{ result, correlationId, transactionId }` on success
@@ -507,6 +512,9 @@ export async function executeWithCredits<T>(
   operation: (tx: DBTransaction) => Promise<T>,
   options: ConsumeCreditsOptions = {}
 ): Promise<ConsumeCreditsResult<T>> {
+  // Two demo paths, deliberately different: a numeric cost honours only the
+  // demo account (store stock is per-item capped, so it is not blanket-waived),
+  // a cost key also honours FEATURE_FREE_DEMO. See the @param costKey contract.
   const cost = typeof costKey === 'number' ? (isDemoUser(userId) ? 0 : costKey) : getCreditCostForUser(userId, costKey);
   if (cost < 0) throw new Error(`Invalid credit cost: ${costKey} must be greater than or equal to 0`);
 
@@ -639,7 +647,10 @@ export async function claimAndRefundReservationTx(
  * `transactionId: null` and opens no transaction at all.
  *
  * @param userId  - User to charge
- * @param costKey - Key into `CREDIT_COSTS` (or a raw numeric cost)
+ * @param costKey - Key into `CREDIT_COSTS`, **or** a raw numeric cost. Same
+ *                  split as `executeWithCredits`: a key is zero for the demo
+ *                  account *or* while `FEATURE_FREE_DEMO` is on, a number is
+ *                  zero for `isDemoUser` alone — see `config/credits.ts`.
  * @param options - Context, metadata, correlation ID
  * @returns The reservation to pass to `settleReservation` / `releaseReservation`
  * @throws With `CREDIT_ERRORS.INSUFFICIENT_CREDITS` prefix when balance is too low
@@ -649,6 +660,7 @@ export async function reserveCredits(
   costKey: CreditCostKey | number,
   options: ConsumeCreditsOptions = {}
 ): Promise<CreditReservation> {
+  // Same numeric-vs-key demo split as `executeWithCredits` — see @param costKey.
   const cost = typeof costKey === 'number' ? (isDemoUser(userId) ? 0 : costKey) : getCreditCostForUser(userId, costKey);
   if (cost < 0) throw new Error(`Invalid credit cost: ${costKey} must be greater than or equal to 0`);
 

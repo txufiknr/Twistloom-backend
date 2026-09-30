@@ -45,7 +45,7 @@ Consequently, the architecture employs **multi-layered guardrails** to prevent d
 │                    GITHUB ACTIONS RUNNER WORKFLOW                      │
 │  • .github/workflows/retry-pending-generations.yml                     │
 │  • Bun runtime on ubuntu-latest (30-minute execution budget)           │
-│  • Runs: bun dist/cron/retry-pending-generations.js                    │
+│  • Runs: bun src/cron/retry-pending-generations.js                     │
 │  • Targeted inputs: book_id, page_id, triggered_by, max_depth          │
 └───────────────────┬────────────────────────────────────────────────────┘
                     │ 3. Execute targeted page generation
@@ -233,11 +233,11 @@ Steps 2–4 are what bound the one gap cron cleanup cannot close on its own: it 
 
 ```yaml
 concurrency:
-  group: candidate-gen-${{ github.event.inputs.page_id || github.run_id }}
+  group: candidate-gen-${{ github.event.inputs.page_id || github.event.schedule || github.run_id }}
   cancel-in-progress: false
 ```
 
-Concurrent runs for the same page are **queued, never cancelled**, so an in-flight generation is never killed mid-flight, and GitHub's one-pending-run rule drops the extra copy. Scheduled runs carry no `page_id` and fall back to `github.run_id`, so they never block or cancel on-demand runs.
+Concurrent runs for the same page are **queued, never cancelled**, so an in-flight generation is never killed mid-flight, and GitHub's one-pending-run rule drops the extra copy. Scheduled runs key on the cron string that fired (`github.event.schedule`) so a run that outlasts its cadence shares one group instead of stacking a second checkout + install, while page-less manual dispatches fall back to `github.run_id` — neither can block or cancel an on-demand, page-targeted run.
 
 ---
 
@@ -364,7 +364,7 @@ name: Actions Candidate Generations
 
 on:
   schedule:
-    - cron: '0 */12 * * *' # Every 12 hours routine cleanup
+    - cron: '0 */12 * * *' # Every 12 hours — full run (custom-action sweep + heavy canon sweep)
   workflow_dispatch:      # On-demand dispatch from backend API
     inputs:
       book_title:
@@ -399,8 +399,9 @@ jobs:
         with:
           bun-version: latest
       - run: bun install --frozen-lockfile
-      - run: bun run build
-      - run: bun dist/cron/retry-pending-generations.js
+      # No build step: Bun executes TypeScript natively, and type checking runs
+      # on every push/PR in ci.yml (`bun run check`).
+      - run: bun src/cron/retry-pending-generations.ts
         env:
           TRIGGERED_BOOK_ID: ${{ github.event.inputs.book_id || '' }}
           TRIGGERED_PAGE_ID: ${{ github.event.inputs.page_id || '' }}
@@ -409,6 +410,10 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           NODE_ENV: production
 ```
+
+Runs are deduplicated per target page by a workflow-level `concurrency` group keyed on `github.event.inputs.page_id` (falling back to `github.event.schedule` for scheduled runs, `github.run_id` for page-less manual ones) with `cancel-in-progress: false`, so an in-flight generation is queued against rather than killed and GitHub's one-pending-run rule drops the extra copy.
+
+**The minutes-scale custom-action sweep no longer runs here.** Audit R9 recovery — a charged custom action whose on-demand dispatch died — is triggered by **Upstash QStash** invoking `POST|GET /api/cron/sweep-custom-actions` every 5 minutes (`QSTASH_SCHEDULES` in `src/cron/ensure-qstash-schedules.ts`). That endpoint only detects the orphaned rows and re-dispatches them to this same workflow: a single AI page takes ~30–50s, which would not fit a serverless function's `maxDuration`, whereas a dispatch does. The 12-hour batch keeps `sweepStaleCustomActions()` as its inline-generating backstop. See `src/services/custom-action-sweep.ts` for the staleness model (30s unstarted / 3min dead heartbeat) and the four duplicate-safety guards.
 
 ---
 

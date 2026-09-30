@@ -89,6 +89,12 @@ export async function createSubscription(params: {
   trialEnd?: Date | null;
   /** Gateway webhook event ID for idempotency tracking */
   providerEventId?: string;
+  /**
+   * Extra row metadata (jsonb). Store-verified rows record the platform and
+   * the store's own state here so a later notification can be correlated
+   * without re-querying the store.
+   */
+  metadata?: Record<string, unknown>;
 }): Promise<void> {
   const isTrial = params.isTrial ?? false;
   const gateway = params.gateway ?? PAYMENT_GATEWAY.stripe;
@@ -107,6 +113,7 @@ export async function createSubscription(params: {
         currentPeriodEnd: params.currentPeriodEnd,
         isTrial,
         trialEnd: isTrial ? (params.trialEnd ?? null) : null,
+        metadata: params.metadata ?? null,
       }).returning();
 
       if (!subscription) {

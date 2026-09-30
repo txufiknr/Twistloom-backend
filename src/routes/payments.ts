@@ -58,6 +58,15 @@ import {
 import type { AppEnv } from "../hono/env.js";
 import { getClientIp } from "../hono/express-shim.js";
 import { PAYMENT_GATEWAY, parsePaymentGateway as parseGateway } from "../utils/payment.js";
+import { isStoreGateway } from "../types/payment.js";
+import { parseStorePlatform } from "../config/store-verification.js";
+import {
+  finalizeStorePurchase,
+  resolveStoreProduct,
+  storeProductKind,
+  verifyStorePurchase,
+} from "../services/store-verification/index.js";
+import { grantStoreCreditPurchase, grantVipFromStore } from "../services/store-verification/grant.js";
 
 // Initialize gateway adapters at module load
 initGatewayAdapters();
@@ -181,6 +190,7 @@ router.get("/credit-packs", async (c) => {
         priceIdr: getXenditPackPriceIdr(pack.id),
         currency: "IDR" as const,
         gateway: PAYMENT_GATEWAY.xendit,
+        storeProductId: pack.storeProductId ?? null,
         badge: pack.badge,
         color: pack.color,
       }));
@@ -198,6 +208,7 @@ router.get("/credit-packs", async (c) => {
       productId: pack.productId,
       currency: "USD" as const,
       gateway: PAYMENT_GATEWAY.stripe,
+      storeProductId: pack.storeProductId ?? null,
       badge: pack.badge,
       color: pack.color,
     }));
@@ -1063,6 +1074,11 @@ router.post("/subscription/cancel", requireAuth, async (c) => {
     if (subscription.length === 0) return cNotFoundError(c, "No active subscription found");
 
     const sub = subscription[0];
+    // Store-sold rows have no hosted session to cancel; `getGatewayAdapter`
+    // would throw for them, so answer deliberately instead.
+    if (isStoreGateway(sub.gateway)) {
+      return cConflictError(c, "This subscription is managed by your platform's subscription settings", null, "store_managed_subscription");
+    }
     const adapter = getGatewayAdapter(sub.gateway);
     await adapter.cancelSubscription(sub.providerSubscriptionId);
     await dbWrite.update(subscriptions).set({ cancelAtPeriodEnd: true }).where(eq(subscriptions.id, sub.id));
@@ -1078,8 +1094,9 @@ router.post("/subscription/cancel", requireAuth, async (c) => {
  *
  * Creates a Stripe Customer Portal session so the user can manage their
  * subscription (upgrade, cancel, update payment method) directly in Stripe's
- * hosted UI. Looks up the Stripe customer ID from the subscription table
- * first, falling back to the user record.
+ * hosted UI. The customer ID comes from the row the user is linked to and that
+ * is still active/trialing (the same row `/subscription/cancel` resolves),
+ * falling back to the newest row and then to the user record.
  *
  * @route GET /api/payments/subscription/portal
  * @auth required
@@ -1113,11 +1130,46 @@ router.get("/subscription/portal", requireAuth, async (c) => {
       }
     }
 
-    let customerId: string | null = null;
-    const subscription = await dbRead.select({ providerCustomerId: subscriptions.providerCustomerId }).from(subscriptions).where(eq(subscriptions.userId, userId)).orderBy(desc(subscriptions.createdAt)).limit(1);
-    if (subscription.length > 0 && subscription[0].providerCustomerId) {
-      customerId = subscription[0].providerCustomerId;
-    } else {
+    // Which gateway the portal belongs to is decided by the row the user is
+    // actually linked to and that is still live — the same row
+    // `/subscription/cancel` resolves. Picking "newest row" instead let a
+    // later-created, already-lapsed store row answer 409 while an active
+    // Stripe subscription existed, locking the user out of the portal for the
+    // subscription they really have.
+    const linked = await dbRead
+      .select({ providerCustomerId: subscriptions.providerCustomerId, gateway: subscriptions.gateway })
+      .from(subscriptions)
+      .innerJoin(users, eq(users.subscriptionId, subscriptions.id))
+      .where(and(eq(users.userId, userId), inArray(subscriptions.status, ["active", "trialing"])))
+      .limit(1);
+    const linkedSub = linked[0];
+
+    // Store-sold rows are managed in the platform's own subscription settings;
+    // there is no hosted session to open, so answer deliberately instead.
+    if (linkedSub && isStoreGateway(linkedSub.gateway)) {
+      return cConflictError(c, "This subscription is managed by your platform's subscription settings", null, "store_managed_subscription");
+    }
+
+    // No live linked row: fall back to the newest row for the customer handle
+    // (a canceled subscription still has a portal worth opening). Here the old
+    // rule still applies — if that row is store-sold, say so rather than
+    // handing a purchase token to the Stripe adapter.
+    let newest: { providerCustomerId: string | null; gateway: string } | undefined;
+    if (!linkedSub) {
+      const rows = await dbRead
+        .select({ providerCustomerId: subscriptions.providerCustomerId, gateway: subscriptions.gateway })
+        .from(subscriptions)
+        .where(eq(subscriptions.userId, userId))
+        .orderBy(desc(subscriptions.createdAt))
+        .limit(1);
+      newest = rows[0];
+    }
+    if (newest && isStoreGateway(newest.gateway)) {
+      return cConflictError(c, "This subscription is managed by your platform's subscription settings", null, "store_managed_subscription");
+    }
+
+    let customerId: string | null = linkedSub?.providerCustomerId ?? newest?.providerCustomerId ?? null;
+    if (!customerId) {
       const [user] = await dbRead.select({ customerId: users.customerId }).from(users).where(eq(users.userId, userId)).limit(1);
       customerId = user?.customerId ?? null;
     }
@@ -1132,6 +1184,217 @@ router.get("/subscription/portal", requireAuth, async (c) => {
     return c.json({ url: result.url });
   } catch (error) {
     return cApiError(c, "Failed to create portal session", error);
+  }
+});
+
+// ── Store Purchase Verification ──────────────────────────────────────────────
+
+/**
+ * POST /subscription/verify
+ *
+ * Confirms a Play/App Store subscription purchase and grants VIP.
+ *
+ * The request supplies only lookup keys (`platform`, `productId`,
+ * `transactionId`); every fact used to decide entitlement comes back from the
+ * store's own API. Answers:
+ *
+ * - `503 store_verification_unavailable` — store disabled or credentials
+ *   missing (owner gate OG-2). Never read as a denial or a grant.
+ * - `200 { status: "pending" }` — awaiting payment / Ask to Buy; grant nothing.
+ * - `200 { status: "denied" }` — the store rejected the proof, the period has
+ *   lapsed, or the purchase token resolves to a row another account already
+ *   owns; no grant and no relinking.
+ * - `200 { status: "verified", subscription, credits }` — granted (or
+ *   re-confirmed). `credits` is the balance after the grant, so a repeat
+ *   submission reports the same truth instead of a second grant.
+ *
+ * Ordering: read → grant → finalize. The Play `:acknowledge` write happens
+ * only after the grant commits and never for a refused grant, so Play's
+ * auto-refund stays available for anything this endpoint did not deliver; a
+ * failed finalize is logged and retried by replaying the verify rather than
+ * by failing a response that already describes a committed grant.
+ *
+ * @route POST /api/payments/subscription/verify
+ * @auth required
+ * @body {string} platform - `googlePlay` | `appStore`
+ * @body {string} productId - Registered product (`vip_monthly`)
+ * @body {string} transactionId - Play purchase token / StoreKit transaction id
+ * @body {string} [signedTransaction] - StoreKit JWS hint, accepted but never read or decoded
+ */
+router.post("/subscription/verify", requireAuth, async (c) => {
+  try {
+    const userId = requireUserId(c);
+
+    const rateLimitResult = await checkRateLimit(`subscription-verify-${userId}`, { maxRequests: 5, windowSeconds: 60 });
+    if (!rateLimitResult.allowed) {
+      return cRateLimitError(c, "Too many verification attempts. Please wait before trying again.");
+    }
+
+    const body = c.get("body") as {
+      platform?: unknown;
+      productId?: unknown;
+      transactionId?: unknown;
+      signedTransaction?: unknown;
+    };
+    const platform = parseStorePlatform(body?.platform);
+    if (!platform) return cValidationError(c, "platform must be googlePlay or appStore", null, 400, "invalid_platform");
+
+    const productId = typeof body?.productId === "string" ? body.productId : null;
+    const transactionId = typeof body?.transactionId === "string" ? body.transactionId.trim() : null;
+    if (!productId || !transactionId) {
+      return cValidationError(c, "productId and transactionId are required", null, 400, "missing_purchase_proof");
+    }
+
+    const resolved = resolveStoreProduct(productId);
+    if (!resolved) return cValidationError(c, "Unknown product", null, 400, "unknown_product");
+    if (resolved.kind !== "subscription") {
+      return cValidationError(c, "Product is not a subscription", null, 400, "product_kind_mismatch");
+    }
+
+    const outcome = await verifyStorePurchase({
+      platform,
+      kind: storeProductKind(resolved),
+      productId,
+      transactionId,
+      signedTransaction: typeof body?.signedTransaction === "string" ? body.signedTransaction : null,
+    });
+
+    if (outcome.kind === "unavailable") {
+      return cApiError(c, "Store verification is not configured yet", null, 503, "store_verification_unavailable");
+    }
+    if (outcome.kind === "pending") return c.json({ status: "pending" });
+    if (outcome.kind === "denied") return c.json({ status: "denied" });
+
+    const grant = await grantVipFromStore(userId, outcome.receipt);
+    if (grant.status === "denied") return c.json({ status: "denied" });
+
+    // Read → grant → finalize. The store write happens only now that the
+    // transaction committed, so Play never acknowledges a purchase this server
+    // refused; and it runs on the replay path too, which is what re-drives a
+    // finalize that failed last time. Best-effort: `finalizeStorePurchase`
+    // cannot throw, and a 5xx here would lie about an already-committed grant.
+    await finalizeStorePurchase(outcome.receipt);
+
+    // `grant.credits` comes back from the grant itself, read on the primary
+    // after the transaction committed — re-reading `users.credits` through
+    // `dbRead` here could report the pre-grant balance while the replica lags.
+    return c.json({ status: "verified", subscription: grant.subscription, credits: grant.credits });
+  } catch (error) {
+    return cApiError(c, "Failed to verify subscription purchase", error);
+  }
+});
+
+/**
+ * POST /store-credit/verify
+ *
+ * Confirms a Play/App Store credit pack purchase and awards the pack exactly
+ * once. Same rules as the subscription endpoint: lookup keys in, store facts
+ * only, `503 store_verification_unavailable` while unconfigured.
+ *
+ * Product binding is server-side — the `productId` must resolve in
+ * `CREDIT_PACKS.storeProductId`, so a proof for a cheap pack cannot be
+ * presented as an expensive one.
+ *
+ * Ordering: read → grant → finalize. The Play `:consume` write runs only after
+ * the grant commits (it is what makes the pack re-buyable) and never for a
+ * refused grant, so Play's auto-refund still applies to money this endpoint
+ * did not deliver. A failed finalize is logged and retried by replaying the
+ * verify, never by failing an already-committed response.
+ *
+ * @route POST /api/payments/store-credit/verify
+ * @auth required
+ * @body {string} store - `google_play` | `app_store`
+ * @body {string} productId - Registered store product id of the pack
+ * @body {string} verificationData - Play purchase token / StoreKit transaction id
+ * @body {string} [packId] - Pack id the client displayed (cross-checked)
+ * @body {string} [accountId] - Obfuscated store account (attribution only; not
+ *   trusted as an identity claim)
+ * @returns {{ granted: boolean, bonusCredits: number, newBalance: number, alreadyGranted: boolean }}
+ */
+router.post("/store-credit/verify", requireAuth, async (c) => {
+  try {
+    const userId = requireUserId(c);
+
+    const rateLimitResult = await checkRateLimit(`store-credit-verify-${userId}`, { maxRequests: 5, windowSeconds: 60 });
+    if (!rateLimitResult.allowed) {
+      return cRateLimitError(c, "Too many verification attempts. Please wait before trying again.");
+    }
+
+    const body = c.get("body") as {
+      productId?: unknown;
+      verificationData?: unknown;
+      store?: unknown;
+      platform?: unknown;
+      packId?: unknown;
+    };
+    const platform = parseStorePlatform(body?.store ?? body?.platform);
+    if (!platform) return cValidationError(c, "store must be google_play or app_store", null, 400, "invalid_platform");
+
+    const productId = typeof body?.productId === "string" ? body.productId : null;
+    const transactionId =
+      typeof body?.verificationData === "string" && body.verificationData.trim().length > 0
+        ? body.verificationData.trim()
+        : null;
+    if (!productId || !transactionId) {
+      return cValidationError(c, "productId and verificationData are required", null, 400, "missing_purchase_proof");
+    }
+
+    const resolved = resolveStoreProduct(productId);
+    if (!resolved) return cValidationError(c, "Unknown product", null, 400, "unknown_product");
+    if (resolved.kind !== "consumable") {
+      return cValidationError(c, "Product is not a credit pack", null, 400, "product_kind_mismatch");
+    }
+    if (typeof body?.packId === "string" && body.packId.length > 0 && body.packId !== resolved.packId) {
+      return cValidationError(c, "Product does not match packId", null, 400, "product_kind_mismatch");
+    }
+
+    const outcome = await verifyStorePurchase({
+      platform,
+      kind: storeProductKind(resolved),
+      productId,
+      transactionId,
+    });
+
+    if (outcome.kind === "unavailable") {
+      return cApiError(c, "Store verification is not configured yet", null, 503, "store_verification_unavailable");
+    }
+    // Pending and denied are valid answers, not failures: the client still
+    // needs a parseable balance, so read it rather than omitting the field.
+    if (outcome.kind === "pending" || outcome.kind === "denied") {
+      const [viewer] = await dbRead.select({ credits: users.credits }).from(users).where(eq(users.userId, userId)).limit(1);
+      return c.json({
+        status: outcome.kind,
+        granted: false,
+        alreadyGranted: false,
+        bonusCredits: 0,
+        newBalance: viewer?.credits ?? 0,
+      });
+    }
+
+    const grant = await grantStoreCreditPurchase(userId, outcome.receipt, resolved);
+    if (grant.deniedReason) {
+      return c.json({
+        status: "denied",
+        granted: false,
+        alreadyGranted: false,
+        bonusCredits: 0,
+        newBalance: grant.newBalance,
+      });
+    }
+    // Ordering invariant: read → grant → finalize. A denied grant (the branch
+    // above) deliberately leaves the purchase un-finalized so Play's three-day
+    // auto-refund still runs for money we did not deliver. Best-effort and
+    // never throws, so the committed grant below is always reported as served.
+    await finalizeStorePurchase(outcome.receipt);
+    return c.json({
+      status: "verified",
+      granted: grant.granted,
+      alreadyGranted: grant.alreadyGranted,
+      bonusCredits: grant.bonusCredits,
+      newBalance: grant.newBalance,
+    });
+  } catch (error) {
+    return cApiError(c, "Failed to verify credit pack purchase", error);
   }
 });
 

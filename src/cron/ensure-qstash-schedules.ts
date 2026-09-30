@@ -11,6 +11,11 @@
  *   `Upstash-Method` and, for protected endpoints, `CRON_SECRET` forwarded as
  *   `Upstash-Forward-Authorization` so the `CRON_SECRET` middleware
  *   (`src/routes/cron.ts`) accepts it.
+ * - **Upsert only — removal is manual.** Deleting an entry from
+ *   {@link QSTASH_SCHEDULES} and re-running leaves the live schedule firing;
+ *   it must be removed through the QStash API/console
+ *   (`DELETE /v2/schedules/{destination}`) or the retired endpoint keeps
+ *   getting called forever.
  *
  * Why this exists instead of Vercel Cron: the Hobby plan allows **one** cron
  * run per day (±59 min), so scheduled background work (e.g. the
@@ -64,6 +69,20 @@ export const QSTASH_SCHEDULES: readonly QStashSchedule[] = [
     id: "credit-reservation-sweep",
     path: "/api/cron/sweep-credit-reservations",
     cron: "*/10 * * * *",
+    method: "POST",
+    forwardCronSecret: true,
+    retries: 3,
+  },
+  {
+    // Audit R9: a custom action charges up front, so an orphaned row (on-demand
+    // GitHub dispatch died / never started) must recover while its reader could
+    // still care. The endpoint only detects + re-dispatches — it never generates
+    // inline — so a 5-minute cadence costs a sub-second HTTP call, not a VM build.
+    // Recovery floor is 3 minutes (CUSTOM_ACTION_GENERATION_STALE_MS), so anything
+    // tighter than `*/2` would buy nothing.
+    id: "custom-action-sweep",
+    path: "/api/cron/sweep-custom-actions",
+    cron: "*/5 * * * *",
     method: "POST",
     forwardCronSecret: true,
     retries: 3,

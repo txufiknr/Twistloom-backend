@@ -47,8 +47,10 @@ const router = new Hono<AppEnv>();
  *
  * Public catalog of every purchasable consumable, in registry display order.
  * Clients use this to render the shop; the `available` flag hides disabled
- * items. Credit prices shown are the registry defaults (demo users still pay 0
- * at purchase time, handled upstream by `getCreditCostForUser`).
+ * items. Credit prices shown are the registry defaults — a *published nominal*
+ * price. The demo account is charged 0 for this purchase at consume time by the
+ * numeric branch of `executeWithCredits` (`services/credits.ts`), which honours
+ * `DEMO_USER_ID` only, not `FEATURE_FREE_DEMO` (see `config/credits.ts`).
  *
  * @route GET /api/consumables
  * @auth None

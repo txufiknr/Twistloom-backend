@@ -2,7 +2,8 @@
  * Cron / Scheduled Tasks Routes
  *
  * Exposes secured endpoints for scheduled platform maintenance,
- * risk maturation holds, and automated disbursement reconciliations.
+ * risk maturation holds, automated disbursement reconciliations, and
+ * orphaned-generation recovery (credit reservations, custom actions).
  *
  * Secured by CRON_SECRET header (Authorization: Bearer <token> or x-cron-secret).
  *
@@ -19,6 +20,7 @@ import { maturePendingEarnings } from "../services/maturation.js";
 import { processPendingPayouts } from "../services/disbursement.js";
 import { evaluateTrustScores } from "../cron/evaluate-trust.js";
 import { runCreditReservationSweep } from "../services/credit-reservations.js";
+import { recoverStaleCustomActionsByDispatch } from "../services/custom-action-sweep.js";
 
 const router = new Hono<AppEnv>();
 
@@ -178,5 +180,50 @@ async function handleSweepCreditReservations(c: Context<AppEnv>) {
 
 router.post("/sweep-credit-reservations", handleSweepCreditReservations);
 router.get("/sweep-credit-reservations", handleSweepCreditReservations);
+
+/**
+ * POST|GET /api/cron/sweep-custom-actions
+ *
+ * Recovers charged custom actions whose on-demand GitHub dispatch died or never
+ * started — a reader pays up front, and if the runner never picks the row up the
+ * money is taken with no page delivered. Detects those rows and re-dispatches them
+ * to the same worker the submit route uses; **never generates in-process**, because
+ * one AI page (~30–50s) plus a batch of them exceeds a serverless function's
+ * `maxDuration`.
+ *
+ * Both methods are registered deliberately, mirroring the credit sweeper:
+ * - `POST` — the Upstash QStash schedule (every 5 minutes).
+ * - `GET`  — Vercel Cron sends GET; ready for the Pro-plan migration.
+ *
+ * Answers 500 when any row fails to dispatch so QStash retries (3 attempts, then
+ * the DLQ). `inFlight > 0` is not an error: it means a live dispatcher already owns
+ * the claim, which is the desired outcome. See `src/services/custom-action-sweep.ts`
+ * for the staleness model and duplicate-safety guards.
+ */
+async function handleSweepCustomActions(c: Context<AppEnv>) {
+  try {
+    const result = await recoverStaleCustomActionsByDispatch();
+    const timestamp = new Date().toISOString();
+
+    if (result.failed > 0) {
+      return c.json(
+        {
+          success: false,
+          error: `Failed to re-dispatch ${result.failed} custom action(s) — will retry on the next run`,
+          data: result,
+          timestamp,
+        },
+        500
+      );
+    }
+
+    return c.json({ success: true, data: result, timestamp });
+  } catch (error) {
+    return cApiError(c, "Failed to sweep custom actions", error);
+  }
+}
+
+router.post("/sweep-custom-actions", handleSweepCustomActions);
+router.get("/sweep-custom-actions", handleSweepCustomActions);
 
 export default router;

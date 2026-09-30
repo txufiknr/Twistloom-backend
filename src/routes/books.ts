@@ -156,8 +156,8 @@ import { releaseGenerationClaim, triggerCandidateGenerationWorkflow, validateAnd
 import { SSE_POLLING_CONFIG } from "../config/candidate-generation.js";
 import { getPsychologicalProfileResult } from "../services/psychological-profile.js";
 import { getLockedPaths } from "../services/locked-paths.js";
-import { runGate0, runGate1, buildCustomActionValidationPrompt, buildCanonicalAction, getRejectionMessage, getRejectionCode, CUSTOM_ACTION_VALIDATION_SCHEMA_DEFINITION, CUSTOM_ACTION_VALIDATION_REQUIRED_FIELDS, CUSTOM_ACTION_GENERATION_STALE_MS } from "../services/custom-actions.js";
-import { getMaxCustomActionChars } from "../config/custom-actions.js";
+import { runGate0, runGate1, buildCustomActionValidationPrompt, buildCanonicalAction, getRejectionMessage, getRejectionCode, CUSTOM_ACTION_VALIDATION_SCHEMA_DEFINITION, CUSTOM_ACTION_VALIDATION_REQUIRED_FIELDS, CUSTOM_ACTION_GENERATION_STALE_MS, CustomActionAlreadyActiveError } from "../services/custom-actions.js";
+import { getMaxCustomActionChars, CUSTOM_ACTION_POLLING_INTERVAL_MS, CUSTOM_ACTION_MAX_POLLING_TIME_MS } from "../config/custom-actions.js";
 import { recordViolationEvent } from "../services/trust-safety.js";
 import { loadOwnCustomActions, mapCustomActionRowToAction } from "../services/book.js";
 import { customActions } from "../db/schema.js";
@@ -174,7 +174,7 @@ import type { CustomActionValidationResult, CustomActionPreviewResponse, CustomA
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { MAX_BRANCHING_PREGENERATION_DEPTH, COMPANION_CACHE_JACCARD_THRESHOLD, COMPANION_CACHE_CANDIDATE_SCAN_LIMIT, COMPANION_SUGGESTIONS_QUERY_MAX_CHARS, COMPANION_HISTORY_LIMIT } from "../config/story.js";
 import { getBookModeCreditCostForUser, getCreditCostForUser, calculateBranchSwitchCost } from "../config/credits.js";
-import { parseIdempotencyKey, findBookByIdempotencyKey, replayOnUniqueViolation, buildAsyncReplay, buildCreationReplay, BOOK_CREATION_STARTED_MESSAGE } from "../services/book-idempotency.js";
+import { parseIdempotencyKey, findBookByIdempotencyKey, replayOnUniqueViolation, buildAsyncReplay, buildCreationReplay, BOOK_CREATION_STARTED_MESSAGE, isUniqueViolation } from "../services/book-idempotency.js";
 import { getJourneyForks, reconstructFork, resolveCurrentPageId, narrateForkAlternative } from "../services/time-travel.js";
 import { savedPaths } from "../db/schema.js";
 import { CREDIT_ERRORS } from "../config/errors.js";
@@ -8429,16 +8429,39 @@ router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, rateLimi
  *
  * Response (202):
  * {
- *   "nextPageId": "page456",
+ *   "message": "Custom action submitted successfully. Page generation in progress.",
+ *   "customActionId": "audit-id",
  *   "pollingInfo": {
- *     "pollingUrl": "/api/books/the-haunting/page456/candidates/status",
+ *     "pollingUrl": "/books/the-haunting/page123/candidates/status",
  *     "pollingIntervalMs": 2000,
  *     "maxPollingTimeMs": 80000
  *   }
  * }
+ *
+ * Conflict (409 — a concurrent submit won the race; no charge stands):
+ * { "error": "...", "message": "...", "code": "customActions.alreadyGenerating",
+ *   "customActionId": "<winner>", "pollingInfo": { ... } }
  */
 router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit(CUSTOM_ACTION_SUBMIT_RATE_LIMIT), requireNotSuspended, requireGenerationQuota, async (c) => {
   let creditsCost: number = getCreditCostForUser(c.get("userId") || null, 'CUSTOM_ACTION');
+  // Bound to the concrete book/page once resolved — lets the catch block answer
+  // a lost concurrent-submit race (audit R1) with the winning row's poll info.
+  let raceScope: { bookIdentifier: string; pageId: string; bookId: string; userId: string } | null = null;
+
+  // Single source for the 409 body: the fast-path pre-check and the lost-race
+  // catch both answer from this shape (code included — AGENTS A9).
+  const alreadyActiveJson = (customActionId: string, scope: { bookIdentifier: string; pageId: string }) => ({
+    error: 'Generation already in progress',
+    message: 'A custom action is already being generated for this page. Please wait for it to complete.',
+    code: 'customActions.alreadyGenerating',
+    customActionId,
+    pollingInfo: {
+      pollingUrl: `/books/${scope.bookIdentifier}/${scope.pageId}/candidates/status`,
+      pollingIntervalMs: CUSTOM_ACTION_POLLING_INTERVAL_MS,
+      maxPollingTimeMs: CUSTOM_ACTION_MAX_POLLING_TIME_MS,
+    },
+  });
+
   try {
     const { identifier, pageId: pageIdParam } = c.req.param();
     const { text: rawText } = c.get("body");
@@ -8473,6 +8496,7 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit
     if (!book || book.id !== dbPage.bookId) {
       return cNotFoundError(c, "Book not found or page does not belong to this book");
     }
+    raceScope = { bookIdentifier, pageId, bookId: book.id, userId };
 
     // Fetch story state
     const storyState = await getStoryStateFromPage(dbPage);
@@ -8516,16 +8540,7 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit
       .limit(1);
 
     if (existingActiveCustom) {
-      return c.json({
-        error: 'Generation already in progress',
-        message: 'A custom action is already being generated for this page. Please wait for it to complete.',
-        customActionId: existingActiveCustom.id,
-        pollingInfo: {
-          pollingUrl: `/books/${bookIdentifier}/${pageId}/candidates/status`,
-          pollingIntervalMs: 2000,
-          maxPollingTimeMs: 80000,
-        },
-      }, 409);
+      return c.json(alreadyActiveJson(existingActiveCustom.id, { bookIdentifier, pageId }), 409);
     }
 
     // Gate 0 — Eligibility with credit check
@@ -8621,6 +8636,28 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit
       userId,
       creditsCost,
       async (tx) => {
+        // Audit R1 — re-check on the WRITE connection inside the charged
+        // transaction. The fast-path pre-check above ran on the replica before
+        // the multi-second AI validation; replica lag (or a second tab that
+        // committed meanwhile) could still admit a duplicate. Throwing here
+        // rolls back the deduction along with everything else, and the partial
+        // unique index `custom_actions_active_book_page_user_unique` backstops
+        // this predicate for any path that bypasses it.
+        const [active] = await tx
+          .select({ id: customActions.id })
+          .from(customActions)
+          .where(and(
+            eq(customActions.bookId, book.id),
+            eq(customActions.pageId, pageId),
+            eq(customActions.userId, userId),
+            isNull(customActions.nextPageId),
+            ne(customActions.outcome, 'reject')
+          ))
+          .limit(1);
+        if (active) {
+          throw new CustomActionAlreadyActiveError(active.id);
+        }
+
         // Persist audit record
         await tx.insert(customActions).values({
           id: auditId,
@@ -8694,12 +8731,36 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit
       customActionId: auditId,
       pollingInfo: {
         pollingUrl,
-        pollingIntervalMs: 2000,
-        maxPollingTimeMs: 80000,
+        pollingIntervalMs: CUSTOM_ACTION_POLLING_INTERVAL_MS,
+        maxPollingTimeMs: CUSTOM_ACTION_MAX_POLLING_TIME_MS,
       },
     } satisfies CustomActionSubmitResponse, 202);
 
   } catch (error) {
+    // Audit R1 — lost a concurrent-submit race: the in-transaction re-check
+    // threw, or the partial unique index rejected the second insert. The
+    // transaction rolled back, so no charge stands. Re-read the winning row
+    // and point the client at its poll instead of reporting a failure.
+    if (raceScope && (error instanceof CustomActionAlreadyActiveError || isUniqueViolation(error))) {
+      const [winner] = await dbWrite
+        .select({ id: customActions.id })
+        .from(customActions)
+        .where(and(
+          eq(customActions.bookId, raceScope.bookId),
+          eq(customActions.pageId, raceScope.pageId),
+          eq(customActions.userId, raceScope.userId),
+          isNull(customActions.nextPageId),
+          ne(customActions.outcome, 'reject')
+        ))
+        .limit(1);
+      // Sentinel path carries the id even if the winner already fulfilled;
+      // a foreign 23505 with no active row falls through to normal handling.
+      const winnerId = winner?.id ?? (error instanceof CustomActionAlreadyActiveError ? error.customActionId : undefined);
+      if (winnerId) {
+        return c.json(alreadyActiveJson(winnerId, raceScope), 409);
+      }
+    }
+
     const errorMessage = getErrorMessage(error);
 
     // Handle insufficient credits error
@@ -8707,6 +8768,7 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit
       return c.json({
         error: 'Insufficient credits',
         message: `You need at least ${creditsCost} credits to submit a custom action`,
+        code: 'customActions.insufficientCredits',
       }, 402);
     }
 

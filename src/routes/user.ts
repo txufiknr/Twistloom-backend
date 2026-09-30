@@ -283,6 +283,7 @@ router.get('/', requireAuth, async (c: Context<AppEnv>) => {
  * @returns {number} inventory.items[].creditsPrice - Credit cost to buy one
  * @returns {boolean} inventory.items[].available - Currently purchasable?
  * @returns {number} inventory.items[].quantity - Owned count
+ * @returns {number|undefined} inventory.items[].maxPerUser - Per-user purchase cap
  * @returns {number} inventory.megaphones - Convenience: owned 📣 Megaphone count
  *
  * @example
@@ -332,6 +333,11 @@ router.get("/inventory", requireAuth, async (c: Context<AppEnv>) => {
       quantity: ownedMap.get(def.type) ?? 0,
       category: def.category,
       honorGate: def.honorGate,
+      // Per-user purchase cap, so a client can size its quantity stepper from
+      // the same payload it already fetches instead of calling the public
+      // catalog a second time. Advisory only: POST /consumables/purchase
+      // re-checks `maxPerUser` inside the `executeWithCredits` transaction.
+      maxPerUser: def.maxPerUser,
     }));
 
     return c.json({

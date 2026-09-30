@@ -1536,6 +1536,17 @@ export type EnrichedStoryPage = Partial<Omit<UserStoryPage, 'stateDelta'>> & {
     /** Keyed by destination page ID → count of unique readers who chose that action */
     choiceCounts: Record<string, number>;
   };
+  /**
+   * Server-authoritative custom-action phase gate (audit D1).
+   *
+   * Computed from the same `phase` Gate 0 enforces, using the single-source
+   * `CUSTOM_ACTION_DISABLED_PHASES` list (config/custom-actions.ts) — so
+   * widening/narrowing that list changes the reader payload in the same
+   * deploy, instead of leaving the client's hardcoded literal behind.
+   * The client treats this as authoritative when present and keeps its local
+   * phase check only as a render-time default until it arrives.
+   */
+  customActionsDisabled?: boolean;
 };
 
 // export type StoryPageNav = Record<number, StoryPageNavItem>;

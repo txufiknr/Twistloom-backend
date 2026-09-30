@@ -1,4 +1,4 @@
-# Payments API Documentation
+﻿# Payments API Documentation
 
 ## Overview
 
@@ -9,8 +9,10 @@ The Payments API provides endpoints for multi-gateway checkout (Stripe + Xendit 
 **Gateways:**
 | Gateway | Credit packs | VIP subscription | Notes |
 |---------|--------------|------------------|--------|
-| `stripe` | ✅ USD Checkout | ✅ | Default |
-| `xendit` | ✅ IDR Invoice | ❌ v1 (Phase 2b later) | Requires `XENDIT_ENABLED=true` |
+| `stripe` | âœ… USD Checkout | âœ… | Default |
+| `xendit` | âœ… IDR Invoice | âŒ v1 (Phase 2b later) | Requires `XENDIT_ENABLED=true` |
+| `google_play` | âœ… verify only | âœ… verify only | No checkout; see [Store Purchase Verification](#store-purchase-verification) |
+| `app_store` | âœ… verify only | âœ… verify only | No checkout; see [Store Purchase Verification](#store-purchase-verification) |
 
 **Authentication:** Most endpoints require NextAuth JWT cookies. Pricing endpoints are public. Webhooks use provider signatures/tokens (not user auth).
 
@@ -33,22 +35,25 @@ The Payments API provides endpoints for multi-gateway checkout (Stripe + Xendit 
    - [Get Subscription Status](#get-paymentssubscription)
    - [Cancel Subscription](#post-paymentssubscriptioncancel)
    - [Open Customer Portal](#get-paymentssubscriptionportal)
-4. [Checkout Sessions](#checkout-sessions)
+4. [Store Purchase Verification](#store-purchase-verification)
+   - [Verify Subscription Purchase](#post-paymentssubscriptionverify)
+   - [Verify Credit Pack Purchase](#post-paymentsstore-creditverify)
+5. [Checkout Sessions](#checkout-sessions)
    - [Create Checkout Session](#post-paymentscreate-checkout-session)
-5. [Webhooks](#webhooks)
+6. [Webhooks](#webhooks)
    - [Handle Stripe Webhook](#post-paymentsstripewebhook)
    - [Handle Xendit Webhook](#post-paymentsxenditwebhook)
-6. [Credit Management](#credit-management)
+7. [Credit Management](#credit-management)
    - [Consume Credits](#post-paymentsconsume-credits)
-7. [Transaction History](#transaction-history)
+8. [Transaction History](#transaction-history)
    - [Get Transaction History](#get-paymentstransactions)
-8. [Error Handling](#error-handling)
-9. [HTTP Headers](#http-headers)
-10. [Rate Limiting](#rate-limiting)
-11. [Authentication](#authentication)
-12. [Database Schema](#database-schema)
-13. [Testing](#testing)
-14. [Changelog](#changelog)
+9. [Error Handling](#error-handling)
+10. [HTTP Headers](#http-headers)
+11. [Rate Limiting](#rate-limiting)
+12. [Authentication](#authentication)
+13. [Database Schema](#database-schema)
+14. [Testing](#testing)
+15. [Changelog](#changelog)
 
 ---
 
@@ -58,7 +63,7 @@ The Payments API provides endpoints for multi-gateway checkout (Stripe + Xendit 
 
 ```typescript
 type PaymentGateway = "stripe" | "xendit";
-// Source: src/types/payment.ts — PAYMENT_GATEWAY.stripe | PAYMENT_GATEWAY.xendit
+// Source: src/types/payment.ts â€” PAYMENT_GATEWAY.stripe | PAYMENT_GATEWAY.xendit
 ```
 
 ### CreditPack
@@ -128,7 +133,7 @@ interface TransactionSummary {
   totalCreditsPurchased: number;
   totalCreditsUsed: number;
   totalCreditsRewarded: number;
-  totalAmountSpent: number;        // Mixed-currency aggregate — prefer per-row amountUsd/amountIdr for display
+  totalAmountSpent: number;        // Mixed-currency aggregate â€” prefer per-row amountUsd/amountIdr for display
   currentBalance: number;
 }
 ```
@@ -201,13 +206,13 @@ Returns credit packs for the selected payment gateway.
 |-------|---------|-------------|
 | `gateway` | `stripe` | `stripe` \| `xendit` |
 
-**Response (200 OK) — Stripe:**
+**Response (200 OK) â€” Stripe:**
 ```json
 [
   {
     "id": "observer",
     "title": "Observer",
-    "tagline": "You watch… but rarely interfere.",
+    "tagline": "You watchâ€¦ but rarely interfere.",
     "description": "Step into the dark without committing...",
     "credits": 50,
     "priceUSD": 2.99,
@@ -221,13 +226,13 @@ Returns credit packs for the selected payment gateway.
 ]
 ```
 
-**Response (200 OK) — Xendit (`?gateway=xendit`):**
+**Response (200 OK) â€” Xendit (`?gateway=xendit`):**
 ```json
 [
   {
     "id": "observer",
     "title": "Observer",
-    "tagline": "You watch… but rarely interfere.",
+    "tagline": "You watchâ€¦ but rarely interfere.",
     "description": "Step into the dark without committing...",
     "credits": 50,
     "priceIdr": 45000,
@@ -240,7 +245,7 @@ Returns credit packs for the selected payment gateway.
 ```
 
 **Errors:**
-- `400` — invalid `gateway`, or Xendit requested while `XENDIT_ENABLED` is not `true`
+- `400` â€” invalid `gateway`, or Xendit requested while `XENDIT_ENABLED` is not `true`
 
 ---
 
@@ -257,7 +262,7 @@ Returns VIP plan metadata for the selected gateway.
 |-------|---------|-------------|
 | `gateway` | `stripe` | `stripe` \| `xendit` |
 
-**Response (200 OK) — Stripe:**
+**Response (200 OK) â€” Stripe:**
 ```json
 {
   "plans": [
@@ -279,7 +284,7 @@ Returns VIP plan metadata for the selected gateway.
 }
 ```
 
-**Response (200 OK) — Xendit:** plan stub with `available: false` and `priceIdr` (checkout not implemented yet).
+**Response (200 OK) â€” Xendit:** plan stub with `available: false` and `priceIdr` (checkout not implemented yet).
 
 **Behavior:**
 - Returns safe data only (prices, descriptions, benefits)
@@ -338,7 +343,7 @@ Creates a VIP subscription checkout. **v1 supports Stripe only.** Pass `gateway:
 
 Creates a Stripe Checkout session for the VIP free trial. This is a separate endpoint (not a param on `create-subscription-checkout`) because trial and non-trial checkout have different validation paths.
 
-**Authentication:** Required (via `requireAuth` — wrapped with `wrapAsync` for async error safety)
+**Authentication:** Required (via `requireAuth` â€” wrapped with `wrapAsync` for async error safety)
 
 **Request Body:**
 ```json
@@ -368,44 +373,44 @@ Creates a Stripe Checkout session for the VIP free trial. This is a separate end
   - Database query failure in `isTrialEligible()`
 
 **Behavior:**
-- Server-side eligibility re-check via `isTrialEligible()` (defense in depth — never trust the frontend gate alone)
+- Server-side eligibility re-check via `isTrialEligible()` (defense in depth â€” never trust the frontend gate alone)
 - Rate-limited: 1 session per 10 seconds per user
 - `metadata.isTrial: "true"` set on both the session and `subscription_data.metadata`
 - Reuses the same `?subscription=success` / `?subscription=cancel` redirect contract as regular subscription checkout
-- `payment_method_collection: "always"` — card required upfront (LinkedIn-style)
+- `payment_method_collection: "always"` â€” card required upfront (LinkedIn-style)
 
 **Debugging:**
 The handler has 11 strategic `[trial-checkout]` console.log checkpoints covering every gate. Check stdout (not stderr) to trace exactly where a failure occurs:
 
 ```
-[trial-checkout] ▶️ Entered handler
+[trial-checkout] â–¶ï¸ Entered handler
 [trial-checkout] userId=abc123
-[trial-checkout] 🔒 Checking rate limit for trial-checkout-abc123
-[trial-checkout] ✅ Rate limit passed
-[trial-checkout] 🔧 VIP_TRIAL.enabled=true
-[trial-checkout] 🔍 Checking trial eligibility for userId=abc123
-[trial-checkout] ✅ Trial eligible=true
-[trial-checkout] 🔗 Checking FRONTEND_URL
-[trial-checkout] ✅ FRONTEND_URL=https://app.twistloom.com
-[trial-checkout] 🔗 Processing returnUrl=...
-[trial-checkout] ✅ URLs: success=..., cancel=...
-[trial-checkout] 🔧 Checking VIP_SUBSCRIPTION.priceId
-[trial-checkout] ✅ VIP_SUBSCRIPTION.priceId=price_xxx
-[trial-checkout] 📡 Querying user's stripeCustomerId
-[trial-checkout] 📡 User lookup: stripeCustomerId=null (will create)
-[trial-checkout] 🏦 Creating new Stripe customer for userId=abc123
-[trial-checkout] ✅ Stripe customer created: id=cus_xxx
-[trial-checkout] 💳 Creating Stripe checkout session...
-[trial-checkout] 💳 trial_period_days=30, endBehavior=cancel
-[trial-checkout] ✅ Stripe session created: id=cs_xxx, url=https://checkout.stripe.com/...
-[trial-checkout] ❌ CAUGHT ERROR: Error: ...
+[trial-checkout] ðŸ”’ Checking rate limit for trial-checkout-abc123
+[trial-checkout] âœ… Rate limit passed
+[trial-checkout] ðŸ”§ VIP_TRIAL.enabled=true
+[trial-checkout] ðŸ” Checking trial eligibility for userId=abc123
+[trial-checkout] âœ… Trial eligible=true
+[trial-checkout] ðŸ”— Checking FRONTEND_URL
+[trial-checkout] âœ… FRONTEND_URL=https://app.twistloom.com
+[trial-checkout] ðŸ”— Processing returnUrl=...
+[trial-checkout] âœ… URLs: success=..., cancel=...
+[trial-checkout] ðŸ”§ Checking VIP_SUBSCRIPTION.priceId
+[trial-checkout] âœ… VIP_SUBSCRIPTION.priceId=price_xxx
+[trial-checkout] ðŸ“¡ Querying user's stripeCustomerId
+[trial-checkout] ðŸ“¡ User lookup: stripeCustomerId=null (will create)
+[trial-checkout] ðŸ¦ Creating new Stripe customer for userId=abc123
+[trial-checkout] âœ… Stripe customer created: id=cus_xxx
+[trial-checkout] ðŸ’³ Creating Stripe checkout session...
+[trial-checkout] ðŸ’³ trial_period_days=30, endBehavior=cancel
+[trial-checkout] âœ… Stripe session created: id=cs_xxx, url=https://checkout.stripe.com/...
+[trial-checkout] âŒ CAUGHT ERROR: Error: ...
 ```
 
 ---
 
 ### GET /payments/subscription/trial-eligibility
 
-Checks whether the current user is eligible for the VIP free trial. This is a UX convenience gate — the backend independently re-checks eligibility at checkout-session creation (server-side security boundary).
+Checks whether the current user is eligible for the VIP free trial. This is a UX convenience gate â€” the backend independently re-checks eligibility at checkout-session creation (server-side security boundary).
 
 **Authentication:** Required (via `requireAuth`)
 
@@ -431,7 +436,7 @@ Checks whether the current user is eligible for the VIP free trial. This is a UX
 
 Returns the authenticated user's current subscription status.
 
-**Authentication:** Optional (via `optionalAuth`) — returns `{ hasActiveSubscription: false }` for guests
+**Authentication:** Optional (via `optionalAuth`) â€” returns `{ hasActiveSubscription: false }` for guests
 
 **Response (200 OK) - Active Subscription:**
 ```json
@@ -498,10 +503,13 @@ Creates a Stripe Customer Portal session for subscription management. This allow
 **Error Responses:**
 - **404 Not Found**: No subscription found
 - **401 Unauthorized**: Authentication required
+- **409 Conflict**: `store_managed_subscription` — the live linked subscription (or, when there is none, the newest one) is a Play/App Store purchase
 - **500 Internal Server Error**: Stripe API error
 
 **Behavior:**
 - Creates Stripe Customer Portal session
+- **The customer handle comes from the live linked row** — the subscription `users.subscription_id` points at and that is still `active`/`trialing`, the same row `/subscription/cancel` resolves. A later-created, already-lapsed store row therefore cannot answer `409` while a Stripe subscription is live
+- Falls back to the newest row, then to `users.customer_id`, only when there is no live linked row
 - Redirects user to Stripe's hosted management portal
 - User can update payment method, cancel immediately, etc.
 - Returns to specified returnUrl after portal session
@@ -529,6 +537,7 @@ Cancels the authenticated user's active subscription at the period end (not imme
 **Error Responses:**
 - **401 Unauthorized**: Authentication required
 - **404 Not Found**: No active subscription found
+- **409 Conflict**: `store_managed_subscription` â€” the subscription belongs to Google Play / App Store; cancel it in the store's own subscription manager
 - **500 Internal Server Error**: Stripe API error
 
 **Behavior:**
@@ -536,6 +545,110 @@ Cancels the authenticated user's active subscription at the period end (not imme
 - Updates local database record
 - User retains access until the end of the current billing period
 - For immediate cancellation, use the Stripe Customer Portal
+- Store-managed subscriptions (`gateway = google_play | app_store`) never reach Stripe or Xendit
+
+---
+
+## Store Purchase Verification
+
+Google Play and App Store purchases settle **server-side** â€” there is no hosted checkout and no gateway webhook. The client sends lookup keys only; every fact used to decide entitlement comes back from the Play Developer API or the App Store Server API. A client-supplied receipt, signature or `signedTransaction` is **never** a grant source.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Rate limit:** 5 requests / 60 s per user, per endpoint.
+
+**Store-managed rows:** grants are written with `gateway = "google_play" | "app_store"`. Those gateways never enter `getGatewayAdapter`, so the gateway-managed routes answer `409 store_managed_subscription` instead of calling Stripe or Xendit.
+
+**Configuration (owner gate OG-2):** both endpoints answer `503 store_verification_unavailable` while the Google Play service account or the App Store Server API key is missing. Treat `503` as *not configured* â€” never as a denial and never as a grant; retry after credentials are published rather than inferring an outcome.
+
+### POST /payments/subscription/verify
+
+Confirms a Play/App Store VIP subscription purchase and grants (or re-confirms) VIP.
+
+**Request body:**
+```json
+{
+  "platform": "googlePlay",
+  "productId": "vip_monthly",
+  "transactionId": "<purchase token / StoreKit transaction id>",
+  "signedTransaction": "<StoreKit JWS â€” hint only>"
+}
+```
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `platform` | `"googlePlay" \| "appStore"` | yes | `google_play` / `app_store` also accepted |
+| `productId` | string | yes | Must resolve to a registered subscription product |
+| `transactionId` | string | yes | Play purchase token, or StoreKit transaction id |
+| `signedTransaction` | string | no | StoreKit JWS hint, never decoded or read by any verifier | â€” never trusted on its own |
+
+**Responses:**
+
+| Status | Body | Meaning |
+|--------|------|---------|
+| `200` | `{ "status": "verified", "subscription": { â€¦ }, "credits": 120 }` | Entitlement confirmed and granted. `subscription` has the same shape as `GET /payments/subscription`; `credits` is the account balance **after** the grant |
+| `200` | `{ "status": "pending" }` | Awaiting payment / Ask to Buy â€” nothing granted |
+| `200` | `{ "status": "denied" }` | Store rejected the proof, the period has lapsed, or the purchase token belongs to another account â€” nothing granted |
+| `400` | `{ "success": false, "error": â€¦, "code": â€¦ }` | `invalid_platform`, `missing_purchase_proof`, `unknown_product`, `product_kind_mismatch` |
+| `401` | `{ "success": false, "error": "Authentication required" }` | No session |
+| `429` | `{ "success": false, "error": "Too many verification attempts. Please wait before trying again." }` | 5 / 60 s per user |
+| `503` | `{ "success": false, "error": "Store verification is not configured yet", "code": "store_verification_unavailable" }` | Store credentials missing (OG-2) |
+| `500` | `{ "success": false, "error": "Failed to verify subscription purchase" }` | Unexpected verifier or persistence failure |
+
+**Behavior:**
+- **Idempotent.** The grant keys on `(gateway, provider_subscription_id)`, so replaying the same proof re-confirms the same entitlement instead of granting twice, and `credits` reports the resulting balance rather than a fresh award.
+- A lapsed or canceled store subscription reports `denied`; an existing local record is moved to `canceled`.
+- A purchase token that resolves to a row another account already owns reports `denied`: nothing is granted and the other account's row is never relinked to the caller.
+- An unknown or wrong-kind `productId` is refused before any store is contacted.
+- No entitlement is granted for `pending` or `denied` outcomes.
+- **Verification is read-only; the store write is post-grant.** `:acknowledge` runs only after the grant transaction commits, never on `pending`, `denied` or a refused grant — so Play's three-day auto-refund stays available for anything this endpoint did not deliver. A failed finalize never changes this response; replaying the verify retries it.
+
+### POST /payments/store-credit/verify
+
+Confirms a Play/App Store credit pack purchase and awards the pack **exactly once**.
+
+**Request body:**
+```json
+{
+  "store": "google_play",
+  "productId": "<store product id of the pack>",
+  "verificationData": "<purchase token / StoreKit transaction id>",
+  "packId": "credits_50",
+  "accountId": "<obfuscated store account>"
+}
+```
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `store` | `"google_play" \| "app_store"` | yes | `platform` is accepted as an alias |
+| `productId` | string | yes | Must resolve in `CREDIT_PACKS.storeProductId` |
+| `verificationData` | string | yes | Play purchase token, or StoreKit transaction id |
+| `packId` | string | no | Pack the client displayed; cross-checked against the resolved pack |
+| `accountId` | string | no | Obfuscated store account â€” attribution only, never an identity claim |
+
+**Responses:**
+```json
+{ "status": "verified", "granted": true,  "alreadyGranted": false, "bonusCredits": 10, "newBalance": 60 }
+{ "status": "pending",  "granted": false, "alreadyGranted": false, "bonusCredits": 0,  "newBalance": 0 }
+{ "status": "denied",   "granted": false, "alreadyGranted": false, "bonusCredits": 0,  "newBalance": 0 }
+```
+
+`granted` and `newBalance` are **always** present â€” including on `pending` and `denied` â€” so the client can render a truthful balance without a second request.
+
+**Errors:** identical to the subscription endpoint, plus:
+
+| Status | `code` | Meaning |
+|--------|--------|---------|
+| `400` | `product_kind_mismatch` | `productId` is a subscription product, or `packId` does not match the resolved pack |
+| `503` | `store_verification_unavailable` | Store credentials missing (OG-2) |
+
+**Behavior:**
+- **Product binding is server-side.** `productId` must resolve in `CREDIT_PACKS.storeProductId`, so a proof for a cheap pack cannot be presented as an expensive one.
+- **Idempotent.** The award keys on `(gateway, provider_payment_id)`; a replay returns `alreadyGranted: true`, `granted: false` and the unchanged balance.
+- **Ownership is checked, not assumed.** A purchase token that resolves to a `transactions` row another account owns answers `{ "status": "denied", "granted": false, "alreadyGranted": false }` — never `alreadyGranted: true`, and the other account's row is left untouched.
+- `bonusCredits` is the first-purchase bonus actually applied **by this call** (`0` on a replay); `newBalance` is the balance after both the pack and that bonus.
+- The pack award and any first-purchase bonus are applied in a single transaction; the audit row in `webhook_deliveries` (unique `(gateway, event_id)`) is written best-effort after that commit, so a duplicate verification leaves exactly one award.
+- **Entry gate OG-5 — Play finalization is server-side, Apple is not.** After a committed grant this endpoint tells Play the purchase is finished: `:consume` for the pack (the only write that makes it re-buyable) and, for subscriptions, `:acknowledge`. It runs only on a granted result — a `denied` grant is deliberately left un-finalized so Play's three-day auto-refund still applies — and a failure is logged without changing this response: replaying the verify retries it. The App Store half has no server-side equivalent (StoreKit finish is device-only), so the client still owns `finishTransaction`. Until OG-1/OG-2 clear, this endpoint has no production caller (`kStoreCreditGrantConfigured` stays `false`). See [`OWNER_GATES_REGISTER.md`](../roadmap/OWNER_GATES_REGISTER.md) OG-5.
 
 ---
 
@@ -573,7 +686,7 @@ Parameters:
 
 Xendit example: `url` is Xendit `invoice_url`, `sessionId` is invoice id, `gateway: "xendit"`.
 
-**Errors:** `400` invalid gateway / Xendit disabled · `401` · `404` pack · `429` · `500`
+**Errors:** `400` invalid gateway / Xendit disabled Â· `401` Â· `404` pack Â· `429` Â· `500`
 
 **Behavior:**
 - Rate limit: 1 request / 10s / user
@@ -589,16 +702,16 @@ Xendit example: `url` is Xendit `invoice_url`, `sessionId` is invoice id, `gatew
 
 Stripe-signed webhook for payments and subscriptions.
 
-**Auth:** `stripe-signature` header · **Env:** `STRIPE_WEBHOOK_SECRET`
+**Auth:** `stripe-signature` header Â· **Env:** `STRIPE_WEBHOOK_SECRET`
 
 **Response:** `{ "received": true }` (or `{ "received": true, "duplicate": true }`)
 
 **Handled events:**
-- `checkout.session.completed` (mode=payment) — credit pack purchase
-- `charge.refunded` — claw back credits
+- `checkout.session.completed` (mode=payment) â€” credit pack purchase
+- `charge.refunded` â€” claw back credits
 - `customer.subscription.created|updated|deleted`
 - `invoice.payment_succeeded` (renewals only, `billing_reason=subscription_cycle`)
-- `invoice.payment_failed` → `past_due`
+- `invoice.payment_failed` â†’ `past_due`
 - `customer.subscription.trial_will_end`
 
 Writes `gateway: "stripe"` on all DB rows.
@@ -616,7 +729,7 @@ Xendit Invoice callbacks (credit packs v1).
 **Response:** `{ "received": true }` or `{ "received": true, "duplicate": true }`
 
 **Behavior:**
-- On paid/settled invoice → award pack credits + optional first-purchase bonus
+- On paid/settled invoice â†’ award pack credits + optional first-purchase bonus
 - Idempotent via `(gateway, provider_event_id)` / delivery tracking
 - Non-paid statuses are acknowledged without awarding
 
@@ -860,7 +973,7 @@ Different endpoints have different rate limits to prevent abuse:
 - `GET /payments/subscription/portal`: 30 requests per minute per user
 
 **Webhook endpoint:**
-- `POST /payments/stripe/webhook`: 300 requests per minute global (Stripe only — shared Redis key)
+- `POST /payments/stripe/webhook`: 300 requests per minute global (Stripe only â€” shared Redis key)
 
 Rate limiting is implemented using Redis with IP-based and user-based keys.
 
@@ -885,7 +998,7 @@ Most endpoints require authentication via NextAuth JWT cookies:
 - `GET /payments/subscription/portal`
 
 **Optional Authentication (different response for guests):**
-- `GET /payments/subscription` — returns `{ hasActiveSubscription: false }` for unauthenticated users
+- `GET /payments/subscription` â€” returns `{ hasActiveSubscription: false }` for unauthenticated users
 
 **Public Endpoints:**
 - `GET /payments/credit-packs` (pricing information)
@@ -1050,24 +1163,33 @@ curl "https://api.twistloom.com/payments/transactions?limit=20&type=reward" \
 
 ## Changelog
 
-### v2.0.0 (2026-07-24) — Gateway-agnostic + Xendit credit packs
-- **Schema (Drizzle):** renamed Stripe-specific columns → `gateway` + `provider_*`; unique constraints scoped by gateway
+### v2.1.0 (2026-09-30) - Store purchase verification (Google Play / App Store)
+- **Routes:** `POST /payments/subscription/verify`, `POST /payments/store-credit/verify` - server-side store verification with idempotent VIP and credit-pack grants; both `503 store_verification_unavailable` until store credentials exist (owner gate OG-2)
+- **Types:** `paymentGateways` gained `google_play` / `app_store`; new `storeGateways`, `hostedGateways`, `isStoreGateway`, `isHostedGateway`, `StoreGateway`, `HostedGateway`
+- **Config:** `src/config/store-verification.ts`; `GOOGLE_PLAY_*` / `APP_STORE_*` in `.env.example`; `CreditPack.storeProductId`
+- **Store-managed rows:** `POST /subscription/cancel` and `GET /subscription/portal` answer `409 store_managed_subscription` for `google_play` / `app_store` subscriptions
+- **Tests:** `tests/store-verification.test.ts` (24 cases) with `tests/helpers/store-verification-db.ts`
+- **Pending:** OG-1 store product ids and OG-2 credentials; the Apple path returns `503` until App Store Server API keys are published (App Store Server Notifications deferred to OG-4)
+- **Finalization (OG-5):** verification is read-only; the Play write (`:acknowledge` for subscriptions, `:consume` for packs) now runs **after** the grant commits, is skipped for a refused grant, and never fails the response — replaying the verify is the retry. Apple finish stays client-side (StoreKit is device-only). Google's reference resolves two Play questions (consume is documented as the one-time-product form of acknowledgement; `get` exists to report consumption status); two remain for one sandbox pass — whether REST `:consume` accepts a client-acknowledged purchase, and whether `purchaseState` stays `0` after a consume. Register: [`OWNER_GATES_REGISTER.md`](../roadmap/OWNER_GATES_REGISTER.md)
+
+### v2.0.0 (2026-07-24) â€” Gateway-agnostic + Xendit credit packs
+- **Schema (Drizzle):** renamed Stripe-specific columns â†’ `gateway` + `provider_*`; unique constraints scoped by gateway
 - **Type:** `PaymentGateway` / `PAYMENT_GATEWAY` in `src/types/payment.ts`
 - **Credit packs:** `GET /credit-packs?gateway=`, `POST /create-checkout-session` body `{ gateway }`
 - **Xendit:** Invoice checkout + `POST /xendit/webhook` (`x-callback-token`); env `XENDIT_*`
 - **Subscriptions:** `providerSubscriptionId` in GET `/subscription`; plans endpoint gateway-aware; VIP still Stripe-only
 - **Transactions API:** `amountUsd` / `amountIdr` by gateway; `awardCredits` writes provider IDs
-- **Docs:** architecture §14; this API doc updated
+- **Docs:** architecture Â§14; this API doc updated
 - **Pending:** run `pnpm db:generate` + migrate before deploy
 
 ### v1.6.0 (2026-07-14)
-- **Async error hardening**: Added `wrapAsync()` utility in `src/utils/error.ts` to catch promise rejections from async Express middleware (Express 4.x does not handle these natively). Applied to `POST /payments/create-trial-checkout-session` — both `requireAuth` and the handler itself are wrapped.
+- **Async error hardening**: Added `wrapAsync()` utility in `src/utils/error.ts` to catch promise rejections from async Express middleware (Express 4.x does not handle these natively). Applied to `POST /payments/create-trial-checkout-session` â€” both `requireAuth` and the handler itself are wrapped.
 - **Debug logging**: `handleApiError()` now writes to both stdout (`console.log`) and stderr (`console.error`) so error output is visible regardless of which stream the operator is watching.
 - **11-step trace**: `POST /payments/create-trial-checkout-session` now logs every gate (rate limit, eligibility, URL validation, Stripe customer lookup, Stripe session creation) with `[trial-checkout]` tags.
 - **Documentation**: Added missing `POST /payments/create-trial-checkout-session` and `GET /payments/subscription/trial-eligibility` API sections with full error response details and debugging guidance.
 
 ### v1.5.0 (2026-07-12)
-- Migrated `transactions.amount_usd` (real) → `transactions.amount_cents` (integer) for Stripe-compatible precision
+- Migrated `transactions.amount_usd` (real) â†’ `transactions.amount_cents` (integer) for Stripe-compatible precision
 - API response `amountUsd` is now computed as `amountCents / 100` (no frontend contract change)
 - Fixed `POST /payments/subscription/cancel` to join via `users.subscriptionId` (canonical pattern)
 - Added `isTrial: "false"` metadata to regular `create-subscription-checkout` for Stripe symmetry
@@ -1624,13 +1746,13 @@ export function usePaymentStatus() {
 
 **Intended Flow:**
 User on: /books/hush-frequency/019df7bf-2692-73e9-902b-0670ade943a5
-↓ Click "Top up" → Modal appears
-↓ Buy "Observer Package"
-↓ Stripe payment
-↓ Returns to: /books/hush-frequency/019df7bf-2692-73e9-902b-0670ade943a5?payment=success
-↓ Frontend detects param → invalidates queries
-↓ Credits updated (2 → 52) without full page reload
-↓ User can choose another action
+â†“ Click "Top up" â†’ Modal appears
+â†“ Buy "Observer Package"
+â†“ Stripe payment
+â†“ Returns to: /books/hush-frequency/019df7bf-2692-73e9-902b-0670ade943a5?payment=success
+â†“ Frontend detects param â†’ invalidates queries
+â†“ Credits updated (2 â†’ 52) without full page reload
+â†“ User can choose another action
 
 ```typescript
 // src/app/books/[slug]/[pageId]/page.tsx
@@ -1687,25 +1809,25 @@ export default function ReaderPage({ params }: { params: { slug: string; pageId:
 #### Why This Pattern?
 
 **Benefits:**
-- ✅ User stays in reading context (no navigation away from book)
-- ✅ No full page reload (feels seamless)
-- ✅ Credits update instantly via query invalidation
-- ✅ Works with any page (reader, dashboard, etc.)
-- ✅ Webhook-based credit granting (secure, not frontend-dependent)
+- âœ… User stays in reading context (no navigation away from book)
+- âœ… No full page reload (feels seamless)
+- âœ… Credits update instantly via query invalidation
+- âœ… Works with any page (reader, dashboard, etc.)
+- âœ… Webhook-based credit granting (secure, not frontend-dependent)
 
 **Security:**
-- ✅ Credits are granted via webhook, not frontend
-- ✅ Query param only triggers UI refresh, not credit allocation
-- ✅ Backend validates all operations
+- âœ… Credits are granted via webhook, not frontend
+- âœ… Query param only triggers UI refresh, not credit allocation
+- âœ… Backend validates all operations
 
 **Fallback:**
 - If `returnUrl` is not provided, backend uses legacy behavior (`/dashboard?success=true`)
 
 **Key points:**
-- ✅ Credits granted via webhook (secure, not frontend-dependent)
-- ✅ Query param only triggers UI refresh, not credit allocation
-- ✅ User stays in reading context (no navigation away)
-- ✅ Works with TanStack Query invalidation for seamless UX
+- âœ… Credits granted via webhook (secure, not frontend-dependent)
+- âœ… Query param only triggers UI refresh, not credit allocation
+- âœ… User stays in reading context (no navigation away)
+- âœ… Works with TanStack Query invalidation for seamless UX
 
 ### Credit Consumption
 
@@ -2011,7 +2133,7 @@ export default function PaymentSuccessPage() {
     <div className="min-h-screen flex items-center justify-center">
       <div className="bg-white p-8 rounded-lg shadow-lg max-w-md">
         <div className="text-center">
-          <div className="text-green-500 text-6xl mb-4">✓</div>
+          <div className="text-green-500 text-6xl mb-4">âœ“</div>
           <h1 className="text-2xl font-bold mb-2">Payment Successful!</h1>
           <p className="text-gray-600 mb-6">
             Your credits have been added to your account.

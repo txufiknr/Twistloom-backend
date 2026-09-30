@@ -15,7 +15,7 @@ import { calculatePlatformFee, calculateCreatorAmount, THANKS_CONFIG } from "../
 import { XENDIT_CONFIG } from "../config/xendit.js";
 import { getErrorMessage } from "../utils/error.js";
 import { isUniqueConstraintError } from "../utils/retry.js";
-import { PAYMENT_GATEWAY, type PaymentGateway } from "../types/payment.js";
+import { PAYMENT_GATEWAY, type HostedGateway } from "../types/payment.js";
 import type { WalletCurrency } from "../types/wallet.js";
 import { sendSystemBroadcast, type SystemBroadcastI18nPayload } from "./broadcast.js";
 
@@ -28,7 +28,8 @@ export interface RecordThanksOptions {
   pageId?: string;
   grossAmount: number;
   currency: string;
-  gateway?: PaymentGateway;
+  /** Hosted-checkout gateway the tip was settled on; store gateways cannot tip. */
+  gateway?: HostedGateway;
   stripeSessionId?: string;
   stripePaymentIntentId?: string;
   stripeEventId?: string;

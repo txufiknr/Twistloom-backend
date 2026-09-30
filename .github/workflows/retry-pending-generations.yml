@@ -2,7 +2,7 @@ name: Actions Candidate Generations
 
 on:
   schedule:
-    - cron: '0 */12 * * *' # Every 12 hours
+    - cron: '0 */12 * * *' # Every 12 hours — full run (custom-action sweep + heavy canon sweep)
   workflow_dispatch:      # Allow manual triggering
     inputs:
       book_title:
@@ -31,10 +31,14 @@ on:
 # more than once; without a concurrency group both copies would run in parallel and race
 # the same generation. Runs are queued rather than cancelled (`cancel-in-progress: false`)
 # so an in-flight generation is never killed mid-flight; a second pending run for the same
-# page is dropped by GitHub's one-pending-run rule. Scheduled runs have no page id and get
-# a per-run group, so they never block or cancel on-demand runs.
+# page is dropped by GitHub's one-pending-run rule.
+#
+# Scheduled runs key on `github.event.schedule` (the cron string that fired) rather than
+# `github.run_id`, so repeats of the same schedule share one group: a run that outlasts its
+# cadence no longer stacks a second checkout + install on top of the first.
+# Manual dispatches without a page id still get a per-run group.
 concurrency:
-  group: candidate-gen-${{ github.event.inputs.page_id || github.run_id }}
+  group: candidate-gen-${{ github.event.inputs.page_id || github.event.schedule || github.run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -69,17 +73,21 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # Build TypeScript to JavaScript
-      - name: Build project
-        run: bun run build
-
-      # Ensure compiled file exists before running
-      - name: Verify build
-        run: test -f dist/cron/retry-pending-generations.js
-
-      # Execute retry pending generations cron job
+      # No `bun run build` here: this job ran `tsc -p tsconfig.build.json` (full
+      # emit, `declaration` + `declarationMap` + `sourceMap`) on every trigger,
+      # and it bought nothing this job uses. Bun executes TypeScript natively
+      # (`.js` specifiers resolve to their `.ts` sources), so the cron is invoked
+      # from `src/` directly. Type checking still happens on every push/PR in
+      # `ci.yml` (`bun run check`).
+      #
+      # The minutes-scale custom-action sweep (audit R9) no longer lives here: it
+      # runs as `POST /api/cron/sweep-custom-actions` on an Upstash QStash
+      # `*/5` schedule, which costs a sub-second HTTP call instead of a VM build.
+      # This job keeps the 12-hour full batch — where inline AI generation has a
+      # 30-minute timeout — plus manual `workflow_dispatch`. `--custom-only` is
+      # still accepted for a quick local/manual custom-action-only run.
       - name: Run retry pending generations job
-        run: bun dist/cron/retry-pending-generations.js
+        run: bun src/cron/retry-pending-generations.ts
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DATABASE_READ_URL: ${{ secrets.DATABASE_READ_URL || secrets.DATABASE_URL }}

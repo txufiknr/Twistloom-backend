@@ -27,6 +27,20 @@
     - 14.3 [Indonesian & Southeast Asian payment gateways comparative evaluation](#143-indonesian--southeast-asian-payment-gateways-comparative-evaluation)
 15. [Known issues & future enhancements](#15-known-issues--future-enhancements)
 16. [Implementation status](#16-implementation-status)
+17. [Creator Payout Verification & Bank Account Validation (Phase 1 & 2)](#17-creator-payout-verification--bank-account-validation-phase-1--2)
+    - 17.1 [Security Architecture: AES-256-GCM Encryption & Blind Indexing](#171-security-architecture-aes-256-gcm-encryption--blind-indexing)
+    - 17.2 [Fuzzy Name Matching Engine](#172-fuzzy-name-matching-engine-srcutilsfuzzy-namets)
+    - 17.3 [Xendit Account Inquiry Switch & Local Dev Fallback](#173-xendit-account-inquiry-switch--local-dev-fallback)
+    - 17.4 [Audit Trail Schema](#174-audit-trail-schema)
+18. [Automated Disbursement Pipeline & Global Tax Compliance](#18-automated-disbursement-pipeline--global-tax-compliance)
+19. [Store purchase verification (Google Play / App Store)](#19-store-purchase-verification-google-play--app-store)
+    - 19.1 [Why verification, not webhooks](#191-why-verification-not-webhooks)
+    - 19.2 [Request flow](#192-request-flow)
+    - 19.3 [Stores are not gateway adapters](#193-stores-are-not-gateway-adapters)
+    - 19.4 [Idempotency & concurrency](#194-idempotency--concurrency-1)
+    - 19.5 [Failure semantics](#195-failure-semantics)
+    - 19.6 [Finalization: read → grant → write](#196-finalization-read--grant--write)
+    - 19.7 [Known limitations & entry gates](#197-known-limitations--entry-gates)
 
 ---
 
@@ -852,8 +866,10 @@ For creator payouts, Twistloom integrates Xendit Single Disbursements (`POST htt
 | GET | `/subscription` | optional | Both | Current subscription status |
 | GET | `/subscription/trial-eligibility` | required | Both | Trial eligibility check |
 | GET | `/subscription-plans` | none | Both | Plan pricing/benefits |
-| POST | `/subscription/cancel` | required | Both | Cancel at period end |
+| POST | `/subscription/cancel` | required | Both | Cancel at period end (`409 store_managed_subscription` for store rows) |
 | GET | `/subscription/portal` | required | Stripe only | Customer Portal URL |
+| POST | `/subscription/verify` | required | Store only | Confirm a Play/App Store VIP purchase; grant idempotently |
+| POST | `/store-credit/verify` | required | Store only | Confirm a Play/App Store credit pack; award exactly once |
 | POST | `/stripe/webhook` | Stripe sig | Stripe | Webhook ingestion |
 | POST | `/xendit/webhook` | Callback token | Xendit | Webhook ingestion (credits & recurring) |
 | POST | `/xendit/disbursement-webhook` | Callback token | Xendit | Payout disbursement callback reconciliation |
@@ -869,6 +885,8 @@ All checkout/portal endpoints that accept a `returnUrl` validate its origin agai
 - **`GET /subscription/portal`** — Stripe only. Xendit has no equivalent hosted portal; cancel is done via `POST /subscription/cancel`.
 - **`POST /stripe/webhook`** — Stripe only. Uses `stripe-signature` header verification.
 - **`POST /xendit/webhook`** — Xendit only. Uses `x-callback-token` header verification.
+
+- **`POST /subscription/verify`**, **`POST /store-credit/verify`** - store-managed gateways (`google_play`, `app_store`) only. No hosted checkout and no webhook: entitlement comes from the store's own API, see [19](#19-store-purchase-verification-google-play--app-store).
 
 ### Gateway-agnostic routes
 
@@ -1334,5 +1352,115 @@ Disbursements execute through an asynchronous, fault-tolerant state machine in `
 
 ---
 
-*Last updated: September 2026 (Phase 1 & 2 Creator Payout Verification, AES-256 encryption with v1 key versioning, blind index Sybil prevention, Xendit local dev fallback, KYC audit ledger, and automated disbursement pipeline complete. Companion to frontend doc: `PAYMENTS_ARCHITECTURE_FRONTEND.md`)*
+## 19. Store purchase verification (Google Play / App Store)
+
+Google Play and App Store purchases settle through a **verification round trip** instead of a hosted checkout plus provider webhook. The client reports lookup keys only; the server asks the store's own API whether the purchase is real, entitled and unexpired, then writes the same `subscriptions` / `transactions` rows the hosted gateways write. The Flutter half of this contract is `VipSubscriptionStatus` + `StoreCreditVerificationResponse`; the owner-held prerequisites are OG-1 (store product ids) and OG-2 (store credentials) in [`OWNER_GATES_REGISTER.md`](../roadmap/OWNER_GATES_REGISTER.md).
+
+### 19.1 Why verification, not webhooks
+
+| Constraint | Consequence |
+|---|---|
+| Neither store pushes subscription state until OG-4 (RTDN / App Store Server Notifications) exists | The client must be able to re-confirm at any time, so every path must be idempotent |
+| Receipts arrive in an app we do not control | The client is untrusted: proof may be stale, replayed or fabricated |
+| Grants are charged, non-reversible side effects | Verification happens server-side, before any row is written |
+
+The resulting invariant: **the store API is the only authority for `entitled`.** Nothing recomputes entitlement from a clock, a flag or a payload the client controls, and a client `signedTransaction` is carried through the contract but never decoded or read — no verifier consults it.
+
+### 19.2 Request flow
+
+```mermaid
+sequenceDiagram
+    participant C as Flutter client
+    participant R as routes/payments.ts
+    participant V as services/store-verification
+    participant S as Play / App Store API
+    participant G as grant.ts
+    participant D as PostgreSQL
+
+    C->>R: POST /subscription/verify {platform, productId, transactionId}
+    R->>R: rate limit 5/min + parse + resolveStoreProduct
+    R-->>C: 400 unknown_product / product_kind_mismatch
+    R->>V: verifyStorePurchase(...)
+    V-->>R: unavailable (credentials missing, OG-2)
+    R-->>C: 503 store_verification_unavailable
+    V->>S: subscription / product lookup  (read-only)
+    S-->>V: state + expiry
+    V-->>R: pending | denied
+    R-->>C: 200 {status: pending | denied}
+    V-->>R: StoreReceipt (entitled)
+    R->>G: grantVipFromStore / grantStoreCreditPurchase
+    G->>D: upsert keyed by (gateway, provider id)
+    G-->>R: subscription echo / new balance
+    R->>V: finalizeStorePurchase(receipt)  (write, only after commit)
+    V->>S: Play write — acknowledge (subscription) or consume (pack)
+    R-->>C: 200 {status: verified, subscription, credits}
+```
+
+### 19.3 Stores are not gateway adapters
+
+`getGatewayAdapter` exists to attach cancel / refund / customer-portal operations to a hosted provider. Play and App Store expose no such operation this server can perform: a store subscription is managed in the platform's own subscription manager. Returning `null` (what an unknown gateway would do) surfaces as a generic 500, so `storeGateways` is a first-class discriminator in `src/types/payment.ts` and `POST /subscription/cancel` plus `GET /subscription/portal` answer `409 store_managed_subscription`. The Flutter client renders that code as a link out to platform subscription settings rather than as a failure.
+
+### 19.4 Idempotency & concurrency
+
+Section [10](#10-idempotency--concurrency) states the shared principle; the store path adds no application-level "already granted" flag:
+
+- `subscriptions` unique `(gateway, provider_subscription_id)` — one row per purchase chain; a replay re-confirms it instead of creating a second.
+- `renewSubscription` unique `(gateway, provider_invoice_id)` with the deterministic id `${gateway}:${productId}:${periodEnd}` — a resubmitted proof for a new paid period applies its credits at most once.
+- `transactions` unique `(gateway, provider_payment_id)` — one award per purchase. A lost insert race surfaces as the unique-constraint error; the winner is re-read on the primary and reported as `alreadyGranted: true` only when that winner is this same account — otherwise the answer is `denied`.
+- The audit row in `webhook_deliveries` (unique `(gateway, event_id)`) is written best-effort **after** the grant commit; a conflict means "already recorded", not "failed", and any other audit failure is logged rather than surfaced (surfacing it would answer a committed grant with a 500).
+- **Ownership, not just idempotency.** The store API proves the *purchase*, never which local account owns it — two app accounts can share a device and a purchase token or `originalTransactionId` is only as private as that device. Every grant path therefore refuses to touch (or relink to the caller) a `subscriptions` / `transactions` row whose `user_id` belongs to someone else: `grantVipFromStore` answers `denied`, `grantStoreCreditPurchase` answers `denied` instead of `alreadyGranted`, and `ensureUserLinkedToSubscription` re-checks ownership on the primary before it writes `users.subscription_id`. Without that check a second account presenting the same token would silently repoint `users.subscription_id` at the first account's row, unlinking whatever the caller legitimately had.
+
+### 19.5 Failure semantics
+
+| Response | Reading |
+|---|---|
+| `503 store_verification_unavailable` | Credentials missing (OG-2). Not an answer: grant nothing, deny nothing, retry after publication |
+| `200 {status: pending}` | Awaiting payment / Ask to Buy. Nothing granted |
+| `200 {status: denied}` | Store rejected the proof, the period lapsed, or the purchase token resolves to a row another account already owns. Nothing granted and nothing relinked; an existing local VIP row is moved to `canceled` for the expiration cron to reconcile |
+| `200 {status: verified, …}` | Granted or re-confirmed. `credits` / `newBalance` are the balance **after** this call |
+| `409 store_managed_subscription` | Management lives in the platform app store, not here |
+| `400 product_kind_mismatch` | A subscription proof presented against a credit-pack product (or the reverse), or `packId` disagreed with the resolved pack |
+
+Credit-pack responses carry `granted` and `newBalance` even on `pending` and `denied`, because `StoreCreditVerificationResponse` requires them — the route reads the balance rather than omitting the field.
+
+### 19.6 Finalization: read → grant → write
+
+Verification is a **read**. The store's own write — `:acknowledge` / `:consume` — is a separate step that runs only *after* the grant has committed:
+
+| Step | Where | Play call | Failure handling |
+|---|---|---|---|
+| `verifyStorePurchase` | read | `purchases.subscriptionsv2.get` / `purchases.products.get` | answers `verified` / `pending` / `denied` / `unavailable`; never mutates |
+| `grantVipFromStore` / `grantStoreCreditPurchase` | Postgres transaction | none | rolls back together with the credit deduction |
+| `finalizeStorePurchase` | write | `:acknowledge` (subscription) / `:consume` (pack) | best-effort: logs, returns `false`, never fails the response |
+
+**Why the write cannot move earlier.** Play auto-refunds an unacknowledged purchase after three days. Acknowledging inside the verifier — before this server knows its own transaction committed — destroys that safety net for a grant that may still fail, while still not making a credit pack re-buyable. It is the worst of both orders: no refund path *and* no re-buy path.
+
+Per product kind:
+
+- **Subscription → `:acknowledge` only.** Stops the auto-refund of an entitlement we just granted. Consuming a subscription is not a valid Play operation.
+- **Credit pack → `:consume` only.** The only write that makes the pack re-buyable. Deliberately **no** `:acknowledge` fallback — acknowledging without consuming would trade a retryable failure for a permanent one.
+- **Apple → no server write at all.** StoreKit 1 finish is device-only and the App Store Server API exposes no finish endpoint, so the client owns that half. Symmetric invariant, deliberately asymmetric mechanism.
+
+Two properties fall out of the ordering:
+
+1. **Replay is the retry.** A failed finalize is logged and swallowed — the grant is already committed, so a 5xx would lie about a purchase we served. Re-POSTing the verify re-runs finalize, because the grant keys on `(gateway, provider id)` and is idempotent. No new endpoint, no new state, and it self-heals on the client's normal resume/refresh pass.
+2. **A refused grant is never finalized.** A foreign-owned token (`deniedReason`) and a lapsed subscription both return before finalize, leaving Play's auto-refund available for money this server did not deliver.
+
+Implementation: `finalizeStorePurchase` in [`src/services/store-verification/index.ts`](../../src/services/store-verification/index.ts), `finalizeGooglePlayPurchase` in [`src/services/store-verification/google-play.ts`](../../src/services/store-verification/google-play.ts), call sites in [`src/routes/payments.ts`](../../src/routes/payments.ts). `playRequest` treats an empty 2xx body as success because `:acknowledge` and `:consume` answer `204 No Content` — JSON-parsing that would report a *succeeded* write as a failed one.
+
+**Play's field types are not uniform across resources.** `purchases.products` (v1) reports `purchaseState` and `acknowledgementState` as **integers**, while `purchases.subscriptionsv2` reports `acknowledgementState` as the enum `ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED` and `subscriptionState` as `SUBSCRIPTION_STATE_ACTIVE`. Both parsers therefore normalise before comparing (`normalizeProductPurchaseState` / `isAcknowledged` in `google-play.ts`); matching only one spelling denies every purchase that arrives in the other.
+
+Two Play behaviours remain unconfirmed by Google's reference (see OG-5): whether REST `:consume` accepts a purchase the client already acknowledged, and whether `purchaseState` stays `0 (Purchased)` after a consume. Both are settled by the same sandbox pass OG-1/OG-2 already requires.
+
+### 19.7 Known limitations & entry gates
+
+- **No store notifications (OG-4).** Entitlement refreshes only when the client verifies — resume, pull-to-refresh, foreground pass. That is correct but reactive: a revocation is noticed on the next verify instead of pushed.
+- **Apple is credential-gated (OG-2).** The App Store path validates through the App Store Server API using `jose`-signed ES256 tokens; without keys it answers `503 store_verification_unavailable`. The client's `signedTransaction` is deliberately *not* a standalone grant source (no local JWS trust), so iOS purchases stay pending until `ISSUER_ID` / `KEY_ID` / `PRIVATE_KEY` are published.
+- **Store product ids are owner-held (OG-1).** The store product must be published with the id `vip_monthly` to match `VIP_SUBSCRIPTION.id`, and `CREDIT_PACKS[].storeProductId` is `null` until the pack products exist — after which every unknown id resolves to `400 unknown_product`.
+- **Purchase finalization (OG-5).** Play is now finished **server-side** — `:consume` for credit packs, `:acknowledge` for subscriptions — in [§19.6](#196-finalization-read--grant--write). What remains gated: Apple's device-only `finishTransaction` (client-owned), two Play behaviours Google's reference does not document (whether REST `:consume` accepts a client-acknowledged purchase; whether `purchaseState` stays `0` after a consume), and two Flutter follow-ups (consume retry lost once acknowledged; consume runs unconditionally for subscriptions). The two Play questions are answered by one sandbox pass. None is a live defect today: `POST /store-credit/verify` has no production caller, so `kStoreCreditGrantConfigured` stays `false` — and the sole production path that reaches `consumePurchase` is the VIP flow, which is the wrong product kind to consume. Tracked in [`OWNER_GATES_REGISTER.md`](../roadmap/OWNER_GATES_REGISTER.md) and `TODO.md`.
+- **Failure mutates nothing.** A verifier or persistence error is surfaced as `Failed to verify …`, grants nothing, and never erases credentials or mutates store state.
+
+---
+
+*Last updated: September 2026 (Store purchase verification section 19 added — including §19.6 finalization ordering (`read → grant → write`) and entry gate OG-5; Play field-type normalization across the v1 product and v2 subscription resources; creator payout verification, AES-256 encryption with v1 key versioning, blind index Sybil prevention, Xendit local dev fallback, KYC audit ledger and automated disbursement pipeline complete. Companion to frontend doc: `PAYMENTS_ARCHITECTURE_FRONTEND.md`)*
 

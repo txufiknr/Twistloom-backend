@@ -18,6 +18,16 @@ export const CUSTOM_ACTION_RATE_LIMIT_PER_HOUR = 10;
 export const CUSTOM_ACTION_DISABLED_PHASES: StoryPhase[] = ['FINALE'];
 
 // ============================================================================
+// CLIENT POLLING CONTRACT (audit D4 — single source for both response bodies)
+// ============================================================================
+
+/** Poll interval sent to clients in the 202/409 `pollingInfo` (ms) */
+export const CUSTOM_ACTION_POLLING_INTERVAL_MS = 2000;
+
+/** Client polling budget sent in the 202/409 `pollingInfo` (ms) */
+export const CUSTOM_ACTION_MAX_POLLING_TIME_MS = 80000;
+
+// ============================================================================
 // GATE 1 — Deterministic Security Filter
 // ============================================================================
 
@@ -47,8 +57,9 @@ export const CUSTOM_ACTION_SECURITY_PATTERNS = [
  * content_policy rejection — even if individual keywords overlap with real-world
  * harm indicators.
  *
- * The whitelist is checked BEFORE the denylist in runGate1(), so a match short-circuits
- * the security filter entirely. This prevents false positives on:
+ * The whitelist is checked BEFORE the denylist in runGate1(), so a match skips
+ * the denylist keyword scan only — injection/jailbreak patterns still run.
+ * This prevents false positives on:
  * - Fantasy combat ("attack the dragon", "cast a fireball")
  * - Horror investigation ("explore the dark room", "confront the ghost")
  * - Thriller action ("interrogate the suspect", "chase the fleeing figure")

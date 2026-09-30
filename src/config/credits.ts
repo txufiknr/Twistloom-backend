@@ -41,6 +41,19 @@ import type { BookMode } from "../types/book.js";
  * `FEATURE_FREE_DEMO=false` to enable normal paid credit pricing.
  *
  * Unset or any value other than the string `"false"` keeps demo mode on.
+ *
+ * **Scope — intentional, do not "fix" by widening it.** This flag only reaches
+ * the *named* cost keys (`CREDIT_COSTS`, `BOOK_MODE_COSTS`) through
+ * {@link getCreditCostForUser} and {@link applyFreeDemoPricing}. A **numeric**
+ * cost handed to `executeWithCredits` — today only credit-priced store purchases
+ * via `purchaseConsumableBatch` — is zeroed for {@link DEMO_USER_ID} alone and
+ * ignores this flag. A store purchase is therefore free for the demo account
+ * under any flag value, and remains charged for every other account even while
+ * `FEATURE_FREE_DEMO` is on, whereas their AI actions are free. That asymmetry is
+ * deliberate: store stock is a finite, per-item capped resource (`maxPerUser`),
+ * so it is granted through the demo account rather than blanket-waived for the
+ * whole platform. Cross-platform finding F-5 in
+ * `Twistloom-web/docs/roadmap/OPEN_FINDINGS_REGISTER.md`.
  */
 export const FEATURE_FREE_DEMO = process.env.FEATURE_FREE_DEMO !== "false";
 
@@ -344,6 +357,7 @@ export const CREDIT_PACKS: CreditPack[] = [
     priceUSD: 2.99,
     priceId: "price_1TSq8CFmDKrMqBDfv8hHK8hi", // Stripe Price ID
     productId: "prod_URjbG0HYUqTKjj",
+    storeProductId: null, // Play/App Store id — published with owner gate OG-1
     badge: null,
     color: "gray",
   },
@@ -356,6 +370,7 @@ export const CREDIT_PACKS: CreditPack[] = [
     priceUSD: 7.99,
     priceId: "price_1TSqEFFmDKrMqBDfJNv4Rhvi",
     productId: "prod_URjhcMuRg9MAl7",
+    storeProductId: null, // Play/App Store id — published with owner gate OG-1
     badge: "🔥 Most Popular",
     color: "blue",
   },
@@ -368,6 +383,7 @@ export const CREDIT_PACKS: CreditPack[] = [
     priceUSD: 19.99,
     priceId: "price_1TSqEpFmDKrMqBDfhrwd9wOn",
     productId: "prod_URjiSAzuitp1le",
+    storeProductId: null, // Play/App Store id — published with owner gate OG-1
     badge: "💎 Best Value",
     color: "purple",
   },

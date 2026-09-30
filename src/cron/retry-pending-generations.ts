@@ -7,9 +7,19 @@
  * - Manual: Processes specific book/page triggered via GitHub workflow with user attribution
  * 
  * Core Functions:
+ * - `sweepStaleCustomActions()`: cheap, indexed recovery for orphaned custom actions (runs FIRST in the batch, and alone under `--custom-only`)
  * - `retryPendingGenerations()`: Batch processing of pending generations with priority ordering
  * - `processSpecificPage()`: Targeted processing for manual workflow triggers
  * - `processPageGeneration()`: Shared logic for both scheduled and manual processing
+ * 
+ * Execution Modes (audit R9 — custom actions recover on a minutes-scale cadence):
+ * - Full scheduled run (12h cron): custom-action sweep first, then the heavy canon sweep
+ * - `--custom-only`: ONLY `sweepStaleCustomActions()` — no canon query, no cleanup
+ *   passes. CI no longer uses it: the minutes-scale cadence moved to QStash's
+ *   `POST /api/cron/sweep-custom-actions`, which re-dispatches instead of generating
+ *   inline (a serverless function cannot fit a ~30–50s AI call). Kept for quick
+ *   local/manual recovery runs.
+ * - Manual: specific book/page triggered via GitHub workflow with user attribution
  * 
  * Idempotency:
  * - Safe to run multiple times: only processes pages with pending generations or specific manual targets
@@ -52,6 +62,62 @@ export interface ProcessedPageClaim {
   claimAt: Date | null;
 }
 
+/**
+ * Batch recovery for orphaned/stale custom actions across public books
+ * (audit R9): a charged row whose on-demand dispatch died must recover
+ * while the reader could still be waiting — so this sweep runs FIRST in the
+ * full batch (ahead of the canon loop, and before its early return), and
+ * alone under `--custom-only`.
+ *
+ * This is the **inline-generate** executor over the shared detection predicate;
+ * the minutes-scale QStash sweep uses the dispatch executor instead. See
+ * `src/services/custom-action-sweep.ts` for the staleness model, duplicate-safety
+ * guards, and why the two executors differ.
+ *
+ * Cheap and fully indexed (`custom_actions_created_at_idx`), never fatal:
+ * a failure logs and returns 0 so the canon sweep still runs.
+ *
+ * @returns number of rows retried
+ */
+export async function sweepStaleCustomActions(): Promise<number> {
+  try {
+    // Dynamic imports for this function scope
+    const { findStaleCustomActions } = await import("../services/custom-action-sweep.js");
+    const { generatePageForCustomAction } = await import("../services/custom-actions.js");
+
+    const pendingCustomActions = await findStaleCustomActions();
+    if (pendingCustomActions.length === 0) return 0;
+
+    console.log(`[sweepStaleCustomActions] 🎨 Found ${pendingCustomActions.length} pending custom actions to retry`);
+    let retried = 0;
+    for (const customRow of pendingCustomActions) {
+      try {
+        const result = await generatePageForCustomAction({
+          userId: customRow.userId,
+          bookId: customRow.bookId,
+          pageId: customRow.pageId,
+          customActionId: customRow.id,
+        });
+        // Only a completed page counts as retried. `in_progress` means another
+        // worker already owns it and `failed` means generation gave up — both
+        // are reported by returning rather than throwing, so counting them as
+        // successes would make this log claim work that never happened.
+        if (result.status === "done") {
+          retried++;
+        } else {
+          console.warn(`[sweepStaleCustomActions] ⚠️ Custom action ${customRow.id} → ${result.status}${result.status === "failed" && result.error ? `: ${result.error}` : ""}`);
+        }
+      } catch (customErr) {
+        console.error(`[sweepStaleCustomActions] ❌ Failed to generate custom action ${customRow.id}:`, getErrorMessage(customErr));
+      }
+    }
+    return retried;
+  } catch (batchCustomError) {
+    console.warn("[sweepStaleCustomActions] ⚠️ Custom actions batch sweep failed (non-fatal):", getErrorMessage(batchCustomError));
+    return 0;
+  }
+}
+
 export async function retryPendingGenerations(): Promise<ProcessedPageClaim[]> {
   const startedAt = Date.now();
   const processedPages: ProcessedPageClaim[] = [];
@@ -69,6 +135,14 @@ export async function retryPendingGenerations(): Promise<ProcessedPageClaim[]> {
   const { eq, gt, lt, desc, asc, and, sql } = await import("drizzle-orm");
   const { getPageFromDB, mapToUserStoryPage } = await import("../services/book.js");
   const systemUserId = requireEnv('SYSTEM_USER_ID');
+
+  // Custom-action recovery FIRST (audit R9): this sweep is user-blocking,
+  // cheap and fully indexed — and it must run before the canon query's early
+  // return, otherwise a run with zero canon pendings skips it entirely
+  // (the pre-audit ordering bug). The minutes-scale cadence is owned by
+  // QStash's `POST /api/cron/sweep-custom-actions`, which re-dispatches
+  // instead of generating inline.
+  await sweepStaleCustomActions();
 
   // Audit Q6 (Step 6.4): reclaim orphaned checkpoint rows (Turn-A caches that
   // were never deleted on successful persist) before processing pending
@@ -180,59 +254,6 @@ export async function retryPendingGenerations(): Promise<ProcessedPageClaim[]> {
     }
   }
 
-  // Batch recovery for orphaned/stale custom actions across public books
-  try {
-    const { customActions } = await import("../db/schema.js");
-    const { isNull, ne, lt, or } = await import("drizzle-orm");
-    const { generatePageForCustomAction, CUSTOM_ACTION_GENERATION_STALE_MS } = await import("../services/custom-actions.js");
-
-    const now = Date.now();
-    const staleHeartbeatThreshold = new Date(now - CUSTOM_ACTION_GENERATION_STALE_MS);
-    const unstartedThreshold = new Date(now - 30_000); // Allow 30s for on-demand worker to pick up
-
-    const pendingCustomActions = await dbRead
-      .select({
-        id: customActions.id,
-        userId: customActions.userId,
-        bookId: customActions.bookId,
-        pageId: customActions.pageId,
-        originalText: customActions.originalText,
-      })
-      .from(customActions)
-      .innerJoin(books, eq(customActions.bookId, books.id))
-      .where(and(
-        eq(books.isPenBook, false),
-        eq(books.visibility, 'public'),
-        isNull(customActions.nextPageId),
-        ne(customActions.outcome, 'reject'),
-        or(
-          // 1. Unstarted rows at least 30s old (gives targeted on-demand runner time to execute)
-          and(isNull(customActions.generationStartedAt), lt(customActions.createdAt, unstartedThreshold)),
-          // 2. Started rows whose heartbeat is older than the stale threshold (crashed / orphaned worker)
-          lt(customActions.generationStartedAt, staleHeartbeatThreshold)
-        )
-      ))
-      .limit(MAX_BRANCHING_PREGENERATION_LIMIT);
-
-    if (pendingCustomActions.length > 0) {
-      console.log(`[retryPendingGenerations] 🎨 Found ${pendingCustomActions.length} pending custom actions to retry`);
-      for (const customRow of pendingCustomActions) {
-        try {
-          await generatePageForCustomAction({
-            userId: customRow.userId,
-            bookId: customRow.bookId,
-            pageId: customRow.pageId,
-            customActionId: customRow.id,
-          });
-        } catch (customErr) {
-          console.error(`[retryPendingGenerations] ❌ Failed to generate custom action ${customRow.id}:`, getErrorMessage(customErr));
-        }
-      }
-    }
-  } catch (batchCustomError) {
-    console.warn("[retryPendingGenerations] ⚠️ Custom actions batch sweep failed (non-fatal):", getErrorMessage(batchCustomError));
-  }
-  
   const durationMs = Date.now() - startedAt;
   console.log(`[retryPendingGenerations] ✅ Retry completed in ${durationMs}ms:`, {
     pagesProcessed: totalProcessed,
@@ -584,6 +605,18 @@ async function main(): Promise<void> {
   const startedAt = Date.now();
   
   try {
+    // Custom-action-only shortcut (audit R9): run ONLY the cheap, indexed
+    // custom-action sweep — no canon query, no claim/global cleanup passes
+    // (this run takes no generation claims), then exit. Not used by CI: the
+    // minutes-scale cadence is QStash's `/api/cron/sweep-custom-actions`.
+    // Useful for a quick local or manually-invoked recovery pass.
+    if (process.argv.includes("--custom-only")) {
+      console.log(`[retry-pending-generations] 🎨 Custom-action-only sweep`);
+      const retried = await sweepStaleCustomActions();
+      console.log(`[retry-pending-generations] ✅ Custom-only sweep finished (${retried} retried) in ${Date.now() - startedAt}ms`);
+      process.exit(0);
+    }
+
     // Check if this is an on-demand trigger with specific inputs
     const triggeredBookId = process.env.TRIGGERED_BOOK_ID?.trim();
     const triggeredPageId = process.env.TRIGGERED_PAGE_ID?.trim();

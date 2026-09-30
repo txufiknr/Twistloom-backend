@@ -1,0 +1,2 @@
+CREATE INDEX "custom_actions_created_at_idx" ON "custom_actions" USING btree ("created_at");--> statement-breakpoint
+CREATE UNIQUE INDEX "custom_actions_active_book_page_user_unique" ON "custom_actions" USING btree ("book_id","page_id","user_id") WHERE "custom_actions"."next_page_id" IS NULL AND "custom_actions"."outcome" <> 'reject';

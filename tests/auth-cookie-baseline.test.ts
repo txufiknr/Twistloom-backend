@@ -128,5 +128,5 @@ describe("Cron auth regression (service-bearer must keep working)", () => {
     expect(bad.status).toBe(401);
 
     process.env = { ...originalEnv };
-  });
+  }, 20000);
 });

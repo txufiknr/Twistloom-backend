@@ -25,12 +25,37 @@ import type { AIJsonProperty } from "../types/ai-chat.js";
 import { formatLanguage } from "./translation.js";
 
 // ============================================================================
-// GATE 0 — Eligibility, rate limiting, credits
+// Concurrent-submit race sentinel (audit R1)
+// ============================================================================
+
+/**
+ * Thrown inside the charged `executeWithCredits` operation when the in-transaction
+ * re-check finds an already-active custom action for the same (book, page, user).
+ *
+ * Throwing rolls the transaction back — the deduction is reverted with it — so
+ * the route can safely answer `409` and point the client at the winning
+ * submission's poll. The partial unique index
+ * `custom_actions_active_book_page_user_unique` is the backstop for the same
+ * race on a path that bypasses this check.
+ */
+export class CustomActionAlreadyActiveError extends Error {
+  constructor(public readonly customActionId: string) {
+    super("A custom action is already being generated for this page");
+    this.name = "CustomActionAlreadyActiveError";
+  }
+}
+
+// ============================================================================
+// GATE 0 — Eligibility
 // ============================================================================
 
 /**
  * Gate 0 — Deterministic eligibility checks. No AI, <5ms.
- * Checks story phase, rate limits, and credit balance.
+ * Checks story phase only (see `CUSTOM_ACTION_DISABLED_PHASES`).
+ *
+ * Rate limits, credit balance and the concurrency guard are enforced by the
+ * route layer (`routes/books.ts`: `rateLimit` middleware, the `dbRead`
+ * pre-check and `executeWithCredits`) — not by this function.
  *
  * Returns an object with `passed: false` + a user-safe message on failure,
  * or `passed: true` on success.
@@ -70,10 +95,11 @@ export function runGate0(
  * Gate 1 — Deterministic security filter. No AI.
  * Checks for prompt injection, denylist keywords, length, and valid characters.
  *
- * Creative Whitelist: If the action text matches a recognized creative fiction
+ * Creative Whitelist: if the action text matches a recognized creative fiction
  * pattern (fantasy combat, horror investigation, thriller action, etc.), the
- * denylist and security pattern checks are skipped to prevent false positives
- * on legitimate genre content.
+ * denylist keyword check is skipped to prevent false positives on legitimate
+ * genre content. Security/injection patterns are ALWAYS enforced regardless
+ * of whitelist status.
  */
 export function runGate1(text: string, isVip: boolean = false): CustomActionSecurityResult {
   const trimmed = text.trim();

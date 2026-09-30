@@ -19,6 +19,7 @@ import { getErrorMessage } from "../utils/error.js";
 import { sanitizeActionsForMode } from "../utils/book-mode.js";
 import { validateGeneratedPage } from "../utils/page-validation.js";
 import { MAX_GENERATION_DURATION_MS } from "../config/book-creation.js";
+import { CUSTOM_ACTION_DISABLED_PHASES } from "../config/custom-actions.js";
 import { isPublicActiveBook, notifyForumBranchAdded } from "./forum-queue.js";
 import { notifyFollowersOfPublishedBook } from "./book-publish-notification.js";
 import { getEnrichedBookSelect } from "./book-controller.js";
@@ -2327,6 +2328,11 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
         } as typeof translation)
       : undefined,
     shownActionHint,
+    // Server-authoritative custom-action phase gate (audit D1): mirrors
+    // Gate 0's check against CUSTOM_ACTION_DISABLED_PHASES so the reader
+    // payload — not a client literal — owns the disabled-phase list.
+    customActionsDisabled:
+      context?.phase !== undefined && CUSTOM_ACTION_DISABLED_PHASES.includes(context.phase),
     context, // context is the SSOT for full action + plot-flag history
     // Community actions are never bundled into the page payload. They live at
     // the very bottom of the page, so the frontend lazy-loads them from the

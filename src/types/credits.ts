@@ -17,6 +17,16 @@ export interface CreditPack {
   priceId: string;
   /** Stripe Product ID for reference */
   productId: string;
+  /**
+   * Play/App Store product id for the same pack, or `null` while the store
+   * listing has not been published (owner gate OG-1).
+   *
+   * Server-side source of truth for store purchases: `POST
+   * /api/payments/store-credit/verify` refuses any `productId` that does not
+   * resolve here, so a client cannot name a more expensive pack than the one
+   * it actually bought. See `src/services/store-verification/`.
+   */
+  storeProductId?: string | null;
   /** Optional badge text (e.g., "Most Popular") */
   badge: string | null;
   /** Color theme for UI display */
