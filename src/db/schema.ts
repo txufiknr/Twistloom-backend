@@ -760,6 +760,16 @@ export const books = pgTable(
     contentRating: text("content_rating").$type<ContentRating>().notNull().default('general'),
     /** Optional front matter — one rich-text page shown before Page 1. */
     frontMatter: jsonb("front_matter").$type<BookFrontMatter>(),
+    /**
+     * Client-supplied `Idempotency-Key` for the creation request that produced
+     * this book (Open Findings F-1). Scoped per user by the partial unique
+     * index below, so replaying an accepted-but-response-lost charge returns
+     * the original book instead of inserting a second draft.
+     *
+     * NULL for books created without the header and for every non-creation
+     * write path. Internal only — never serialized into API responses.
+     */
+    idempotencyKey: text("idempotency_key"),
     createdAt,
     updatedAt,
   } satisfies Record<keyof Omit<Book, 'stats' | 'imageUrl'> | keyof BookStats | ResourceTimestamp, unknown>,
@@ -794,6 +804,12 @@ export const books = pgTable(
     index("books_hook_gin_idx").using("gin", sql`hook gin_trgm_ops`),
     // GIN index for summary with pg_trgm (enables efficient ILIKE search with leading wildcards)
     index("books_summary_gin_idx").using("gin", sql`summary gin_trgm_ops`),
+    // Replay-on-key for book creation (F-1). Partial so NULL keys — every book
+    // created without an `Idempotency-Key` — stay out of the index, and unique
+    // so two concurrent requests carrying the same user+key cannot both commit.
+    uniqueIndex("books_user_idempotency_key_unique")
+      .on(t.userId, t.idempotencyKey)
+      .where(sql`${t.idempotencyKey} IS NOT NULL`),
   ]
 );
 

@@ -2613,6 +2613,9 @@ export function mapBookFromDb(dbBook: DBBook): Book {
     bgmEnabled: dbBook.bgmEnabled ?? true,
     contentRating: dbBook.contentRating ?? 'general',
     frontMatter: dbBook.frontMatter ?? null,
+    // Internal request token — intentionally left undefined so JSON.stringify
+    // drops it and the key never reaches an API response (see Book.idempotencyKey).
+    idempotencyKey: undefined,
     createdAt: dbBook.createdAt,
     updatedAt: dbBook.updatedAt,
   } satisfies Record<keyof Omit<Book, 'stats' | 'imageUrl'>, unknown>;

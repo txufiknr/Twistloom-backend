@@ -66,6 +66,7 @@
  * - GET /api/books/:identifier/locked-paths - Get timeline of locked/closed paths (requires auth)
  * 
  * Social Interactions:
+ * - POST /api/books/likes/bulk - Like up to 20 books in one transaction (requires auth)
  * - POST /api/books/:id/like - Like a book (requires auth)
  * - DELETE /api/books/:id/like - Unlike a book (requires auth)
  * - POST /api/books/:id/favorite - Add book to favorites (requires auth)
@@ -135,6 +136,7 @@ import { validateSearchQuery, validateLanguageCode, isValidLanguageCode, validat
 import type { ImageUploadSource } from "../types/image.js";
 import { updateBook, updateBookVisibility, insertBook, uploadBookCoverImage, uploadBookCharacterAvatarImage, sanitizeBookTextField, sanitizeBookEnding, sanitizeMainCharacter, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage, mapBookFromDb, invalidatePopularTagsCache, invalidateBookCache, invalidateEnrichedBookCache, invalidatePageOneCache, loadParagraphCommentCounts, loadCommunityActions, isValidSlug, RESERVED_BOOK_SLUGS, slugExists } from "../services/book.js";
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
+import { parseBulkLikeIds } from "../utils/book-likes.js";
 import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookPage, enrichBooksWithUserData } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache } from "../services/cache.js";
 import type { BookCreationStatus, BookGenerationPayload, BookMode, BookSortOption, BookSource, BookStatus, BookVisibility, EnrichedBookData } from "../types/book.js";
@@ -172,6 +174,7 @@ import type { CustomActionValidationResult, CustomActionPreviewResponse, CustomA
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { MAX_BRANCHING_PREGENERATION_DEPTH, COMPANION_CACHE_JACCARD_THRESHOLD, COMPANION_CACHE_CANDIDATE_SCAN_LIMIT, COMPANION_SUGGESTIONS_QUERY_MAX_CHARS, COMPANION_HISTORY_LIMIT } from "../config/story.js";
 import { getBookModeCreditCostForUser, getCreditCostForUser, calculateBranchSwitchCost } from "../config/credits.js";
+import { parseIdempotencyKey, findBookByIdempotencyKey, replayOnUniqueViolation, buildAsyncReplay, buildCreationReplay, BOOK_CREATION_STARTED_MESSAGE } from "../services/book-idempotency.js";
 import { getJourneyForks, reconstructFork, resolveCurrentPageId, narrateForkAlternative } from "../services/time-travel.js";
 import { savedPaths } from "../db/schema.js";
 import { CREDIT_ERRORS } from "../config/errors.js";
@@ -282,9 +285,23 @@ async function checkConcurrentGenerationLimit(
  * }
  */
 router.post("/", requireAuth, rateLimit(BOOK_CREATION_RATE_LIMIT), async (c) => {
+  const userId = c.get("userId")!;
+
+  // ── Replay-on-key (F-1) ──────────────────────────────────────────────────
+  // Parsed before the try so a malformed key is rejected outright, and the
+  // pre-flight lookup runs before the VIP/limit checks so a replay of a job
+  // this user already owns is never refused as "too many generations".
+  const keyResult = parseIdempotencyKey(c.req.header("idempotency-key"));
+  if (!keyResult.ok) return cValidationError(c, keyResult.error);
+  const idempotencyKey = keyResult.key;
+
   try {
+    if (idempotencyKey) {
+      const existing = await findBookByIdempotencyKey(userId, idempotencyKey);
+      if (existing) return c.json(await buildCreationReplay(existing, userId), 201);
+    }
+
     const { theme, mcCandidate, generateCoverImage, advancedOptions, mode } = c.get("body");
-    const userId = c.get("userId")!;
 
     // Fetch VIP status once upfront to avoid redundant queries
     const isVip = await hasActiveVipSubscription(userId);
@@ -305,13 +322,26 @@ router.post("/", requireAuth, rateLimit(BOOK_CREATION_RATE_LIMIT), async (c) => 
         mode,
         context: "book_creation",
         isVip,
+        idempotencyKey,
       },
       // No progress callback for POST endpoint (synchronous response)
     );
 
     c.status(201); return c.json(result);
   } catch (error) {
-    handleBookCreationError(c, error);
+    // Lost race on books_user_idempotency_key_unique — the losing transaction
+    // (credits included) already rolled back; replay the winner's response.
+    const replay = await replayOnUniqueViolation(error, {
+      userId,
+      key: idempotencyKey,
+      buildReplay: (book) => buildCreationReplay(book, userId),
+    });
+    if (replay) return c.json(replay, 201);
+
+    // NOTE: must be returned — `cApiError`/`c.json` build the Response, they do
+    // not finalize the context, so discarding it makes Hono report
+    // "Context is not finalized" as a 500 instead of the intended status.
+    return handleBookCreationError(c, error);
   }
 });
 
@@ -427,7 +457,7 @@ router.post('/workflow-webhook', async (c) => {
     return c.json({ ok: true });
   } catch (error) {
     console.error('[POST /api/books/workflow-webhook] ❌ Error:', error);
-    handleBookCreationError(c, error, 'Failed to process workflow webhook');
+    return handleBookCreationError(c, error, 'Failed to process workflow webhook');
   }
 });
 
@@ -495,9 +525,23 @@ router.post('/workflow-webhook', async (c) => {
  * data: {"error":"Theme validation failed"}
  */
 router.post("/stream", requireAuth, rateLimit(BOOK_STREAM_RATE_LIMIT), async (c) => {
+  const userId = c.get("userId")!;
+
+  // ── Replay-on-key (F-1) ──────────────────────────────────────────────────
+  // Parsed before the try so a malformed key is rejected outright instead of
+  // silently dropping the replay protection the client believes it has.
+  const keyResult = parseIdempotencyKey(c.req.header("idempotency-key"));
+  if (!keyResult.ok) return cValidationError(c, keyResult.error);
+  const idempotencyKey = keyResult.key;
+
   try {
     const { theme, mcCandidate, generateCoverImage, advancedOptions, mode } = c.get("body");
-    const userId = c.get("userId")!;
+
+    // Resolved before the VIP/limit checks so a replay of a job this user
+    // already owns is never refused as "too many generations".
+    const existingBook = idempotencyKey
+      ? await findBookByIdempotencyKey(userId, idempotencyKey)
+      : null;
 
     // Fetch VIP status once upfront to avoid redundant queries
     const isVip = await hasActiveVipSubscription(userId);
@@ -507,29 +551,55 @@ router.post("/stream", requireAuth, rateLimit(BOOK_STREAM_RATE_LIMIT), async (c)
     if (limitErr) return limitErr;
 
     return streamSSE(c, async (stream) => {
-      // Create progress callback for SSE events
-      const onProgress: ProgressCallback = (event) => {
-        sendSSEEvent(stream, event);
-      };
+      try {
+        // Replay: the original attempt already charged and committed page 1,
+        // so no progress events are emitted and no AI call is made.
+        if (existingBook) {
+          sendSSEEvent(stream, { type: 'complete', data: await buildCreationReplay(existingBook, userId) });
+          return;
+        }
 
-      // Create book with progress events
-      const result = await createBookCore(
-        {
-          req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } as any,
+        // Create progress callback for SSE events
+        const onProgress: ProgressCallback = (event) => {
+          sendSSEEvent(stream, event);
+        };
+
+        // Create book with progress events
+        const result = await createBookCore(
+          {
+            req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } as any,
+            userId,
+            theme,
+            mcCandidate,
+            generateCoverImage,
+            advancedOptions,
+            mode,
+            context: "book_creation_stream",
+            isVip,
+            idempotencyKey,
+          },
+          onProgress
+        );
+
+        // Send final complete event
+        sendSSEEvent(stream, { type: 'complete', data: result });
+      } catch (error) {
+        // Lost race on books_user_idempotency_key_unique — the losing
+        // transaction (credits included) already rolled back.
+        const replay = await replayOnUniqueViolation(error, {
           userId,
-          theme,
-          mcCandidate,
-          generateCoverImage,
-          advancedOptions,
-          mode,
-          context: "book_creation_stream",
-          isVip,
-        },
-        onProgress
-      );
+          key: idempotencyKey,
+          buildReplay: (book) => buildCreationReplay(book, userId),
+        });
+        if (replay) {
+          sendSSEEvent(stream, { type: 'complete', data: replay });
+          return;
+        }
 
-      // Send final complete event
-      sendSSEEvent(stream, { type: 'complete', data: result });
+        // Documented terminal event — without it the client only ever sees a
+        // silently closed stream and waits for a `complete` that never comes.
+        sendSSEEvent(stream, { type: 'error', error: getErrorMessage(error) });
+      }
     });
   } catch (error) {
     return cApiError(c, "Failed to create book", error);
@@ -582,9 +652,28 @@ router.post("/stream", requireAuth, rateLimit(BOOK_STREAM_RATE_LIMIT), async (c)
  * { "bookId": "01912345-6789-1234-5678-123456789012", "message": "Book creation started..." }
  */
 router.post('/async', requireAuth, rateLimit(BOOK_ASYNC_RATE_LIMIT), requireNotSuspended, requireGenerationQuota, async (c) => {
+  const userId = c.get("userId")!;
+
+  // ── STEP 0a: Replay-on-key (F-1) ──────────────────────────────────────────
+  //
+  // Runs before every other cost on this route — VIP lookup, concurrency
+  // check, and especially the timed AI validation — so a retry of an
+  // accepted-but-response-lost dispatch is a pure read: no second charge, no
+  // second draft row, no wasted provider call, no re-dispatch.
+  const keyResult = parseIdempotencyKey(c.req.header("idempotency-key"));
+  if (!keyResult.ok) return cValidationError(c, keyResult.error);
+  const idempotencyKey = keyResult.key;
+
   try {
+    if (idempotencyKey) {
+      const existing = await findBookByIdempotencyKey(userId, idempotencyKey);
+      if (existing) {
+        console.log(`[POST /api/books/async] ♻️ Replaying existing book ${existing.id} for a repeated Idempotency-Key`);
+        return c.json(await buildAsyncReplay(existing), 202);
+      }
+    }
+
     const { theme, mcCandidate: initialMCCandidate, generateCoverImage, advancedOptions, mode: requestedMode } = c.get("body");
-    const userId = c.get("userId")!;
     const themePreview = theme?.length > 80 ? theme.slice(0, 80) + '…' : theme;
 
     const startTime = Date.now();
@@ -653,6 +742,7 @@ router.post('/async', requireAuth, rateLimit(BOOK_ASYNC_RATE_LIMIT), requireNotS
       mode, // Book creation mode (story format)
       status: 'draft', // Promoted to 'active' when initializeBook completes
       originalThemeInput: theme, // Preserve original user input for frontend display
+      idempotencyKey, // Partial unique index enforces one draft per user+key
     };
 
     const initialBookGenerationData: DBNewBookGeneration = {
@@ -682,19 +772,36 @@ router.post('/async', requireAuth, rateLimit(BOOK_ASYNC_RATE_LIMIT), requireNotS
     //
     // If any insert fails the transaction rolls back and credits are preserved
     // automatically. The runner picks up all generation params from the DB row.
-    const { result: dbBook } = await executeWithCredits<DBBook>(
-      userId,
-      getBookModeCreditCostForUser(userId, mode),
-      async (tx) => {
-        const [insertedBook] = await tx.insert(books).values(initialBookData).returning();
-        await tx.insert(bookGenerations).values(initialBookGenerationData);
-        return insertedBook;
-      },
-      {
-        context:  'book_creation_async',
-        metadata: { theme, bookId, mode },
-      }
-    );
+    //
+    // Concurrency: when two requests race on the same Idempotency-Key, exactly
+    // one INSERT commits — the loser raises 23505 on
+    // `books_user_idempotency_key_unique`, `executeWithCredits` rolls back its
+    // deduction with the failed transaction, and we replay the winner below.
+    let dbBook: DBBook;
+    try {
+      const { result } = await executeWithCredits<DBBook>(
+        userId,
+        getBookModeCreditCostForUser(userId, mode),
+        async (tx) => {
+          const [insertedBook] = await tx.insert(books).values(initialBookData).returning();
+          await tx.insert(bookGenerations).values(initialBookGenerationData);
+          return insertedBook;
+        },
+        {
+          context:  'book_creation_async',
+          metadata: { theme, bookId, mode },
+        }
+      );
+      dbBook = result;
+    } catch (error) {
+      const replay = await replayOnUniqueViolation(error, {
+        userId,
+        key: idempotencyKey,
+        buildReplay: buildAsyncReplay,
+      });
+      if (replay) return c.json(replay, 202);
+      throw error;
+    }
 
     // Map DB row to frontend-facing Book shape for the response.
     console.log(`[POST /api/books/async] 💰 Credits consumed, draft rows inserted for book ${bookId}`);
@@ -735,49 +842,87 @@ router.post('/async', requireAuth, rateLimit(BOOK_ASYNC_RATE_LIMIT), requireNotS
     console.log(`[POST /api/books/async] ✅ Creation started (202) for book ${bookId} (${(Date.now() - startTime).toFixed(0)} ms)`);
     return c.json({
       bookId,
-      message: 'Book creation started. Poll /api/books/:bookId/status for updates.',
+      message: BOOK_CREATION_STARTED_MESSAGE,
       aiComment,
       book,
     }, 202);
   } catch (error) {
     console.error('[POST /api/books/async] ❌ Failed to start book creation:', error);
-    handleBookCreationError(c, error, 'Failed to start book creation');
+    // NOTE: must be returned — discarding the Response leaves the context
+    // unfinalized and Hono replaces the intended status with a 500.
+    return handleBookCreationError(c, error, 'Failed to start book creation');
   }
 });
 
 /**
  * GET /api/books/generations/active
  *
- * Returns all active (in-progress) book generations for the authenticated user.
- * Lightweight endpoint for the frontend to display generation progress indicators.
+ * Returns all active (pending or in-progress) book generations for the
+ * authenticated user, each carrying enough book identity to be rendered
+ * without a second request.
+ * Lightweight endpoint for the frontend to display generation progress
+ * indicators, resume a list after a reload, or build a completion
+ * notification payload (Open Findings F-3).
+ *
+ * **Row set:** `pending` + `in_progress`, matching the definition of "active"
+ * used by the concurrent-generation limit. Previously only `in_progress` was
+ * returned, so a job that had been dispatched but not yet picked up by the
+ * worker was invisible to any resume surface.
+ *
+ * **Additive response:** existing fields are unchanged; `title`, `slug`,
+ * `mode`, `bookStatus`, `imageUrl`, `generationStartedAt` and
+ * `generationCreatedAt` are new, and are `null` if the book row is gone.
  *
  * @route GET /api/books/generations/active
  * @auth Required
- * @returns Array of { bookId, generationStatus, generationStep }
+ * @returns Array of { bookId, generationStatus, generationStep,
+ *   generationStartedAt, generationCreatedAt, title, slug, mode, bookStatus,
+ *   imageUrl }
  *
  * @example
  * GET /api/books/generations/active
  * Response 200:
  * [
- *   { "bookId": "01912345-6789-1234-5678-123456789012", "generationStatus": "in_progress", "generationStep": "ai_generation" },
- *   { "bookId": "01912345-6789-1234-5678-123456789013", "generationStatus": "in_progress", "generationStep": "theme_validation" }
+ *   {
+ *     "bookId": "01912345-6789-1234-5678-123456789012",
+ *     "generationStatus": "in_progress",
+ *     "generationStep": "ai_generation",
+ *     "generationStartedAt": "2026-06-01T10:00:05.000Z",
+ *     "generationCreatedAt": "2026-06-01T10:00:01.000Z",
+ *     "title": "The Whispering Halls",
+ *     "slug": "whispering-halls",
+ *     "mode": "interactive",
+ *     "bookStatus": "draft",
+ *     "imageUrl": "https://example.com/cover.jpg"
+ *   }
  * ]
  */
 router.get('/generations/active', requireAuth, async (c) => {
   try {
     const userId = c.get("userId")!;
 
+    // `books` is left-joined (not inner) so a generation whose book row has
+    // been deleted still reports its job state instead of disappearing.
     const rows = await dbRead
       .select({
         bookId: bookGenerations.bookId,
         generationStatus: bookGenerations.generationStatus,
         generationStep: bookGenerations.generationStep,
+        generationStartedAt: bookGenerations.generationStartedAt,
+        generationCreatedAt: bookGenerations.createdAt,
+        title: books.title,
+        slug: books.slug,
+        mode: books.mode,
+        bookStatus: books.status,
+        imageUrl: uploadedImages.imageUrl,
       })
       .from(bookGenerations)
+      .leftJoin(books, eq(bookGenerations.bookId, books.id))
+      .leftJoin(uploadedImages, eq(books.imageId, uploadedImages.imageId))
       .where(
         and(
           eq(bookGenerations.userId, userId),
-          eq(bookGenerations.generationStatus, 'in_progress'),
+          inArray(bookGenerations.generationStatus, ['pending', 'in_progress']),
         ),
       );
 
@@ -2621,6 +2766,11 @@ router.get("/:id/similar", optionalAuth, async (c) => {
  * @query minRatingCount - Minimum number of approved ratings (e.g. 5) to gate on;
  *                 combine with rating for "4★ & up by at least 5 people"
  * @query status - Filter by comma-separated statuses (only applies with sortBy=creations). Values: active, draft, archived. E.g., "active,draft"
+ * @query visibility - Filter by comma-separated visibilities. Values: public, unlisted, private, followers. E.g., "public" or "private,unlisted,followers".
+ *                 Narrow-only: always ANDed onto the scope, so a caller can never widen access.
+ *                 Intended for owner-scoped lists (creations / pen-drafts) so each dashboard tab
+ *                 can paginate and report its own `totalCount` server-side.
+ *                 Absent = no filter (and the request is eligible for the shared browse cache).
  * @query source - Filter by authoring origin: spark (AI-generated) | pen (human-authored in the Pen editor).
  *                 Absent = no filter. Distinct from sortBy=pen (public Pen showcase category).
  *                 Note: when present, the request bypasses the shared page-1 browse cache and the
@@ -2637,6 +2787,9 @@ router.get("/:id/similar", optionalAuth, async (c) => {
  * @example
  * // Get user's own active and draft books
  * GET /api/books/explore?sortBy=creations&status=active,draft&page=1&limit=20
+ *
+ * // Get one visibility tab of the user's own creations (totalCount = that tab's total)
+ * GET /api/books/explore?sortBy=creations&visibility=public&page=1&limit=20
  * 
  * // Filter published books by mode (story format)
  * GET /api/books/explore?mode=multiverse&sortBy=trending&page=1&limit=20
@@ -2843,6 +2996,20 @@ router.get("/explore", optionalAuth, async (c) => {
       }
     }
 
+    // Extract and validate visibility filter (comma-separated, e.g. "public"
+    // or "private,unlisted,followers"). Open Findings F-2: lets an owner-scoped
+    // dashboard paginate and count one tab per request instead of splitting
+    // mixed-visibility rows client-side over whatever page happened to load.
+    let visibilityFilter: BookVisibility[] | undefined;
+    const visibilityParam = c.req.query().visibility as string | undefined;
+    if (visibilityParam) {
+      const rawVisibilities = visibilityParam.split(',').map(v => v.trim().toLowerCase()).filter(Boolean);
+      visibilityFilter = rawVisibilities.filter((v): v is BookVisibility => bookVisibilities.includes(v as BookVisibility));
+      if (visibilityFilter.length === 0) {
+        return cValidationError(c, `Invalid visibility value. Must be one or more of: ${bookVisibilities.join(', ')}`);
+      }
+    }
+
     // Determine base condition based on sort option.
     // When profileUserId is provided (from ?userId=X), we are viewing books
     // by/for a specific user:
@@ -2851,13 +3018,22 @@ router.get("/explore", optionalAuth, async (c) => {
     //   - other sorts or visitor viewing creations → public books authored by that user
     const targetUserId = profileUserId || userId;
     const isOwnerViewingSelf = Boolean(userId && targetUserId === userId);
-    const baseCondition: ReturnType<typeof sql> = (isCreations || isPenDrafts) && isOwnerViewingSelf
+    const scopeCondition: ReturnType<typeof sql> = (isCreations || isPenDrafts) && isOwnerViewingSelf
       ? statusFilter && isCreations
         ? and(eq(books.userId, targetUserId!), inArray(books.status, statusFilter))!
         : eq(books.userId, targetUserId!) // User's own books regardless of status
       : profileUserId && bookSortBy !== 'favorites' && bookSortBy !== 'reads' && bookSortBy !== 'likes'
         ? and(eq(books.status, 'active'), eq(books.visibility, 'public'), eq(books.userId, profileUserId))!
         : and(eq(books.status, 'active'), eq(books.visibility, 'public'))!;
+
+    // Visibility filter is folded in as an additional AND, never a replacement:
+    // it can only narrow the scope, so an anonymous or foreign caller asking
+    // for `visibility=private` gets an empty page rather than anyone's private
+    // books. Same treatment as `status`, so `totalCount` becomes the accurate
+    // per-tab total and each dashboard can paginate per tab.
+    const baseCondition: ReturnType<typeof sql> = visibilityFilter
+      ? and(scopeCondition, inArray(books.visibility, visibilityFilter))!
+      : scopeCondition;
 
     // Unfiltered denominator for the "found M from N total" label. Counted over
     // the same base condition as the result set but WITHOUT the tag/search/age/
@@ -2882,6 +3058,7 @@ router.get("/explore", optionalAuth, async (c) => {
       !mode &&
       !sanitizedSource &&
       !statusFilter &&
+      !visibilityFilter &&
       !ratingParam &&
       !ratingCountParam &&
       bookSortBy !== 'reads' &&
@@ -2899,10 +3076,11 @@ router.get("/explore", optionalAuth, async (c) => {
     }
 
     // Cache strategy: don't cache user-specific or filtered queries.
-    // `sanitizedSource` must be listed here: the per-sort cache key below is
-    // sort-only (not query-string keyed), so a source-filtered page would
-    // otherwise poison the shared public browse slot for the TTL.
-    const shouldCache = page === 1 && !profileUserId && !isCreations && !isPenDrafts && !search && tagsArray.length === 0 && !language && !lastUpdated && !ageRange && !gender && !mode && !sanitizedSource && !statusFilter && !ratingParam && !ratingCountParam && bookSortBy !== 'reads' && bookSortBy !== 'favorites' && bookSortBy !== 'recommendations' && bookSortBy !== 'for-you';
+    // `sanitizedSource` and `visibilityFilter` must be listed here: the per-sort
+    // cache key below is sort-only (not query-string keyed), so a source- or
+    // visibility-filtered page would otherwise poison the shared public browse
+    // slot for the TTL.
+    const shouldCache = page === 1 && !profileUserId && !isCreations && !isPenDrafts && !search && tagsArray.length === 0 && !language && !lastUpdated && !ageRange && !gender && !mode && !sanitizedSource && !statusFilter && !visibilityFilter && !ratingParam && !ratingCountParam && bookSortBy !== 'reads' && bookSortBy !== 'favorites' && bookSortBy !== 'recommendations' && bookSortBy !== 'for-you';
     //
     // Per-sort cache key (see CACHE_KEYS.EXPLORE_PAGE_1_BY_SORT). Each public
     // sort option caches page 1 under its OWN key. This fixes a cache-key
@@ -3226,6 +3404,174 @@ router.get("/stats", optionalAuth, async (c) => {
     return cApiError(c, "Failed to retrieve book stats", error);
   }
 });
+
+/**
+ * POST /api/books/likes/bulk
+ *
+ * Likes up to 20 books for the authenticated user in one
+ * transaction. Additive counterpart of `POST /:id/like` for the welcome
+ * wizard's multi-select step (USER_ONBOARDING_WIZARD_ROADMAP, Step 1).
+ *
+ * Semantics deliberately mirror the single-like route:
+ * - `user_likes` rows are inserted with `onConflictDoNothing`, so a retried
+ *   or duplicated batch cannot double-count — the counter bump is scoped to
+ *   the rows Postgres actually inserted (`RETURNING`), and no trigger counts
+ *   likes for us (`books.likes_count` has none; see F4 in the roadmap).
+ * - `likes_count + 1` and `trending_score + 0.3` are applied only to those
+ *   rows, inside the same transaction.
+ * - Unlike `POST /user/likes`, this route maintains the denormalized counters;
+ *   unlikes must use `DELETE /books/:id/like`.
+ *
+ * Idempotent by construction: re-sending the same batch returns every id in
+ * `alreadyLikedIds` and changes no counter, so blind client retries are safe.
+ *
+ * @route POST /api/books/likes/bulk
+ * @requiresAuth
+ *
+ * @body {Object} Bulk like data
+ * @body {string[]} bookIds - 1..20 unique non-empty book ids (raw array capped at 100; see {@link parseBulkLikeIds})
+ *
+ * @returns {Object} Partition of the deduped request ids
+ * @returns {string[]} likedIds - Ids whose like was created by this call
+ * @returns {string[]} alreadyLikedIds - Ids that were already liked (no-op)
+ *
+ * @throws 400 - Malformed body (missing/empty/non-string ids, or >20 unique ids)
+ * @throws 404 - At least one requested id does not exist (whole batch rejected,
+ *               matching the single-like route's all-or-nothing contract)
+ *
+ * @example
+ * POST /api/books/likes/bulk
+ * Body: { "bookIds": ["b1", "b2", "b3"] }
+ *
+ * Response (200):
+ * {
+ *   "likedIds": ["b1", "b2"],
+ *   "alreadyLikedIds": ["b3"]
+ * }
+ */
+router.post(
+  "/likes/bulk",
+  requireAuth,
+  rateLimit({
+    maxRequests: 20,
+    windowSeconds: 60,
+    prefix: "books-likes-bulk",
+    message: "Too many like requests. Please try again shortly.",
+  }),
+  async (c) => {
+    try {
+      const userId = c.get("userId")!;
+      const parsed = parseBulkLikeIds((c.get("body") ?? {}).bookIds);
+      if (!parsed.ok) {
+        return cValidationError(c, parsed.error);
+      }
+      const bookIds = parsed.ids;
+
+      const result = await dbWrite.transaction(async (tx) => {
+        // Existence check first — reject the whole batch like the single route.
+        const existingBooks = await tx
+          .select({ id: books.id })
+          .from(books)
+          .where(inArray(books.id, bookIds));
+        if (existingBooks.length !== bookIds.length) {
+          throw new Error("BOOK_NOT_FOUND");
+        }
+
+        const existingLikes = await tx
+          .select({ targetId: userLikes.targetId })
+          .from(userLikes)
+          .where(
+            and(
+              eq(userLikes.userId, userId),
+              eq(userLikes.targetType, "book"),
+              inArray(userLikes.targetId, bookIds),
+            ),
+          );
+        const already = new Set(existingLikes.map((row) => row.targetId));
+
+        const toInsert = bookIds.filter((id) => !already.has(id));
+        const insertedIds =
+          toInsert.length === 0
+            ? []
+            : (
+                await tx
+                  .insert(userLikes)
+                  .values(
+                    toInsert.map((id) => ({
+                      userId,
+                      targetType: "book" as const,
+                      targetId: id,
+                      createdAt: new Date(),
+                    })),
+                  )
+                  .onConflictDoNothing()
+                  .returning({ targetId: userLikes.targetId })
+              ).map((row) => row.targetId);
+
+        // Counters move only for rows this call actually created.
+        if (insertedIds.length > 0) {
+          await tx
+            .update(books)
+            .set({
+              likesCount: sql`${books.likesCount} + 1`,
+              trendingScore: sql`${books.trendingScore} + 0.3`,
+              updatedAt: new Date(),
+            })
+            .where(inArray(books.id, insertedIds));
+        }
+
+        const inserted = new Set(insertedIds);
+        return {
+          likedIds: bookIds.filter((id) => inserted.has(id)),
+          alreadyLikedIds: bookIds.filter((id) => already.has(id)),
+        };
+      });
+
+      if (result.likedIds.length > 0) {
+        const affected = await dbRead
+          .select({ status: books.status, visibility: books.visibility })
+          .from(books)
+          .where(inArray(books.id, result.likedIds));
+
+        // One call clears every explore page-1 slot; gate on any public+active.
+        const exploreEligible = affected.some(
+          (book) => book.visibility === "public" && book.status === "active",
+        );
+        if (exploreEligible) await invalidateExploreCache();
+
+        // isLiked flags and likedBooksCount changed for this user.
+        await invalidateUserBooksCache(userId);
+        await invalidateUserProfileCache(userId);
+
+        await Promise.all(
+          result.likedIds.map((id) =>
+            logUserActivity(
+              {
+                userId,
+                activityType: "liked",
+                targetType: "book",
+                targetId: id,
+              },
+              {
+                req: {
+                  ip: getClientIp(c),
+                  get: (h: string) => c.req.header(h),
+                },
+              },
+            ),
+          ),
+        );
+      }
+
+      return c.json(result);
+    } catch (error) {
+      if (getErrorMessage(error) === "BOOK_NOT_FOUND") {
+        return cNotFoundError(c, "Book not found");
+      }
+      return cApiError(c, "Failed to bulk like books", error);
+    }
+  },
+);
 
 /**
  * POST /api/books/:id/like

@@ -1365,6 +1365,9 @@ router.delete("/", requireAuth, async (c: Context<AppEnv>) => {
  * 
  * Like a book, comment, or another user.
  * Uses upsert (onConflictDoNothing) to handle idempotent likes.
+ * For `targetType: "book"` the insert also bumps `books.likes_count` and
+ * `trending_score` in the same transaction (only when a row was created),
+ * so this route no longer diverges from `POST /books/:id/like`.
  * 
  * @route POST /user/likes
  * @description Like a target item
@@ -1425,14 +1428,41 @@ router.post("/likes", requireAuth, async (c: Context<AppEnv>) => {
       targetId,
     };
 
-    // Perform upsert operation (create or return existing)
-    const [row] = await dbWrite
-      .insert(userLikes)
-      .values(likeData)
-      .onConflictDoNothing()
-      .returning();
+    // Book targets own denormalized counters (books.likes_count /
+    // trending_score), so the insert and the bump must share one transaction
+    // and only move when a row was actually created — the same semantics as
+    // POST /books/:id/like. Without this, mixing this route with the /books
+    // family permanently inflates counts (Step 13, USER_ONBOARDING_WIZARD_ROADMAP).
+    let row: (typeof userLikes.$inferSelect) | undefined;
+    if (targetType === 'book') {
+      row = await dbWrite.transaction(async (tx) => {
+        const [inserted] = await tx
+          .insert(userLikes)
+          .values(likeData)
+          .onConflictDoNothing()
+          .returning();
+        if (inserted) {
+          await tx
+            .update(books)
+            .set({
+              likesCount: sql`${books.likesCount} + 1`,
+              trendingScore: sql`${books.trendingScore} + 0.3`,
+              updatedAt: new Date(),
+            })
+            .where(eq(books.id, targetId));
+        }
+        return inserted;
+      });
+    } else {
+      const [inserted] = await dbWrite
+        .insert(userLikes)
+        .values(likeData)
+        .onConflictDoNothing()
+        .returning();
+      row = inserted;
+    }
 
-    // If row is null, like already existed - fetch it
+    // If row is undefined, like already existed - fetch it
     const [like] = row ? [row] : await dbRead
       .select()
       .from(userLikes)
@@ -1480,6 +1510,9 @@ router.post("/likes", requireAuth, async (c: Context<AppEnv>) => {
  * DELETE /user/likes
  * 
  * Unlike a book, comment, or another user.
+ * For `targetType: "book"` the delete also decrements `books.likes_count` and
+ * `trending_score` (floored at 0) in the same transaction, only when a row was
+ * actually removed — mirroring `DELETE /books/:id/like`.
  * 
  * @route DELETE /user/likes
  * @description Unlike a target item
@@ -1524,15 +1557,41 @@ router.delete("/likes", requireAuth, async (c: Context<AppEnv>) => {
       }, 400);
     }
 
-    // Delete the like
-    const result = await dbWrite
-      .delete(userLikes)
-      .where(and(
-        eq(userLikes.userId, userId),
-        eq(userLikes.targetType, targetType as LikeTargetType),
-        eq(userLikes.targetId, targetId as string)
-      ))
-      .returning();
+    // Book targets keep the denormalized counters in step: the delete and the
+    // decrement share one transaction and only move when a row was removed —
+    // mirroring DELETE /books/:id/like. Floors use GREATEST so likes that predate
+    // the counter fix (inserted here without a bump) cannot drive counts negative
+    // (Step 13, USER_ONBOARDING_WIZARD_ROADMAP).
+    const result = targetType === 'book'
+      ? await dbWrite.transaction(async (tx) => {
+          const deleted = await tx
+            .delete(userLikes)
+            .where(and(
+              eq(userLikes.userId, userId),
+              eq(userLikes.targetType, targetType as LikeTargetType),
+              eq(userLikes.targetId, targetId as string)
+            ))
+            .returning();
+          if (deleted.length > 0) {
+            await tx
+              .update(books)
+              .set({
+                likesCount: sql`GREATEST(${books.likesCount} - 1, 0)`,
+                trendingScore: sql`GREATEST(${books.trendingScore} - 0.3, 0)`,
+                updatedAt: new Date(),
+              })
+              .where(eq(books.id, targetId as string));
+          }
+          return deleted;
+        })
+      : await dbWrite
+          .delete(userLikes)
+          .where(and(
+            eq(userLikes.userId, userId),
+            eq(userLikes.targetType, targetType as LikeTargetType),
+            eq(userLikes.targetId, targetId as string)
+          ))
+          .returning();
 
     if (result.length === 0) {
       return cNotFoundError(c, "Like not found");

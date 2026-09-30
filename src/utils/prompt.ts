@@ -4687,6 +4687,7 @@ export async function initializeBook(
     bookId: draftBookId,
       advancedOptions,
       mode = 'interactive',
+      idempotencyKey = null,
     } = params;
 
   // ── Internal progress helper ─────────────────────────────────────────────
@@ -4876,7 +4877,11 @@ export async function initializeBook(
         originalThemeInput: theme,
         mode, // Book creation mode (story format)
         ending: viableEnding,
-        advancedOptions // Persist for ongoing page generation
+        advancedOptions, // Persist for ongoing page generation
+        // Replay-on-key (F-1): written in the same transaction as the credit
+        // deduction, so the partial unique index can reject a duplicate before
+        // it commits rather than after.
+        idempotencyKey,
       };
       const dbBook = await insertBook(newBookData, { client, alternativeTitles });
       book = mapBookFromDb(dbBook);

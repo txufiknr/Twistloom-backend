@@ -255,6 +255,13 @@ export type Book = {
   contentRating: 'general' | 'teen' | 'mature' | 'adult';
   /** Optional front matter — one rich-text page shown before Page 1 */
   frontMatter: BookFrontMatter | null;
+  /**
+   * Client-supplied `Idempotency-Key` of the creation request that produced
+   * this book (Open Findings F-1). Internal request-scoped token — it is
+   * deliberately never serialized by `mapBookFromDb`, so it never reaches an
+   * API response.
+   */
+  idempotencyKey?: string | null;
   /** When the book was created */
   createdAt: Date;
   /** When the book was last updated */
@@ -480,6 +487,13 @@ export type InitializeBookParams = StoryPlan & {
   advancedOptions?: AdvancedOptionsConfig;
   /** Book creation mode (story format). Defaults to 'interactive' when omitted. */
   mode?: BookMode;
+  /**
+   * Client-supplied `Idempotency-Key` header value (Open Findings F-1),
+   * persisted on the created `books` row inside the same transaction as the
+   * credit deduction so a replay cannot charge twice. `null`/omitted = no
+   * replay protection for this request.
+   */
+  idempotencyKey?: string | null;
 };
 
 export type CreateBookParams = Omit<InitializeBookParams, 'aiComment' | 'language' | 'bookId' | 'tx'> & { context?: string; mode?: BookMode; isVip?: boolean; };
