@@ -13,7 +13,9 @@
  *   `lineItems[].autoRenewingPlan.autoRenewEnabled`), plus
  *   `purchases.products.get` for credit packs
  * - App Store Server API production → sandbox host fallback (a sandbox
- *   transaction is a 404 on the production host, not a denial)
+ *   transaction is a 404 on the production host, not a denial), plus the
+ *   documented `StatusResponse` nesting (`data[] → lastTransactions[]` with
+ *   facts inside the signed JWS payloads)
  * - credential failures (401/403) answering `unavailable`, never `denied`
  *
  * `bun test` runs every file in **one process**, and a module mock cannot be
@@ -493,22 +495,69 @@ async function signedTransaction(payload: Record<string, unknown>): Promise<stri
     .sign(new TextEncoder().encode("test-secret"));
 }
 
-/** Apple's `Get All Subscription Statuses` body; `root` overrides top-level fields. */
-function subscriptionStatus(entry: Record<string, unknown> = {}, root: Record<string, unknown> = {}): Record<string, unknown> {
+/** `signedRenewalInfo` has the same compact-JWS shape as `signedTransactionInfo`. */
+const signedRenewalInfo = signedTransaction;
+
+/** The subscription chain id these fixtures are addressed by. */
+const ORIGINAL_TRANSACTION_ID = "2000000123456";
+
+/**
+ * Apple's `Get All Subscription Statuses` body in its **documented** shape:
+ * `data[] → SubscriptionGroupIdentifierItem → lastTransactions[]`, with
+ * `productId`/`expiresDate`/`purchaseDate`/`revocationDate` living inside the
+ * App-Store-signed `signedTransactionInfo` JWS and `autoRenewStatus` inside
+ * `signedRenewalInfo` — never on the group items.
+ *
+ * A flattened fixture (fields directly on `data[]` elements) is exactly what
+ * let the pre-fix parser pass its suite while production denied every real
+ * subscription as `appstore_missing_expiry`; the fixture therefore mirrors
+ * Apple's nesting on purpose.
+ *
+ * @param overrides - `transaction`/`renewal` override decoded JWS claims;
+ *   `envelope` overrides `lastTransactionsItem` fields (e.g. `status`)
+ * @param root - Top-level response fields (`environment`, `bundleId`)
+ */
+async function subscriptionStatus(
+  overrides: {
+    transaction?: Record<string, unknown>;
+    renewal?: Record<string, unknown>;
+    envelope?: Record<string, unknown>;
+  } = {},
+  root: Record<string, unknown> = {},
+): Promise<Record<string, unknown>> {
+  const signedTransactionInfo = await signedTransaction({
+    // JWSTransactionDecodedPayload always names the app — this is where the
+    // bundle binding is actually read from (the consumable endpoint's root
+    // response has no bundleId field at all).
+    bundleId: "com.twistloom.app",
+    productId: "vip_monthly",
+    transactionId: ORIGINAL_TRANSACTION_ID,
+    originalTransactionId: ORIGINAL_TRANSACTION_ID,
+    purchaseDate: START.getTime(),
+    expiresDate: FUTURE.getTime(),
+    ...overrides.transaction,
+  });
+  const signedRenewalInfoClaims = await signedRenewalInfo({
+    autoRenewStatus: 1,
+    originalTransactionId: ORIGINAL_TRANSACTION_ID,
+    ...overrides.renewal,
+  });
   return {
     environment: "Production",
     bundleId: "com.twistloom.app",
     ...root,
     data: [
       {
-        productId: "vip_monthly",
-        status: 1,
-        expiresDate: FUTURE.getTime(),
-        autoRenewStatus: 1,
-        originalTransactionId: "2000000123456",
-        transactionId: "2000000123456",
-        recentSubscriptionStartDate: START.getTime(),
-        ...entry,
+        subscriptionGroupIdentifier: "1000000000",
+        lastTransactions: [
+          {
+            originalTransactionId: ORIGINAL_TRANSACTION_ID,
+            status: 1,
+            signedTransactionInfo,
+            signedRenewalInfo: signedRenewalInfoClaims,
+            ...overrides.envelope,
+          },
+        ],
       },
     ],
   };
@@ -523,7 +572,7 @@ const APP_STORE_PROOF = {
 
 describe("App Store verification (production and sandbox hosts)", () => {
   it("reads a production subscription without touching the sandbox host", async () => {
-    routes = [appStore(APP_STORE_PROD, 200, subscriptionStatus())];
+    routes = [appStore(APP_STORE_PROD, 200, await subscriptionStatus())];
 
     const outcome = await verifyAppStore(APP_STORE_PROOF);
     expect(outcome.kind).toBe("verified");
@@ -539,7 +588,7 @@ describe("App Store verification (production and sandbox hosts)", () => {
     routes = [
       appStore(APP_STORE_PROD, 404),
       // Apple omitted `environment`; the host that had the record decides.
-      appStore(APP_STORE_SANDBOX, 200, subscriptionStatus({}, { environment: undefined })),
+      appStore(APP_STORE_SANDBOX, 200, await subscriptionStatus({}, { environment: undefined })),
     ];
 
     const outcome = await verifyAppStore(APP_STORE_PROOF);
@@ -575,14 +624,14 @@ describe("App Store verification (production and sandbox hosts)", () => {
   });
 
   it("denies a product Apple reports for a different product", async () => {
-    routes = [appStore(APP_STORE_PROD, 200, subscriptionStatus({ productId: "vip_yearly" }))];
+    routes = [appStore(APP_STORE_PROD, 200, await subscriptionStatus({ transaction: { productId: "vip_yearly" } }))];
 
     const outcome = await verifyAppStore(APP_STORE_PROOF);
     expect(outcome).toEqual({ kind: "denied", reason: "appstore_product_mismatch" });
   });
 
   it("denies a subscription whose paid period has ended", async () => {
-    routes = [appStore(APP_STORE_PROD, 200, subscriptionStatus({ expiresDate: PAST.getTime() }))];
+    routes = [appStore(APP_STORE_PROD, 200, await subscriptionStatus({ transaction: { expiresDate: PAST.getTime() } }))];
 
     const outcome = await verifyAppStore(APP_STORE_PROOF);
     expect(outcome.kind).toBe("denied");
@@ -592,15 +641,19 @@ describe("App Store verification (production and sandbox hosts)", () => {
 
   it("verifies a credit pack through the sandbox host", async () => {
     const signed = await signedTransaction({
+      bundleId: "com.twistloom.app",
       productId: "vip_100",
       transactionId: "2000000999",
       originalTransactionId: "2000000999",
       purchaseDate: START.getTime(),
       quantity: 1,
     });
+    // Apple's real `TransactionInfoResponse` shape: `signedTransactionInfo`
+    // ONLY — no root bundleId. A root-level check would never run here, which
+    // is why the binding reads the signed claims.
     routes = [
       appStore(APP_STORE_PROD, 404),
-      appStore(APP_STORE_SANDBOX, 200, { bundleId: "com.twistloom.app", signedTransactionInfo: signed }),
+      appStore(APP_STORE_SANDBOX, 200, { signedTransactionInfo: signed }),
     ];
 
     const outcome = await verifyAppStore({
@@ -616,8 +669,60 @@ describe("App Store verification (production and sandbox hosts)", () => {
     expect(fetchCalls[1]).toContain("/inApps/v1/transactions/2000000999");
   });
 
+  it("denies a credit pack whose signed claims name a different app bundle", async () => {
+    const signed = await signedTransaction({
+      bundleId: "com.attacker.app",
+      productId: "vip_100",
+      transactionId: "2000000997",
+      originalTransactionId: "2000000997",
+      purchaseDate: START.getTime(),
+      quantity: 1,
+    });
+    routes = [appStore(APP_STORE_PROD, 200, { signedTransactionInfo: signed })];
+
+    const outcome = await verifyAppStore({
+      platform: "app_store",
+      kind: "consumable",
+      productId: "vip_100",
+      transactionId: "2000000997",
+    });
+    expect(outcome).toEqual({ kind: "denied", reason: "appstore_bundle_mismatch" });
+  });
+
+  it("fails closed when the signed credit-pack transaction carries no bundle id", async () => {
+    const signed = await signedTransaction({
+      productId: "vip_100",
+      transactionId: "2000000996",
+      originalTransactionId: "2000000996",
+      purchaseDate: START.getTime(),
+      quantity: 1,
+    });
+    routes = [appStore(APP_STORE_PROD, 200, { signedTransactionInfo: signed })];
+
+    const outcome = await verifyAppStore({
+      platform: "app_store",
+      kind: "consumable",
+      productId: "vip_100",
+      transactionId: "2000000996",
+    });
+    expect(outcome).toEqual({ kind: "denied", reason: "appstore_bundle_mismatch" });
+  });
+
+  it("denies a credit pack whose signed transaction it cannot decode", async () => {
+    routes = [appStore(APP_STORE_PROD, 200, { signedTransactionInfo: "aaa.bbb.ccc" })];
+
+    const outcome = await verifyAppStore({
+      platform: "app_store",
+      kind: "consumable",
+      productId: "vip_100",
+      transactionId: "2000000995",
+    });
+    expect(outcome).toEqual({ kind: "denied", reason: "appstore_unreadable_transaction" });
+  });
+
   it("denies a revoked transaction", async () => {
     const signed = await signedTransaction({
+      bundleId: "com.twistloom.app",
       productId: "vip_100",
       transactionId: "2000000998",
       originalTransactionId: "2000000998",
@@ -625,7 +730,7 @@ describe("App Store verification (production and sandbox hosts)", () => {
       revocationDate: START.getTime(),
       revocationReason: 0,
     });
-    routes = [appStore(APP_STORE_PROD, 200, { bundleId: "com.twistloom.app", signedTransactionInfo: signed })];
+    routes = [appStore(APP_STORE_PROD, 200, { signedTransactionInfo: signed })];
 
     const outcome = await verifyAppStore({
       platform: "app_store",
@@ -634,5 +739,175 @@ describe("App Store verification (production and sandbox hosts)", () => {
       transactionId: "2000000998",
     });
     expect(outcome).toEqual({ kind: "denied", reason: "appstore_revoked" });
+  });
+
+  // -----------------------------------------------------------------------
+  // StatusResponse contract — the nesting Apple actually documents.
+  // -----------------------------------------------------------------------
+
+  it("denies a flattened StatusResponse that does not match Apple's nesting", async () => {
+    // The pre-fix parser read `data[]` elements directly and only passed
+    // because its fixture was flattened too; pin the real contract so the
+    // fixture can never drift back unnoticed.
+    routes = [
+      appStore(APP_STORE_PROD, 200, {
+        environment: "Production",
+        bundleId: "com.twistloom.app",
+        data: [
+          {
+            productId: "vip_monthly",
+            status: 1,
+            expiresDate: FUTURE.getTime(),
+            originalTransactionId: ORIGINAL_TRANSACTION_ID,
+          },
+        ],
+      }),
+    ];
+
+    const outcome = await verifyAppStore(APP_STORE_PROOF);
+    expect(outcome).toEqual({ kind: "denied", reason: "appstore_no_subscription_status" });
+  });
+
+  it("selects the matching chain across subscription groups", async () => {
+    const otherTransaction = await signedTransaction({
+      productId: "vip_yearly",
+      transactionId: "999999999",
+      originalTransactionId: "999999999",
+      purchaseDate: START.getTime(),
+      expiresDate: FUTURE.getTime(),
+    });
+    const mine = await subscriptionStatus();
+    const mineGroups = Array.isArray(mine.data) ? mine.data : [];
+    routes = [
+      appStore(APP_STORE_PROD, 200, {
+        ...mine,
+        data: [
+          {
+            subscriptionGroupIdentifier: "other-group",
+            lastTransactions: [
+              {
+                originalTransactionId: "999999999",
+                status: 1,
+                signedTransactionInfo: otherTransaction,
+              },
+            ],
+          },
+          ...mineGroups,
+        ],
+      }),
+    ];
+
+    const outcome = await verifyAppStore(APP_STORE_PROOF);
+    expect(outcome.kind).toBe("verified");
+    if (outcome.kind !== "verified") return;
+    expect(outcome.receipt.productId).toBe("vip_monthly");
+    expect(outcome.receipt.purchaseKey).toBe(ORIGINAL_TRANSACTION_ID);
+  });
+
+  it("denies a revoked subscription even while the envelope still reads active", async () => {
+    routes = [
+      appStore(APP_STORE_PROD, 200, await subscriptionStatus({ transaction: { revocationDate: START.getTime() } })),
+    ];
+
+    const outcome = await verifyAppStore(APP_STORE_PROOF);
+    expect(outcome).toEqual({ kind: "denied", reason: "appstore_revoked" });
+  });
+
+  it("denies the revoked status value Apple reports for a refunded period", async () => {
+    routes = [appStore(APP_STORE_PROD, 200, await subscriptionStatus({ envelope: { status: 5 } }))];
+
+    const outcome = await verifyAppStore(APP_STORE_PROOF);
+    expect(outcome).toEqual({ kind: "denied", reason: "appstore_not_entitled_status_5" });
+  });
+
+  it("fails closed when the signed transaction carries no expiry", async () => {
+    routes = [appStore(APP_STORE_PROD, 200, await subscriptionStatus({ transaction: { expiresDate: undefined } }))];
+
+    const outcome = await verifyAppStore(APP_STORE_PROOF);
+    expect(outcome).toEqual({ kind: "denied", reason: "appstore_missing_expiry" });
+  });
+
+  it("fails closed when the signed transaction carries no product id", async () => {
+    routes = [appStore(APP_STORE_PROD, 200, await subscriptionStatus({ transaction: { productId: undefined } }))];
+
+    const outcome = await verifyAppStore(APP_STORE_PROOF);
+    expect(outcome).toEqual({ kind: "denied", reason: "appstore_missing_product" });
+  });
+
+  it("denies a signed transaction it cannot decode", async () => {
+    routes = [
+      appStore(APP_STORE_PROD, 200, {
+        environment: "Production",
+        bundleId: "com.twistloom.app",
+        data: [
+          {
+            subscriptionGroupIdentifier: "1000000000",
+            lastTransactions: [
+              {
+                originalTransactionId: ORIGINAL_TRANSACTION_ID,
+                status: 1,
+                signedTransactionInfo: "aaa.bbb.ccc",
+              },
+            ],
+          },
+        ],
+      }),
+    ];
+
+    const outcome = await verifyAppStore(APP_STORE_PROOF);
+    expect(outcome).toEqual({ kind: "denied", reason: "appstore_unreadable_transaction" });
+  });
+
+  it("denies a StatusResponse with no subscription for this customer", async () => {
+    routes = [
+      appStore(APP_STORE_PROD, 200, { environment: "Production", bundleId: "com.twistloom.app", data: [] }),
+    ];
+
+    const outcome = await verifyAppStore(APP_STORE_PROOF);
+    expect(outcome).toEqual({ kind: "denied", reason: "appstore_no_subscription_status" });
+  });
+
+  it("denies a response for a different app bundle", async () => {
+    routes = [appStore(APP_STORE_PROD, 200, await subscriptionStatus({}, { bundleId: "com.attacker.app" }))];
+
+    const outcome = await verifyAppStore(APP_STORE_PROOF);
+    expect(outcome).toEqual({ kind: "denied", reason: "appstore_bundle_mismatch" });
+  });
+
+  it("denies when only the signed claims disagree about the bundle", async () => {
+    // The root is silent (or clean) — the App-Store-signed claims are the
+    // authoritative binding and a mismatch there must still deny.
+    routes = [
+      appStore(
+        APP_STORE_PROD,
+        200,
+        await subscriptionStatus({ transaction: { bundleId: "com.attacker.app" } }, { bundleId: undefined }),
+      ),
+    ];
+
+    const outcome = await verifyAppStore(APP_STORE_PROOF);
+    expect(outcome).toEqual({ kind: "denied", reason: "appstore_bundle_mismatch" });
+  });
+
+  it("accepts the root bundle id when the claims omit one", async () => {
+    routes = [
+      appStore(
+        APP_STORE_PROD,
+        200,
+        await subscriptionStatus({ transaction: { bundleId: undefined } }),
+      ),
+    ];
+
+    const outcome = await verifyAppStore(APP_STORE_PROOF);
+    expect(outcome.kind).toBe("verified");
+  });
+
+  it("prefers the environment Apple signed into the transaction over the envelope", async () => {
+    routes = [appStore(APP_STORE_PROD, 200, await subscriptionStatus({ transaction: { environment: "Sandbox" } }))];
+
+    const outcome = await verifyAppStore(APP_STORE_PROOF);
+    expect(outcome.kind).toBe("verified");
+    if (outcome.kind !== "verified") return;
+    expect(outcome.receipt.environment).toBe("Sandbox");
   });
 });

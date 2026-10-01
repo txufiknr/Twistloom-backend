@@ -13,6 +13,9 @@
  * - renewals: unique `(gateway, provider_invoice_id)`
  * - purchases: unique `(gateway, provider_payment_id)`
  * - audit ledger: unique `(gateway, event_id)` on `webhook_deliveries`
+ * - first-purchase bonus: partial unique `user_id` where
+ *   `type = 'first_purchase_bonus'` (one bonus per account, claimed via
+ *   `awardFirstPurchaseBonusOnce`)
  *
  * The store's own API is the only authority for `entitled`; nothing here
  * recomputes it from a clock the client controls.
@@ -34,7 +37,7 @@ import { FIRST_PURCHASE_BONUS } from "../../config/credits.js";
 import { VIP_BENEFITS } from "../../config/subscription.js";
 import type { PaymentGateway } from "../../types/payment.js";
 import { isUniqueConstraintError } from "../../utils/retry.js";
-import { awardCredits } from "../credits.js";
+import { awardCredits, awardFirstPurchaseBonusOnce } from "../credits.js";
 import { cancelSubscription, createSubscription, renewSubscription, updateSubscription } from "../subscription.js";
 import { storeGatewayFor, type ResolvedStoreProduct } from "./index.js";
 import type { StoreReceipt } from "./types.js";
@@ -418,7 +421,7 @@ export async function grantStoreCreditPurchase(
   let bonusCredits = 0;
   try {
     const newBalance = await dbWrite.transaction(async (tx) => {
-      let balance = await awardCredits(userId, resolved.credits, {
+      await awardCredits(userId, resolved.credits, {
         type: "purchase",
         gateway,
         notificationType: "payment_success",
@@ -441,29 +444,21 @@ export async function grantStoreCreditPurchase(
         tx,
       });
 
-      if (FIRST_PURCHASE_BONUS > 0) {
-        const bonusRows = await tx
-          .select({ id: transactions.id })
-          .from(transactions)
-          .where(and(eq(transactions.userId, userId), eq(transactions.type, "first_purchase_bonus")))
-          .limit(1);
-        if (bonusRows.length === 0) {
-          balance = await awardCredits(userId, FIRST_PURCHASE_BONUS, {
-            type: "first_purchase_bonus",
-            gateway,
-            notificationType: "first_purchase_bonus",
-            notificationTitle: "First Purchase Bonus",
-            notificationMessage: `You received ${FIRST_PURCHASE_BONUS} credits for your first purchase`,
-            notificationData: { packId: resolved.packId },
-            context: "first_purchase_bonus",
-            tx,
-          });
-          bonusCredits = FIRST_PURCHASE_BONUS;
-        }
-      }
+      // The one-time bonus is claimed through the partial unique index
+      // `transactions_user_first_purchase_bonus_unique` (see
+      // awardFirstPurchaseBonusOnce), not through a check-then-insert: two
+      // concurrent distinct purchases cannot both pass an INSERT, and the
+      // loser reports `inserted: false` without rolling back its purchase.
+      const bonus = await awardFirstPurchaseBonusOnce(userId, FIRST_PURCHASE_BONUS, {
+        gateway,
+        notificationData: { packId: resolved.packId },
+        tx,
+      });
+      if (bonus.inserted) bonusCredits = FIRST_PURCHASE_BONUS;
+
       // The balance returned to the client must be the one *after* every award
       // in this transaction, including the bonus.
-      return balance;
+      return bonus.balance;
     });
     await recordStoreVerification(gateway, providerPaymentId, "granted");
     return { granted: true, alreadyGranted: false, bonusCredits, newBalance };

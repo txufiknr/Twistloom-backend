@@ -11,7 +11,7 @@
  * key that has never been seeded (super admin never opened /admin/settings)
  * still resolves to its documented default instead of `undefined`.
  */
-import { dbRead } from "../db/client.js";
+import { dbRead, dbWrite } from "../db/client.js";
 import { adminSettings } from "../db/schema.js";
 
 /** Default values for every supported setting key (validation + fallback SSOT). */
@@ -68,6 +68,49 @@ export async function getModerationThresholds(): Promise<ModerationThresholds> {
       4.0,
     ),
   };
+}
+
+/**
+ * Result of an enforcement-critical settings read.
+ *
+ * `ok: false` means the stored policy could NOT be resolved — it does **not**
+ * mean "no takedowns configured". Callers must surface this instead of
+ * substituting defaults.
+ */
+export type BanPolicyResult =
+  | { ok: true; settings: Record<string, unknown> }
+  | { ok: false; error: unknown };
+
+/**
+ * Loads the ban policy for an **explicit administrator enforcement action**.
+ *
+ * Consumer contract (deliberately different from {@link getAdminSettingsMap}):
+ *
+ * | Consumer | Reader | On DB failure |
+ * |---|---|---|
+ * | Content ingestion, testimonial/mention thresholds | `getAdminSettingsMap` | **fail-open** to {@link DEFAULT_ADMIN_SETTINGS} — a missing setting must not block ingestion |
+ * | Admin ban takedowns (`ban.hide_books`, `ban.revoke_sessions`, …) | `getBanPolicy` | **fail-loud** — substituting `false` would silently skip configured takedowns (policy drift) while the ban itself succeeds |
+ *
+ * Reads from the primary (`dbWrite`) so a just-changed setting is visible and
+ * so replica unavailability cannot masquerade as "unset". The ban must still
+ * proceed when this fails — `users.bannedAt` is the actual lockout — so callers
+ * report `settingsUnresolved` rather than aborting.
+ *
+ * @returns `{ ok: true, settings }` with defaults merged under stored values,
+ *          or `{ ok: false, error }` when the policy could not be read
+ */
+export async function getBanPolicy(): Promise<BanPolicyResult> {
+  try {
+    const rows = await dbWrite.select().from(adminSettings);
+    const map: Record<string, unknown> = { ...DEFAULT_ADMIN_SETTINGS };
+    for (const row of rows) {
+      map[row.key] = row.value;
+    }
+    return { ok: true, settings: map };
+  } catch (error) {
+    console.error("[admin-settings] ❌ Failed to read admin_settings for enforcement action:", error);
+    return { ok: false, error };
+  }
 }
 
 /**

@@ -76,17 +76,25 @@ const dbWrite = {
     }),
 };
 
+// Captured BEFORE the stubs below replace them — `afterAll` puts them back.
+const actualSessionManager = await import("../src/services/session-manager.js");
 mock.module("../src/services/session-manager.js", () => ({
+  ...actualSessionManager,
   createSession,
   updateSessionMetadata: async () => undefined,
 }));
+const actualTokenFamily = await import("../src/services/token-family.js");
 mock.module("../src/services/token-family.js", () => ({
+  ...actualTokenFamily,
   createRefreshFamily,
 }));
+const actualAdminAuth = await import("../src/middleware/admin-auth.js");
 mock.module("../src/middleware/admin-auth.js", () => ({
+  ...actualAdminAuth,
   resolveAdminAccess,
   isSuperAdminUserId: () => false,
 }));
+const actualDbClient = await import("../src/db/client.js");
 mock.module("../src/db/client.js", () => ({
   dbRead,
   dbWrite,
@@ -108,6 +116,14 @@ beforeAll(() => {
 
 afterAll(() => {
   process.env = { ...ORIGINAL_ENV };
+  // `mock.module` is process-global and `mock.restore()` does not revert it —
+  // re-register every real namespace so later test files never see these
+  // fakes (see the mock-restore rule in tests/helpers/store-verification-db.ts).
+  mock.module("../src/services/mobile-tokens.js", () => actualMobileTokens);
+  mock.module("../src/services/session-manager.js", () => actualSessionManager);
+  mock.module("../src/services/token-family.js", () => actualTokenFamily);
+  mock.module("../src/middleware/admin-auth.js", () => actualAdminAuth);
+  mock.module("../src/db/client.js", () => actualDbClient);
 });
 
 beforeEach(() => {

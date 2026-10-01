@@ -27,7 +27,7 @@ import { dbRead } from "../db/client.js";
 import { createRelevanceExpression } from "../utils/search.js";
 import { getEnrichedBook, getPageActionsFromDB, getPageFromDB } from "./book.js";
 import { cNotFoundError, cForbiddenError } from "../utils/error.js";
-import { getBookPageAccessError } from "./book-page-access.js";
+import { getBookAccessSnapshot, getBookPageAccessError } from "./book-page-access.js";
 import { getClientIp } from "../hono/express-shim.js";
 import { computeVisitStats, mapActionToSelectedAction, markPageVisited } from "./story.js";
 import { sendSystemBroadcast, type SystemBroadcastI18nPayload } from "./broadcast.js";
@@ -96,6 +96,7 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
     mode:        books.mode,
     creditsPrice: books.creditsPrice,
     originalThemeInput: books.originalThemeInput,
+    frontMatter:   books.frontMatter,
     createdAt:   books.createdAt,
     updatedAt:   books.updatedAt,
     mc:          books.mc,
@@ -1182,7 +1183,7 @@ export async function visitBookPage(
     return { errorResponse: cNotFoundError(res, `Page not found`) };
   }
 
-  // Get book
+  // Get book (fat projection — cached, may be process-local stale)
   const { page: pageNumber, bookId, parentId: parentPageId, branchId } = dbPage;
   const book = await getEnrichedBook(bookId, userId, language);
   if (!book) {
@@ -1190,7 +1191,16 @@ export async function visitBookPage(
     return { errorResponse: cNotFoundError(res, `Book not found`) };
   }
 
-  const accessError = getBookPageAccessError(res, book, userId);
+  // Authorization runs on the AUTHORITATIVE primary read, never on the
+  // 5-minute process-local enriched projection: a book moderated to
+  // private/archived on another serverless instance must be denied now, not
+  // when that instance's LRU expires. See getBookAccessSnapshot.
+  const accessFields = await getBookAccessSnapshot(bookId);
+  if (!accessFields) {
+    console.error(`[visit] ❌ Book row vanished during access check:`, bookId);
+    return { errorResponse: cNotFoundError(res, `Book not found`) };
+  }
+  const accessError = getBookPageAccessError(res, accessFields, userId);
   if (accessError) return { errorResponse: accessError };
 
   if (isUserTakeAction) {

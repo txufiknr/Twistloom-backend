@@ -1,7 +1,6 @@
-import { describe, expect, it, mock } from "bun:test";
+import { afterAll, describe, expect, it, mock } from "bun:test";
 import { Hono } from "hono";
 import type { EnrichedBookData } from "../src/types/book.js";
-import { getBookPageAccessError } from "../src/services/book-page-access.js";
 
 type AccessBook = Pick<EnrichedBookData, "userId" | "status" | "visibility">;
 
@@ -34,6 +33,37 @@ const markPageVisited = mock(async () => ({
   readerUserId: "other-user",
 }));
 
+// --- Module doubles (registered BEFORE the modules under test are imported) ---
+//
+// `visitBookPage` now authorizes against `getBookAccessSnapshot()`, a primary
+// read through `dbWrite` (see book-page-access.ts). Without this double the
+// test would open a real connection; the double serves a `books` row mirroring
+// `resolvedBook`, so the snapshot equals the projection under test and the
+// assertions below keep their original meaning.
+const accessRow = { userId: resolvedBook.userId, status: resolvedBook.status, visibility: resolvedBook.visibility };
+const fakeAccessDb = {
+  select: () => {
+    const chain: any = {
+      from: () => chain,
+      where: () => chain,
+      limit: async () => [
+        {
+          userId: accessRow.userId,
+          status: accessRow.status,
+          visibility: accessRow.visibility,
+        },
+      ],
+    };
+    return chain;
+  },
+};
+const actualDbClient = await import("../src/db/client.js");
+mock.module("../src/db/client.js", () => ({
+  ...actualDbClient,
+  dbRead: fakeAccessDb,
+  dbWrite: fakeAccessDb,
+}));
+
 const actualBookService = await import("../src/services/book.js");
 mock.module("../src/services/book.js", () => ({
   ...actualBookService,
@@ -49,7 +79,17 @@ mock.module("../src/services/story.js", () => ({
   markPageVisited,
 }));
 
+const { getBookPageAccessError } = await import("../src/services/book-page-access.js");
 const { visitBookPage } = await import("../src/services/book-controller.js");
+
+afterAll(() => {
+  // `mock.module` leaks forward across test files in the same process and
+  // `mock.restore()` does not revert it — put the real modules back for
+  // whatever runs next (pattern: auth-signup-pair.test.ts).
+  mock.module("../src/db/client.js", () => actualDbClient);
+  mock.module("../src/services/book.js", () => actualBookService);
+  mock.module("../src/services/story.js", () => actualStoryService);
+});
 
 async function checkAccess(book: AccessBook, userId?: string) {
   const app = new Hono();
@@ -146,6 +186,9 @@ describe("book page access before visit side effects", () => {
       stats: { readCount: 0 },
       title: "Private test book",
     };
+    accessRow.userId = resolvedBook.userId;
+    accessRow.status = resolvedBook.status;
+    accessRow.visibility = resolvedBook.visibility;
     markPageVisited.mockClear();
 
     const response = await requestPageVisit("other-user");

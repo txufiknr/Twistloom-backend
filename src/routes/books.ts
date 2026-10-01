@@ -139,6 +139,7 @@ import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.
 import { parseBulkLikeIds } from "../utils/book-likes.js";
 import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookPage, enrichBooksWithUserData } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache } from "../services/cache.js";
+import { getBookAccessSnapshot, getBookDetailAccessError, isRestrictedToOwner } from "../services/book-page-access.js";
 import type { BookCreationStatus, BookGenerationPayload, BookMode, BookSortOption, BookSource, BookStatus, BookVisibility, EnrichedBookData } from "../types/book.js";
 import { bookStatuses, bookVisibilities, bookModes, bookSources, lastUpdatedFilterOptions, storyGenerationSteps } from "../types/book.js";
 import { createBookCore, createBookValidate, handleBookCreationError, updateBookGenerationStatus } from "../services/book-creation.js";
@@ -3424,6 +3425,9 @@ router.get("/stats", optionalAuth, async (c) => {
  *
  * Idempotent by construction: re-sending the same batch returns every id in
  * `alreadyLikedIds` and changes no counter, so blind client retries are safe.
+ * Under a concurrent duplicate the response stays complete too: `likedIds`
+ * comes from `RETURNING`, and every remaining id is reported as already liked
+ * (a concurrent winner is neither inserted here nor in the pre-read set).
  *
  * @route POST /api/books/likes/bulk
  * @requiresAuth
@@ -3523,7 +3527,13 @@ router.post(
         const inserted = new Set(insertedIds);
         return {
           likedIds: bookIds.filter((id) => inserted.has(id)),
-          alreadyLikedIds: bookIds.filter((id) => already.has(id)),
+          // Every id this call did NOT create is already liked — including an
+          // id a concurrent request inserted between our SELECT and our
+          // `ON CONFLICT DO NOTHING` (it was in neither `inserted` nor the
+          // earlier `already` set). Classifying from the INSERT result keeps
+          // the response complete under concurrency; counters stay keyed to
+          // `RETURNING` above.
+          alreadyLikedIds: bookIds.filter((id) => !inserted.has(id)),
         };
       });
 
@@ -9322,6 +9332,28 @@ router.get("/:identifier", optionalAuth, async (c) => {
     const enrichedBook = await getEnrichedBook(bookIdentifier, c.get("userId"), c.get("headerLanguage"));
     if (!enrichedBook) return cNotFoundError(c, "Book not found");
 
+    // ── Access gate (before ETag/304 and before any caching header) ─────────
+    // One authoritative primary snapshot feeds BOTH the gate and the
+    // cache-header/body decisions below, so a moderation another instance
+    // wrote is never decided from the 5-minute enriched LRU projection
+    // (invariants 1 & 3: BOOK_ACCESS_AND_MODERATION_ARCHITECTURE.md §3).
+    // Responds 404 for private/archived books to non-owners/non-admins — see
+    // getBookDetailAccessError for the cross-client rationale (401 would force
+    // web users to sign out; 403 triggers a token refresh in Flutter).
+    const snapshot = await getBookAccessSnapshot(enrichedBook.id);
+    if (!snapshot) return cNotFoundError(c, "Book not found");
+    const accessError = await getBookDetailAccessError(c, snapshot, c.get("userId"));
+    if (accessError) {
+      accessError.headers.set("Cache-Control", "no-store");
+      return accessError;
+    }
+
+    // The snapshot's status/visibility override the possibly-stale enriched
+    // projection: caching decisions and the response body must reflect the
+    // authoritative row even while the LRU still serves pre-moderation values
+    // (other display-only fields otherwise catch up on the next cache fill).
+    const book = { ...enrichedBook, status: snapshot.status, visibility: snapshot.visibility };
+
     // Generate ETag from updatedAt + userId (user-specific columns: isMine, isLiked, isRead, lastReadAt, lastPageId, lastPageNumber, contextHistory)
     const lastModified = enrichedBook.updatedAt;
     const etagInput = `${lastModified.getTime()}-${c.get("userId") || 'anonymous'}`;
@@ -9334,16 +9366,21 @@ router.get("/:identifier", optionalAuth, async (c) => {
     c.header('Last-Modified', lastModified.toUTCString());
     c.header('ETag', etag);
 
-    // Active books: private cache so Vercel edge doesn't serve stale user-specific data
-    // Non-active (draft/archived) books: no cache — these change frequently during generation
-    // and must never be served stale from the edge
-    if (enrichedBook.status === 'active') {
+    // Owner-restricted books (private/archived): never stored — the requester
+    // proved ownership/admin once, that must not become a reusable cache entry.
+    // Active public-ish books: private cache so Vercel edge doesn't serve stale
+    // user-specific data. Non-active (draft/archived) books: no cache — these
+    // change frequently during generation and must never be served stale.
+    // Evaluated on the snapshot, never on the LRU projection.
+    if (isRestrictedToOwner(snapshot)) {
+      c.header('Cache-Control', 'private, no-store');
+    } else if (book.status === 'active') {
       c.header('Cache-Control', 'private, max-age=300, stale-while-revalidate=150');
     } else {
       c.header('Cache-Control', 'private, no-cache');
     }
 
-    return c.json({ book: enrichedBook });
+    return c.json({ book });
   } catch (error) {
     return cApiError(c, "Failed to retrieve book", error);
   }

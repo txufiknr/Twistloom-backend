@@ -27,20 +27,21 @@ import { cApiError, cValidationError, cNotFoundError } from "../utils/error.js";
 import { reconstructStoryState } from "../utils/branch-traversal.js";
 import { getBookAnalytics, getCommunityAnalytics } from "../services/analytics.js";
 import { getAdminBusinessMetrics } from "../services/admin-business-analytics.js";
-import { DEFAULT_ADMIN_SETTINGS, getAdminSettingsMap } from "../services/admin-settings.js";
+import { DEFAULT_ADMIN_SETTINGS, getBanPolicy } from "../services/admin-settings.js";
 import { estimateCost } from "../utils/ai-cost.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
-import { getBookFromDB, getPageFromDB, invalidateEnrichedBookCache } from "../services/book.js";
+import { getBookFromDB, getPageFromDB, invalidateBookCache, invalidateEnrichedBookCache, updateBook } from "../services/book.js";
 import { getStoryState } from "../services/story.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { socialMentions, bookTestimonials, adminUsers, adminSettings, usage, users, userFeedbacks, books, portalBlogPosts, platformTestimonials, pages, userPageProgress, creatorPayouts, creatorPayoutEvents, creatorWallets, creatorPayoutMethods, creatorKycVerifications, transactions, subscriptions, userComments, authSessions } from "../db/schema.js";
 import type { AppEnv } from "../hono/env.js";
-import { bookStatuses, bookVisibilities, type BookStatus, type BookVisibility } from "../types/book.js";
+import type { DBUpdateBook } from "../types/schema.js";
+import { bookStatuses, bookVisibilities, isBookStatus, isBookVisibility } from "../types/book.js";
 import { feedbackAdminStatuses, feedbackCategories, type FeedbackAdminStatus, type FeedbackCategory } from "../types/user.js";
 import { extractAndResolveTwistloomLink, parseTwistloomProductUrl, resolveBookByIdForAdmin, resolvePublicBookBySlug } from "../services/social/extract-twistloom-link.js";
 import { sanitizeBlogHtml } from "../utils/sanitize-html.js";
-import { notifyForumUserBanned, notifyForumUserUnbanned } from "../services/forum-queue.js";
-import { invalidateUserProfileCache } from "../services/cache.js";
+import { notifyForumUserBanned, notifyForumUserUnbanned, notifyForumOfBookChange, notifyForumStoryArchived } from "../services/forum-queue.js";
+import { invalidateUserProfileCache, invalidateUserBooksCache, invalidateExploreCache } from "../services/cache.js";
 import { getNeonProjectUsage, NeonApiError } from "../services/neon-usage.js";
 import {
   applyEnforcementAction,
@@ -55,7 +56,8 @@ import {
   resolveAdminModerationAppeal,
   getAdminEnforcementActions,
 } from "../services/trust-safety.js";
-import type { EnforcementAction, ViolationType, ViolationSeverity } from "../types/trust-safety.js";
+import type { ViolationType, ViolationSeverity } from "../types/trust-safety.js";
+import { violationTypes, violationSeverities, enforcementActions, isViolationType, isViolationSeverity, isEnforcementAction } from "../types/trust-safety.js";
 import { parsePaymentGateway, formatPaymentAmount, getGatewayCurrency, getSubscriptionPlanName } from "../utils/payment.js";
 
 const router = new Hono<AppEnv>();
@@ -371,7 +373,7 @@ router.patch("/social-mentions/:id",
         return cValidationError(c, "Invalid status. Must be 'pending', 'approved', or 'rejected'");
       }
 
-      const [existing] = await dbRead
+      const [existing] = await dbWrite
         .select({ id: socialMentions.id })
         .from(socialMentions)
         .where(eq(socialMentions.id, id))
@@ -407,7 +409,7 @@ router.patch("/social-mentions/:id",
         } else {
           // Fall back: resolve slug without public gate for admin storage
           const { books } = await import("../db/schema.js");
-          const [anyBook] = await dbRead
+          const [anyBook] = await dbWrite
             .select({ id: books.id })
             .from(books)
             .where(eq(books.slug, parsed.slug))
@@ -503,7 +505,7 @@ router.post("/social-mentions",
           return cValidationError(c, "relatedBookUrl is not a valid Twistloom /books or /share URL");
         }
         const { books } = await import("../db/schema.js");
-        const [anyBook] = await dbRead
+        const [anyBook] = await dbWrite
           .select({ id: books.id })
           .from(books)
           .where(eq(books.slug, parsed.slug))
@@ -773,7 +775,7 @@ router.patch("/testimonials/:id",
         return cValidationError(c, "Invalid status. Must be 'pending', 'approved', or 'rejected'");
       }
 
-      const [existing] = await dbRead
+      const [existing] = await dbWrite
         .select({ id: bookTestimonials.id })
         .from(bookTestimonials)
         .where(eq(bookTestimonials.id, id))
@@ -933,7 +935,7 @@ router.patch("/platform-testimonials/:id",
         return cValidationError(c, "Invalid status. Must be 'pending', 'approved', or 'rejected'");
       }
 
-      const [existing] = await dbRead
+      const [existing] = await dbWrite
         .select({ id: platformTestimonials.id })
         .from(platformTestimonials)
         .where(eq(platformTestimonials.id, id))
@@ -1044,7 +1046,7 @@ router.post("/admins",
       let resolvedEmail = typeof email === "string" && email.length > 0 ? email : null;
 
       if (!resolvedUserId && resolvedEmail) {
-        const [platformUser] = await dbRead
+        const [platformUser] = await dbWrite
           .select({ userId: users.userId, email: users.email })
           .from(users)
           .where(eq(users.email, resolvedEmail))
@@ -1060,7 +1062,7 @@ router.post("/admins",
         return cValidationError(c, "userId is required");
       }
 
-      const [existing] = await dbRead
+      const [existing] = await dbWrite
         .select({ userId: adminUsers.userId })
         .from(adminUsers)
         .where(eq(adminUsers.userId, resolvedUserId))
@@ -1109,7 +1111,7 @@ router.patch(
         return cValidationError(c, "Cannot set permissions on the super admin account");
       }
 
-      const [existing] = await dbRead
+      const [existing] = await dbWrite
         .select({ userId: adminUsers.userId })
         .from(adminUsers)
         .where(eq(adminUsers.userId, userId))
@@ -1784,6 +1786,10 @@ router.post(
       const { normalizeEmailPreferences } = await import("../services/email-preferences.js");
       const { sendAnnouncementEmail } = await import("../utils/email.js");
 
+      // Deliberately dbRead: this is a full-table recipient fan-out for an
+      // announcement broadcast — it must not load every user onto the primary.
+      // Second-stale email-preference reads are acceptable here (and every
+      // other read-then-write guard in this file uses dbWrite, audit §3.1).
       const rows = await dbRead
         .select({
           userId: users.userId,
@@ -1959,7 +1965,7 @@ router.patch("/feedbacks/:id",
         return cValidationError(c, "Invalid adminStatus. Must be 'unread', 'read', or 'solved'");
       }
 
-      const [existing] = await dbRead
+      const [existing] = await dbWrite
         .select({ id: userFeedbacks.id })
         .from(userFeedbacks)
         .where(eq(userFeedbacks.id, id))
@@ -1975,7 +1981,7 @@ router.patch("/feedbacks/:id",
         .where(eq(userFeedbacks.id, id))
         .returning();
 
-      const [row] = await dbRead
+      const [row] = await dbWrite
         .select(feedbackSelect)
         .from(userFeedbacks)
         .leftJoin(users, eq(userFeedbacks.userId, users.userId))
@@ -2064,12 +2070,12 @@ function buildAdminBookConditions(query: {
     conditions.push(isNull(books.imageId));
   }
 
-  if (typeof query.status === "string" && bookStatuses.includes(query.status as BookStatus)) {
-    conditions.push(eq(books.status, query.status as BookStatus));
+  if (isBookStatus(query.status)) {
+    conditions.push(eq(books.status, query.status));
   }
 
-  if (typeof query.visibility === "string" && bookVisibilities.includes(query.visibility as BookVisibility)) {
-    conditions.push(eq(books.visibility, query.visibility as BookVisibility));
+  if (isBookVisibility(query.visibility)) {
+    conditions.push(eq(books.visibility, query.visibility));
   }
 
   return conditions;
@@ -2199,8 +2205,32 @@ router.get("/books",
  * `id` or `slug` as the identifier. Only fields present in the body are
  * updated; both are validated against their allowed enum values.
  *
+ * **SSOT contract — moderation is not a parallel mutation path.** The write goes
+ * through {@link updateBook}, exactly like the author-facing
+ * `PATCH /api/books/:id/visibility` and `/:id/archive` routes, so every cache a
+ * normal edit refreshes is refreshed here as well:
+ *
+ * | Layer | Scope | Refreshed by |
+ * |---|---|---|
+ * | Enriched book LRU (`book:{id\|slug}:{userId}`) | process-local, 5 min | `updateBook` (id + old slug + new slug) |
+ * | Basic book LRU (`book:{id}`) | process-local, 5 min | `updateBook` |
+ * | Page-1 payload (Redis `book:page1:{id}:*`) | distributed, 30 days | `updateBook` |
+ * | Author book list (Redis `user:books:{userId}:*`) | distributed | this route |
+ * | Explore page-1 (Redis `books:explore:page:1:*`, all sorts) | distributed, 30 min, **global** | this route |
+ * | Portal forum feed | event queue | this route |
+ *
+ * The process-local LRU rows above are *not* a global coordination mechanism
+ * (see AGENTS.md §3.1) — cross-instance freshness for `status`/`visibility` is
+ * guaranteed by the authoritative primary read in `getBookAccessSnapshot()`
+ * that backs reader authorization, not by this invalidation.
+ *
+ * Side effects inherited from `updateBook` (identical to an author edit):
+ * auto-assigns a slug when a slugless book first becomes public+active, and
+ * emits the follower publish notification on a non-public → public transition.
+ *
  * @body { status?: BookStatus, visibility?: BookVisibility }
  * @returns { id, slug, status, visibility, updatedAt } or 404/400
+ * @see docs/architecture/BOOK_ACCESS_AND_MODERATION_ARCHITECTURE.md §4.4
  */
 router.patch("/books/:id",
   requireAuth,
@@ -2212,22 +2242,29 @@ router.patch("/books/:id",
         return cValidationError(c, "id is required");
       }
 
-      const body = c.get("body") as { status?: string; visibility?: string } | undefined;
+      const body: { status?: unknown; visibility?: unknown } | undefined = c.get("body");
       const status = body?.status;
       const visibility = body?.visibility;
 
       if (status === undefined && visibility === undefined) {
         return cValidationError(c, "At least one of status or visibility is required");
       }
-      if (status !== undefined && !bookStatuses.includes(status as BookStatus)) {
+      if (status !== undefined && !isBookStatus(status)) {
         return cValidationError(c, `Invalid status. Must be one of: ${bookStatuses.join(", ")}`);
       }
-      if (visibility !== undefined && !bookVisibilities.includes(visibility as BookVisibility)) {
+      if (visibility !== undefined && !isBookVisibility(visibility)) {
         return cValidationError(c, `Invalid visibility. Must be one of: ${bookVisibilities.join(", ")}`);
       }
 
-      const [existing] = await dbRead
-        .select({ id: books.id })
+      const [existing] = await dbWrite
+        .select({
+          id: books.id,
+          userId: books.userId,
+          slug: books.slug,
+          title: books.title,
+          status: books.status,
+          visibility: books.visibility,
+        })
         .from(books)
         .where(or(eq(books.id, id), eq(books.slug, id)))
         .limit(1);
@@ -2235,39 +2272,51 @@ router.patch("/books/:id",
         return cNotFoundError(c, "Book not found");
       }
 
-      const updatePayload: { status?: BookStatus; visibility?: BookVisibility; updatedAt: Date } = {
-        updatedAt: new Date(),
-      };
-      if (status !== undefined) updatePayload.status = status as BookStatus;
-      if (visibility !== undefined) updatePayload.visibility = visibility as BookVisibility;
+      const updatePayload: DBUpdateBook = {};
+      if (status !== undefined) updatePayload.status = status;
+      if (visibility !== undefined) updatePayload.visibility = visibility;
 
-      const [updated] = await dbWrite
-        .update(books)
-        .set(updatePayload)
-        .where(eq(books.id, existing.id))
-        .returning({
-          id: books.id,
-          slug: books.slug,
-          status: books.status,
-          visibility: books.visibility,
-          updatedAt: books.updatedAt,
-        });
+      // SSOT write — see the JSDoc table above for the invalidation set this
+      // buys us over a hand-rolled `dbWrite.update`.
+      const updated = await updateBook(existing.id, updatePayload);
+
+      if (existing.userId) {
+        await invalidateUserBooksCache(existing.userId);
+      }
+      // Discoverability is Redis-backed and therefore shared by every
+      // serverless instance: a book leaving public+active must drop out of
+      // Explore immediately, or moderated content stays listed for up to 30 min.
+      await invalidateExploreCache({ before: existing, after: updated });
+      notifyForumOfBookChange({
+        before: existing,
+        after: {
+          id: updated.id,
+          slug: updated.slug,
+          title: updated.title,
+          summary: updated.summary,
+          hook: updated.hook,
+          userId: updated.userId,
+          status: updated.status,
+          visibility: updated.visibility,
+          mode: updated.mode,
+          language: updated.language,
+        },
+      });
 
       console.log(
         `[admin] 📚 Book moderated by admin: ${existing.id} (${Object.entries({ status, visibility })
           .filter(([, v]) => v !== undefined)
-          .map(([k, v]) => `${k}=${v}`)
+          .map(([k, v]) => `${k}=${String(v)}`)
           .join(", ")})`,
       );
-      // Public book detail is cached — drop it so the override is visible immediately.
-      try {
-        const { invalidateEnrichedBookCache } = await import("../services/book.js");
-        invalidateEnrichedBookCache(existing.id);
-      } catch (cacheError) {
-        console.error(`[admin] ⚠️ Failed to invalidate book cache for ${existing.id}:`, cacheError);
-      }
 
-      return c.json(updated);
+      return c.json({
+        id: updated.id,
+        slug: updated.slug,
+        status: updated.status,
+        visibility: updated.visibility,
+        updatedAt: updated.updatedAt,
+      });
     } catch (error) {
       return cApiError(c, "Failed to update book", error);
     }
@@ -2435,7 +2484,11 @@ router.get("/users/:userId/transactions",
       const limitNum = Math.min(Math.max(Number(limit) || 20, 1), 100);
       const offsetNum = Math.max(Number(offset) || 0, 0);
 
-      const existingUser = await dbRead
+      // Drizzle returns a row ARRAY — destructuring is required. A bare
+      // `const existingUser = await …` would be `[]` (truthy) and the 404
+      // below would never fire, making "unknown account" indistinguishable
+      // from "account with an empty ledger".
+      const [existingUser] = await dbRead
         .select({ userId: users.userId })
         .from(users)
         .where(eq(users.userId, userId))
@@ -2542,6 +2595,8 @@ router.get("/users/:userId/sessions",
  *
  * Sets banned_at, bumps token_version, deletes auth sessions (immediate lockout).
  * Cannot ban SYSTEM_USER_ID (super admin).
+ *
+ * @see docs/architecture/BOOK_ACCESS_AND_MODERATION_ARCHITECTURE.md §4.5
  */
 router.patch(
   "/users/:userId/ban",
@@ -2557,7 +2612,7 @@ router.patch(
         return cValidationError(c, "Cannot ban the super admin account");
       }
 
-      const [existing] = await dbRead
+      const [existing] = await dbWrite
         .select({ userId: users.userId, bannedAt: users.bannedAt })
         .from(users)
         .where(eq(users.userId, userId))
@@ -2575,17 +2630,33 @@ router.patch(
       }
 
       const adminId = c.get("userId");
-      const body = c.get("body") as {
-        reason?: string;
-        violationType?: string;
-        severity?: string;
-        internalNotes?: string;
-      } | undefined;
+      const body: {
+        reason?: unknown;
+        violationType?: unknown;
+        severity?: unknown;
+        internalNotes?: unknown;
+      } | undefined = c.get("body");
 
-      const reason = body?.reason?.trim() || "Account banned by system administrator";
-      const violationType = (body?.violationType as any) || "other";
-      const severity = (body?.severity as any) || "critical";
-      const internalNotes = body?.internalNotes?.trim() || null;
+      // Structural validation — no `as any` on a privileged enforcement path.
+      // A provided-but-unknown enum value is a client contract violation and
+      // must 400, not be silently coerced into the ledger.
+      if (body?.violationType !== undefined && !isViolationType(body.violationType)) {
+        return cValidationError(c, `Invalid violationType. Must be one of: ${violationTypes.join(", ")}`);
+      }
+      if (body?.severity !== undefined && !isViolationSeverity(body.severity)) {
+        return cValidationError(c, `Invalid severity. Must be one of: ${violationSeverities.join(", ")}`);
+      }
+
+      const reason =
+        typeof body?.reason === "string" && body.reason.trim().length > 0
+          ? body.reason.trim()
+          : "Account banned by system administrator";
+      const violationType: ViolationType = body?.violationType ?? "other";
+      const severity: ViolationSeverity = body?.severity ?? "critical";
+      const internalNotes =
+        typeof body?.internalNotes === "string" && body.internalNotes.trim().length > 0
+          ? body.internalNotes.trim()
+          : null;
 
       // Apply enforcement action into disciplinary ledger (SSOT & dual-writes users.bannedAt)
       const actionRow = await applyEnforcementAction({
@@ -2598,9 +2669,18 @@ router.patch(
         createdBy: adminId,
       });
 
-      // Load configurable ban policy (used for session wipe + content takedowns)
+      // Load configurable ban policy (used for session wipe + content takedowns).
+      // Uses the fail-loud reader: substituting permissive defaults here would
+      // silently skip admin-configured takedowns (see getBanPolicy JSDoc).
       const appliedTakedowns: string[] = [];
-      const settings = await getAdminSettingsMap();
+      const banPolicy = await getBanPolicy();
+      const settingsUnresolved = !banPolicy.ok;
+      const settings = banPolicy.ok ? banPolicy.settings : {};
+      if (settingsUnresolved) {
+        console.error(
+          `[admin] ⚠️ Ban policy unreadable for ${userId} — ban applied, configured takedowns NOT resolved`,
+        );
+      }
 
       // Revoke active sessions — only when ban.revoke_sessions is enabled.
       // Auth lockout (banned_at → 403) applies regardless; this controls whether
@@ -2619,12 +2699,45 @@ router.patch(
       try {
         // Hide books from public pages
         if (settings["ban.hide_books"] === true) {
-          await dbWrite
+          // Single atomic UPDATE ... RETURNING (AGENTS.md §3.9): one statement
+          // on the primary both closes the replica-lag miss (dbRead could skip
+          // books created seconds before the ban) and the read→update TOCTOU
+          // gap of the former SELECT-then-UPDATE pair (audit §3.1/§3.2).
+          const affected = await dbWrite
             .update(books)
             .set({ visibility: "private", updatedAt: new Date() })
-            .where(eq(books.userId, userId));
+            .where(and(eq(books.userId, userId), ne(books.visibility, "private")))
+            .returning({
+              id: books.id,
+              slug: books.slug,
+              status: books.status,
+              visibility: books.visibility,
+            });
+
+          for (const book of affected) {
+            invalidateBookCache(book.id);
+            invalidateEnrichedBookCache(book.id);
+            if (book.slug) invalidateEnrichedBookCache(book.slug);
+            // Any book the ban just hid may own a portal thread — dispatch the
+            // archive for every affected book (conservative): the portal
+            // handler is idempotent (queue key `story.archived:<id>`) and
+            // updates 0 rows when no thread/storyRef exists (audit §5.2).
+            notifyForumStoryArchived(book.id, book.slug);
+          }
+          if (affected.some((book) => book.status === "active")) {
+            // ONE pattern wipe clears every Explore page-1 sort slot — not one
+            // sequential Redis SCAN per book (audit §4.1). Conservative gate:
+            // active+unlisted books count too, an unnecessary wipe costs only
+            // a cache miss.
+            await invalidateExploreCache();
+          }
+          if (affected.length > 0) {
+            await invalidateUserBooksCache(userId);
+          }
           appliedTakedowns.push("hide_books");
-          console.log(`[admin] 📚 Books hidden for banned user: ${userId}`);
+          console.log(
+            `[admin] 📚 Books hidden for banned user: ${userId} (${affected.length} changed)`,
+          );
         }
 
         // Anonymize comments (replace with [deleted])
@@ -2655,7 +2768,15 @@ router.patch(
       notifyForumUserBanned(userId, "admin_ban");
       await invalidateUserProfileCache(userId);
 
-      return c.json({ userId, bannedAt: actionRow.createdAt, alreadyBanned: false, appliedTakedowns });
+      return c.json({
+        userId,
+        bannedAt: actionRow.createdAt,
+        alreadyBanned: false,
+        appliedTakedowns,
+        // Present only when the stored policy could not be read — the caller/UI
+        // must not mistake "unresolved" for "no takedowns configured".
+        ...(settingsUnresolved ? { settingsUnresolved: true as const } : {}),
+      });
     } catch (error) {
       return cApiError(c, "Failed to ban user", error);
     }
@@ -2679,7 +2800,7 @@ router.patch(
         return cValidationError(c, "userId is required");
       }
 
-      const [existing] = await dbRead
+      const [existing] = await dbWrite
         .select({ userId: users.userId, bannedAt: users.bannedAt })
         .from(users)
         .where(eq(users.userId, userId))
@@ -2917,7 +3038,7 @@ router.patch(
         publishedAt?: string | null;
       };
 
-      const [existing] = await dbRead
+      const [existing] = await dbWrite
         .select()
         .from(portalBlogPosts)
         .where(eq(portalBlogPosts.id, id))
@@ -3730,7 +3851,7 @@ router.post(
 
       if (pageId) {
         // Regenerate for a specific page
-        const [targetPage] = await dbRead
+        const [targetPage] = await dbWrite
           .select({ id: pages.id, imagePrompt: pages.imagePrompt, imageUrl: pages.imageUrl })
           .from(pages)
           .where(and(eq(pages.id, pageId), eq(pages.bookId, bookId)))
@@ -3740,7 +3861,7 @@ router.post(
 
         // Clean up any existing illustration (even if imageUrl is null —
         // orphaned uploaded_images rows from failed generations must be cleared)
-        const [oldImage] = await dbRead
+        const [oldImage] = await dbWrite
           .select({ imageId: uploadedImages.imageId })
           .from(uploadedImages)
           .where(and(
@@ -3760,7 +3881,7 @@ router.post(
           await dbWrite.update(pages).set({ imageUrl: null }).where(eq(pages.id, pageId));
         }
 
-        const [bookOwner] = await dbRead
+        const [bookOwner] = await dbWrite
           .select({ userId: books.userId })
           .from(books)
           .where(eq(books.id, bookId))
@@ -4034,19 +4155,36 @@ router.get("/trust-safety/users/:userId/dossier", requireAuth, requirePermission
 router.post("/trust-safety/users/:userId/enforce", requireAuth, requirePermission("users"), async (c) => {
   try {
     const { userId } = c.req.param();
-    const body = (c.get("body") ?? {}) as {
-      action?: EnforcementAction;
-      violationType?: ViolationType;
-      severity?: ViolationSeverity;
-      reason?: string;
-      internalNotes?: string;
-      durationHours?: number;
-    };
+    const body: {
+      action?: unknown;
+      violationType?: unknown;
+      severity?: unknown;
+      reason?: unknown;
+      internalNotes?: unknown;
+      durationHours?: unknown;
+    } = c.get("body") ?? {};
     const adminId = c.get("userId")!;
 
-    if (!body.action || !body.violationType || !body.severity || !body.reason) {
+    if (body.action === undefined || body.violationType === undefined || body.severity === undefined || body.reason === undefined) {
       return cValidationError(c, "Missing required fields: action, violationType, severity, and reason are required");
     }
+    if (!isEnforcementAction(body.action)) {
+      return cValidationError(c, `Invalid action. Must be one of: ${enforcementActions.join(", ")}`);
+    }
+    if (!isViolationType(body.violationType)) {
+      return cValidationError(c, `Invalid violationType. Must be one of: ${violationTypes.join(", ")}`);
+    }
+    if (!isViolationSeverity(body.severity)) {
+      return cValidationError(c, `Invalid severity. Must be one of: ${violationSeverities.join(", ")}`);
+    }
+    if (typeof body.reason !== "string" || body.reason.trim().length === 0) {
+      return cValidationError(c, "reason is required");
+    }
+    const reason = body.reason.trim();
+    const internalNotes =
+      typeof body.internalNotes === "string" && body.internalNotes.trim().length > 0
+        ? body.internalNotes.trim()
+        : undefined;
 
     if (body.durationHours !== undefined) {
       if (
@@ -4068,8 +4206,8 @@ router.post("/trust-safety/users/:userId/enforce", requireAuth, requirePermissio
       action: body.action,
       violationType: body.violationType,
       severity: body.severity,
-      reason: body.reason,
-      internalNotes: body.internalNotes,
+      reason,
+      internalNotes,
       createdBy: adminId,
       expiresAt,
     });

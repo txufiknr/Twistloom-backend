@@ -15,7 +15,7 @@ import { users, transactions, webhookDeliveries, userNotifications, subscription
 import { CREDIT_PACKS, FIRST_PURCHASE_BONUS } from "../../config/credits.js";
 import { PAYMENT_GATEWAY } from "../../types/payment.js";
 import { createSubscription, updateSubscription, renewSubscription, cancelSubscription, handleTrialWillEnd } from "../subscription.js";
-import { awardCredits } from "../credits.js";
+import { awardCredits, awardFirstPurchaseBonusOnce } from "../credits.js";
 import { isUniqueConstraintError } from "../../utils/retry.js";
 
 // ── Extended Types (Stripe SDK gaps) ────────────────────────────────────────
@@ -236,25 +236,19 @@ export async function handleCheckoutSessionCompleted(
         providerEventId,
         tx,
       });
-      // First-purchase bonus: check for an existing bonus row instead of
-      // counting prior purchases. If the bonus awardCredits throws, the
-      // entire transaction rolls back (including the main purchase), so on
-      // redelivery the duplicate guard passes and both are retried atomically.
-      if (FIRST_PURCHASE_BONUS > 0) {
-        const bonusAlreadyAwarded = await tx.select().from(transactions).where(and(eq(transactions.userId, userId), eq(transactions.type, "first_purchase_bonus"))).limit(1);
-        if (bonusAlreadyAwarded.length === 0) {
-          await awardCredits(userId, FIRST_PURCHASE_BONUS, {
-            type: "first_purchase_bonus",
-            gateway: PAYMENT_GATEWAY.stripe,
-            notificationType: "first_purchase_bonus",
-            notificationTitle: "First Purchase Bonus",
-            notificationMessage: `You received ${FIRST_PURCHASE_BONUS} credits for your first purchase`,
-            notificationData: { amountCents: session.amount_total, packId, providerPaymentId },
-            metadata: { providerEventId, providerPaymentId, packId },
-            tx,
-          });
-          console.log(`[stripe] 🎁 Awarded first-purchase bonus (${FIRST_PURCHASE_BONUS} credits) to user ${userId}`);
-        }
+      // First-purchase bonus: claimed through the partial unique index
+      // `transactions_user_first_purchase_bonus_unique` (see
+      // awardFirstPurchaseBonusOnce), not through a check-then-insert — two
+      // concurrent distinct purchases cannot both pass an INSERT, and the
+      // loser simply reports `inserted: false` without failing the webhook.
+      const bonus = await awardFirstPurchaseBonusOnce(userId, FIRST_PURCHASE_BONUS, {
+        gateway: PAYMENT_GATEWAY.stripe,
+        notificationData: { amountCents: session.amount_total, packId, providerPaymentId },
+        metadata: { providerEventId, providerPaymentId, packId },
+        tx,
+      });
+      if (bonus.inserted) {
+        console.log(`[stripe] 🎁 Awarded first-purchase bonus (${FIRST_PURCHASE_BONUS} credits) to user ${userId}`);
       }
       if (webhookDeliveryId) {
         await tx.update(webhookDeliveries).set({ status: "success", processedAt: new Date(), updatedAt: new Date() }).where(eq(webhookDeliveries.id, webhookDeliveryId));

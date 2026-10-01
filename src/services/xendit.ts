@@ -23,7 +23,7 @@ import {
 import { CREDIT_PACKS, FIRST_PURCHASE_BONUS } from "../config/credits.js";
 import { dbWrite } from "../db/client.js";
 import { transactions, webhookDeliveries } from "../db/schema.js";
-import { awardCredits } from "./credits.js";
+import { awardCredits, awardFirstPurchaseBonusOnce } from "./credits.js";
 import { recordThanks } from "./thanks.js";
 import { createSubscription, renewSubscription, cancelSubscription, updateSubscription } from "./subscription.js";
 import { isUniqueConstraintError } from "../utils/retry.js";
@@ -405,27 +405,21 @@ export async function handleXenditInvoicePaid(
         providerEventId,
         tx,
       });
-      // First-purchase bonus: check for an existing bonus row instead of
-      // counting prior purchases. If the bonus awardCredits throws, the
-      // entire transaction rolls back (including the main purchase), so on
-      // redelivery the duplicate guard passes and both are retried atomically.
-      if (FIRST_PURCHASE_BONUS > 0) {
-        const bonusAlreadyAwarded = await tx.select().from(transactions).where(and(eq(transactions.userId, userId), eq(transactions.type, "first_purchase_bonus"))).limit(1);
-        if (bonusAlreadyAwarded.length === 0) {
-          await awardCredits(userId, FIRST_PURCHASE_BONUS, {
-            type: "first_purchase_bonus",
-            gateway: XENDIT_GATEWAY,
-            notificationType: "first_purchase_bonus",
-            notificationTitle: "First Purchase Bonus",
-            notificationMessage: `You received ${FIRST_PURCHASE_BONUS} credits for your first purchase`,
-            notificationData: { amountIdr: paidAmount, packId, providerPaymentId },
-            metadata: { providerEventId, providerPaymentId, packId, currency: "IDR" },
-            tx,
-          });
-          console.log(
-            `[xendit] 🎁 Awarded first-purchase bonus (${FIRST_PURCHASE_BONUS} credits) to user ${userId}`
-          );
-        }
+      // First-purchase bonus: claimed through the partial unique index
+      // `transactions_user_first_purchase_bonus_unique` (see
+      // awardFirstPurchaseBonusOnce), not through a check-then-insert — two
+      // concurrent distinct purchases cannot both pass an INSERT, and the
+      // loser simply reports `inserted: false` without failing the webhook.
+      const bonus = await awardFirstPurchaseBonusOnce(userId, FIRST_PURCHASE_BONUS, {
+        gateway: XENDIT_GATEWAY,
+        notificationData: { amountIdr: paidAmount, packId, providerPaymentId },
+        metadata: { providerEventId, providerPaymentId, packId, currency: "IDR" },
+        tx,
+      });
+      if (bonus.inserted) {
+        console.log(
+          `[xendit] 🎁 Awarded first-purchase bonus (${FIRST_PURCHASE_BONUS} credits) to user ${userId}`
+        );
       }
     });
   } catch (error) {

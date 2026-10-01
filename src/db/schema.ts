@@ -1599,6 +1599,16 @@ export const transactions = pgTable(
     unique("transactions_provider_payment_unique").on(t.gateway, t.providerPaymentId),
     // Composite unique: event ID is unique per gateway (allows NULL rows)
     unique("transactions_provider_event_unique").on(t.gateway, t.providerEventId),
+    // Partial unique: at most ONE first-purchase bonus per user, enforced by
+    // the database rather than by a check-then-insert (which concurrent
+    // distinct purchases could both pass). Writers must use
+    // `awardFirstPurchaseBonusOnce` (`ON CONFLICT DO NOTHING`), never a plain
+    // INSERT. Before migrating, dedupe any pre-existing duplicates:
+    //   SELECT user_id, count(*) FROM transactions
+    //   WHERE type = 'first_purchase_bonus' GROUP BY 1 HAVING count(*) > 1;
+    uniqueIndex("transactions_user_first_purchase_bonus_unique")
+      .on(t.userId)
+      .where(sql`${t.type} = 'first_purchase_bonus'`),
   ]
 );
 

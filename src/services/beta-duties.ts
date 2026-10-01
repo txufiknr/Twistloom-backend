@@ -1,4 +1,4 @@
-import { eq, and, sql, inArray } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { dbRead, dbWrite, type DBTransaction } from '../db/client.js';
 import {
   userBetaDuties,
@@ -26,7 +26,7 @@ interface BetaDutiesMetrics {
  * Loads raw metric inputs for beta duty evaluation.
  */
 async function loadBetaDutiesMetrics(userId: string): Promise<BetaDutiesMetrics> {
-  const [penBooks, feedbackRows, testimonyRows] = await Promise.all([
+  const [penBooks, feedbackRows, testimonyRows, pageRow] = await Promise.all([
     dbRead
       .select({ id: books.id, authoringStatus: books.authoringStatus })
       .from(books)
@@ -41,23 +41,20 @@ async function loadBetaDutiesMetrics(userId: string): Promise<BetaDutiesMetrics>
       .select({ count: sql<number>`count(*)::int` })
       .from(platformTestimonials)
       .where(and(eq(platformTestimonials.userId, userId), sql`${platformTestimonials.status} != 'rejected'`)),
+
+    dbRead
+      .select({ id: pages.id })
+      .from(pages)
+      .innerJoin(books, eq(pages.bookId, books.id))
+      .where(and(eq(books.userId, userId), eq(books.isPenBook, true)))
+      .limit(1),
   ]);
 
   const hasPenBook = penBooks.length > 0;
   const hasFinishedBook = penBooks.some((b) => b.authoringStatus === 'complete');
   const hasFeedback = (feedbackRows[0]?.count ?? 0) > 0;
   const hasTestimony = (testimonyRows[0]?.count ?? 0) > 0;
-
-  let hasPublishedPage = false;
-  if (hasPenBook) {
-    const penBookIds = penBooks.map((b) => b.id);
-    const [pageRow] = await dbRead
-      .select({ bookId: pages.bookId })
-      .from(pages)
-      .where(inArray(pages.bookId, penBookIds))
-      .limit(1);
-    hasPublishedPage = !!pageRow;
-  }
+  const hasPublishedPage = pageRow.length > 0;
 
   return {
     hasPenBook,
@@ -98,7 +95,7 @@ export async function evaluateBetaDuties(userId: string): Promise<string[]> {
     const currentStatus = existingMap.get(rule.id);
 
     if (isMet && !currentStatus) {
-      await dbWrite
+      const [inserted] = await dbWrite
         .insert(userBetaDuties)
         .values({
           userId,
@@ -106,16 +103,20 @@ export async function evaluateBetaDuties(userId: string): Promise<string[]> {
           status: 'completed',
           completedAt: new Date(),
         })
-        .onConflictDoNothing();
+        .onConflictDoNothing()
+        .returning({ id: userBetaDuties.id });
 
-      await logUserActivity({
-        userId,
-        activityType: 'beta_duty_completed',
-        targetType: 'duty',
-        metadata: { dutyId: rule.id },
-      });
+      if (inserted) {
+        await logUserActivity({
+          userId,
+          activityType: 'beta_duty_completed',
+          targetType: 'duty',
+          targetId: inserted.id,
+          metadata: { dutyId: rule.id },
+        });
 
-      newlyCompleted.push(rule.id);
+        newlyCompleted.push(rule.id);
+      }
     }
   }
 
@@ -201,18 +202,23 @@ export async function claimBetaDutyReward(
       .returning({ id: userBetaDuties.id });
 
     if (!claimed) {
+      const [user] = await tx
+        .select({ credits: users.credits })
+        .from(users)
+        .where(eq(users.userId, userId))
+        .limit(1);
+
       const [existing] = await tx
-        .select({ status: userBetaDuties.status, credits: users.credits })
+        .select({ status: userBetaDuties.status })
         .from(userBetaDuties)
-        .innerJoin(users, eq(users.userId, userId))
         .where(and(eq(userBetaDuties.userId, userId), eq(userBetaDuties.dutyId, dutyId)))
         .limit(1);
 
       if (!existing) {
-        return { status: 'not_completed', creditsAwarded: 0, newBalance: 0 };
+        return { status: 'not_completed', creditsAwarded: 0, newBalance: user?.credits ?? 0 };
       }
       const status = existing.status === 'claimed' ? 'already_claimed' : 'not_completed';
-      return { status, creditsAwarded: 0, newBalance: existing.credits };
+      return { status, creditsAwarded: 0, newBalance: user?.credits ?? 0 };
     }
 
     const newBalance = await addCredits(userId, rule.rewardCredits, {
@@ -252,12 +258,15 @@ export async function claimAllBetaDutyRewards(
   newBalance: number;
 }> {
   return dbWrite.transaction(async (tx: DBTransaction) => {
-    const claimable = await tx
-      .select({ dutyId: userBetaDuties.dutyId })
-      .from(userBetaDuties)
-      .where(and(eq(userBetaDuties.userId, userId), eq(userBetaDuties.status, 'completed')));
+    // Atomically claim all completed duties using RETURNING so that only rows
+    // actually transitioned from 'completed' to 'claimed' by THIS transaction are awarded.
+    const claimedRows = await tx
+      .update(userBetaDuties)
+      .set({ status: 'claimed', claimedAt: new Date(), updatedAt: new Date() })
+      .where(and(eq(userBetaDuties.userId, userId), eq(userBetaDuties.status, 'completed')))
+      .returning({ dutyId: userBetaDuties.dutyId });
 
-    if (claimable.length === 0) {
+    if (claimedRows.length === 0) {
       const [user] = await tx
         .select({ credits: users.credits })
         .from(users)
@@ -266,14 +275,9 @@ export async function claimAllBetaDutyRewards(
       return { status: 'none_claimable', claimedCount: 0, creditsAwarded: 0, newBalance: user?.credits ?? 0 };
     }
 
-    const dutyIds = claimable.map((r) => r.dutyId);
+    const dutyIds = claimedRows.map((r) => r.dutyId);
     const rewardByDutyId = new Map<string, number>(BETA_DUTY_REGISTRY.map((r) => [r.id, r.rewardCredits]));
     const totalReward = dutyIds.reduce((sum, id) => sum + (rewardByDutyId.get(id) ?? 0), 0);
-
-    await tx
-      .update(userBetaDuties)
-      .set({ status: 'claimed', claimedAt: new Date(), updatedAt: new Date() })
-      .where(and(eq(userBetaDuties.userId, userId), eq(userBetaDuties.status, 'completed')));
 
     const newBalance = await addCredits(userId, totalReward, {
       context: 'beta_duty_reward',

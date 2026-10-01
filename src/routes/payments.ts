@@ -1189,6 +1189,33 @@ router.get("/subscription/portal", requireAuth, async (c) => {
 
 // ── Store Purchase Verification ──────────────────────────────────────────────
 
+/*
+ * Open follow-up (P2): typed guards at this boundary.
+ *
+ * Both handlers below read the parsed body with a structural cast
+ * (`c.get("body") as { ...?: unknown }`) and then narrow each field with
+ * ad-hoc `typeof` checks + `parseStorePlatform`. That is safe today — every
+ * field is validated before use — but the pattern does not scale: each new
+ * store-proof field needs another hand-rolled check, and a *missed* check
+ * silently downgrades to `null`/skip rather than a typed failure.
+ *
+ * Planned hardening (no new dependencies; `zod` is deliberately not a direct
+ * dependency of this repo — follow the hand-written style of
+ * `parseStorePlatform` / `isPaymentGateway` in `src/types/payment.ts`):
+ *
+ * 1. `parseSubscriptionVerifyBody(unknown): { ok: true, value:
+ *    SubscriptionVerifyRequest } | { ok: false, error, code }` and the
+ *    consumable twin, mirroring `ParsedIdempotencyKey`'s discriminated union.
+ * 2. Same for store-verifier *responses* before they are handed to
+ *    `grantVipFromStore` / `grantStoreCreditPurchase`, so a store API shape
+ *    change fails as a typed denial instead of flowing downstream.
+ * 3. Route keeps returning the same 400 codes — this is a refactor, not a
+ *    contract change.
+ *
+ * Tracked alongside the App Store JWS `x5c` note in
+ * `docs/architecture/PAYMENTS_ARCHITECTURE_BACKEND.md` §19.7.
+ */
+
 /**
  * POST /subscription/verify
  *

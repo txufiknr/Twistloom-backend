@@ -24,6 +24,7 @@ The Authentication API provides endpoints for user registration, credential veri
    - [Verify Credentials](#post-apiauthverify-credentials)
 2. [User Registration](#user-registration)
    - [Sign Up](#post-apiauthsignup)
+   - [Username Availability](#get-apiauthusername-available)
 3. [Password Management](#password-management)
    - [Forgot Password](#post-apiauthforgot-password)
    - [Reset Password](#post-apiauthreset-password)
@@ -208,6 +209,40 @@ Registers a new user account with email/password authentication. Creates both us
 - `FRONTEND_URL`: Frontend URL for email links
 - `RESEND_API_KEY`: Resend API key for email sending
 - `RESEND_FROM_EMAIL`: Sender email address
+
+---
+
+### GET /api/auth/username-available
+
+Advisory availability probe for a candidate username, so a signup form can confirm a free handle while the reader is still typing instead of only failing at `POST /signup`.
+
+**Authentication:** Not required (public endpoint)
+
+**Rate Limiting:** Redis-backed per-IP limit (60 requests/minute, dedicated `auth-username-available:{ip}` key, fails open when Redis is unavailable — never shares the login/signup attempt budget)
+
+**Query Parameters:**
+```json
+?username=story-weaver
+```
+
+The raw value is sanitized exactly as signup sanitizes it (lowercase, spaces/dots/underscores → hyphens, stray characters stripped), so "what is checked" equals "what would be stored".
+
+**Response (200 OK):**
+```json
+{ "available": true }
+```
+
+`available: false` covers a taken username, a reserved word (`admin`, `support`, `root`, `system`, `null`, `undefined`, the app slug) and a candidate that fails format validation after sanitization. The endpoint deliberately reports a single boolean so unauthenticated callers learn nothing about validation internals or account existence beyond "not available".
+
+**Error Responses:**
+- `400 Bad Request`: `username` missing or blank
+  ```json
+  { "success": false, "error": "Username is required" }
+  ```
+- `429 Too Many Requests`: Rate limit exceeded for this IP
+
+**Semantics:**
+- **Advisory only.** `POST /signup` remains authoritative: it re-runs uniqueness through `sanitizeUserData`'s soft-conflict auto-suffix, so a race between this probe and a real registration can never create a duplicate account. Clients must not treat `available: true` as a reservation.
 
 ---
 

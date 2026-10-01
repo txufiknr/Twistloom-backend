@@ -4259,8 +4259,14 @@ router.patch('/preferred-locale', requireAuth, async (c: Context<AppEnv>) => {
 router.get('/quests', requireAuth, async (c: Context<AppEnv>) => {
   try {
     const userId = c.get("userId")!;
+    const [user] = await dbRead
+      .select({ tier: users.tier, vipExpiresAt: users.vipExpiresAt })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1);
+    const isVip = isUserVipActive(user);
     const quests = await getUserQuests(userId);
-    const summary = summarizeQuests(quests);
+    const summary = summarizeQuests(quests, isVip);
     return c.json({ success: true, quests, summary });
   } catch (error) {
     return cApiError(c, 'Failed to fetch quest log', error);
@@ -4596,7 +4602,7 @@ router.get('/platform-testimonials', requireAuth, async (c: Context<AppEnv>) => 
  *   }
  * }
  */
-router.patch('/platform-testimonials/:id', requireAuth, async (c: Context<AppEnv>) => {
+router.patch('/platform-testimonials/:id', requireAuth, requireNotSuspended, requireNotMuted, async (c: Context<AppEnv>) => {
   try {
     const userId = c.get('userId')!;
 
@@ -4745,6 +4751,11 @@ router.delete('/platform-testimonials/:id', requireAuth, async (c: Context<AppEn
 router.get('/beta-duties', requireAuth, async (c: Context<AppEnv>) => {
   try {
     const userId = c.get('userId')!;
+
+    if (!(await isBetaTesterUser(userId))) {
+      return cForbiddenError(c, 'Only beta testers can access beta duties');
+    }
+
     const duties = await getUserBetaDuties(userId);
     const summary = summarizeBetaDuties(duties);
     return c.json({ success: true, duties, summary });
@@ -4761,11 +4772,16 @@ router.get('/beta-duties', requireAuth, async (c: Context<AppEnv>) => {
  *
  * @route POST /user/beta-duties/recheck
  * @description Re-evaluate beta duties completion
- * @auth Required
+ * @auth Required + beta tester
  */
 router.post('/beta-duties/recheck', requireAuth, async (c: Context<AppEnv>) => {
   try {
     const userId = c.get('userId')!;
+
+    if (!(await isBetaTesterUser(userId))) {
+      return cForbiddenError(c, 'Only beta testers can access beta duties');
+    }
+
     const newlyCompleted = await recheckBetaDuties(userId);
     return c.json({ success: true, newlyCompleted });
   } catch (error) {
@@ -4780,11 +4796,16 @@ router.post('/beta-duties/recheck', requireAuth, async (c: Context<AppEnv>) => {
  *
  * @route POST /user/beta-duties/claim-all
  * @description Claim all completed beta duty rewards at once
- * @auth Required
+ * @auth Required + beta tester
  */
 router.post('/beta-duties/claim-all', requireAuth, async (c: Context<AppEnv>) => {
   try {
     const userId = c.get('userId')!;
+
+    if (!(await isBetaTesterUser(userId))) {
+      return cForbiddenError(c, 'Only beta testers can access beta duties');
+    }
+
     const result = await claimAllBetaDutyRewardsAndInvalidate(userId);
     return c.json({
       success: true,
@@ -4806,11 +4827,16 @@ router.post('/beta-duties/claim-all', requireAuth, async (c: Context<AppEnv>) =>
  *
  * @route POST /user/beta-duties/:dutyId/claim
  * @description Claim a completed beta duty's credit reward
- * @auth Required
+ * @auth Required + beta tester
  */
 router.post('/beta-duties/:dutyId/claim', requireAuth, async (c: Context<AppEnv>) => {
   try {
     const userId = c.get('userId')!;
+
+    if (!(await isBetaTesterUser(userId))) {
+      return cForbiddenError(c, 'Only beta testers can access beta duties');
+    }
+
     const dutyId = c.req.param('dutyId');
     if (!dutyId) {
       return cValidationError(c, 'Duty ID is required');

@@ -44,6 +44,39 @@ export const bookStatuses = ['active', 'archived', 'draft'] as const;
 export type BookStatus = typeof bookStatuses[number];
 
 /**
+ * Type guard for untrusted request input destined for `books.status`.
+ *
+ * Route handlers must validate with this instead of casting (`status as BookStatus`),
+ * so an arbitrary request string can never reach a typed column or an update payload.
+ *
+ * @param value - Raw value parsed from a request body/query
+ * @returns `true` when the value is a known {@link BookStatus}
+ *
+ * @example
+ * ```typescript
+ * if (status !== undefined && !isBookStatus(status)) {
+ *   return cValidationError(c, `Invalid status. Must be one of: ${bookStatuses.join(", ")}`);
+ * }
+ * updatePayload.status = status; // narrowed to BookStatus — no `as` cast
+ * ```
+ */
+export function isBookStatus(value: unknown): value is BookStatus {
+  return typeof value === "string" && (bookStatuses as readonly string[]).includes(value);
+}
+
+/**
+ * Type guard for untrusted request input destined for `books.visibility`.
+ *
+ * See {@link isBookStatus} for why guards replace casts at schema boundaries.
+ *
+ * @param value - Raw value parsed from a request body/query
+ * @returns `true` when the value is a known {@link BookVisibility}
+ */
+export function isBookVisibility(value: unknown): value is BookVisibility {
+  return typeof value === "string" && (bookVisibilities as readonly string[]).includes(value);
+}
+
+/**
  * Authoring-origin filter for the explore endpoint (`source` query param).
  *
  * - `spark`: AI-generated books (`is_pen_book = false`).
@@ -297,6 +330,7 @@ export type EnrichedBookData = Pick<DBBook,
   | 'mode'
   | 'creditsPrice'
   | 'originalThemeInput'
+  | 'frontMatter'
   | 'createdAt'
   | 'updatedAt'
   | 'mc'

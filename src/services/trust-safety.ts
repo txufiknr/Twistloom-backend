@@ -54,7 +54,7 @@ export function invalidateUserEnforcementCache(userId: string): void {
  * Retrieves the user's trust profile or initializes a default profile if not present.
  */
 export async function getOrCreateUserTrustProfile(userId: string) {
-  const [existing] = await dbRead
+  const [existing] = await dbWrite
     .select()
     .from(userTrustProfiles)
     .where(eq(userTrustProfiles.userId, userId))
@@ -331,7 +331,10 @@ export async function revokeEnforcementAction(
 export async function getActiveEnforcementsForUser(userId: string) {
   const now = new Date();
 
-  return await dbRead
+  // Primary read: this feeds mutation decisions (unban revokes the rows it
+  // returns, PATCH enforcement guards on existence) — replica lag could skip
+  // a just-created enforcement and drift the ledger SSOT (audit §3.1).
+  return await dbWrite
     .select()
     .from(userEnforcementActions)
     .where(
@@ -1186,7 +1189,7 @@ export interface SubmitUserAppealPayload {
  */
 export async function submitUserAppeal(userId: string, payload: SubmitUserAppealPayload) {
   // 1. Verify the enforcement action exists and belongs to this user
-  const [action] = await dbRead
+  const [action] = await dbWrite
     .select()
     .from(userEnforcementActions)
     .where(
@@ -1202,7 +1205,7 @@ export async function submitUserAppeal(userId: string, payload: SubmitUserAppeal
   }
 
   // 2. Check if an appeal already exists for this action
-  const [existingAppeal] = await dbRead
+  const [existingAppeal] = await dbWrite
     .select()
     .from(moderationAppeals)
     .where(eq(moderationAppeals.enforcementActionId, payload.actionId))

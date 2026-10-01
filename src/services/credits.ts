@@ -975,3 +975,132 @@ export async function awardCredits(
 
   return trx ? executeAward(trx) : dbWrite.transaction(executeAward);
 }
+
+// ---------------------------------------------------------------------------
+// awardFirstPurchaseBonusOnce
+// ---------------------------------------------------------------------------
+
+/** Options for {@link awardFirstPurchaseBonusOnce}. */
+interface FirstPurchaseBonusOptions {
+  /** Gateway of the purchase that qualified for the bonus. */
+  gateway: PaymentGateway;
+  /** Additional payload stored in the notification's `data` column. */
+  notificationData?: Record<string, unknown>;
+  /** Metadata for the bonus transaction record. */
+  metadata?: Record<string, unknown>;
+  /**
+   * Existing DB transaction to join — **required**: the bonus must commit or
+   * roll back atomically with the qualifying purchase it rides with.
+   */
+  tx: DBTransaction;
+}
+
+/** Result of a first-purchase bonus attempt. */
+export interface FirstPurchaseBonusResult {
+  /**
+   * `true` only for the call that actually created the bonus row. `false`
+   * when another purchase for this user already claimed it (or the configured
+   * bonus is ≤ 0) — in which case **nothing was written**.
+   */
+  inserted: boolean;
+  /** Balance after this call; unchanged when `inserted` is `false`. */
+  balance: number;
+}
+
+/**
+ * Awards the one-time first-purchase bonus **at most once per user**.
+ *
+ * The invariant lives in the database, not in a check-then-insert: the
+ * partial unique index `transactions_user_first_purchase_bonus_unique`
+ * (`ON (user_id) WHERE type = 'first_purchase_bonus'`) permits a single bonus
+ * row per account, and this helper claims it with
+ * `INSERT … ON CONFLICT DO NOTHING RETURNING`. Two concurrent distinct
+ * purchases therefore reach the insert concurrently and exactly one wins —
+ * the loser simply reports `inserted: false` instead of rolling back the
+ * purchase it came in with.
+ *
+ * This matters because a plain `SELECT`-then-`INSERT` would depend on the
+ * caller having already locked the `users` row earlier in the same
+ * transaction (the pack award does) — safety by incidental call ordering,
+ * which a future reorder would silently remove.
+ *
+ * @param userId - Recipient of the bonus
+ * @param creditsAmount - Bonus size; ≤ 0 is a no-op that only reads the balance
+ * @param options - Gateway, notification/metadata payload, and the caller's `tx`
+ * @returns Whether this call created the bonus, plus the post-call balance
+ * @throws Error when the user does not exist
+ */
+export async function awardFirstPurchaseBonusOnce(
+  userId: string,
+  creditsAmount: number,
+  options: FirstPurchaseBonusOptions
+): Promise<FirstPurchaseBonusResult> {
+  const { gateway, notificationData = {}, metadata = {}, tx: trx } = options;
+
+  const execute = async (tx: DBTransaction): Promise<FirstPurchaseBonusResult> => {
+    if (creditsAmount <= 0) {
+      const [current] = await tx
+        .select({ credits: users.credits })
+        .from(users)
+        .where(eq(users.userId, userId))
+        .limit(1);
+      // Same contract as the >0 path: never fabricate a balance for a
+      // missing user (error-path envelope fidelity, AGENTS.md §3.11).
+      if (!current) throw new Error('User not found');
+      return { inserted: false, balance: current.credits };
+    }
+
+    // Row lock mirrors awardCredits: the returned balance must reflect this
+    // write, and a concurrent purchase claiming the bonus first is waited out
+    // here rather than discovered as an error later.
+    const [user] = await tx
+      .select({ credits: users.credits })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .for('update')
+      .limit(1);
+    if (!user) throw new Error('User not found');
+    // Capture before any write: the balance this call started from.
+    const startingCredits = user.credits;
+
+    const [row] = await tx
+      .insert(transactions)
+      .values({
+        userId,
+        type: 'first_purchase_bonus',
+        credits: creditsAmount,
+        gateway,
+        context: 'first_purchase_bonus',
+        metadata: Object.keys(metadata).length > 0 ? metadata : null,
+        createdAt: new Date()
+      })
+      .onConflictDoNothing()
+      .returning({ id: transactions.id });
+
+    if (!row) {
+      // A concurrent purchase already claimed the bonus for this user.
+      return { inserted: false, balance: startingCredits };
+    }
+
+    // Update user credits (do NOT set updatedAt — user-controlled profile field, AGENTS.md §8G)
+    await tx
+      .update(users)
+      .set({ credits: sql`${users.credits} + ${creditsAmount}` })
+      .where(eq(users.userId, userId));
+
+    await tx.insert(userNotifications).values({
+      userId,
+      type: 'first_purchase_bonus',
+      title: 'First Purchase Bonus',
+      message: `You received ${creditsAmount} credits for your first purchase`,
+      data: { credits: creditsAmount, ...notificationData },
+      read: false,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
+
+    return { inserted: true, balance: startingCredits + creditsAmount };
+  };
+
+  return execute(trx);
+}

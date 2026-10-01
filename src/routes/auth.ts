@@ -57,7 +57,7 @@ import { generateId } from '../utils/uuid.js';
 import { createOrUpdateOAuthUser, setReferrerForNewUser, tryAwardReferralBonus } from '../services/user-controller.js';
 import { issueMobileLoginPair, type MobileTokenPairResponse } from '../services/mobile-login.js';
 import { verifyAppleIdentityToken, type AppleUserProfile } from '../services/apple-auth.js';
-import { validateUsername } from '../utils/username.js';
+import { sanitizeUsername, validateUsername } from '../utils/username.js';
 import { isTemp as isTemporaryEmail } from 'tempmail-checker';
 import { requireAuth, invalidateCurrentSessionVerifyCache } from '../middleware/nextauth.js';
 import { resolveAdminAccess } from '../middleware/admin-auth.js';
@@ -432,6 +432,86 @@ router.post('/signup', async (c) => {
       message: 'If account was created, please check your email to verify.',
       verificationEmailSent: false,
     }, 200);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/auth/username-available
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/auth/username-available
+ *
+ * Advisory username availability probe for the mobile signup form, so the
+ * username field can show a checkmark while the reader is still typing instead
+ * of failing only at POST /signup.
+ *
+ * Advisory only: POST /signup stays authoritative (it re-runs uniqueness
+ * through `sanitizeUserData`'s soft-conflict auto-suffix), so a race between
+ * this probe and a real registration never creates a duplicate account.
+ *
+ * Rate limiting uses the Redis `checkRateLimit` (AGENTS.md 3.9.C — fail open
+ * when Redis is unavailable) under a **dedicated key**: the in-memory
+ * `checkRateLimitByIP` bucket is shared with login/signup attempts, so a
+ * burst of keystroke-driven probes must never consume that budget.
+ *
+ * @route GET /api/auth/username-available
+ * @description Check whether a username is free (public, unauthenticated)
+ *
+ * @query {string} username - Raw candidate; sanitized (lowercase, separators →
+ *   hyphens) exactly as signup sanitizes it before the uniqueness lookup
+ *
+ * @returns {Object} Response
+ * @returns {boolean} available - True when the sanitized candidate passes
+ *   format/reserved-word validation **and** no account holds it; false covers
+ *   taken, reserved (`admin`, …) and malformed candidates alike, so the
+ *   endpoint never echoes validation internals back to unauthenticated callers
+ *
+ * @throws 400 - `username` missing or blank
+ * @throws 429 - Rate limit exceeded for this IP
+ *
+ * @example
+ * // Request
+ * GET /api/auth/username-available?username=story-weaver
+ *
+ * // Response (200)
+ * { "available": true }
+ */
+router.get('/username-available', async (c) => {
+  try {
+    const ip = getClientIp(c);
+    // Keystroke-driven (debounced client-side, still high-frequency): a loose
+    // per-IP budget that cannot be spent by other auth endpoints.
+    const limit = await checkRateLimit(`auth-username-available:${ip}`, {
+      maxRequests: 60,
+      windowSeconds: 60,
+    });
+    if (!limit.allowed) return cRateLimitError(c);
+
+    const raw = c.req.query('username');
+    if (!raw || !raw.trim()) {
+      return cValidationError(c, 'Username is required');
+    }
+
+    // Same normalization signup applies, so "what is checked" equals
+    // "what would be stored".
+    const candidate = sanitizeUsername(String(raw));
+    if (!validateUsername(candidate).valid) {
+      // Reserved words and malformed input are both "unavailable"; the client
+      // already validates format locally, so this branch stays a safety net.
+      return c.json({ available: false });
+    }
+
+    const [conflict] = await dbRead
+      .select({ userId: users.userId })
+      .from(users)
+      .where(eq(users.username, candidate))
+      .limit(1);
+
+    return c.json({ available: !conflict });
+  } catch (error) {
+    console.error('[GET /api/auth/username-available] error:', error);
+    return cApiError(c, 'Failed to check username availability', error);
   }
 });
 

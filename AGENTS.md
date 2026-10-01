@@ -221,6 +221,9 @@ const { result, correlationId, transactionId } = await executeWithCredits(
 4. **Activity Logging Outside Transaction**: User analytics and audit logging (`logUserActivity`) are intentionally placed outside the transaction boundary so analytics errors never roll back successful user purchases.
 5. **Idempotent Refunds**: If an asynchronous step fails *after* a transaction has committed, call `refundCredits(userId, costKey, { correlationId })`. `refundCreditsIdempotent` verifies against the `transactions` table before issuing refunds to prevent duplicate refund attacks.
 6. **Free Demo & Demo User Support**: Always respect `FEATURE_FREE_DEMO` and `isDemoUser(userId)` via `getCreditCostForUser()`. When demo mode is active, costs resolve to 0 and skip row locks.
+7. **Atomic Batch Claims via `UPDATE ... RETURNING` (Zero-Sum Double-Spend Mitigation)**: When claiming batch rewards (e.g. `claimAllBetaDutyRewards`, quest claims, achievements), never read claimable items, compute the reward in app memory, and issue a blind update. Concurrent duplicate requests can both read claimable records and award double credits! Always run `UPDATE <table_name> SET is_claimed = true, claimed_at = now() WHERE ... RETURNING id, ...` and compute/award rewards **strictly** from the rows returned by that single transaction. If 0 rows are returned, yield early with 0 credits awarded (`none_claimable`).
+8. **Insertion Deduplication & Side-Effect Guard (`.returning({ id })` on Conflict)**: When evaluating event-driven or periodic duties/quests using `insert(...).onConflictDoNothing()`, the query resolves successfully even if 0 rows were inserted because they already exist. Never fire analytics (`logUserActivity('duty_completed')`) or dispatch notifications based merely on in-memory eligibility. Chain `.returning({ id })` and trigger completion side-effects only for IDs actually inserted into the database.
+9. **Authentic Balance Preservation on Rejection**: When rejecting a claim request (e.g. duty/quest not completed or already claimed), never return a hardcoded `credits: 0`. Always fetch and return the user's authentic `user.credits` balance so client-side state is preserved without visual balance wipes.
 
 ---
 
@@ -499,6 +502,134 @@ if (event.deliveryId) {
 }
 ```
 
+#### K. Batch Claim Race Conditions: Never Compute Rewards From Pre-Update State
+
+When claiming rewards across multiple items (quests, beta duties, achievements), computing rewards from an initial `SELECT` and executing a blind `UPDATE` creates a severe double-spend vulnerability under concurrent requests. Both requests read unclimed items, calculate rewards, and call `addCredits`, while one of the updates matches 0 rows:
+
+```typescript
+// ❌ CRITICAL DOUBLE-SPEND BUG — rewards calculated before verifying update success:
+const claimable = await dbWrite.select().from(userDuties).where(...);
+const totalReward = claimable.reduce((acc, d) => acc + d.reward, 0);
+await dbWrite.update(userDuties).set({ isClaimed: true }).where(...); // Blind update!
+await addCredits(userId, totalReward); // Concurrent call credits user twice!
+
+// ✅ ATOMIC UPDATE ... RETURNING — award rewards strictly for affected rows:
+const updatedRows = await dbWrite
+  .update(userDuties)
+  .set({ isClaimed: true, claimedAt: new Date() })
+  .where(and(eq(userDuties.userId, userId), inArray(userDuties.dutyId, targetIds), eq(userDuties.isClaimed, false)))
+  .returning({ dutyId: userDuties.dutyId });
+
+if (updatedRows.length === 0) {
+  return { status: "none_claimable", creditsAwarded: 0 };
+}
+
+const awardedCredits = updatedRows.reduce((sum, r) => sum + (REGISTRY[r.dutyId]?.reward ?? 0), 0);
+if (awardedCredits > 0) {
+  await addCredits(userId, awardedCredits);
+}
+```
+
+#### L. Unbounded SQL Parameter Lists: Replace `inArray` with Indexed Joins
+
+Querying child records by passing an array of parent IDs with `inArray(pages.bookId, bookIds)` creates an unbounded SQL parameter list for prolific users. This incurs high query serialization overhead and can exceed PostgreSQL parameter limits:
+
+```typescript
+// ❌ Unbounded parameter list: breaks/slows down when user has hundreds of books
+const userBooks = await dbRead.select({ id: books.id }).from(books).where(eq(books.userId, userId));
+const bookIds = userBooks.map(b => b.id);
+const hasPages = await dbRead.select().from(pages).where(inArray(pages.bookId, bookIds)).limit(1);
+
+// ✅ Indexed innerJoin: executes in O(1) time without dynamic SQL parameter arrays
+const [hasPages] = await dbRead
+  .select({ id: pages.id })
+  .from(pages)
+  .innerJoin(books, eq(pages.bookId, books.id))
+  .where(and(eq(books.userId, userId), eq(books.isPenBook, true)))
+  .limit(1);
+```
+
+#### M. Subsystem-Wide Authorization Consistency
+
+If a subsystem requires a special user role or enrollment flag (such as `isBetaTesterUser`, creator tier, VIP status), **all** endpoints under that subsystem (query, recheck, individual action, batch claim) must enforce that authorization gate uniformly:
+
+```typescript
+// ❌ Missing authorization guard on auxiliary or batch endpoints:
+router.post('/beta-duties/claim-all', requireAuth, async (c) => { ... });
+
+// ✅ Consistent 403 Forbidden across all subsystem routes:
+router.post('/beta-duties/claim-all', requireAuth, async (c) => {
+  const userId = c.get('userId')!;
+  if (!(await isBetaTesterUser(userId))) {
+    return cApiError(c, 'Beta tester access required', 403);
+  }
+  // ...
+});
+```
+
+Similarly, all user-generated content mutations (e.g. platform testimonials, forum posts, reviews) must uniformly enforce user standing guards (`requireNotSuspended`, `requireNotMuted`).
+
+---
+
+### 3.10 Entitlement-Aware Aggregation & Badge Accuracy
+
+Summary, inbox, and progression endpoints (e.g. `/user/quests`, `/user/inbox`, `/user/summary`, `/user/checkin/status`) calculate aggregated metrics such as `claimable`, `unclaimedReward`, or unread notification counts.
+
+#### The Golden Rule: Actionable Badges Require Real Execution Authority
+- **Check Entitlement on Read**: When aggregating counts of items that require subscription tiers, roles, or beta permissions (e.g. VIP-exclusive quests, beta-tester duties, premium rewards), the service MUST evaluate the user's active entitlement (`isUserVipActive`, `isBetaTesterUser`) *before* including items in actionable counts.
+- **Prevent Phantom Badges**: Counting items that the user cannot immediately claim or execute creates persistent "phantom badges" on navigation elements that the user cannot clear without purchasing an upgrade.
+- **Avoid Bulk-Claim Deadlocks**: Aggregation logic MUST stay in 1:1 lockstep with batch mutation logic. If a batch mutation (`claimAllQuestRewards`) filters out VIP-exclusive items for non-VIPs, the summary endpoint (`summarizeQuests`) MUST apply that exact same filter so `claimable` never exceeds what the bulk transaction will actually award.
+
+```typescript
+// ❌ WRONG — counts VIP quests for non-VIPs, creating phantom badges and bulk claim deadlock:
+export function summarizeQuests(quests: UserQuestState[]) {
+  const claimable = quests.filter((q) => q.status === 'completed');
+  return { claimable: claimable.length, unclaimedReward: claimable.reduce(...) };
+}
+
+// ✅ RIGHT — checks entitlement so claimable represents true execution authority:
+export function summarizeQuests(quests: UserQuestState[], isVip: boolean = false) {
+  const claimable = quests.filter(
+    (q) => q.status === 'completed' && (isVip || (!q.isVipOnly && q.chapterId !== 'ch7'))
+  );
+  return { claimable: claimable.length, unclaimedReward: claimable.reduce(...) };
+}
+```
+
+---
+
+### 3.11 Error-Path Envelope Fidelity & State Integrity
+
+API endpoints frequently return contextual user state alongside status indicators or error reasons (e.g., `newBalance`, `currentCredits`, `streakCount`, `quotaRemaining`).
+
+#### The Golden Rule: Never Fabricate State on Missing Auxiliary Rows
+- **Authentic Balance Preservation**: When an operation fails or rejects early (e.g. attempting to claim an uncompleted quest, invalid transaction state, or non-existent auxiliary row), NEVER default user balance or sensitive counters to `0` or dummy values.
+- **Inner Join Fallback Hazard**: If an auxiliary record (`user_quests`, `user_inventory`, `user_streaks`) does not exist for the user, an `innerJoin(users, ...)` query yields `undefined`. Falling back to `{ status: 'not_completed', newBalance: 0 }` sends a fabricated zero balance to the client, causing catastrophic visual balance wipes or optimistic cache corruption on the frontend!
+- **Direct Primary Query Fallback**: If the joined auxiliary row does not exist, query the primary table (`users.credits`) directly to return the authentic current value.
+
+```typescript
+// ❌ WRONG — returns newBalance: 0 if no user_quests row exists:
+const [existing] = await tx
+  .select({ status: userQuests.status, credits: users.credits })
+  .from(userQuests)
+  .innerJoin(users, eq(users.userId, userId))
+  .where(...);
+
+if (!existing) {
+  return { status: 'not_completed', creditsAwarded: 0, newBalance: 0 }; // ⚠️ Wipes client balance!
+}
+
+// ✅ RIGHT — fetches authentic user balance from primary table:
+if (!existing) {
+  const [u] = await tx
+    .select({ credits: users.credits })
+    .from(users)
+    .where(eq(users.userId, userId))
+    .limit(1);
+  return { status: 'not_completed', creditsAwarded: 0, newBalance: u?.credits ?? 0 };
+}
+```
+
 ---
 
 ## 4. Coding Standards & Conventions
@@ -546,6 +677,12 @@ Before providing code modifications:
 - [ ] Heartbeat / last-seen endpoints are lightweight atomic upserts (no full entity load/recompute).
 - [ ] Verified auth sessions are cached on hot paths (short TTL, token-hash keyed, invalidated on logout).
 - [ ] High-frequency poll endpoints coalesce bursts and use appropriate `private` `Cache-Control`.
+- [ ] Read-path aggregations and summary counters (`claimable`, badge counts) evaluate subscription/tier entitlement so actionable badges reflect real execution authority.
+- [ ] Error response envelopes containing user state (`newBalance`, `credits`, counters) preserve authentic database values instead of defaulting to 0 or null on missing auxiliary rows.
+- [ ] Batch claim endpoints compute and award rewards strictly from affected rows via `UPDATE ... RETURNING` to eliminate race conditions and double-spending.
+- [ ] Automated evaluation inserts (`insert().onConflictDoNothing()`) chain `.returning({ id })` to guard completion side effects and activity logs against duplicate firing.
+- [ ] Subsystem-level access controls (roles, beta tester status, creator tiers) are applied consistently across all subsystem routes (reads, writes, rechecks, and batch mutations).
+- [ ] Relational child queries avoid unbounded `inArray` parameter lists, preferring indexed SQL joins with `LIMIT 1`.
 
 ---
 
@@ -563,3 +700,4 @@ Before modifying or adding core backend subsystems, read the respective architec
 | **AI LLM Orchestration** | [`AI_LLM_ARCHITECTURE.md`](file:///d:/Projects/Twistloom/Twistloom-backend/docs/architecture/AI_LLM_ARCHITECTURE.md) | `src/utils/ai-clients.ts`, `src/utils/ai-parser.ts` |
 | **Explore, Filter & Cache** | [`BOOK_EXPLORE_FILTER_SORTING_ARCHITECTURE.md`](file:///d:/Projects/Twistloom/Twistloom-backend/docs/architecture/BOOK_EXPLORE_FILTER_SORTING_ARCHITECTURE.md) | `src/routes/books.ts`, `src/services/cache.ts` |
 | **Dual Authentication** | [`DUAL_AUTH_ARCHITECTURE.md`](file:///d:/Projects/Twistloom/Twistloom-backend/docs/architecture/DUAL_AUTH_ARCHITECTURE.md) | `src/routes/auth.ts`, `src/middleware/auth.ts` |
+| **Book Access & Admin Moderation** | [`BOOK_ACCESS_AND_MODERATION_ARCHITECTURE.md`](file:///d:/Projects/Twistloom/Twistloom-backend/docs/architecture/BOOK_ACCESS_AND_MODERATION_ARCHITECTURE.md) | `src/services/book-page-access.ts`, `src/services/book-controller.ts`, `src/routes/admin.ts` |

@@ -40,6 +40,33 @@
  *   `SparkController._keyFor` keys on `mode|prompt`), so this cannot happen in
  *   practice for the supported flows.
  *
+ * ## Open follow-up (P2): request fingerprinting
+ *
+ * The last contract bullet is the known gap: correctness of "key reuse with a
+ * different payload" is enforced only by *client* convention, not by this
+ * module. A buggy or adversarial client that reuses one key across two
+ * different prompts silently receives the first book back (HTTP 200 replay)
+ * instead of an error — no charge, but a confusing contract violation.
+ *
+ * Planned hardening (deliberately not implemented yet, tracked against Open
+ * Findings Register F-1):
+ *
+ * 1. Add `request_fingerprint TEXT` to `books`, nullable, populated with
+ *    `sha256(canonicalJson(body))` in the same transaction as the insert.
+ * 2. On the pre-flight lookup (`findBookByIdempotencyKey`), compare the stored
+ *    fingerprint with the incoming one; mismatch → `409` with a stable error
+ *    code (e.g. `idempotency_key_reuse_with_different_payload`) instead of a
+ *    silent replay.
+ * 3. Keep the unique index as the race backstop — the fingerprint check only
+ *    upgrades the *happy path* UX; the `23505` → `replayOnUniqueViolation`
+ *    path stays authoritative and must also verify the fingerprint when it
+ *    re-reads the winner row (a race loser with a mismatched payload should
+ *    surface the 409, not replay).
+ *
+ * A hand-written canonical-JSON hash (stable key ordering, no extra deps) is
+ * preferred over adding a schema-validation library; `zod` is deliberately not
+ * a direct dependency of this repo.
+ *
  * @see POST /api/books/async, POST /api/books, POST /api/books/stream
  */
 

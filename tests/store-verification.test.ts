@@ -18,6 +18,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, mock } from "bun:test";
 import { Hono } from "hono";
 import { CREDIT_PACKS } from "../src/config/credits.js";
+import type { DBTransaction } from "../src/db/client.js";
 import { createFakeDb, type FakeDb } from "./helpers/store-verification-db.js";
 
 // ---------------------------------------------------------------------------
@@ -86,6 +87,7 @@ const { storeVerificationReady } = await import("../src/config/store-verificatio
 const { verifyGooglePlay } = await import("../src/services/store-verification/google-play.js");
 const { verifyAppStore } = await import("../src/services/store-verification/app-store.js");
 const { parseJsonBody } = await import("../src/middleware/body.js");
+const { awardFirstPurchaseBonusOnce } = await import("../src/services/credits.js");
 const paymentsRouter = (await import("../src/routes/payments.js")).default;
 
 // ---------------------------------------------------------------------------
@@ -472,7 +474,7 @@ describe("credit pack grant and replay", () => {
     packId: "observer",
   };
 
-  function packReceipt() {
+  function packReceipt(overrides: Record<string, unknown> = {}) {
     return {
       platform: "google_play",
       kind: "consumable",
@@ -486,6 +488,7 @@ describe("credit pack grant and replay", () => {
       state: "PURCHASE_STATE_PURCHASED",
       environment: "PRODUCTION",
       metadata: { quantity: 1 },
+      ...overrides,
     } as any;
   }
 
@@ -519,6 +522,66 @@ describe("credit pack grant and replay", () => {
       fakeDb.rows.transactions.filter((row) => row.type === "first_purchase_bonus"),
     ).toHaveLength(1);
     expect(fakeDb.rows.users[0].credits).toBe(140);
+  });
+
+  it("grants a second distinct purchase without a second first-purchase bonus", async () => {
+    seedUser(40);
+    let receiptCall = 0;
+    setStoreVerifierForTesting(async () => ({
+      kind: "verified" as const,
+      receipt:
+        receiptCall++ === 0
+          ? packReceipt()
+          : packReceipt({
+              purchaseKey: "tok_pack_2",
+              orderId: "GPA.9999-8888-7777-666655554444",
+            }),
+    }));
+
+    const first = await post(app, "/api/payments/store-credit/verify", CREDIT_PROOF);
+    expect(first.body).toMatchObject({ granted: true, bonusCredits: 50, newBalance: 140 });
+
+    // A different payment id is a genuinely different purchase: it must grant
+    // its pack, but the one-time bonus belongs to the account, not the pack.
+    const second = await post(app, "/api/payments/store-credit/verify", CREDIT_PROOF);
+    expect(second.status).toBe(200);
+    expect(second.body).toMatchObject({
+      granted: true,
+      alreadyGranted: false,
+      bonusCredits: 0,
+      newBalance: 190, // 140 + 50 (second pack), no second bonus
+    });
+
+    expect(
+      fakeDb.rows.transactions.filter((row) => row.context === "credit_pack_purchase"),
+    ).toHaveLength(2);
+    expect(
+      fakeDb.rows.transactions.filter((row) => row.type === "first_purchase_bonus"),
+    ).toHaveLength(1);
+    expect(fakeDb.rows.users[0].credits).toBe(190);
+  });
+
+  it("refuses a second bonus claim through the unique index, without any pre-check", async () => {
+    // The invariant being pinned: `transactions_user_first_purchase_bonus_unique`
+    // + `ON CONFLICT DO NOTHING`. The helper performs NO select-before-insert,
+    // so this second claim is refused purely by the constraint — a
+    // check-then-insert design would have double-granted here.
+    seedUser(40);
+
+    const first = await fakeDb.dbWrite.transaction((tx: DBTransaction) =>
+      awardFirstPurchaseBonusOnce(USER_ID, 50, { gateway: "stripe", tx }),
+    );
+    const second = await fakeDb.dbWrite.transaction((tx: DBTransaction) =>
+      awardFirstPurchaseBonusOnce(USER_ID, 50, { gateway: "stripe", tx }),
+    );
+
+    expect(first).toEqual({ inserted: true, balance: 90 });
+    expect(second).toEqual({ inserted: false, balance: 90 });
+    expect(
+      fakeDb.rows.transactions.filter((row) => row.type === "first_purchase_bonus"),
+    ).toHaveLength(1);
+    expect(fakeDb.rows.userNotifications.filter((row) => row.type === "first_purchase_bonus")).toHaveLength(1);
+    expect(fakeDb.rows.users[0].credits).toBe(90);
   });
 
   it("ignores a packId that disagrees with the product the server resolved", async () => {

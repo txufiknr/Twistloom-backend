@@ -15,14 +15,16 @@ This document serves as a comprehensive guide for human developers and contribut
 5. [Environment Variables](#-environment-variables)
 6. [Database Management & Migrations](#-database-management--migrations)
 7. [Core Architectural Guidelines](#-core-architectural-guidelines)
-   - [7.1 Hono Framework & Route Conventions](#71-hono-framework--route-conventions)
-   - [7.2 Multi-Tier Caching (LRU + Redis + Database)](#72-multi-tier-caching-lru--redis--database)
-   - [7.3 Credits & Transactional Financial Integrity](#73-credits--transactional-financial-integrity)
-   - [7.4 Server-Sent Events (SSE) Streaming](#74-server-sent-events-sse-streaming)
-    - [7.5 AI Provider Orchestration & Fallback](#75-ai-provider-orchestration--fallback)
-    - [7.6 Hot-Path & Serialization Performance](#76-hot-path--serialization-performance)
-    - [7.7 Input Sanitization & Security Best Practices](#77-input-sanitization--security-best-practices)
-    - [7.8 Payment Gateway & Credits Best Practices](#78-payment-gateway--credits-best-practices)
+   - [7.1 Hono Framework & Route Conventions](#61-hono-framework--route-conventions)
+   - [7.2 Multi-Tier Caching (LRU + Redis + Database)](#62-multi-tier-caching-lru--redis--database)
+   - [7.3 Credits & Transactional Financial Integrity](#63-credits--transactional-financial-integrity)
+   - [7.4 Server-Sent Events (SSE) Streaming](#64-server-sent-events-sse-streaming)
+   - [7.5 AI Provider Orchestration & Fallback](#65-ai-provider-orchestration--fallback)
+   - [7.6 Hot-Path & Serialization Performance](#66-hot-path--serialization-performance)
+   - [7.7 Input Sanitization & Security Best Practices](#67-input-sanitization--security-best-practices)
+   - [7.8 Payment Gateway & Credits Best Practices](#68-payment-gateway--credits-best-practices)
+   - [7.9 Entitlement-Aware Aggregation & Badge Accuracy](#69-entitlement-aware-aggregation--badge-accuracy)
+   - [7.10 Error-Path Envelope Fidelity & State Integrity](#610-error-path-envelope-fidelity--state-integrity)
 8. [Code Quality & Standards](#-code-quality--standards)
 9. [Testing & Debugging](#-testing--debugging)
 10. [Pull Request & Contribution Process](#-pull-request--contribution-process)
@@ -302,6 +304,9 @@ const { result, correlationId, transactionId } = await executeWithCredits(
 - **Automatic Rollback**: If the callback throws, both the credit deduction and all database inserts roll back simultaneously.
 - **Analytics Isolation**: Activity logging (`logUserActivity`) runs *outside* the transaction so analytics errors never rollback financial transactions.
 - **Idempotent Refunds**: Post-commit asynchronous failures must use `refundCreditsIdempotent(userId, costKey, correlationId)`.
+- **Atomic Batch Claims**: When claiming batch rewards (e.g. `claimAllBetaDutyRewards`, quests), execute `UPDATE ... WHERE ... RETURNING duty_id` and compute rewards strictly from rows returned by that query. If 0 rows return, yield early with 0 credits to eliminate concurrent double-spending.
+- **Insert Deduplication Guard**: When evaluating criteria via `insert().onConflictDoNothing()`, chain `.returning({ id })` to ensure activity logging and side-effect dispatches only occur if rows were actually created.
+- **Authentic Balance Preservation**: Never return a fabricated `credits: 0` on failed or redundant claims. Always query and return the authentic `user.credits` balance.
 
 ---
 
@@ -384,6 +389,76 @@ These rules emerged from a comprehensive audit of the Stripe + Xendit payment sy
 
 #### Timestamps
 - **Preserve `updatedAt` on non-profile updates.** Payment-related mutations must not overwrite the user-controlled profile timestamp.
+
+#### Batch Claims & Concurrency
+- **Never compute rewards from pre-update state.** In batch reward claims, use `UPDATE ... WHERE ... RETURNING duty_id` and calculate awards strictly from rows returned by that transaction. If 0 rows return, return `status: 'none_claimable'` and award 0 credits. This prevents duplicate credit grants when concurrent requests race.
+
+#### Unbounded SQL Parameter Lists
+- **Avoid `inArray` with dynamic unbounded arrays.** Replace `inArray(pages.bookId, penBookIds)` with an indexed `innerJoin` on `pages.book_id = books.id WHERE books.user_id = $1 ... LIMIT 1`. This runs in $O(1)$ indexed lookup time and avoids PostgreSQL query parameter explosion.
+
+#### Subsystem-Wide Authorization Consistency
+- **Enforce role/flag gating across all subsystem endpoints.** If a feature requires `isBetaTesterUser` or VIP membership, guard `GET`, `POST /recheck`, `POST /claim`, and `POST /claim-all` with uniform `403 Forbidden` checks. Apply `requireNotSuspended` and `requireNotMuted` to all user-generated content mutations.
+
+---
+
+### 6.9 Entitlement-Aware Aggregation & Badge Accuracy
+
+Progression, gamification, and notification read endpoints (`/user/quests`, `/user/inbox`, `/user/summary`, `/user/checkin/status`) calculate aggregated metrics such as `claimable`, `unclaimedReward`, or unread notification counts.
+
+#### The Golden Rule: Actionable Badges Require Real Execution Authority
+- **Check Entitlement on Read**: When aggregating counts of items that require subscription tiers, roles, or beta permissions (e.g. VIP-exclusive quests, beta-tester duties, premium rewards), the service MUST evaluate the user's active entitlement (`isUserVipActive`, `isBetaTesterUser`) *before* including items in actionable counts.
+- **Prevent Phantom Badges**: Counting items that the user cannot immediately claim or execute creates persistent "phantom badges" on navigation elements that the user cannot clear without purchasing an upgrade.
+- **Avoid Bulk-Claim Deadlocks**: Aggregation logic MUST stay in 1:1 lockstep with batch mutation logic. If a batch mutation (`claimAllQuestRewards`) filters out VIP-exclusive items for non-VIPs, the summary endpoint (`summarizeQuests`) MUST apply that exact same filter so `claimable` never exceeds what the bulk transaction will actually award.
+
+```typescript
+// ❌ WRONG — counts VIP quests for non-VIPs, creating phantom badges and bulk claim deadlock:
+export function summarizeQuests(quests: UserQuestState[]) {
+  const claimable = quests.filter((q) => q.status === 'completed');
+  return { claimable: claimable.length, unclaimedReward: claimable.reduce(...) };
+}
+
+// ✅ RIGHT — checks entitlement so claimable represents true execution authority:
+export function summarizeQuests(quests: UserQuestState[], isVip: boolean = false) {
+  const claimable = quests.filter(
+    (q) => q.status === 'completed' && (isVip || (!q.isVipOnly && q.chapterId !== 'ch7'))
+  );
+  return { claimable: claimable.length, unclaimedReward: claimable.reduce(...) };
+}
+```
+
+---
+
+### 6.10 Error-Path Envelope Fidelity & State Integrity
+
+API endpoints frequently return contextual user state alongside status indicators or error reasons (e.g., `newBalance`, `currentCredits`, `streakCount`, `quotaRemaining`).
+
+#### The Golden Rule: Never Fabricate State on Missing Auxiliary Rows
+- **Authentic Balance Preservation**: When an operation fails or rejects early (e.g. attempting to claim an uncompleted quest, invalid transaction state, or non-existent auxiliary row), NEVER default user balance or sensitive counters to `0` or dummy values.
+- **Inner Join Fallback Hazard**: If an auxiliary record (`user_quests`, `user_inventory`, `user_streaks`) does not exist for the user, an `innerJoin(users, ...)` query yields `undefined`. Falling back to `{ status: 'not_completed', newBalance: 0 }` sends a fabricated zero balance to the client, causing catastrophic visual balance wipes or optimistic cache corruption on the frontend!
+- **Direct Primary Query Fallback**: If the joined auxiliary row does not exist, query the primary table (`users.credits`) directly to return the authentic current value.
+
+```typescript
+// ❌ WRONG — returns newBalance: 0 if no user_quests row exists:
+const [existing] = await tx
+  .select({ status: userQuests.status, credits: users.credits })
+  .from(userQuests)
+  .innerJoin(users, eq(users.userId, userId))
+  .where(...);
+
+if (!existing) {
+  return { status: 'not_completed', creditsAwarded: 0, newBalance: 0 }; // ⚠️ Wipes client balance!
+}
+
+// ✅ RIGHT — fetches authentic user balance from primary table:
+if (!existing) {
+  const [u] = await tx
+    .select({ credits: users.credits })
+    .from(users)
+    .where(eq(users.userId, userId))
+    .limit(1);
+  return { status: 'not_completed', creditsAwarded: 0, newBalance: u?.credits ?? 0 };
+}
+```
 
 ---
 
@@ -474,6 +549,8 @@ Before opening a pull request, ensure:
 - [ ] Expensive page-stable serialization is memoized with a page-scoped key rather than recomputed per request.
 - [ ] Heartbeat / last-seen endpoints use lightweight atomic updates.
 - [ ] Verified session results are cached on hot paths (short TTL, token-hash keyed, invalidated on logout).
+- [ ] Batch claim endpoints compute and award rewards strictly from affected rows via `UPDATE ... RETURNING` to eliminate double-spend race conditions.
+- [ ] Subsystem-level authorization guards (roles, beta tester status, creator tiers) are applied uniformly across all subsystem endpoints.
 - [ ] Temporary test/scratch files have been removed.
 
 ---

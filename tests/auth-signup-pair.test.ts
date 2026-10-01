@@ -67,6 +67,8 @@ const dbWrite = {
     }),
 };
 
+// Captured BEFORE the stub below replaces it — `afterAll` puts it back.
+const actualDbClient = await import("../src/db/client.js");
 mock.module("../src/db/client.js", () => ({ dbRead, dbWrite, db: dbWrite }));
 
 const createSession = mock(async () => "session-signup-1");
@@ -95,6 +97,8 @@ mock.module("../src/services/token-family.js", () => ({
 }));
 
 const actualAdminAuth = await import("../src/middleware/admin-auth.js");
+// Captured BEFORE the stub below replaces it — `afterAll` puts it back.
+const realResolveAdminAccess = actualAdminAuth.resolveAdminAccess;
 mock.module("../src/middleware/admin-auth.js", () => ({
   ...actualAdminAuth,
   resolveAdminAccess,
@@ -114,6 +118,8 @@ const signupUserData = {
 // middleware/nextauth (getUserIdByEmail, invalidateByEmail),
 // services/user-controller (…, logUserActivity, updateUserLastActivity,
 // performDailyCheckIn) — called only on paths this test does not exercise.
+// Captured BEFORE the stubs below replace them — `afterAll` puts them back.
+const actualUserService = await import("../src/services/user.js");
 mock.module("../src/services/user.js", () => ({
   sanitizeUserData: mock(async () => signupUserData),
   getUserForAuth: mock(async () => null),
@@ -124,11 +130,13 @@ mock.module("../src/services/user.js", () => ({
   performDailyCheckIn: mock(async () => null),
 }));
 
+const actualPasswordUtil = await import("../src/utils/password.js");
 mock.module("../src/utils/password.js", () => ({
   hashPassword: mock(async () => "hashed-password"),
   verifyPassword: mock(async () => true),
 }));
 
+const actualEmailVerification = await import("../src/utils/email-verification.js");
 mock.module("../src/utils/email-verification.js", () => ({
   createEmailVerificationToken: mock(async () => "verification-token-test"),
   verifyEmailToken: mock(async () => null),
@@ -140,6 +148,7 @@ mock.module("../src/utils/email-verification.js", () => ({
 
 // Only routes/auth imports utils/email inside this closure; the real module
 // pulls in the Resend SDK and template config this contract test never uses.
+const actualEmailUtil = await import("../src/utils/email.js");
 mock.module("../src/utils/email.js", () => ({
   sendVerificationEmail: mock(async () => true),
   sendPasswordResetEmail: mock(async () => true),
@@ -184,6 +193,22 @@ beforeEach(() => {
 
 afterAll(() => {
   process.env = { ...ORIGINAL_ENV };
+  // `mock.module` leaks forward across test files in the same process, so a
+  // permanent "nobody is an admin" stub here would silently break every later
+  // file that authorizes through admin membership (admin moderation, the book
+  // detail gate's admin bypass). Restore every mocked namespace — see the
+  // mock-restore rule in tests/helpers/store-verification-db.ts.
+  mock.module("../src/middleware/admin-auth.js", () => ({
+    ...actualAdminAuth,
+    resolveAdminAccess: realResolveAdminAccess,
+  }));
+  mock.module("../src/db/client.js", () => actualDbClient);
+  mock.module("../src/services/session-manager.js", () => actualSessionManager);
+  mock.module("../src/services/token-family.js", () => actualTokenFamily);
+  mock.module("../src/services/user.js", () => actualUserService);
+  mock.module("../src/utils/password.js", () => actualPasswordUtil);
+  mock.module("../src/utils/email-verification.js", () => actualEmailVerification);
+  mock.module("../src/utils/email.js", () => actualEmailUtil);
 });
 
 describe("POST /auth/signup (Q1-A: in-band token pair + isNewUser)", () => {

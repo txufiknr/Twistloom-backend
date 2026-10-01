@@ -509,14 +509,20 @@ export async function getUserQuests(userId: string): Promise<UserQuestState[]> {
  * Computes the quest-log summary (completed / claimable / reward totals).
  *
  * @param quests - The full user quest state list
+ * @param isVip - Whether the user currently holds active VIP status or trial
  */
-export function summarizeQuests(quests: UserQuestState[]): {
+export function summarizeQuests(
+  quests: UserQuestState[],
+  isVip: boolean = false,
+): {
   completed: number;
   claimable: number;
   totalReward: number;
   unclaimedReward: number;
 } {
-  const claimable = quests.filter((q) => q.status === 'completed');
+  const claimable = quests.filter(
+    (q) => q.status === 'completed' && (isVip || (!q.isVipOnly && q.chapterId !== 'ch7')),
+  );
   return {
     completed: claimable.length,
     claimable: claimable.length,
@@ -589,7 +595,12 @@ export async function claimQuestReward(
         .limit(1);
 
       if (!existing) {
-        return { status: 'not_completed', creditsAwarded: 0, newBalance: 0 };
+        const [u] = await tx
+          .select({ credits: users.credits })
+          .from(users)
+          .where(eq(users.userId, userId))
+          .limit(1);
+        return { status: 'not_completed', creditsAwarded: 0, newBalance: u?.credits ?? 0 };
       }
       const status = existing.status === 'claimed' ? 'already_claimed' : 'not_completed';
       return { status, creditsAwarded: 0, newBalance: existing.credits };

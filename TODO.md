@@ -1,3 +1,4 @@
+[ ] chatgpt: daily schedule post/write blog article (html, ref: legacy diagnosis)
 [ ] Page 1 selected actions masih none
 [ ] Stripe switch to live
 [ ] Xendit switch to live
@@ -85,7 +86,7 @@ please write a comprehensive roadmap MD for this in @docs/roadmap\ , grounded on
 [ ] agentic mcp: TWISTLOOM_AGENT_MCP_ROADMAP.md
 [ ] claude: TODO-ai-gateway-decouple.md
 [ ] create QStash schedules — `bun qstash:setup:prod` registers both (credit-reservation `*/10`, custom-action `*/5`); runbook curl is in §4 (needs your QSTASH_TOKEN/host).
-[ ] QSTASH_TOKEN (+ CRON_SECRET, BACKEND_URL) before `bun qstash:setup`.
+[ ] Required env: `QSTASH_TOKEN` before `bun qstash:setup`.
 [ ] google play & app store env vars
 [ ] OG-5 Play sandbox pass (answer before OG-1/OG-2 — one purchased item settles both): does REST `purchases.products.consume` accept a purchase the client already acknowledged? does `purchaseState` stay `0` after a consume (else a replay answers `denied` for a pack that was granted)? — `docs/roadmap/OWNER_GATES_REGISTER.md`
 [ ] flutter: App Store `finishTransaction` — the Apple half of OG-5; Play now finalizes server-side (`finalizeStorePurchase`)

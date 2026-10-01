@@ -32,6 +32,30 @@ export const violationSeverities = ['low', 'medium', 'high', 'critical'] as cons
 export type ViolationSeverity = (typeof violationSeverities)[number];
 
 /**
+ * Type guard for untrusted request input destined for `user_enforcement_actions.violation_type`.
+ *
+ * Enforcement/ban mutations are privileged: validate structurally instead of casting
+ * a request string (`body.violationType as ViolationType`), so the compile-time
+ * invariant on {@link ViolationType} cannot be bypassed at the API boundary.
+ *
+ * @param value - Raw value parsed from a request body
+ * @returns `true` when the value is a known {@link ViolationType}
+ */
+export function isViolationType(value: unknown): value is ViolationType {
+  return typeof value === "string" && (violationTypes as readonly string[]).includes(value);
+}
+
+/**
+ * Type guard for untrusted request input destined for enforcement `severity`.
+ *
+ * @param value - Raw value parsed from a request body
+ * @returns `true` when the value is a known {@link ViolationSeverity}
+ */
+export function isViolationSeverity(value: unknown): value is ViolationSeverity {
+  return typeof value === "string" && (violationSeverities as readonly string[]).includes(value);
+}
+
+/**
  * Disciplinary actions in progressive enforcement ladder
  */
 export const enforcementActions = [
@@ -46,6 +70,16 @@ export const enforcementActions = [
 ] as const;
 
 export type EnforcementAction = (typeof enforcementActions)[number];
+
+/**
+ * Type guard for untrusted request input destined for enforcement `action`.
+ *
+ * @param value - Raw value parsed from a request body
+ * @returns `true` when the value is a known {@link EnforcementAction}
+ */
+export function isEnforcementAction(value: unknown): value is EnforcementAction {
+  return typeof value === "string" && (enforcementActions as readonly string[]).includes(value);
+}
 
 /**
  * User dynamic risk tiers
