@@ -31,6 +31,7 @@ import type { Context } from 'hono';
 import { getErrorMessage, cApiError } from '../utils/error.js';
 import { isInsufficientCreditsError } from '../config/errors.js';
 import { executeWithCredits, refundCredits, addCredits } from './credits.js';
+import { notifyBookGenerationOutcome, resolveGenerationOutcome } from './ai-generation-notification.js';
 import { getBookModeCreditCostForUser } from '../config/credits.js';
 import { getRefundForStep } from '../config/generation-refund.js';
 import { MAX_CHARACTER_AGE, MIN_CHARACTER_AGE } from '../config/story.js';
@@ -484,6 +485,13 @@ export function handleBookCreationError(
  * `generationError` is reset to `null` on every call unless `error` is provided.
  * This intentionally clears stale error messages when new progress is reported.
  *
+ * **Outcome notification (F-8):**
+ * When a write lands a real transition to `'completed'` or `'failed'`, an
+ * in-app `user_notifications` row is persisted (gated by the owner's
+ * `inAppPreferences.aiCompleted`) via `ai-generation-notification.ts`.
+ * Duplicate terminal callbacks are deduplicated through the pre-read prior
+ * status + UPDATE `RETURNING` combination.
+ *
  * @param bookId - Target book ID
  * @param status - Explicit generation status (optional, may be overridden by step)
  * @param step   - Generation step (optional, drives status auto-derivation)
@@ -561,7 +569,23 @@ async function updateBookGenerationStatusCore(
   // overwritable — e.g. retrying a failed generation advances it to in_progress.
   //
   // ── 6. Persist to database ────────────────────────────────────────────────
-  await dbWrite
+  //
+  // Terminal transitions additionally pre-read the row's current status (one
+  // indexed SELECT, only on the ≤2 terminal writes a generation ever makes) so
+  // the outcome notification below can distinguish a real transition from a
+  // duplicate callback — e.g. a repeated 'failed' webhook restamps the row but
+  // must not insert a second inbox row (F-8 exactly-once contract).
+  let priorStatus: BookGenerationStatus | undefined;
+  if (finalStatus === 'completed' || finalStatus === 'failed') {
+    const [prior] = await dbWrite
+      .select({ generationStatus: bookGenerations.generationStatus })
+      .from(bookGenerations)
+      .where(eq(bookGenerations.bookId, bookId))
+      .limit(1);
+    priorStatus = prior?.generationStatus ?? undefined;
+  }
+
+  const appliedRows = await dbWrite
     .update(bookGenerations)
     .set(update)
     .where(
@@ -570,7 +594,9 @@ async function updateBookGenerationStatusCore(
         ne(bookGenerations.generationStatus, 'cancelled'),
         ne(bookGenerations.generationStatus, 'completed'),
       )
-    );
+    )
+    .returning({ generationStatus: bookGenerations.generationStatus });
+  const updateApplied = appliedRows.length > 0;
 
   // ── 7. Auto-refund credits on failure ─────────────────────────────────────
   //
@@ -619,6 +645,17 @@ async function updateBookGenerationStatusCore(
         refundErr,
       );
     }
+  }
+
+  // ── 8. Persist the outcome inbox row (F-8) ───────────────────────────────
+  //
+  // After the status write (and, on failure, after the refund attempt) so the
+  // notification always reflects settled state. Awaiting is safe:
+  // `notifyBookGenerationOutcome` never throws — it is a best-effort channel
+  // that must not break generation persistence.
+  const outcome = resolveGenerationOutcome({ finalStatus, priorStatus, updateApplied });
+  if (outcome) {
+    await notifyBookGenerationOutcome(bookId, outcome);
   }
 }
 

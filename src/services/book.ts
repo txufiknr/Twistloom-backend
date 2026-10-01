@@ -1157,7 +1157,24 @@ export async function getEnrichedBook(
 
 /**
  * Updates an existing book in the database
- * 
+ *
+ * **Pre-image read (F-12, accepted by design 2026-10-01):** when `updates`
+ * touches `visibility`, `status`, `slug`, or `title`, this function performs
+ * one indexed single-row SELECT of the *current* row before writing. That read
+ * is load-bearing, not redundant — it is the pre-update image that powers
+ * publish-transition detection (`non-public → public` follower fan-out), slug
+ * auto-assign/validation, old-slug LRU invalidation, and the
+ * `effectiveStatus`/`effectiveVisibility` fallbacks below. Callers such as
+ * `utils/prompt.ts` (async finalisation) have no pre-image of their own and
+ * depend on it.
+ *
+ * Deliberately **not** parameterised with a caller-supplied row: a stale
+ * caller snapshot silently breaks publish fan-out and
+ * `invalidateExploreCache({ before, after })` keys in exchange for saving one
+ * 6-column PK lookup — a net loss. Writes that change none of the four fields
+ * skip the read entirely, so the common metadata write path already pays zero
+ * extra SELECTs. See OPEN_FINDINGS_REGISTER F-12 (closed accepted-by-design).
+ *
  * @param bookId - Book identifier to update
  * @param updates - Partial book data to update
  * @returns Promise resolving to the updated book record
