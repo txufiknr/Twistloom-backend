@@ -49,6 +49,7 @@ const userRow = {
   imageUrl: null as string | null,
   isNewUser: false,
   bannedAt: null as Date | null,
+  credits: 10,
 };
 
 const selectChain = {
@@ -149,6 +150,7 @@ describe("issueMobileLoginPair (SSOT for password/google/apple)", () => {
     expect(result.pair.user.email).toBe("user@example.com");
     expect(result.pair.user.sessionId).toBe("session-test-1");
     expect(result.pair.user.isAdmin).toBe(false);
+    expect(result.pair.user.credits).toBe(10);
 
     expect(createSession).toHaveBeenCalledTimes(1);
     expect(createRefreshFamily).toHaveBeenCalledTimes(1);

@@ -55,7 +55,7 @@
  * concurrent overwrite of the `actions` JSONB column.
  */
 
-import { getBook, getBookFromDB, getPageFromDB, getStoryPageById, mapToPersistedStoryPage, mapToUserStoryPage } from '../services/book.js';
+import { getBook, getBookFromDB, getPageFromDB, getStoryPageById, mapToPersistedStoryPage, mapToUserStoryPage, getUserActionHints, sanitizeActionHints } from '../services/book.js';
 import { MAX_BRANCHING_PREGENERATION_DEPTH, MAX_BRANCHING_RETRIES } from '../config/story.js';
 import { GITHUB_REPO_CONFIG } from '../config/env.js';
 import type { UserStoryPage, Action, PersistedStoryPage } from '../types/story.js';
@@ -1758,7 +1758,13 @@ export async function validateAndRetrievePageForGeneration(
         dbPage.actions = [completedAction];
       }
       void clearActionProgressEvents(pageId);
-      const userPage = userId ? await mapToUserStoryPage(dbPage, userId) : mapToPersistedStoryPage(dbPage);
+      const rawUserPage = userId ? await mapToUserStoryPage(dbPage, userId) : mapToPersistedStoryPage(dbPage);
+      const isAuthor = Boolean(userId && dbBook.userId && dbBook.userId === userId);
+      const shownActionHint = userId ? await getUserActionHints(userId, pageId) : [];
+      const userPage = {
+        ...rawUserPage,
+        actions: sanitizeActionHints(rawUserPage.actions, shownActionHint, isAuthor),
+      };
       return { dbBook, dbPage, userPage, isGenerating: false, isDone: true, totalPendingActions: 0 };
     }
   }
@@ -1769,8 +1775,14 @@ export async function validateAndRetrievePageForGeneration(
     dbPage.isGeneratingStartedAt = null; // Reset timestamp for stuck generation
   }
 
-  // Map to user story page
-  const userPage = userId ? await mapToUserStoryPage(dbPage, userId) : mapToPersistedStoryPage(dbPage);
+  // Map to user story page with F-22 hint sanitization
+  const rawUserPage = userId ? await mapToUserStoryPage(dbPage, userId) : mapToPersistedStoryPage(dbPage);
+  const isAuthor = Boolean(userId && dbBook.userId && dbBook.userId === userId);
+  const shownActionHint = userId ? await getUserActionHints(userId, pageId) : [];
+  const userPage = {
+    ...rawUserPage,
+    actions: sanitizeActionHints(rawUserPage.actions, shownActionHint, isAuthor),
+  };
 
   return { dbBook, dbPage, userPage, isGenerating, isDone, totalPendingActions };
 }

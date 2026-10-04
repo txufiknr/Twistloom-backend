@@ -530,14 +530,19 @@ export async function executeWithCredits<T>(
     console.log(`[executeWithCredits] ⏩ Free action (cost 0): ${costKey}`);
     return dbWrite.transaction(async (tx) => {
       const result = await operation(tx);
-      return { result, correlationId, transactionId: generateId() };
+      const [userRow] = await tx
+        .select({ credits: users.credits })
+        .from(users)
+        .where(eq(users.userId, userId))
+        .limit(1);
+      return { result, correlationId, transactionId: generateId(), remainingCredits: userRow?.credits ?? 0 };
     });
   }
 
   // Execute everything in a single transaction for atomicity
   return dbWrite.transaction(async (tx) => {
     // ── 1. Deduct credits (row-locked) ────────────────────────────────────
-    const { transactionId } = await consumeCreditsInTransaction(tx, userId, cost, {
+    const { remainingCredits, transactionId } = await consumeCreditsInTransaction(tx, userId, cost, {
       ...options,
       correlationId
     });
@@ -545,7 +550,7 @@ export async function executeWithCredits<T>(
     try {
       // ── 2. Execute the caller's work ────────────────────────────────────
       const result = await operation(tx);
-      return { result, correlationId, transactionId };
+      return { result, correlationId, transactionId, remainingCredits };
     } catch (operationError) {
       // ── 3. Failure path — the DATABASE rolls everything back ────────────
       //

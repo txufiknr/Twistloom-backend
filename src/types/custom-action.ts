@@ -110,6 +110,8 @@ export interface CustomActionSubmitResponse {
     pollingIntervalMs: number;
     maxPollingTimeMs: number;
   };
+  /** Authoritative post-deduction user balance (F-21) */
+  credits?: number;
   /** Rejection code (AGENTS A9) - see CustomActionPreviewResponse.code. */
   code?: string;
   message?: string;

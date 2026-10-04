@@ -607,6 +607,9 @@ export async function markPageVisited(params: {
       );
       
       result = executeCreditsResult.result;
+      if (executeCreditsResult.remainingCredits !== undefined) {
+        result.credits = executeCreditsResult.remainingCredits;
+      }
       correlationId = executeCreditsResult.correlationId;
     } else {
       // Internal user or no credit consumption: mark page visited without credit transaction

@@ -40,7 +40,7 @@ import { geminiGenerateImage } from "../utils/ai-image.js";
 import { uploadBookCover, uploadBookCharacterImage, persistUploadedImage, deleteFileFromImageKit } from "./image.js";
 import { retryWithBranchConflict, isUniqueConstraintError } from "../utils/retry.js";
 import { generateBranchId, getStoryStateWithBranch } from "./story-branch.js";
-import { sanitizeText, generateSlug, sanitizeKeywords, parseTrait, cleanSingleLineText, cleanMultilineText } from "../utils/text-processing.js";
+import { sanitizeText, generateSlug, sanitizeKeywords, parseTrait, cleanSingleLineText, cleanMultilineText, concealSecretText } from "../utils/text-processing.js";
 import { generateId, isValidUuid } from "../utils/uuid.js";
 import { calculateActionTendency, calculateStoryMomentum, getStoryStateInfo } from "../utils/story.js";
 import { normalizeDialogueMarkers } from "../utils/dialogue-parser.js";
@@ -2022,6 +2022,27 @@ function loadLatestCanonValidation(pageId: string) {
  * // ]
  * ```
  */
+export function sanitizeActionHints(
+  actions: Action[],
+  shownActionHint: string[] = [],
+  isAuthor: boolean = false
+): Action[] {
+  return actions.map(action => {
+    if (!action.hint?.text) return action;
+    const isPurchased = shownActionHint.includes(action.text);
+    if (isPurchased || isAuthor) {
+      return action;
+    }
+    return {
+      ...action,
+      hint: {
+        ...action.hint,
+        text: concealSecretText(action.hint.text),
+      },
+    };
+  });
+}
+
 export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOptions): Promise<EnrichedStoryPage | null> {
   const { userId, book, headerLanguage, translate = false, sourceAction, isUserTakeAction } = options;
   const { language = 'en' } = book ?? {};
@@ -2294,6 +2315,14 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
     console.error(`[mapToEnrichedPage] ❌ Source action should be exists for page ${dbPage.page}`);
   }
 
+  // Redact unpurchased hint text server-side (F-22): secret consequence hints
+  // are only delivered when the user has purchased the hint or is the book's author.
+  // Unpurchased hints preserve sentence-like word shapes, capitalization, and punctuation
+  // via scrambled letter substitution (web parity: `concealSecretText`) so clients decode safely
+  // and blurred previews display an authentic sentence silhouette that intrigues readers without leaking the secret.
+  const isAuthor = Boolean(userId && book?.userId && book.userId === userId);
+  const sanitizedActions = sanitizeActionHints(visibleActions, shownActionHint, isAuthor);
+
   // Return only frontend-relevant fields.
   // Exclude backend-specific fields: userId, aiEvalProvider,
   // aiEvalModel, pendingGenerationCount.
@@ -2322,7 +2351,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
     updatedAt: dbPage.updatedAt,
 
     // Enriched columns
-    actions: visibleActions, // ALL actions — completed AND still-pending (empty destinationPageIds until generation resolves them)
+    actions: sanitizedActions, // Redacted for unpurchased hints (F-22); completed AND still-pending
     originalActionsCount: allActions.length,
     selectedActions,
     sourceAction, // sourceAction is the convenience shortcut for the single action that led to this page.

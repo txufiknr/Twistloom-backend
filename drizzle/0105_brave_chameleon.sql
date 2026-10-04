@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX IF NOT EXISTS "transactions_user_first_purchase_bonus_unique" ON "transactions" USING btree ("user_id") WHERE "transactions"."type" = 'first_purchase_bonus';

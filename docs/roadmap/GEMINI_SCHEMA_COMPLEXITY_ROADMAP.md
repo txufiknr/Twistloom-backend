@@ -135,6 +135,15 @@ Beyond the raw schema, each generation call appends ~10 KB of output format (`ne
 
 **Risk assessment:** 🟡 Medium — safe (mechanical rename in schema, types, prompts, and consumer code; typecheck catches mismatches). High effort (~3 days).
 
+##### Architectural Decision: Wire Key Compression Rejected (No-Go)
+- **ADR Reference:** See [JSONSCHEMA_KEY_COMPRESSION_ROADMAP.md](file:///d:/Projects/Twistloom/Twistloom-backend/docs/roadmap/JSONSCHEMA_KEY_COMPRESSION_ROADMAP.md) for full evaluation and audit history.
+- **Verdict:** Wire-level JSON schema key compression (`jsonschema-key-compression` or hand-authored alias dictionaries) was formally evaluated and **rejected (No-Go)**.
+- **Key Takeaways & Alignment:**
+  1. *Zero Prompt Savings on World State:* Story state reaches prompts as prose/Markdown formatters (`formatCharactersForPrompt`, etc.), not JSON keys.
+  2. *Decoder Complexity Unaffected:* Google's constrained decoder state explosion (`isSchemaTooComplex()` at `src/utils/ai-chat.ts:2021`) is driven by property cardinality (303 props in `STORY_GENERATION_SCHEMA_DEFINITION`, 271 props in Turn B), enum fan-out (252–334 items), and nesting depth (depth 8 in candidate generation). Shortening key strings without structural flattening does not reduce decoder state space.
+  3. *Adherence & Truncation Risks:* Opaque keys (`|a`, `|b`) severely degrade model reasoning, compounded by `convertToGeminiSchema` dropping descriptions > 60 chars (`src/utils/gemini.ts:530`).
+  4. *Clean Semantic Renames Authoritative:* Hand-crafted semantic abbreviations (e.g. `placeConnectionUpdates` → `placeConnections`, `importantObjects` → `keyObjects`) preserve LLM semantic comprehension across all providers without runtime translation seams or database alias drift.
+
 ---
 
 #### Phase 1.6 — Flatten `viableEnding.changeNote` into root-level fields

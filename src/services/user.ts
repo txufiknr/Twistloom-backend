@@ -662,8 +662,8 @@ export async function performDailyCheckIn(userId: string, claimType: CheckinClai
         creditsClaimed: creditsToAward,
       });
 
-      // Add credits to user in the SAME transaction
-      await addCredits(userId, creditsToAward, {
+      // Add credits to user in the SAME transaction (addCredits returns the post-addition balance, F-21)
+      const updatedCredits = await addCredits(userId, creditsToAward, {
         tx,
         context: claimType === 'vip_2x' ? "daily_checkin_vip_2x" : "daily_checkin",
         metadata: { checkInDate: todayUTC, creditsAwarded: creditsToAward, claimType },
@@ -692,6 +692,7 @@ export async function performDailyCheckIn(userId: string, claimType: CheckinClai
         currentStreak: newStreak,
         totalCreditsClaimed,
         checkInDate: todayUTC,
+        credits: updatedCredits,
         message: `Successfully claimed ${creditsToAward} ${claimType === 'vip_2x' ? 'VIP 2x' : 'daily'} credits`,
       } satisfies CheckinPostResponse;
     });

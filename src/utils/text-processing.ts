@@ -663,3 +663,30 @@ export function htmlToPlainText(html: string): string {
 export function camelCase(type: string): string {
   return type.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
 }
+
+
+/**
+ * Replaces alphanumeric characters with random characters to conceal secret text
+ * while maintaining exact string length, spacing, capitalization, and punctuation
+ * (web parity: `concealSecretText` in web's `text-processing.tsx`).
+ */
+export function concealSecretText(secretText: string): string {
+  if (!secretText) return "";
+
+  const lowerChars = "abcdefghijklmnopqrstuvwxyz";
+  const upperChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const numbers = "0123456789";
+
+  return secretText.replace(/[a-zA-Z0-9]/g, (char) => {
+    if (/[a-z]/.test(char)) {
+      return lowerChars[Math.floor(Math.random() * lowerChars.length)];
+    }
+    if (/[A-Z]/.test(char)) {
+      return upperChars[Math.floor(Math.random() * upperChars.length)];
+    }
+    if (/[0-9]/.test(char)) {
+      return numbers[Math.floor(Math.random() * numbers.length)];
+    }
+    return char;
+  });
+}

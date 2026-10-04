@@ -729,6 +729,13 @@
       "when": 1790747587215,
       "tag": "0104_giant_salo",
       "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "7",
+      "when": 1790913463917,
+      "tag": "0105_brave_chameleon",
+      "breakpoints": true
     }
   ]
 }

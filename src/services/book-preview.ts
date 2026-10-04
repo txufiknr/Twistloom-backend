@@ -130,7 +130,7 @@ async function resolvePublishedPreview(params: {
   const { userId, dbPage, book, headerLanguage, translate } = params;
 
   const enriched = await mapToEnrichedPage(dbPage, {
-    userId: undefined,
+    userId,
     book,
     headerLanguage,
     translate,
@@ -187,7 +187,7 @@ async function resolveDraftPreview(params: {
 
   const parentEnriched = parentDbPage
     ? await mapToEnrichedPage(parentDbPage, {
-        userId: undefined,
+        userId: params.userId,
         book,
         headerLanguage: params.headerLanguage,
         translate: params.translate,

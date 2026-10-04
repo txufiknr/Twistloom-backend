@@ -77,6 +77,8 @@ export interface ConsumeCreditsResult<T> {
   correlationId: string;
   /** Primary key of the consumption `transactions` row */
   transactionId: string;
+  /** Post-transaction user credit balance (F-21 single-publisher invariant) */
+  remainingCredits: number;
 }
 
 /**

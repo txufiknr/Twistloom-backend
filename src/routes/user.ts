@@ -68,6 +68,7 @@ import { users, books, userAuth, userLikes, userFavorites, userFollows, userActi
 import type { ReportTargetType, ReportType } from "../types/trust-safety.js";
 import { getOrFetchUserEnforcementStatus, getOrCreateUserTrustProfile, getUserTrustSafetyOverview, submitUserAppeal, getUserAppeals } from "../services/trust-safety.js";
 import { isUserVipActive } from "../services/subscription.js";
+import { verifyAppleIdentityToken } from "../services/apple-auth.js";
 import { getErrorMessage, cApiError, cNotFoundError, cConflictError, cValidationError, cUnauthorizedError, cForbiddenError } from "../utils/error.js";
 import { eq, and, desc, sql, gte } from "drizzle-orm";
 import { calculatePaginationMeta, extractPaginationParams } from "../utils/pagination.js";
@@ -209,6 +210,16 @@ router.get('/', requireAuth, async (c: Context<AppEnv>) => {
       .from(userProviders)
       .where(eq(userProviders.userId, userId));
 
+    // Auth capability for the client's credential UI (mobile Account screen
+    // decides between the password and OAuth re-auth proof paths for
+    // change-password / DELETE /user). Derived from the credentials column
+    // the same way DELETE /user decides; only the boolean leaves the server.
+    const [credentialRow] = await dbRead
+      .select({ passwordHash: users.passwordHash })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1);
+
     // Normalize: move tier into subscription sub-object for consistent API shape
     // with GET /api/users/:identifier. The frontend reads user.subscription.tier
     // for VIP gating — keeping it as a single authoritative field prevents SSOT drift.
@@ -254,6 +265,7 @@ router.get('/', requireAuth, async (c: Context<AppEnv>) => {
         // from the row already fetched above (no extra round-trip).
         isVip: isUserVipActive({ tier, vipExpiresAt }),
         linkedMethods: providers.map(p => p.provider),
+        hasPassword: !!credentialRow?.passwordHash,
       }
     });
   } catch (error) {
@@ -1240,6 +1252,9 @@ router.get("/users/:identifier", optionalAuth, async (c: Context<AppEnv>) => {
  * @route DELETE /user
  * @description Delete user profile and all associated data
  * 
+ * @body {string} [currentPassword] - Current password (required for credentials-linked accounts)
+ * @body {string} [idToken] - Fresh Google/Apple provider token (required for OAuth-only accounts; `sub` must match the linked provider account)
+ * 
  * @header X-App-Version - Application version (for analytics)
  * @header X-Platform - Client platform (android/ios)
  * 
@@ -1267,6 +1282,10 @@ router.delete("/", requireAuth, async (c: Context<AppEnv>) => {
     //  - credentials-linked users → the current password (bcrypt-verified)
     //  - Google-only users        → a fresh Google ID token whose `sub` matches
     //    the linked provider account id (a genuine Google re-auth)
+    //  - Apple-only users         → a fresh Apple identity token (RS256,
+    //    APPLE_CLIENT_ID audience) whose `sub` matches likewise — without this
+    //    branch an Apple account has no proof path and could never exercise
+    //    its in-app deletion right (App Store 5.1.1(v))
     // The client-side typed "DELETE" phrase is UX-only (guards against
     // accidental clicks) and is deliberately NOT validated here — a literal
     // string cannot act as a security proof.
@@ -1291,6 +1310,7 @@ router.delete("/", requireAuth, async (c: Context<AppEnv>) => {
 
     const hasCredentials = !!authUser?.passwordHash;
     const googleProvider = providers.find((p) => p.provider === 'google');
+    const appleProvider = providers.find((p) => p.provider === 'apple');
 
     if (hasCredentials) {
       // Credentials-linked: password is the proof of ownership.
@@ -1318,6 +1338,21 @@ router.delete("/", requireAuth, async (c: Context<AppEnv>) => {
         }
       } catch {
         return cUnauthorizedError(c, 'Google re-authentication failed');
+      }
+    } else if (appleProvider?.providerAccountId) {
+      // Apple-only: same proof as the Google branch — a fresh identity token
+      // verified against Apple's JWKS (issuer, APPLE_CLIENT_ID audience,
+      // RS256) whose `sub` matches the linked provider account.
+      if (!idToken) {
+        return cUnauthorizedError(c, 'Sign-in with Apple re-authentication is required to delete your account');
+      }
+      try {
+        const verified = await verifyAppleIdentityToken(idToken);
+        if (!verified.ok || verified.identity.sub !== appleProvider.providerAccountId) {
+          return cUnauthorizedError(c, 'Sign-in with Apple re-authentication failed');
+        }
+      } catch {
+        return cUnauthorizedError(c, 'Sign-in with Apple re-authentication failed');
       }
     } else {
       // No known provider record — cannot prove ownership, refuse to delete.

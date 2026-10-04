@@ -599,6 +599,8 @@ export type BookPageVisit = {
   /** True when the user reached the terminal page AND this is their first
    *  completion of this book (insertUserCompletedBook returned a record). */
   isNewCompletion?: boolean;
+  /** Authoritative post-deduction user balance when credits were consumed (F-21) */
+  credits?: number;
 }
 
 export type VisitBookPageParams = {
@@ -624,7 +626,7 @@ export type VisitBookPageResult = {
 
 export type EnrichedPageOptions = {
   userId?: string,
-  book?: Pick<Book, 'language' | 'title' | 'status' | 'mode'>,
+  book?: Pick<Book, 'language' | 'title' | 'status' | 'mode' | 'userId'>,
   headerLanguage?: string | null,
   translate?: boolean
 } & TakeActionValidity;

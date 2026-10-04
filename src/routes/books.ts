@@ -114,10 +114,10 @@ import { getErrorMessage, cApiError, cForbiddenError, cNotFoundError, cRateLimit
 import { sanitizeKeywords, cleanMultilineText } from '../utils/text-processing.js';
 import { stripHtml } from '../utils/sanitize-html.js';
 import { coalescePoll, getCoalesced, setCoalesced, POLL_RETRY_AFTER_SECONDS } from "../utils/poll-coalesce.js";
-import { eq, and, or, desc, sql, ne, inArray, arrayOverlaps, isNull } from "drizzle-orm";
+import { eq, and, or, desc, sql, ne, inArray, arrayOverlaps, isNull, isNotNull } from "drizzle-orm";
 import { hashSHA256 } from "../utils/hash.js";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
-import { getBook, getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage, tryAcquireWorkflowDispatchGate, getAllBookEndings, insertUserCompletedBook } from "../services/book.js";
+import { getBook, getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage, tryAcquireWorkflowDispatchGate, getAllBookEndings, insertUserCompletedBook, invalidateEnrichedPageCache, getUserActionHints, sanitizeActionHints } from "../services/book.js";
 import { getBookAnalytics } from "../services/analytics.js";
 import { getBookPageCacheControl } from "../services/book-page-cache.js";
 import { getModerationThresholds } from "../services/admin-settings.js";
@@ -189,6 +189,7 @@ import { getMaxConcurrentGenerations, AI_VALIDATION_TIMEOUT_MS, BOOK_CREATION_PR
 import { BOOK_CREATION_RATE_LIMIT, BOOK_STREAM_RATE_LIMIT, BOOK_ASYNC_RATE_LIMIT, BOOK_PROMPT_RATE_LIMIT, ACTION_HINT_RATE_LIMIT, CUSTOM_ACTION_PREVIEW_RATE_LIMIT, CUSTOM_ACTION_SUBMIT_RATE_LIMIT, COMPANION_ASK_RATE_LIMIT } from "../config/ai-rate-limits.js";
 import { isValidReactionEmoji, REACTION_IDS, reactionIdList, REACTION_EMOJI_MAP } from "../config/reactions.js";
 import { generateRandomCharacter } from "../utils/characters.js";
+import { BOOK_LANGUAGES, BOOK_AGE_RANGES, BOOK_GENDERS, BOOK_MODES } from "../config/catalog.js";
 import { COMPANION_SYSTEM, COMPANION_RESULT_SCHEMA, COMPANION_RESULT_REQUIRED_FIELDS, buildCompanionUserPrompt, buildCompanionPageContext, type CompanionResult, type CompanionChatTurn, type CompanionSemanticContext } from "../utils/companion-prompt.js";
 import { validateCompanionQuestion } from "../utils/prompt-security.js";
 import { getCachedSuggestions, setCachedSuggestions, getCachedPageQuestions, setCachedPageQuestions } from "../services/companion-cache.js";
@@ -2832,6 +2833,16 @@ router.get("/:id/similar", optionalAuth, async (c) => {
  *   }
  * }
  */
+router.get("/explore/facets", (c) => {
+  c.header("Cache-Control", "public, max-age=86400, stale-while-revalidate=604800");
+  return c.json({
+    languages: BOOK_LANGUAGES,
+    ageRanges: BOOK_AGE_RANGES,
+    genders: BOOK_GENDERS,
+    modes: BOOK_MODES,
+  });
+});
+
 router.get("/explore", optionalAuth, async (c) => {
   try {
     const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE, search, sortBy, lastUpdated, language, tags, ageRange, gender, mode, collection, profileUserId } = extractPaginationParams(c.req.query());
@@ -4574,13 +4585,15 @@ async function fetchComments(
  *
  * @param id - Book ID
  * @param pageId - Page ID
- * @query paragraphNumber - Filter to comments on a specific paragraph (optional)
+ * @query paragraphNumber - Filter to comments on a specific paragraph (optional; `0` = page-level comments only, `-1` = paragraph-anchored comments only)
  * @query page - Page number for pagination (default: 1)
  * @query limit - Number of comments per page (default: 20)
  * @returns Paginated list of comments with user info
  *
  * @example
  * GET /api/books/book123/pages/page456/comments
+ * GET /api/books/book123/pages/page456/comments?paragraphNumber=0
+ * GET /api/books/book123/pages/page456/comments?paragraphNumber=-1
  * GET /api/books/book123/pages/page456/comments?paragraphNumber=3
  */
 router.get("/:id/pages/:pageId/comments", optionalAuth, async (c) => {
@@ -4601,7 +4614,23 @@ router.get("/:id/pages/:pageId/comments", optionalAuth, async (c) => {
       if (Number.isNaN(parsed)) {
         return cValidationError(c, "paragraphNumber must be an integer");
       }
-      conditions.push(eq(userComments.paragraphNumber, parsed));
+      if (parsed === 0) {
+        // `paragraphNumber=0` selects page-level comments: their
+        // `paragraph_number` is NULL, so the equality below would never match.
+        // Key 0 = page-level mirrors the comment-counts contract
+        // (services/book.ts loadParagraphCommentCounts).
+        conditions.push(isNull(userComments.paragraphNumber));
+      } else if (parsed === -1) {
+        // `paragraphNumber=-1` selects the paragraph-anchored window only
+        // (`IS NOT NULL`): a client paging this stream gets a clean window
+        // over anchored rows instead of downloading (and discarding)
+        // page-level rows interleaved in the mixed stream.
+        conditions.push(isNotNull(userComments.paragraphNumber));
+      } else if (parsed < 0) {
+        return cValidationError(c, "paragraphNumber must be >= -1");
+      } else {
+        conditions.push(eq(userComments.paragraphNumber, parsed));
+      }
     }
 
     const { comments, pagination } = await fetchComments(id as string, conditions, page, limit);
@@ -6016,13 +6045,15 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
         if (dbPage.actions.length > 1) {
           await dbWrite.update(pages).set({ actions: [completedNovelAction] }).where(eq(pages.id, dbPage.id));
         }
-        void clearActionProgressEvents(pageIdStr);
+        const isAuthor = Boolean(userId && dbBook.userId && dbBook.userId === userId);
+        const shownActionHint = userId ? await getUserActionHints(userId, pageIdStr) : [];
+        const sanitizedNovelActions = sanitizeActionHints([completedNovelAction], shownActionHint, isAuthor);
 
         const novelDoneResponse: CandidateGenerationStatus = {
           isGenerating: false,
           completedActions: 1,
           totalActions: 1,
-          actions: [completedNovelAction],
+          actions: sanitizedNovelActions,
           actionProgress: [{
             action: completedNovelAction.text,
             status: 'completed',
@@ -6069,7 +6100,9 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
     }
 
     // Merged view: canon actions + the owner's custom actions (SSOT for totals).
-    const mergedActions = [...actions, ...customActionsForStatus];
+    const isAuthor = Boolean(userId && dbBook.userId && dbBook.userId === userId);
+    const shownActionHint = userId ? await getUserActionHints(userId, pageIdStr) : [];
+    const mergedActions = sanitizeActionHints([...actions, ...customActionsForStatus], shownActionHint, isAuthor);
     const actionsWithDestinations = mergedActions.filter((a) => a.destinationPageIds?.length);
     const completedActions = actionsWithDestinations.length;
     const totalActions = mergedActions.length;
@@ -6302,18 +6335,32 @@ router.post("/:identifier/:pageId/actions/hint", requireAuth, rateLimit(ACTION_H
       ))
       .limit(1);
 
+    const targetAction = dbPage.actions.find(action => action.text === actionText);
+    const hintText = targetAction?.hint?.text ?? "";
+
     if (existingHint.length > 0) {
+      const [userRow] = await dbWrite
+        .select({ credits: users.credits })
+        .from(users)
+        .where(eq(users.userId, userId))
+        .limit(1);
+
+      const shownActionHint = await getUserActionHints(userId, pageId);
+
       return c.json({
         success: true,
         actionText,
         alreadyPurchased: true,
+        hintText,
+        credits: userRow?.credits ?? 0,
+        shownActionHint,
         message: "You have already purchased this hint"
       });
     }
 
     // Consume credits and insert hint record in a single transaction
     // Note: executeWithCredits handles automatic refund if the operation fails
-    await executeWithCredits(
+    const creditResult = await executeWithCredits(
       userId,
       "SHOW_ACTION_HINT",
       async (tx) => {
@@ -6331,6 +6378,9 @@ router.post("/:identifier/:pageId/actions/hint", requireAuth, rateLimit(ACTION_H
       }
     );
 
+    // Invalidate page cache so subsequent page fetches reflect the purchased hint text (F-22)
+    invalidateEnrichedPageCache(pageId);
+
     // Log user activity
     await logUserActivity({
       userId,
@@ -6340,22 +6390,17 @@ router.post("/:identifier/:pageId/actions/hint", requireAuth, rateLimit(ACTION_H
       metadata: { actionText, bookId: book.id }
     }, { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } });
 
-    // // Get updated user credit balance
-    // const userResult = await dbRead
-    //   .select({ credits: users.credits })
-    //   .from(users)
-    //   .where(eq(users.userId, userId))
-    //   .limit(1);
-
-    // const creditsRemaining = userResult[0]?.credits || 0;
-
     console.log(`[POST /actions/hint] ✅ User ${userId} purchased hint for action "${actionText}" on page ${pageId}`);
+
+    const shownActionHint = await getUserActionHints(userId, pageId);
 
     return c.json({
       success: true,
       actionText,
       alreadyPurchased: false,
-      // creditsRemaining
+      hintText,
+      credits: creditResult.remainingCredits,
+      shownActionHint,
     });
 
   } catch (error) {
@@ -8642,7 +8687,7 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit
 
     // Charge credits and persist action in a transaction
     const auditId = generateId();
-    await executeWithCredits(
+    const creditResult = await executeWithCredits(
       userId,
       creditsCost,
       async (tx) => {
@@ -8744,6 +8789,7 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit
         pollingIntervalMs: CUSTOM_ACTION_POLLING_INTERVAL_MS,
         maxPollingTimeMs: CUSTOM_ACTION_MAX_POLLING_TIME_MS,
       },
+      credits: creditResult.remainingCredits,
     } satisfies CustomActionSubmitResponse, 202);
 
   } catch (error) {

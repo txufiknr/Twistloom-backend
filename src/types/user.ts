@@ -255,6 +255,11 @@ export interface CheckinPostResponse {
   currentStreak: number;
   totalCreditsClaimed: number;
   /**
+   * Authoritative user credit balance after the check-in transaction commits (F-21).
+   * Present on successful claims so clients can reconcile balance directly without extra GETs.
+   */
+  credits?: number;
+  /**
    * Machine-readable failure code (`<namespace>.<key>`, AGENTS §9) present on
    * rejected claims (e.g. `dailyCheckin.alreadyClaimed` → HTTP 409); the
    * client resolves it to `dailyCheckin.errors.<key>`.

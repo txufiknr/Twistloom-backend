@@ -49,7 +49,7 @@ import {
   formatSecurityDetailHtml,
 } from '../utils/email.js';
 import { createEmailVerificationToken, verifyEmailToken, isEmailVerified } from '../utils/email-verification.js';
-import { cApiError, cRateLimitError, cUnauthorizedError, cValidationError, cForbiddenError } from '../utils/error.js';
+import { cApiError, cRateLimitError, cUnauthorizedError, cValidationError } from '../utils/error.js';
 import { CURRENT_TERMS_VERSION } from '../config/legal.js';
 import { checkRateLimitByIP } from '../middleware/rate-limit.js';
 import { checkRateLimit } from '../utils/redis.js';
@@ -859,7 +859,9 @@ router.post('/mobile/token', async (c) => {
     }
 
     const userData = await getUserForAuth(emailOrUsername);
-    if (!userData) return cUnauthorizedError(c, 'Invalid credentials');
+    if (!userData) {
+      return c.json({ error: 'Invalid credentials', code: 'auth.invalidCredentials' }, 401);
+    }
 
     const lockoutStatus = await checkAccountLockout(userData.userId);
     if (lockoutStatus.isLocked) {
@@ -870,18 +872,22 @@ router.post('/mobile/token', async (c) => {
       const minutesRemaining = Math.ceil(lockoutStatus.remainingTime / 60000);
       return c.json({
         error: `Account locked. Try again in ${minutesRemaining} minutes.`,
+        code: 'auth.accountLocked',
         lockedUntil: new Date(Date.now() + lockoutStatus.remainingTime).toISOString(),
       }, 429);
     }
 
     if (!userData.passwordHash) {
-      return cUnauthorizedError(c, 'This account uses social login. Please continue with Google or Apple.');
+      return c.json({
+        error: 'This account uses social login. Please continue with Google or Apple.',
+        code: 'auth.socialLoginRequired',
+      }, 401);
     }
 
     const isValid = await verifyPassword(password, userData.passwordHash);
     if (!isValid) {
       await recordFailedLogin(userData.userId);
-      return cUnauthorizedError(c, 'Invalid credentials');
+      return c.json({ error: 'Invalid credentials', code: 'auth.invalidCredentials' }, 401);
     }
 
     await resetFailedLoginAttempts(userData.userId);
@@ -889,8 +895,10 @@ router.post('/mobile/token', async (c) => {
     // SSOT: same session + access JWT + refresh family issuance as OAuth mobile.
     const issued = await issueMobileLoginPair(userData.userId);
     if (!issued.ok) {
-      if (issued.reason === 'banned') return cForbiddenError(c, 'Account banned');
-      return cUnauthorizedError(c, 'Invalid credentials');
+      if (issued.reason === 'banned') {
+        return c.json({ error: 'Account banned', code: 'auth.accountBanned' }, 403);
+      }
+      return c.json({ error: 'Invalid credentials', code: 'auth.invalidCredentials' }, 401);
     }
 
     await revokePasswordResetTokens(userData.userId).catch(() => {});
@@ -967,8 +975,10 @@ router.post('/mobile/google', async (c) => {
 
     const issued = await issueMobileLoginPair(userId);
     if (!issued.ok) {
-      if (issued.reason === 'banned') return cForbiddenError(c, 'Account banned');
-      return cUnauthorizedError(c, 'Invalid credentials');
+      if (issued.reason === 'banned') {
+        return c.json({ error: 'Account banned', code: 'auth.accountBanned' }, 403);
+      }
+      return c.json({ error: 'Invalid credentials', code: 'auth.invalidCredentials' }, 401);
     }
 
     await logAuditEvent(c, 'auth_mobile_token_issued', 'auth').catch(() => {});
@@ -1046,8 +1056,10 @@ router.post('/mobile/apple', async (c) => {
 
     const issued = await issueMobileLoginPair(userId);
     if (!issued.ok) {
-      if (issued.reason === 'banned') return cForbiddenError(c, 'Account banned');
-      return cUnauthorizedError(c, 'Invalid credentials');
+      if (issued.reason === 'banned') {
+        return c.json({ error: 'Account banned', code: 'auth.accountBanned' }, 403);
+      }
+      return c.json({ error: 'Invalid credentials', code: 'auth.invalidCredentials' }, 401);
     }
 
     await logAuditEvent(c, 'auth_mobile_token_issued', 'auth').catch(() => {});

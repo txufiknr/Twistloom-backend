@@ -28,6 +28,7 @@ export interface MobileLoginUserPayload {
   isNewUser: boolean;
   isAdmin: boolean;
   sessionId: string;
+  credits: number;
 }
 
 /** Response body shared by `/mobile/token`, `/mobile/google`, `/mobile/apple`. */
@@ -69,6 +70,7 @@ export async function issueMobileLoginPair(
       imageUrl: users.imageUrl,
       isNewUser: users.isNewUser,
       bannedAt: users.bannedAt,
+      credits: users.credits,
     })
     .from(users)
     .where(eq(users.userId, userId))
@@ -120,6 +122,7 @@ export async function issueMobileLoginPair(
         isNewUser: userRow.isNewUser,
         isAdmin: admin.isAdmin,
         sessionId,
+        credits: userRow.credits,
       },
     },
   };
