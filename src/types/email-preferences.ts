@@ -27,14 +27,15 @@ export interface EmailPreferences {
 }
 
 /** Partial update payload for PATCH /user/email-preferences */
-export type EmailPreferencesUpdate = {
-  weeklyRecommendations?: boolean;
-  monthlyActivitySummary?: boolean;
-  productAnnouncements?: boolean;
-  storyPublished?: boolean;
-  /** Pass `null` to clear override (same as app) */
-  emailLocale?: EmailLocale | null;
-};
+export type EmailPreferencesUpdate = Partial<EmailPreferences>;
+// export type EmailPreferencesUpdate = {
+//   weeklyRecommendations?: boolean;
+//   monthlyActivitySummary?: boolean;
+//   productAnnouncements?: boolean;
+//   storyPublished?: boolean;
+//   /** Pass `null` to clear override (same as app) */
+//   emailLocale?: EmailLocale | null;
+// };
 
 /** Default prefs applied after onboarding (opt-out model) */
 export const DEFAULT_EMAIL_PREFERENCES: EmailPreferences = {

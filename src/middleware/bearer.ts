@@ -23,40 +23,32 @@
  * (see `src/routes/cron.ts`). Those paths must skip user-JWT verification so
  * inbound cron jobs are not rejected as "invalid token".
  *
- * Performance: a short-TTL process LRU keyed by SHA-256(raw token) skips
- * JWT verify + DB lookups for the same token within the window (CPU savings
- * for hot authenticated routes). Gated by `CPU_OPTIMIZATIONS_ENABLED`. The
- * cache stores only `{userId, email, claims}` after a full successful verify;
- * logout invalidates the presented token immediately via `invalidateBearerCache`.
+ * Performance: a bounded fixed-TTL LRU keyed by SHA-256(raw token) reuses
+ * immutable verified claims only. Every hit checks exp and loads the owned
+ * session/current user from primary; cache reuse cannot delay revocation.
+ * Metadata has a separate minute throttle and Netlify waitUntil scheduling.
  */
 
 import type { Context, Next } from "hono";
 import { LRUCache } from "lru-cache";
-import {
-  verifyAccessToken,
-  loadUserForBearer,
-  toAuthUserFromBearer,
-  touchBearerSession,
-  sessionRowExistsFresh,
-  type MobileAccessTokenClaims,
-} from "../services/mobile-tokens.js";
+import { verifyAccessToken, loadUserForBearer, toAuthUserFromBearer, type MobileAccessTokenClaims } from "../services/mobile-tokens.js";
 import { hashSHA256 } from "../utils/hash.js";
 import { CPU_OPTIMIZATIONS_ENABLED } from "../config/cpu-optimizations.js";
+import { scheduleSessionMetadata } from "./nextauth.js";
+import type { AppEnv } from "../hono/env.js";
 
 /** Cache TTL for verified bearer identity (≤15s per roadmap). */
 const BEARER_CACHE_TTL_MS = 15_000;
 const BEARER_CACHE_MAX = 5_000;
 
 interface BearerCacheEntry {
-  userId: string;
-  email: string;
   claims: MobileAccessTokenClaims;
 }
 
 const bearerCache = new LRUCache<string, BearerCacheEntry>({
   max: BEARER_CACHE_MAX,
   ttl: BEARER_CACHE_TTL_MS,
-  updateAgeOnGet: true,
+  updateAgeOnGet: false,
 });
 
 /**
@@ -74,7 +66,12 @@ export async function getCachedBearerIdentity(
 ): Promise<BearerCacheEntry | null> {
   const key = await bearerCacheKey(token);
   if (!key) return null;
-  return bearerCache.get(key) ?? null;
+  const entry = bearerCache.get(key);
+  if (entry && entry.claims.exp <= Date.now() / 1000) {
+    bearerCache.delete(key);
+    return null;
+  }
+  return entry ?? null;
 }
 
 /** Writes a verified bearer identity into the short-TTL cache. */
@@ -84,7 +81,8 @@ export async function setCachedBearerIdentity(
 ): Promise<void> {
   const key = await bearerCacheKey(token);
   if (!key) return;
-  bearerCache.set(key, entry);
+  const remaining = entry.claims.exp * 1000 - Date.now();
+  if (remaining > 0) bearerCache.set(key, entry, { ttl: Math.min(BEARER_CACHE_TTL_MS, remaining) });
 }
 
 /**
@@ -113,7 +111,7 @@ export function isServiceBearerPath(pathname: string): boolean {
  * Global bearer branch. Runs only when an Authorization header is present
  * and the path is not a service-bearer (cron) route.
  */
-export async function bearerAuthMiddleware(c: Context, next: Next): Promise<void | Response> {
+export async function bearerAuthMiddleware(c: Context<AppEnv>, next: Next): Promise<void | Response> {
   const authHeader = c.req.header("authorization");
 
   if (!authHeader) {
@@ -136,23 +134,12 @@ export async function bearerAuthMiddleware(c: Context, next: Next): Promise<void
     return c.json({ success: false, error: "Invalid authorization scheme" }, 401);
   }
 
-  // Short-TTL identity cache: skip JWT verify + DB when the same token was
-  // verified within the last ≤15s (and CPU optimizations are on).
+  // Fixed-TTL verified-claims cache skips crypto only, never primary policy.
   const cached = await getCachedBearerIdentity(token);
-  if (cached) {
-    const authUser = toAuthUserFromBearer(cached.userId, cached.email, cached.claims);
-    c.set("user", authUser);
-    c.set("userId", cached.userId);
-    touchBearerSession(
-      cached.claims.sid,
-      c.req.header("user-agent") ?? null,
-      getClientIpSafe(c),
-    );
-    await next();
-    return;
-  }
-
-  const verified = await verifyAccessToken(token);
+  // Reuse signature verification only. Standing and session ownership are
+  // primary-store authority on EVERY request, including a warm cache hit.
+  const verified = cached ? { ok: true as const, claims: cached.claims }
+    : await verifyAccessToken(token);
 
   if (!verified.ok) {
     if (verified.reason === "expired") {
@@ -170,40 +157,23 @@ export async function bearerAuthMiddleware(c: Context, next: Next): Promise<void
     if (loaded.kind === "banned") {
       return c.json({ success: false, error: "Account banned" }, 403);
     }
+    if (loaded.kind === "session") {
+      c.header("WWW-Authenticate", 'Bearer error="invalid_token", error_description="session revoked"');
+      return c.json({ success: false, error: "Session revoked" }, 401);
+    }
     c.header("WWW-Authenticate", 'Bearer error="invalid_token", error_description="revoked"');
     return c.json({ success: false, error: "Token revoked" }, 401);
   }
 
-  if (claims.sid) {
-    const exists = await sessionRowExistsFresh(claims.sid);
-    if (!exists) {
-      c.header("WWW-Authenticate", 'Bearer error="invalid_token", error_description="session revoked"');
-      return c.json({ success: false, error: "Session revoked" }, 401);
-    }
-  }
-
   // Full verify succeeded — cache identity for the short TTL window.
-  await setCachedBearerIdentity(token, {
-    userId: loaded.userId,
-    email: loaded.email,
-    claims,
-  });
+  if (!cached) await setCachedBearerIdentity(token, { claims });
 
   const authUser = toAuthUserFromBearer(loaded.userId, loaded.email, claims);
   c.set("user", authUser);
   c.set("userId", loaded.userId);
 
-  touchBearerSession(
-    claims.sid,
-    c.req.header("user-agent") ?? null,
-    getClientIpSafe(c),
-  );
+  scheduleSessionMetadata(c, claims.sid);
 
   await next();
 }
 
-function getClientIpSafe(c: Context): string | null {
-  const fwd = c.req.header("x-forwarded-for");
-  if (fwd) return fwd.split(",")[0].trim();
-  return c.req.header("x-real-ip") ?? null;
-}

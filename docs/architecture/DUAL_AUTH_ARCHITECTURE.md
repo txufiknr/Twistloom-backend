@@ -1,1134 +1,862 @@
 # Dual Auth Architecture (Providers + Credentials)
 
-## Overview
+> Living architecture document · Twistloom Backend · 2026-10-05
+> Scope: Canonical account/provider proof, browser encrypted cookies, native bearer/refresh, session authority, recovery and shared revocation in the current working tree.
+> Status: **Partial** · reviewed against current code and Git history; specific local evidence and unverified deployment behavior are recorded in §15.
+> Roadmaps: [Native mobile bearer auth](../roadmap/NATIVE_MOBILE_BEARER_AUTH_ROADMAP.md) · [Auth enhancements](../roadmap/AUTH_ENHANCEMENT_ROADMAP.md) · [Netlify migration](../roadmap/NETLIFY_MIGRATION_ROADMAP.md); roadmaps own proposals, this document owns as-built behavior.
+> Anchor contract: §N sections are stable citation targets; renumbering requires checking/updating source references. See §18 for the map and current citation audit.
+> Companion: [Frontend auth architecture](../../../Twistloom-web/docs/architecture/FRONTEND_AUTH_ARCHITECTURE.md). The two credential adapters have different current freshness guarantees.
 
-This document describes Twistloom’s **two orthogonal “dual” axes** and the **final implemented shape** as of 2026-09-23:
+## Table of Contents
 
-1. **Dual provider** (web face): Google OAuth + Email/Password via NextAuth v5 → one httpOnly session cookie.
-2. **Dual credential** (multi-platform): that cookie (browser) **plus** short-lived bearer access JWTs + rotating opaque refresh secrets (native Flutter) → **one identity store, two credential adapters, one resource server** accepting both while rejecting mixed conflicting identities.
+- [1. Executive Summary & Design Rationale](#1-executive-summary--design-rationale)
+- [2. System Boundaries & Overview Diagram](#2-system-boundaries--overview-diagram)
+- [3. Key Architectural Invariants](#3-key-architectural-invariants)
+- [4. Browser Provider Admission & Tracked Sessions](#4-browser-provider-admission--tracked-sessions)
+- [5. Global Middleware & Credential Reconciliation](#5-global-middleware--credential-reconciliation)
+- [6. Native Access & Refresh Tokens](#6-native-access--refresh-tokens)
+- [7. Identity, Registration & Profile Lifecycle](#7-identity-registration--profile-lifecycle)
+- [8. Recovery, Verification & Account Methods](#8-recovery-verification--account-methods)
+- [9. Logout & Revocation](#9-logout--revocation)
+- [10. Errors, Route Guards & Abuse Controls](#10-errors-route-guards--abuse-controls)
+- [11. Netlify & Local Configuration](#11-netlify--local-configuration)
+- [12. Failure Modes & Recovery Matrix](#12-failure-modes--recovery-matrix)
+- [13. Industry Standard Comparison](#13-industry-standard-comparison)
+- [14. File Map & Ownership](#14-file-map--ownership)
+- [15. Verification & Evidence](#15-verification--evidence)
+- [16. FAQ](#16-faq)
+- [17. Known Gaps & Future Enhancements](#17-known-gaps--future-enhancements)
+- [18. Section Anchor Map & Related Documents](#18-section-anchor-map--related-documents)
 
-Cookie verification and `verify-credentials` remain the first-class browser path (non-breaking contract NB-1…NB-8 in the mobile roadmap). Mobile issuance/verification is additive and implemented behind `/api/auth/mobile/*` + a global bearer branch that no-ops when `Authorization` is absent.
+---
 
-### Dual provider vs dual credential
+<a id="overview"></a>
+<a id="key-benefits"></a>
 
-| Axis | What is dual | Face | Document |
-|------|--------------|------|----------|
-| **Dual provider** (web) | Google OAuth + email/password → one NextAuth cookie | First-party **web** | this file |
-| **Dual credential** (multi-platform) | httpOnly cookie (web) **+** short-lived bearer/refresh (native Flutter) → one identity/resource server | Web **and** native | [NATIVE_MOBILE_BEARER_AUTH_ROADMAP](../roadmap/NATIVE_MOBILE_BEARER_AUTH_ROADMAP.md) · Flutter [MOBILE_AUTH_CONTRACT](../../../Twistloom-flutter/docs/roadmap/MOBILE_AUTH_CONTRACT.md) |
+## 1. Executive Summary & Design Rationale
 
-### Why this is industry standard?
+Twistloom uses one backend identity store with two credential adapters:
 
-**Alternative C — first-party OAuth 2.0 resource server + Auth.js session for browser — is the industry-standard multi-platform shape, not a transitional workaround.** Real-world precedents:
+- **Browser:** Google OAuth, Google One Tap, or email/password sign-in produces an Auth.js encrypted session cookie on the Next.js frontend.
+- **Native:** Password, Google, or Apple sign-in produces a signed access JWT and a rotating opaque refresh token.
+- **Resource server:** The Hono backend resolves either credential into `userId` and `user` before route guards and permission checks.
 
-| Company | Browser face | Native / API face | Shared identity |
-|---------|--------------|-------------------|-----------------|
-| **Meta** | web cookies | Graph `access_token` | one account graph |
-| **Google** | first-party cookies | OAuth bearer for first-party APIs | one Google account |
-| **X (Twitter)** | web cookies | OAuth 1.0a / OAuth 2.0 API tokens | one account |
-| **Stripe** | dashboard session | restricted/live **secret keys** (service bearers) | one account |
-| **Most SaaS** | session cookie (Auth.js / Passport) | JWT access + rotating refresh (RFC 9700) | one users table |
+“Dual provider” describes Google plus credentials on the web. “Dual credential” describes browser cookies plus native bearer tokens. Neither means separate accounts or separate authorization systems. Apple is currently a native provider, not a configured web Auth.js provider.
 
-What every mature multi-platform product converges on:
+The backend runs through [the Netlify function adapter](../../netlify/functions/api.mts) in production and Bun locally. Migration did not change which application owns sign-in or which database owns users.
 
-1. **One identity store** (users + sessions + credential material) — never two user tables.
-2. **Two credential adapters** at the edge: cookie verifier (Auth.js JWE) and bearer verifier (JWT signature + `tv`/`sid` claims + optional service-bearer allow-list).
-3. **One resource server** (this Hono API) that resolves both credential types onto the same `userId` before route guards (`requireAuth`).
-4. **Reject mixed conflicting identities**: a request may present *either* credential, never two different users’ credentials at once (we never merge cookie + bearer into one request identity).
-5. **Service bearers are a third, non-user class** (`CRON_SECRET`, webhooks) — exempt from the user-JWT branch so machine secrets never 401 as “invalid user token.”
+**Both adapters use fresh primary-store session/owner/ban authority on accepted API requests.** Their decode caches reuse immutable verified claims only, have fixed expiry and cannot overrule current policy. Native also compares current tokenVersion; browser credential-change revocation removes tracked rows.
 
-**Why not force everyone onto OAuth/PKCE only?** Full OIDC authorization-code + PKCE for first-party web is a deferred non-goal: NextAuth already issues a secure httpOnly cookie with zero client-side token storage; adding a browser bearer would *increase* XSS token-steal surface without improving the threat model. Managed IdPs (Auth0/Cognito/Supabase) are an ops choice, not an architecture requirement — self-hosted Auth.js + local JWT verification keeps data residency and avoids vendor lock-in while implementing the same industry pattern.
+### 1.1 Problem statement and design rationale
 
-**Opaque access tokens are a first-class Alternative C variant for v1** (Stripe-style server session lookup) if instant revoke outweighs local warm-path verify; Twistloom ships **JWT access + opaque rotating refresh** for M0 to match the signed Flutter contract (`sub`/`sid`/`tv`/`iss`/`aud`) and avoid a DB hit on every native API call. Both stay valid under C — freeze one **before** Flutter M0 ships.
+Three web entry points and three native sign-in entry points must resolve to the same account while preserving frontend-owned browser cookies and native secure-storage credentials. Authentication success alone does not establish current authorization. The design separates provider/password proof, credential encoding, tracked-session authority, presentation, and route permissions.
 
-**Two credential faces exist forever.** This is accepted product surface, not tech debt: web will keep cookies (CSRF, XSS, SameSite) and native will keep tokens (secure storage, refresh rotation). Shared control plane = `users.token_version` + `auth_sessions` + `refresh_families`.
+| Decision | Alternative considered | Why it fits Twistloom | Cost accepted |
+|---|---|---|---|
+| **One canonical backend user store** | Separate Auth.js adapter/mobile accounts | Cross-repo identity and permanent API contracts in AGENTS.md §1 | Backend linking/upsert policy must handle provider subjects and email conflicts |
+| **Encrypted browser cookie plus native bearer** | Put browser access/refresh tokens in web storage | First-party browser transport and an existing native contract | Two adapters need independent verification and tests |
+| **Shared web issuance service** | Create sessions directly in each provider handler | One standing/session insertion rule across password/OAuth/One Tap | Row lock/transaction on each successful web sign-in |
+| **Fresh web authorization outside the decode cache** | Cache the previously authorized user | Revocation/standing are globally mutable state; process LRU is not authority (AGENTS.md §3.1) | Primary query per accepted cookie request |
+| **Backend-derived admin/onboarding hints** | Probe admin API from every navigation render | Reduce repetitive frontend requests while keeping protected actions backend-owned | Display hints can become stale or be client-patched |
+| **Separate advisory metadata** | Write/parse device metadata on every request | Polling frequency and serverless compute constraints | Last-active is approximate; each warm instance has its own reservation |
 
-## Implemented Dual-Credential Shape (2026-09-23)
+Current reality is **Partial** for private deployment evidence and durable delivery, with the source fixes implemented and locally verified: both adapters check primary ownership/standing; native cache hits enforce expiry; short browser sessions have a fixed deadline; sign-out attempts owned revocation; credential changes revoke all sessions; recovery proofs are scoped and consumed before mutation. Successful provider/native response contracts and intentional avatar/guest-reading behavior remain. Residual limits are real PostgreSQL concurrency/performance evidence and durable mail/activity/revocation retry during outages (§17).
 
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                         Clients                                          │
-│  Next.js (Auth.js cookie)              Flutter (Bearer access JWT)       │
-│  Cookie: next-auth.session-token       Authorization: Bearer <jwt>       │
-│  via same-origin rewrite               + refresh token (opaque)          │
-└───────────────┬────────────────────────────────┬─────────────────────────┘
-                │                                │
-                ▼                                ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│  Global auth middleware (src/app.ts)                                     │
-│  1) bearerAuthMiddleware (src/middleware/bearer.ts)                       │
-│     - No Authorization header → no-op (cookie path)                      │
-│     - /api/cron/* + Bearer → skip (service-bearer registry)              │
-│     - Non-Bearer scheme (Basic/bare Bearer) on non-service path →         │
-│       **401 Invalid authorization scheme** (intentional; no cookie        │
-│       fallback — present non-Bearer header claims bearer intent)          │
-│     - Bearer <mobile JWT> → 15s identity LRU hit? else jose verify →     │
-│       tv + ban + fresh sid → set (cache key = SHA-256(raw token);        │
-│       CPU_OPTIMIZATIONS_ENABLED; logout → invalidateBearerCache)         │
-│  2) verifyNextAuthToken (cookie) only if userId not already set          │
-└───────────────┬──────────────────────────────────────────────────────────┘
-                │  c.set("userId" / "user") — same AuthUser shape
-                ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│  Resource server (requireAuth / optionalAuth routes)                     │
-│  One identity: users.user_id · token_version · auth_sessions · families  │
-└──────────────────────────────────────────────────────────────────────────┘
-```
+---
 
-### Endpoints (additive)
+<a id="architecture-web-dual-provider-detail"></a>
+<a id="implemented-dual-credential-shape-2026-09-23"></a>
 
-| Method | Path | Auth | Role |
-|--------|------|------|------|
-| POST | `/api/auth/verify-credentials` | public + IP limit | **Frozen** web NextAuth contract (NB-1) |
-| POST | `/api/auth/mobile/token` | public + **Redis** IP limit | Password → access JWT + refresh family (ban → 403; session+family in **one transaction**) |
-| POST | `/api/auth/mobile/refresh` | public + **Redis** IP limit | Rotate refresh (RFC 9700) + new access; banned → fail closed + family revoke |
-| POST | `/api/auth/logout` | open (sets session) | Cookie body frozen; soft-revoke families + **delete session row** (cascade) + invalidate bearer identity cache |
-| POST | `/api/auth/logout-all-devices` | Bearer/cookie | One tx: deletes all sessions (cascade removes families) + bumps `tv`; no separate family soft-revoke |
-| POST | `/api/auth/logout-session` / logout-all | Bearer/cookie | Session-scoped family revoke; logout-all soft-revokes others via cascade |
-| PUT | `/api/auth/password` | Bearer/cookie | Bumps `tv` + revokes families (credential change) |
-| POST | `/api/auth/reset-password` | token | Same `tv` bump + family revoke |
+## 2. System Boundaries & Overview Diagram
 
-### Claims & secrets
-
-- Access JWT: `sub`, `sid`, `tv`, `iss=twistloom-backend`, `aud=reader` (provisional until parent Q6 / Step 12), `exp` (default 15 min), `iat`, header `kid=m0-hs256`, alg allow-list `HS256`.
-- Signing key: **`MOBILE_ACCESS_SECRET`** (≥32 chars, **separate from `AUTH_SECRET`**). Dual-secret verify via `MOBILE_ACCESS_SECRET_PREVIOUS` during rotation.
-- Refresh: 256-bit opaque hex; store **SHA-256 only** in `refresh_families` (current hash unique-indexed; prior hashes append-only in GIN-indexed `usedHashes`). Rotate atomically; reuse of any hash in `usedHashes` → **revoke entire family** (EQ3=B default; EQ3=A idempotent window is a fast-follow).
-
-### Non-breaking guarantees (summary)
-
-- Cookie path unchanged when `Authorization` absent.
-- **Intentional hard-401 (no cookie fallback) for non-Bearer schemes:** a present `Authorization` header on a non-service path that is *not* a well-formed `Bearer <token>` (e.g. `Basic`, bare `Bearer`) claims bearer intent → `401 Invalid authorization scheme` (+ `WWW-Authenticate: Bearer`), never silent cookie fallback. In-repo callers checked 2026-09-23: only `/api/cron/*` reads inbound `Authorization` (service-bearer exempt); no known external `Basic`/`Token` clients. Tested by `tests/bearer-auth-matrix.test.ts`.
-- `verify-credentials` response shape frozen.
-- Logout cookie body byte-identical: `{ "message": "Logged out successfully" }`.
-- `/api/cron/*` `Authorization: Bearer <CRON_SECRET>` never enters user-JWT verify.
-- CORS already allows `Authorization` and no-Origin clients (`app.ts`).
-
-**Source of truth for the full contract:** [NATIVE_MOBILE_BEARER_AUTH_ROADMAP](../roadmap/NATIVE_MOBILE_BEARER_AUTH_ROADMAP.md) §3 NB-1…NB-8.
-
-## Architecture (web dual-provider detail)
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Frontend (NextAuth v5)                   │
-├─────────────────────────────────────────────────────────────┤
-│                                                              │
-│  Google OAuth              Email/Password                    │
-│  signIn('google')    →    signIn('credentials', {            │
-│                             email, password                  │
-│                           })                                 │
-│        ↓                        ↓                             │
-│  NextAuth OAuth      NextAuth Credentials Provider           │
-│  Provider            (calls backend API)                     │
-│        ↓                        ↓                             │
-│  ┌──────────────────────────────────────────┐               │
-│  │  Both create NextAuth session cookie      │               │
-│  │  (same cookie format, same JWT)          │               │
-│  └──────────────────────────────────────────┘               │
-│                                                              │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│              Backend (Credential Verification)              │
-├─────────────────────────────────────────────────────────────┤
-│  POST /api/auth/verify-credentials                          │
-│  - Validates email/username and password                    │
-│  - Returns user data if valid                               │
-│  - NextAuth creates session cookie from response            │
-│                                                              │
-│  Security:                                                   │
-│  - IP-based rate limiting (5 attempts/minute)               │
-│  - Bcrypt password hashing                                  │
-│  - Brute force protection                                   │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│              Backend (Session Verification)                 │
-├─────────────────────────────────────────────────────────────┤
-│  verifyNextAuthToken() - Verifies JWT from cookie            │
-│  requireAuth - Middleware for protected routes              │
-│  optionalAuth - Middleware for public routes                 │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    Browser[Browser] -->|Frontend host cookie| Next[Next.js on Netlify]
+    Next -->|Rewrite or server cookie forwarding| API[Hono API]
+    Native[Native client] -->|Authorization Bearer| API
+    API --> Bearer[Bearer middleware]
+    Bearer --> Reconcile[Cookie verification and identity reconciliation]
+    Reconcile --> Guards[Route authentication and permission guards]
+    Guards --> Data[Shared users and application data]
+    Reconcile -->|Web requests: fresh primary lookup| Sessions[auth_sessions joined to users]
 ```
 
-## Login Flow Diagrams
+| Layer | Owns | Does not establish |
+|---|---|---|
+| Next.js / Auth.js | Browser provider flow, encrypted cookie, frontend session | Live backend standing or resource permissions |
+| Google / Apple verifier | Signed provider identity proof | Twistloom account/session permission |
+| Hono global auth | Request identity and adapter-specific policy | Authorization for every feature |
+| Route guards/services | Ownership, admin capabilities, verification/standing rules | Frontend display state |
+| Primary database | Current web session-owner pair, bans, committed revocation | Cancellation of an already-authenticated request |
+| Redis/process caches | Rate limits, coalescing, immutable decode reuse | Durable globally valid authorization |
 
-### Google OAuth Login Flow
+A service secret is a separate credential class. Cron bypasses user-bearer verification but still uses its route's service-secret gate. The browser session JWE is not a mobile HS256 token.
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Frontend                                │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  1. User clicks "Sign in with Google"                           │
-│     ↓                                                            │
-│  2. Frontend calls signIn('google')                             │
-│     ↓                                                            │
-│  3. NextAuth redirects to Google OAuth                           │
-│     ↓                                                            │
-│  4. User authorizes on Google                                    │
-│     ↓                                                            │
-│  5. Google redirects back with OAuth token                      │
-│     ↓                                                            │
-│  6. NextAuth creates session cookie (httpOnly, secure)           │
-│     ↓                                                            │
-│  7. Frontend redirects to app (session cookie set)               │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│                         Backend                                 │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  8. User makes first authenticated request                       │
-│     ↓                                                            │
-│  9. verifyNextAuthToken() called                                │
-│     ↓                                                            │
-│  10. getSession() verifies NextAuth JWT cookie                   │
-│     ↓                                                            │
-│  11. Extract email, name, image from session                     │
-│     ↓                                                            │
-│  12. Check if user exists in database by email                  │
-│     ↓                                                            │
-│  ┌─────────────────────────────────────────────────────┐       │
-│  │  IF USER EXISTS:                                     │       │
-│  │    → createOrUpdateOAuthUser() updates profile       │       │
-│  │    → Cache invalidated                               │       │
-│  └─────────────────────────────────────────────────────┘       │
-│     ↓                                                            │
-│  ┌─────────────────────────────────────────────────────┐       │
-│  │  IF USER DOESN'T EXIST (First-time login):          │       │
-│  │    → createOrUpdateOAuthUser() creates new user     │       │
-│  │    → Creates user_auth record                        │       │
-│  │    → Sets isNewUser=true                             │       │
-│  │    → Cache invalidated                               │       │
-│  └─────────────────────────────────────────────────────┘       │
-│     ↓                                                            │
-│  13. Return AuthUser { id, email, name }                        │
-│     ↓                                                            │
-│  14. Request proceeds with authenticated user                    │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+---
 
-Key Points:
-- Auto-creates user on first-time Google login
-- Updates profile data from Google on each login
-```
+## 3. Key Architectural Invariants
 
-### Email/Password Login Flow
+| # | Current invariant | Evidence and check |
+|---|---|---|
+| 1 | Successful web issuance returns canonical backend user/session UUIDs; no provider-sub fallback | `src/routes/auth.ts`, `src/services/web-session.ts`; malformed exchange tests |
+| 2 | Cookie middleware never creates users/sessions | `src/middleware/nextauth.ts`; missing/legacy session rejection tests |
+| 3 | Web authorization joins session ID and owner on primary for every accepted request | `src/services/web-session.ts`; warm logout/ban/wrong-owner tests |
+| 4 | Mutable standing is outside completed decode cache and single-flight | `src/middleware/nextauth.ts`; enabled/disabled cache policy tests |
+| 5 | Auth middleware runs before raw JSON body consumption | `src/app.ts`, `src/app.ts`; authenticated POST body test |
+| 6 | Conflicting resolved cookie/bearer users are rejected | `src/middleware/cookie-bearer-identity.ts`; bearer matrix |
+| 7 | Refresh rotation locks a family and rejects reuse of a prior secret | `src/services/token-family.ts`; token-family test coverage |
+| 8 | Device metadata cannot grant access or turn a failed policy check into success | `src/middleware/nextauth.ts`; write failure/coalescing tests |
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Frontend                                │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  1. User enters email and password                               │
-│     ↓                                                            │
-│  2. Frontend calls signIn('credentials', {                       │
-│       emailOrUsername, password                                  │
-│     })                                                           │
-│     ↓                                                            │
-│  3. NextAuth Credentials Provider triggered                      │
-│     ↓                                                            │
-│  4. Provider calls POST /api/auth/verify-credentials            │
-│     ↓                                                            │
-│  5. Backend validates credentials (see below)                    │
-│     ↓                                                            │
-│  6. Backend returns user data if valid                          │
-│     ↓                                                            │
-│  7. NextAuth creates session cookie (httpOnly, secure)           │
-│     ↓                                                            │
-│  8. Frontend redirects to app (session cookie set)               │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│                         Backend                                 │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌─────────────────────────────────────────────────────┐       │
-│  │  POST /api/auth/verify-credentials                  │       │
-│  │                                                       │       │
-│  │  1. Rate limiting check (IP-based, 5/min)           │       │
-│  │     ↓                                                │       │
-│  │  2. Find user by email or username                   │       │
-│  │     ↓                                                │       │
-│  │  3. Check account lockout status                     │       │
-│  │     ↓                                                │       │
-│  │  4. Verify password with bcrypt                       │       │
-│  │     ↓                                                │       │
-│  │  5. Reset failed login attempts on success           │       │
-│  │     ↓                                                │       │
-│  │  6. Return user data (userId, email, name, etc.)    │       │
-│  └─────────────────────────────────────────────────────┘       │
-│     ↓                                                            │
-│  9. User makes first authenticated request                       │
-│     ↓                                                            │
-│  10. verifyNextAuthToken() called                               │
-│     ↓                                                            │
-│  11. getSession() verifies NextAuth JWT cookie                  │
-│     ↓                                                            │
-│  12. Extract email, name, image from session                     │
-│     ↓                                                            │
-│  13. Check if user exists in database by email                   │
-│     ↓                                                            │
-│  ┌─────────────────────────────────────────────────────┐       │
-│  │  IF USER EXISTS:                                     │       │
-│  │    → createOrUpdateOAuthUser() updates profile       │       │
-│  │    → Cache invalidated                               │       │
-│  └─────────────────────────────────────────────────────┘       │
-│     ↓                                                            │
-│  14. Return AuthUser { id, email, name }                        │
-│     ↓                                                            │
-│  15. Request proceeds with authenticated user                    │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+These are as-built invariants. Native ownership, strict cache-hit expiry, password-proof revalidation and transaction-first reset consumption are implemented. Browser one-hour enforcement and central sign-out are locally tested; delivery/cleanup outages remain explicitly bounded best-effort (§9/§17).
 
-Key Points:
-- User must exist in database (created via signup endpoint)
-- Password verification with bcrypt
-- Account lockout protection (5 failed attempts)
-- Rate limiting to prevent brute force attacks
-```
+---
 
-## How NextAuth Connects to Backend Endpoints
+<a id="login-flow-diagrams"></a>
+<a id="browser-sign-in-and-tracked-sessions"></a>
 
-### Login Flow (signIn)
+## 4. Browser Provider Admission & Tracked Sessions
 
-**Email/Password Login:**
+### 4.1 Email/password
 
-1. **Frontend calls NextAuth:**
-   ```typescript
-   await signIn('credentials', {
-     emailOrUsername: 'user@example.com',
-     password: 'user123',
-   });
-   ```
+1. The frontend credentials `authorize()` attaches a purpose/body-bound 60-second server attestation and posts email/username and password directly to `/api/auth/verify-credentials`.
+2. The backend applies distributed signed-account/egress or direct-client IP limits, loads credentials from the primary connection through `getUserForAuth`, checks account lockout, and verifies bcrypt.
+3. A null password hash means a social-login-only account, not a usable password.
+4. After successful verification, `issueWebSession(userId, verifiedPasswordHash)` locks the primary user row, checks existence, ban status and the exact password hash just verified, and inserts an `auth_sessions` row in one transaction.
+5. Admin display enrichment is resolved before insertion; the handler returns the web exchange payload.
+6. The frontend validates that payload, copies canonical IDs into its JWT, and Auth.js encodes the frontend cookie.
 
-2. **NextAuth Credentials Provider is triggered:**
-   - NextAuth intercepts the `signIn('credentials')` call
-   - The Credentials provider's `authorize()` function is executed
-   - This function is configured in the frontend's NextAuth config
+No password is included in the Auth.js cookie. `getUserForAuth` does not use a positive credential cache.
 
-3. **Credentials Provider calls backend:**
-   ```typescript
-   // In frontend NextAuth config
-   Credentials({
-     async authorize(credentials) {
-       const res = await fetch(`${BACKEND_URL}/api/auth/verify-credentials`, {
-         method: 'POST',
-         headers: { 'Content-Type': 'application/json' },
-         body: JSON.stringify({
-           emailOrUsername: credentials.emailOrUsername,
-           password: credentials.password,
-         }),
-       });
+### 4.2 Google OAuth and One Tap
 
-       if (!res.ok) return null;
+Google OAuth exchanges its ID token in the frontend `signIn()` callback. One Tap exchanges its credential in its own `authorize()`, after an additional frontend-server token verification. The backend routes share `handleGoogleAuth`:
 
-       const user = await res.json();
-       return user; // { userId, email, name, image }
-     },
-   })
-   ```
+1. Validate the signed exchange header/body or apply the distributed direct-client IP limit.
+2. Verify the Google ID token with `GOOGLE_CLIENT_ID` as audience and require verified email.
+3. Resolve/create/update the canonical backend user.
+4. Apply signed account/egress limits using the verified Google subject, resolve admin display state, then issue through the primary standing/row-lock gate.
+5. Return canonical identity and admin/onboarding display fields.
 
-4. **Backend verifies credentials:**
-   - Backend receives POST request to `/api/auth/verify-credentials`
-   - Validates email/username and password using bcrypt
-   - Returns user data if valid, or error if invalid
-   - Rate limited to prevent brute force attacks
+The frontend `jwt()` callback does **not** repeat the Google exchange. Google subject IDs and provisional usernames never replace missing backend IDs. Cookie middleware never creates users or repairs missing sessions.
 
-5. **NextAuth creates session cookie:**
-   - If backend returns valid user data, NextAuth creates a JWT session cookie
-   - Cookie is stored in browser (httpOnly, secure, SameSite)
-   - Subsequent requests automatically include this cookie
+The user/provider upsert and Google profile work occur before issuance. Admin enrichment resolves before insertion, so its failure cannot strand newly issued credentials. Provider HTTP, image upload and response delivery are outside the transaction; an HTTP/client failure after commit can still leave a tracked row. Retry sign-in rather than fabricate identity.
 
-6. **Backend verifies session on subsequent requests:**
-   - Backend middleware `verifyNextAuthToken()` validates JWT from cookie
-   - Sets `c.get("userId")` for authenticated requests
-   - Routes use `requireAuth` or `optionalAuth` middleware
+### 4.3 Successful web exchange
 
-**Google OAuth Login:**
-
-1. Frontend calls `signIn('google')`
-2. NextAuth handles OAuth flow (redirect to Google, callback, etc.)
-3. No backend credential verification needed
-4. NextAuth creates same session cookie format
-5. Backend verifies session same way as email/password
-
-### Logout Flow (signOut)
-
-**Primary method (NextAuth):**
-
-1. **Frontend calls NextAuth:**
-   ```typescript
-   await signOut({ callbackUrl: '/' });
-   ```
-
-2. **NextAuth clears session:**
-   - NextAuth removes the session cookie from browser
-   - Redirects to callback URL (e.g., home page)
-   - No backend call needed for basic logout
-
-3. **Backend receives no session cookie:**
-   - On next request, browser doesn't send session cookie
-   - Backend middleware detects no valid session
-   - `c.get("userId")` is not set (unauthenticated)
-
-**Backend cleanup (`POST /api/auth/logout`) — implemented, not a placeholder:**
-
-The backend endpoint is no longer optional bookkeeping. On every call (cookie or bearer face):
-
-1. Drops the current session-verify LRU entry (`invalidateCurrentSessionVerifyCache`).
-2. If an `Authorization: Bearer` token was presented, **immediately invalidates** the 15s bearer identity cache for that token (`extractBearerToken` → `invalidateBearerCache`) so a warm entry cannot outlive logout.
-3. If `sessionId` + `userId` are bound: soft-revokes `refresh_families` for the session, then **hard-deletes the `auth_sessions` row** (`logoutFromSpecificDevice`); `ON DELETE CASCADE` removes any remaining families.
-4. Returns the byte-identical body `{ "message": "Logged out successfully" }` on success **and** on catch (NB-3/NB-4 — never becomes an error oracle).
-
-Frontend cookie clearing remains NextAuth `signOut()`; this endpoint is the server-side revocation half (required for the mobile face, safe for web).
-
-### Summary
-
-- **Login:** NextAuth `signIn()` → Credentials provider → Backend `/verify-credentials` → Session cookie
-- **Logout:** NextAuth `signOut()` clears the cookie; `POST /api/auth/logout` revokes server-side families + session row + bearer cache
-- **Session verification:** Backend middleware validates JWT cookie (or bearer JWT) on every request
-- **Both auth methods (Google + Email/Password)** create the same session cookie format
-
-## Key Benefits
-
-1. **Single Session Format**: Both auth methods create the same NextAuth session cookie
-2. **Backend Simplicity**: Backend only needs to verify JWT cookies (already implemented)
-3. **Security**: NextAuth handles CSRF, session management, and security best practices
-4. **Flexibility**: Users can choose their preferred login method
-5. **Credit System**: Book creation requires authentication and consumes credits (prevents abuse)
-
-## Backend Implementation
-
-### 1. Database Schema Changes
-
-**File: `src/db/schema.ts`**
-
-Added `passwordHash` field and unique constraints to users table:
-```typescript
-export const users = pgTable("users", {
-  userId: userId().primaryKey(),
-  name: text("name"),
-  username: text("username").unique("users_username_unique"), // NEW: Unique constraint for login
-  email: text("email").unique("users_email_unique"), // NEW: Unique constraint for login
-  passwordHash: text("password_hash"), // NEW: Hashed password for email/password auth
-  penName: text("pen_name"),
-  gender,
-  image,
-  imageId,
-  lastActive,
-  createdAt,
-  updatedAt,
-}, (t) => [
-  index("users_gender_idx").on(t.gender),
-  index("users_created_at_idx").on(t.createdAt),
-  // Note: email and username have unique constraints which automatically create indexes
-]);
-```
-
-**Migration Required:**
-```bash
-pnpm db:generate
-pnpm db:migrate
-```
-
-### 2. Password Hashing Utilities
-
-**File: `src/utils/password.ts`**
-
-Provides bcrypt-based password hashing and verification:
-```typescript
-import bcrypt from 'bcrypt';
-
-const SALT_ROUNDS = 12;
-
-export async function hashPassword(password: string): Promise<string> {
-  return await bcrypt.hash(password, SALT_ROUNDS);
-}
-
-export async function verifyPassword(password: string, hashedPassword: string): Promise<boolean> {
-  return await bcrypt.compare(password, hashedPassword);
-}
-```
-
-### 3. Credential Verification Endpoint
-
-**File: `src/routes/auth.ts`** (real Hono handler, mirrors `POST /verify-credentials`)
-
-Endpoint for NextAuth Credentials provider:
-```typescript
-router.post('/verify-credentials', async (c) => {
-  try {
-    const ip = getClientIp(c);
-    if (!checkRateLimitByIP(ip)) return cRateLimitError(c);
-
-    const { emailOrUsername, password } = c.get("body");
-
-    if (!emailOrUsername || !password) {
-      return cValidationError(c, 'Email/username and password are required');
-    }
-
-    const userData = await getUserForAuth(emailOrUsername);
-    if (!userData) {
-      return cUnauthorizedError(c, 'Invalid credentials');
-    }
-
-    // Check account lockout
-    const lockoutStatus = await checkAccountLockout(userData.userId);
-    if (lockoutStatus.isLocked) {
-      if (lockoutStatus.remainingTime === undefined) {
-        await resetFailedLoginAttempts(userData.userId);
-        return cRateLimitError(c, 'Account lock state inconsistent. Please try again.');
-      }
-      const minutesRemaining = Math.ceil(lockoutStatus.remainingTime / 60000);
-      return c.json({
-        error: `Account locked. Try again in ${minutesRemaining} minutes.`,
-        lockedUntil: new Date(Date.now() + lockoutStatus.remainingTime).toISOString(),
-      }, 429);
-    }
-
-    if (!userData.passwordHash) {
-      return cUnauthorizedError(c, 'This account uses OAuth login. Please sign in with Google.');
-    }
-
-    const isValid = await verifyPassword(password, userData.passwordHash);
-    if (!isValid) {
-      await recordFailedLogin(userData.userId);
-      return cUnauthorizedError(c, 'Invalid credentials');
-    }
-
-    await resetFailedLoginAttempts(userData.userId);
-
-    // Session row for device tracking — embedded in the JWT by the frontend's
-    // jwt() callback so later requests can be selectively revoked.
-    const sessionId = await createSession(userData.userId);
-
-    // Successful login invalidates any outstanding password-reset tokens.
-    await revokePasswordResetTokens(userData.userId).catch(() => {});
-
-    const access = await resolveAdminAccess(userData.userId);
-
-    // NB-1 success payload shape is frozen — do not add/remove keys here.
-    return c.json({
-      userId: userData.userId,
-      email: userData.email,
-      name: userData.name,
-      username: userData.username,
-      imageUrl: userData.imageUrl,
-      isNewUser: userData.isNewUser,
-      isAdmin: access.isAdmin,
-      sessionId,
-    });
-  } catch (error) {
-    console.error('[POST /api/auth/verify-credentials] ❌ Credential verification error:', error);
-    return cApiError(c, 'Failed to verify credentials', error, 500);
-  }
-});
-```
-
-### 4. Rate Limiting
-
-**File: `src/middleware/rate-limit.ts`**
-
-Two rate limiting strategies:
-
-1. **User-based (authenticated endpoints)**: Uses Upstash Redis, keyed by `c.get("userId")` (via `rateLimitByUser`)
-2. **IP-based (unauthenticated endpoints)**: Uses process LRU cache, keyed by IP address (`getClientIp(c)`)
+All three routes return a top-level object, not a `{ user: ... }` wrapper:
 
 ```typescript
-// For unauthenticated endpoints (login, signup, forgot-password)
-// LRU: max 10,000 entries, TTL = AUTH_RATE_LIMIT_WINDOW_MS (default 60s)
-// Returns true to allow the attempt; false when rate limited (callers emit 429)
-export function checkRateLimitByIP(ip: string): boolean {
-  const now = Date.now();
-  const record = ipRateLimitCache.get(ip);
-
-  if (!record || now > record.resetTime) {
-    ipRateLimitCache.set(ip, { count: 1, resetTime: now + IP_RATE_WINDOW });
-    return true;
-  }
-
-  if (record.count >= IP_RATE_LIMIT) {
-    return false; // Rate limited
-  }
-
-  record.count++;
-  ipRateLimitCache.set(ip, record);
-  return true;
-}
-```
-
-**Environment Variables (Optional):**
-- `AUTH_RATE_LIMIT_MAX_ATTEMPTS`: Maximum attempts per window (default: 5)
-- `AUTH_RATE_LIMIT_WINDOW_MS`: Time window in milliseconds (default: 60000 = 1 minute)
-
-### 5. Route Registration
-
-**File: `src/routes/index.ts`** (Hono mounting, not Express `router.use`)
-
-```typescript
-import authRouter from "./auth.js";
-
-router.route("/auth", authRouter);
-```
-
-## Frontend Implementation Required
-
-### 1. Configure NextAuth Credentials Provider
-
-**File: `src/auth.ts` (frontend)**
-
-Add Credentials provider to NextAuth configuration:
-
-```typescript
-import Credentials from 'next-auth/providers/credentials';
-import type { NextAuthConfig } from 'next-auth';
-
-export const authConfig: NextAuthConfig = {
-  providers: [
-    // Existing Google OAuth provider
-    Google({
-      clientId: process.env.GOOGLE_CLIENT_ID,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-    }),
-
-    // NEW: Email/Password Credentials provider
-    Credentials({
-      name: 'credentials',
-      credentials: {
-        emailOrUsername: { label: 'Email or Username', type: 'text' },
-        password: { label: 'Password', type: 'password' },
-      },
-      async authorize(credentials) {
-        // Call backend to verify credentials
-        const res = await fetch(`${process.env.BACKEND_URL}/api/auth/verify-credentials`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            emailOrUsername: credentials.emailOrUsername,
-            password: credentials.password,
-          }),
-        });
-
-        if (!res.ok) return null;
-
-        const user = await res.json();
-        
-        // Return user object for NextAuth session
-        return {
-          id: user.userId,
-          email: user.email,
-          name: user.name,
-          image: user.image,
-        };
-      },
-    }),
-  ],
-  // ... rest of NextAuth config
-};
-```
-
-### 2. Update Login Components
-
-**Remove `AuthApi` service** - No longer needed with NextAuth.
-
-**Use NextAuth signIn for both methods:**
-
-```typescript
-import { signIn } from 'next-auth/react';
-
-// Google OAuth login
-const handleGoogleLogin = async () => {
-  await signIn('google');
-};
-
-// Email/Password login
-const handleEmailLogin = async (emailOrUsername: string, password: string) => {
-  const result = await signIn('credentials', {
-    emailOrUsername,
-    password,
-    redirect: false,
-  });
-
-  if (result?.error) {
-    console.error('Login failed:', result.error);
-    // Show error to user
-  } else {
-    // Login successful, redirect or update UI
-  }
-};
-```
-
-### 3. Update Auth API Service
-
-**Update:** `src/lib/services/auth-api.ts`
-
-This service is still needed for signup, forgot-password, and logout operations.
-
-**Changes needed:**
-- Replace `login()` method to use NextAuth `signIn()` instead of backend API
-- Keep `signup()` method (calls backend `POST /auth/signup`)
-- Keep `requestPasswordReset()` method (calls backend `POST /auth/forgot-password`)
-- Update `logout()` method to use NextAuth `signOut()` instead of backend API
-
-**Example updated auth-api.ts:**
-```typescript
-import { signIn, signOut } from 'next-auth/react';
-
-class AuthApi {
-  // Use NextAuth for login (both Google and email/password)
-  async login(credentials: { emailOrUsername: string; password: string }) {
-    await signIn('credentials', {
-      emailOrUsername: credentials.emailOrUsername,
-      password: credentials.password,
-    });
-  }
-
-  // Keep backend API for signup
-  async signup(data: SignupData) {
-    await fetch(`${BACKEND_URL}/auth/signup`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    });
-  }
-
-  // Keep backend API for password reset
-  async requestPasswordReset(email: string) {
-    await fetch(`${BACKEND_URL}/auth/forgot-password`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email }),
-    });
-  }
-
-  // Use NextAuth for logout
-  async logout() {
-    await signOut({ callbackUrl: '/' });
-  }
-}
-```
-
-### 4. Environment Variables
-
-**Frontend `.env.local`:**
-```bash
-AUTH_SECRET=your-secret-here
-AUTH_URL=http://localhost:3001
-GOOGLE_CLIENT_ID=your-google-client-id
-GOOGLE_CLIENT_SECRET=your-google-client-secret
-BACKEND_URL=http://localhost:3000
-```
-
-**Backend `.env.local`:**
-```bash
-AUTH_SECRET=your-secret-here (same as frontend — cookie JWE only)
-FRONTEND_URL=http://localhost:3001
-AUTH_URL=http://localhost:3001
-
-# Mobile bearer (separate from AUTH_SECRET — min 32 chars)
-MOBILE_ACCESS_SECRET=generate_openssl_rand_base64_32
-# MOBILE_ACCESS_SECRET_PREVIOUS=   # dual-secret rotation window
-MOBILE_ACCESS_TTL_MINUTES=15
-MOBILE_REFRESH_TTL_DAYS=30
-MOBILE_ACCESS_AUD=reader          # provisional until parent Q6 / Step 12
-
-# Auth Rate Limiting (Optional)
-AUTH_RATE_LIMIT_MAX_ATTEMPTS=5
-AUTH_RATE_LIMIT_WINDOW_MS=60000
-```
-
-## User Registration Flow
-
-### Backend Signup Endpoint
-
-**File: `src/routes/auth.ts`** (real Hono handler, mirrors `POST /signup`)
-
-```typescript
-router.post('/signup', async (c) => {
-  try {
-    const ip = getClientIp(c);
-    if (!checkRateLimitByIP(ip)) {
-      return c.json({ error: 'Too many requests. Please try again later.' }, 429);
-    }
-
-    const { password, receiveEmails: _receiveEmails, agreedToTerms, ageConfirmed, referrer } = c.get("body");
-    if (!password) return cValidationError(c, 'Password is required');
-    if (!agreedToTerms) return cValidationError(c, 'You must agree to the terms');
-    if (!ageConfirmed) return cValidationError(c, 'You must confirm you are at least 13 years old');
-
-    const passwordValidation = validatePasswordStrength(password);
-    if (!passwordValidation.valid) {
-      return c.json({
-        error: 'Password does not meet security requirements',
-        details: passwordValidation.errors,
-      }, 422);
-    }
-
-    const userData = await sanitizeUserData(c.get("body"), { res: c, createNew: true });
-    if (!userData) return;
-
-    if (isTemporaryEmail(userData.email)) {
-      return cValidationError(c, 'Temporary or disposable email addresses are not allowed.', undefined, 422);
-    }
-
-    const passwordHash = await hashPassword(password);
-    const newUser = await dbWrite.transaction(async (tx) => {
-      const [user] = await tx.insert(users).values({
-        userId: generateId(),
-        ...userData,
-        passwordHash,
-        termsAcceptedAt: new Date(),
-        termsVersion: CURRENT_TERMS_VERSION,
-        ageConfirmedAt: new Date(),
-      }).returning();
-      await tx.insert(userAuth).values({ userId: user.userId });
-      return user;
-    });
-
-    const verificationToken = await createEmailVerificationToken(newUser.userId);
-    const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`;
-    const verificationEmailSent = await sendVerificationEmail(
-      newUser.email,
-      verificationUrl,
-      verificationToken,
-      { userId: newUser.userId },
-    );
-
-    let referralApplied = false;
-    if (referrer && typeof referrer === 'string') {
-      referralApplied = await setReferrerForNewUser(c, newUser.userId, referrer, { handleResponse: false });
-    }
-
-    return c.json({
-      userId: newUser.userId,
-      message: verificationEmailSent
-        ? 'Account created. Please check your email to verify your account.'
-        : 'Account created. Verification email failed to send.',
-      verificationEmailSent,
-      referrer,
-      referralApplied,
-    }, 201);
-  } catch (error) {
-    console.error('[signup] ❌ Sign up error:', error);
-    return c.json({
-      message: 'If account was created, please check your email to verify.',
-      verificationEmailSent: false,
-    }, 200);
-  }
-});
-```
-
-### Frontend Signup
-
-Use NextAuth to sign in after successful signup:
-
-```typescript
-const handleSignup = async (signupData: SignupData) => {
-  // Call backend signup endpoint
-  const res = await fetch(`${process.env.BACKEND_URL}/api/auth/signup`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(signupData),
-  });
-
-  if (!res.ok) {
-    const error = await res.json();
-    throw new Error(error.error);
-  }
-
-  // Auto-sign in after successful signup
-  await signIn('credentials', {
-    emailOrUsername: signupData.email,
-    password: signupData.password,
-  });
-};
-```
-
-### Password Reset Flow
-
-**Backend Forgot-Password Endpoint**
-
-**File: `src/routes/auth.ts`** (real Hono handler, mirrors `POST /forgot-password`)
-
-```typescript
-router.post('/forgot-password', async (c) => {
-  try {
-    const ip = getClientIp(c);
-    if (!checkRateLimitByIP(ip)) {
-      return c.json({ error: 'Too many requests. Please try again later.' }, 429);
-    }
-
-    const { email } = c.get("body");
-
-    if (!email) {
-      return cValidationError(c, 'Email is required');
-    }
-
-    let emailSent = false;
-    const token = await createPasswordResetToken(email);
-
-    if (token) {
-      const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${token}`;
-      emailSent = await sendPasswordResetEmail(email, resetUrl); // locale resolved by email lookup
-    }
-
-    // Always return success — prevents email enumeration
-    return c.json({
-      message: 'Password reset email sent if account exists',
-      emailSent,
-    });
-  } catch (error) {
-    console.error('[forgot] ❌ Forgot password error:', error);
-    // Still return success to prevent email enumeration
-    return c.json({
-      message: 'Password reset email sent if account exists',
-      emailSent: false,
-    });
-  }
-});
-```
-
-**Note:** Email delivery is implemented via `sendPasswordResetEmail` (single-use token, 1h expiry). The success body is returned whether or not the account exists (anti-enumeration).
-
-**Backend Reset-Password Endpoint**
-
-**File: `src/routes/auth.ts`** (real Hono handler, mirrors `POST /reset-password`)
-
-```typescript
-router.post('/reset-password', async (c) => {
-  try {
-    const ip = getClientIp(c);
-    if (!checkRateLimitByIP(ip)) {
-      return c.json({ error: 'Too many requests. Please try again later.' }, 429);
-    }
-
-    const { token, password } = c.get("body");
-
-    if (!token || !password) {
-      return cValidationError(c, 'Token and password are required');
-    }
-
-    const passwordValidation = validatePasswordStrength(password);
-    if (!passwordValidation.valid) {
-      return c.json({
-        error: 'Password does not meet security requirements',
-        details: passwordValidation.errors,
-      }, 422);
-    }
-
-    const userId = await verifyPasswordResetToken(token);
-    if (!userId) {
-      return cValidationError(c, 'Invalid or expired reset token');
-    }
-
-    const success = await resetPassword(token, password);
-    if (!success) {
-      return cValidationError(c, 'Failed to reset password');
-    }
-
-    // Security notification (always on) — non-blocking
-    const [userRow] = await dbRead
-      .select({ email: users.email, name: users.name })
-      .from(users)
-      .where(eq(users.userId, userId))
-      .limit(1);
-    if (userRow?.email) {
-      const detailHtml = formatSecurityDetailHtml({
-        at: new Date(),
-        ip,
-        userAgent: c.req.header('user-agent'),
-      });
-      sendEmailSafe('POST /auth/reset-password', () =>
-        sendPasswordChangedEmail(userRow.email, userRow.name || 'there', detailHtml, { userId }),
-      );
-    }
-
-    return c.json({ message: 'Password reset successfully' });
-  } catch (error) {
-    console.error('[reset] ❌ Reset password error:', error);
-    return cApiError(c, 'Failed to reset password', error, 500);
-  }
-});
-```
-
-### Logout Endpoint
-
-**File: `src/routes/auth.ts` (`POST /logout`, ~907-934)**
-
-```typescript
-router.post('/logout', async (c) => {
-  try {
-    await invalidateCurrentSessionVerifyCache(c);
-    const user = c.get("user");
-    const sessionId = user?.sessionId;
-    const userId = c.get("userId");
-
-    // Kill the warm 15s bearer identity cache for a presented token.
-    const bearer = extractBearerToken(c.req.header("authorization"));
-    if (bearer) await invalidateBearerCache(bearer);
-
-    if (sessionId && userId) {
-      await revokeFamiliesForSession(sessionId).catch(() => {});
-      await logoutFromSpecificDevice(userId, sessionId).catch(() => {});
-    } else if (sessionId) {
-      await revokeFamiliesForSession(sessionId).catch(() => {});
-    }
-
-    return c.json({ message: 'Logged out successfully' });
-  } catch (error) {
-    // Cookie face must still return the byte-identical body even if revocation fails.
-    return c.json({ message: 'Logged out successfully' });
-  }
-});
-```
-
-**Behavior summary:**
-
-- Session-scoped family soft-revoke → session row hard-delete → `ON DELETE CASCADE` cleans remaining families.
-- Bearer identity LRU invalidated for the presented token (15s cache in `src/middleware/bearer.ts`).
-- Response body byte-identical on every path: `{ "message": "Logged out successfully" }`.
-- Idempotent: missing/invalid credentials still return 200 (never an oracle for token validity).
-- Frontend still calls `await signOut({ callbackUrl: '/' })` to clear the browser cookie.
-
-Related routes:
-
-- **`POST /logout-all`** — soft-revokes other sessions' families via cascade after `logoutFromAllOtherDevices`; no hard `DELETE` on `refresh_families`.
-- **`POST /logout-all-devices`** — **one transaction**: deletes all sessions (cascade removes their families) and bumps `users.tokenVersion` (invalidates all outstanding JWTs). No separate family soft-revoke — a post-delete `revokedAt` update would match zero rows.
-- **`POST /logout-session`** — deletes one session by id + cascades its families.
-
-## Security Considerations
-
-### Password Security
-- **Bcrypt with 12 salt rounds** - Industry-standard password hashing
-- **Never store plaintext passwords** - Always hash before storage
-- **Password requirements** - Enforce minimum length and complexity on frontend
-
-### Mobile / Bearer Security (implemented)
-- **Ban at issue + refresh** — `/mobile/token` returns `403 Account banned` before any write; `evaluateRotation` fails closed (`reason: "banned"`, family revoked)
-- **Atomic mobile login** — session + family inserts share one `dbWrite.transaction`
-- **15s bearer identity LRU** — key = SHA-256(raw token), value = `{userId, email, claims}` after full verify; gated by `CPU_OPTIMIZATIONS_ENABLED`; invalidated on logout
-- **Logout hard-deletes the session row** (cascade families) after soft-revoke; response body always `{ "message": "Logged out successfully" }`
-- **logout-all soft-revokes** families (`revokedAt`) — session deletes cascade; no hard `DELETE` on `refresh_families`
-
-### Rate Limiting
-- **IP-based for auth endpoints** - Prevents brute force attacks
-- **5 attempts per minute** - Reasonable limit for legitimate users
-- **LRU cache** - Automatic memory management (max 10,000 IPs)
-
-### OAuth Security
-- **Google OAuth** - Handled by NextAuth (secure, battle-tested)
-- **CSRF protection** - Built into NextAuth
-- **Secure cookies** - httpOnly, secure, SameSite configured
-
-### Session Security
-- **JWT verification** - Every request verifies JWT cookie
-- **Bearer identity LRU** - 15s TTL, key = SHA-256(raw token), gated by `CPU_OPTIMIZATIONS_ENABLED`; populated only after full verify (JWT + user load + fresh `sid`); invalidated on logout (`invalidateBearerCache`)
-- **Automatic expiration** - Sessions expire after configured TTL
-- **Revocation support** - `tokenVersion` bump, session-row delete (fresh `sid` check), family cascade revoke
-
-## Testing
-
-### Test Credential Verification Endpoint
-
-```bash
-# Create a test user with password (via database or signup endpoint)
-# Then test login:
-
-curl -X POST https://your-backend.vercel.app/api/auth/verify-credentials \
-  -H "Content-Type: application/json" \
-  -d '{"emailOrUsername": "test@example.com", "password": "testpass123"}'
-
-# Expected success response:
 {
-  "userId": "user-uuid",
-  "email": "test@example.com",
-  "name": "Test User",
-  "image": null
-}
-
-# Expected error response (invalid credentials):
-{
-  "error": "Invalid credentials"
+  userId: string;       // canonical backend UUID
+  sessionId: string;    // tracked device-session UUID
+  email: string;
+  name: string | null;
+  username: string;
+  imageUrl: string | null;
+  isNewUser: boolean;
+  isAdmin: boolean;
 }
 ```
 
-### Test Rate Limiting
+The frontend [exchange validator](../../../Twistloom-web/src/lib/services/auth-exchange.ts) requires both UUIDs, nonempty email/username, nullable string name/image, and boolean flags. A malformed HTTP 200 is a failed sign-in. The flags are presentation hints; backend authorization does not trust them.
 
-```bash
-# Send 6 requests quickly (should fail on 6th)
-for i in {1..6}; do
-  curl -X POST https://your-backend.vercel.app/api/auth/verify-credentials \
-    -H "Content-Type: application/json" \
-    -d '{"emailOrUsername": "test@example.com", "password": "wrongpass"}'
-  echo "---"
-done
+### 4.4 Cookie authorization
 
-# Expected: First 5 return 401, 6th returns 429 (Too Many Attempts)
+`verifyNextAuthToken` uses Auth.js decryption, then requires canonical `token.userId`, `token.sessionId`, and a numeric unexpired `token.exp`.
+
+For every accepted cookie-authenticated API request, `loadWebSession` joins `auth_sessions` to `users` on **dbWrite**, matching both session ID and owner ID. It returns current email/name/ban status.
+
+- Missing/invalid/expired/legacy claims, missing session, wrong owner, or deleted user: 401 with `auth.sessionRevoked`; clear actual session-cookie names and chunks supplied by the request.
+- Current ban: 403 with `auth.accountBanned` and error `account_banned`; retain the cookie.
+- Primary-store failure: propagate to the global error handler; retain the cookie and deny the request.
+- No matching cookie or missing backend `AUTH_SECRET`: no cookie identity. Protected routes subsequently fail `requireAuth`; missing secrets do not grant guest requests a user.
+
+These checks occur at authentication time, not as a lock held through every downstream mutation. A revocation occurring after a request has passed its check does not cancel that already-running request.
+
+The frontend recognizes `authjs.session-token` or `__Secure-authjs.session-token`; large cookies can have numbered chunks. Fingerprinting and rejection cleanup inspect actual cookie names/values. Auth.js still selects/decrypts the token using its own secure-cookie configuration, so proxy scheme/host configuration remains relevant.
+
+### 4.5 Caches and advisory metadata
+
+- **Decoded web claims:** bounded LRU, 5,000 entries, 60-second TTL, keyed by SHA-256 of sorted session-cookie names/values. Stores only user ID, session ID, and token expiry. Expiry is checked on cache hits.
+- **Decode single-flight:** concurrent decodes for the same cookie share one promise. Fresh DB authorization is outside this promise.
+- **Device metadata:** separate bounded LRU, 5,000 session IDs, 60-second reservation. Concurrent requests coalesce one attempted metadata write per session per warm instance. Failures release the reservation for retry. Eviction and separate instances can cause earlier/additional writes.
+- **Legacy session-existence cache:** `session-manager.ts` still has a ten-minute boolean cache for `sessionExists`. Current web authorization does not use it.
+- **Former ban cache invalidation:** `invalidateUserBanCache` is a compatibility no-op because web bans are read freshly.
+
+`DISABLE_CPU_OPTIMIZATIONS=true` bypasses completed web decode reuse; concurrent decode coalescing and primary policy checks still run. It does not disable the independent metadata throttle.
+
+Metadata records user agent, IP, device name, and last activity after successful authorization. It is advisory; neither a cache hit nor a write failure controls access. Netlify's adapter passes `Context.waitUntil` into Hono for the handled metadata task. Bun/test/adapters without that context retain best-effort background behavior. Activity timestamps can lag approximately a minute; this is not a precise audit trail or a claim of free background compute.
+
+
+### 4.6 Detailed password and provider gate sequence
+
+```mermaid
+sequenceDiagram
+    participant F as Frontend server
+    participant R as Hono sign-in route
+    participant P as Password or Google verifier
+    participant D as Primary database
+    F->>R: JSON proof
+    R->>R: IP and input gates
+    R->>P: Verify submitted proof
+    alt Invalid proof or locked account
+        R-->>F: 401 or 429 rejection
+    else Proof accepted
+        R->>R: Resolve admin display hint
+        R->>D: Lock user and recheck hash/standing
+        alt Missing or banned
+            D-->>R: Missing or banned standing
+            R-->>F: 503 or 403 with safe code
+        else User allowed
+            R->>D: Insert tracked session and commit
+            R-->>F: Flat canonical identity
+        end
+    end
 ```
 
-### Test NextAuth Integration
+Password verification stays outside the lock to avoid holding it during bcrypt; issuance compares the exact verified hash inside the primary user lock. Reset/change either commits first and rejects stale proof (401 auth.invalidCredentials), or waits for issuance and then deletes the newly inserted session. Google proof uses current standing without a password-hash comparison. This is credential-change serialization, not cancellation of admitted requests.
 
-1. **Google OAuth**: Click "Sign in with Google" → Should redirect to Google → Back to app with session
-2. **Email/Password**: Enter credentials → Should call verify-credentials → Create session
-3. **Session persistence**: Refresh page → Should remain logged in
-4. **Logout**: Should clear session cookie
+### 4.7 Browser contract compatibility (NB-1 through NB-8)
 
-## Troubleshooting
+The [native roadmap's NB contract](../roadmap/NATIVE_MOBILE_BEARER_AUTH_ROADMAP.md) remains the reference for compatibility. The following is the current interpretation, including intentional policy changes:
 
-### Issue: "This account uses OAuth login"
-**Cause:** User created via Google OAuth (no passwordHash in database)
-**Solution:** User must sign in with Google, or add password to their account
+| Surface | Preserved behavior | Intentional correction or limit |
+|---|---|---|
+| No Authorization header | Cookie adapter remains available | Invalid/revoked/legacy cookies fail policy rather than becoming guests |
+| Web exchange success | Same eight canonical identity/profile fields | Additive failure codes; malformed identities cannot issue cookies |
+| Public reauthentication | Password/Google proof can establish a new identity | Three explicit bypass paths only; an auth header retains mixed-credential checks |
+| Logout handler body | Fixed success message when handler is reached | Global invalid-cookie policy may reject before handler; cleanup errors can still be hidden |
+| Cron service bearer | Does not enter mobile JWT verifier | Service route must verify its own secret |
+| Existing valid tracked cookie | Continues while actual token/session/user remain valid | Missing-ID/untracked cookies require sign-in |
+| Resource guards | Same attached `userId` API | Both adapters recheck primary ownership/standing |
+| JSON body | Available after authentication | Ordering is required with Hono's raw Request |
 
-### Issue: Rate limiting too aggressive
-**Solution:** Adjust rate limits via environment variables:
-- `AUTH_RATE_LIMIT_MAX_ATTEMPTS`: Maximum attempts per window (default: 5)
-- `AUTH_RATE_LIMIT_WINDOW_MS`: Time window in milliseconds (default: 60000)
+Do not restore the old Google-sub fallback or middleware user creation to avoid an error screen. Recovery is explicit reauthentication after a failed exchange; fabricated identities cannot safely authorize the user's resources.
 
-### Issue: NextAuth session not persisting
-**Cause:** AUTH_SECRET mismatch between frontend and backend
-**Solution:** Ensure both use the same AUTH_SECRET environment variable
+---
 
-### Issue: CORS errors
-**Cause:** Frontend URL not in CORS allowed origins
-**Solution:** Add frontend URL to `FRONTEND_URL` environment variable
+<a id="how-nextauth-connects-to-backend-endpoints"></a>
 
-## Migration Checklist
+## 5. Global Middleware & Credential Reconciliation
 
-### Backend
-- [x] Add passwordHash field to users schema
-- [x] Add unique constraints to email and username
-- [x] Create password hashing utilities
-- [x] Create credential verification endpoint
-- [x] Add IP-based rate limiting with LRU cache
-- [x] Make rate limits configurable via environment variables
-- [x] Register auth routes
-- [x] Implement signup endpoint
-- [x] Implement forgot-password endpoint
-- [x] Implement logout endpoint (session delete + family cascade + bearer cache invalidation, 2026-09-23)
-- [x] Dual credential: mobile token issue/refresh + bearer middleware + family revoke (2026-09-23)
-- [x] Security audit corrections: ban at issue/refresh, atomic mobile login, 15s bearer identity LRU, logout-all cascade/soft-revoke (2026-09-23)
-- [x] `refresh_families` migration **applied** (`drizzle/0099`, owner-confirmed 2026-09-23)
-- [x] Step 10 local matrix green: non-Bearer 401, hybrid conflict 401, `logoutFromAllDevices` one transaction, family-keyed refresh rate limit (2026-09-23)
-- [x] Cookie-regression baseline tests + CI workflow
-- [ ] Full Step 10 integration suite (DB-backed)
-- [ ] Step 11 wire fixtures / Flutter live capture
-- [ ] Parent Q5 Apple Sign-in (Step 9)
-- [ ] Parent Q6 pen audiences (Step 12)
+### 5.1 Middleware order and identity precedence
 
-### Frontend
-- [ ] Add Credentials provider to NextAuth config
-- [ ] Update AuthApi service (login/logout to use NextAuth, keep signup/forgot-password backend calls)
-- [ ] Update login components to use NextAuth signIn
-- [ ] Update environment variables
-- [ ] Test both login methods (Google + Email/Password)
-- [ ] Test session persistence
+The relevant order in `app.ts` is:
 
-## References
+1. Security headers, compression, cache headers, CORS, and Hono CSRF middleware.
+2. `initAuthConfig` with the shared `AUTH_SECRET`, `trustHost: true`, and no backend Auth.js providers.
+3. Bearer middleware on `/api/*`.
+4. Cookie/bearer identity reconciliation on `/api/*`.
+5. JSON parsing, locale extraction, authenticated-user rate limiting, and routes.
 
-- [NextAuth.js Documentation](https://next-auth.js.org/)
-- [NextAuth Credentials Provider](https://next-auth.js.org/providers/credentials)
-- [RFC 9700 — OAuth 2.0 Security Best Current Practice (refresh rotation / reuse detection)](https://www.rfc-editor.org/rfc/rfc9700)
-- [NATIVE_MOBILE_BEARER_AUTH_ROADMAP](../roadmap/NATIVE_MOBILE_BEARER_AUTH_ROADMAP.md) — implementation plan + NB-1…NB-8 non-breaking contract
-- Flutter [MOBILE_AUTH_CONTRACT](../../../Twistloom-flutter/docs/roadmap/MOBILE_AUTH_CONTRACT.md)
+Auth runs before JSON parsing because `@hono/auth-js` wraps the raw request. Consuming its body first can break authenticated POST/PUT requests.
+
+With no nonempty Authorization header, cookie verification is the browser path. A nonempty malformed/non-Bearer header fails with 401 instead of falling back to cookies. An empty header is treated as absent by the current truthiness check. `/api/cron/*` skips user-bearer verification because its bearer value is a service secret; the cron route validates that secret separately.
+
+When both a valid user bearer and a recognized session cookie are present, the cookie also undergoes web policy checks. Different resolved user IDs return 401 “Conflicting credentials.” Same-user credentials are accepted even if their session IDs differ; the already-attached bearer context remains the request identity. Invalid, revoked, or banned cookies do not silently disappear into bearer fallback.
+
+Exactly three web exchanges bypass stale-cookie resolution when Authorization is absent: `/api/auth/verify-credentials`, `/api/auth/google-oauth`, and `/api/auth/google-one-tap`. This lets a user reauthenticate. Other nominally public API routes still pass through global authentication and can reject a supplied invalid cookie.
+
+---
+
+## 6. Native Access & Refresh Tokens
+
+### 6.1 Issuance
+
+`/api/auth/mobile/token`, `/mobile/google`, and `/mobile/apple` verify proof then call `issueMobileLoginPair`. Admin display enrichment resolves before insertion. The primary transaction locks the canonical user, reads current profile/ban/tokenVersion and rejects missing/banned users. Password grants recheck the exact verified password hash. Session insertion, access signing and refresh-family insertion commit together; signing/family failure rolls back.
+
+HTTP delivery is outside the transaction. Successful fields remain accessToken, expiresIn, refreshToken, tokenType:"Bearer", familyId and canonical user.
+
+### 6.2 Access JWT verification
+
+- HS256; issuer twistloom-backend; audience MOBILE_ACCESS_AUD or reader; kid=m0-hs256.
+- Default lifetime: 15 minutes, configurable. MOBILE_ACCESS_SECRET is separate from AUTH_SECRET, minimum 32 characters; PREVIOUS supports overlapping rotation.
+- Required canonical UUID sub/sid, nonnegative safe-integer tv, finite iat/exp, issuer and audience.
+- Signature verification allows clock tolerance for other time claims, but exp is strictly enforced on cold verification and every hit; tolerance cannot extend access.
+- A primary joined query matches user AND owned session and checks current ban/tokenVersion on every request. Wrong owner, deletion or revocation cannot be accepted through a warm cache.
+
+The 5,000-entry SHA-256-keyed LRU stores only immutable verified claims. TTL is fixed at at most 15 seconds, capped by remaining exp; updateAgeOnGet=false and hits do not reinsert entries. DISABLE_CPU_OPTIMIZATIONS bypasses completed crypto reuse with identical primary policy. Both adapters share the independent minute metadata scheduler. Cache eviction is an optimization, not revocation authority.
+
+### 6.3 Refresh rotation
+
+Refresh secrets are random 256-bit opaque hex values. The database stores SHA-256 hashes, not the usable secret. A family is bound to a tracked session; deleting that session cascades deletion of its refresh families.
+
+`rotateRefreshToken` locks the family on the primary in a transaction. It checks family expiry/revocation, current primary user ban/token version, and whether the presented hash is current or previously used. A previously used hash revokes the whole family. A valid rotation replaces the current hash and appends the old hash to `usedHashes`.
+
+Default family lifetime is 30 days via `MOBILE_REFRESH_TTL_DAYS`. Rotation does not extend the original family expiry. There is no implemented retry grace/idempotent replay window; native clients must coordinate concurrent refresh calls.
+
+### 6.4 Native lifecycle and replay handling
+
+```mermaid
+stateDiagram-v2
+    [*] --> LoginProof
+    LoginProof --> PairIssued: proof accepted and transaction commits
+    LoginProof --> Rejected: bad proof or policy failure
+    PairIssued --> AccessUse: send bearer access JWT
+    AccessUse --> PairIssued: accepted request
+    PairIssued --> Rotated: current refresh hash accepted
+    Rotated --> AccessUse: new access JWT and refresh secret
+    Rotated --> Revoked: old refresh secret reused
+    PairIssued --> Revoked: family expiry or explicit revocation
+    Revoked --> LoginProof: reauthenticate
+    Rejected --> [*]
+```
+
+Access-token acceptance and refresh-family acceptance are distinct. Family revocation stops future refresh; an issued access JWT is revoked by session deletion or tokenVersion change, not family state alone. Logout/credential-change routes apply the shared changes; warm claims still require primary policy. Client refresh single-flight reduces accidental reuse but is not server idempotency.
+
+Apple identity verification belongs to the native handler and provider verifier, including the configured audience. Apple is not an additional web Auth.js provider. Key rotation requires overlap for access-token verification and a deliberate retirement window; changing AUTH_SECRET instead affects browser encrypted cookies.
+
+---
+
+<a id="backend-implementation"></a>
+<a id="user-registration-flow"></a>
+
+## 7. Identity, Registration & Profile Lifecycle
+
+The shared schema contains:
+
+- `users`: canonical ID, email/username/profile, nullable password hash, ban state, onboarding state, and native token version.
+- `user_auth`: verification/reset material, failed-login counters, and account lock time.
+- `user_providers`: linked Google/Apple provider subjects.
+- `auth_sessions`: per-login device/session IDs and activity metadata.
+- `refresh_families`: native refresh hashes, reuse history, expiry, and revocation.
+
+Google/Apple identity resolution checks provider subject first; otherwise it can link an existing verified-email identity. Backend routes are responsible for verified provider proof. Returning OAuth logins may refresh a nonempty name, but preserve username and custom avatar; new accounts may import the provider image on a best-effort basis. See `createOrUpdateOAuthUser` for linking details rather than treating email as the cookie identity.
+
+`POST /api/auth/signup` validates account fields, password strength, terms/age confirmation, and creates the account. Password hashing uses bcryptjs with 12 rounds. Signup can include a best-effort native token pair, but it never issues the browser Auth.js cookie. Web signup follows with email verification or skip-verification, then credentials sign-in.
+
+`GET /api/user` requires auth and returns `{ user: ... }` with profile fields such as `id`, `imageUrl`, `isNewUser`, `linkedMethods`, `hasPassword`, and subscription state. This differs from the flat login-exchange schema.
+
+`POST /api/user` locks the primary user, records eligible unset referral while isNewUser=true, then commits profile/completion/missing preferences/locale together. Empty completion is valid. Repeat completion preserves finished profile/referrer, repairs defaults and retries idempotent payout. ImageKit remains external best-effort; welcome/activity/cache work is handled after commit. PUT updates profile/social links in one transaction, accepts imageUrl:null and returns a public allowlist.
+
+Authenticated account-method routes include Google/credentials link/unlink, email, password, and username changes. These use their own proof and validation gates; simply changing a frontend JWT display hint cannot link a provider or grant permissions.
+
+
+### 7.1 Database relationships and indexing
+
+```mermaid
+erDiagram
+    USERS ||--o| USER_AUTH : verification_and_recovery
+    USERS ||--o{ USER_PROVIDERS : linked_subjects
+    USERS ||--o{ AUTH_SESSIONS : tracked_logins
+    AUTH_SESSIONS ||--o{ REFRESH_FAMILIES : session_scoped_native_refresh
+    USERS ||--o{ REFRESH_FAMILIES : native_credentials
+```
+
+| Table/export | Auth-relevant fields | Authority / persistence detail |
+|---|---|---|
+| `users` | `userId`, email, username, nullable passwordHash, isNewUser, tokenVersion, bannedAt | Canonical account; unique email/username constraints also provide indexes |
+| `userAuth` | userId, emailVerified, verification token/expiry, reset token/expiry, failed attempts, lockUntil | Verification/recovery state; reset and OTP tokens each have a unique constraint; not an Auth.js adapter table |
+| `userProviders` | userId, provider, providerAccountId | Provider-subject linking; verifier admission must precede linking |
+| `authSessions` | id, userId, userAgent, ipAddress, deviceName, lastActiveAt, createdAt | UUID-backed tracked login; current schema has no shared web-expiry deadline column |
+| `refreshFamilies` | userId, sessionId, tokenVersion, refreshHash, usedHashes, expiresAt, revokedAt | Current hash index and used-hash lookup; session deletion cascades families |
+
+Schema evidence: `src/db/schema.ts`, `src/db/schema.ts`, `src/db/schema.ts`, `src/db/schema.ts`, `src/db/schema.ts`. Automatic username availability is advisory: the database uniqueness constraint still arbitrates concurrent insertions. No database migration is needed to edit this document.
+
+### 7.2 Signup inputs, responses, and password rules
+
+`POST /api/auth/signup` accepts email, username, password, optional gender/referrer and boolean terms/age/email choices. Terms/timestamps and explicit engagement consent commit with creation: receiveEmails===true opts into engagement mail, including storyPublished; security/billing mail is separate. Onboarding preserves existing consent and fills only null defaults. Conditional primary default writes prevent replica lag from overwriting a choice.
+
+The password validator enforces 8–128 characters, upper/lower case, number, special character, and rejects its common-password list, sequential runs, and repeated runs. These are current rules, not a recommendation to remove or increase hashing work for a free tier (`src/utils/password-validation.ts`; `src/utils/password.ts`).
+
+Normal signup returns **201** with userId, message, verificationEmailSent, referrer/referralApplied, isNewUser and optional native pair/user. Proof/mail or native-issuance failure retains a creation-only 201 so resend/login can recover. Unexpected creation failure is classified 500 rather than success-shaped 200. Creation and delivery/issuance remain distinct commit boundaries.
+
+### 7.3 Username and profile pipeline
+
+| Helper | Current algorithm | Examples / limits |
+|---|---|---|
+| `sanitizeUsername` (`src/utils/username.ts`) | Trim/clean text; lowercase; spaces/dots/underscores/plus to hyphens; strip other characters; collapse/trim hyphens | John Doe → john-doe; user@name! → username; output still requires validation |
+| `convertNameOrEmailToUsername` (`:84`) | Prefer normalized name of length at least 3; otherwise email local part; truncate to 25; return user if result shorter than 2 | x@y.com → user, not x; a two-character candidate still fails the final 3-character validation |
+| `convertEmailToName` (`:127`) | Normalize local-part separators to spaces and title-case words | ray.j+tag@mail.com → Ray J Tag, not Ray J |
+| `validateUsername` (`:159`) | 3–30 ASCII lowercase letters/digits/hyphens; no edge/double hyphens; reserved-name rejection | Returns valid/errors; app slug, admin, support, root, system, null, undefined are reserved |
+| `findUniqueUsername` (`src/services/user.ts`) | One batched query for base, base-2…base-21 (default); trim suffixed candidates to 30; first unused or null | Exhaustion is possible with existing collisions; not “practically impossible” |
+| `sanitizeUserData` (`src/services/user.ts`) | Requires email even with createNew=false; normalizes profile; creation checks email and auto-suffixes username; final validation | createNew=false skips uniqueness, so caller owns identity/conflict policy |
+| `sanitizeProfileUpdate` (`src/services/user.ts`) | Shared optional-field sanitizer; username validation and owned-name conflict check; cosmetic/entitlement gates | User profile changes return hard 409 usernameTaken or 422 usernameInvalid, not automatic suffixes |
+
+Creation currently auto-suffixes even an explicitly supplied signup username through `sanitizeUserData`; the old frontend doc's “credentials never auto-generate/deduplicate” statement was inaccurate. Onboarding/profile edits deliberately use hard conflicts instead.
+
+Profile API distinctions:
+
+| Operation | Input/response and side effects |
+|---|---|
+| GET /api/user (`src/routes/user.ts`) | Enriched `{ user }`; canonical `id` and `imageUrl`; subscription.tier, isVip, credits, isNewUser, emailVerified, linkedMethods, hasPassword and metrics |
+| POST /api/user (`:665`) | Optional name/username/imageUrl/source/referrer/preferredLocale from wizard; shared sanitizer also processes supported profile fields; 200 completion or already-completed body; optional avatar best-effort |
+| PUT /api/user (`:831`) | At least one sanitized update or 400; uses imageUrl, not image; avatar upload failure can fail the request with 500; returns `{ success: true, user }`, not an `updated` patch |
+| Omitted/empty/null imageUrl | Current scalar sanitizer skips unusable values; `null` does not clear avatar. Do not inherit the old explicit-clear claim |
+| Profile privilege fields | Email/password/provider changes use auth routes; subscriptions are managed by their own system; frontend updates cannot grant standing/capabilities |
+
+PUT uses `publicUpdatedProfile` to allowlist public profile/preferences/subscription fields from RETURNING. Password hashes, tokenVersion, bannedAt and raw referrerId never enter JSON; hasReferrer is boolean. Explicit imageUrl:null clears the stored image. Profile/social links commit together; optional post-commit cache/activity/audit failure is logged without converting success to a failed response.
+
+### 7.4 OAuth update history and referral ownership
+
+The earlier returning-OAuth sanitization conflict was addressed in backend history (June 2026); current returning branches avoid new-account email uniqueness checks. Since commit `fba9974` (2026-07-21), returning OAuth deliberately preserves custom avatars. Subject-first provider linking was added with native OAuth work. Restore these rationales, not the stale claim that every sign-in overwrites the avatar.
+
+Referral attribution and payment remain separate. The helper reads its supplied primary executor and conditionally updates only an unfinished account with no referrer; referrers must exist, be verified and non-self. Onboarding supplies its locked transaction and defers credit/activity until commit. `tryAwardReferralBonus` uses primary prechecks and its existing atomic claim plus both credit awards, allowing verification/completion retries without double-paying.
+
+**Historical ordering conflict, corrected:** HEAD completed isNewUser before its new-user-only attribution helper. The final transaction records attribution before completion; a primary-fresh local test covers this. Signup remains a separate path; completed users cannot attach late arbitrary referrers.
+
+The final sequence is primary lookup → sanitizer → optional external avatar upload/persist → locked attribution/profile/completion/preferences/locale transaction → handled post-commit cache/activity/idempotent reward and first-completion welcome work → {message,isNewUser:false,username}. Retry repairs defaults/payout. No durable outbox, automatic eventual mail/activity delivery or exact-once mail claim is made.
+
+---
+
+<a id="password-reset-flow"></a>
+
+## 8. Recovery, Verification & Account Methods
+
+### 8.1 Password reset request and consumption
+
+| Route/helper | Final behavior | Compatibility / limit |
+|---|---|---|
+| POST /auth/forgot-password | Distributed IP/account admission; defer lookup/proof/mail via waitUntil; uniform 200 acknowledgement | emailSent:true means accepted, not existence or delivery; validation/rate remain 400/429 |
+| createPasswordResetToken | 32 crypto-random bytes, 64 hex, one-hour expiry; store sha256: digest on primary | Resend replaces prior proof; unexpired legacy raw UUID remains compatible |
+| POST /auth/reset-password | Strength/proof checks; 200 winner, 400 invalid/consumed/expired, 422 weak password; best-effort security mail | Delivery outside credential transaction |
+| resetPassword | Preliminary primary lookup; bcrypt outside lock; lock user first; consume matching unexpired proof BEFORE password/tv/family/all-session mutation | Loser has no credential effects; revocation failure rolls back proof and all changes |
+
+The stored digest cannot redeem itself: input accepts raw hex or legacy UUID, not sha256: storage values. Expiry is rechecked after hashing in the consume predicate. User-first lock order serializes reset/change with issuance. Local tests model locking and evaluate real predicates, including two passwords for one proof and revocation rollback; actual PostgreSQL concurrency remains a private evidence gate.
+
+### 8.2 Email verification and resend
+
+Six-digit UX now uses node:crypto randomInt, a 15-minute expiry and a peppered account-scoped HMAC derived from AUTH_SECRET with a domain prefix. Equal codes on different accounts have different stored values, compatible with the existing unique text column; no database migration is required.
+
+The request is **{token,email}**. A normalized-email primary join identifies the account; a conditional update matches account HMAC AND unexpired proof, marks verified and clears it. Another account's code, leaked HMAC and expired/replaced/consumed proof cannot redeem it. Unscoped legacy OTPs are retired and require resend. Web callers and email links supply email; the link page requires deliberate submission so scanner GETs do not consume proof.
+
+Verify applies distributed IP/account attempts then idempotent referral payout. Resend and forgot return identical acknowledgements with emailSent:true meaning accepted, never account or delivery state. Account work runs after admission through handled waitUntil tasks; this is not durable delivery or a promise of identical network timing. The existing 72-hour new-account verified-email grace remains unchanged.
+
+### 8.3 Account security route catalog
+
+Paths below are relative to `/api/auth`. All authenticated routes first pass global adapter policy; route proof/capability gates then apply.
+
+| Method/path | Proof/input | Responsibility |
+|---|---|---|
+| PUT /email | newEmail, currentPassword | Password-backed email update; Google-linked restrictions and verification reset |
+| PUT /password | currentPassword, newPassword | Existing-password proof and strength checks; native version/family revocation |
+| PUT /username | newUsername | Username validation/conflict policy |
+| POST /link/google | idToken | Verify Google identity before provider linking |
+| POST /unlink/google | Existing authenticated identity and remaining-method policy | Prevent removal of last available login method |
+| POST /link/credentials | password | Add a validated password login method |
+| POST /unlink/credentials | currentPassword | Verify proof and remaining-method policy before removal |
+
+Evidence: `src/routes/auth.ts`, `:1769`, `:1876`, `:1947`, `:2022`, `:2081`, `:2163`. These endpoints are not web Auth.js OAuth callback URLs. Method-list UI should refetch GET /user after changes rather than assume projected loginMethod changed automatically.
+
+---
+
+<a id="logout-and-revocation"></a>
+
+## 9. Logout & Revocation
+
+“Clear the browser cookie” and “revoke the backend session” are separate effects, centrally integrated.
+
+- Auth.js events.signOut receives verified server claims and posts a purpose-bound revoke proof to /auth/revoke-web-session. The domain-separated AUTH_SECRET-derived key is distinct from cookie/native signing; proof has issuer/audience/HS256/purpose and at most 60 seconds of validity.
+- The route needs no old browser cookie: it verifies canonical owner/session UUIDs and deletes only their matching primary row. Missing row gives idempotent {revoked:true}; invalid proof is 401 and DB outage 500. Banned/stale standing cannot block this signed cleanup.
+- Two attempts with five-second timeouts bound frontend cleanup. Success rejects copied cookies on the next protected request across instances. Exhausted failure logs a fixed diagnostic but still clears local Auth.js cookies; copied cookies remain usable until revocation/expiry. No durable cleanup queue exists.
+- Legacy POST /logout preserves its fixed best-effort {message:"Logged out successfully"}; it is not the normal browser hook. GET /sessions lists owned devices; logout-all removes OTHER sessions, logout-all-devices includes current/tv increment, logout-session removes specified owned session, DELETE /sessions/:id refuses current.
+- Password reset/change transactionally updates hash/tv, revokes families and deletes ALL tracked web/native sessions. Change also clears pending reset proof. Current device is not retained: its next protected request requires reauthentication.
+
+### 9.1 Two independent logout effects
+
+```mermaid
+sequenceDiagram
+    participant Browser
+    participant Next as Auth.js frontend
+    participant API as Hono control route
+    participant DB as Primary sessions
+    Browser->>Next: Manual or automatic signOut
+    Next->>API: Short signed owner/session proof
+    API->>DB: Delete matching owner AND session
+    alt Delete succeeds
+        API-->>Next: Idempotent success
+    else Store unavailable
+        API-->>Next: Failure; bounded retry
+        Note over Next,API: Remaining replay risk logged; no durable queue
+    end
+    Next-->>Browser: Clear local cookie
+    Browser->>API: Later copied-cookie/native request
+    API->>DB: Fresh owned session and standing
+    DB-->>API: Missing when deletion committed
+    API-->>Browser: 401 for deleted session
+```
+
+Admission checks do not cancel already-authenticated requests. Family revocation alone differs from session deletion/tv change; preserve the other/all-device naming distinction.
+
+---
+
+## 10. Errors, Route Guards & Abuse Controls
+
+The mirrored public error vocabulary is `auth.invalidCredentials`, `auth.socialLoginRequired`, `auth.accountLocked`, `auth.accountBanned`, `auth.serviceUnavailable`, and `auth.sessionRevoked`.
+
+Web policy exceptions produce `{ success: false, error, code }`. Credential sign-in uses these codes for classified failures; lockout can also return `lockedUntil`. Generic validation/IP-limit errors, native bearer failures, and caught Google verifier/DB exceptions do not all carry this vocabulary. The frontend preserves allowlisted codes; unknown 401 maps to invalid credentials, other unclassified failures or malformed payloads to service unavailable.
+
+`requireAuth` checks the identity attached globally. `optionalAuth` is a pass-through and cannot suppress global auth failures. `requireVerifiedEmail` permits verified users or users within a 72-hour creation grace period, and lets guests pass; combine it with `requireAuth` when authentication is required. It reads verification/grace data through `dbRead`. Admin capabilities and other feature policy are enforced by their dedicated backend guards.
+
+Abuse controls are distinct:
+
+- Public auth IP attempts use atomic Redis fixed windows (five/minute default) and hashed identifiers. Recovery/verification additionally use five/account/15 minutes. Netlify supplies trusted context.ip; arbitrary forwarded headers are ignored unless TRUST_PROXY_HEADERS=true explicitly configures a trusted proxy. Local fallback is unknown. Signed frontend exchanges bind the serialized body and use separate 300/minute egress plus five/minute account buckets, avoiding a shared five-attempt frontend bottleneck.
+- Authenticated traffic retains Redis per-user sliding 100/minute; native login retains 10/minute and refresh IP/family 30/minute. The fixed-window helper increments and sets/repairs TTL in one Lua operation. Redis absence/outage fails open by repository policy; provisioning/monitoring is necessary.
+- Primary lockout uses one SQL UPDATE with highest thresholds: 5 attempts→5 minutes, 10→15, 15→60. Expired locks preserve escalation; active lock deadlines stay. Success/change clears counts. After 24 hours of shared user_auth.updatedAt inactivity with no active lock, a new failure starts at one. This is an inactivity window, not a dedicated fixed-window column.
+
+Hono CORS uses the explicit origin set in `app.ts`, allows credentials/Authorization, and is separate from authentication. Hono CSRF middleware checks unsafe requests with form-compatible content types, using Fetch Metadata/origin; it is not a blanket origin validator for JSON requests. Server-to-server JSON exchanges work without an Origin header. Frontend Auth.js has its own auth-action protections.
+
+### 10.1 Entry-point catalog
+
+| Method/path (under /api/auth) | Route admission | Current consumer |
+|---|---|---|
+| POST /verify-credentials | Password proof, web IP limit | Auth.js credentials authorize |
+| POST /google-oauth | Google ID token, web IP limit | Auth.js Google signIn callback |
+| POST /google-one-tap | Google ID token, web IP limit | Auth.js googleonetap authorize |
+| POST /signup | Account fields/consents, web IP limit | Web signup; optional native token pair in response |
+| GET /username-available | Redis IP limit; advisory format/availability probe | Signup UX; insertion can still conflict |
+| POST /forgot-password | Email, web IP limit | Recovery request |
+| POST /reset-password | Reset token/password, web IP limit | Recovery consumption |
+| POST /verify-email | Verification code, web IP limit | OTP/link verification |
+| POST /resend-verification | Email, web IP limit | OTP retry |
+| POST /mobile/token | Password proof, Redis limit | Native password login |
+| POST /mobile/google | Google identity proof, Redis limit | Native Google login |
+| POST /mobile/apple | Apple identity proof, Redis limit | Native Apple login |
+| POST /mobile/refresh | Opaque secret, Redis IP/family limits | Native refresh; family checks own admission |
+| POST /logout | No route requireAuth; global supplied-credential checks still run | Backend current-session cleanup |
+| GET /sessions | requireAuth | Device management |
+| POST /logout-all | requireAuth/current session | Other-device revocation |
+| POST /logout-all-devices | requireAuth | All-device revocation |
+| POST /logout-session | requireAuth/owned session | Specified-session revocation |
+| DELETE /sessions/:id | requireAuth/owned noncurrent session | Device-list removal |
+
+Mounting is `app.route("/api", routes)` followed by Hono auth route registration, not Express router.use. “Public” means no route requireAuth; it does not bypass global invalid-cookie policy unless explicitly listed in §5.
+
+---
+
+<a id="migration-checklist"></a>
+
+## 11. Netlify & Local Configuration
+
+Production frontend: `https://twistloom-web.netlify.app`. Backend: `https://twistloom-backend.netlify.app`. Both remain private.
+
+- Both apps need the same `AUTH_SECRET`; native signing keys remain separate.
+- Both web/provider verification layers need the correct `GOOGLE_CLIENT_ID`; the frontend also needs `GOOGLE_CLIENT_SECRET`.
+- Frontend `AUTH_URL` is its own canonical HTTPS origin; register `/api/auth/callback/google` on that origin with Google.
+- Backend `FRONTEND_URL` must be the current Netlify frontend origin. The hardcoded origin set still includes Vercel and local origins; it does not automatically add the Netlify frontend. Preview origins require deliberate configuration.
+- If backend `AUTH_URL` is set, it must describe the backend HTTPS origin, not the frontend or an HTTP proxy URL. Auth.js secure-cookie selection must agree with forwarded request scheme.
+- Browser calls use the frontend `/api/backend/*` rewrite. Direct frontend-server calls forward cookies and use an absolute backend API URL.
+- Frontend `NEXT_PUBLIC_BACKEND_URL` controls the rewrite destination (backend origin without `/api`); `NEXT_PUBLIC_API_URL_FULL` separately controls server exchanges (backend URL with `/api`). Keep both consistent.
+- Bare local frontend builds retain Vercel fallbacks unless explicit URLs/platform configuration override them. Configure local endpoints rather than assuming migration removed every fallback.
+
+Cross-origin deployment does not share host-only cookies between the two Netlify domains. Same-origin rewrites and explicit server forwarding provide the credential transport. A private-host HTML login gate/site response is not an application auth result.
+
+### 11.1 Configuration ownership
+
+| Setting | Owner / purpose | Failure or rollout consideration |
+|---|---|---|
+| AUTH_SECRET | Same secret in frontend and backend | Mismatch rejects decryption; changing it invalidates existing browser cookies |
+| AUTH_URL | Each service's own externally visible HTTPS origin | Wrong scheme can select the wrong secure cookie name/salt |
+| GOOGLE_CLIENT_ID | Backend and frontend server verification | Audience must match OAuth/One Tap client |
+| GOOGLE_CLIENT_SECRET | Frontend OAuth only | Never expose through NEXT_PUBLIC |
+| FRONTEND_URL | Backend allowed browser origin | Explicit current Netlify origin; private access gate remains separate |
+| MOBILE_ACCESS_SECRET / PREVIOUS | Backend native JWT verification | Separate minimum-32-character secret and overlapping rotation |
+| MOBILE_ACCESS_AUD / TTL_MINUTES | Backend native access audience/lifetime | Default reader / 15; cache cannot extend encoded expiry |
+| MOBILE_REFRESH_TTL_DAYS | Backend family expiry | Default 30; original deadline does not roll on rotation |
+| AUTH_RATE_LIMIT_WINDOW_MS / MAX_ATTEMPTS | Web IP limiter | Defaults 60000 / 5; distributed Redis enforcement |
+| DISABLE_CPU_OPTIMIZATIONS | Diagnostic positive-cache bypass | Fresh primary checks remain in both adapters; metadata throttle stays independent |
+
+### 11.2 Coordinated rollout and local investigation
+
+1. Supply explicit frontend/server API origins, secrets, callback origin, and backend origin allowlist.
+2. Ensure frontend exchanges mint canonical userId/sessionId before strict cookie enforcement is active.
+3. Test a plain local cookie and an HTTPS secure cookie separately, including chunks and POST bodies.
+4. Keep valid tracked cookies compatible; show localized reauthentication for legacy/missing-row tokens.
+5. Exercise password, Google OAuth, One Tap, owned-device revocation, bans, and recovery.
+6. Measure fresh-primary-read latency and metadata writes before selecting optimizations.
+
+The old Vercel checklist is superseded by the Netlify migration companion. Deployment configuration checks are not an instruction to publish the currently private sites. Secret values should never be included in diagnostic output.
+
+---
+
+## 12. Failure Modes & Recovery Matrix
+
+| # | Failure | Detection / exact response | Recovery and limit |
+|---|---|---|---|
+| 1 | Missing protected identity | requireAuth, 401 (`src/middleware/nextauth.ts`) | Sign in; no cookie session is fabricated |
+| 2 | Wrong password or missing account | verify-credentials, 401 auth.invalidCredentials (`src/routes/auth.ts`) | Retry credentials; never expose passwordHash in exchange |
+| 3 | OAuth-only password attempt | 401 auth.socialLoginRequired | Use Google or a separately linked password method |
+| 4 | Account lock | 429 auth.accountLocked and lockedUntil when consistent | Wait until lockedUntil; atomic escalating primary thresholds |
+| 5 | Current banned web account | 403 auth.accountBanned (`src/middleware/nextauth.ts`) | Localized ban/help flow; no session-expiry sign-out promise |
+| 6 | Invalid/expired/legacy/revoked/wrong-owner cookie | 401 auth.sessionRevoked; cookie/chunk deletion headers | Reauthenticate via one of the three bypass exchanges |
+| 7 | Primary outage during web check | Unexpected 500 through app.onError (`src/app.ts`) | Deny access, retain cookie, retry after recovery |
+| 8 | Invalid Google proof / provider failure | Explicit invalid payload can be 401; verifier exceptions caught as generic 500 | Frontend exchange validator classifies safe recovery; not every error has code |
+| 9 | User disappears before web issuance | 503 auth.serviceUnavailable | No inserted session; retry after account/service resolution |
+| 10 | Backend JSON malformed or IDs absent | Frontend rejects even HTTP 200 | Auth.js issues no provisional identity |
+| 11 | Malformed nonempty auth header | 401 Invalid authorization scheme + WWW-Authenticate | Send correct bearer or omit header for cookie path |
+| 12 | Different resolved bearer/cookie users | 401 Conflicting credentials | Present one identity; same-user session IDs need not match |
+| 13 | Cold native token invalid/expired/revoked | 401 with bearer error; banned user gives 403 | Native refresh/login; primary policy also on warm hits |
+| 14 | Refresh secret reused | Family revoked; mobile refresh rejects with 401 | Clear native credentials and reauthenticate; avoid parallel refresh |
+| 15 | Invalid/expired reset or OTP | 400; new weak reset password gives 422 | Resend proof; old unscoped OTP requires resend |
+| 16 | Username invalid/taken in profile/onboarding | 422 user.usernameInvalid / 409 user.usernameTaken | Translate code and choose another name |
+| 17 | Optional onboarding photo fails | Completion can still return 200 | Profile completion preserved; separate PUT photo retry can fail with 500 |
+| 18 | Logout DB cleanup fails | Current logout handler can still return 200 fixed message | Browser cleanup is possible; authoritative revocation is not confirmed |
+| 19 | Metadata write fails | Logged; reservation removed for next retry | Authorized response unaffected |
+| 20 | Private Netlify gate intercepts exchange | HTML/non-application response, not a canonical identity | Auth validator rejects; deployment/browser check is Not claimed |
+
+Statuses are route-specific. Global auth/CORS/CSRF gates can reject before the route; a nominal 200 handler does not guarantee 200 for every request.
+
+---
+
+<a id="security-considerations"></a>
+
+## 13. Industry Standard Comparison
+
+### 13.1 The standard and comparison
+
+Reference points are [Auth.js encrypted JWT behavior](https://authjs.dev/reference/core/jwt), [OWASP session management](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html), [OWASP recovery guidance](https://cheatsheetseries.owasp.org/cheatsheets/Forgot_Password_Cheat_Sheet.html), and [RFC 9700 refresh-token replay protection](https://www.rfc-editor.org/rfc/rfc9700.html#section-4.14). These describe particular controls; Twistloom's native issuer is not a complete general-purpose OAuth/OIDC authorization server.
+
+| Aspect | Reference practice | Current Twistloom alignment |
+|---|---|---|
+| Browser credential transport | Auth.js encrypted JWT; OWASP secure cookie attributes | Aligned on encrypted HttpOnly cookie; chosen SameSite=None requires the existing surrounding defenses |
+| Current session authority | OWASP server-side expiration/invalidation | Both adapters use primary authority; browser deadline/sign-out implemented with outage caveats |
+| Native refresh replay | RFC 9700 rotation or equivalent replay detection | Rotation, reuse detection and session-scoped family persistence align; no claim of full RFC compliance |
+| Native access expiry | Bounded credential lifetime | Fixed immutable cache; strict expiry and primary policy on every hit |
+| Recovery proof | OWASP scoped, expiring, single-use proof and consistent public response | Account HMAC OTP, transaction-first reset and uniform acknowledgement; delivery best-effort |
+| Browser/native identity design | Separate first-party credential presentations can share canonical identity | Deliberate two-adapter choice; comparisons to Meta/Stripe do not prove implementation parity |
+
+**Matches:** canonical users, provider verification, encrypted browser tokens and refresh reuse detection. **Deliberate divergence:** the web checks primary state on every API request to support device revocation, accepting database cost. **Remaining:** private concurrency/browser/performance evidence and durable outage/delivery retry.
+
+The architecture has useful foundations; “industry standard” is not a blanket security or performance certification. The old company comparison is retained as the rationale for separate credential adapters, with unsupported claims of equivalent controls removed.
+
+---
+
+## 14. File Map & Ownership
+
+- [Hono application and middleware order](../../src/app.ts).
+- [Web cookie verification and guards](../../src/middleware/nextauth.ts).
+- [Cookie/bearer identity reconciliation](../../src/middleware/cookie-bearer-identity.ts).
+- [Web session issuance and primary lookup](../../src/services/web-session.ts).
+- [Auth routes](../../src/routes/auth.ts) and [session management](../../src/services/session-manager.ts).
+- [Bearer middleware](../../src/middleware/bearer.ts), [access tokens](../../src/services/mobile-tokens.ts), [native issuance](../../src/services/mobile-login.ts), and [refresh families](../../src/services/token-family.ts).
+- [Identity schema](../../src/db/schema.ts), [user services](../../src/services/user.ts), and [OAuth user creation](../../src/services/user-controller.ts).
+- [Frontend implementation](../../../Twistloom-web/src/auth.ts) and [frontend architecture](../../../Twistloom-web/docs/architecture/FRONTEND_AUTH_ARCHITECTURE.md).
+
+Implementation files determine current behavior. Roadmaps describe intended contracts and follow-up work; an unchecked item or older “implemented” claim is not proof of current behavior.
+
+| File:line | Maintained responsibility |
+|---|---|
+| src/app.ts:29 | Auth configuration; bearer/cookie order; body parsing |
+| src/middleware/nextauth.ts:188 | Immutable decode, fresh web policy, route guards |
+| src/middleware/cookie-bearer-identity.ts:6 | Explicit credential reconciliation and exchange bypass |
+| src/services/web-session.ts:56 | Primary owner/standing lookup and row-locked issuance |
+| src/services/session-manager.ts:32 | Device metadata, owned deletion, other/all-device cleanup |
+| src/middleware/bearer.ts:46; src/services/mobile-tokens.ts:231 | Native fixed immutable decode reuse and fresh primary policy |
+| src/services/mobile-login.ts:63; src/services/token-family.ts:21 | Native pair transaction and locked refresh rotation |
+| src/routes/auth.ts:223 | Provider/password admission, registration and reset routes |
+| src/routes/user.ts:671 | Enriched user read, onboarding and profile write contracts |
+| src/services/user.ts:43 | Credential lookup, creation/profile sanitization and username uniqueness |
+| src/services/user-controller.ts:60 | OAuth creation/linking; custom-avatar preservation |
+| src/utils/email-verification.ts:95; src/utils/password-reset.ts:141 | Scoped OTP and consume-first transactional reset proof |
+| src/utils/account-lockout.ts:119 | Failed-attempt counter and threshold behavior |
+| src/middleware/admin-auth.ts:72 | Backend admin authority, distinct from JWT UI hint |
+| src/db/schema.ts:45 | Canonical identity, recovery, providers, sessions, refresh-family schema |
+| netlify/functions/api.mts:32 | Production Hono adapter and execution-context forwarding |
+
+Current additional boundaries:
+
+| File:line | Responsibility |
+|---|---|
+| src/services/web-control.ts:18 | Purpose/body/time-bound server attestations |
+| src/services/credential-revocation.ts:10 | All-session deletion inside credential transaction |
+| src/services/profile-response.ts:6 | Public profile write-response allowlist |
+| src/utils/redis.ts:95 | Atomic Redis counter/expiry; fail-open infra policy |
+
+Line references describe the reviewed working tree on 2026-10-05; later edits must refresh them. Auth.js is a shared browser-cookie implementation dependency, not the owner of backend accounts.
+
+---
+
+<a id="testing"></a>
+
+## 15. Verification & Evidence
+
+The 2026-10-05 implementation review passed **385 backend tests across 33 files**. The frontend suite passed **255 tests across 30 files**. Tests exercise actual Auth.js/JWE and real Hono middleware/routes with controlled provider/DB/network boundaries; modeled locks are not live PostgreSQL race evidence.
+
+DB, Redis transport, Google and outbound mail boundaries are mocked. New native warm-hit tests cover ban/tv/revocation/continuing traffic at exp. Web tests cover copied-cookie, banned cleanup and wrong owner/purpose/signature. Recovery tests cover consume-before-write, expiry during hashing, rollback, replacement, legacy UUID, account OTP and retirement. Onboarding tests cover referral ordering, consent/default repair, optional activity failure and safe response. Private Neon/Netlify and real performance remain unverified.
+
+### 15.1 Evidence scope and repeatable checks
+
+| Evidence layer | Reviewed result | Limit |
+|---|---|---|
+| Current implementation | Auth, user, session, recovery, admin, schema and Netlify paths inspected | Static inspection cannot prove all runtime races |
+| Git provenance | Historical claims compared with committed HEAD and dated commits in §17 | HEAD/history do not identify every historical deployed artifact |
+| Local auth regression suites | 385 backend / 255 frontend passes in this implementation review | Controlled external boundaries; no real-store deployment evidence |
+| Cache-enabled/disabled web policy | Reviewed tests cover both modes and metadata write bounds | Mocked DB does not prove live Neon locking behavior |
+| Actual Auth.js encoder probe | Historical discrepancy reproduced; final callback/renewal tests enforce one-hour deadline | Local installed dependency evidence; historical runtime unknown |
+| Documentation checks | Validate relative targets, canonical structure, anchors, fences, whitespace and frontend drift script after edits | Not a live browser/provider/deployment test |
+| Private Netlify production | **Not claimed**: live login, secret provisioning, callback, DB races or latency | User confirmed sites private; going live is not a prerequisite for code assessment |
+
+For local diagnosis, use a disposable test account through signup rather than manually storing a plaintext password. POST verify-credentials with identifier/password should yield the flat canonical UUID payload only on valid proof; wrong proof is 401 and a distributed IP/account bucket can later return 429. Do not assume the sixth request always fails when earlier requests or different instances affect the bucket.
+
+Automated tests should cover credential failure classification, bad provider proof, canonical-ID rejection, no middleware user creation, secure/chunked cookie transport, JSON body availability, primary outage recovery, warm revocation/ban rejection, and metadata retry. New local regression tests cover the implemented §17 fixes; the remaining private/store/durability checks are not implied by these passes.
+
+Frontend maintenance command: pnpm doc:drift (equivalently its configured Node script when the package-manager launcher is unavailable). Backend code changes should pass Bun check/auth tests; frontend code changes should pass its unit/type/lint/contract checks. A full production build is not required for documentation edits.
+
+**Documentation audit score (original claim groups in §17.1):** 5 Critical, 6 Major, 1 Minor identified and corrected or explicitly qualified. Critical groups are lifetime, native cache bound, normal sign-out, password-change web revocation, and recovery-proof guarantees. Major groups cover native parity, escalation, guest history, redirect/hint claims, intermediate metadata amplification and provisional identity fallback; avatar policy is Minor. These are grouped documentation findings, not counts of runtime vulnerabilities or an exhaustive security audit. Current runtime gaps and their code evidence remain in §17.2; no accuracy percentage or production verification is claimed.
+
+---
+
+<a id="troubleshooting"></a>
+
+## 16. FAQ
+
+### 16.1 FAQ 1. Why did authentication work on Vercel if these gaps existed?
+
+Happy-path login exercises proof and cookie issuance; it does not necessarily exercise copied-cookie logout, warm-cache expiry, OTP collision, or concurrent reset. HEAD/history already contain these patterns; §17 distinguishes pre-existing gaps from the current changes.
+
+### 16.2 FAQ 2. Should we restore Google-sub fallback or middleware user creation?
+
+No. Those paths could display a session without a canonical tracked account or recreate identity after deletion. The replacement is a typed failed exchange and explicit reauthentication; successful provider flows remain supported.
+
+### 16.3 FAQ 3. Is changing to Netlify the cause of the security fixes?
+
+The standing/session policy is application logic. Netlify adds operational requirements around private gates, HTTPS/header forwarding and background-task scheduling; the underlying gaps predate the migration.
+
+### 16.4 FAQ 4. Does every request decrypt the cookie again?
+
+No: immutable claims can be reused for 60 seconds, with expiry checked. Every accepted web request still performs fresh primary authorization (`src/middleware/nextauth.ts`).
+
+### 16.5 FAQ 5. Can revocation race with an in-flight operation?
+
+Yes. The gate checks standing at request admission, not for the whole operation. Especially sensitive mutations need transaction-local ownership/standing policy where required.
+
+### 16.6 FAQ 6. Does the backend set the browser Auth.js cookie at signup or logout?
+
+No. Auth.js owns browser issuance/cleanup; signup may return native credentials. Its central signOut event now attempts signed owned-session deletion before local cookie cleanup, with bounded retries and explicit outage limits.
+
+### 16.7 FAQ 7. Why can devices show slightly stale activity?
+
+The web metadata reservation batches writes per instance/minute. lastActiveAt is advisory; revocation uses session-row existence, not the metadata timestamp.
+
+### 16.8 FAQ 8. Is native logout immediate everywhere?
+
+After session deletion/tv change commits, every protected native request rechecks primary state even with warm claims. This prevents cache-delayed revocation, but cannot cancel admitted requests or compensate for failed cleanup.
+
+### 16.9 FAQ 9. Why can usernames differ from a requested signup name?
+
+Creation uses the shared soft-dedup pipeline even for an explicit signup username. User profile/onboarding edits enforce hard conflicts. Advisory availability does not reserve the name.
+
+### 16.10 FAQ 10. Why is a returning Google avatar not refreshed?
+
+Preserving a user-customized avatar is deliberate and already committed. Users change their avatar in profile settings; restoring automatic overwrites would regress that choice.
+
+### 16.11 FAQ 11. What should happen after a reset token is used twice?
+
+One reset changes credentials; a consumed/expired proof returns false before credential effects. Consumption and revocation share the transaction. Local modeled-concurrency/rollback tests pass; real PostgreSQL race evidence remains pending.
+
+### 16.12 FAQ 12. Are private deployment checks a release gate for writing or testing docs?
+
+No. Documentation and local verification proceed now. Private browser/real-DB evidence stays Not claimed; this review does not publish sites or change live data.
+
+---
+
+## 17. Known Gaps & Future Enhancements
+
+### 17.1 Historical claim assessment and regression provenance
+
+“False claim” means the documentation exceeded the demonstrated implementation; it does not mean the feature is unimportant. A regression requires an earlier working guarantee plus evidence it was lost. Committed HEAD is a useful baseline, but is not proof of what environment was actually deployed.
+
+| Original claim / concern | Evidence reviewed | Classification | What to retain or restore |
+|---|---|---|---|
+| One-hour credentials cookie when rememberMe=false | Frontend HEAD maxAge remains 30 days; same intended-exp pattern in `2fb85a68` (2026-05-21); installed encoder overwrites it | Pre-existing implementation gap; no evidence introduced by current diff | Restore the intended lifetime with tested enforcement, not just token.exp assignment |
+| Native revocation within at most 15 seconds | `updateAgeOnGet: true` present at introduction `555b982` (2026-09-23) and unchanged at HEAD | Original bounded-window claim was unsupported | Stop mutable authorization sliding; check expiry on every hit; primary ownership/standing |
+| Native fresh owner/session/ban gate equivalent to web | HEAD still uses dbRead, optional sid, session-only existence; native issuance checks ban before its tx | Pre-existing weaker adapter, not removed by current web hardening | Align native authority without changing successful token-pair shape |
+| Browser signOut deletes backend session | Frontend HEAD and AuthProvider have no signOut event/revocation call; none was removed by the assessed diff | Integration absent in the inspected baseline; backend endpoint is implemented | Wire reliable authoritative revocation to normal sign-out |
+| Password change/reset invalidates all browser JWTs | HEAD reset/version logic revokes native credentials/families but keeps auth_sessions; web claims do not compare tv | Pre-existing cross-adapter policy gap | Delete browser tracked sessions or add a fully enforced web version policy |
+| 5/15/60-minute lockout escalation | First-match findIndex exists in `4f3676a` (2026-04-23), present in pre-hardening HEAD | Pre-existing bug plus unsupported escalation claim | Atomic primary counter and explicit escalation policy |
+| “Secure”, account-bound OTP / single-use reset under all races | Pre-hardening verification matched six-digit code globally; HEAD reset writes before final token-consume result | Existing implementation gaps; reset race is source-inferred, not live reproduced | Scoped cryptographic challenges and transaction-first proof consumption |
+| Returning OAuth overwrites image | Avatar preservation is committed in `fba9974` (2026-07-21) and present at HEAD | Intentional behavior change; old description stale | Preserve custom avatars; optional explicit resync can be a separate product feature |
+| Backend guest creation/generation/migration still exists | `a3b9a7d` (2026-05-24), “no guest user anymore”, removed guest middleware | Proven historical removal, deliberately committed | Preserve guest-reading migration; do not silently re-enable guest generation/credit bypass |
+| Continue target should be double-decoded; admin hints refreshed by profile LRU | HEAD uses one decode, token hints, and self-update admin callers | Documentation drift, not functionality to restore | Keep actual safe flow and correct diagnostics |
+| Web metadata began writing on every request during hardening | Fresh authorization moved outside old positive cache; reviewed uncommitted intermediate path amplified writes | A genuine intermediate performance regression, already corrected in current tree | Retain independent bounded minute reservation/retry/waitUntil and its regression tests |
+| Google fallback/session auto-creation disappeared | Current diff deliberately rejects noncanonical identities and freshly enforces tracked rows | Intentional security correction with reauthentication compatibility impact | Keep explicit recovery; measure added primary-query cost |
+
+These conclusions use code/history, not historical production telemetry. For the lifetime specifically, the May commit proves the pattern is old; it does not prove the exact deployed dependency/runtime behavior in May.
+
+### 17.2 Current gap inventory
+
+Stable finding IDs retain the historical audit. Local “Implemented & verified” is distinct from deployment verification.
+
+| # | Original gap → final correction | Status / residual limit |
+|---|---|---|
+| 1 | Native sliding policy/expiry → fixed immutable claims, strict exp, fresh primary gate | **Implemented & verified**; warm traffic tests |
+| 2 | Optional sid/wrong owner/replica/issuance standing → canonical owned pair and locked issuance | **Implemented & verified** locally; real races pending |
+| 3 | Global weak OTP → crypto account HMAC, 15 minutes, email-bound callers/distributed guesses | **Implemented & verified**; old OTP resend required |
+| 4 | Late reset consume → proof first, expiry recheck, rollback all credential effects | **Implemented & verified** in modeled lock tests |
+| 5 | Sign-out leaves row → central signed owned revoke, two attempts | **Partial** only for durable outage cleanup; normal/replay tests pass |
+| 6 | Password changes preserve web rows → delete all sessions/revoke native transactionally | **Implemented & verified**; current device reauthenticates |
+| 7 | One-hour intent overwritten → deadline plus encoder/request cookie/session cap | **Implemented & verified** with installed Auth.js; old no-deadline cookies grandfathered |
+| 8 | Local limits/flawed counter → trusted adapter IP, signed exchange, Redis atomic windows, primary SQL escalation | **Implemented & verified** locally; provisioning/transport/real DB races pending |
+| 9 | Recovery boolean/timing oracle → uniform acknowledgement, deferred account work | **Implemented**; no arbitrary-infrastructure timing guarantee |
+| 10 | Raw PUT/null mismatch → public allowlist and explicit null clear | **Implemented & verified** response; optional upload external |
+| 11 | Frontend memory/hints/latches → bounded maps, trusted hint refresh, account readiness/migration, bounded retries | **Implemented & verified** locally; private browser pending |
+| 12 | Stale documentation/comments → canonical docs and affected contracts/comments synchronized | **Implemented**; historical documents retain provenance |
+| 13 | Private Netlify/real DB/performance evidence | **Partial**; no public launch or live-data mutation |
+| 14 | Partial delivery/admin/profile flow → pre-insert admin, creation-only 201, transactional profile/social links, handled effects | **Partial** only for durable mail/activity/outage retry and HTTP acknowledgement |
+| 15 | Referral after completion → primary locked attribution before completion and atomic defaults/locale | **Implemented & verified**; optional welcome/activity best-effort |
+
+Existing text/JSON columns support these changes; no automatic migration or live configuration change was performed.
+
+### 17.3 Recommended restoration approach, in dependency order
+
+The implementation used the following dependency order. Historical acceptance criteria remain useful; local evidence lives in §15 and deployment-only checks are explicitly pending.
+
+1. **Primary authority and native expiry.** Fixed claim-cache bounds, canonical owner pair, primary ban/tv, locked issuance and independent metadata throttle. Test warm hits, missing/wrong sid, expiry and revocation; real multi-instance/issuance-ban races remain private checks.
+2. **Recovery/data boundaries.** Crypto account OTP and distributed guessing, digest-only reset with legacy UUID support, consume before mutations and rollback revocation. Allowlisted profile/null clear, explicit consent, conditional primary defaults and locked referral eligibility before completion. Test resend/expiry/wrong account/collision scoping, losing reset and side-effect failure.
+3. **Browser lifecycle.** Signed central signOut, copied-cookie rejection after committed deletion, all-session credential-change policy and password-hash issuance recheck. Cleanup outages remain bounded/logged; durable retry requires queue ownership.
+4. **Actual lifetime.** Request-scoped maxAge and capped Auth.js encoding/session expiry implement fixed one-hour short sessions; remembered/Google retain rolling 30 days. Old canonical cookies lacking deadline retain their old encoded lifetime until reauthentication. Callback/renewal tests verify actual cookie/JWE behavior.
+5. **Abuse/presentation.** Trusted Netlify IP, signed body/account exchanges, atomic Redis TTL and fail-open policy, primary highest-threshold lockout, uniform recovery, bounded display/in-flight maps, server-owned hints and capped admin retries.
+6. **Routing/lifecycle and evidence.** Safe normalized redirect destinations, recognized locale segments, reactive OAuth/readiness, account-scoped completion markers, serialized/bounded retained guest-reading migration. Preserve custom avatars and the deliberate guest-generation removal.
+
+**Private acceptance still required:** providers/two devices; plain/secure/chunked cookies and signed control transport; direct/spoofed source headers and frontend rewrite egress; real reset/issuance/ban/referral/lockout races; Redis expiry/outage; measured primary query latency, CPU/memory and metadata writes with cache flag on/off. These need controlled private access/disposable fixtures, not going live.
+
+**Durable reliability follow-up:** review an idempotent outbox/retry worker for revocation cleanup and optional mail/activity, with schema/queue/retention/deployment ownership. waitUntil is invocation extension, not durable queuing or free compute. Repeat onboarding repairs defaults/payout but does not guarantee lost welcome/audit delivery. No provisional IDs, middleware identity repair, avatar overwrite, stale-closure polling or guest credit bypass is restored.
+
+### 17.4 Preserved original coverage
+
+| Valuable original topic | Current home / correction |
+|---|---|
+| Dual provider vs dual credential, benefits and alternatives | §1–§3; split identity adapters retained with costs and authority |
+| Login flow diagrams and callback ownership | §4–§5; real Hono/admission/rejection flows |
+| Schema, hashing and registration | §7; current tables/constraints, bcryptjs, request fields and partial responses |
+| Complete auth/device endpoint reference | §8–§10; flat web payload, native pair and account security catalog |
+| Forgot/reset, verification, lockout and rate-limit guidance | §8/§10/§12/§17; stronger original intent retained as explicit proposals |
+| Logout, other/all-device and compatibility contract | §4/§9; cookie cleanup vs row revocation made explicit |
+| Web/native secret and environment configuration | §6/§11; both API URLs, native rotation keys, private-site caveats |
+| Testing, troubleshooting and migration checklist | §15–§17; real commands/tests, useful diagnostics and coordinated deployment |
+| Security and industry rationale | §3/§13; primary references, controls and honest gaps |
+| Historical defects and intentional product changes | §7/§17; provenance retained without reintroducing removed guest/fallback behavior |
+
+---
+
+## 18. Section Anchor Map & Related Documents
+
+No source comments naming either auth architecture document were found in the two src trees during this edit. Preserve these section numbers for future citations; heading aliases below retain major historical deep links. Related-doc descriptions must follow these as-built guarantees.
+
+| Section | Topic / anchor | Source citations |
+|---|---|---|
+| §1 | [Executive Summary & Design Rationale](#1-executive-summary--design-rationale) | None found in either src tree |
+| §2 | [System Boundaries & Overview Diagram](#2-system-boundaries--overview-diagram) | None found in either src tree |
+| §3 | [Key Architectural Invariants](#3-key-architectural-invariants) | None found in either src tree |
+| §4 | [Browser Provider Admission & Tracked Sessions](#4-browser-provider-admission--tracked-sessions) | None found in either src tree |
+| §5 | [Global Middleware & Credential Reconciliation](#5-global-middleware--credential-reconciliation) | None found in either src tree |
+| §6 | [Native Access & Refresh Tokens](#6-native-access--refresh-tokens) | None found in either src tree |
+| §7 | [Identity, Registration & Profile Lifecycle](#7-identity-registration--profile-lifecycle) | None found in either src tree |
+| §8 | [Recovery, Verification & Account Methods](#8-recovery-verification--account-methods) | None found in either src tree |
+| §9 | [Logout & Revocation](#9-logout--revocation) | None found in either src tree |
+| §10 | [Errors, Route Guards & Abuse Controls](#10-errors-route-guards--abuse-controls) | None found in either src tree |
+| §11 | [Netlify & Local Configuration](#11-netlify--local-configuration) | None found in either src tree |
+| §12 | [Failure Modes & Recovery Matrix](#12-failure-modes--recovery-matrix) | None found in either src tree |
+| §13 | [Industry Standard Comparison](#13-industry-standard-comparison) | None found in either src tree |
+| §14 | [File Map & Ownership](#14-file-map--ownership) | None found in either src tree |
+| §15 | [Verification & Evidence](#15-verification--evidence) | None found in either src tree |
+| §16 | [FAQ](#16-faq) | None found in either src tree |
+| §17 | [Known Gaps & Future Enhancements](#17-known-gaps--future-enhancements) | None found in either src tree |
+| §18 | [Section Anchor Map & Related Documents](#18-section-anchor-map--related-documents) | None found in either src tree |
+
+- [Frontend auth architecture](../../../Twistloom-web/docs/architecture/FRONTEND_AUTH_ARCHITECTURE.md).
+- [Native mobile bearer roadmap](../roadmap/NATIVE_MOBILE_BEARER_AUTH_ROADMAP.md) and [Flutter auth contract](../../../Twistloom-flutter/docs/roadmap/MOBILE_AUTH_CONTRACT.md).
+- [Netlify migration roadmap](../roadmap/NETLIFY_MIGRATION_ROADMAP.md).
+- [Netlify free-tier optimization roadmap](../roadmap/NETLIFY_FREE_TIER_OPTIMIZATION_ROADMAP.md).
+
+The architecture format is maintained by [architecture-doc](../../.agents/skills/architecture-doc/SKILL.md) and checked with [architecture-doc-audit](../../.agents/skills/architecture-doc-audit/SKILL.md). [AGENTS.md](../../AGENTS.md) remains the repository authority. Do not convert planned restoration work into an implemented claim until its acceptance evidence exists.

@@ -14,7 +14,7 @@
 import type { Context } from "hono";
 import type { DBNewUser, DBNewUserActivityLog, DBUserActivityLog, DBUserForAuth } from "../types/schema.js";
 import { type AvatarFrame, avatarFrames, PROFILE_TITLES, type ProfileTitle, type CheckinClaimType, type CheckinPostResponse, type CheckinStatusResponse, type Gender } from "../types/user.js";
-import { type DBClient, dbRead, dbWrite } from "../db/client.js";
+import { type DBClient, type DBTransaction, dbRead, dbWrite } from "../db/client.js";
 import { users, books, posts, userComments, userAuth, userCheckins, userActivityLogs, userSocialLinks, userAchievements, userInventory } from "../db/schema.js";
 import { CONSUMABLES_REGISTRY } from "../config/consumables.js";
 import { ACHIEVEMENT_REGISTRY } from "../config/achievements.js";
@@ -406,16 +406,18 @@ export async function getUserIdByEmail(email: string): Promise<string | null> {
  * or username, returning all fields required for authentication including
  * the password hash. This is used during login and authentication flows.
  * 
- * Security Sonsiderations:
- * - NOT cached: Always hits the DB to ensure password changes, bans, and deletions take effect immediately.
- * - Password changes take effect immediately
- * - Account deletions/bans prevent login immediately
- * - Suitable for security-critical authentication operations
+ * Security considerations:
+ * - Not cached: reads the primary connection (`dbWrite`) so password changes
+ *   and deletions are not hidden by a positive cache or replica lag.
+ * - Returns credential/profile fields only; this lookup does not check ban
+ *   standing or create a session. Callers verify credentials, then use
+ *   `issueWebSession` to re-check current standing and issue the session atomically.
+ * - Password hashes are server-only and must never enter public responses.
  * 
  * Performance:
  * Uses indexed lookups on email and username columns for fast queries.
  * 
- * @param emailOrUsername - User email address or username to look up
+ * @param emailOrUsername - Email or username, normalized by trimming/lowercasing.
  * @returns User object with authentication data if found, null otherwise
  * 
  * @example
@@ -441,7 +443,7 @@ export async function getUserForAuth(
 ): Promise<DBUserForAuth | null> {
   const lookup = sanitizeTextForDB(String(emailOrUsername).trim().toLowerCase());
 
-  const [user] = await dbRead
+  const [user] = await dbWrite
     .select({
       userId:       users.userId,
       email:        users.email,
@@ -1157,7 +1159,8 @@ export async function sanitizeProfileUpdate(
   if (bio !== undefined) updateData.bio = bio;
 
   const imageUrl = sanitizeFieldValue('imageUrl', payload.imageUrl);
-  if (imageUrl !== undefined) updateData.imageUrl = imageUrl;
+  if (payload.imageUrl === null) updateData.imageUrl = null;
+  else if (imageUrl !== undefined) updateData.imageUrl = imageUrl;
 
   const gender = sanitizeFieldValue('gender', payload.gender);
   if (gender !== undefined) updateData.gender = gender;
@@ -1301,8 +1304,9 @@ const SOCIAL_PLATFORMS: SocialPlatform[] = ['discord', 'patreon', 'kofi', 'subst
 export async function updateSocialLinks(
   userId: string,
   socialLinks: Record<string, string> | null | undefined,
+  transaction?: DBTransaction,
 ): Promise<void> {
-  await dbWrite.transaction(async (tx) => {
+  const apply = async (tx: DBTransaction) => {
     // Clear all existing social links for this user
     await tx
       .delete(userSocialLinks)
@@ -1338,7 +1342,9 @@ export async function updateSocialLinks(
         .insert(userSocialLinks)
         .values(entries);
     }
-  });
+  };
+  if (transaction) await apply(transaction);
+  else await dbWrite.transaction(apply);
 }
 
 /**

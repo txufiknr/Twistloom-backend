@@ -36,6 +36,7 @@ const issuanceUserRow = {
 
 /** Rows the issuance user lookup returns; emptied to force the degraded path. */
 let issuanceRows = [issuanceUserRow];
+let insertedUser: Record<string, unknown> = {};
 
 const dbRead = {
   select: () => ({
@@ -52,15 +53,15 @@ const dbWrite = {
     fn({
       insert: () => ({
         values: (row: Record<string, unknown>) => ({
-          returning: async () => [
+          returning: async () => { insertedUser = row; return [
             { ...row, userId: "user-signup-1", isNewUser: true },
-          ],
+          ]; },
         }),
       }),
       select: () => ({
         from: () => ({
           where: () => ({
-            limit: async () => [{ tokenVersion: issuanceUserRow.tokenVersion }],
+            limit: () => ({ for: async () => issuanceRows }),
           }),
         }),
       }),
@@ -188,7 +189,7 @@ function postSignup(app: Hono<AppEnv>, overrides: object = {}) {
 beforeEach(() => {
   createSession.mockClear();
   createRefreshFamily.mockClear();
-  issuanceRows = [issuanceUserRow];
+  issuanceRows = [issuanceUserRow]; insertedUser = {};
 });
 
 afterAll(() => {
@@ -238,6 +239,15 @@ describe("POST /auth/signup (Q1-A: in-band token pair + isNewUser)", () => {
 
     expect(createSession).toHaveBeenCalledTimes(1);
     expect(createRefreshFamily).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists explicit opt-out rather than enabling defaults after signup', async () => {
+    expect((await postSignup(buildAuthApp(), { receiveEmails: false })).status).toBe(201);
+    const preferences = insertedUser.emailPreferences as Record<string, boolean>;
+    expect(preferences.weeklyRecommendations).toBe(false);
+    expect(preferences.monthlyActivitySummary).toBe(false);
+    expect(preferences.productAnnouncements).toBe(false);
+    expect(preferences.storyPublished).toBe(false);
   });
 
   it("degrades to a creation-only 201 when issuance cannot run", async () => {

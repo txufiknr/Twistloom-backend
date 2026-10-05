@@ -13,7 +13,7 @@
  * (`mobile-tokens`, `auth-cookie-baseline`) until a staging fixture lands.
  */
 
-import { describe, expect, it, beforeAll, afterAll, mock } from "bun:test";
+import { describe, expect, it, beforeAll, afterAll, mock, spyOn } from "bun:test";
 import { Hono, type Context } from "hono";
 import { initAuthConfig, getAuthUser } from "@hono/auth-js";
 import { SignJWT } from "jose";
@@ -42,7 +42,7 @@ const actualMobileTokens = await import("../src/services/mobile-tokens.js");
 
 const loadUserForBearer = mock(async () => ({
   ok: true as const,
-  userId: "user-step10",
+  userId: "019a0000-0000-7000-8000-000000000001",
   tokenVersion: 7,
   email: "step10@example.com",
 }));
@@ -136,10 +136,10 @@ async function bearerHeaders(token: string): Promise<Record<string, string>> {
   return { Authorization: `Bearer ${token}` };
 }
 
-async function validToken(userId = "user-step10", sessionId?: string, tv = 7) {
+async function validToken(userId = "019a0000-0000-7000-8000-000000000001", sessionId?: string, tv = 7) {
   // Unique sid per call so the 15s bearer identity LRU never reuses a prior
   // test's cached success and skips mocked DB legs.
-  return (await issueAccessToken(userId, sessionId ?? `sess-${crypto.randomUUID()}`, tv))
+  return (await issueAccessToken(userId, sessionId ?? crypto.randomUUID(), tv))
     .token;
 }
 
@@ -147,9 +147,9 @@ async function validToken(userId = "user-step10", sessionId?: string, tv = 7) {
 async function expiredToken(): Promise<string> {
   const secret = new TextEncoder().encode(TEST_MOBILE_SECRET);
   const now = Math.floor(Date.now() / 1000);
-  return new SignJWT({ sid: "sess-1", tv: 7 })
+  return new SignJWT({ sid: "019a0000-0000-7000-8000-000000000003", tv: 7 })
     .setProtectedHeader({ alg: "HS256", kid: "m0-hs256", typ: "JWT" })
-    .setSubject("user-step10")
+    .setSubject("019a0000-0000-7000-8000-000000000001")
     .setIssuer("twistloom-backend")
     .setAudience("reader")
     .setIssuedAt(now - 7200)
@@ -162,7 +162,7 @@ async function wrongAudienceToken(): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   return new SignJWT({ sid: "sess-wrong-audience", tv: 7 })
     .setProtectedHeader({ alg: "HS256", kid: "m0-hs256", typ: "JWT" })
-    .setSubject("user-step10")
+    .setSubject("019a0000-0000-7000-8000-000000000001")
     .setIssuer("twistloom-backend")
     .setAudience("pen")
     .setIssuedAt(now)
@@ -276,7 +276,7 @@ describe("Bearer middleware matrix (Step 10)", () => {
     const previous = process.env.MOBILE_ACCESS_SECRET;
     process.env.MOBILE_ACCESS_SECRET = "another-secret-completely-different-32!";
     try {
-      const wrong = await issueAccessToken("user-step10", "sess-1", 7);
+      const wrong = await issueAccessToken("019a0000-0000-7000-8000-000000000001", "019a0000-0000-7000-8000-000000000003", 7);
       process.env.MOBILE_ACCESS_SECRET = previous;
       const res = await bearerApp.request("/api/whoami", {
         headers: await bearerHeaders(wrong.token),
@@ -321,13 +321,13 @@ describe("Bearer middleware matrix (Step 10)", () => {
     });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.userId).toBe("user-step10");
+    expect(body.userId).toBe("019a0000-0000-7000-8000-000000000001");
     expect(loadUserForBearer).toHaveBeenCalled();
-    expect(sessionRowExistsFresh).toHaveBeenCalled();
+    expect(sessionRowExistsFresh).not.toHaveBeenCalled(); // Ownership is in the primary joined lookup.
   });
 
   it("returns 401 when session row is missing (revoked sid)", async () => {
-    sessionRowExistsFresh.mockImplementationOnce(async () => false);
+    loadUserForBearer.mockImplementationOnce(async () => ({ ok: false as const, kind: "session" as const }));
     const res = await bearerApp.request("/api/whoami", {
       headers: await bearerHeaders(await validToken()),
     });
@@ -381,7 +381,7 @@ describe("Cookie and bearer identity middleware composition", () => {
 
   it("accepts matching bearer and Auth.js cookie identities", async () => {
     const { cookieHeader } = await createSignedSessionCookie({
-      email: "user-step10@example.com",
+      email: "019a0000-0000-7000-8000-000000000001@example.com",
       sessionId: "sess-cookie-match",
       variant: "plain",
     });
@@ -394,7 +394,7 @@ describe("Cookie and bearer identity middleware composition", () => {
     });
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ userId: "user-step10" });
+    expect(await res.json()).toEqual({ userId: "019a0000-0000-7000-8000-000000000001" });
   });
 
   it("rejects conflicting bearer and Auth.js cookie identities", async () => {
@@ -512,5 +512,44 @@ describe("Logout body contract (NB-4) in Step 10", () => {
     expect(JSON.stringify({ message: "Logged out successfully" })).toBe(
       '{"message":"Logged out successfully"}',
     );
+  });
+});
+
+
+describe('native immutable-cache acceptance', () => {
+  for (const [kind, status] of [['session', 401], ['revoked', 401], ['banned', 403]] as const) {
+    it('rechecks ' + kind + ' after warming the same token', async () => {
+      const headers = await bearerHeaders(await validToken());
+      expect((await bearerApp.request('/api/whoami', { headers })).status).toBe(200);
+      const calls = loadUserForBearer.mock.calls.length;
+      loadUserForBearer.mockImplementationOnce(async () => ({ ok: false as const, kind }));
+      expect((await bearerApp.request('/api/whoami', { headers })).status).toBe(status);
+      expect(loadUserForBearer.mock.calls.length).toBe(calls + 1);
+    });
+  }
+  it('a frequently used warm token cannot pass its signed expiry', async () => {
+    const exp = Math.floor(Date.now() / 1000) + 5;
+    const token = await new SignJWT({ sub: '019a0000-0000-7000-8000-000000000001', sid: crypto.randomUUID(), tv: 7 })
+      .setProtectedHeader({ alg: 'HS256' }).setIssuer(actualMobileTokens.MOBILE_TOKEN_ISSUER).setAudience('reader')
+      .setIssuedAt().setExpirationTime(exp).sign(new TextEncoder().encode(TEST_MOBILE_SECRET));
+    const headers = await bearerHeaders(token);
+    expect((await bearerApp.request('/api/whoami', { headers })).status).toBe(200);
+    const clock = spyOn(Date, 'now');
+    try {
+      for (let offset = 1; offset < 5; offset++) {
+        clock.mockReturnValue((exp - 5 + offset) * 1000);
+        expect((await bearerApp.request('/api/whoami', { headers })).status).toBe(200);
+      }
+      clock.mockReturnValue(exp * 1000);
+      expect((await bearerApp.request('/api/whoami', { headers })).status).toBe(401);
+    } finally { clock.mockRestore(); }
+  });
+  it('rejects signed tokens without a canonical session owner pair', async () => {
+    for (const claims of [{ sub: '019a0000-0000-7000-8000-000000000001', tv: 7 },
+      { sub: 'google-sub', sid: crypto.randomUUID(), tv: 7 }]) {
+      const token = await new SignJWT(claims).setProtectedHeader({ alg: 'HS256' }).setIssuer(actualMobileTokens.MOBILE_TOKEN_ISSUER)
+        .setAudience('reader').setIssuedAt().setExpirationTime('15m').sign(new TextEncoder().encode(TEST_MOBILE_SECRET));
+      expect((await bearerApp.request('/api/whoami', { headers: await bearerHeaders(token) })).status).toBe(401);
+    }
   });
 });

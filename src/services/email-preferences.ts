@@ -7,20 +7,11 @@
  */
 
 import { createHmac, timingSafeEqual } from 'crypto';
-import { eq } from 'drizzle-orm';
+import { eq, and, isNull } from 'drizzle-orm';
 import { dbRead, dbWrite } from '../db/client.js';
 import { users } from '../db/schema.js';
-import {
-  DEFAULT_EMAIL_PREFERENCES,
-  EMAIL_PREFERENCE_BOOL_KEYS,
-  type EmailPreferences,
-  type EmailPreferencesUpdate,
-} from '../types/email-preferences.js';
-import {
-  DEFAULT_EMAIL_LOCALE,
-  isEmailLocale,
-  type EmailLocale,
-} from '../types/email-locale.js';
+import { DEFAULT_EMAIL_PREFERENCES, EMAIL_PREFERENCE_BOOL_KEYS, type EmailPreferences, type EmailPreferencesUpdate } from '../types/email-preferences.js';
+import { DEFAULT_EMAIL_LOCALE, isEmailLocale, type EmailLocale } from '../types/email-locale.js';
 import { emailLocalePathPrefix } from '../config/emails/i18n.js';
 
 /**
@@ -121,19 +112,9 @@ export async function updateEmailPreferences(
  * Applies default engagement prefs (opt-out model) at onboarding complete.
  */
 export async function ensureDefaultEmailPreferences(userId: string): Promise<void> {
-  const [row] = await dbRead
-    .select({ emailPreferences: users.emailPreferences })
-    .from(users)
-    .where(eq(users.userId, userId))
-    .limit(1);
-
-  if (!row) return;
-  if (row.emailPreferences != null) return;
-
-  await dbWrite
-    .update(users)
-    .set({ emailPreferences: DEFAULT_EMAIL_PREFERENCES, updatedAt: new Date() })
-    .where(eq(users.userId, userId));
+  // A conditional primary write preserves explicit consent even under replica lag.
+  await dbWrite.update(users).set({ emailPreferences: DEFAULT_EMAIL_PREFERENCES, updatedAt: new Date() })
+    .where(and(eq(users.userId, userId), isNull(users.emailPreferences)));
 }
 
 /**

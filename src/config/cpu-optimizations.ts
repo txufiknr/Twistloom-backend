@@ -1,17 +1,21 @@
 /**
  * Central CPU-optimization feature flag.
  *
- * Every CPU/billing-saving refactor in this codebase is gated behind this
- * single switch so operators can flip between two modes without code edits:
+ * Shared switch for the gated polling, cookie-decoding, and compression
+ * optimizations, allowing comparison or rollback without code edits:
  *
  * - **Optimizations ON (default)** — for CPU-constrained / credit-constrained
  *   tiers (Vercel Hobby, Netlify Free): status-poll coalescing (P1.4),
- *   session-verify cache (P2.4), and status payload compression skip (P2.5)
+ *   immutable session-cookie decode cache (P2.4), and status compression skip (P2.5)
  *   are all active.
  * - **Optimizations OFF** — set `DISABLE_CPU_OPTIMIZATIONS=true` (or `1`/`yes`/
- *   `on`) for paid tiers where CPU/duration is no longer a constraint. This
- *   restores maximum data freshness (no coalescing staleness) and removes the
- *   ≤60s session-verify trust window, at the cost of full CPU.
+ *   `on`) to disable these gated paths for measurement or rollback. Paid tiers
+ *   still benefit from reduced work; disabling this is an operational choice,
+ *   not a prerequisite for upgrading. Cookie decode single-flight can still
+ *   coalesce concurrent requests; the completed decode LRU is bypassed.
+ *
+ * Security invariant: session existence, ownership, and account standing are
+ * checked freshly in both modes. This flag never enables stale authorization.
  *
  * Reading `process.env` once at module load is safe on both Bun and Node.js
  * serverless runtimes (platforms inject env vars into `process.env`).

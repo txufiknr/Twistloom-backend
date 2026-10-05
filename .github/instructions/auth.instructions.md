@@ -8,8 +8,8 @@ See `AGENTS.md` for the full security invariants. This file adds path-specific c
 
 ## Common Pitfalls
 
-- `verifyNextAuthToken` performs JWE decryption + lookups on every request — cache the resolved `{ userId, sessionId }` in a short-TTL LRU keyed by SHA-256 hash of the raw token.
-- Invalidate session cache immediately on logout.
+- `verifyNextAuthToken` may cache immutable JWE decoding in a short-TTL LRU keyed by the actual token-cookie names/chunks. Never cache authorization: every request freshly checks session existence, ownership and account standing against the primary store.
+- Logout deletes authoritative session rows; no positive cache or read replica may bypass revocation. Clear actual plain/secure cookie chunks on rejection. Public password/Google exchanges must allow reauthentication with a stale cookie while independently verifying credentials.
 - Authentication proves identity; authorization decides whether that identity may perform an operation. Do not treat possession of an identifier as authorization.
 - Guest/authenticated migration semantics must be preserved — not every reader has a logged-in account.
 - Payment webhook handlers must tolerate retries and verify idempotency before processing.

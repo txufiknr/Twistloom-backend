@@ -1,3 +1,4 @@
+import { AuthPolicyError } from "./utils/auth-error.js";
 /**
  * Serverless-compatible Hono setup
  *
@@ -221,9 +222,12 @@ app.get("/user", (c) => c.redirect("/api/user"));
 app.get("/books", (c) => c.redirect("/api/books"));
 
 // Global error handler — formats HTTPException and unexpected errors uniformly.
+// Auth policy rejections add a stable public code for client translation while
+// retaining the existing status/error contract; unexpected errors stay generic
+// in production and must never be converted into successful authentication.
 app.onError((err, c) => {
   if (err instanceof HTTPException) {
-    return c.json({ success: false, error: err.message }, err.status);
+    return c.json({ success: false, error: err.message, ...(err instanceof AuthPolicyError ? { code: err.code } : {}) }, err.status);
   }
   console.error("[app] ❌ Unhandled error:", err);
   return c.json(

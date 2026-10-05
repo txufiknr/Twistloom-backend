@@ -13,7 +13,7 @@
   "verification.codeLabel": "Your Verification Code",
   "verification.body2": "Or click the button below to verify your email directly:",
   "verification.button": "Verify Email",
-  "verification.footer1": "This verification code expires in <strong>24 hours</strong>.",
+  "verification.footer1": "This verification code expires in <strong>15 minutes</strong>.",
   "verification.footer2": "If you didn't create an account, no action is needed — this code will expire on its own.",
 
   "welcome.subject": "Welcome to {{appName}}!",

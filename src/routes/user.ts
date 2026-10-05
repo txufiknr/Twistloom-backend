@@ -1,3 +1,9 @@
+import { DEFAULT_EMAIL_PREFERENCES } from '../types/email-preferences.js';
+import { DEFAULT_IN_APP_PREFERENCES } from '../types/in-app-preferences.js';
+import { DEFAULT_PRIVACY_PREFERENCES } from '../types/privacy-preferences.js';
+import { isEmailLocale } from '../types/email-locale.js';
+import { tryAwardReferralBonus } from '../services/user-controller.js';
+import { publicUpdatedProfile } from '../services/profile-response.js';
 /**
  * User Routes
  * 
@@ -667,22 +673,13 @@ router.post('/', requireAuth, async (c: Context<AppEnv>) => {
     const userId = c.get("userId")!;
     const body = c.get("body") ?? {};
 
-    const [current] = await dbRead
+    const [current] = await dbWrite
       .select({ isNewUser: users.isNewUser, username: users.username })
       .from(users)
       .where(eq(users.userId, userId))
       .limit(1);
 
     if (!current) return cNotFoundError(c, 'User not found');
-
-    // Idempotent: already finished — success so fire-and-forget clients don't error
-    if (!current.isNewUser) {
-      return c.json({
-        message: 'Onboarding already completed',
-        isNewUser: false,
-        username: current.username,
-      });
-    }
 
     // 1. Sanitize payload via SSOT (all fields optional; empty body is valid)
     const sanitizeResult = await sanitizeProfileUpdate(userId, body, c);
@@ -715,63 +712,47 @@ router.post('/', requireAuth, async (c: Context<AppEnv>) => {
       }
     }
 
-    // 3. Complete onboarding
-    updateData.isNewUser = false;
-    updateData.updatedAt = new Date();
+    // Attribution, onboarding state and preferences share one primary lock.
+    const completed = await dbWrite.transaction(async (tx) => {
+      const [locked] = await tx.select().from(users).where(eq(users.userId, userId)).limit(1).for('update');
+      if (!locked) throw new Error('User unavailable');
+      if (locked.isNewUser && typeof body.referrer === 'string' && body.referrer) {
+        await setReferrerForNewUser(c, userId, body.referrer, { client: tx, handleResponse: false, deferSideEffects: true });
+      }
+      const data = locked.isNewUser ? updateData : {};
+      await tx.update(users).set({
+        ...data, isNewUser: false, updatedAt: new Date(),
+        ...(locked.isNewUser && typeof body.source === 'string' && sources.includes(body.source as Source) ? { source: body.source } : {}),
+        emailPreferences: locked.emailPreferences ?? DEFAULT_EMAIL_PREFERENCES,
+        inAppPreferences: locked.inAppPreferences ?? DEFAULT_IN_APP_PREFERENCES,
+        privacyPreferences: locked.privacyPreferences ?? DEFAULT_PRIVACY_PREFERENCES,
+        ...(isEmailLocale(body.preferredLocale) ? { preferredLocale: body.preferredLocale } : {}),
+      }).where(eq(users.userId, userId));
+      return { first: locked.isNewUser, email: locked.email, username: data.username ?? locked.username };
+    });
 
-    if (body.source && typeof body.source === 'string' && sources.includes(body.source as Source)) {
-      updateData.source = body.source;
-    }
-
-    await dbWrite
-      .update(users)
-      .set(updateData)
-      .where(eq(users.userId, userId));
-
-    // 4. Referrer (optional; no-ops if already set)
-    if (body.referrer && typeof body.referrer === 'string') {
-      await setReferrerForNewUser(c, userId, body.referrer, { handleResponse: false });
-    }
-
-    await invalidateUserProfileCache(userId);
-    await updateUserLastActivity(userId);
-    await logUserActivity(
-      { userId, activityType: 'onboarding_complete', targetType: 'user', targetId: userId },
-      { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } }
-    );
-
-    // Default engagement prefs (opt-out) + optional preferredLocale from client UI cookie
-    const { ensureDefaultEmailPreferences, updatePreferredLocale } = await import('../services/email-preferences.js');
-    await ensureDefaultEmailPreferences(userId);
-    const { ensureDefaultInAppPreferences } = await import('../services/in-app-preferences.js');
-    await ensureDefaultInAppPreferences(userId);
-    const { ensureDefaultPrivacyPreferences } = await import('../services/privacy-preferences.js');
-    await ensureDefaultPrivacyPreferences(userId);
-
-    const { isEmailLocale } = await import('../types/email-locale.js');
-    if (body.preferredLocale && isEmailLocale(body.preferredLocale)) {
-      await updatePreferredLocale(userId, body.preferredLocale);
-    }
-
-    const [userRow] = await dbRead
-      .select({ email: users.email, username: users.username })
-      .from(users)
-      .where(eq(users.userId, userId))
-      .limit(1);
-
-    if (userRow?.email) {
-      const { sendWelcomeEmail, sendEmailSafe } = await import('../utils/email.js');
-      const username =
-        (updateData.username as string | undefined) ?? userRow.username ?? current.username;
-      sendEmailSafe('POST /api/user welcome', () =>
-        sendWelcomeEmail(userRow.email, username, { userId }),
-      );
-    }
+    // Optional work cannot turn a committed completion into a failed response.
+    // Referral claiming is idempotent and is retried on repeat completion.
+    const effects = (async () => {
+      const results = await Promise.allSettled([
+        invalidateUserProfileCache(userId), updateUserLastActivity(userId), tryAwardReferralBonus(userId),
+        ...(completed.first ? [logUserActivity(
+          { userId, activityType: 'onboarding_complete', targetType: 'user', targetId: userId },
+          { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } },
+        )] : []),
+      ]);
+      if (results.some(result => result.status === 'rejected')) console.error('[onboarding] Post-commit work failed');
+      if (completed.first && completed.email) {
+        const { sendWelcomeEmail } = await import('../utils/email.js');
+        await sendWelcomeEmail(completed.email, completed.username, { userId });
+      }
+    })().catch(() => { console.error('[onboarding] Welcome delivery failed'); });
+    try { c.executionCtx.waitUntil(effects); } catch { void effects; }
 
     return c.json({
       message:   'Onboarding complete',
       isNewUser: false,
-      username:  (updateData.username as string | undefined) ?? current.username,
+      username: completed.username,
     });
   } catch (error) {
     console.error('[POST /api/user] ❌', error);
@@ -867,36 +848,19 @@ router.put('/', requireAuth, async (c: Context<AppEnv>) => {
     // 3. Apply partial profile update (does not complete onboarding)
     updateData.updatedAt = new Date();
 
-    const [user] = await dbWrite
-      .update(users)
-      .set(updateData)
-      .where(eq(users.userId, userId))
-      .returning();
-
-    // 4. Update social links in junction table (if provided)
-    if ('socialLinks' in body) {
-      await updateSocialLinks(userId, body.socialLinks);
-    }
-
-    await invalidateUserProfileCache(userId);
-    await updateUserLastActivity(userId);
-
-    // Rename userId → id for frontend consistency
-    // Normalize: move tier into subscription sub-object (consistent with GET /api/user)
-    // Expose hasReferrer (boolean SSOT); never leak raw referrerId UUID to clients
-    const { userId: id, tier: putTier, vipExpiresAt: putVipExpiresAt, referrerId, ...putRest } = user;
-    await logAuditEvent(c, 'security_profile_updated', 'user');
-    return c.json({
-      success: true,
-      user: {
-        id,
-        ...putRest,
-        hasReferrer: !!referrerId,
-        subscription: { tier: putTier },
-        // From the RETURNING() row above - no re-fetch (SSOT: subscription.ts).
-        isVip: isUserVipActive({ tier: putTier, vipExpiresAt: putVipExpiresAt }),
-      },
+    const user = await dbWrite.transaction(async (tx) => {
+      const [updated] = await tx.update(users).set(updateData).where(eq(users.userId, userId)).returning();
+      if (!updated) return null;
+      if ('socialLinks' in body) await updateSocialLinks(userId, body.socialLinks, tx);
+      return updated;
     });
+    if (!user) return cNotFoundError(c, 'User not found');
+    const effects = await Promise.allSettled([
+      invalidateUserProfileCache(userId), updateUserLastActivity(userId),
+      logAuditEvent(c, 'security_profile_updated', 'user'),
+    ]);
+    if (effects.some(effect => effect.status === 'rejected')) console.error('[profile] Post-commit work failed');
+    return c.json({ success: true, user: publicUpdatedProfile(user) });
   } catch (error) {
     console.error('[PUT /api/user] ❌', error);
     return cApiError(c, 'Failed to update profile', error);

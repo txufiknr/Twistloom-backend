@@ -104,15 +104,17 @@ export async function checkRateLimit(
 
   const { maxRequests, windowSeconds } = config;
   
-  // Use atomic INCR with EXPIRE to prevent race condition
-  // If key doesn't exist, INCR creates it with value 1 and sets expiration
-  // If key exists, only INCR is executed
-  const requestCount = await redis.incr(key);
-  
-  // Only set expiration if this is the first request (key was just created)
-  // This prevents the race condition where INCR succeeds but EXPIRE fails
-  if (requestCount === 1) {
-    await redis.expire(key, windowSeconds);
+  // One script owns both increment and TTL, including repair of legacy keys
+  // left without expiry by the former two-command implementation.
+  let requestCount: number;
+  try {
+    requestCount = await redis.eval<unknown[], number>(
+    "local n = redis.call('INCR', KEYS[1]); if redis.call('TTL', KEYS[1]) < 0 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end; return n",
+    [key], [windowSeconds],
+    );
+  } catch {
+    console.error('[rate-limit] Redis unavailable (fail open)');
+    return { allowed: true, requestCount: 1 };
   }
 
   const allowed = requestCount <= maxRequests;

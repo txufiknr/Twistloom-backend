@@ -498,15 +498,16 @@ export async function setReferrerForNewUser(
   referrerUsername: string,
   opts: {
     client?: DBClient;
+    deferSideEffects?: boolean; // Caller owns transaction and post-commit work
     handleResponse?: boolean; // Whether to send API responses (default: true)
   } = {}
 ): Promise<boolean> {
-  const { client = dbWrite, handleResponse = true } = opts;
+  const { client = dbWrite, handleResponse = true, deferSideEffects = false } = opts;
   const res = c;
 
   try {
     // Ensure user exists and is new
-    const [user] = await dbRead
+    const [user] = await client
       .select({ userId: users.userId, isNewUser: users.isNewUser, referrerId: users.referrerId })
       .from(users)
       .where(eq(users.userId, userId))
@@ -532,7 +533,7 @@ export async function setReferrerForNewUser(
 
     // Find referrer by username — must have verified email to be eligible
     const cleanReferrer = sanitizeUsername(referrerUsername);
-    const [referrer] = await dbRead
+    const [referrer] = await client
       .select({
         userId: users.userId,
         username: users.username,
@@ -563,10 +564,13 @@ export async function setReferrerForNewUser(
     }
 
     // Record referrer only — do NOT flip isNewUser; onboarding still owns that flag
-    await client
+    const applied = await client
       .update(users)
       .set({ referrerId: referrer.userId, updatedAt: new Date() })
-      .where(eq(users.userId, userId));
+      .where(and(eq(users.userId, userId), eq(users.isNewUser, true), sql`${users.referrerId} is null`))
+      .returning({ userId: users.userId });
+    if (!applied.length) return false;
+    if (deferSideEffects) return true;
 
     // Pay only if referred user is already verified (Google / already-verified path).
     // Form signup: email still unverified → tryAwardReferralBonus no-ops until verify-email.
@@ -596,6 +600,7 @@ export async function setReferrerForNewUser(
     console.log(`[user-controller] ✅ Applied referrer ${userId} → ${referrerUsername}`);
     return true;
   } catch (error) {
+    if (deferSideEffects) throw error; // Transaction owner must roll back.
     console.error('[user-controller] ❌ Failed to apply referrer:', error);
     if (handleResponse) return !!cApiError(res, 'Failed to apply referrer', error);
     return false;
@@ -637,7 +642,7 @@ export async function setReferrerForNewUser(
 export async function tryAwardReferralBonus(userId: string): Promise<boolean> {
   try {
     // Fast pre-checks (non-authoritative — claim below is the real guard)
-    const [row] = await dbRead
+    const [row] = await dbWrite
       .select({
         referrerId: users.referrerId,
         referralRewardedAt: users.referralRewardedAt,

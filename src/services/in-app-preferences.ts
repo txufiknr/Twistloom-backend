@@ -8,7 +8,7 @@
  * key is opt-out and defaults to enabled.
  */
 
-import { eq } from 'drizzle-orm';
+import { eq, and, isNull } from 'drizzle-orm';
 import { dbRead, dbWrite } from '../db/client.js';
 import { users } from '../db/schema.js';
 import {
@@ -93,17 +93,7 @@ export async function updateInAppPreferences(
  * Applies default in-app prefs (opt-out model) at onboarding complete.
  */
 export async function ensureDefaultInAppPreferences(userId: string): Promise<void> {
-  const [row] = await dbRead
-    .select({ inAppPreferences: users.inAppPreferences })
-    .from(users)
-    .where(eq(users.userId, userId))
-    .limit(1);
-
-  if (!row) return;
-  if (row.inAppPreferences != null) return;
-
-  await dbWrite
-    .update(users)
-    .set({ inAppPreferences: DEFAULT_IN_APP_PREFERENCES, updatedAt: new Date() })
-    .where(eq(users.userId, userId));
+  // A conditional primary write preserves explicit consent even under replica lag.
+  await dbWrite.update(users).set({ inAppPreferences: DEFAULT_IN_APP_PREFERENCES, updatedAt: new Date() })
+    .where(and(eq(users.userId, userId), isNull(users.inAppPreferences)));
 }

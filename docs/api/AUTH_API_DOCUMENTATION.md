@@ -14,7 +14,7 @@ The Authentication API provides endpoints for user registration, credential veri
 - Email/Password and Google OAuth authentication methods supported
 - Native mobile clients use `POST /mobile/token`, `POST /mobile/google`, or `POST /mobile/apple` + `POST /mobile/refresh` for bearer access tokens (HS256 JWT) with rotating opaque refresh secrets (shared SSOT `issueMobileLoginPair`)
 
-**Authentication faces (multi-platform):** protected endpoints accept **NextAuth JWT cookies** (web) and **Bearer access tokens** (native Flutter). One identity store, two credential adapters — dual credential. Cookie verification remains first-class; bearer issue/refresh routes (`POST /mobile/token`, `POST /mobile/google`, `POST /mobile/apple`, `POST /mobile/refresh`) are implemented and documented below. Verified bearer identities may be cached in a **15s process LRU** keyed by SHA-256(raw token) (gated by `CPU_OPTIMIZATIONS_ENABLED`); logout invalidates the presented token immediately. See [DUAL_AUTH_ARCHITECTURE.md](../architecture/DUAL_AUTH_ARCHITECTURE.md) for architecture details.
+**Authentication faces (multi-platform):** protected endpoints accept **NextAuth JWT cookies** (web) and **Bearer access tokens** (native Flutter). One identity store, two credential adapters — dual credential. Cookie verification remains first-class; bearer issue/refresh routes (`POST /mobile/token`, `POST /mobile/google`, `POST /mobile/apple`, `POST /mobile/refresh`) are implemented and documented below. Verified immutable bearer claims may be reused in a **fixed maximum 15s process LRU**, capped by encoded expiry. Every accepted request freshly checks primary session owner, ban and token version; cache hits cannot authorize deleted sessions. See [DUAL_AUTH_ARCHITECTURE.md](../architecture/DUAL_AUTH_ARCHITECTURE.md) for architecture details.
 
 ---
 
@@ -271,7 +271,7 @@ Initiates password reset flow by generating a secure token and sending a passwor
 }
 ```
 
-The `emailSent` field indicates whether Resend successfully accepted the email delivery request. Always `false` for non-existing emails (prevents enumeration).
+The legacy `emailSent:true` field means request accepted, not delivery. Existing and absent accounts receive the same acknowledgement. Account lookup, proof issuance and mail run as handled deferred work; delivery failures do not change the public body.
 
 **Error Responses:**
 - `400 Bad Request`: Email is required
@@ -378,7 +378,8 @@ Verifies user email using a verification token sent during signup.
 **Request Body:**
 ```json
 {
-  "token": "string"  // Email verification token
+  "token": "123456",  // Six-digit verification code
+  "email": "user@example.com" // Account to which this code belongs
 }
 ```
 
@@ -395,7 +396,8 @@ Verifies user email using a verification token sent during signup.
 - `500 Internal Server Error`: Server error
 
 **Security Features:**
-- Token expires after 24 hours
+- Code expires after 15 minutes; cryptographically random and stored as an account-bound HMAC
+- Both code and normalized account email required; old unscoped codes require resend
 - Token is single-use (revoked after verification)
 - Token validation prevents replay attacks
 
@@ -430,7 +432,7 @@ Resends email verification token for users who didn't receive or lost their veri
 }
 ```
 
-`emailSent` indicates whether the email was actually sent via Resend. Always `false` for non-existing or already-verified emails (prevents enumeration). Same response body returned for all code paths including unexpected errors.
+The legacy `emailSent:true` means request accepted, not Resend delivery. Valid requests receive the same body for existing, absent and already-verified accounts; account-specific work is deferred and handled. Input errors remain 400 and limiter rejection 429.
 
 **Error Responses:**
 - `400 Bad Request`: Email is required
@@ -876,7 +878,7 @@ The `isCurrent` field indicates whether the session is the one associated with t
 **Security Features:**
 - Requires authentication via `requireAuth` middleware
 - Returns only sessions belonging to the authenticated user
-- Uses LRU cache for session verification (reduces database queries)
+- Reuses immutable cookie decoding only; primary session-owner/standing checks stay fresh
 
 **Database Operations:**
 1. Queries `auth_sessions` table for user's sessions
@@ -1078,6 +1080,14 @@ Content-Type: application/json
 3. Invalidates cache entry for deleted session
 
 ---
+
+### POST /api/auth/revoke-web-session
+
+Auth.js server signOut sends `{proof}` signed with the domain-separated shared-secret control key. HS256, issuer/audience, purpose revoke, canonical owner/session UUIDs and at most 60 seconds of lifetime are required. The primary owner/session pair is deleted idempotently; success is `{revoked:true}`, invalid proof 401 and database failure 500. An application cookie is not required. The frontend tries twice with five-second timeouts, then still clears its cookie; copied-cookie revocation during an outage is not guaranteed.
+
+### GET /api/auth/session-hints
+
+Authenticated tracked session required. Returns primary `{isNewUser,username,isAdmin}` for explicit Auth.js presentation refresh; client update flags cannot grant these values. Backend admin capability checks remain separate.
 
 ### POST /api/auth/logout
 
@@ -1519,19 +1529,20 @@ Changes the authenticated user's username.
 - Email enumeration prevention (always returns success for auth flows)
 
 **Token Security:**
-- Random UUID tokens
+- Reset: 32-byte cryptographic proof, SHA-256 stored; unexpired legacy UUID links remain accepted
+- Verification: six-digit cryptographic code, account-bound HMAC stored
 - Password reset tokens: 1 hour expiry
-- Email verification tokens: 24 hour expiry
+- Email verification codes: 15 minutes expiry
 - Single-use tokens (revoked after use)
 
 **Session Security:**
 - Per-device session tracking via `auth_sessions` table
 - Session ID embedded in JWT (cookie) / bearer `sid` claim for verification
-- LRU cache for session existence checks (reduces DB load)
+- Decode caches reuse immutable proofs only; both adapters check primary session owner/ban on every accepted request
 - Selective session revocation (logout single device or all devices)
-- `tokenVersion` mechanism for bulk JWT revocation (cookie + bearer)
+- Native compares tokenVersion; web revocation deletes tracked rows (web JWE has no tokenVersion check)
 - Mobile refresh families: rotating opaque secrets, SHA-256 stored, family-level revocation on reuse
-- Password change / reset bump `tokenVersion` + soft-revoke all `refresh_families` in one transaction; logout-all-devices bumps `tokenVersion` + deletes all sessions (cascade removes families) in one transaction
+- Password change/reset consume proof as applicable, update password/version, revoke families and delete ALL tracked sessions in one transaction; current browser also reauthenticates. Logout-all-devices deletes sessions and bumps version transactionally.
 
 **Bearer Token Security:**
 - HS256 access JWT signed with `MOBILE_ACCESS_SECRET` (≥32 chars, separate from `AUTH_SECRET`)
@@ -1555,7 +1566,8 @@ Public endpoints implement IP-based rate limiting to prevent:
 - Account creation abuse (signup)
 
 **Implementation tiers:**
-- **In-memory LRU** (`checkRateLimitByIP`): used by cookie-path credential/signup/reset flows for per-process throttling
+- **Shared Redis** (`checkRateLimitByIP`): trusted provider IP budget for public auth; hashed account budgets for credentials/recovery/verification. Atomic counter + TTL; infrastructure failure opens the limiter. TRUST_PROXY_HEADERS remains false unless an operator explicitly trusts the configured proxy.
+- **Signed frontend exchange**: purpose/body-bound proof separates frontend egress (300/minute) and account (5/minute) budgets from unsigned direct-IP limits.
 - **Upstash Redis** (`checkRateLimit`): used by mobile token/refresh endpoints (`auth-mobile-token:${ip}` 10/60s, `auth-mobile-refresh:${ip}` 30/60s) — serverless-safe atomic counters, fail-open when Redis is unavailable (AGENTS.md §3.9.C)
 
 ---
@@ -1570,7 +1582,7 @@ RESEND_API_KEY=re_xxxxxxxxxxxxxx
 RESEND_FROM_EMAIL=noreply@twistloom.com
 
 # Frontend URL (for email links)
-FRONTEND_URL=https://twistloom.vercel.app
+FRONTEND_URL=https://twistloom-web.netlify.app
 ```
 
 ### Required for Google Auth
@@ -1861,7 +1873,7 @@ This separation enables:
 ### Data Retention
 
 - Password reset tokens: 1 hour
-- Email verification tokens: 24 hours
+- Email verification codes: 15 minutes
 - Account lockout records: Until unlocked or manually reset
 - Failed login attempts: Reset on successful login
 - Active sessions: Until explicitly logged out or user deleted

@@ -31,15 +31,15 @@ afterEach(() => {
 
 describe("Mobile access tokens (Step 4)", () => {
   it("issues a HS256 JWT with expected claims", async () => {
-    const result = await issueAccessToken("user-1", "session-1", 7);
+    const result = await issueAccessToken("019a0000-0000-7000-8000-000000000001", "019a0000-0000-7000-8000-000000000003", 7);
     expect(typeof result.token).toBe("string");
     expect(result.expiresIn).toBe(900);
 
     const verified = await verifyAccessToken(result.token);
     expect(verified.ok).toBe(true);
     if (verified.ok) {
-      expect(verified.claims.sub).toBe("user-1");
-      expect(verified.claims.sid).toBe("session-1");
+      expect(verified.claims.sub).toBe("019a0000-0000-7000-8000-000000000001");
+      expect(verified.claims.sid).toBe("019a0000-0000-7000-8000-000000000003");
       expect(verified.claims.tv).toBe(7);
       expect(verified.claims.iss).toBe(MOBILE_TOKEN_ISSUER);
       expect(verified.claims.aud).toBe(PROVISIONAL_AUDIENCE);
@@ -47,7 +47,7 @@ describe("Mobile access tokens (Step 4)", () => {
   });
 
   it("rejects a token signed with a different secret", async () => {
-    const result = await issueAccessToken("user-1", "session-1", 0);
+    const result = await issueAccessToken("019a0000-0000-7000-8000-000000000001", "019a0000-0000-7000-8000-000000000003", 0);
     setSecret("another-secret-completely-different-32!");
     const verified = await verifyAccessToken(result.token);
     expect(verified.ok).toBe(false);
@@ -55,7 +55,7 @@ describe("Mobile access tokens (Step 4)", () => {
   });
 
   it("accepts previous secret during dual-secret rotation window", async () => {
-    const result = await issueAccessToken("user-1", "session-1", 0);
+    const result = await issueAccessToken("019a0000-0000-7000-8000-000000000001", "019a0000-0000-7000-8000-000000000003", 0);
     // Rotate: current secret changes, previous keeps working
     process.env.MOBILE_ACCESS_SECRET = "brand-new-secret-for-rotation-32ch";
     process.env.MOBILE_ACCESS_SECRET_PREVIOUS =
@@ -65,7 +65,7 @@ describe("Mobile access tokens (Step 4)", () => {
   });
 
   it("rejects tampered payload", async () => {
-    const result = await issueAccessToken("user-1", "session-1", 0);
+    const result = await issueAccessToken("019a0000-0000-7000-8000-000000000001", "019a0000-0000-7000-8000-000000000003", 0);
     const parts = result.token.split(".");
     // Flip a character in the payload segment
     const payload = parts[1].replace(/^.(?=.)/, (m) => (m === "A" ? "B" : "A"));
@@ -115,8 +115,8 @@ describe("evaluateRotation — RFC 9700 family rotation (Step 6)", () => {
   function familyRow(overrides: Partial<RotationFamilyRow> = {}): RotationFamilyRow {
     return {
       id: "family-1",
-      userId: "user-1",
-      sessionId: "session-1",
+      userId: "019a0000-0000-7000-8000-000000000001",
+      sessionId: "019a0000-0000-7000-8000-000000000003",
       tokenVersion: 3,
       refreshHash: CURRENT,
       usedHashes: [OLDER, PREVIOUS],

@@ -13,7 +13,7 @@
   "verification.codeLabel": "Kode Verifikasi Anda",
   "verification.body2": "Atau klik tombol di bawah untuk memverifikasi email langsung:",
   "verification.button": "Verifikasi Email",
-  "verification.footer1": "Kode verifikasi ini kedaluwarsa dalam <strong>24 jam</strong>.",
+  "verification.footer1": "Kode verifikasi ini kedaluwarsa dalam <strong>15 menit</strong>.",
   "verification.footer2": "Jika Anda tidak membuat akun, tidak perlu melakukan apa pun — kode ini akan kedaluwarsa sendiri.",
 
   "welcome.subject": "Selamat datang di {{appName}}!",

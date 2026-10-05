@@ -6,7 +6,7 @@
  * 
  * Features:
  * - Sliding window rate limiting (more accurate than fixed window)
- * - Redis-backed (ultra-fast, <1ms latency)
+ * - Redis-backed; REST latency depends on region/network
  * - Automatic TTL expiration (no cleanup needed)
  * - Serverless-safe (Upstash REST API)
  * - Configurable limits per endpoint or globally
@@ -15,21 +15,21 @@
  * - Uses @upstash/ratelimit for battle-tested rate limiting
  * - Automatic key expiration via TTL
  * - No database bloat concerns
- * - Sub-millisecond response times
+ * - One shared enforcement boundary across serverless instances
  * 
  * @note
  * - Requires UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN environment variables
- * - Falls back to database-backed rate limiting if Redis is unavailable
+ * - Fails open when Redis is absent or unavailable (explicit infrastructure policy)
  * - Only applies rate limiting to requests with userId (set by NextAuth auth middleware)
  */
 
 import { createMiddleware } from 'hono/factory';
 import { HTTPException } from 'hono/http-exception';
 import { Ratelimit } from '@upstash/ratelimit';
-import { LRUCache } from 'lru-cache';
 import { getErrorMessage } from '../utils/error.js';
 import type { RateLimitConfig } from '../types/redis.js';
-import { getRedisClient } from '../utils/redis.js';
+import { getRedisClient, checkRateLimit } from '../utils/redis.js';
+import { hashSHA256 } from '../utils/hash.js';
 import type { AppEnv } from '../hono/env.js';
 import { getClientIp } from '../hono/express-shim.js';
 
@@ -62,7 +62,7 @@ export interface RateLimitOptions {
  * - Counts requests within the last N seconds
  * - More accurate than fixed window (no burst at window boundaries)
  * - Automatic TTL expiration (no cleanup needed)
- * - Ultra-fast (<1ms latency vs 10-50ms for database)
+ * - Deployment latency must be measured; no sub-millisecond guarantee
  * 
  * @param config - Rate limit configuration (defaults to 100 req/min)
  * @param opts - Optional behavior flags (see {@link RateLimitOptions})
@@ -191,72 +191,43 @@ export function rateLimit(config: RateLimitConfig = DEFAULT_RATE_LIMIT, opts?: R
 export const rateLimitByUser = rateLimit(DEFAULT_RATE_LIMIT);
 
 /**
- * Simple in-memory IP-based rate limiter for unauthenticated endpoints.
- * 
- * Used for endpoints where the user is not yet authenticated (e.g., login, signup).
- * The global rateLimitByUser middleware requires req.userId, which doesn't exist
- * before authentication. This IP-based limiter fills that gap for security.
- * 
- * Security Purpose:
- * - Prevents brute force attacks on login/signup endpoints
- * - Limits attempts per IP address instead of per user
- * - Simple in-memory implementation (no Redis needed)
- * 
- * Implementation:
- * - Uses LRU cache for automatic memory management
- * - Max 10,000 IPs cached (prevents unbounded memory growth)
- * - Automatic eviction when cache is full
- * - Configurable via environment variables
- * 
- * Limitations:
- * - In-memory only (resets on server restart)
- * - Per-IP (can be bypassed with proxy rotation)
- * - Not distributed across multiple server instances
- * 
- * Environment Variables:
- * - AUTH_RATE_LIMIT_MAX_ATTEMPTS: Maximum attempts per window (default: 5)
- * - AUTH_RATE_LIMIT_WINDOW_MS: Time window in milliseconds (default: 60000)
- * 
+ * Distributed IP attempts for unauthenticated auth/recovery routes.
+ *
+ * Uses the shared atomic Redis fixed-window helper rather than warm-instance
+ * counters. Optional normalized account buckets bind OTP guesses across IPs.
+ * Neither layer is an account-existence oracle; bucket keys contain SHA-256
+ * digests rather than plaintext emails/IPs. Account lockout is separate.
+ *
+ * @remarks Redis absence/outage fails open by repository policy. Netlify
+ *   supplies trusted context.ip; arbitrary forwarded headers are not authority.
+ *   Signed web exchanges use separate egress/account limits to avoid pooling
+ *   every browser into one five-attempt frontend-server bucket.
  * @example
- * ```typescript
- * import { checkRateLimitByIP } from '../middleware/rate-limit.js';
- * 
- * app.post('/api/auth/login', async (c) => {
- *   const ip = getClientIp(c) || 'unknown';
- *   if (!checkRateLimitByIP(ip)) {
- *     return c.json({ error: 'Too many attempts' }, 429);
- *   }
- *   // ... rest of handler
- * });
- * ```
- * 
- * @param ip - IP address to check
- * @returns true if request is allowed, false if rate limited
+ * if (!await checkRateLimitByIP(getClientIp(c), email)) return cRateLimitError(c);
+ * @param ip - Adapter-provided address (or the shared local unknown fallback).
+ * @param account - Optional normalized recovery/verification email identifier.
+ * @returns Whether distributed attempt admission permits this request.
  */
-const IP_RATE_LIMIT = parseInt(process.env.AUTH_RATE_LIMIT_MAX_ATTEMPTS || '5', 10); // Max attempts per window
-const IP_RATE_WINDOW = parseInt(process.env.AUTH_RATE_LIMIT_WINDOW_MS || '60000', 10); // Time window in milliseconds
+function positiveAuthSetting(raw: string | undefined, fallback: number): number {
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+const IP_RATE_LIMIT = positiveAuthSetting(process.env.AUTH_RATE_LIMIT_MAX_ATTEMPTS, 5); // Max attempts per window
+const IP_RATE_WINDOW = positiveAuthSetting(process.env.AUTH_RATE_LIMIT_WINDOW_MS, 60000); // Time window in milliseconds
 
-// LRU cache for IP rate limiting (max 10,000 entries to prevent memory bloat)
-const ipRateLimitCache = new LRUCache<string, { count: number; resetTime: number }>({
-  max: 10000, // Maximum number of IPs to track
-  ttl: IP_RATE_WINDOW, // Auto-expire entries after time window
-});
-
-export function checkRateLimitByIP(ip: string): boolean {
-  const now = Date.now();
-  const record = ipRateLimitCache.get(ip);
-
-  if (!record || now > record.resetTime) {
-    // Reset or first attempt
-    ipRateLimitCache.set(ip, { count: 1, resetTime: now + IP_RATE_WINDOW });
+/** Distributed attempts; infrastructure failures follow the explicit fail-open policy.
+ * Optional account buckets bind OTP/recovery guesses across changing source IPs. */
+export async function checkRateLimitByIP(ip: string, account?: string): Promise<boolean> {
+  try {
+    const windowSeconds = Math.max(1, Math.ceil(IP_RATE_WINDOW / 1000));
+    const ipResult = await checkRateLimit('auth:ip:' + await hashSHA256(ip),
+      { maxRequests: IP_RATE_LIMIT, windowSeconds });
+    if (!ipResult.allowed) return false;
+    if (!account) return true;
+    return (await checkRateLimit('auth:account:' + await hashSHA256(account.trim().toLowerCase()),
+      { maxRequests: IP_RATE_LIMIT, windowSeconds: 15 * 60 })).allowed;
+  } catch {
+    console.error('[auth] Distributed attempt limiter unavailable (fail open)');
     return true;
   }
-
-  if (record.count >= IP_RATE_LIMIT) {
-    return false; // Rate limited
-  }
-
-  record.count++;
-  ipRateLimitCache.set(ip, record);
-  return true;
 }

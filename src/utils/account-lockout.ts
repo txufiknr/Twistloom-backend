@@ -30,9 +30,9 @@
  * ```
  */
 
-import { dbRead, dbWrite } from '../db/client.js';
+import { dbWrite } from '../db/client.js';
 import { userAuth } from '../db/schema.js';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 
 /**
  * Lockout status for an account
@@ -49,8 +49,6 @@ export interface LockoutStatus {
 /**
  * Lockout thresholds and durations
  */
-const LOCKOUT_THRESHOLDS = [5, 10, 15]; // Failed attempts that trigger lockout
-const LOCKOUT_DURATIONS = [5, 15, 60]; // Corresponding lockout durations in minutes
 
 /**
  * Checks if an account is currently locked due to failed login attempts
@@ -68,7 +66,7 @@ const LOCKOUT_DURATIONS = [5, 15, 60]; // Corresponding lockout durations in min
  * ```
  */
 export async function checkAccountLockout(userId: string): Promise<LockoutStatus> {
-  const auth = await dbRead
+  const auth = await dbWrite
     .select({
       failedLoginAttempts: userAuth.failedLoginAttempts,
       lockUntil: userAuth.lockUntil,
@@ -83,18 +81,10 @@ export async function checkAccountLockout(userId: string): Promise<LockoutStatus
 
   const { failedLoginAttempts, lockUntil } = auth[0];
 
-  // Check if lock has expired
-  if (lockUntil && new Date(lockUntil) < new Date()) {
-    // Reset lock
-    await dbWrite
-      .update(userAuth)
-      .set({
-        failedLoginAttempts: 0,
-        lockUntil: null,
-      })
-      .where(eq(userAuth.userId, userId));
-
-    return { isLocked: false, attempts: 0 };
+  // Expiry allows another attempt without erasing escalation. A primary atomic
+  // write resets counts only after 24 hours of auth-state inactivity or success.
+  if (lockUntil && new Date(lockUntil).getTime() <= Date.now()) {
+    return { isLocked: false, attempts: failedLoginAttempts ?? 0 };
   }
 
   // Check if account is currently locked
@@ -127,31 +117,19 @@ export async function checkAccountLockout(userId: string): Promise<LockoutStatus
  * ```
  */
 export async function recordFailedLogin(userId: string): Promise<void> {
-  const auth = await dbRead
-    .select({ failedLoginAttempts: userAuth.failedLoginAttempts })
-    .from(userAuth)
-    .where(eq(userAuth.userId, userId))
-    .limit(1);
-
-  if (auth.length === 0) return;
-
-  const attempts = (auth[0].failedLoginAttempts || 0) + 1;
-  let lockUntil: Date | null = null;
-
-  // Check if we've reached a lockout threshold
-  const thresholdIndex = LOCKOUT_THRESHOLDS.findIndex(threshold => attempts >= threshold);
-  if (thresholdIndex !== -1) {
-    const durationMinutes = LOCKOUT_DURATIONS[thresholdIndex];
-    lockUntil = new Date(Date.now() + durationMinutes * 60 * 1000);
-  }
-
-  await dbWrite
-    .update(userAuth)
-    .set({
-      failedLoginAttempts: attempts,
-      lockUntil,
-    })
-    .where(eq(userAuth.userId, userId));
+  // PostgreSQL evaluates every RHS against the locked old row. Concurrent
+  // failures cannot lose increments; selecting first on a replica is forbidden.
+  const attempts = sql<number>`case when ${userAuth.updatedAt} < now() - interval '24 hours'
+    and (${userAuth.lockUntil} is null or ${userAuth.lockUntil} <= now())
+    then 1 else coalesce(${userAuth.failedLoginAttempts}, 0) + 1 end`;
+  await dbWrite.update(userAuth).set({
+    failedLoginAttempts: attempts,
+    lockUntil: sql`case when ${userAuth.lockUntil} > now() then ${userAuth.lockUntil}
+      when (${attempts}) >= 15 then now() + interval '60 minutes'
+      when (${attempts}) >= 10 then now() + interval '15 minutes'
+      when (${attempts}) >= 5 then now() + interval '5 minutes' else null end`,
+    updatedAt: new Date(),
+  }).where(eq(userAuth.userId, userId));
 }
 
 /**
@@ -193,7 +171,7 @@ export async function resetFailedLoginAttempts(userId: string): Promise<void> {
  * ```
  */
 export async function getFailedLoginAttempts(userId: string): Promise<number> {
-  const auth = await dbRead
+  const auth = await dbWrite
     .select({ failedLoginAttempts: userAuth.failedLoginAttempts })
     .from(userAuth)
     .where(eq(userAuth.userId, userId))

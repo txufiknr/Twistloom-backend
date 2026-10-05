@@ -234,14 +234,14 @@ describe("getBookDetailAccessError (GET /api/books/:identifier — 404 contract)
 
   it("bypasses the restriction for an admin holding the `books` permission (web moderation panel)", async () => {
     seedBook(primaryDb, { id: "priv-3", status: "active", visibility: "private" });
-    replicaDb.rows.adminUsers.push({ userId: "admin-books", permissions: ["books"] });
+    primaryDb.rows.adminUsers.push({ userId: "admin-books", permissions: ["books"] });
 
     expect(await detailAccess("priv-3", "admin-books")).toEqual({ status: 200, body: { allowed: true } });
   });
 
   it("does NOT bypass for an admin without `books`, nor for a plain user", async () => {
     seedBook(primaryDb, { id: "priv-4", status: "active", visibility: "private" });
-    replicaDb.rows.adminUsers.push({ userId: "admin-blog", permissions: ["blog"] });
+    primaryDb.rows.adminUsers.push({ userId: "admin-blog", permissions: ["blog"] });
 
     expect(await detailAccess("priv-4", "admin-blog")).toEqual({
       status: 404,
@@ -336,4 +336,11 @@ afterAll(() => {
   mock.module("../src/db/client.js", () => actualDbClient);
   mock.module("../src/services/book.js", () => actualBookService);
   mock.module("../src/services/story.js", () => actualStoryService);
+});
+
+
+it('revoked primary admin membership cannot be restored by replica lag', async () => {
+  seedBook(primaryDb, { id: 'admin-revocation-lag', status: 'archived', visibility: 'private' });
+  replicaDb.rows.adminUsers.push({ userId: 'revoked-admin', permissions: ['books'] });
+  expect((await detailAccess('admin-revocation-lag', 'revoked-admin')).status).toBe(404);
 });

@@ -1,46 +1,45 @@
 /**
- * NextAuth v5 Cookie-Based Authentication Middleware (Hono)
- *
- * Verifies Auth.js session cookies and resolves the request to a backend userId.
+ * Auth.js v5 cookie-based authentication for Hono.
  *
  * Architecture:
- * - Uses @hono/auth-js `getAuthUser()` to decrypt/verify Auth.js JWE cookies
- *   (built on the runtime-agnostic @auth/core, the same engine as @auth/express).
- * - AUTH_SECRET must be shared between Next.js (frontend) and this backend.
- * - Next.js rewrites proxy /api/backend/* requests, so the browser sends
- *   cookies automatically (same-origin from the browser's perspective).
+ * - `@hono/auth-js` uses `@auth/core` to decrypt and verify the frontend's
+ *   encrypted session cookie with the shared `AUTH_SECRET`.
+ * - Browser API requests use the frontend's `/api/backend/*` proxy; server-side
+ *   frontend requests must forward their Auth.js cookies to this backend.
+ * - Global authentication in `app.ts` runs before JSON body parsing because
+ *   Auth.js wraps the raw request and needs its body to remain unconsumed.
  *
- * Cookie Name Detection:
- * Auth.js v5 uses one of two session-token cookie names depending on the
- * frontend's secure-cookie setting:
- *   - '__Secure-authjs.session-token'  (production / local HTTPS)
- *   - 'authjs.session-token'           (plain HTTP development)
+ * Cookie handling:
+ * Auth.js uses `authjs.session-token` for plain HTTP and
+ * `__Secure-authjs.session-token` for secure cookies, including local HTTPS.
+ * Large tokens may be split into numbered chunks. Cache fingerprints and
+ * rejection cleanup include the actual names/chunks sent by the client rather
+ * than inferring a cookie name from TLS behind a proxy. Auth.js itself remains
+ * responsible for token verification.
  *
- * @hono/auth-js (via @auth/core `getSession`) already auto-detects the correct
- * cookie name based on the request's secure context, so we no longer need the
- * manual detection logic the old @auth/express integration required. The JWT is
- * validated against AUTH_SECRET regardless of the cookie name.
+ * Identity and user-creation policy:
+ * Sign-in endpoints create/update users and issue a tracked backend session.
+ * Cookies must carry canonical backend `userId` and `sessionId` UUIDs; email
+ * and a provider subject are not substitutes. This middleware only looks up
+ * that session and its owner. Missing users/sessions or legacy cookies require
+ * reauthentication; they never trigger fallback user or session creation.
  *
- * User Creation Policy:
- * Users are created in the backend database at sign-in time via the dedicated
- * endpoints called from the NextAuth jwt() callback. This middleware operates
- * primarily as a **lookup** — it finds the userId for the verified email. It
- * retains a fallback creation path for edge cases (e.g., DB reset with valid
- * cookies still in-flight), but this path is not expected to fire in normal
- * operation.
+ * Cache boundary:
+ * Only immutable decoded claims may be reused. Every request independently
+ * checks session existence, ownership, and current ban status on the primary
+ * store, so decoding reuse cannot extend a revoked session's authorization.
  */
-
 import { createMiddleware } from "hono/factory";
 import { HTTPException } from "hono/http-exception";
 import type { Context } from "hono";
-import type { AuthUser as AuthJsUser } from "@hono/auth-js";
 import { getAuthUser } from "@hono/auth-js";
 import type { AuthUser } from "../types/express.js";
-import { createOrUpdateOAuthUser } from "../services/user-controller.js";
 import { updateSessionMetadata } from "../services/session-manager.js";
-import { getUserIdByEmail, invalidateByEmail } from "../services/user.js";
+import { loadWebSession } from "../services/web-session.js";
 import { getClientIp } from "../hono/express-shim.js";
 import { isEmailVerified } from "../utils/email-verification.js";
+import { isValidUuid } from "../utils/uuid.js";
+import { AuthPolicyError } from "../utils/auth-error.js";
 import { dbRead } from "../db/client.js";
 import { users } from "../db/schema.js";
 import { eq } from "drizzle-orm";
@@ -49,207 +48,174 @@ import type { AppEnv } from "../hono/env.js";
 import { hashSHA256 } from "../utils/hash.js";
 import { CPU_OPTIMIZATIONS_ENABLED } from "../config/cpu-optimizations.js";
 
-// @auth/express is no longer imported; @hono/auth-js (built on @auth/core) is
-// used instead. The `getClientIp` helper remains from the shared shim module.
+/** Verified cookie claims only; mutable profile and authorization data are excluded. */
+interface DecodedIdentity { id: string; sessionId: string; expiresAt: number }
 
-// ---------------------------------------------------------------------------
-// In-memory cache for user ban status (Fluid Active CPU optimization)
-// Avoids database SELECT queries on the users table on every single request.
-// ---------------------------------------------------------------------------
-const userBanCache = new LRUCache<string, boolean>({
-  max: 5000,
-  ttl: 1000 * 60 * 5, // 5 minutes TTL
-});
+// A bounded, instance-local 60-second LRU avoids repeated JWE work on polling
+// routes. Keys hash the sorted cookie names/values, including numbered chunks;
+// the cache retains neither plaintext cookies nor a previously authorized user.
+// The token's own expiry is checked separately, even while an LRU entry is fresh.
+const decodedCache = new LRUCache<string, DecodedIdentity>({ max: 5000, ttl: 60_000 });
 
-export function invalidateUserBanCache(userId: string): void {
-  userBanCache.delete(userId);
+// Single-flight decoding is keyed by the cookie fingerprint, not email/userId:
+// different device sessions must never share session attribution. Only crypto
+// work is coalesced; the primary-store authorization lookup stays per request.
+// This map still deduplicates concurrent decodes when LRU reuse is disabled.
+const decoding = new Map<string, Promise<DecodedIdentity | null>>();
+
+// Device metadata is advisory: reserve one write per session/minute on this
+// instance, including concurrent requests. This cache never answers an auth
+// check; session existence, ownership and standing are still read every time.
+const metadataUpdates = new LRUCache<string, boolean>({ max: 5000, ttl: 60_000 });
+
+/** Schedules throttled device tracking independently of authorization. */
+export function scheduleSessionMetadata(c: Context<AppEnv>, sessionId: string): void {
+  if (metadataUpdates.has(sessionId)) return;
+  metadataUpdates.set(sessionId, true);
+  const task = updateSessionMetadata(sessionId, c.req.header("user-agent") ?? null, getClientIp(c))
+    .catch(() => {
+      metadataUpdates.delete(sessionId); // Allow a later request to retry a failed write.
+      console.error("[nextauth] Session metadata update failed");
+    });
+  try {
+    // The Netlify adapter supplies waitUntil so work can finish after response.
+    c.executionCtx.waitUntil(task);
+  } catch {
+    // Bun/test and legacy adapters may have no execution context. The handled
+    // promise remains best-effort there; metadata never blocks or grants access.
+  }
 }
-
-// ---------------------------------------------------------------------------
-// Session verification cache (Fluid Active CPU optimization, P2.4)
-//
-// `getAuthUser` performs Auth.js JWE session-cookie decryption/verification on
-// EVERY request. On high-frequency poll/heartbeat routes (/touch, /status,
-// /candidates/status) this crypto is the single largest per-request CPU cost.
-// We cache the resolved AuthUser for a short window keyed by a SHA-256 hash of
-// the raw session cookie (never the plaintext token), so repeated polls from
-// the same session skip the decryption entirely.
-//
-// Trust window: a revoked/expired session may still be accepted for up to
-// SESSION_VERIFY_TTL_MS after logout. This is consistent with the existing
-// 5-minute ban-cache window and NextAuth's own short-lived tokens.
-// ---------------------------------------------------------------------------
-const SESSION_VERIFY_TTL_MS = 60 * 1000; // 60 seconds
-
-const sessionVerifyCache = new LRUCache<string, AuthUser>({
-  max: 5000,
-  ttl: SESSION_VERIFY_TTL_MS,
-});
-
-/** Extracts the raw Auth.js session-token cookie value (either secure or plain). */
-function extractAuthjsToken(c: Context<AppEnv>): string | null {
-  const cookieHeader = c.req.header("cookie") ?? "";
-  const match = cookieHeader.match(/(?:^|;\s*)(?:__Secure-)?authjs\.session-token=([^;]+)/);
-  return match ? match[1] : null;
-}
-
-/** Invalidates the cached verification for the session carried by this request. */
-export async function invalidateCurrentSessionVerifyCache(c: Context<AppEnv>): Promise<void> {
-  const token = extractAuthjsToken(c);
-  if (!token) return;
-  const tokenHash = await hashSHA256(token);
-  sessionVerifyCache.delete(tokenHash);
-}
-
-// ---------------------------------------------------------------------------
-// In-flight request deduplication
-//
-// Prevents a race condition where two concurrent requests arriving just after
-// login both see a cache miss and race to create the same user.
-// Maps email → Promise<AuthUser | null> for in-progress verifications.
-// ---------------------------------------------------------------------------
-const inFlightRequests = new Map<string, Promise<AuthUser | null>>();
-
-// ---------------------------------------------------------------------------
-// verifyNextAuthToken
-// ---------------------------------------------------------------------------
 
 /**
- * Verifies the Auth.js session cookie via @hono/auth-js and resolves the
- * authenticated backend user.
+ * Compatibility hook for moderation callers that previously evicted a ban LRU.
  *
- * @remarks Auth.js v5 + Hono Compatibility
- * This function is safe to call before or after body-parsing middleware.
- * The global auth middleware in `app.ts` runs **before** `parseJsonBody`,
- * so `getAuthUser` always receives a pristine, unconsumed request body.
+ * Ban status is now read from the primary store on every cookie-authenticated
+ * request, so there is no cached authorization to invalidate. Retaining the
+ * export keeps those callers compatible without recreating a stale trust window.
+ *
+ * @param _userId - User whose former ban-cache entry would have been evicted.
+ */
+export function invalidateUserBanCache(_userId: string): void {}
+
+/**
+ * Collects plain/secure Auth.js session cookies and their numbered chunks.
+ *
+ * Sorting makes the decode-cache fingerprint independent of cookie-header order;
+ * names remain part of the fingerprint so different cookie layouts cannot share
+ * an entry. This helper does not decrypt or choose a session token.
+ *
+ * @param c - Request context containing the browser's forwarded Cookie header.
+ * @returns Matching cookie names and raw values, sorted by name.
+ */
+function sessionCookies(c: Context<AppEnv>): Array<{ name: string; value: string }> {
+  return (c.req.header("cookie") ?? "").split(";").flatMap(part => {
+    const separator = part.indexOf("=");
+    const name = part.slice(0, separator).trim();
+    return /^(?:__Secure-)?authjs\.session-token(?:\.\d+)?$/.test(name)
+      ? [{ name, value: part.slice(separator + 1) }] : [];
+  }).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * Expires every session-cookie name/chunk actually supplied by this request.
+ *
+ * Secure-prefixed cookies retain the Secure attribute on deletion. Append each
+ * Set-Cookie header so chunk cleanup does not overwrite another cookie response;
+ * a request with no matching cookies produces no deletion headers.
+ */
+function clearSessionCookies(c: Context<AppEnv>): void {
+  for (const { name } of sessionCookies(c)) {
+    c.header("Set-Cookie", name + "=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax" +
+      (name.startsWith("__Secure-") ? "; Secure" : ""), { append: true });
+  }
+}
+
+/**
+ * Evicts decoded claims for the session cookies carried by this request.
+ *
+ * Logout callers must also delete the authoritative session row. Eviction is
+ * local to this instance and does not cancel an in-flight decode; the fresh
+ * session lookup, rather than cache eviction, enforces revocation everywhere.
+ *
+ * @param c - Request context used to compute the same fingerprint as verification.
+ */
+export async function invalidateCurrentSessionVerifyCache(c: Context<AppEnv>): Promise<void> {
+  const cookies = sessionCookies(c);
+  if (cookies.length) decodedCache.delete(await hashSHA256(JSON.stringify(cookies)));
+}
+
+/**
+ * Extracts canonical backend IDs and expiry from Auth.js-verified JWT claims.
+ * Session/profile callback fields and provider subjects are not identity sources.
+ *
+ * @returns Minimal verified claims, or null for missing, legacy, or expired claims.
+ * @throws Auth.js decoding errors; the caller normalizes these to invalid identity.
+ */
+async function decodeIdentity(c: Context<AppEnv>): Promise<DecodedIdentity | null> {
+  const verified = await getAuthUser(c);
+  const token = verified?.token;
+  if (!token || !isValidUuid(token.userId) || !isValidUuid(token.sessionId) ||
+      typeof token.exp !== "number" || token.exp * 1000 <= Date.now()) return null;
+  return { id: token.userId, sessionId: token.sessionId, expiresAt: token.exp * 1000 };
+}
+
+/**
+ * Resolves an Auth.js cookie to a currently authorized backend device session.
  *
  * Flow:
- *   1. Verify the session cookie through @hono/auth-js getAuthUser() (which
- *      delegates to @auth/core getSession).
- *   2. Extract email from the verified session.
- *   3. Deduplicate concurrent requests for the same email.
- *   4. Look up userId in the DB (LRU-cached via getUserIdByEmail).
- *   5. If not found: create user as a fallback for edge cases.
- *   6. Update session metadata (userAgent, IP) — fire-and-forget, non-blocking.
- *   7. Return AuthUser { id, email, name, sessionId }.
+ * 1. Reuse unexpired decoded claims, or single-flight the JWE decode for this cookie.
+ * 2. Validate the session ID and user ID together against the primary store.
+ * 3. Reject missing/revoked sessions and currently banned accounts.
+ * 4. Schedule a throttled, non-blocking metadata update for this device session.
+ * 5. Return current user fields from the database, not a cached AuthUser.
  *
- * @param c - Hono context
- * @returns AuthUser if the cookie is valid, null otherwise
+ * @remarks
+ * Call after `initAuthConfig` and before any middleware consumes the request body.
+ * The global middleware in `app.ts` handles this once; route guards reuse the
+ * resolved context identity. Authorization must stay outside both decode caches
+ * and the shared promise, including when CPU optimizations are enabled.
+ * Legacy cookies without canonical IDs fail closed and require a new sign-in.
+ *
+ * @param c - Hono request context configured for Auth.js cookie verification.
+ * @returns Current backend user/session identity, or null when no session cookie
+ *   was supplied or AUTH_SECRET is unavailable.
+ * @throws AuthPolicyError with 401/auth.sessionRevoked for invalid, expired, or
+ *   missing sessions; sent session cookies are cleared in these rejection paths.
+ * @throws AuthPolicyError with 403/auth.accountBanned for a currently banned user.
+ * @throws Primary-store lookup failures, propagated to the global error handler
+ *   rather than converted into an authorized user or an anonymous request.
  */
 export async function verifyNextAuthToken(c: Context<AppEnv>): Promise<AuthUser | null> {
-  const secret = process.env.AUTH_SECRET;
-  if (!secret) {
-    console.error("[nextauth] 💀 AUTH_SECRET is not configured");
-    return null;
-  }
-
-  // P2.4 — short-circuit JWE verification for recently-seen session tokens.
-  const token = extractAuthjsToken(c);
-  const tokenHash = token ? await hashSHA256(token) : null;
-  if (CPU_OPTIMIZATIONS_ENABLED && tokenHash) {
-    const cached = sessionVerifyCache.get(tokenHash);
-    if (cached) return cached;
-  }
-
-  let authUser: AuthJsUser | null;
-  try {
-    // The global auth middleware in app.ts runs before parseJsonBody, so the
-    // request body is still pristine when getAuthUser wraps it. No workaround
-    // for the "disturbed or locked" body error is needed here.
-    authUser = await getAuthUser(c);
-  } catch (error) {
-    console.error("[nextauth] ❌ getAuthUser error:", error);
-    return null;
-  }
-
-  // The decoded session exposes the user in two shapes:
-  //   - `authUser.user`  : the full AdapterUser/token subject (ALWAYS includes email)
-  //   - `authUser.session.user` : the object returned by the frontend's `session()`
-  //     callback, which may omit `email` (common with the JWT strategy + a custom
-  //     session callback that only copies name/image).
-  // Prefer `authUser.user` and fall back to `session.user` so a valid session is
-  // never rejected just because the frontend stripped email from `session.user`.
-  // This also matches how the previous @auth/express integration resolved the user.
-  const resolvedUser = authUser?.user ?? authUser?.session?.user;
-  const email = resolvedUser?.email as string | undefined;
-  if (!email) {
-    // Only clear the stale cookie if one was actually sent (otherwise every
-    // unauthenticated request would spuriously clear a non-existent cookie).
-    const cookieHeader = c.req.header("cookie") ?? "";
-    if (cookieHeader.includes("authjs.session-token")) {
-      // Cookie present but unreadable — expired token or secret mismatch.
-      // Tell the browser to delete it so this warning stops repeating.
-      const isSecure =
-        c.req.header("x-forwarded-proto") === "https" ||
-        c.req.url.startsWith("https");
-      const cookieName = isSecure
-        ? "__Secure-authjs.session-token"
-        : "authjs.session-token";
-      c.header(
-        "Set-Cookie",
-        `${cookieName}=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=Lax${isSecure ? "; Secure" : ""}`,
-      );
-      console.info("[nextauth] 🍪 Cleared stale session cookie (token expired or unreadable)");
+  if (!process.env.AUTH_SECRET || !sessionCookies(c).length) return null;
+  const key = await hashSHA256(JSON.stringify(sessionCookies(c)));
+  let identity = CPU_OPTIMIZATIONS_ENABLED ? decodedCache.get(key) : undefined;
+  if (!identity || identity.expiresAt <= Date.now()) {
+    let pending = decoding.get(key);
+    if (!pending) {
+      pending = decodeIdentity(c).catch(() => null).finally(() => decoding.delete(key));
+      decoding.set(key, pending);
     }
-    return null;
+    identity = await pending ?? undefined;
+    if (identity && CPU_OPTIMIZATIONS_ENABLED) decodedCache.set(key, identity);
   }
-
-  const name = resolvedUser?.name as string | undefined;
-  const image = (resolvedUser as { image?: string }).image as string | undefined;
-  const sessionId = (authUser?.token as { sessionId?: string } | undefined)?.sessionId;
-
-  // ── Deduplicate concurrent in-flight verifications ─────────────────────
-  const existing = inFlightRequests.get(email);
-  if (existing) return existing;
-
-  const verificationPromise = (async (): Promise<AuthUser | null> => {
-    try {
-      let userId = await getUserIdByEmail(email);
-
-      if (!userId) {
-        console.warn(`[nextauth] ⚠️ User not found for verified email: ${email} — creating fallback`);
-        userId = await createOrUpdateOAuthUser({ email, name, image });
-        invalidateByEmail(email);
-      }
-
-      // P4: reject banned accounts (banned_at IS NOT NULL)
-      // Check in-memory LRU cache first to prevent database querying on every request
-      let isBanned = userBanCache.get(userId);
-      if (isBanned === undefined) {
-        const [banRow] = await dbRead
-          .select({ bannedAt: users.bannedAt })
-          .from(users)
-          .where(eq(users.userId, userId))
-          .limit(1);
-        isBanned = Boolean(banRow?.bannedAt);
-        userBanCache.set(userId, isBanned);
-      }
-
-      if (isBanned) {
-        console.info(`[nextauth] 🚫 Banned user attempted access: ${userId}`);
-        throw new HTTPException(403, { message: "account_banned" });
-      }
-
-      if (sessionId) {
-        updateSessionMetadata(
-          sessionId,
-          c.req.header("user-agent") ?? null,
-          getClientIp(c),
-        ).catch((err) => {
-          console.error("[nextauth] ❌ Session metadata update failed:", err);
-        });
-      }
-
-      const resolvedUser: AuthUser = { id: userId, email, name, sessionId };
-      if (CPU_OPTIMIZATIONS_ENABLED && tokenHash) sessionVerifyCache.set(tokenHash, resolvedUser);
-      return resolvedUser;
-    } finally {
-      inFlightRequests.delete(email);
-    }
-  })();
-
-  inFlightRequests.set(email, verificationPromise);
-  return verificationPromise;
+  if (!identity) {
+    decodedCache.delete(key);
+    clearSessionCookies(c);
+    throw new AuthPolicyError(401, "auth.sessionRevoked", "Session expired or invalid");
+  }
+  // Keep this gate outside the decode LRU and shared promise: a warm cookie can
+  // outlive its session row, and different concurrent requests need fresh checks.
+  const row = await loadWebSession(identity.sessionId, identity.id);
+  if (!row) {
+    decodedCache.delete(key);
+    clearSessionCookies(c);
+    throw new AuthPolicyError(401, "auth.sessionRevoked", "Session revoked");
+  }
+  if (row.bannedAt) throw new AuthPolicyError(403, "auth.accountBanned", "account_banned");
+  // Metadata is advisory, not an authorization prerequisite. Attribute it to
+  // the verified device session; a write failure must not undo a successful gate.
+  scheduleSessionMetadata(c, identity.sessionId);
+  return { id: row.userId, email: row.email, name: row.name ?? undefined, sessionId: identity.sessionId };
 }
 
 // ---------------------------------------------------------------------------
@@ -257,10 +223,10 @@ export async function verifyNextAuthToken(c: Context<AppEnv>): Promise<AuthUser 
 // ---------------------------------------------------------------------------
 
 /**
- * Requires a valid Auth.js session.
+ * Requires an identity already resolved by global cookie or bearer authentication.
  *
  * @remarks
- * The user/session is already verified by the global auth middleware in
+ * The cookie session or bearer identity is already verified by global auth in
  * `app.ts` (which runs before body parsing). This middleware only guards
  * the route — if no userId was resolved, it throws 401.
  *
@@ -284,6 +250,8 @@ export const requireAuth = createMiddleware<AppEnv>(async (c, next) => {
  * sets userId on the context if valid. Route handlers that called
  * `optionalAuth` to detect guest vs. authenticated users work identically
  * because `c.get("userId")` was already populated upstream.
+ * Invalid/revoked-cookie policy errors are still enforced by global auth;
+ * this pass-through does not turn those failures into anonymous access.
  */
 export const optionalAuth = createMiddleware<AppEnv>(async (c, next) => {
   await next();
@@ -293,8 +261,9 @@ export const optionalAuth = createMiddleware<AppEnv>(async (c, next) => {
  * Requires the authenticated user's email to be verified.
  *
  * @remarks
- * Must be placed **after** `requireAuth` (or used alongside it) because it
- * depends on `c.get("userId")` being populated by the global auth middleware.
+ * Use after `requireAuth`: global authentication populates `userId`, while
+ * `requireAuth` rejects guests. This guard deliberately passes guests through
+ * and cannot enforce authentication by itself.
  *
  * Unverified users within a 72-hour grace period from account creation are
  * allowed through so onboarding is not blocked. After the grace period, a

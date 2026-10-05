@@ -79,7 +79,7 @@ export function sanitizeUsername(username: string): string {
  * convertNameOrEmailToUsername('john.doe@gmail.com', 'John Doe')  // 'john-doe'
  * convertNameOrEmailToUsername('alice@example.com', 'Alice')      // 'alice'
  * convertNameOrEmailToUsername('bob@example.com')                 // 'bob'
- * convertNameOrEmailToUsername('x@y.com', '')                     // 'x'
+ * convertNameOrEmailToUsername('x@y.com', '')                     // 'user'
  */
 export function convertNameOrEmailToUsername(email: string, name?: string): string {
   let base = '';
@@ -122,7 +122,7 @@ export function convertNameOrEmailToUsername(email: string, name?: string): stri
  * convertEmailToName('john.doe@gmail.com')    // 'John Doe'
  * convertEmailToName('alice_smith@corp.io')   // 'Alice Smith'
  * convertEmailToName('bob@example.com')       // 'Bob'
- * convertEmailToName('ray.j+tag@mail.com')    // 'Ray J'
+ * convertEmailToName('ray.j+tag@mail.com')    // 'Ray J Tag'
  */
 export function convertEmailToName(email: string): string {
   // Extract local part, fall back to full email if malformed

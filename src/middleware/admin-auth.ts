@@ -10,7 +10,7 @@
 import { createMiddleware } from "hono/factory";
 import { HTTPException } from "hono/http-exception";
 import { eq } from "drizzle-orm";
-import { dbRead } from "../db/client.js";
+import { dbWrite } from "../db/client.js";
 import { adminUsers } from "../db/schema.js";
 import type { AppEnv } from "../hono/env.js";
 
@@ -55,7 +55,7 @@ type AdminRow = {
 };
 
 async function loadAdminRow(userId: string): Promise<AdminRow | null> {
-  const [admin] = await dbRead
+  const [admin] = await dbWrite
     .select({
       userId: adminUsers.userId,
       permissions: adminUsers.permissions,

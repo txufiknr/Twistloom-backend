@@ -32,8 +32,14 @@ import type { AppEnv } from "./env.js";
  * @returns Client IP string
  */
 export function getClientIp(c: Context<AppEnv>): string {
-  const fwd = c.req.raw.headers.get("x-forwarded-for");
-  if (fwd) return fwd.split(",")[0].trim();
+  // The adapter supplies provider-owned context.ip. Never treat an arbitrary
+  // client X-Forwarded-For as identity. Other adapters can opt into a trusted
+  // proxy boundary explicitly; unconfigured local requests share "unknown".
+  if (c.env?.trustedClientIp) return c.env.trustedClientIp;
+  if (process.env.TRUST_PROXY_HEADERS === "true") {
+    const fwd = c.req.raw.headers.get("x-forwarded-for");
+    if (fwd) return fwd.split(",")[0].trim();
+  }
   return "unknown";
 }
 

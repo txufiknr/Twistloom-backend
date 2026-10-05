@@ -7,8 +7,8 @@
  * user data; NextAuth creates and manages the session cookie.
  *
  * Flow overview:
- *   Email login     → POST /verify-credentials  → returns user + isNewUser
- *   Google OAuth    → POST /google-oauth        → verifies id_token, upserts user, returns user + isNewUser
+ *   Email login     → POST /verify-credentials  → returns tracked user/session + isNewUser
+ *   Google OAuth    → POST /google-oauth        → verifies id_token, upserts user, returns tracked user/session
  *   One Tap         → POST /google-one-tap      → same as /google-oauth (different entry point)
  *   Mobile password → POST /mobile/token        → password grant → native access/refresh pair
  *   Mobile Google   → POST /mobile/google       → Google ID token → native access/refresh pair
@@ -17,17 +17,24 @@
  *   Signup          → POST /signup              → creates account, sends verification email, issues native token pair
  *   Forgot password → POST /forgot-password     → sends password reset email
  *   Reset password  → POST /reset-password      → resets password with token
- *   Verify email    → POST /verify-email        → verifies email with token
+ *   Verify email    → POST /verify-email        → verifies account email plus OTP
  *   Resend verify   → POST /resend-verification → resends verification email
  *   Sessions        → GET /sessions             → list active sessions
  *   Logout (device) → POST /logout-session      → logout specific session
  *   Logout (other)  → POST /logout-all          → logout all other sessions
  *   Logout (all)    → POST /logout-all-devices  → logout from every device
- *   Logout (simple) → POST /logout              → placeholder cleanup
+ *   Logout (simple) → POST /logout              → best-effort compatibility cleanup
+ *   Web sign-out    → POST /revoke-web-session  → purpose-bound server owner/session deletion
  *
- * isNewUser is included in every sign-in response so the frontend can embed it
- * in the JWT token at sign-in time, making the session() callback a pure
- * token-reader with zero network calls.
+ * Web exchanges return canonical userId/sessionId UUIDs after a primary-store
+ * standing check and transactional session issuance. Auth.js embeds those IDs
+ * and isNewUser in its encrypted JWT cookie; the backend middleware checks the
+ * session/owner/standing freshly on subsequent requests. It never creates users
+ * or repairs missing sessions from a cookie.
+ *
+ * isNewUser reflects canonical users.is_new_user state for onboarding. Reading
+ * this identity field from the JWT needs no network call; frontend session()
+ * profile enrichment may still fetch GET /user independently.
  */
 
 import { Hono } from "hono";
@@ -52,6 +59,9 @@ import { createEmailVerificationToken, verifyEmailToken, isEmailVerified } from 
 import { cApiError, cRateLimitError, cUnauthorizedError, cValidationError } from '../utils/error.js';
 import { CURRENT_TERMS_VERSION } from '../config/legal.js';
 import { checkRateLimitByIP } from '../middleware/rate-limit.js';
+import { allowWebExchange, isWebExchange, readRevocation } from '../services/web-control.js';
+import { deleteUserSessions } from '../services/credential-revocation.js';
+import { authSessions } from '../db/schema.js';
 import { checkRateLimit } from '../utils/redis.js';
 import { generateId } from '../utils/uuid.js';
 import { createOrUpdateOAuthUser, setReferrerForNewUser, tryAwardReferralBonus } from '../services/user-controller.js';
@@ -62,7 +72,7 @@ import { isTemp as isTemporaryEmail } from 'tempmail-checker';
 import { requireAuth, invalidateCurrentSessionVerifyCache } from '../middleware/nextauth.js';
 import { resolveAdminAccess } from '../middleware/admin-auth.js';
 import { logAuditEvent } from '../utils/audit-log.js';
-import { createSession, getUserSessions, logoutFromSpecificDevice, logoutFromAllOtherDevices, logoutFromAllDevices, deleteSessionById } from '../services/session-manager.js';
+import { getUserSessions, logoutFromSpecificDevice, logoutFromAllOtherDevices, logoutFromAllDevices, deleteSessionById } from '../services/session-manager.js';
 import { revokeAllFamiliesForUser, revokeFamiliesForSession, rotateRefreshToken, peekFamilyIdByPresentedHash } from '../services/token-family.js';
 import { issueAccessToken } from '../services/mobile-tokens.js';
 import { invalidateBearerCache, extractBearerToken } from '../middleware/bearer.js';
@@ -70,21 +80,44 @@ import { sanitizeUserData, getUserForAuth, getUserIdByEmail } from '../services/
 import { hashSHA256 } from '../utils/hash.js';
 import type { AppEnv } from '../hono/env.js';
 import { getClientIp } from '../hono/express-shim.js';
-import type { DBUserForAuth } from '../types/schema.js';
+import { issueWebSession } from '../services/web-session.js';
 
 const router = new Hono<AppEnv>();
 
 // Google OAuth client for ID token verification (used by both One Tap and OAuth flows)
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
+/** Session display hints are refreshed from the backend, never granted by a
+ * client's Auth.js update payload. These values do not authorize admin APIs. */
+router.get('/session-hints', requireAuth, async (c) => {
+  const userId = c.get('userId')!;
+  const [user] = await dbWrite.select({ isNewUser: users.isNewUser, username: users.username })
+    .from(users).where(eq(users.userId, userId)).limit(1);
+  if (!user) return cUnauthorizedError(c, 'Unauthorized');
+  const access = await resolveAdminAccess(userId);
+  return c.json({ ...user, isAdmin: access.isAdmin });
+});
+
 /**
- * Verifies a Google ID token, upserts the user, and sends the user data
- * response. Used by both POST /google-one-tap and POST /google-oauth.
+ * Verifies a Google ID token and exchanges it for a tracked backend web session.
+ * Used by both POST /google-one-tap and POST /google-oauth.
+ *
+ * Google audience and verified email are checked before the user upsert.
+ * `issueWebSession` then locks/rechecks the primary-store user and issues a
+ * device session atomically, returning current profile and onboarding fields.
+ * The frontend embeds canonical backend IDs rather than Google's subject.
+ *
+ * @param idToken - Google-signed ID token submitted by the frontend provider.
+ * @param c - Request context for rate limiting and the JSON response.
+ * @returns User/session identity plus the resolved admin display flag on success,
+ *   or an explicit rate-limit, invalid-token, unavailable-account, or ban response.
+ * @throws Google verification or database failures, handled by the calling route.
  */
 async function handleGoogleAuth(idToken: string, c: Context<AppEnv>): Promise<Response | void> {
   // Rate limiting based on IP address
   const ip = getClientIp(c);
-  if (!checkRateLimitByIP(ip)) return cRateLimitError(c);
+  const signedExchange = await isWebExchange(c.req.header("x-twistloom-web-control"), c.get("body"));
+  if (!signedExchange && !await checkRateLimitByIP(ip)) return cRateLimitError(c);
 
   // Verify Google ID token (works for both One Tap credentials and standard OAuth id_token)
   const ticket = await googleClient.verifyIdToken({
@@ -97,43 +130,29 @@ async function handleGoogleAuth(idToken: string, c: Context<AppEnv>): Promise<Re
   if (!payload.email_verified) return cUnauthorizedError(c, 'Google email address is not verified');
 
   const { email, name, picture: image, sub } = payload;
+  if (signedExchange) {
+    const signedLimit = await allowWebExchange(c.req.header('x-twistloom-web-control'), c.get('body'), 'google:' + sub, ip);
+    if (!(signedLimit ?? await checkRateLimitByIP(ip))) return cRateLimitError(c);
+  }
 
   // Create user if new, or update profile fields if existing
   const userId = await createOrUpdateOAuthUser({email, name, image, sub});
 
-  // Create a session record for device tracking. The session ID is returned
-  // to the frontend's jwt() callback and embedded in the JWT so subsequent
-  // authenticated requests can update session metadata (user-agent, IP) via
-  // the verifyNextAuthToken middleware.
-  const sessionId = await createSession(userId);
-
-  // Fetch full user record including isNewUser.
-  // isNewUser reflects the canonical database state — true for brand-new users,
-  // false once onboarding has been completed (set by the onboarding endpoint).
-  const [user] = await dbRead
-    .select({
-      userId: users.userId,
-      email: users.email,
-      name: users.name,
-      username: users.username,
-      imageUrl: users.imageUrl,
-      isNewUser: users.isNewUser,
-    })
-    .from(users)
-    .where(eq(users.userId, userId))
-    .limit(1);
-
-  if (!user) {
-    return cApiError(c, 'Failed to retrieve user data');
-  }
-
-  // Resolve admin status for JWT embedding. This check is lightweight:
-  // isSuperAdminUserId() is a constant comparison; loadAdminRow() hits the
-  // admin_users table (indexed PK lookup, <1ms). At current scale this is
-  // negligible — ~1 extra query per sign-in for non-super-admin users.
+  // Issuance returns the authoritative profile (including isNewUser) and a
+  // device session in one transaction. Do not create a session before checking
+  // current standing, or use a separate replica read for the returned identity.
   const access = await resolveAdminAccess(userId);
+  const issuance = await issueWebSession(userId);
+  if (!issuance.ok) return c.json({ success: false,
+    error: issuance.reason === 'banned' ? 'Account banned' : 'Account unavailable',
+    code: issuance.reason === 'banned' ? 'auth.accountBanned' : issuance.reason === 'credentials' ? 'auth.invalidCredentials' : 'auth.serviceUnavailable',
+  }, issuance.reason === 'banned' ? 403 : issuance.reason === 'credentials' ? 401 : 503);
+  const user = issuance.user;
 
-  return c.json({ ...user, isAdmin: access.isAdmin, sessionId });
+  // Embed admin status for frontend display; protected admin operations still
+  // resolve backend authorization. The constant super-admin comparison avoids
+  // a lookup for that case; other users use the admin-row lookup.
+  return c.json({ ...user, isAdmin: access.isAdmin });
 }
 
 // ---------------------------------------------------------------------------
@@ -144,8 +163,10 @@ async function handleGoogleAuth(idToken: string, c: Context<AppEnv>): Promise<Re
  * POST /api/auth/verify-credentials
  *
  * Verifies email/username and password for the NextAuth Credentials provider.
- * Checks account lockout status, verifies bcrypt password hash, and returns
- * user data for JWT token embedding.
+ * Checks account lockout status, verifies the password hash, and atomically
+ * issues a tracked session only for a currently allowed primary-store account.
+ * Password/Google exchanges allow reauthentication despite a stale cookie;
+ * submitted credentials, rather than that cookie, establish the new identity.
  *
  * @route POST /api/auth/verify-credentials
  * @description Verify email/username and password credentials
@@ -159,11 +180,18 @@ async function handleGoogleAuth(idToken: string, c: Context<AppEnv>): Promise<Re
  *
  * @returns {Object} User data for JWT
  * @returns {string} userId - User's unique identifier
+ * @returns {string} sessionId - Tracked device-session UUID for revocation/metadata
  * @returns {string} email - User email
  * @returns {string|null} name - User display name
  * @returns {string} username - User username
  * @returns {string|null} imageUrl - User profile image URL
  * @returns {boolean} isNewUser - Whether onboarding is pending
+ * @returns {boolean} isAdmin - Frontend display flag; backend admin checks remain required
+ *
+ * @remarks Rejections carry safe machine codes where classified: invalid
+ *   credentials / social login required (401), lockout (429), banned account
+ *   (403), and service/account unavailability (500/503). The frontend validates
+ *   the complete HTTP-200 identity before Auth.js can issue a cookie.
  *
  * @example
  * // NextAuth Credentials provider usage
@@ -176,35 +204,38 @@ async function handleGoogleAuth(idToken: string, c: Context<AppEnv>): Promise<Re
  *       password: credentials.password,
  *     }),
  *   });
- *   if (!res.ok) return null;
- *   const user = await res.json();
+ *   const user = await readAuthExchange(res);
  *   return { id: user.userId, ...user };
  * }
  *
  * // Response
  * {
- *   "userId": "user-uuid",
+ *   "userId": "d47e87f4-2589-40b0-8378-fc34779f2f31",
+ *   "sessionId": "6d44a635-dcc7-4481-aeb7-9708c26d17a9",
  *   "email": "user@example.com",
  *   "name": "John Doe",
  *   "username": "johndoe",
  *   "imageUrl": "https://ik.imagekit.io/abc123/profile.jpg",
- *   "isNewUser": false
+ *   "isNewUser": false,
+ *   "isAdmin": false
  * }
  */
 router.post('/verify-credentials', async (c) => {
   try {
     const ip = getClientIp(c);
-    if (!checkRateLimitByIP(ip)) return cRateLimitError(c);
+    const signedLimit = await allowWebExchange(c.req.header("x-twistloom-web-control"), c.get("body"),
+      String(c.get("body")?.emailOrUsername ?? ""), ip);
+    if (!(signedLimit ?? await checkRateLimitByIP(ip))) return cRateLimitError(c);
 
     const { emailOrUsername, password } = c.get("body");
 
-    if (!emailOrUsername || !password) {
+    if (typeof emailOrUsername !== 'string' || !emailOrUsername.trim() || typeof password !== 'string' || !password) {
       return cValidationError(c, 'Email/username and password are required');
     }
 
     const userData = await getUserForAuth(emailOrUsername);
     if (!userData) {
-      return cUnauthorizedError(c, 'Invalid credentials');
+      return c.json({ success: false, error: 'Invalid credentials', code: 'auth.invalidCredentials' }, 401);
     }
 
     // Check account lockout
@@ -216,27 +247,34 @@ router.post('/verify-credentials', async (c) => {
       }
       const minutesRemaining = Math.ceil(lockoutStatus.remainingTime / 60000);
       return c.json({
+        success: false, code: 'auth.accountLocked',
         error: `Account locked. Try again in ${minutesRemaining} minutes.`,
         lockedUntil: new Date(Date.now() + lockoutStatus.remainingTime).toISOString(),
       }, 429);
     }
 
     if (!userData.passwordHash) {
-      return cUnauthorizedError(c, 'This account uses OAuth login. Please sign in with Google.');
+      return c.json({ success: false, error: 'This account uses OAuth login. Please sign in with Google.', code: 'auth.socialLoginRequired' }, 401);
     }
 
     const isValid = await verifyPassword(password, userData.passwordHash);
     if (!isValid) {
       await recordFailedLogin(userData.userId);
-      return cUnauthorizedError(c, 'Invalid credentials');
+      return c.json({ success: false, error: 'Invalid credentials', code: 'auth.invalidCredentials' }, 401);
     }
 
     await resetFailedLoginAttempts(userData.userId);
 
-    // Create a session record for device tracking. The session ID is embedded
-    // in the JWT by the frontend's jwt() callback so subsequent requests can
-    // be attributed to this device and selectively revoked.
-    const sessionId = await createSession(userData.userId);
+    // Re-check current standing and create the tracked device session in one
+    // primary-store transaction: credential verification alone does not protect
+    // against a concurrent ban/deletion. The frontend embeds this sessionId in
+    // the JWT so later requests are attributed to this device and can be revoked.
+    const access = await resolveAdminAccess(userData.userId);
+    const issuance = await issueWebSession(userData.userId, userData.passwordHash);
+    if (!issuance.ok) return c.json({ success: false,
+      error: issuance.reason === 'banned' ? 'Account banned' : 'Account unavailable',
+      code: issuance.reason === 'banned' ? 'auth.accountBanned' : issuance.reason === 'credentials' ? 'auth.invalidCredentials' : 'auth.serviceUnavailable',
+    }, issuance.reason === 'banned' ? 403 : issuance.reason === 'credentials' ? 401 : 503);
 
     // Revoke any outstanding password-reset tokens — a successful login means
     // the user already has access, so pending reset links become unnecessary
@@ -245,22 +283,12 @@ router.post('/verify-credentials', async (c) => {
       // Non-critical: token cleanup failure shouldn't block login.
     });
 
-    // Resolve admin status for JWT embedding.
-    const access = await resolveAdminAccess(userData.userId);
+    // Admin enrichment was resolved before committing the session.
 
-    return c.json({
-      userId: userData.userId,
-      email: userData.email,
-      name: userData.name,
-      username: userData.username,
-      imageUrl: userData.imageUrl,
-      isNewUser: userData.isNewUser,
-      isAdmin: access.isAdmin,
-      sessionId,
-    } satisfies Omit<DBUserForAuth, 'passwordHash'> & { isNewUser: boolean; isAdmin: boolean; sessionId: string });
+    return c.json({ ...issuance.user, isAdmin: access.isAdmin });
   } catch (error) {
     console.error('[POST /api/auth/verify-credentials] ❌ Credential verification error:', error);
-    return cApiError(c, 'Failed to verify credentials', error, 500);
+    return c.json({ success: false, error: 'Failed to verify credentials', code: 'auth.serviceUnavailable' }, 500);
   }
 });
 
@@ -333,15 +361,15 @@ router.post('/signup', async (c) => {
   try {
     // Rate limit
     const ip = getClientIp(c);
-    if (!checkRateLimitByIP(ip)) {
+    if (!await checkRateLimitByIP(ip)) {
       return c.json({ error: 'Too many requests. Please try again later.' }, 429);
     }
 
     // Sign up data validation
-    const { password, receiveEmails: _receiveEmails, agreedToTerms, ageConfirmed, referrer } = c.get("body");
-    if (!password) return cValidationError(c, 'Password is required');
-    if (!agreedToTerms) return cValidationError(c, 'You must agree to the terms');
-    if (!ageConfirmed) return cValidationError(c, 'You must confirm you are at least 13 years old');
+    const { password, receiveEmails, agreedToTerms, ageConfirmed, referrer } = c.get("body");
+    if (typeof password !== 'string' || !password) return cValidationError(c, 'Password is required');
+    if (agreedToTerms !== true) return cValidationError(c, 'You must agree to the terms');
+    if (ageConfirmed !== true) return cValidationError(c, 'You must confirm you are at least 13 years old');
 
     // Password strength validation
     const passwordValidation = validatePasswordStrength(password);
@@ -367,6 +395,8 @@ router.post('/signup', async (c) => {
         userId: generateId(),
         ...userData,
         passwordHash,
+        emailPreferences: { weeklyRecommendations: receiveEmails === true, monthlyActivitySummary: receiveEmails === true,
+          productAnnouncements: receiveEmails === true, storyPublished: receiveEmails === true, emailLocale: null },
         termsAcceptedAt: new Date(),
         termsVersion: CURRENT_TERMS_VERSION,
         ageConfirmedAt: new Date(),
@@ -375,14 +405,16 @@ router.post('/signup', async (c) => {
       return user;
     });
 
-    const verificationToken = await createEmailVerificationToken(newUser.userId);
-    const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`;
-    const verificationEmailSent = await sendVerificationEmail(
+    // Account creation has committed. Recovery delivery failure must retain its
+    // explicit 201 result and let the user resend, rather than obscure creation.
+    const verificationToken = await createEmailVerificationToken(newUser.userId).catch(() => null);
+    const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}&email=${encodeURIComponent(newUser.email)}`;
+    const verificationEmailSent = verificationToken ? await sendVerificationEmail(
       newUser.email,
       verificationUrl,
       verificationToken,
       { userId: newUser.userId },
-    );
+    ).catch(() => false) : false;
 
     let referralApplied = false;
     if (referrer && typeof referrer === 'string') {
@@ -398,7 +430,7 @@ router.post('/signup', async (c) => {
     // /mobile/token so the app signs in atomically and can open the welcome
     // wizard from the in-band isNewUser claim with no second exchange.
     // Issuance failure degrades to the plain 201 creation body (not the
-    // catch-all 200 below): the account already exists either way, and a 201
+    // unexpected-error 500 below): the account already exists either way, and a 201
     // without tokens keeps non-interactive/legacy callers working.
     const issued = await issueMobileLoginPair(newUser.userId).catch(() => null);
     if (!issued?.ok) {
@@ -428,10 +460,7 @@ router.post('/signup', async (c) => {
     }, 201);
   } catch (error) {
     console.error('[signup] ❌ Sign up error:', error);
-    return c.json({
-      message: 'If account was created, please check your email to verify.',
-      verificationEmailSent: false,
-    }, 200);
+    return cApiError(c, 'Failed to create account', error, 500, 'auth.serviceUnavailable');
   }
 });
 
@@ -451,7 +480,7 @@ router.post('/signup', async (c) => {
  * this probe and a real registration never creates a duplicate account.
  *
  * Rate limiting uses the Redis `checkRateLimit` (AGENTS.md 3.9.C — fail open
- * when Redis is unavailable) under a **dedicated key**: the in-memory
+ * when Redis is unavailable) under a **dedicated key**: the distributed
  * `checkRateLimitByIP` bucket is shared with login/signup attempts, so a
  * burst of keystroke-driven probes must never consume that budget.
  *
@@ -546,39 +575,19 @@ router.get('/username-available', async (c) => {
  * }
  */
 router.post('/forgot-password', async (c) => {
-  try {
-    const ip = getClientIp(c);
-    if (!checkRateLimitByIP(ip)) {
-      return c.json({ error: 'Too many requests. Please try again later.' }, 429);
-    }
-
-    const { email } = c.get("body");
-
-    if (!email) {
-      return cValidationError(c, 'Email is required');
-    }
-
-    let emailSent = false;
-    const token = await createPasswordResetToken(email);
-
-    if (token) {
-      const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${token}`;
-      emailSent = await sendPasswordResetEmail(email, resetUrl); // locale resolved by email lookup
-    }
-
-    // Always return success — prevents email enumeration
-    return c.json({
-      message: 'Password reset email sent if account exists',
-      emailSent,
-    });
-  } catch (error) {
-    console.error('[forgot] ❌ Forgot password error:', error);
-    // Still return success to prevent email enumeration
-    return c.json({
-      message: 'Password reset email sent if account exists',
-      emailSent: false,
-    });
-  }
+  const { email } = c.get('body');
+  if (typeof email !== 'string' || !email.trim()) return cValidationError(c, 'Email is required');
+  if (!await checkRateLimitByIP(getClientIp(c), email)) return cRateLimitError(c);
+  const work = (async () => {
+    try {
+      const token = await createPasswordResetToken(email);
+      if (token) await sendPasswordResetEmail(email, process.env.FRONTEND_URL + '/reset-password?token=' + token);
+    } catch { console.error('[forgot-password] Recovery delivery failed'); }
+  })();
+  // Netlify extends the invocation for this work. Other local adapters execute
+  // the handled promise best-effort; this acknowledgement is not delivery proof.
+  try { c.executionCtx.waitUntil(work); } catch { void work; }
+  return c.json({ message: 'Password reset email sent if account exists', emailSent: true });
 });
 
 // ---------------------------------------------------------------------------
@@ -610,7 +619,7 @@ router.post('/forgot-password', async (c) => {
 router.post('/reset-password', async (c) => {
   try {
     const ip = getClientIp(c);
-    if (!checkRateLimitByIP(ip)) {
+    if (!await checkRateLimitByIP(ip)) {
       return c.json({ error: 'Too many requests. Please try again later.' }, 429);
     }
 
@@ -669,8 +678,8 @@ router.post('/reset-password', async (c) => {
 /**
  * POST /api/auth/verify-email
  *
- * Verifies user email using a verification token. Token expires after
- * 24 hours and is invalidated after single use.
+ * Verifies an account email plus six-digit cryptographic code. The account-bound
+ * HMAC proof expires after 15 minutes and is conditionally consumed once.
  *
  * On success, also attempts deferred referral payout via
  * {@link tryAwardReferralBonus} (no-op if no referrer or already paid).
@@ -678,14 +687,15 @@ router.post('/reset-password', async (c) => {
  * @route POST /api/auth/verify-email
  * @description Verify email address with token
  *
- * @body {string} token - Email verification token
+ * @body {string} token - Six-digit email verification code
+ * @body {string} email - Account email to which this code belongs
  *
  * @returns {Object} Status
  * @returns {string} message - Status of the verification
  *
  * @example
  * // Request
- * { "token": "verification-token-uuid" }
+ * { "token": "123456", "email": "user@example.com" }
  *
  * // Response (200)
  * { "message": "Email verified successfully" }
@@ -693,17 +703,17 @@ router.post('/reset-password', async (c) => {
 router.post('/verify-email', async (c) => {
   try {
     const ip = getClientIp(c);
-    if (!checkRateLimitByIP(ip)) {
+    if (!await checkRateLimitByIP(ip, String(c.get("body")?.email ?? ""))) {
       return c.json({ error: 'Too many requests. Please try again later.' }, 429);
     }
 
-    const { token } = c.get("body");
+    const { token, email } = c.get("body");
 
-    if (!token) {
-      return cValidationError(c, 'Token is required');
+    if (typeof token !== "string" || typeof email !== "string") {
+      return cValidationError(c, 'Token and email are required');
     }
 
-    const userId = await verifyEmailToken(token);
+    const userId = await verifyEmailToken(token, email);
 
     if (!userId) {
       return cValidationError(c, 'Invalid or expired verification token');
@@ -745,41 +755,22 @@ router.post('/verify-email', async (c) => {
  * { "message": "If an account exists, a verification email has been sent." }
  */
 router.post('/resend-verification', async (c) => {
-  try {
-    const ip = getClientIp(c);
-    if (!checkRateLimitByIP(ip)) {
-      return c.json({ error: 'Too many requests. Please try again later.' }, 429);
-    }
-
-    const { email } = c.get("body");
-
-    if (!email) {
-      return cValidationError(c, 'Email is required');
-    }
-
-    let emailSent = false;
-    const userId = await getUserIdByEmail(email);
-
-    if (userId) {
-      const verified = await isEmailVerified(userId);
-      if (!verified) {
-        const verificationToken = await createEmailVerificationToken(userId);
-        const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`;
-        emailSent = await sendVerificationEmail(email, verificationUrl, verificationToken); // locale by email lookup
+  const { email } = c.get('body');
+  if (typeof email !== 'string' || !email.trim()) return cValidationError(c, 'Email is required');
+  if (!await checkRateLimitByIP(getClientIp(c), email)) return cRateLimitError(c);
+  const work = (async () => {
+    try {
+      const userId = await getUserIdByEmail(email);
+      if (userId && !await isEmailVerified(userId)) {
+        const token = await createEmailVerificationToken(userId);
+        await sendVerificationEmail(email, process.env.FRONTEND_URL + '/verify-email?token=' + token + '&email=' + encodeURIComponent(email), token);
       }
-    }
-
-    return c.json({
-      message: 'Verification email sent if account exists',
-      emailSent,
-    });
-  } catch (error) {
-    console.error('[resendVerification] ❌ Resend verification error:', error);
-    return c.json({
-      message: 'Verification email sent if account exists',
-      emailSent: false,
-    });
-  }
+    } catch { console.error('[resend-verification] Recovery delivery failed'); }
+  })();
+  // Netlify extends the invocation for this work. Other local adapters execute
+  // the handled promise best-effort; this acknowledgement is not delivery proof.
+  try { c.executionCtx.waitUntil(work); } catch { void work; }
+  return c.json({ message: 'Verification email sent if account exists', emailSent: true });
 });
 
 // ---------------------------------------------------------------------------
@@ -789,11 +780,12 @@ router.post('/resend-verification', async (c) => {
 /**
  * POST /api/auth/logout
  *
- * Placeholder for any backend cleanup on logout. Session clearing is handled
- * entirely by NextAuth on the frontend via signOut().
+ * Compatibility logout: best-effort current session/family cleanup with the
+ * historical fixed success body. Frontend Auth.js clears the browser cookie
+ * and uses its purpose-bound revoke-web-session hook for authoritative cleanup.
  *
  * @route POST /api/auth/logout
- * @description Backend logout placeholder (cleanup handled by NextAuth)
+ * @description Compatibility current-session cleanup; fixed response contract
  *
  * @returns {Object} Status
  * @returns {string} message - Success message
@@ -846,7 +838,7 @@ router.post('/resend-verification', async (c) => {
 router.post('/mobile/token', async (c) => {
   try {
     const ip = getClientIp(c);
-    // Redis-backed limit (AGENTS.md §3.9.C — not in-memory checkRateLimitByIP)
+    // Redis-backed limit (AGENTS.md §3.9.C — separate from the shared auth checkRateLimitByIP budget)
     const limit = await checkRateLimit(`auth-mobile-token:${ip}`, {
       maxRequests: 10,
       windowSeconds: 60,
@@ -854,7 +846,7 @@ router.post('/mobile/token', async (c) => {
     if (!limit.allowed) return cRateLimitError(c);
 
     const { emailOrUsername, password } = c.get("body");
-    if (!emailOrUsername || !password) {
+    if (typeof emailOrUsername !== 'string' || !emailOrUsername.trim() || typeof password !== 'string' || !password) {
       return cValidationError(c, 'Email/username and password are required');
     }
 
@@ -893,7 +885,7 @@ router.post('/mobile/token', async (c) => {
     await resetFailedLoginAttempts(userData.userId);
 
     // SSOT: same session + access JWT + refresh family issuance as OAuth mobile.
-    const issued = await issueMobileLoginPair(userData.userId);
+    const issued = await issueMobileLoginPair(userData.userId, userData.passwordHash);
     if (!issued.ok) {
       if (issued.reason === 'banned') {
         return c.json({ error: 'Account banned', code: 'auth.accountBanned' }, 403);
@@ -1173,6 +1165,14 @@ router.post('/mobile/refresh', async (c) => {
  * // Response (200)
  * { "message": "Logged out successfully" }
  */
+router.post('/revoke-web-session', async c => {
+  const proof: unknown = c.get('body')?.proof;
+  const owner = typeof proof === 'string' ? await readRevocation(proof) : null;
+  if (!owner) return cUnauthorizedError(c, 'Invalid revocation proof');
+  await dbWrite.delete(authSessions).where(and(eq(authSessions.id, owner.sessionId), eq(authSessions.userId, owner.userId)));
+  return c.json({ revoked: true });
+});
+
 router.post('/logout', async (c) => {
   try {
     await invalidateCurrentSessionVerifyCache(c);
@@ -1630,7 +1630,7 @@ router.delete('/sessions/:id', requireAuth, async (c) => {
 router.put('/email', requireAuth, async (c) => {
   try {
     const ip = getClientIp(c);
-    if (!checkRateLimitByIP(ip)) return cRateLimitError(c);
+    if (!await checkRateLimitByIP(ip)) return cRateLimitError(c);
 
     const userId = c.get("userId")!;
     const { newEmail, currentPassword } = c.get("body");
@@ -1644,7 +1644,7 @@ router.put('/email', requireAuth, async (c) => {
       return cValidationError(c, 'Invalid email format');
     }
 
-    const [user] = await dbRead
+    const [user] = await dbWrite
       .select({ passwordHash: users.passwordHash })
       .from(users)
       .where(eq(users.userId, userId))
@@ -1722,7 +1722,7 @@ router.put('/email', requireAuth, async (c) => {
     }
     sendEmailSafe('PUT /auth/email (verify)', async () => {
       const verificationToken = await createEmailVerificationToken(userId);
-      const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`;
+      const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}&email=${encodeURIComponent(sanitizedEmail)}`;
       return sendVerificationEmail(sanitizedEmail, verificationUrl, verificationToken, { userId });
     });
 
@@ -1762,12 +1762,12 @@ router.put('/email', requireAuth, async (c) => {
 router.put('/password', requireAuth, async (c) => {
   try {
     const ip = getClientIp(c);
-    if (!checkRateLimitByIP(ip)) return cRateLimitError(c);
+    if (!await checkRateLimitByIP(ip)) return cRateLimitError(c);
 
     const userId = c.get("userId")!;
     const { currentPassword, newPassword } = c.get("body");
 
-    if (!currentPassword || !newPassword) {
+    if (typeof currentPassword !== 'string' || typeof newPassword !== 'string' || !currentPassword || !newPassword) {
       return cValidationError(c, 'Current password and new password are required');
     }
 
@@ -1779,7 +1779,7 @@ router.put('/password', requireAuth, async (c) => {
       }, 422);
     }
 
-    const [user] = await dbRead
+    const [user] = await dbWrite
       .select({ passwordHash: users.passwordHash })
       .from(users)
       .where(eq(users.userId, userId))
@@ -1800,9 +1800,12 @@ router.put('/password', requireAuth, async (c) => {
     const now = new Date();
 
     // Credential change: bump tokenVersion + revoke refresh families in one
-    // transaction so outstanding mobile access/refresh tokens die with the
-    // password (Step 7). Cookie path is unaffected until EQ5 parity.
+    // transaction with all tracked-session deletion. Both native and copied
+    // browser credentials fail their next primary standing check; current reauthenticates.
     await dbWrite.transaction(async (tx) => {
+      const [live] = await tx.select({ passwordHash: users.passwordHash }).from(users)
+        .where(eq(users.userId, userId)).limit(1).for("update");
+      if (!live || live.passwordHash !== user.passwordHash) throw new Error("Credentials changed concurrently");
       await tx
         .update(users)
         .set({
@@ -1812,19 +1815,23 @@ router.put('/password', requireAuth, async (c) => {
         .where(eq(users.userId, userId));
 
       await revokeAllFamiliesForUser(userId, tx);
+      await deleteUserSessions(userId, tx);
 
       await tx
         .update(userAuth)
-        .set({ failedLoginAttempts: 0, lockUntil: null, updatedAt: now })
+        .set({ failedLoginAttempts: 0, lockUntil: null, passwordResetToken: null, passwordResetExpires: null, updatedAt: now })
         .where(eq(userAuth.userId, userId));
     });
 
     // Security notification (always on) — non-blocking
-    const [userRow] = await dbRead
+    const [userRow] = await dbWrite
       .select({ email: users.email, name: users.name })
       .from(users)
       .where(eq(users.userId, userId))
-      .limit(1);
+      .limit(1).catch(() => {
+        console.error('[auth] Password-change notification lookup failed after commit');
+        return [];
+      });
     if (userRow?.email) {
       const detailHtml = formatSecurityDetailHtml({
         at: now,
@@ -1836,7 +1843,9 @@ router.put('/password', requireAuth, async (c) => {
       );
     }
 
-    await logAuditEvent(c, 'security_password_changed', 'auth');
+    await logAuditEvent(c, 'security_password_changed', 'auth').catch(() => {
+      console.error('[auth] Password-change audit failed after commit');
+    });
     return c.json({ message: 'Password updated successfully' });
   } catch (error) {
     console.error('[PUT /api/auth/password] ❌', error);
@@ -1869,7 +1878,7 @@ router.put('/password', requireAuth, async (c) => {
 router.put('/username', requireAuth, async (c) => {
   try {
     const ip = getClientIp(c);
-    if (!checkRateLimitByIP(ip)) return cRateLimitError(c);
+    if (!await checkRateLimitByIP(ip)) return cRateLimitError(c);
 
     const userId = c.get("userId")!;
     const { newUsername } = c.get("body");

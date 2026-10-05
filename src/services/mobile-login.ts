@@ -6,11 +6,11 @@
  * creation, access-JWT minting and refresh-family insert atomic (one
  * transaction) so password and OAuth exchanges cannot diverge.
  *
- * Cookie (Auth.js) issuance is intentionally untouched — web continues to call
- * `createSession` directly from `handleGoogleAuth`.
+ * Like web issuance, native issuance locks the primary user row before checking
+ * standing. No replica/profile cache can authorize a new token pair.
  */
 
-import { dbRead, dbWrite } from "../db/client.js";
+import { dbWrite } from "../db/client.js";
 import { users } from "../db/schema.js";
 import { eq } from "drizzle-orm";
 import { createSession } from "./session-manager.js";
@@ -41,7 +41,7 @@ export interface MobileTokenPairResponse {
   user: MobileLoginUserPayload;
 }
 
-export type MobileLoginFailureReason = "missing" | "banned";
+export type MobileLoginFailureReason = "missing" | "banned" | "credentials";
 
 export type IssueMobileLoginPairResult =
   | { ok: true; pair: MobileTokenPairResponse }
@@ -57,13 +57,21 @@ export type IssueMobileLoginPairResult =
  * orphaned session without a family (or the reverse).
  *
  * @param userId - Authenticated user id (already credential-verified by caller)
+ * @param verifiedPasswordHash - Exact verified password hash for password grant;
+ *   rechecked under lock so a concurrent reset cannot admit the old proof.
  */
 export async function issueMobileLoginPair(
   userId: string,
+  verifiedPasswordHash?: string,
 ): Promise<IssueMobileLoginPairResult> {
-  const [userRow] = await dbRead
+  // Resolve optional display enrichment before committing credentials. Failure
+  // here cannot strand a session/family that was never delivered to the client.
+  const admin = await resolveAdminAccess(userId);
+  const issued = await dbWrite.transaction(async (tx) => {
+    const [userRow] = await tx
     .select({
       tokenVersion: users.tokenVersion,
+      passwordHash: users.passwordHash,
       email: users.email,
       name: users.name,
       username: users.username,
@@ -74,36 +82,21 @@ export async function issueMobileLoginPair(
     })
     .from(users)
     .where(eq(users.userId, userId))
-    .limit(1);
+    .limit(1).for("update");
 
-  if (!userRow) return { ok: false, reason: "missing" };
-  if (userRow.bannedAt) return { ok: false, reason: "banned" };
+    if (!userRow) return { ok: false, reason: "missing" } as const;
+    if (userRow.bannedAt) return { ok: false, reason: "banned" } as const;
+    if (verifiedPasswordHash !== undefined && userRow.passwordHash !== verifiedPasswordHash) {
+      return { ok: false, reason: "credentials" } as const;
+    }
 
-  const { sessionId, accessToken, refreshToken, familyId } =
-    await dbWrite.transaction(async (tx) => {
-      const sid = await createSession(userId, tx);
-      const [live] = await tx
-        .select({ tokenVersion: users.tokenVersion })
-        .from(users)
-        .where(eq(users.userId, userId))
-        .limit(1);
-      if (!live) throw new Error("User disappeared during login");
-      const access = await issueAccessToken(userId, sid, live.tokenVersion);
-      const fam = await createRefreshFamily(
-        userId,
-        sid,
-        live.tokenVersion,
-        tx,
-      );
-      return {
-        sessionId: sid,
-        accessToken: access.token,
-        refreshToken: fam.refreshToken,
-        familyId: fam.familyId,
-      };
-    });
-
-  const admin = await resolveAdminAccess(userId);
+    const sessionId = await createSession(userId, tx);
+    const { token: accessToken } = await issueAccessToken(userId, sessionId, userRow.tokenVersion);
+    const { refreshToken, familyId } = await createRefreshFamily(userId, sessionId, userRow.tokenVersion, tx);
+    return { ok: true, userRow, sessionId, accessToken, refreshToken, familyId } as const;
+  });
+  if (!issued.ok) return issued;
+  const { userRow, sessionId, accessToken, refreshToken, familyId } = issued;
 
   return {
     ok: true,

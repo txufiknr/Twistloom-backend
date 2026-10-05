@@ -855,6 +855,8 @@ Dual-track by design: every Netlify change landed **additively** while the Verce
 
 ## 11. Free-Tier Optimization Enhancements Plan
 
+> **Research update (2026-10-05):** See the companion [Netlify Free-Tier Optimization Roadmap](NETLIFY_FREE_TIER_OPTIMIZATION_ROADMAP.md) for the combined Next.js + Hono budget, researched platform eligibility, and ordered assessment plan. It supersedes the independent budget targets and cache-cost examples below: CDN/durable hits avoid origin compute but still consume request/bandwidth credits. Existing implementation statuses in this migration document are retained pending the later code/deployment audit.
+
 > **Scope:** post-migration Steps 11-16. This is the Netlify counterpart of [`VERCEL_FLUID_ACTIVE_CPU_OPTIMIZATION_ROADMAP.md`](./VERCEL_FLUID_ACTIVE_CPU_OPTIMIZATION_ROADMAP.md): it asks the same question one tier lower — *what optimization tricks does Netlify Free actually offer, what do they buy us in credits, and what do we lose versus Vercel?*
 >
 > Rates below come from Netlify's credit-based pricing (accounts activated after 2025-09-04). **Verify current rates in Netlify UI → Usage & billing before treating the numbers as budget law**; the structure (pooled hard limit, wall-clock compute) is what drives the design.

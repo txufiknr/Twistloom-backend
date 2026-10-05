@@ -18,14 +18,15 @@
 
 import { SignJWT, jwtVerify, errors as joseErrors } from "jose";
 import type { AuthUser } from "../types/express.js";
-import { dbRead } from "../db/client.js";
-import { users } from "../db/schema.js";
-import { eq } from "drizzle-orm";
+import { dbWrite } from "../db/client.js";
+import { users, authSessions } from "../db/schema.js";
+import { eq, and } from "drizzle-orm";
+import { isValidUuid } from "../utils/uuid.js";
 import { updateSessionMetadata } from "./session-manager.js";
 
 /** Default access-token lifetime (minutes). Override with MOBILE_ACCESS_TTL_MINUTES. */
 const DEFAULT_ACCESS_TTL_MINUTES = 15;
-/** Clock-skew leeway (seconds) accepted on `exp`/`iat`. */
+/** JOSE clock-skew leeway; strict exp is checked independently before acceptance. */
 const CLOCK_SKEW_SECONDS = 60;
 /** Issuer claim for all mobile access tokens. */
 export const MOBILE_TOKEN_ISSUER = "twistloom-backend";
@@ -36,7 +37,7 @@ const KEY_ID = "m0-hs256";
 
 export interface MobileAccessTokenClaims {
   sub: string;
-  sid?: string;
+  sid: string;
   tv: number;
   iss: string;
   aud: string;
@@ -140,7 +141,7 @@ export type VerifyAccessTokenResult =
   | { ok: false; reason: VerifyAccessTokenFailure };
 
 /**
- * Verifies a mobile access JWT (signature, iss, aud, exp±leeway, alg allow-list).
+ * Verifies a mobile access JWT (signature, iss, aud, strict exp (clock tolerance does not extend access), alg allow-list).
  * Does **not** check `tokenVersion` or session-row existence — those are
  * enforce-revocation concerns (bearer middleware / Step 7).
  *
@@ -163,21 +164,24 @@ export async function verifyAccessToken(
       });
 
       const sub = payload.sub;
-      if (!sub || typeof sub !== "string") {
+      if (!isValidUuid(sub)) {
         return { ok: false, reason: "malformed" };
       }
 
       const tv = typeof payload.tv === "number" ? payload.tv : undefined;
-      if (tv === undefined) {
+      if (tv === undefined || !Number.isSafeInteger(tv) || tv < 0) {
         return { ok: false, reason: "malformed" };
       }
 
       const sid = typeof payload.sid === "string" ? payload.sid : undefined;
       const exp = typeof payload.exp === "number" ? payload.exp : undefined;
       const iat = typeof payload.iat === "number" ? payload.iat : undefined;
-      if (exp === undefined || iat === undefined) {
+      if (!isValidUuid(sid) || exp === undefined || iat === undefined ||
+          !Number.isFinite(exp) || !Number.isFinite(iat)) {
         return { ok: false, reason: "malformed" };
       }
+      // Leeway allows small clock differences in issuance, never access after exp.
+      if (exp <= Date.now() / 1000) return { ok: false, reason: "expired" };
 
       return {
         ok: true,
@@ -221,15 +225,16 @@ export async function verifyAccessToken(
  * revocation (Step 7): `tv` mismatch or missing user → reject.
  * Ban check mirrors cookie path (403 `account_banned`).
  *
- * Fresh DB reads — never the 10-minute `sessionExists` LRU.
+ * Every request, including verified-claim cache hits, reads the primary joined
+ * session-owner pair and current standing — never the sessionExists LRU.
  */
 export async function loadUserForBearer(
   claims: MobileAccessTokenClaims,
 ): Promise<
   | { ok: true; userId: string; tokenVersion: number; email: string }
-  | { ok: false; kind: "revoked" | "banned" | "missing" }
+  | { ok: false; kind: "revoked" | "banned" | "missing" | "session" }
 > {
-  const [row] = await dbRead
+  const [row] = await dbWrite
     .select({
       userId: users.userId,
       email: users.email,
@@ -237,10 +242,12 @@ export async function loadUserForBearer(
       bannedAt: users.bannedAt,
     })
     .from(users)
-    .where(eq(users.userId, claims.sub))
+    .innerJoin(authSessions, eq(authSessions.userId, users.userId))
+    .where(and(eq(users.userId, claims.sub), eq(authSessions.id, claims.sid),
+      eq(authSessions.userId, claims.sub)))
     .limit(1);
 
-  if (!row) return { ok: false, kind: "missing" };
+  if (!row) return { ok: false, kind: "session" };
   if (row.bannedAt) return { ok: false, kind: "banned" };
   if (row.tokenVersion !== claims.tv) return { ok: false, kind: "revoked" };
 
@@ -253,15 +260,14 @@ export async function loadUserForBearer(
 }
 
 /**
- * Fresh `auth_sessions` existence check for `sid` (never process-local LRU).
+ * Fresh primary `auth_sessions` owner-pair check for `sid` and userId (never process-local LRU).
  * Returns false when the session row is gone (single-device logout).
  */
-export async function sessionRowExistsFresh(sessionId: string): Promise<boolean> {
-  const { authSessions } = await import("../db/schema.js");
-  const [row] = await dbRead
+export async function sessionRowExistsFresh(sessionId: string, userId: string): Promise<boolean> {
+  const [row] = await dbWrite
     .select({ id: authSessions.id })
     .from(authSessions)
-    .where(eq(authSessions.id, sessionId))
+    .where(and(eq(authSessions.id, sessionId), eq(authSessions.userId, userId)))
     .limit(1);
   return Boolean(row);
 }
@@ -282,7 +288,9 @@ export function toAuthUserFromBearer(
   };
 }
 
-/** Fire-and-forget session metadata update (parity with cookie path). */
+/** @deprecated Legacy unthrottled helper retained for compatibility. Active
+ * bearer middleware uses shared scheduleSessionMetadata with minute reservation
+ * and platform waitUntil instead; do not add new callers to this helper. */
 export function touchBearerSession(
   sessionId: string | undefined,
   userAgent: string | null,

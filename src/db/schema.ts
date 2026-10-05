@@ -39,6 +39,7 @@ import type {
 } from "../types/wallet.js";
 import type { PrivacyPreferences } from "../types/privacy-preferences.js";
 import type { WallAttachmentSnapshot, WallPostFlair, WallPostType, WallReactionCounts, WallReactionType } from "../types/wall.js";
+import type { EmailPreferencesUpdate } from "../types/email-preferences.js";
 
 /** Pre-defined columns */
 // const id = () => uuid("id").primaryKey().$defaultFn(generateId);
@@ -426,12 +427,7 @@ export const users = pgTable(
      * Security & billing never consult engagement toggles. Null until onboarding
      * applies defaults — see DEFAULT_EMAIL_PREFERENCES.
      */
-    emailPreferences: jsonb("email_preferences").$type<{
-      weeklyRecommendations: boolean;
-      monthlyActivitySummary: boolean;
-      productAnnouncements: boolean;
-      emailLocale?: "en" | "id" | null;
-    }>(),
+    emailPreferences: jsonb("email_preferences").$type<EmailPreferencesUpdate>(),
     /**
      * Optional in-app notification prefs (comments, likes, storyPublished,
      * aiCompleted). Null until onboarding applies defaults — see

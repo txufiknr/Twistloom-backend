@@ -41,7 +41,7 @@ export default async function handler(request: Request, context: Context): Promi
     props: {},
   };
 
-  return app.fetch(request, {}, executionCtx);
+  return app.fetch(request, { trustedClientIp: context.ip }, executionCtx);
 }
 
 export const config: Config = {

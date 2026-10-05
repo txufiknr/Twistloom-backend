@@ -50,5 +50,6 @@ export interface AppVariables {
  * Use `AppEnv["Bindings"]` / `AppEnv["Variables"]` and `new Hono<AppEnv>()`.
  */
 export interface AppEnv {
+  Bindings: { trustedClientIp?: string };
   Variables: AppVariables;
 }

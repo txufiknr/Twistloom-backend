@@ -55,15 +55,7 @@ const userRow = {
 const selectChain = {
   from: () => ({
     where: () => ({
-      limit: async () => [userRow],
-    }),
-  }),
-};
-
-const txSelectChain = {
-  from: () => ({
-    where: () => ({
-      limit: async () => [{ tokenVersion: userRow.tokenVersion }],
+      limit: () => ({ for: async () => [userRow] }),
     }),
   }),
 };
@@ -72,7 +64,7 @@ const dbRead = { select: () => selectChain };
 const dbWrite = {
   transaction: async <T>(fn: (tx: unknown) => Promise<T>) =>
     fn({
-      select: () => txSelectChain,
+      select: () => selectChain,
       insert: () => ({ values: async () => undefined }),
     }),
 };
@@ -161,7 +153,7 @@ describe("issueMobileLoginPair (SSOT for password/google/apple)", () => {
   it("fails closed when the user row is missing", async () => {
     const original = selectChain.from;
     selectChain.from = () => ({
-      where: () => ({ limit: async () => [] }),
+      where: () => ({ limit: () => ({ for: async () => [] }) }),
     });
     try {
       const result = await issueMobileLoginPair("ghost");

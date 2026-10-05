@@ -22,10 +22,18 @@
 
 import { dbRead, dbWrite } from '../db/client.js';
 import { users, userAuth } from '../db/schema.js';
-import { eq, and, sql } from 'drizzle-orm';
-import { generateId } from '../utils/uuid.js';
+import { eq, and, sql, gt, or } from 'drizzle-orm';
+import { hashSHA256 } from './hash.js';
 import { hashPassword } from './password.js';
 import { revokeAllFamiliesForUser } from '../services/token-family.js';
+import { deleteUserSessions } from '../services/credential-revocation.js';
+
+/** New proofs are high-entropy secrets stored as hashes; scoped legacy UUIDs
+ * remain usable until their existing expiry so deployed recovery links survive. */
+async function resetProofCondition(token: string) {
+  return or(eq(userAuth.passwordResetToken, `sha256:${await hashSHA256(token)}`),
+    eq(userAuth.passwordResetToken, token));
+}
 
 /**
  * Creates a password reset token for a user
@@ -44,15 +52,17 @@ import { revokeAllFamiliesForUser } from '../services/token-family.js';
  * ```
  */
 export async function createPasswordResetToken(email: string): Promise<string | null> {
-  const user = await dbRead
+  const user = await dbWrite
     .select({ userId: users.userId })
     .from(users)
-    .where(eq(users.email, email))
+    .where(eq(users.email, email.trim().toLowerCase()))
     .limit(1);
 
   if (user.length === 0) return null;
 
-  const token = generateId();
+  const token = Array.from(crypto.getRandomValues(new Uint8Array(32)),
+    byte => byte.toString(16).padStart(2, '0')).join('');
+  const storedToken = `sha256:${await hashSHA256(token)}`;
   const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour expiry
 
   // Create or update user_auth record
@@ -60,14 +70,14 @@ export async function createPasswordResetToken(email: string): Promise<string | 
     .insert(userAuth)
     .values({
       userId: user[0].userId,
-      passwordResetToken: token,
+      passwordResetToken: storedToken,
       passwordResetExpires: expiresAt,
       updatedAt: new Date(),
     })
     .onConflictDoUpdate({
       target: userAuth.userId,
       set: {
-        passwordResetToken: token,
+        passwordResetToken: storedToken,
         passwordResetExpires: expiresAt,
         updatedAt: new Date(),
       },
@@ -91,13 +101,14 @@ export async function createPasswordResetToken(email: string): Promise<string | 
  * ```
  */
 export async function verifyPasswordResetToken(token: string): Promise<string | null> {
-  const auth = await dbRead
+  if (!/^[0-9a-f]{64}$/.test(token) && !/^[0-9a-f-]{36}$/i.test(token)) return null;
+  const auth = await dbWrite
     .select({
       userId: userAuth.userId,
       passwordResetExpires: userAuth.passwordResetExpires,
     })
     .from(userAuth)
-    .where(eq(userAuth.passwordResetToken, token))
+    .where(and(await resetProofCondition(token), gt(userAuth.passwordResetExpires, new Date())))
     .limit(1);
 
   if (auth.length === 0) return null;
@@ -128,14 +139,15 @@ export async function verifyPasswordResetToken(token: string): Promise<string | 
  * ```
  */
 export async function resetPassword(token: string, newPassword: string): Promise<boolean> {
+  if (!/^[0-9a-f]{64}$/.test(token) && !/^[0-9a-f-]{36}$/i.test(token)) return false;
   // Verify token first (fresh read — the transaction below locks the row)
-  const auth = await dbRead
+  const auth = await dbWrite
     .select({
       userId: userAuth.userId,
       passwordResetExpires: userAuth.passwordResetExpires,
     })
     .from(userAuth)
-    .where(eq(userAuth.passwordResetToken, token))
+    .where(and(await resetProofCondition(token), gt(userAuth.passwordResetExpires, new Date())))
     .limit(1);
 
   if (auth.length === 0) return false;
@@ -152,17 +164,12 @@ export async function resetPassword(token: string, newPassword: string): Promise
   // refresh families, and clear the reset token — single transaction for atomicity.
   // If any update fails, everything rolls back — no partial state.
   const result = await dbWrite.transaction(async (tx) => {
-    await tx
-      .update(users)
-      .set({
-        passwordHash,
-        tokenVersion: sql`${users.tokenVersion} + 1`,
-      })
-      .where(eq(users.userId, userId));
-
-    await revokeAllFamiliesForUser(userId, tx);
-
-    return tx
+    // Consistent lock order: user first, then proof. Issuance/password changes
+    // serialize on this same user row. A losing proof causes NO mutations.
+    const [user] = await tx.select({ id: users.userId }).from(users)
+      .where(eq(users.userId, userId)).limit(1).for('update');
+    if (!user) return false;
+    const consumed = await tx
       .update(userAuth)
       .set({
         passwordResetToken: null,
@@ -173,13 +180,19 @@ export async function resetPassword(token: string, newPassword: string): Promise
       .where(
         and(
           eq(userAuth.userId, userId),
-          eq(userAuth.passwordResetToken, token)
+          await resetProofCondition(token),
+          gt(userAuth.passwordResetExpires, new Date())
         )
-      );
+      ).returning({ userId: userAuth.userId });
+    if (consumed.length === 0) return false;
+    await tx.update(users).set({ passwordHash, tokenVersion: sql`${users.tokenVersion} + 1` })
+      .where(eq(users.userId, userId));
+    await revokeAllFamiliesForUser(userId, tx);
+    await deleteUserSessions(userId, tx);
+    return true;
   });
 
-  // If no rows were updated, the token was already used by another request
-  return result.rowCount !== null && result.rowCount > 0;
+  return result;
 }
 
 /**

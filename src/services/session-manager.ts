@@ -88,10 +88,13 @@ export async function sessionExists(sessionId: string): Promise<boolean> {
  * Device metadata (user agent, IP, device name) is populated lazily by the
  * verifyNextAuthToken middleware on the first authenticated request via
  * updateSessionMetadata — at sign-in time the backend receives server-to-server
- * requests from NextAuth's jwt() callback, not the end-client's request, so the
- * user-agent and IP at that point would be NextAuth's, not the user's.
+ * sign-in exchanges from NextAuth's authorize()/signIn() callbacks, not the
+ * end-client's request, so its user-agent and IP would describe the frontend
+ * server rather than the browser's device.
  *
  * @param userId - The user to create a session for
+ * @param executor - Optional transaction executor so checked account standing
+ *   and session insertion commit together (used by `issueWebSession`).
  * @returns The generated session ID
  */
 export async function createSession(

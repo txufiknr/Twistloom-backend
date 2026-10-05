@@ -1,5 +1,7 @@
 # Logout from All Devices & Selective Logout Roadmap
 
+> Auth authority update (2026-10-05): [Dual auth architecture](../architecture/DUAL_AUTH_ARCHITECTURE.md) records the current implementation. Both adapters cache immutable decode results only and freshly check primary owner/session/ban state; native also checks tokenVersion. Browser signOut uses purpose-bound server cleanup, and password change/reset transactionally delete all tracked sessions. Older LRU/policy descriptions below are historical; they do not authorize warm mutable-state reuse.
+
 > **Multi-platform note (2026-09-23):** session versioning / `tokenVersion` revocation below is the shared control plane for both credential faces. Web continues to use Auth.js httpOnly cookies; native Flutter uses short-lived bearer access tokens + rotating refresh secrets (dual credential — one identity system, two credential presentations; same pattern as Meta/Google/X). Cookie-path enforcement and bearer-family revoke are implemented in [NATIVE_MOBILE_BEARER_AUTH_ROADMAP.md](NATIVE_MOBILE_BEARER_AUTH_ROADMAP.md) and [DUAL_AUTH_ARCHITECTURE.md](../architecture/DUAL_AUTH_ARCHITECTURE.md). Logout UI/flows in this document remain valid for web.
 
 ## Overview

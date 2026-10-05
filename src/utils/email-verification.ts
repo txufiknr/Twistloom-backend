@@ -2,7 +2,8 @@
  * Email Verification Utilities
  * 
  * Provides email verification functionality with secure token generation and verification.
- * Tokens expire after 24 hours for security.
+ * Cryptographic six-digit proofs expire after 15 minutes and are bound to the email/account.
+ * Only a peppered account-scoped HMAC is stored; old unscoped codes require resend.
  * 
  * @example
  * ```typescript
@@ -24,8 +25,17 @@
  */
 
 import { dbRead, dbWrite } from '../db/client.js';
-import { userAuth } from '../db/schema.js';
-import { eq, and } from 'drizzle-orm';
+import { userAuth, users } from '../db/schema.js';
+import { eq, and, gt } from 'drizzle-orm';
+import { randomInt, createHmac } from 'node:crypto';
+
+/** A pepper prevents offline enumeration of the small OTP space from DB hashes.
+ * Key changes retire outstanding OTPs; resend issues a proof under the new key. */
+function otpHash(userId: string, token: string): string {
+  const secret = process.env.AUTH_SECRET;
+  if (!secret) throw new Error('AUTH_SECRET is required for verification proofs');
+  return `hmac:${createHmac('sha256', secret).update(`twistloom:otp:v1:${userId}:${token}`).digest('hex')}`;
+}
 
 /**
  * Creates an email verification token for a user
@@ -40,23 +50,25 @@ import { eq, and } from 'drizzle-orm';
  * ```
  */
 export async function createEmailVerificationToken(userId: string): Promise<string> {
-  // Generate a 6-digit numeric OTP code for easy manual entry or link clicking
-  const token = Math.floor(100000 + Math.random() * 900000).toString();
-  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours expiry
+  // Cryptographic six-digit UX, hashed with the account UUID. Equal codes on
+  // different accounts no longer collide with the global database unique key.
+  const token = randomInt(100000, 1000000).toString();
+  const storedToken = otpHash(userId, token);
+  const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
 
   // Create or update user_auth record
   await dbWrite
     .insert(userAuth)
     .values({
       userId,
-      emailVerificationToken: token,
+      emailVerificationToken: storedToken,
       emailVerificationExpires: expiresAt,
       updatedAt: new Date(),
     })
     .onConflictDoUpdate({
       target: userAuth.userId,
       set: {
-        emailVerificationToken: token,
+        emailVerificationToken: storedToken,
         emailVerificationExpires: expiresAt,
         updatedAt: new Date(),
       },
@@ -68,26 +80,29 @@ export async function createEmailVerificationToken(userId: string): Promise<stri
 /**
  * Verifies an email verification token and marks email as verified
  * 
- * @param token - Email verification token
+ * @param token - Six-digit code
+ * @param email - Address being verified (normalized account lookup)
  * @returns User ID if token is valid and not expired, null otherwise
  * 
  * @example
  * ```typescript
- * const userId = await verifyEmailToken('valid-token');
+ * const userId = await verifyEmailToken('123456', 'user@example.com');
  * if (userId) {
  *   console.log('Email verified for user:', userId);
  * }
  * ```
  */
-export async function verifyEmailToken(token: string): Promise<string | null> {
+export async function verifyEmailToken(token: string, email: string): Promise<string | null> {
+  if (!/^\d{6}$/.test(token) || !email.trim()) return null;
   // Check if token exists and is not expired first
-  const auth = await dbRead
+  const auth = await dbWrite
     .select({ 
       userId: userAuth.userId,
       emailVerificationExpires: userAuth.emailVerificationExpires,
     })
     .from(userAuth)
-    .where(eq(userAuth.emailVerificationToken, token))
+    .innerJoin(users, eq(users.userId, userAuth.userId))
+    .where(eq(users.email, email.trim().toLowerCase()))
     .limit(1);
 
   if (auth.length === 0) return null;
@@ -108,7 +123,9 @@ export async function verifyEmailToken(token: string): Promise<string | null> {
     .where(
       and(
         eq(userAuth.userId, auth[0].userId),
-        eq(userAuth.emailVerificationToken, token)
+        // Unscoped old OTPs are deliberately retired; resend creates scoped proof.
+        eq(userAuth.emailVerificationToken, otpHash(auth[0].userId, token)),
+        gt(userAuth.emailVerificationExpires, new Date())
       )
     );
 
