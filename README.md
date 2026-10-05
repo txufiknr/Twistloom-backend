@@ -24,7 +24,8 @@
 ![Hono](https://img.shields.io/badge/hono-E36002?logo=hono&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/postgresql-336791?logo=postgresql)
 ![Drizzle ORM](https://img.shields.io/badge/drizzle-ff6b00?logo=drizzle)
-![Vercel](https://img.shields.io/badge/vercel-000000?logo=vercel)
+![Netlify](https://img.shields.io/badge/netlify-00C7B7?logo=netlify&logoColor=white)
+![Vercel](https://img.shields.io/badge/vercel-000000?logo=vercel) <!-- rollback deployment path -->
 ![License](https://img.shields.io/badge/license-proprietary-red)
 
 </div>
@@ -45,7 +46,8 @@ Twistloom is not merely a branching story platform. It is a multiverse storytell
 
 ## 🌐 URLs
 
-- **Backend API**: https://twistloom-backend.vercel.app
+- **Backend API**: https://twistloom-backend.netlify.app
+- **Backend API (rollback)**: https://twistloom-backend.vercel.app
 - **Frontend Web**: https://twistloom-web.vercel.app
 
 ## 🏗️ Tech Stack
@@ -59,7 +61,7 @@ Twistloom is not merely a branching story platform. It is a multiverse storytell
 | 🔥 **Hono.js** | 4.13+ | Ultra-fast, runtime-agnostic web framework with first-class TypeScript and native Bun support |
 | 🗄️ **Neon (Postgres)** | 18 | Serverless, auto-scaling, and excellent TypeScript support |
 | 🔧 **Drizzle ORM** | 0.45+ | Type-safe, excellent migrations, and modern query builder |
-| 🚀 **Vercel** | Node.js runtime | Stable serverless execution via custom `IncomingMessage` → `Request` adapter |
+| 🚀 **Netlify** | Serverless Functions (Node.js) | Production runtime — a ~5-line Web `Request` → `Response` wrapper around Hono (`netlify/functions/api.mts`); the Vercel adapter is retained as the rollback path |
 
 ### **AI Providers**
 
@@ -128,10 +130,11 @@ The backend was migrated from **Node.js + pnpm + tsx** to **Bun** (runtime + pac
 |-------|--------|--------|
 | 1 — Package manager | `pnpm` → `bun install`, lockfile `pnpm-lock.yaml` → `bun.lock` | ✅ |
 | 2 — Local dev | `tsx watch` + `@hono/node-server` → `bun --watch` + `Bun.serve()` | ✅ |
-| 3 — Vercel deployment | Consolidated `IncomingMessage` → `Request` adapter as the default export in `src/app.ts` (re-exported by `api/index.ts`) | ✅ |
+| 3 — Vercel deployment *(historical)* | Consolidated `IncomingMessage` → `Request` adapter as the default export in `src/app.ts` (re-exported by `api/index.ts`) — retained only as the rollback path | ✅ |
 | 4 — DB migrations | Drizzle Kit runs under Node.js (`node --env-file=... node_modules/drizzle-kit/bin.cjs`) | ✅ |
+| 5 — Netlify deployment | `netlify/functions/api.mts` calls `app.fetch()` directly (Web `Request` → `Response`), `netlify.toml` owns the build, `bun.lockb` stub forces native `bun install` | ✅ |
 
-> **Note on runtime decisions:** Vercel's Bun runtime was initially attempted but had ESM module linking failures. The `hono/vercel` adapter was also tried but its `handle()` doesn't properly convert `IncomingMessage` → `Request` on the Node.js runtime, causing `this.raw.headers.get()` to fail. The final architecture uses a **custom conversion handler** — consolidated as the default export of `src/app.ts` (re-exported by `api/index.ts`) — the same well-tested pattern from the pre-migration codebase. This is the most stable path while still benefiting from Bun's faster local dev cycle.
+> **Note on runtime decisions:** Vercel's Bun runtime was initially attempted but had ESM module linking failures. The `hono/vercel` adapter was also tried but its `handle()` doesn't properly convert `IncomingMessage` → `Request` on the Node.js runtime, causing `this.raw.headers.get()` to fail. The final Vercel architecture uses a **custom conversion handler** — consolidated as the default export of `src/app.ts` (re-exported by `api/index.ts`). **Production now runs on Netlify**, whose Functions API already speaks the Web standard, so no conversion layer exists on the live path at all.
 
 #### DB migrations run under Node.js (drizzle-kit)
 
@@ -153,9 +156,36 @@ The `db:*` scripts (`db:generate`, `db:migrate`, `db:migrate:prod`, `db:studio`)
 
 `@hono/node-server`, `undici`, `tsx`, `@types/express` — all replaced by Bun's built-in capabilities.
 
-### Vercel deployment
+### Netlify deployment (production)
 
-The app is deployed on the **Node.js runtime** via a custom handler that lives in `src/app.ts` as its **default export** (`vercelHandler`). Vercel's Node.js Serverless functions can receive `(IncomingMessage, ServerResponse)`, but Hono expects a Web API `Request` — so the handler converts between the two and pipes the response back through whichever output path Vercel expects (legacy `res` or a returned `Response` for Fluid Compute). `api/index.ts` is a thin re-export of that handler, so both entrypoints Vercel might pick serve the identical conversion.
+Production runs on **Netlify Serverless Functions (Node.js)**. Netlify's modern Functions API hands the handler a spec-compliant Web `Request` and accepts a Web `Response` — exactly Hono's native contract — so the entire adapter layer disappears:
+
+```ts
+// netlify/functions/api.mts
+import type { Config, Context } from "@netlify/functions";
+import { app } from "../../src/app.js";
+
+export default async (request: Request, context: Context): Promise<Response> =>
+  app.fetch(request, {}, executionContextFrom(context));
+
+export const config: Config = { path: "/*", preferStatic: true };
+```
+
+| Piece | File | Role |
+|-------|------|------|
+| Function entrypoint | `netlify/functions/api.mts` | `path: "/*"` catch-all + `preferStatic` so `public/` is served at the edge for free |
+| Build contract | `netlify.toml` | `bun run typecheck` build gate, `publish = "public"`, esbuild bundler, `pdfkit` external + AFM font data |
+| Bun detection | `bun.lockb` (empty stub) | Netlify only auto-detects Bun from the binary lockfile; the stub stops it falling back to `npm install` (the authoritative lockfile is still `bun.lock`) |
+| Verification | `bun run verify:deployment` | Runs the automated routing/CORS/CSRF/cache checks from the migration roadmap |
+| Cleanup / rollback | `bun platform:status`, `bun platform:cleanup:netlify`, `bun platform:cleanup:vercel` | Destructive platform-artifact lifecycle (dry-run by default) |
+
+Environment, limits, credit budget, and the full cutover checklist: [`docs/roadmap/NETLIFY_MIGRATION_ROADMAP.md`](docs/roadmap/NETLIFY_MIGRATION_ROADMAP.md). Platform switching (clean up / revert): [`docs/operations/DEPLOYMENT_PLATFORM_LIFECYCLE.md`](docs/operations/DEPLOYMENT_PLATFORM_LIFECYCLE.md).
+
+### Vercel deployment (rollback path)
+
+> **Retained deliberately.** `vercel.json`, `api/index.ts`, and the `vercelHandler` adapter in `src/app.ts` are **not** dead code — they are the rollback deployment. Removing them is an explicit, one-command decision (`bun platform:cleanup:vercel`), never a side effect.
+
+The app **can** be deployed on the **Node.js runtime** via a custom handler that lives in `src/app.ts` as its **default export** (`vercelHandler`, guarded by `__PLATFORM_VERCEL_ADAPTER_*` markers). Vercel's Node.js Serverless functions can receive `(IncomingMessage, ServerResponse)`, but Hono expects a Web API `Request` — so the handler converts between the two and pipes the response back through whichever output path Vercel expects (legacy `res` or a returned `Response` for Fluid Compute). `api/index.ts` is a thin re-export of that handler, so both entrypoints Vercel might pick serve the identical conversion.
 
 > **⚠️ Historical pitfall — the default export must be the adapter, not `app.fetch`.** Vercel's "Hono" framework preset auto-detects `src/app.ts` (a recognized entrypoint that imports `hono`) and deploys its default export. If that default export is `app.fetch`, a legacy Node invocation hands Hono a raw `IncomingMessage` whose `headers` is a plain object — crashing CORS/compress middleware with `TypeError: this.raw.headers.get is not a function` and logging "default export returned a `Response`". That is why the default export is the consolidated `vercelHandler`, which always converts to a real Web `Request` first.
 
@@ -169,7 +199,8 @@ The app is deployed on the **Node.js runtime** via a custom handler that lives i
 |-------|---------|---------|
 | Local development | **Bun** | Fast dev server (`bun --watch`), native TypeScript |
 | Package management | **Bun** | `bun install` (~80% faster than pnpm) |
-| Production (Vercel) | **Node.js** | Stable, battle-tested serverless execution |
+| Production (Netlify) | **Node.js** | Serverless Functions — Web `Request`/`Response` passthrough via `netlify/functions/api.mts` |
+| Rollback (Vercel) | **Node.js** | Custom `IncomingMessage` → `Request` adapter, retained until the Vercel project is retired |
 
 #### Web API migration (pre-existing)
 
@@ -186,9 +217,17 @@ The codebase was originally migrated to be Edge Runtime-compatible, systematical
 | `process.uptime()` / `.memoryUsage()` / `.version` | `typeof` guards + `Date.now()` startup timestamp |
 | Stripe default HTTP client | `Stripe.createFetchHttpClient()` |
 | Neon WebSocket (`ws` package) | `neonConfig.webSocketConstructor = globalThis.WebSocket` |
-| `@hono/node-server` entrypoint | Bun's `Bun.serve()` (local) / custom `IncomingMessage` → `Request` adapter (production) |
+| `@hono/node-server` entrypoint | Bun's `Bun.serve()` (local) / `netlify/functions/api.mts` (production) / custom `IncomingMessage` → `Request` adapter (Vercel rollback) |
 
-#### Configuration
+#### Configuration (Netlify — production)
+
+- **Build command** — `bun run typecheck` (defined in `netlify.toml`; fails on type errors before esbuild bundles the function).
+- **Publish directory** — `public` (contains `robots.txt`; `preferStatic` serves it at the CDN edge).
+- **Functions directory** — `netlify/functions`, bundled with `esbuild`, `pdfkit` kept external with its AFM data shipped via `included_files`.
+- **Environment** — Functions scope in the Netlify UI; `NODE_ENV=production` **must** be set explicitly (Netlify does not set it), plus `AWS_LAMBDA_JS_RUNTIME=nodejs24.x` if the runtime needs pinning.
+- **Routing** — declared inline in the function (`config.path = "/*"`). No `[[redirects]]` catch-all — one routing mechanism only.
+
+#### Configuration (Vercel — rollback)
 
 - **Vercel dashboard → Framework Preset** — either **"Hono"** (auto-detects `src/app.ts` and deploys its adapter default export) or **"Other"** (routes every path via the `vercel.json` rewrite to `/api/index`, which re-exports the same handler). Both now work because both entrypoints serve the identical consolidated `vercelHandler`.
 - **Runtime** — Node.js (set via `export const config = { runtime: "nodejs" }` in `src/app.ts`, re-exported by `api/index.ts`).
@@ -233,8 +272,8 @@ The codebase was originally migrated to be Edge Runtime-compatible, systematical
 
 * **Background Multiverse Expansion**: Alternative futures generated asynchronously before readers reach them
 * **GitHub Workflow Processing**: On-demand GitHub Actions with 30-minute timeout for reliable async generation
-* **Timeout Prevention**: Eliminates Vercel execution limits through background processing
-* **Deployment-Aware Strategy Pattern**: Automatic adaptation between Vercel, GitHub Actions, and cron environments
+* **Timeout Prevention**: Eliminates platform execution limits through background processing
+* **Deployment-Aware Strategy Pattern**: Automatic adaptation between Netlify, GitHub Actions, and cron environments
 * **Distributed Locking**: Prevents duplicate generation and concurrent branch conflicts
 * **Pending Generation Tracking**: Database-driven generation management without external job queues
 * **Real-Time Progress Updates**: SSE-based progress monitoring for generation status
@@ -387,7 +426,7 @@ The codebase was originally migrated to be Edge Runtime-compatible, systematical
 
 ### **Performance**
 
-- Serverless optimization for Vercel deployment
+- Serverless optimization for Netlify Functions (and Vercel rollback)
 - Intelligent caching with Redis (Upstash)
 - Database connection pooling via Neon serverless
 - Efficient context management for long-running stories
@@ -404,7 +443,7 @@ The codebase was originally migrated to be Edge Runtime-compatible, systematical
 - Rate limiting and request throttling via Upstash Redis
 - Graceful error handling and fallbacks across all providers
 - Distributed locking for concurrent generation safety
-- Strategy-pattern deployment (Vercel / GitHub Actions / cron)
+- Strategy-pattern deployment (Netlify / GitHub Actions / cron)
 
 ### **Reliability**
 
@@ -510,9 +549,9 @@ This algorithm enables **instantaneous story navigation** and **enterprise-scale
 
 ## 🌐 API Examples
 
-https://twistloom-backend.vercel.app/api/books/explore?sortBy=trending&limit=10
-https://twistloom-backend.vercel.app/api/books/stats
-https://twistloom-backend.vercel.app/api/user/users/txufiknr
+https://twistloom-backend.netlify.app/api/books/explore?sortBy=trending&limit=10
+https://twistloom-backend.netlify.app/api/books/stats
+https://twistloom-backend.netlify.app/api/user/users/txufiknr
 
 ## 🏛️ API Architecture
 
@@ -728,7 +767,7 @@ bun qstash:setup:prod            # Create/update QStash schedules from .env.prod
 bun qstash:setup:prod --dry-run  # Print the exact QStash requests without sending them
 ```
 
-Background work that must run more than once a day is triggered by **Upstash QStash**, because Vercel Cron is limited to one run per day on the Hobby plan. Two schedules are registered: the **credit-reservation leak sweeper** (`POST /api/cron/sweep-credit-reservations`, every 10 min) and the **custom-action orphan sweep** (`POST /api/cron/sweep-custom-actions`, every 5 min — re-dispatches a charged custom action whose on-demand GitHub run died; it never generates inline, so it stays sub-second instead of costing a VM build). Registration is an **upsert keyed by `Upstash-Schedule-Id`** (`src/cron/ensure-qstash-schedules.ts`), so re-running the script never creates duplicates (the free tier allows 10 schedules). It requires `QSTASH_TOKEN`, `CRON_SECRET`, and `BACKEND_URL` (or `VERCEL_URL`), and is deliberately **not** part of `bun db:triggers` / `bun db:reset` — those stay database-only. Details: [`docs/architecture/PAYMENTS_ARCHITECTURE_BACKEND.md`](docs/architecture/PAYMENTS_ARCHITECTURE_BACKEND.md) §4.
+Background work that must run more than once a day is triggered by **Upstash QStash** rather than a platform cron: Vercel Hobby allows only one run per day, and Netlify Scheduled Functions are plan-gated on the Free tier (see Step 16 of the migration roadmap). Two schedules are registered: the **credit-reservation leak sweeper** (`POST /api/cron/sweep-credit-reservations`, every 10 min) and the **custom-action orphan sweep** (`POST /api/cron/sweep-custom-actions`, every 5 min — re-dispatches a charged custom action whose on-demand GitHub run died; it never generates inline, so it stays sub-second instead of costing a VM build). Registration is an **upsert keyed by `Upstash-Schedule-Id`** (`src/cron/ensure-qstash-schedules.ts`), so re-running the script never creates duplicates (the free tier allows 10 schedules). It requires `QSTASH_TOKEN`, `CRON_SECRET`, and `BACKEND_URL` as the destination host — `VERCEL_URL` is accepted only as a legacy fallback for the rollback deployment — and is deliberately **not** part of `bun db:triggers` / `bun db:reset` — those stay database-only. After any host change, re-run `bun qstash:setup:prod` to repoint the schedules. Details: [`docs/architecture/PAYMENTS_ARCHITECTURE_BACKEND.md`](docs/architecture/PAYMENTS_ARCHITECTURE_BACKEND.md) §4.
 
 ### **Quality Assurance**
 ```bash
@@ -868,11 +907,17 @@ OPENROUTER_API_KEY=...
 > **Note**: This is a simplified overview. The codebase evolves rapidly — for a complete listing, see the source tree directly.
 
 ```
+netlify.toml                       # Netlify build contract (build cmd, publish dir, bundler)
+bun.lockb                          # Empty stub — forces Netlify's native `bun install` detection
+
+netlify/
+├── functions/api.mts               # Netlify entrypoint — Web Request → Response via app.fetch
+
 api/
-├── index.ts                        # Vercel entrypoint — re-exports src/app.ts's default export
+├── index.ts                        # Vercel entrypoint (rollback) — re-exports src/app.ts's default export
 
 src/
-├── app.ts                          # Hono app configuration & Vercel adapter
+├── app.ts                          # Pure Hono app + the Vercel rollback adapter (marker-guarded block)
 ├── server.bun.ts                   # Server entry point (Bun runtime)
 │
 ├── config/                         # Configuration files and AI client setup
@@ -972,7 +1017,7 @@ src/
 - **Distributed Locking**: Prevents concurrent generation on same branching point
 - **Custom Actions**: AI-powered canon validation (Gate 0/1) for user-submitted actions
 - **Canon Validation**: Lore-consistency checking for generated pages
-- **Strategy Pattern**: Deployment-aware generation (Vercel / GitHub Actions / cron)
+- **Strategy Pattern**: Deployment-aware generation (Netlify / GitHub Actions / cron)
 - **Performance Monitoring**: System performance tracking and metrics
 - **Translation Service**: Multi-language support and auto-translation cron
 - **Credits System**: Atomic credit consumption and management

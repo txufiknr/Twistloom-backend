@@ -6,8 +6,18 @@ export const IS_DEVELOPMENT = process.env.NODE_ENV === "development";
 export const IS_TEST = (process.env.NODE_ENV ?? "test") === "test";
 export const DEV_USE_SECURE_COOKIES = process.env.DEV_USE_SECURE_COOKIES === 'true';
 
-/** Cloud / Runtime environment detection */
-export const IS_VERCEL = Boolean(process.env.VERCEL || process.env.VERCEL_ENV);
+/**
+ * Cloud / Runtime environment detection: true on any serverless platform.
+ *
+ * Semantics are "am I running inside a serverless function?", not "am I on a
+ * specific vendor?" — consumers use it for serverless log frugality, reduced
+ * diagnostics, and platform-provided execution limits. Recognizes Vercel
+ * (`VERCEL` / `VERCEL_ENV`) and Netlify (`NETLIFY`), so switching platforms
+ * never silently flips production behavior into local-dev mode.
+ */
+export const IS_SERVERLESS = Boolean(
+  process.env.VERCEL || process.env.VERCEL_ENV || process.env.NETLIFY
+);
 export const IS_GITHUB_ACTIONS = Boolean(process.env.GITHUB_ACTIONS);
 
 /** Default server port */

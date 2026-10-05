@@ -1,0 +1,26 @@
+# Netlify build & functions configuration (source-controlled deployment contract).
+#
+# Keep every deployment assumption here rather than in the Netlify dashboard so
+# the whole story is reviewable in the repository and portable between sites.
+#
+# Reversal / cleanup: see docs/operations/DEPLOYMENT_PLATFORM_LIFECYCLE.md
+
+[build]
+  # Dependencies are installed with Bun during Netlify's native pre-build phase,
+  # triggered by the `bun.lockb` stub in the repository root (Netlify only
+  # auto-detects the binary lockfile). This build command is a pure type gate —
+  # it fails early on type errors before esbuild bundles the function.
+  command = "bun run typecheck"
+  publish = "public"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+  # pdfkit resolves AFM font data from its own package directory at runtime;
+  # keep it out of the esbuild bundle and explicitly ship its data files.
+  external_node_modules = ["pdfkit"]
+  included_files = ["node_modules/pdfkit/js/data/**"]
+
+[build.environment]
+  NODE_VERSION = "24"
+  BUN_VERSION = "1.3.14"

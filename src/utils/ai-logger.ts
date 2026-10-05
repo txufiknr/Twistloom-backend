@@ -5,7 +5,7 @@
 
 import type { AIChatProvider, AIResponse } from "../types/ai-chat.js";
 import { edgeGroup } from './edge-group.js';
-import { IS_VERCEL } from '../config/env.js';
+import { IS_SERVERLESS } from '../config/env.js';
 
 /**
  * Logs successful AI provider response with standardized format
@@ -17,9 +17,10 @@ export function logAISuccess(response: AIResponse<unknown>, requestStartAt?: num
   const elapsedMs = requestStartAt ? Date.now() - requestStartAt : undefined;
   const title = `[${provider}] ✅ ${model} succeeded (${output.length} chars, finish: ${finishReason}${elapsedMs ? `, duration: ${elapsedMs}ms` : ''})`;
 
-  // On Vercel serverless functions, dumping massive multi-KB LLM outputs into stdout
-  // burns active CPU cycles and floods serverless logs. On Vercel, emit a clean 1-liner.
-  if (IS_VERCEL) {
+  // On serverless platforms (Vercel, Netlify), dumping massive multi-KB LLM
+  // outputs into stdout burns billed compute and floods function logs.
+  // Emit a clean 1-liner instead.
+  if (IS_SERVERLESS) {
     console.log(title);
     return;
   }
@@ -94,7 +95,7 @@ export function logAIPrompt(provider: AIChatProvider, message: string, content: 
 
   const title = `[${provider}] ${message} (${content.length} chars)`;
   
-  if (IS_VERCEL) {
+  if (IS_SERVERLESS) {
     console.log(title);
     return;
   }

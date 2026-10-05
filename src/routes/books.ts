@@ -204,7 +204,6 @@ import {
 import { streamCompanionAnswerSSE, companionAnswerIsComplete } from "../utils/companion-stream.js";
 import { retrieveSimilarPages, retrieveBookCluesForQuery } from "../services/vector-memory.js";
 import { assembleBookPages, sanitizeDownloadFilename } from "../services/book-export.js";
-import { generateDocument } from "../services/document-generators/index.js";
 
 const router = new Hono<AppEnv>();
 
@@ -9343,7 +9342,12 @@ router.post("/:identifier/export", requireAuth, async (c) => {
       return cValidationError(c, "No story pages found to export for this branch.");
     }
 
-    // 4. Generate document buffer in memory
+    // 4. Generate document buffer in memory.
+    // Lazy dynamic import: pdfkit/docx/epub-gen pull heavy font assets and SDK
+    // singletons, so they must not initialize on every request that merely
+    // loads this router. Shaves cold-start/init wall-clock (Netlify bills
+    // wall-clock duration; Vercel bills active CPU — both benefit).
+    const { generateDocument } = await import("../services/document-generators/index.js");
     const { buffer, contentType, ext } = await generateDocument(
       {
         title: enrichedBook.title || "Untitled Story",

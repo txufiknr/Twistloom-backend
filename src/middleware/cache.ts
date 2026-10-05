@@ -2,17 +2,24 @@
  * Cache-Control header middleware for Hono API responses.
  *
  * Sets appropriate caching directives per content type and auth status,
- * enabling Vercel Edge and CDN caching for publicly cacheable responses.
+ * enabling CDN and browser caching for publicly cacheable responses.
  *
  * Strategy:
- *   - Unauthenticated GET/HEAD → short public cache (CDN-friendly)
+ *   - Unauthenticated GET/HEAD → short public cache + Netlify edge/durable
+ *     opt-in via `Netlify-CDN-Cache-Control` (see src/utils/netlify-cache.ts)
  *   - Authenticated GET/HEAD → private, no-cache (user-specific data)
  *   - Error responses → no-store (never cache errors)
  *   - Mutations (POST/PUT/DELETE) → no-store
+ *
+ * Platform note: `s-maxage` only collapses traffic at an edge that honors it.
+ * Netlify's shared CDN ignores `private` responses entirely and reads its own
+ * `Netlify-CDN-Cache-Control` header, so authenticated bursts are dampened by
+ * the app-layer `coalescePoll` / `getCoalesced` LRU rather than by the CDN.
  */
 
 import { createMiddleware } from "hono/factory";
 import type { AppEnv } from "../hono/env.js";
+import { applyPublicCdnCache } from "../utils/netlify-cache.js";
 
 /** Cache durations in seconds */
 const CACHE = {
@@ -49,20 +56,24 @@ export const cacheControl = createMiddleware<AppEnv>(async (c, next) => {
   const userId = c.get("userId");
   if (userId) {
     // Realtime status polling endpoints (book creation + candidate generation):
-    // allow a SHORT private edge/browser cache so bursts of identical polls from
-    // the same client are coalesced by Vercel Edge / the browser without invoking
-    // the serverless function on every 1–2s tick. This is the P1.2/P1.4 invocation
-    // reducer — the per-instance LRU in poll-coalesce.ts already collapses
-    // same-instance bursts; this adds client-side + edge collapse. 1–2s staleness
-    // is imperceptible for generation progress. `private` (not `public`) keeps the
-    // per-user payload from leaking across users at the CDN. Truly realtime
-    // endpoints (checkin/status, notifications, activity-logs, generations/active)
+    // allow a SHORT private browser cache so identical polls from the same
+    // client are collapsed without invoking the serverless function on every
+    // 1–2s tick. This is the P1.2/P1.4 invocation reducer — the per-instance
+    // LRU in poll-coalesce.ts already collapses same-instance bursts; this adds
+    // client-side collapse. 1–2s staleness is imperceptible for generation
+    // progress. `private` (not `public`) keeps the per-user payload from
+    // leaking across users at any shared CDN. Truly realtime endpoints
+    // (checkin/status, notifications, activity-logs, generations/active)
     // stay fully uncached below.
     const isStatusPoll =
       (path.endsWith("/status") && !path.includes("/checkin/status")) ||
       path.endsWith("/candidates/status");
     if (isStatusPoll) {
-      c.header("Cache-Control", "private, max-age=1, s-maxage=1, stale-while-revalidate=2");
+      // `private` is mandatory here (user-scoped payload). Netlify's shared CDN
+      // never stores `private` responses, so a `s-maxage` directive would be
+      // inert and misleading — the real poll-burst dampener is the app-layer
+      // `coalescePoll` / `getCoalesced` LRU, which is runtime-agnostic.
+      c.header("Cache-Control", "private, max-age=1, stale-while-revalidate=2");
       return;
     }
 
@@ -98,4 +109,10 @@ export const cacheControl = createMiddleware<AppEnv>(async (c, next) => {
     // Other public GET endpoints — conservative default
     c.header("Cache-Control", "public, max-age=10, s-maxage=60");
   }
+
+  // Netlify shared-cache opt-in for the genuinely public reads above.
+  // Emits `Netlify-CDN-Cache-Control` + `Netlify-Cache-Tag` (inert on Vercel
+  // and every other CDN) and is a no-op for user-scoped or cookie-setting
+  // responses. See src/utils/netlify-cache.ts.
+  applyPublicCdnCache(c, path);
 });

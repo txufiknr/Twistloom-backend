@@ -30,7 +30,7 @@ const app = new Hono<AppEnv>();
 // Security headers — defence-in-depth against common web vulnerabilities.
 // Applied before CORS so they're present on every response including preflight
 // and error responses. These headers should also be set at the reverse proxy
-// (Vercel Edge, Cloudflare) but are duplicated here as a safety net for
+// (Netlify CDN, Cloudflare) but are duplicated here as a safety net for
 // direct serverless-function invocations.
 app.use("*", async (c, next) => {
   c.header("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload");
@@ -43,7 +43,7 @@ app.use("*", async (c, next) => {
 
 // Response compression (gzip/deflate) for API responses.
 // Compresses JSON payloads (book data, page content) by 60-80%.
-// Vercel Edge may already compress, but this ensures compression
+// The platform CDN may already compress, but this ensures compression
 // for direct function invocations and self-hosted scenarios.
 //
 // Fluid Active CPU optimization: skip gzip for tiny realtime poll/status
@@ -51,7 +51,7 @@ app.use("*", async (c, next) => {
 // (every /touch, /status, /candidates/status tick) is pure CPU with no
 // meaningful bandwidth benefit on small bodies.
 //
-// Gated by CPU_OPTIMIZATIONS_ENABLED: on Vercel Pro / pay-as-you-go
+// Gated by CPU_OPTIMIZATIONS_ENABLED: on paid tiers
 // (DISABLE_CPU_OPTIMIZATIONS=true) the original compress() runs everywhere.
 import { CPU_OPTIMIZATIONS_ENABLED } from "./config/cpu-optimizations.js";
 
@@ -118,7 +118,7 @@ app.use("/api/*", csrf({
 
 // Auth.js v5 configuration for @hono/auth-js (cookie verification only).
 // The backend does not run OAuth flows; it merely verifies the session cookie
-// set by the Next.js frontend. trustHost is required behind Vercel's proxy.
+// set by the Next.js frontend. trustHost is required behind the platform's edge proxy.
 app.use(
   "*",
   initAuthConfig(() => ({
@@ -241,8 +241,16 @@ function getErrorMessageSafe(err: unknown): string {
   return err instanceof Error ? err.message : "Unknown error";
 }
 
+// __PLATFORM_VERCEL_ADAPTER_BEGIN__
 // ---------------------------------------------------------------------------
 // Vercel entrypoint (consolidated from the former `api/index.ts`).
+//
+// ⚠️ PLATFORM-SPECIFIC BLOCK — everything between the BEGIN/END markers, plus
+// the `node:http` type import at the top of this file, is removed by
+// `bun platform:cleanup:vercel` once the Vercel project is decommissioned; the
+// script then appends `export default app;`. Do not edit inside the markers
+// for application concerns — this block exists only so the Vercel deployment
+// keeps working while Netlify becomes the primary platform.
 //
 // Vercel's Hono framework preset auto-detects `src/app.ts` as the serverless
 // entrypoint and deploys its default export. If that default export were
@@ -414,5 +422,6 @@ export default async function vercelHandler(
     throw error;
   }
 }
+// __PLATFORM_VERCEL_ADAPTER_END__
 
 export { app };

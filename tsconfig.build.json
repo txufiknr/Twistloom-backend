@@ -4,9 +4,9 @@
     // ====================
     // 📦 BUILD OUTPUT CONFIGURATION
     // ====================
-    // Override noEmit to generate compiled JavaScript for Vercel deployment
+    // Override noEmit to generate compiled JavaScript for the `start:cron:*` scripts
     "noEmit": false,
-    // Output directory for compiled files (Vercel standard)
+    // Output directory for compiled files
     "outDir": "dist",
     // Source root directory for TypeScript files
     "rootDir": "src",
@@ -22,7 +22,7 @@
     // ====================
     // 🐞 DEBUGGING & SOURCE MAPS
     // ====================
-    // Generate source maps for better debugging in Vercel environment
+    // Generate source maps for better debugging of compiled cron entrypoints
     "sourceMap": true
   },
   // ====================

@@ -73,7 +73,7 @@ Hono backend.
 ┌──────────────────────────────────────────────────────────────────────┐
 │               NEXT.JS REWRITE PROXY (same process)                   │
 │                                                                      │
-│  /api/backend/user/profile ───→ https://twistloom-backend.vercel.app │
+│  /api/backend/user/profile ───→ https://twistloom-backend.netlify.app │
 │                                       /api/user/profile              │
 │                                                                      │
 │  Forwards headers (including Origin and Cookie) from original        │
@@ -184,7 +184,9 @@ The protection is completely transparent to the frontend because:
 
 5. **Existing CORS config is reused**: The same `allowedOrigins` set and
    `*.vercel.app` wildcard logic powers both CORS and CSRF, keeping the origin
-   policy in a single source of truth.
+   policy in a single source of truth. The wildcard matches the **frontend**
+   origin (`twistloom-web.vercel.app`); the backend host itself being on
+   Netlify does not affect it.
 
 ---
 
@@ -298,12 +300,12 @@ Use curl to verify CSRF blocking works:
 
 ```bash
 # Legitimate request (no Origin) — should succeed for public endpoints
-curl -X POST https://twistloom-backend.vercel.app/api/auth/signup \
+curl -X POST https://twistloom-backend.netlify.app/api/auth/signup \
   -H "Content-Type: application/json" \
   -d '{"email":"test@example.com","password":"..."}'
 
 # CSRF attempt (evil origin) — should return 403
-curl -X POST https://twistloom-backend.vercel.app/api/user/profile \
+curl -X POST https://twistloom-backend.netlify.app/api/user/profile \
   -H "Origin: https://evil.com" \
   -H "Content-Type: application/json" \
   -H "Cookie: __Secure-authjs.session-token=..." \

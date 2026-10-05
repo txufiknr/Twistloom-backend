@@ -3,6 +3,8 @@
   "include": [
     "src/**/*.ts",
     "tests/**/*.ts",
+    "scripts/**/*.ts",
+    "netlify/**/*.mts",
     "drizzle.config.ts"
   ]
 }

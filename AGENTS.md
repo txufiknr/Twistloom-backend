@@ -50,7 +50,7 @@ This document outlines the architecture, coding standards, established design pa
 ## 2. Technology Stack & Runtime Architecture
 
 ### Core Technologies
-- **Runtime**: Bun 1.3+ (Local dev via `Bun.serve()`, Vercel Node.js Serverless runtime in production)
+- **Runtime**: Bun 1.3+ (Local dev via `Bun.serve()`, Netlify Serverless Functions on the Node.js runtime in production; Vercel retained as the rollback deployment)
 - **API Framework**: Hono.js 4.13+ (runtime-agnostic, typed `AppEnv` bindings, Web API standard)
 - **Database**: Neon (PostgreSQL 18, serverless connection pooling & WebSocket support)
 - **ORM**: Drizzle ORM 0.45+ (type-safe query builder with SQL interval arithmetic)

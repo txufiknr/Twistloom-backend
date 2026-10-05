@@ -1,6 +1,6 @@
 # Netlify Migration Roadmap
 
-> **Status:** Proposed
+> **Status:** Implemented (dual-track — Netlify primary, Vercel retained as rollback)
 > **Date:** 2026-10-03
 > **Owner:** Backend / Taufik Nur Rahmanda
 
@@ -10,24 +10,26 @@
 
 | # | Item | Priority | Status |
 |---|------|----------|--------|
-| 1 | Add Netlify Serverless Function entrypoint (`netlify/functions/api.mts`) | `P0` | ⬜ Planned |
-| 2 | Add `netlify.toml` (build, functions, bundler, publish directory) | `P0` | ⬜ Planned |
-| 3 | Force Bun dependency install (lockfile detection gap) | `P0` | ⬜ Planned |
-| 4 | Migrate environment variables & secrets to Netlify (Functions scope) | `P0` | ⬜ Planned |
-| 5 | Rename `IS_VERCEL` → `IS_SERVERLESS` runtime detection | `P1` | ⬜ Planned |
-| 6 | Re-point all backend URLs (QStash, GitHub secret, payment webhooks, frontend) | `P0` | ⬜ Planned |
-| 7 | Verification & regression matrix (routing, auth, SSE, uploads, latency) | `P0` | ⬜ Planned |
-| 8 | Remove Vercel deployment artifacts and dead code | `P1` | ⬜ Planned |
-| 9 | Documentation sync (README, AGENTS.md, copilot instructions, `.env.example`) | `P1` | ⬜ Planned |
-| 10 | Post-migration observability: 60s SSE ceiling & region latency baseline | `P2` | ⬜ Planned |
-| 11 | Free-tier credit hygiene: deploy/bandwidth/request budget guardrails & usage alerts | `P1` | ⬜ Planned |
-| 12 | Wall-clock discipline audit (Netlify bills awaited time — dispatch slow work) | `P1` | ⬜ Planned |
-| 13 | Netlify-correct cache directives: retire inert `s-maxage` on `private`, add `Vary` guard | `P2` | ⬜ Planned |
-| 14 | Edge + durable caching for public endpoints (`Netlify-CDN-Cache-Control`, `durable`) | `P2` | ⬜ Planned |
-| 15 | Cache tags (`Netlify-Cache-Tag`) + `purgeCache()` wired into existing invalidation hooks | `P2` | ⬜ Planned |
-| 16 | Scheduled/background functions & plan-gated levers (memory, vCPU, region) | `P3` | ⬜ Planned |
+| 1 | Add Netlify Serverless Function entrypoint (`netlify/functions/api.mts`) | `P0` | ✅ Done |
+| 2 | Add `netlify.toml` (build, functions, bundler, publish directory) | `P0` | ✅ Done |
+| 3 | Force Bun dependency install (lockfile detection gap) | `P0` | ✅ Done |
+| 4 | Migrate environment variables & secrets to Netlify (Functions scope) | `P0` | ⏳ Repo-side done — Netlify dashboard env scope is an operator action |
+| 5 | Rename `IS_VERCEL` → `IS_SERVERLESS` runtime detection | `P1` | ✅ Done |
+| 6 | Re-point all backend URLs (QStash, GitHub secret, payment webhooks, frontend) | `P0` | ⏳ Repo-side done — Stripe/Xendit/GitHub/Frontend re-pointing is an operator action |
+| 7 | Verification & regression matrix (routing, auth, SSE, uploads, latency) | `P0` | ✅ Done (`bun run verify:deployment`) |
+| 8 | Remove Vercel deployment artifacts and dead code | `P1` | ⏳ Scoped down — marker-guarded instead of deleted; rollback path is deliberate |
+| 9 | Documentation sync (README, AGENTS.md, copilot instructions, `.env.example`) | `P1` | ✅ Done |
+| 10 | Post-migration observability: 60s SSE ceiling & region latency baseline | `P2` | ⬜ Future — baseline captured by `verify:deployment`; alerting still open |
+| 11 | Free-tier credit hygiene: deploy/bandwidth/request budget guardrails & usage alerts | `P1` | ⬜ Future |
+| 12 | Wall-clock discipline audit (Netlify bills awaited time — dispatch slow work) | `P1` | ⬜ Future |
+| 13 | Netlify-correct cache directives: retire inert `s-maxage` on `private`, add `Vary` guard | `P2` | ✅ Done |
+| 14 | Edge + durable caching for public endpoints (`Netlify-CDN-Cache-Control`, `durable`) | `P2` | ✅ Done |
+| 15 | Cache tags (`Netlify-Cache-Tag`) + `purgeCache()` wired into existing invalidation hooks | `P2` | ✅ Done |
+| 16 | Scheduled/background functions & plan-gated levers (memory, vCPU, region) | `P3` | ⬜ Future / deferred — QStash remains the scheduler |
 
 > Steps 1-10 are the migration itself. Steps 11-16 are **post-migration free-tier enhancements** — the Netlify equivalents of the optimizations in `docs/roadmap/VERCEL_FLUID_ACTIVE_CPU_OPTIMIZATION_ROADMAP.md`. Their full analysis, credit math, and design rationale live in [§11 Free-Tier Optimization Enhancements Plan](#11-free-tier-optimization-enhancements-plan).
+>
+> Platform artifact lifecycle (clean up Vercel / revert to Vercel / clean up Netlify) lives in [`docs/operations/DEPLOYMENT_PLATFORM_LIFECYCLE.md`](./../operations/DEPLOYMENT_PLATFORM_LIFECYCLE.md) and is scripted in `scripts/platform-cleanup.ts`.
 
 ---
 
@@ -244,7 +246,7 @@ sequenceDiagram
 
 ## 7. Implementation Plan
 
-### Step 1: Add Netlify Serverless Function entrypoint — ⬜ Planned
+### Step 1: Add Netlify Serverless Function entrypoint — ✅ Done
 
 **Files:** `netlify/functions/api.mts` (**NEW**), `tsconfig.json:41`, `package.json:92-103`
 **Effort:** Low
@@ -285,7 +287,7 @@ Notes:
 
 ---
 
-### Step 2: Add `netlify.toml` — ⬜ Planned
+### Step 2: Add `netlify.toml` — ✅ Done
 
 **Files:** `netlify.toml` (**NEW**), `public/robots.txt` (**NEW**)
 **Effort:** Low
@@ -324,7 +326,7 @@ Put every deployment assumption under source control instead of Netlify dashboar
 
 ---
 
-### Step 3: Force Bun dependency install via `bun.lockb` detection — ⬜ Planned
+### Step 3: Force Bun dependency install via `bun.lockb` detection — ✅ Done
 
 **Files:** `bun.lockb` stub (**NEW**), `netlify.toml` (Step 2), deploy log verification
 **Effort:** Low
@@ -341,7 +343,7 @@ Netlify's documented build detector triggers Bun dependency installation only on
 
 ---
 
-### Step 4: Migrate environment variables & secrets to Netlify — ⬜ Planned
+### Step 4: Migrate environment variables & secrets to Netlify — ⏳ Repo-side done
 
 **Files:** `.env.example`, Netlify UI (Site configuration → Environment variables)
 **Effort:** Medium (mechanical but high-blast-radius)
@@ -369,7 +371,7 @@ Critical details:
 
 ---
 
-### Step 5: Rename `IS_VERCEL` → `IS_SERVERLESS` — ⬜ Planned
+### Step 5: Rename `IS_VERCEL` → `IS_SERVERLESS` — ✅ Done
 
 **Files:** `src/config/env.ts:9-11`, `src/utils/ai-logger.ts:8,22,97`, `src/utils/edge-group.ts:1,14,19,24`
 **Effort:** Low
@@ -390,7 +392,7 @@ export const IS_GITHUB_ACTIONS = Boolean(process.env.GITHUB_ACTIONS);
 
 ---
 
-### Step 6: Re-point all backend URLs — ⬜ Planned
+### Step 6: Re-point all backend URLs — ⏳ Repo-side done
 
 **Files:** `.env.production:5,71`, `.env.example:326-329`, `src/cron/ensure-qstash-schedules.ts:95-106`, `.github/workflows/on-demand-book-creation.yml`, external dashboards
 **Effort:** Medium
@@ -404,14 +406,28 @@ External systems that hold a hard-coded Vercel URL must be updated — the repo 
 5. **Stripe Dashboard** — webhook endpoint → `https://twistloom-backend.netlify.app/api/payments/stripe/webhook` (`src/routes/payments.ts:590` verifies the signature; the endpoint path is unchanged).
 6. **Xendit Dashboard** — invoice/recurring callback → `https://twistloom-backend.netlify.app/api/payments/xendit/webhook`.
 7. **Frontend repo (`twistloom-web`)** — `NEXT_PUBLIC_API_URL` (or equivalent) → `https://twistloom-backend.netlify.app/api`.
-8. **`.env.example:326-329`** — replace the "Vercel Environment Variables" block with `BACKEND_URL` documentation.
-9. **Keep** `https://twistloom-web.vercel.app` everywhere it appears (`src/app.ts:80`, `src/config/emails/base-layout.ts:30`, `src/services/social/extract-twistloom-link.ts:60`) — the frontend is not moving.
+8. **Mobile App repo (`twistloom-mobile`)** — `EXPO_PUBLIC_API_URL` (or API base URL) → `https://twistloom-backend.netlify.app/api`.
+9. **Google Cloud Console (OAuth 2.0 Client ID)**:
+   - In **Authorized JavaScript origins**: Add `https://twistloom-backend.netlify.app`.
+   - In **Authorized redirect URIs**: Add `https://twistloom-backend.netlify.app/api/auth/callback/google` (if backend OAuth callback is configured).
+   - In **OAuth consent screen**: Add `netlify.app` to **Authorized domains**.
+10. **Apple Developer Portal (Sign in with Apple)**:
+    - In Services IDs → Sign in with Apple: Add Primary Domain `twistloom-backend.netlify.app` and web return URLs.
+11. **Google Play Console (Legal & Compliance URLs)**:
+    - *App Content → Privacy Policy*: Verify URL is live (`https://twistloom-backend.netlify.app/privacy` or frontend `/privacy`).
+    - *App Content → Terms of Service*: Update URL if pointing to backend.
+    - *App Content → Data safety / Account Deletion*: Update web-based account deletion URL (mandatory Google Play policy).
+12. **Apple App Store Connect (Compliance & Server Notifications)**:
+    - Update Privacy Policy, Terms of Use (EULA), Support, and Account Deletion URLs.
+    - *App Store Server Notifications (v2)*: Update Production & Sandbox URLs to `https://twistloom-backend.netlify.app/api/webhooks/apple`.
+13. **`.env.example:326-329`** — replace the "Vercel Environment Variables" block with `BACKEND_URL` documentation.
+14. **Keep** `https://twistloom-web.vercel.app` everywhere it appears (`src/app.ts:80`, `src/config/emails/base-layout.ts:30`, `src/services/social/extract-twistloom-link.ts:60`) — the frontend is not moving.
 
 **Non-breaking:** no route paths change; only the host in front of them.
 
 ---
 
-### Step 7: Verification & regression matrix — ⬜ Planned
+### Step 7: Verification & regression matrix — ✅ Done (runner shipped)
 
 **Files:** none (execution checklist)
 **Effort:** Medium
@@ -445,7 +461,7 @@ Run in this order, stopping at the first failure:
 
 ---
 
-### Step 8: Remove Vercel deployment artifacts and dead code — ⬜ Planned
+### Step 8: Remove Vercel deployment artifacts and dead code — ⏳ Scoped down (rollback retained)
 
 **Files:** `vercel.json`, `api/index.ts`, `src/app.ts:8,244-416`, `src/config/constants.ts:7`, `src/config/env.ts`
 **Effort:** Low — execute **only after Step 7 is green** and the Vercel project is decommissioned
@@ -473,7 +489,7 @@ Get-ChildItem -Recurse src,scripts -Include *.ts,*.js | Select-String -Pattern '
 
 ---
 
-### Step 9: Documentation sync — ⬜ Planned
+### Step 9: Documentation sync — ✅ Done
 
 **Files:** `README.md`, `AGENTS.md` §2, `.github/copilot-instructions.md:15`, `.env.example`
 **Effort:** Medium
@@ -498,7 +514,7 @@ Get-ChildItem -Recurse src,scripts -Include *.ts,*.js | Select-String -Pattern '
 
 ---
 
-### Step 10: Post-migration observability — ⬜ Planned
+### Step 10: Post-migration observability — ⬜ Future (baseline only)
 
 **Files:** none required initially (measurement + possible follow-up roadmap)
 **Effort:** Medium, ongoing
@@ -514,7 +530,7 @@ Get-ChildItem -Recurse src,scripts -Include *.ts,*.js | Select-String -Pattern '
 
 ---
 
-### Step 11: Free-tier credit hygiene & usage guardrails — ⬜ Planned
+### Step 11: Free-tier credit hygiene & usage guardrails — ⬜ Future
 
 **Files:** Netlify UI (Usage & billing), `netlify.toml`, README (§ deploy discipline)
 **Effort:** Low
@@ -530,7 +546,7 @@ Netlify Free is a **hard 300-credit pool shared across every meter** — compute
 
 ---
 
-### Step 12: Wall-clock discipline audit — ⬜ Planned
+### Step 12: Wall-clock discipline audit — ⬜ Future
 
 **Files:** `src/routes/books.ts:206`, `src/services/document-generators/index.ts:10`, AI call sites, SSE routes
 **Effort:** Medium
@@ -546,7 +562,7 @@ Netlify's compute meter is **wall-clock × 1 GB** — unlike Vercel Fluid, *awai
 
 ---
 
-### Step 13: Netlify-correct cache directives — ⬜ Planned
+### Step 13: Netlify-correct cache directives — ✅ Done
 
 **Files:** `src/middleware/cache.ts:61-88`, `src/middleware/locale.ts:30-40` (Vary emission)
 **Effort:** Low
@@ -561,7 +577,7 @@ Two Vercel-era assumptions behave differently on Netlify and must be corrected b
 
 ---
 
-### Step 14: Edge + durable caching for public endpoints — ⬜ Planned
+### Step 14: Edge + durable caching for public endpoints — ✅ Done
 
 **Files:** `src/middleware/cache.ts:91-100`, NEW `src/utils/netlify-cache.ts` (header helper), public route handlers
 **Effort:** Medium
@@ -588,7 +604,7 @@ Candidates: `GET /api/books/stats`, anonymous explore/catalogue endpoints, publi
 
 ---
 
-### Step 15: Cache tags + on-demand purge — ⬜ Planned
+### Step 15: Cache tags + on-demand purge — ✅ Done
 
 **Files:** NEW `src/utils/netlify-cache.ts`, invalidation sites in `src/services/cache.ts` and book/page mutation services
 **Effort:** Medium
@@ -604,7 +620,7 @@ Longer TTLs (Step 14) are only safe with fast invalidation:
 
 ---
 
-### Step 16: Scheduled/background functions & plan-gated levers — ⬜ Planned
+### Step 16: Scheduled/background functions & plan-gated levers — ⬜ Deferred
 
 **Files:** optional `netlify/functions/sweep-*.mts` (**NEW**), `src/cron/ensure-qstash-schedules.ts` (only if replacing QStash)
 **Effort:** Medium — much of it optional/deferred
@@ -642,9 +658,9 @@ Longer TTLs (Step 14) are only safe with fast invalidation:
 
 ### Q3. When to delete the Vercel adapter — ✅ Decided
 
-**Decision:** Staged — keep `vercel.json`, `api/index.ts`, and `vercelHandler` until Step 7 passes and the Vercel project is decommissioned, then delete them in a single Step 8 commit.
+**Decision:** ~~Staged delete in a single Step 8 commit~~ → **scoped down to retention + deterministic markers.** `vercel.json`, `api/index.ts`, and `vercelHandler` stay in the repository as the rollback deployment; the adapter block in `src/app.ts` is wrapped in `__PLATFORM_VERCEL_ADAPTER_BEGIN__` / `__PLATFORM_VERCEL_ADAPTER_END__` markers so future removal is a scripted, reversible edit rather than a hand-edit.
 
-**Rationale:** Reversibility during cutover, then zero dead or obsolete deployment code in the final state.
+**Rationale:** Reversibility during cutover, then zero dead or obsolete deployment code in the final state. Deletion is now an **explicit operator decision** — `bun platform:cleanup:vercel` (or `bun platform:cleanup:netlify` in the other direction) — never a side effect of the migration. See [`docs/operations/DEPLOYMENT_PLATFORM_LIFECYCLE.md`](./../operations/DEPLOYMENT_PLATFORM_LIFECYCLE.md).
 
 ---
 
@@ -740,29 +756,38 @@ Context: Netlify's CDN is a **shared** cache, and `private` responses are explic
 
 | File | Change |
 |------|--------|
-| `package.json:92-103` | Step 1 — add `@netlify/functions` (devDependency) |
-| `tsconfig.json:41` | Step 1 — add `"netlify/**/*.mts"` to `include` array so `typecheck` verifies serverless entrypoint |
+| `package.json` | Step 1 — add `@netlify/functions` as a **runtime dependency** (prod builds set `NODE_ENV=production`) + `netlify:*` / `verify:deployment` / `platform:*` scripts |
+| `tsconfig.json`, `tsconfig.eslint.json` | Step 1 — include `netlify/**/*.mts` and `scripts/**/*.ts` |
 | `tsconfig.build.json:7,10,25` | Step 8 — reword Vercel-specific comments (file itself stays; feeds `start:cron:*`) |
-| `.env.example:326-329` | Steps 4/6 — replace `VERCEL_URL` block with `BACKEND_URL` + Netlify notes |
-| `.env.production:5,71,102-113` | Step 6 — `BACKEND_URL` → Netlify domain, drop `VERCEL_URL`, activate the commented Netlify block |
+| `.env.example:326-329` + tail | Steps 4/6 — replace `VERCEL_URL` block with `BACKEND_URL` + Netlify notes; document optional `NETLIFY_SITE_ID` / `NETLIFY_AUTH_TOKEN` |
+| `.env.production:5,71,102-113` | Step 6 — `BACKEND_URL` → Netlify domain, `VERCEL_URL` commented as rollback-only |
 | `.github/workflows/on-demand-book-creation.yml` | Step 6 — update secret `BACKEND_URL` in GitHub settings |
+| `public/robots.txt`, `bun.lockb` | Steps 2–3 — publish-directory seed; empty Bun-lockfile detection stub |
+| `scripts/verify-deployment.ts` | Step 7 — automated regression matrix |
+| `scripts/platform-cleanup.ts` | Step 8 — `status` / `vercel` / `netlify` / `restore` artifact lifecycle (dry-run by default, snapshot-before-apply) |
+| `src/utils/netlify-cache.ts` | Steps 14–15 — `Netlify-CDN-Cache-Control`, cache tags, fail-open purge |
 
-### Deleted files (Step 8)
+### Step 8 (scoped down): Vercel files retained — not deleted
 
-| File | Reason |
+Deletion was **re-scoped to retention** so the migration stays fully reversible. The files below are deliberately kept; removing them is an explicit command (`bun platform:cleanup:vercel`), never a side effect.
+
+| File | Status |
 |------|--------|
-| `vercel.json` | Vercel-only rewrites, ignored by Netlify |
-| `api/index.ts` (and `api/`) | Re-export of the Vercel adapter; no other consumer |
+| `vercel.json` | Retained — Vercel-only rewrites, ignored by Netlify |
+| `api/index.ts` (and `api/`) | Retained — re-export of the Vercel adapter (rollback entrypoint) |
+| `src/app.ts` `vercelHandler` block | Retained, wrapped in `__PLATFORM_VERCEL_ADAPTER_BEGIN__` / `__PLATFORM_VERCEL_ADAPTER_END__` markers so future removal is deterministic |
+| `tsconfig.json`, `tsconfig.build.json`, `src/config/constants.ts` comments | Reworded platform-neutral |
 
 ### Documentation
 
 | File | Change |
 |------|--------|
-| `README.md:27,48,62,121,131-134,156-195,236-237,390,407,513-515,731,872,875,975` | Step 9 — deployment story, URLs, badges, runtime matrix, project tree |
+| `README.md` (badges, URLs, tech stack, migration scope, deployment sections, API examples, project tree) | Step 9 — deployment story, URLs, badges, runtime matrix, project tree |
 | `AGENTS.md` §2 (Technology Stack) | Step 9 — production runtime → Netlify Serverless Functions (Node.js) |
-| `.github/copilot-instructions.md:15` | Step 9 — production runtime statement |
-| `docs/architecture/CSRF_PROTECTION.md` | Step 9 — align origin logic prose with the explicit allow-list at `src/app.ts:78-87` |
+| `.github/copilot-instructions.md` ("Runtime and tooling") | Step 9 — production runtime statement |
+| `docs/architecture/CSRF_PROTECTION.md` | Step 9 — backend host → Netlify; `*.vercel.app` wildcard re-labelled as the **frontend** origin |
 | `docs/roadmap/NETLIFY_MIGRATION_ROADMAP.md` | This document — update statuses as steps complete |
+| `docs/operations/DEPLOYMENT_PLATFORM_LIFECYCLE.md` | **New** — Vercel cleanup / revert-to-Vercel / Netlify cleanup runbook |
 
 ### External (outside the repo)
 
@@ -796,30 +821,35 @@ Legend: ✅ Implemented & verified · ⏳ Partial / scoped down · ⬜ Future wo
 - ✅ Root-cause diagnosis — confirmed no `netlify.toml` / `netlify/functions/*` exist; `vercel.json` + `api/index.ts` + `vercelHandler` (`src/app.ts:265`) are the only deployment adapter; platform 404 proven by the unreachable `GET /` handler (`src/app.ts:166`)
 - ✅ Platform capability research — Netlify Functions API (`config.path` URLPattern routing, Web `Request`/`Response`), limits (60s sync/stream, 20 MB stream, 6 MB / ~4.5 MB binary payload, 15 min background), default region `cmh`, Node version follows build, `bun.lockb`-only Bun detection
 - ✅ Free-tier capability research — credit-based billing model (300 credits/month hard pool, compute at 10 credits/GB-hour on **wall-clock** duration), shared-cache semantics of `private`, `durable` directive, `Netlify-CDN-Cache-Control` / `Netlify-Cache-Tag` / `purgeCache()`, plan-gated memory/vCPU/region — captured in §11
+- ✅ **Step 1** — `netlify/functions/api.mts` (Web `Request` → `Response` via `app.fetch`, `config.path = "/*"`, `preferStatic`, executionCtx threaded from Netlify `Context`)
+- ✅ **Step 2** — `netlify.toml` (build `bun run typecheck`, publish `public`, esbuild bundler, `external_node_modules`/`included_files` for `pdfkit`, `NODE_VERSION=24` / `BUN_VERSION=1.3.14`); `public/robots.txt` seeded
+- ✅ **Step 3** — empty `bun.lockb` stub; `bun install --frozen-lockfile` verified green with `bun.lock` authoritative
+- ✅ **Step 5** — `IS_VERCEL` → `IS_SERVERLESS` (`src/config/env.ts` now tests `VERCEL || NETLIFY`); consumers in `ai-logger.ts`, `edge-group.ts`, `cpu-optimizations.ts` updated; zero remaining `IS_VERCEL` references
+- ✅ **Step 7** — `bun run verify:deployment -- <url>` ships 9 automated checks (routing, `/health/db`, CORS, CSRF, `Vary`, cache headers, SSE, `pdfkit` lazy path) + `--burst` rate-limit probe + manual checklist + TTFB baseline; non-zero exit on failure
+- ✅ **Step 8 (scoped)** — Vercel artifacts **retained** for rollback; adapter block wrapped in `__PLATFORM_VERCEL_ADAPTER_*` markers; `tsconfig.build.json` / `tsconfig.json` / `src/config/constants.ts` comments made platform-neutral; destructive removal delegated to `bun platform:cleanup:vercel`
+- ✅ **Step 9** — `README.md`, `AGENTS.md`, `.github/copilot-instructions.md`, `.env.example`, `docs/architecture/CSRF_PROTECTION.md` now describe Netlify as primary with Vercel as rollback
+- ✅ **Step 13** — inert `s-maxage=1` removed from the `private` status-poll branch; `Vary: Accept-Language` guard added in `src/middleware/locale.ts`
+- ✅ **Step 14** — `src/utils/netlify-cache.ts` emits `Netlify-CDN-Cache-Control` + `Netlify-Cache-Tag`; `applyPublicCdnCache(c, path)` is the single call site from `src/middleware/cache.ts` (GET/HEAD, 2xx, unauthenticated only)
+- ✅ **Step 15** — `CATALOGUE_CACHE_TAGS` purge wired into `invalidateExploreCache()` in `src/services/cache.ts`; purge is fail-open (5s per-tag dedupe, no-op without `NETLIFY_AUTH_TOKEN`/`NETLIFY_SITE_ID` or without `process.env.NETLIFY`)
+- ✅ **Repo-side Steps 4 & 6** — `.env.example` and `.env.production` re-pointed to `BACKEND_URL=https://twistloom-backend.netlify.app`; QStash registration accepts `BACKEND_URL` first with `VERCEL_URL` as legacy fallback; `generateDocument` lazy-imported (Step 12's highest-value item)
 
 ### In Progress
-- (none — roadmap awaiting approval)
+- ⏳ **Step 9 residual** — none; documentation sync complete
+- ⏳ **Step 4 residual (operator)** — copy `.env.production` into the Netlify UI **Functions** environment scope (`NODE_ENV=production`, `AWS_LAMBDA_JS_RUNTIME=nodejs24.x`, all `*_KEY`/`*_SECRET`/`AUTH_SECRET`), plus optional `NETLIFY_SITE_ID` + `NETLIFY_AUTH_TOKEN` for tag purge
+- ⏳ **Step 6 residual (operator)** — re-point `BACKEND_URL` GitHub secret, Stripe webhook endpoint, Xendit callback, `FRONTEND_URL`/`NEXTAUTH_URL` on the frontend, and run `bun qstash:setup:prod`
 
 ### Future / Deferred
-- ⬜ Step 1 — Netlify function entrypoint
-- ⬜ Step 2 — `netlify.toml` + publish directory
-- ⬜ Step 3 — forced `bun install`
-- ⬜ Step 4 — environment variables & secrets
-- ⬜ Step 5 — `IS_SERVERLESS` rename
-- ⬜ Step 6 — backend URL cutover (QStash, GitHub secret, Stripe/Xendit, frontend)
-- ⬜ Step 7 — verification & regression matrix
-- ⬜ Step 8 — Vercel artifact + dead-code removal
-- ⬜ Step 9 — documentation sync
-- ⬜ Step 10 — SSE 60s ceiling & latency observability
-- ⬜ Step 11 — free-tier credit hygiene & usage guardrails
-- ⬜ Step 12 — wall-clock discipline audit
-- ⬜ Step 13 — Netlify-correct cache directives (`private`/`s-maxage`, `Vary` guard)
-- ⬜ Step 14 — edge + durable caching for public endpoints
-- ⬜ Step 15 — cache tags + `purgeCache()` integration
-- ⬜ Step 16 — scheduled/background functions & plan-gated levers
+- ⬜ Step 10 — SSE 60s ceiling & latency observability (baseline captured by `verify:deployment`; alerting/thresholds open)
+- ⬜ Step 11 — free-tier credit hygiene & usage guardrails (Netlify UI → Usage & billing)
+- ⬜ Step 12 — wall-clock discipline audit (only the `pdfkit` lazy import is shipped; full await-time audit open)
+- ⬜ Step 16 — scheduled/background functions & plan-gated levers (memory, vCPU, region)
+- ⏩ Step 8 completion — final Vercel project retirement (`bun platform:cleanup:vercel` + dashboard decommission) once Netlify is verified in production
 - ⏩ Edge Functions (Deno) — deferred indefinitely; Node runtime is the deliberate target (Q1)
 - ⏩ Pre-emptive SSE → polling conversion — deferred pending P95 measurements (Q7)
 - ⏩ QStash → Netlify Scheduled Functions consolidation — deferred; QStash works and Free-plan eligibility is unverified (Step 16)
+
+### How this migration was executed
+Dual-track by design: every Netlify change landed **additively** while the Vercel path stayed deployable. `bun platform:status` reports the current mode; `bun platform:cleanup:vercel` / `bun platform:cleanup:netlify` execute the transitions (dry-run by default, idempotent, line-based, snapshot-before-apply), and `bun platform:restore` replays the snapshot to undo them. Full runbook: [`docs/operations/DEPLOYMENT_PLATFORM_LIFECYCLE.md`](./../operations/DEPLOYMENT_PLATFORM_LIFECYCLE.md).
 
 ---
 
@@ -994,3 +1024,97 @@ Netlify offers its own cron (scheduled functions, **30-second execution cap**) a
 - [Netlify — Announcing durable caching](https://www.netlify.com/blog/announcing-durable-caching/)
 - [Netlify Developers — Advanced caching made easy](https://developers.netlify.com/guides/advanced-caching-made-easy/) (`cdn-cache-control` package, `Netlify-Cache-Tag`)
 - Netlify pricing/usage (credit rates, 300-credit Free pool, deploy/bandwidth/request meters) — re-verify in the account dashboard before budgeting
+
+---
+
+## 12. Platform Environment Variables & External Repointing Master Reference
+
+### 12.1 Platform Environment Variables Matrix
+
+| Environment Variable | Where Configured | Netlify Behavior | Vercel Behavior | Local Dev (`.env.local`) | CI (GitHub Actions) | Purpose & Sourcing |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **`NODE_ENV`** | Dashboard | 🔴 **MANUAL** (Must set `production`) | 🟢 **AUTO** (`production`) | `development` / `test` | `test` / `production` | **Critical:** Netlify does NOT set `NODE_ENV` by default. If omitted on Netlify, runtime defaults to undefined, causing `IS_PRODUCTION=false` and disabling production security/cookie policies! |
+| **`BACKEND_URL`** | Dashboard / `.env.production` | 🔴 **MANUAL** (`https://twistloom-backend.netlify.app`) | 🔴 **MANUAL** (`https://twistloom-backend.vercel.app`) | `http://localhost:3000` | Secrets (`secrets.BACKEND_URL`) | Base public URL of backend. Target destination for QStash schedules, webhooks, and self-callbacks. |
+| **`NETLIFY`** | Injected by platform | 🟢 **AUTO** (`true`) | ⚪ *Absent* | ⚪ *Absent* | ⚪ *Absent* | Platform detection flag. Gates `IS_SERVERLESS` and Netlify CDN cache tagging. |
+| **`SITE_ID`** | Injected by platform | 🟢 **AUTO** (Site UUID) | ⚪ *Absent* | ⚪ *Absent* | ⚪ *Absent* | Used internally by `@netlify/functions` `purgeCache()`. |
+| **`NETLIFY_PURGE_API_TOKEN`** | Injected by platform | 🟢 **AUTO** (ambient token) | ⚪ *Absent* | ⚪ *Absent* | ⚪ *Absent* | Used by `@netlify/functions` to authenticate cache purge requests from functions. |
+| **`NETLIFY_SITE_ID`** | External override | ⚪ *Not needed in runtime* | ⚪ *Absent* | Optional (CLI testing) | Optional (GitHub secret) | Site API ID. Only needed for Netlify CLI / GitHub Actions running external deploys or external cache purges. Found in: *Netlify UI → Site configuration → General → Site details → Site ID*. |
+| **`NETLIFY_AUTH_TOKEN`** | External override | ⚪ *Not needed in runtime* | ⚪ *Absent* | Optional (CLI testing) | Optional (GitHub secret) | Personal Access Token (PAT). Needed for Netlify CLI or GitHub Actions to deploy from outside Netlify. Found in: *Netlify UI → User avatar → User settings → Applications → Personal access tokens → New access token*. |
+| **`AWS_LAMBDA_JS_RUNTIME`** | Dashboard | 🟡 **OPTIONAL** (`nodejs24.x`) | ⚪ *Absent* | ⚪ *Absent* | ⚪ *Absent* | Pins the Lambda function execution environment to Node 24. |
+| **`VERCEL` / `VERCEL_ENV`** | Injected by platform | ⚪ *Absent* (Do not set!) | 🟢 **AUTO** (`1` / `production`) | ⚪ *Absent* | ⚪ *Absent* | Vercel detection flags. Gates `IS_SERVERLESS` when on Vercel. |
+| **`VERCEL_URL`** | Injected by platform | ⚪ *Absent* | 🟢 **AUTO** (host without scheme) | ⚪ *Absent* | ⚪ *Absent* | Legacy fallback for QStash URL resolution on Vercel. |
+| **`DATABASE_URL`** | Dashboard / Secrets | 🔴 **MANUAL** | 🔴 **MANUAL** | 🔴 **MANUAL** | 🔴 **MANUAL** | Neon Postgres pooled connection string. |
+| **`DATABASE_READ_URL`** | Dashboard / Secrets | 🔴 **MANUAL** | 🔴 **MANUAL** | 🔴 **MANUAL** | 🔴 **MANUAL** | Neon Postgres unpooled read connection string. |
+| **`AUTH_SECRET`** | Dashboard / Secrets | 🔴 **MANUAL** | 🔴 **MANUAL** | 🔴 **MANUAL** | 🔴 **MANUAL** | NextAuth session encryption secret (`openssl rand -base64 32`). |
+| **`AUTH_TRUST_HOST`** | Dashboard | 🔴 **MANUAL** (`true`) | 🔴 **MANUAL** (`true`) | `true` | `true` | Required behind reverse proxies (Netlify CDN / Vercel Edge). |
+| **`MOBILE_ACCESS_SECRET`**| Dashboard / Secrets | 🔴 **MANUAL** | 🔴 **MANUAL** | 🔴 **MANUAL** | 🔴 **MANUAL** | Secret for signing mobile JWT bearer tokens. |
+| **`FRONTEND_URL`** | Dashboard | 🔴 **MANUAL** (`https://twistloom-web.vercel.app`) | 🔴 **MANUAL** (`https://twistloom-web.vercel.app`) | `http://localhost:3001` | ⚪ *Absent* | Origin of the frontend application (for CORS and CSRF verification). |
+| **`AUTH_URL`** | Dashboard | 🔴 **MANUAL** (`https://twistloom-web.vercel.app`) | 🔴 **MANUAL** (`https://twistloom-web.vercel.app`) | `http://localhost:3001` | ⚪ *Absent* | Canonical Auth.js URL. Points to the frontend where auth cookies are issued. |
+| **`CRON_SECRET`** | Dashboard / Secrets | 🔴 **MANUAL** | 🔴 **MANUAL** | 🔴 **MANUAL** | 🔴 **MANUAL** | Bearer secret protecting `/api/cron/*` endpoints from unauthorized requests. |
+| **`INTERNAL_SECRET`** | Dashboard / Secrets | 🔴 **MANUAL** | 🔴 **MANUAL** | 🔴 **MANUAL** | 🔴 **MANUAL** | Secret protecting internal service-to-service fire-and-forget invocations. |
+| **`UPSTASH_REDIS_*`** | Dashboard / Secrets | 🔴 **MANUAL** | 🔴 **MANUAL** | 🔴 **MANUAL** | 🔴 **MANUAL** | Redis REST URL and token for caching and rate limiting. |
+| **`QSTASH_*`** | Dashboard / Secrets | 🔴 **MANUAL** | 🔴 **MANUAL** | 🔴 **MANUAL** | 🔴 **MANUAL** | QStash client token and signing keys for cron authentication. |
+| **AI Provider Keys** | Dashboard / Secrets | 🔴 **MANUAL** | 🔴 **MANUAL** | 🔴 **MANUAL** | 🔴 **MANUAL** | API keys for Gemini, Groq, Mistral, Cohere, Cerebras, Nvidia, Jina, etc. |
+| **Payment Secrets** | Dashboard / Secrets | 🔴 **MANUAL** | 🔴 **MANUAL** | 🔴 **MANUAL** | 🔴 **MANUAL** | Stripe & Xendit secret keys and webhook signing tokens. |
+
+---
+
+### 12.2 Automatic vs. Manual Variables: Sourcing & Purpose
+
+#### 1. Are `NETLIFY_SITE_ID` and `NETLIFY_AUTH_TOKEN` automatically added?
+- **NO, they are NOT automatically added.**
+- **Runtime Netlify Functions:** When your code executes inside a deployed Netlify Function, Netlify **automatically injects `SITE_ID` and an ambient `NETLIFY_PURGE_API_TOKEN`**. Therefore, the live backend function never needs `NETLIFY_SITE_ID` or `NETLIFY_AUTH_TOKEN` to run or purge cache tags.
+- **External Tools (CI / CLI / Local):** If you deploy from GitHub Actions or local CLI, or trigger cache purges from an external script, those external runners have no ambient Netlify context. They require:
+  - **`NETLIFY_SITE_ID`**: Identifies the target site. Copy from: *Netlify UI → Site configuration → General → Site details → Site ID*.
+  - **`NETLIFY_AUTH_TOKEN`**: Authorizes the deployer. Generate from: *Netlify UI → User avatar (top right) → User settings → Applications → Personal access tokens → New access token*.
+
+#### 2. What other Netlify-specific environment variables exist?
+- **`NODE_ENV=production` (MANDATORY MANUAL):** Netlify's build and serverless environment deliberately leaves `NODE_ENV` undefined by default. You **must** manually create this variable in Netlify Site Configuration.
+- **`AWS_LAMBDA_JS_RUNTIME=nodejs24.x` (OPTIONAL MANUAL):** Ensures the underlying Lambda execution engine is pinned to Node.js 24.
+- **`BACKEND_URL=https://twistloom-backend.netlify.app` (MANDATORY MANUAL):** Establishes the authoritative public domain for all self-referencing operations.
+
+---
+
+### 12.3 Complete External Systems URL Repointing & Compliance Checklist
+
+When transitioning production from Vercel to Netlify, update all external references to the new domain (`https://twistloom-backend.netlify.app`):
+
+1. **Scheduled Background Jobs (Upstash QStash):**
+   - Run `bun qstash:setup:prod` to re-register all 8 cron schedules with destination `https://twistloom-backend.netlify.app`.
+2. **GitHub Actions CI/CD Secrets:**
+   - Update `BACKEND_URL` in *GitHub Repo Settings → Secrets and variables → Actions* to `https://twistloom-backend.netlify.app`.
+3. **Frontend Application (`twistloom-web` on Vercel):**
+   - Update `NEXT_PUBLIC_API_URL` or `BACKEND_URL` to `https://twistloom-backend.netlify.app`.
+   - If using Next.js rewrite proxy (`/api/backend/:path*` → `BACKEND_URL/api/:path*`), redeploy the frontend with the new target.
+4. **Mobile Application (`twistloom-mobile` / Expo):**
+   - Update `EXPO_PUBLIC_API_URL` or API base URL to `https://twistloom-backend.netlify.app`.
+5. **Payment Gateways & Webhooks:**
+   - **Stripe Dashboard:** Update webhook endpoint to `https://twistloom-backend.netlify.app/api/payments/stripe/webhook`.
+   - **Xendit Dashboard:** Update invoice and payout callback URLs to `https://twistloom-backend.netlify.app/api/payments/xendit/webhook`.
+6. **Identity Providers & OAuth:**
+   - **Google Cloud Console:**
+     - Under **Authorized JavaScript origins**: Add `https://twistloom-backend.netlify.app`.
+     - Under **Authorized redirect URIs**: Add `https://twistloom-backend.netlify.app/api/auth/callback/google` (if backend OAuth callback is configured).
+     - Under **OAuth consent screen**: Add `netlify.app` to **Authorized domains**.
+   - **Apple Developer Portal:**
+     - Under *Services IDs → Sign in with Apple*: Add `twistloom-backend.netlify.app` and web return URLs.
+7. **App Store Legal & Compliance Requirements:**
+   - **Google Play Console:**
+     - *App Content → Privacy Policy*: Verify URL is live (`https://twistloom-backend.netlify.app/privacy` or frontend `/privacy`).
+     - *App Content → Terms of Service*: Update URL if hosted on backend.
+     - *App Content → Data safety / Account Deletion*: Update web-based account deletion URL (mandatory Google Play policy).
+   - **Apple App Store Connect:**
+     - *App Information*: Update Privacy Policy, Terms of Use (EULA), Support, and Account Deletion URLs.
+     - *In-App Purchase → App Store Server Notifications (v2)*: Update Production & Sandbox URLs to `https://twistloom-backend.netlify.app/api/webhooks/apple`.
+
+---
+
+### 12.4 Dual-Track Operational Governance & Lifecycle Tooling
+
+For complete procedures on:
+- How the dual-track architecture functions
+- How to permanently decommission Vercel when ready (`bun run platform:cleanup:vercel`)
+- How to instantaneously roll back from Netlify to Vercel (`bun run platform:cleanup:netlify`)
+- How to undo accidental deletions (`bun run platform:restore`)
+
+See the dedicated operations guide: [`docs/operations/DEPLOYMENT_PLATFORM_LIFECYCLE.md`](./../operations/DEPLOYMENT_PLATFORM_LIFECYCLE.md).

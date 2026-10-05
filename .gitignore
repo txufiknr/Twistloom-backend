@@ -91,3 +91,7 @@ models/lid.176.bin
 *.bak.*
 notes.txt
 TODO*
+
+# Platform lifecycle (scripts/platform-cleanup.ts)
+.platform-cleanup-backup/
+.netlify/

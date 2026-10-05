@@ -37,4 +37,28 @@ export const extractLocale = createMiddleware<AppEnv>(async (c, next) => {
     : null;
   c.set("headerLanguage", headerLanguage);
   await next();
+
+  // Vary guard: the response body can depend on `headerLanguage`, so any shared
+  // cache (Vercel edge, Netlify CDN/durable cache) must key on Accept-Language.
+  // Without it, caching one localized public response would serve that single
+  // language to every visitor. Only cacheable safe methods are tagged; the
+  // header is additive so route-level `Vary` values are preserved.
+  if (!["GET", "HEAD"].includes(c.req.method) || c.res.status >= 400) {
+    return;
+  }
+  const existing = c.res.headers.get("Vary");
+  if (existing) {
+    const directives = existing
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+    const alreadySet = directives.some(
+      (value) => value === "*" || value.toLowerCase() === "accept-language"
+    );
+    if (!alreadySet) {
+      c.header("Vary", [...directives, "Accept-Language"].join(", "));
+    }
+    return;
+  }
+  c.header("Vary", "Accept-Language");
 });

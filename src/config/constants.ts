@@ -8,6 +8,8 @@ export const APP_WEB_URL = 'https://twistloom-backend.vercel.app';
 export const APP_EMAIL = 'admin@twistloom.com';
 
 /**
- * Application version from npm_package_version env var (injected by Vercel at build time)
+ * Application version from npm_package_version env var (injected by the
+ * package manager at build time; falls back to `1.0.0` when the runtime does
+ * not expose it — e.g. inside a Netlify serverless invocation).
  */
 export const VERSION: string = process.env['npm_package_version'] || '1.0.0';

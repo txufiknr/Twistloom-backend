@@ -7,7 +7,8 @@
  * - Key: the `Upstash-Schedule-Id` header. Per QStash docs, if a schedule with
  *   that ID already exists, its settings are updated in place — re-running
  *   never creates duplicates (the free tier only allows 10 schedules).
- * - Destination: `<BACKEND_URL|VERCEL_URL><path>`, called with
+ * - Destination: `<BACKEND_URL><path>` (the explicit `VERCEL_URL` fallback is
+ *   retained only as a rollback path for the Vercel deployment), called with
  *   `Upstash-Method` and, for protected endpoints, `CRON_SECRET` forwarded as
  *   `Upstash-Forward-Authorization` so the `CRON_SECRET` middleware
  *   (`src/routes/cron.ts`) accepts it.
@@ -17,10 +18,11 @@
  *   (`DELETE /v2/schedules/{destination}`) or the retired endpoint keeps
  *   getting called forever.
  *
- * Why this exists instead of Vercel Cron: the Hobby plan allows **one** cron
- * run per day (±59 min), so scheduled background work (e.g. the
- * credit-reservation leak sweeper) is triggered by QStash until the team
- * upgrades to Vercel Pro. See `docs/architecture/PAYMENTS_ARCHITECTURE_BACKEND.md` §4.
+ * Why this exists instead of platform-native cron: hobby/free tiers cap cron
+ * frequency (Vercel Hobby allows **one** run per day; Netlify Scheduled
+ * Functions are plan-gated), so scheduled background work (e.g. the
+ * credit-reservation leak sweeper) is triggered by QStash. See
+ * `docs/architecture/PAYMENTS_ARCHITECTURE_BACKEND.md` §4.
  *
  * Why it is not part of `src/db/triggers.ts`: `db:triggers` / `db:reset` are a
  * database-only pipeline (fresh checkouts and CI may have no QStash token, and
@@ -32,8 +34,9 @@
  *   bun qstash:setup:prod                         # .env.production destination
  *   bun --env-file=.env.production src/cron/ensure-qstash-schedules.ts --dry-run
  *
- * Required env: `QSTASH_TOKEN`, `CRON_SECRET`, and `BACKEND_URL` (or
- * `VERCEL_URL`) as the destination base URL.
+ * Required env: `QSTASH_TOKEN`, `CRON_SECRET`, and `BACKEND_URL` as the
+ * destination base URL (`VERCEL_URL` remains an accepted legacy fallback for
+ * the Vercel rollback path).
  */
 
 import { getErrorMessage } from "../utils/error.js";
@@ -92,10 +95,11 @@ export const QSTASH_SCHEDULES: readonly QStashSchedule[] = [
 /**
  * Resolves the destination base URL for scheduled calls.
  *
- * Prefers the explicit `BACKEND_URL`, falling back to `VERCEL_URL` (the
- * deployed host). Trailing slashes are stripped so path concatenation is safe.
+ * Prefers the explicit `BACKEND_URL`, falling back to `VERCEL_URL` (legacy
+ * Vercel deployment / rollback path). Trailing slashes are stripped so path
+ * concatenation is safe.
  *
- * @returns Base URL without a trailing slash, e.g. `https://twistloom-backend.vercel.app`
+ * @returns Base URL without a trailing slash, e.g. `https://twistloom-backend.netlify.app`
  * @throws When neither variable is set
  */
 function resolveBaseUrl(): string {

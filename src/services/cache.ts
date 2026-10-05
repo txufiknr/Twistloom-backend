@@ -14,6 +14,7 @@
 
 import { REDIS_CACHE_TTL, REDIS_CACHE_KEYS } from '../config/redis.js';
 import { getRedisClient } from '../utils/redis.js';
+import { CATALOGUE_CACHE_TAGS, purgeNetlifyCacheTags } from '../utils/netlify-cache.js';
 
 // Re-export for convenience
 export const CACHE_TTL = REDIS_CACHE_TTL;
@@ -219,6 +220,13 @@ export async function invalidateExploreCache(options?: InvalidateExploreOptions)
   // anymore, but an old stale copy could otherwise linger until TTL).
   await deleteCache(CACHE_KEYS.EXPLORE_PAGE_1);
   await deleteCachePattern(CACHE_KEYS.EXPLORE_PAGE_1_PATTERN);
+
+  // Keep the Netlify edge/durable cache in lockstep with Redis: the public
+  // catalogue responses carry `Netlify-Cache-Tag` (explore/trending/stats), so
+  // their CDN entries must be purged alongside the app-level keys. Fail-open
+  // and a no-op outside Netlify; TTL remains the correctness backstop.
+  await purgeNetlifyCacheTags(CATALOGUE_CACHE_TAGS);
+
   return true;
 }
 

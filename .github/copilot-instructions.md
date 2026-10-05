@@ -12,7 +12,7 @@
 
 - Use Bun as the local runtime and package manager.
 - Use `bun` commands, not `npm`, `yarn`, or `pnpm`.
-- Production deployment currently runs on Vercel's Node.js runtime; do not assume Bun-only APIs are available in production code.
+- Production deployment runs on Netlify's Node.js runtime (`netlify/functions/api.mts`); do not assume Bun-only APIs are available in production code. The Vercel adapter is retained as the rollback path.
 - Prefer Web Platform APIs where practical because the codebase intentionally remains runtime-portable.
 
 ## TypeScript
