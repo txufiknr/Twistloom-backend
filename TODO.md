@@ -1,4 +1,5 @@
 [ ] publish app: https://console.cloud.google.com/auth/audience?project=gen-lang-client-0851326927
+[ ] netlify go live
 [ ] chatgpt: daily schedule post/write blog article (html, ref: legacy diagnosis)
 [ ] Page 1 selected actions masih none
 [ ] Stripe switch to live

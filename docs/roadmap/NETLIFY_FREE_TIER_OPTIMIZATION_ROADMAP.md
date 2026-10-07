@@ -1,10 +1,10 @@
 # Netlify Free-Tier Optimization Roadmap
 
-> **Status:** Proposed — research complete; implementation assessment pending
-> **Date:** 2026-10-05
+> **Status:** Proposed — research complete and fact-checked; implementation assessment pending
+> **Date:** 2026-10-05 (revised 2026-10-07)
 > **Owner:** Backend + Web / Taufik Nur Rahmanda
 > **Scope:** `Twistloom-backend` (Hono, Node.js functions) and `Twistloom-web` (Next.js), both deployed on Netlify
-> **Evidence boundary:** Platform research and existing roadmap context only. No deep source audit, deployment changes, account access, traffic measurements, or implementation verification in this document.
+> **Evidence boundary:** Platform research plus a **read-only path/source audit of both repositories (2026-10-07)**. No deployment changes, account access, traffic measurements, or live implementation verification. Platform claims were re-verified against vendor docs on 2026-10-07; corrections are logged in §8 ("Fact-check log").
 
 ---
 
@@ -41,11 +41,16 @@
 
 ### Current State
 
-- Both projects now use Netlify, as confirmed by the owner. Their correct URLs are `https://twistloom-web.netlify.app` and `https://twistloom-backend.netlify.app`; they remain private. This research does not require publishing either site or bypassing its access gate.
+- Both projects target Netlify (`netlify.toml` exists in both repositories). Observed status from the web [`DEPLOYMENT_PLATFORM_LIFECYCLE.md`](../../../Twistloom-web/docs/operations/DEPLOYMENT_PLATFORM_LIFECYCLE.md) "Verified Platform Status (2026-10-05)": the backend answered **401 via Netlify Edge Access Control**, while `https://twistloom-web.netlify.app` answered **404 "site not found"** (site not yet created at that time). The web site's first production build was attempted on 2026-10-07 and failed before deploy (undeclared `jose` import; failed deploys consume 0 credits), so **the web site's existence, URL, and access-gate mechanism must be re-confirmed in Step 1** — "both sites are private" is not established evidence for the web site. This research does not require publishing either site or bypassing its access gate.
 - [`NETLIFY_MIGRATION_ROADMAP.md`](NETLIFY_MIGRATION_ROADMAP.md) documents the backend Node.js adapter and an optimization extension in §11. Its Steps 13–15 report cache directives, public durable caching, and tag purging as done. Those are **documented completion claims to verify later**, not newly discovered omissions.
 - [`VERCEL_FLUID_ACTIVE_CPU_OPTIMIZATION_ROADMAP.md`](VERCEL_FLUID_ACTIVE_CPU_OPTIMIZATION_ROADMAP.md) records the previous active-CPU optimization approach. This roadmap replaces its hosting economics for Netlify while retaining useful hypotheses about request amplification, dependency loading, and repeated work.
 - The web [`OPEN_FINDINGS_REGISTER.md`](../../../Twistloom-web/docs/roadmap/OPEN_FINDINGS_REGISTER.md) is a separate findings/completion register. This research does not reopen its closed findings or override its evidence gates.
 - Actual account plan, team ownership, deployed adapter/runtime versions, traffic distribution, and credit consumption have not been inspected. References to source paths below identify future audit candidates only; exact edit locations will be recorded during that audit.
+- **Read-only source audit (2026-10-07) — existing controls that already cover part of this plan:**
+  - Backend public caching/tag purge shipped per migration Steps 13–15: `src/utils/netlify-cache.ts`, `src/middleware/cache.ts`, `src/services/cache.ts`; app-layer rate limiting already exists via Upstash (`src/middleware/` rate-limit module), so Step 4 adds a *platform* layer rather than a first one.
+  - Web request/polling dampeners already configured: `../Twistloom-web/src/lib/query-client.ts` sets `refetchOnWindowFocus: false` and `refetchOnReconnect: false`; `../Twistloom-web/src/lib/config/polling.ts` defines backoff caps and polling timeouts; Step 10 therefore starts from "verify + extend", not from zero.
+  - Web already serves 11 public pages with `export const revalidate = 60|300`, so Step 9 has a partially-reduced baseline rather than full SSR.
+  - Every documented path in §8 (both repos) exists on disk; no phantom file references were found.
 
 ### Pain Points
 
@@ -65,7 +70,7 @@ Keep both applications reliable within the actual Free-plan allowance by reducin
 
 ### 3.1 Verified platform facts and plan assumptions
 
-Research checked on **2026-10-05**, using the official sources linked here and in §8. The primary model is **credit-based Free**; if the account is Legacy Free, rebuild the budget from that plan before implementing budget-driven changes. A recent migration does not prove the account's pricing model.
+Research checked on **2026-10-05** and re-verified on **2026-10-07**, using the official sources linked here and in §8. The primary model is **credit-based Free**; if the account is Legacy Free, rebuild the budget from that plan before implementing budget-driven changes. Netlify treats accounts created before **2025-09-04** as Legacy by default (switching to credit-based is optional and **cannot be reverted**), so a recent site migration does not prove the account's pricing model.
 
 | Meter | Credit-based rate | Planning implication |
 |-------|-------------------|----------------------|
@@ -74,18 +79,18 @@ Research checked on **2026-10-05**, using the official sources linked here and i
 | Deploy Preview / branch deployment | 0 deployment credits | Runtime traffic is still metered |
 | Compute | 10 credits / GB-hour | Allocated memory × execution duration |
 | Bandwidth | 20 credits / GB | Assets and API/download/image responses matter |
-| Web requests | 2 credits / 10,000 requests | Cache hits still consume this meter |
+| Web requests | 2 credits / 10,000 requests | No documented exemption for CDN/cache-served requests — budget cache hits as metered |
 
-Sources: [Netlify pricing](https://www.netlify.com/pricing/), [How credits work](https://docs.netlify.com/manage/accounts-and-billing/billing/billing-for-credit-based-plans/how-credits-work/). Failed deploys and rollback to a previous production deploy do not consume deployment credits; active previews still generate runtime usage.
+Sources: [Netlify pricing](https://www.netlify.com/pricing/), [How credits work](https://docs.netlify.com/manage/accounts-and-billing/billing/billing-for-credit-based-plans/how-credits-work/). Failed deploys and rollback to a previous production deploy do not consume deployment credits; active previews still generate runtime usage. The request-meter rate is documented; the *cache-hit* treatment is not explicitly documented either way (unlike edge invocations, which explicitly exclude cached responses), so this roadmap budgets conservatively.
 
-Usage is aggregated across a team's projects. Exhausting available credits pauses the team's sites. Documented built-in notices include 50%, 75%, and 100%; another billing FAQ also lists 90%, so confirm account behavior rather than depending on that additional notice. Do not assume configurable 70%/90% alerts exist on Free. See [usage monitoring](https://docs.netlify.com/manage/accounts-and-billing/billing/billing-for-credit-based-plans/monitor-usage-for-credit-based-plans/) and [billing FAQ](https://docs.netlify.com/manage/accounts-and-billing/billing/billing-for-credit-based-plans/billing-faq-for-credit-based-plans/).
+Usage is aggregated across a team's projects. Exhausting credits pauses **all** sites in the team (visitors see a "Site not available" page), the Free plan has **no auto-recharge or credit packs**, and new production deploys cannot be triggered until the cycle resets. The two official pages disagree on notifications: [usage monitoring](https://docs.netlify.com/manage/accounts-and-billing/billing/billing-for-credit-based-plans/monitor-usage-for-credit-based-plans/) documents 50%, 75%, and 100%, while the [billing FAQ](https://docs.netlify.com/manage/accounts-and-billing/billing/billing-for-credit-based-plans/billing-faq-for-credit-based-plans/) also lists 90%. Confirm account behavior rather than depending on any one notice, and do not assume configurable 70%/90% alerts exist on Free.
 
 **Other optional consumers:** Netlify AI Gateway/Agent Runners convert model usage at 180 credits per USD; Agent Runners also use compute. Preview Servers and Netlify Database have compute meters. External AI, Neon, Redis, media, and queue providers retain their own quotas and bills. Do not assume those services use Netlify credits unless routed through a Netlify-metered product. [AI pricing](https://docs.netlify.com/manage/accounts-and-billing/billing/billing-for-credit-based-plans/pricing-for-ai-features/), [credit-based plan details](https://docs.netlify.com/manage/accounts-and-billing/billing/billing-for-credit-based-plans/credit-based-pricing-plans/).
 
 | Runtime property | Verified platform behavior | Free-tier consequence |
 |------------------|----------------------------|-----------------------|
 | Functions memory | Default 1024 MB; billing uses allocation, not observed heap | Less heap use alone does not lower the memory multiplier |
-| Function region | New-site default `cmh` / Ohio; customization requires Pro or Enterprise | Measure dependency distance; do not plan a Free function-region switch |
+| Function region | New-site default `cmh` / Ohio (sites created before 2023-10-04 may differ); customization requires Pro or Enterprise | Measure dependency distance; do not plan a Free function-region switch |
 | Memory/vCPU customization | Credit-based Pro or Enterprise | Do not propose a 256 MB function or paid tuning as a Free saving |
 | Synchronous function | 60-second execution limit | Set application deadlines with room for cleanup |
 | Scheduled function | 30-second execution limit | Keep work bounded or dispatch it |
@@ -93,6 +98,20 @@ Usage is aggregated across a team's projects. Exhausting available credits pause
 | Payloads | 6 MB buffered; 20 MB streamed; 256 KB background; binary request effectively ~4.5 MB | Direct transfers are preferable for large files |
 
 Sources: [function configuration](https://docs.netlify.com/build/functions/configuration/), [function billing](https://docs.netlify.com/build/functions/usage-and-billing/). Defaults describe the platform, not verified settings of these deployments.
+
+#### Additional Free-plan constraints that shape this plan
+
+| Constraint (credit-based Free) | Consequence for this roadmap |
+|--------------------------------|------------------------------|
+| **1 concurrent build per team**; paid build add-ons are not purchasable on Free | Paired web + backend releases queue serially — Step 3's batching also reduces waiting, not just credits |
+| **1 Team Owner seat, no additional seats**; up to 500 projects share one 300-credit pool | A second project does not add headroom; any test/sandbox site also draws from the same pool |
+| **Build minutes are not a separate meter** (deploy = flat 15 credits) | Faster builds save wall-clock/iteration time only — never claim build-time savings as credits |
+| **No auto-recharge/credit packs on Free**; while paused, no new production deploys | Step 2's exhaustion response must be front-loaded; an exhausted cycle blocks hotfixes |
+| **Preview Servers consume compute** (10 credits/GB-hour); Free includes 1 Live Preview Server | "Previews are free" applies to the deploy meter only — Step 3 must inventory idle preview servers |
+| **Password protection / basic-auth headers, shared env vars, audit logs are Pro-gated**; Free Firewall Traffic Rules limited to 2 rules per ruleset, 3 IPs, 3 geolocations | Directly affects Step 4's abuse controls and Step 7's private-site cache caveat — confirm which gate is actually in force |
+| **Rate-limit enforcement can lag up to ~10 seconds** | Platform rate limits are a coarse backstop, not an exact quota; keep app-layer limits |
+
+Sources: [credit-based pricing plans](https://docs.netlify.com/manage/accounts-and-billing/billing/billing-for-credit-based-plans/credit-based-pricing-plans/), [rate limiting](https://docs.netlify.com/manage/security/secure-access-to-sites/rate-limiting/), [billing FAQ](https://docs.netlify.com/manage/accounts-and-billing/billing/billing-for-credit-based-plans/billing-faq-for-credit-based-plans/).
 
 ### 3.2 Use one budget, not independent maxima
 
@@ -240,7 +259,7 @@ The diagram illustrates the recommended boundaries; it does not assert that this
 **Files:** This roadmap; `docs/roadmap/NETLIFY_MIGRATION_ROADMAP.md`; `netlify.toml`; `netlify/functions/api.mts`; web `netlify.toml`, `next.config.ts`; generated deploy artifacts. Source details are future audit candidates.
 **Effort:** Low–medium. **Savings driver:** Accurate prioritization and avoiding duplicate work.
 
-1. Confirm Credit-based versus Legacy Free, team membership of both projects, billing-cycle dates, other projects sharing the pool, actual deployed Node/Next.js/adapter configuration, and which mechanism makes each site private.
+1. Confirm Credit-based versus Legacy Free (accounts created before 2025-09-04 default to Legacy; the switch cannot be reversed), team membership of both projects, billing-cycle dates, other projects sharing the pool, actual deployed Node/Next.js/adapter configuration, and which mechanism makes each site private — the backend's 401 came from Netlify Edge Access Control, while the web site's gate is unverified (404 as of 2026-10-05, first build attempted 2026-10-07). Verify that neither gate silently disables CDN caching (see Step 7).
 2. Build an implementation/evidence matrix for all 20 steps, including the migration's already-completed cache work and previously closed web findings.
 3. Capture representative private-site activity: anonymous public reading where authorized, sign-in, browsing, reading, mutations, job progress, and an export. Separate cold/warm requests, preview/production, humans/bots, cache hits/misses, and idle scheduled work.
 4. Record deployed request counts, served bytes, function duration and invocation count, dependency timing, rendering mode, and deploy count. Use existing instrumentation first; never log credentials or private payloads.
@@ -273,11 +292,12 @@ The diagram illustrates the recommended boundaries; it does not assert that this
 **Effort:** Low–medium. **Savings driver:** Deployment credits and post-deploy cache refill.
 
 1. Batch compatible fixes into deliberate production releases. Count a paired release as two successful deploys; release only the app that changed when contracts allow it.
-2. Use previews for repeated validation. Preview deployment is free of the deploy meter, but browsing, SSR, APIs, scheduled manual runs, and test traffic are not assumed free.
-3. Ignore genuinely irrelevant changes, such as documentation-only edits, after inspecting each repository's build inputs. Include configuration, dependencies, shared/generated assets, and lockfiles in relevant changes. These are separate projects; do not assume a monorepo path filter fits them.
-4. Follow Netlify ignore semantics: exit `0` skips; exit `1` builds. Build-hook-triggered builds bypass this ignore mechanism. Use a dependency-free helper compatible with the ignore-command environment, with missing Git history conservatively causing a build. [Ignore builds](https://docs.netlify.com/build/configure-builds/ignore-builds/).
-5. Scope preview secrets and backend targets; suppress emails, paid generation, production writes, and duplicate callback side effects unless intentionally enabled in a sandbox. Disable idle preview features where safe.
-6. Use documented rollback rather than rebuilding merely to restore the previous known-good release. Preserve API compatibility during sequential web/backend deployment.
+2. Use previews for repeated validation. Preview deployment is free of the deploy meter, but preview browsing, SSR, APIs, and test traffic still consume runtime meters; scheduled functions run only for published (production) deploys, so previews carry no idle cron cost, whereas any running Preview Server consumes compute at 10 credits/GB-hour. Inventory and idle-stop preview servers.
+3. Account for the **one-concurrent-build team limit**: web and backend releases queue behind each other, so batching also shortens iteration waits. Failed builds cost 0 credits but still consume queue time.
+4. Ignore genuinely irrelevant changes, such as documentation-only edits, after inspecting each repository's build inputs. Include configuration, dependencies, shared/generated assets, and lockfiles in relevant changes. These are separate projects; do not assume a monorepo path filter fits them.
+5. Follow Netlify ignore semantics: exit `0` skips; exit `1` builds. Build-hook-triggered builds bypass this ignore mechanism. Use a dependency-free helper compatible with the ignore-command environment, with missing Git history conservatively causing a build. [Ignore builds](https://docs.netlify.com/build/configure-builds/ignore-builds/).
+6. Scope preview secrets and backend targets; suppress emails, paid generation, production writes, and duplicate callback side effects unless intentionally enabled in a sandbox. Disable idle preview features where safe.
+7. Use documented rollback rather than rebuilding merely to restore the previous known-good release. Preserve API compatibility during sequential web/backend deployment.
 
 **Non-breaking:** Security fixes and necessary emergency releases remain possible; no required build is skipped.
 **Exit evidence:** Build/no-build cases verified, paired-release accounting, preview side-effect review, and a rollback rehearsal. Optimize build time for iteration, but do not claim saved build minutes reduce this plan's deployment meter.
@@ -289,9 +309,9 @@ The diagram illustrates the recommended boundaries; it does not assert that this
 **Files:** Backend `netlify/functions/api.mts`, `netlify.toml`, middleware candidates; web `netlify.toml`, `src/proxy.ts` and generated adapter configuration, subject to support checks.
 **Effort:** Low–medium. **Savings driver:** Avoided origin duration, responses, and provider usage.
 
-1. Evaluate Netlify code-based rate limits before origin invocation on the most expensive eligible paths. Free supports **two rules per project**, path targeting, and per-domain/IP aggregation. Preserve application-level per-user quotas; IP limits alone are unsuitable for shared networks or payment/job correctness. [Rate limiting](https://docs.netlify.com/manage/security/secure-access-to-sites/rate-limiting/).
+1. Evaluate Netlify code-based rate limits before origin invocation on the most expensive eligible paths. Free supports **two code-based rules per project**, **path targeting only**, with per-domain-&-IP aggregation (per-domain alone is an Enterprise/high-performance-edge option). Declare function/edge-function rules as a `rateLimit` block in the function's exported `config` — Netlify explicitly states that **function rate limits cannot be defined in `netlify.toml`** (`netlify.toml` `[redirects.rate_limit]` applies to redirects only). Enforcement can lag by up to ~10 seconds, so keep the existing application-layer quotas (backend already enforces per-user limits through its Upstash rate-limit middleware) as the authoritative control; IP limits alone are unsuitable for shared networks or payment/job correctness. [Rate limiting](https://docs.netlify.com/manage/security/secure-access-to-sites/rate-limiting/).
 2. Validate body limits, method, schema, and required credentials before loading heavy features or calling providers. Use existing secure middleware ordering rather than bypassing authorization.
-3. Restrict middleware/proxy matchers to necessary paths so assets do not cause extra work. Review catch-all function routing and supported static-file precedence so CDN assets are not unnecessarily handled by a function. Verify locale routing, callbacks, and protected paths still behave correctly; do not edit generated adapter functions directly.
+3. Restrict middleware/proxy matchers to necessary paths so assets do not cause extra work. The web matcher in `src/proxy.ts` is broad and already carries an in-code note to narrow it (`../Twistloom-web/src/proxy.ts:369`, matcher at `:372`); narrowing it removes edge/middleware work per request without new code. Review catch-all function routing and supported static-file precedence — backend `netlify.toml` already sets `preferStatic: true` so CDN static files win over the function — and verify locale routing, callbacks, and protected paths still behave correctly; do not edit generated adapter functions directly.
 4. Prefer small static failure responses where suitable. Keep legitimate crawler discovery, accessibility, shared-IP users, webhook signatures, and trusted callbacks working. `robots.txt` guides cooperative crawlers; it is not abuse enforcement.
 5. Measure observed cost of blocked traffic; do not promise that rate-limited, password-gated, or rejected requests incur zero credits. Avoid adding an Edge Function solely to inspect every request if platform rules suffice.
 
@@ -302,13 +322,13 @@ The diagram illustrates the recommended boundaries; it does not assert that this
 
 ### Step 5: Reduce image, JavaScript, font, and response bandwidth — ⬜ Planned
 
-**Files:** Web `next.config.ts`, `src/lib/config/image.ts`, `src/lib/utils/image-url.ts`, asset/component families; backend response serializers identified later.
+**Files:** Web `next.config.ts`, `src/lib/config/image.ts`, `src/lib/utils/image-url.ts`, `src/components/ui/OptimizedImage.tsx`, `src/app/layout.tsx` (Serwist service worker), asset/component families; backend response serializers identified later.
 **Effort:** Medium. **Savings driver:** Bandwidth, browser requests, and serialization work.
 
 1. Rank response types and routes by bytes served, including covers, avatars, reader illustrations, social previews, JS, CSS, fonts, HTML/RSC, and JSON. Optimize the largest actual contributors first.
-2. Verify the deployed Next.js image path: Netlify's current adapter uses Image CDN for `next/image`; it also provisions functions for dynamic Next.js work. Avoid adding a Node image proxy when the adapter/CDN already handles it. [Next.js on Netlify](https://docs.netlify.com/build/frameworks/framework-setup-guides/nextjs/overview/).
-3. Use correct responsive `sizes`, bounded widths/quality variants, supported efficient formats, and lazy loading below the fold. Do not preload every cover or compromise the main visible image. Whitelist remote sources and maintain private-image access boundaries. [Image CDN](https://docs.netlify.com/build/image-cdn/overview/).
-4. Serve only necessary font families, scripts, styles, and third-party widgets. Use immutable browser caching for truly content-hashed assets; changing assets must get new URLs. Browser reuse can avoid a request, whereas a CDN hit still serves bytes. [Advanced caching guide](https://developers.netlify.com/guides/advanced-caching-made-easy/).
+2. Verify the deployed Next.js image path: Netlify's current adapter uses Image CDN for `next/image`; it also provisions functions for dynamic Next.js work. Avoid adding a Node image proxy when the adapter/CDN already handles it. **Audit split first:** `OptimizedImage` sets `unoptimized` for ImageKit sources (`../Twistloom-web/src/components/ui/OptimizedImage.tsx:70`), so ImageKit URLs bypass Next/Image CDN optimization entirely while `picsum.photos` and `i.pravatar.cc` do not — measure both classes before choosing an optimization, and never route private images through a shared optimizer without an access check. [Next.js on Netlify](https://docs.netlify.com/build/frameworks/framework-setup-guides/nextjs/overview/).
+3. Use correct responsive `sizes`, bounded widths/quality variants, supported efficient formats, and lazy loading below the fold. Do not preload every cover or compromise the main visible image. Whitelist remote sources (`next.config.ts` `images.remotePatterns`) and maintain private-image access boundaries. [Image CDN](https://docs.netlify.com/build/image-cdn/overview/).
+4. Serve only necessary font families, scripts, styles, and third-party widgets. Use immutable browser caching for truly content-hashed assets; changing assets must get new URLs. Browser reuse can avoid a request, whereas a CDN hit still serves bytes. Note the web app registers a **Serwist service worker** (`../Twistloom-web/src/app/layout.tsx:156`): precached assets avoid network requests but every SW revision bump re-downloads them, so count SW cache invalidation as a bandwidth event when bundling changes. Vercel telemetry (`@vercel/analytics`, `@vercel/speed-insights`) is deliberately retained for rollback parity and consent-gated — confirm it no-ops on Netlify so it adds no requests or bytes. [Advanced caching guide](https://developers.netlify.com/guides/advanced-caching-made-easy/).
 5. Verify actual compression on deployed text responses before implementing compression inside a function. Return paginated, field-selected JSON and avoid repeated large content/RSC payloads. Preserve required fields and response contracts.
 6. Check metadata/social-image endpoints for expensive regeneration and needless requests; use static or intentionally revalidated assets when content/freshness permits.
 
@@ -326,7 +346,7 @@ The diagram illustrates the recommended boundaries; it does not assert that this
 2. Validate object ownership, key scope, size, type, checksum where applicable, expiration, and download entitlement. Use private storage for private assets. A signed URL is a bearer capability, so keep it short-lived and out of shared caches/logs.
 3. For reusable exports, store an artifact keyed by content/version and export options instead of regenerating it on every download; re-check entitlement before access. Clean up expired artifacts.
 4. Compare storage/CDN egress, requests, retention, and free quotas. Moving files into Netlify Blobs does not automatically avoid Netlify delivery meters, nor does adding another free-tier dependency guarantee total savings.
-5. Verify CORS, resumability where required, filenames, failure handling, and large-file limits. Reuse existing integrations before introducing another provider.
+5. Verify CORS, resumability where required, filenames, failure handling, and large-file limits. Reuse existing integrations before introducing another provider. **Current-state evidence:** web uploads do *not* yet follow item 1 — cover, pen-draft, and feedback images are client-compressed (`browser-image-compression`) then POSTed as base64/FormData through the `/api/backend` rewrite (`../Twistloom-web/src/lib/services/pen-api.ts`, `FeedbackForm.tsx`) into backend functions, while `../Twistloom-web/src/lib/config/upload.ts` permits up to 6 MB (cover/pen) and 10 MB (feedback); base64 adds ~33% and Netlify functions allow a **6 MB buffered request** payload (20 MB streamed responses only), so these limits sit at or above the platform ceiling — measure end-to-end in Step 1 for 413/timeout failures before trusting them, and lower the configured limits or adopt item 1 if they exceed it.
 
 **Non-breaking:** Entitlement enforcement and private-media isolation remain authoritative.
 **Exit evidence:** Successful authorized transfer, rejected unauthorized/expired capability, correct provider accounting, and no large payload passing unnecessarily through the function.
@@ -340,12 +360,12 @@ The diagram illustrates the recommended boundaries; it does not assert that this
 
 1. Audit migration Steps 13–14 first. Approve a narrow list of truly public GET representations; distinguish anonymous data from optional-user fields, paid access, moderation states, private books, drafts, and cookie-dependent responses.
 2. Set a per-representation freshness budget. Prefer a short initial TTL and only add stale-while-revalidate when stale output is acceptable. Do not cache errors or unauthorized output under an anonymous key.
-3. Validate header precedence: Netlify-specific cache headers outrank generic ones. For protected responses, prohibit conflicting shared-cache opt-ins and ensure the effective policy is private/no-store as appropriate. Do not assume a generic `private` header defeats every higher-precedence header. [CDN caching guidance](https://www.netlify.com/knowledge-base/how-to-control-cdn-caching-on-netlify/).
+3. Validate header precedence precisely: for cache-*control*, Netlify respects the most specific header in the order `Netlify-CDN-Cache-Control` > `CDN-Cache-Control` > `Cache-Control` — a generic header does **not** outrank a Netlify-specific one, and a generic `private` on a protected response is not a substitute for a correct higher-precedence policy. Variation is different: when a response carries both `Netlify-Vary` and `Vary`, Netlify honors **both** when building cache keys (additive, not ranked). For protected responses, prohibit conflicting shared-cache opt-ins and ensure the effective policy is private/no-store as appropriate. [Caching overview](https://docs.netlify.com/build/caching/caching-overview/), [CDN caching guidance](https://www.netlify.com/knowledge-base/how-to-control-cdn-caching-on-netlify/).
 4. Verify locale and every response-affecting query/header variant. Remove only proven nonsemantic tracking parameters from cache-key variation, with consistent `Netlify-Vary` behavior. Do not collapse semantic filters, pagination, locale, or permission variants for hit rate. [Cache-key guidance](https://www.netlify.com/knowledge-base/how-to-control-cdn-caching-on-netlify/).
 5. Verify `durable` for eligible serverless public responses and inspect deployed `Cache-Status`; local development cannot establish real CDN behavior. Durable cache is not supported for Edge Function responses. [Caching overview](https://docs.netlify.com/build/caching/caching-overview/).
 6. Treat cache hits as saved origin compute, never zero total credits. Background revalidation still performs origin work. Tiny TTLs or low-traffic/high-cardinality routes may produce limited savings.
 
-**Private-site evidence caveat:** Netlify documents that its `basic-auth` protection on any page disables CDN caching for the whole site. Determine whether that specific mechanism applies; do not infer it from an arbitrary login gate. Keep protection in place. If it prevents a representative cache check, mark that deployed evidence pending and continue local/header-policy checks. [Private-site caching caveat](https://www.netlify.com/knowledge-base/how-to-control-cdn-caching-on-netlify/).
+**Private-site evidence caveat:** Netlify documents that its `basic-auth` protection on any page disables CDN caching for the whole site, and on credit-based plans password protection/basic-auth headers are listed as **Pro-only** — so first establish which gate is actually in force: the backend's observed 401 came from **Netlify Edge Access Control**, which is a different mechanism whose caching interaction is not covered by the `basic-auth` statement. Do not infer caching behavior from an arbitrary login gate, and keep whatever protection exists in place. If the gate prevents a representative cache check, mark that deployed evidence pending and continue local/header-policy checks. [Private-site caching caveat](https://www.netlify.com/knowledge-base/how-to-control-cdn-caching-on-netlify/).
 
 **Non-breaking:** Public caching never authorizes a protected operation or exposes a private representation.
 **Exit evidence:** Hit/miss and origin-count tests; A/B user and anonymous isolation; locale/query variants; no shared private/error caching; measured savings for approved routes.
@@ -361,7 +381,7 @@ The diagram illustrates the recommended boundaries; it does not assert that this
 2. Trigger invalidation after durable commit; use idempotent, bounded dispatch/retry. Retain finite TTLs as fallback. A post-response task may be suitable for latency but is neither guaranteed free nor a substitute for a recoverable delivery record when required.
 3. Prefer scoped tags over site-wide purges. Batch repeat invalidations; Netlify limits each tag/site purge to twice per five seconds. Monitor failures/429s rather than silently assuming freshness. [Caching invalidation limits](https://docs.netlify.com/build/caching/caching-overview/#on-demand-invalidation).
 4. Distinguish tolerated catalogue staleness from strict withdrawal/private-content changes. If purge propagation/failure cannot meet privacy requirements, that representation is ineligible for public caching.
-5. Review whether atomic deploy invalidation is adequate. Do not adopt cross-deploy `Netlify-Cache-ID` persistence unless representation/schema compatibility and explicit invalidation are proved.
+5. Review whether atomic deploy invalidation is adequate: new deploys invalidate the cache for that deploy context by default. `Netlify-Cache-ID` is the documented **opt-out of that automatic invalidation** for function/proxy responses (its IDs also register as purge tags), not a general "persist across deploys" switch — do not adopt it unless representation/schema compatibility and explicit invalidation are proved. [Caching overview](https://docs.netlify.com/build/caching/caching-overview/).
 6. Avoid expensive synchronous revalidation fan-out after every write; evaluate coalescing and bounded regeneration. Protect revalidation endpoints, prevent replay abuse, and keep tokens out of client bundles.
 
 **Non-breaking:** Database transactions stay authoritative; auth/permission changes are enforced immediately by the protected API.
@@ -374,10 +394,10 @@ The diagram illustrates the recommended boundaries; it does not assert that this
 **Files:** Web `src/app/` route/layout/metadata candidates, `next.config.ts`, data-loading and revalidation helpers.
 **Effort:** Medium. **Savings driver:** Avoided SSR and repeated backend rendering reads.
 
-1. Classify routes as static, public revalidated, personalized dynamic, or unsuitable for shared reuse. Include metadata and social-image handlers, not just visible pages.
+1. Classify routes as static, public revalidated, personalized dynamic, or unsuitable for shared reuse. Include metadata and social-image handlers, not just visible pages. Baseline already exists: 11 web pages set `export const revalidate = 60|300`, so start by inventorying which routes are *not* covered rather than assuming full SSR.
 2. For public pages, compare static rendering/ISR with per-visitor SSR. Keep personalization in an appropriate separate boundary if the audited Next.js version and adapter support it; preserve public SEO and current-user behavior.
-3. Inspect dynamic triggers in shared layouts and metadata. Cookie/request-dependent reads and broad force-dynamic settings may expand runtime work. Use APIs supported by the installed version; do not blindly mix older cache defaults, Cache Components, or experimental PPR assumptions. [Next.js production guide](https://nextjs.org/docs/app/guides/production-checklist), [cookies API](https://nextjs.org/docs/app/api-reference/functions/cookies).
-4. Let the Netlify adapter manage its generated cache infrastructure. Verify deployed output rather than manually patching generated functions or assuming custom response headers override Next.js caching.
+3. Inspect dynamic triggers in shared layouts and metadata. Cookie/request-dependent reads and broad force-dynamic settings may expand runtime work. The installed version is **Next.js 16** and this project does **not** enable `cacheComponents` (`next.config.ts` has no such flag), so the classic rendering model applies: request-time APIs such as `cookies()` opt the route (or the whole app from the root layout) into dynamic rendering. Version-16 specifics to respect: synchronous `cookies()`/`headers()` access was removed, `revalidateTag` now requires a second `cacheLife` argument (the single-argument form is deprecated; `updateTag`/`refresh()` cover the Server-Action case), and `next build` no longer runs linting. Do not mix Cache Components/`"use cache"`/PPR assumptions into this codebase without deliberately opting in. [Next.js production guide](https://nextjs.org/docs/app/guides/production-checklist), [version 16 upgrade guide](https://nextjs.org/docs/app/guides/upgrading/version-16), [cookies API](https://nextjs.org/docs/app/api-reference/functions/cookies).
+4. Let the Netlify adapter manage its generated cache infrastructure: it provisions SSR/ISR/PPR/route-handler functions and implements tag-based and path-based revalidation on top of Netlify's cache tags/primitives (no documented `/___revalidate`-style endpoint exists, so do not assume one). Verify deployed output rather than manually patching generated functions or assuming custom response headers override Next.js caching.
 5. Set revalidation by business freshness and traffic. Avoid full production rebuilds on every content edit; prefer authenticated on-demand revalidation where appropriate. Prebuild a useful bounded set of popular routes rather than every possible locale/content combination.
 6. Reuse approved public data even inside a personalized route where version-appropriate Next.js data caching safely supports it. Netlify's Cache API can also cache selected internal responses/fetches, but assess overlap with the adapter first; avoid redundant cache layers and never share a user's authorization or private fetch result. [Cache API](https://docs.netlify.com/build/caching/cache-api/).
 
@@ -391,7 +411,7 @@ The diagram illustrates the recommended boundaries; it does not assert that this
 **Files:** Web `src/lib/config/polling.ts`, `src/lib/query-client.ts`, hook/query-key/link candidates; backend status/coalescing candidates.
 **Effort:** Medium. **Savings driver:** Requests, compute, and repeated bytes/provider reads.
 
-1. Measure real production navigation and job progress. Separate expected development-only activity from production amplification; include RSC fetches, retries, focus/reconnect refetches, metadata, and repeated session/profile loads.
+1. Measure real production navigation and job progress. **Existing baseline:** focus and reconnect refetches are already disabled globally (`../Twistloom-web/src/lib/query-client.ts:37` and `:68`), polling backoff/timeout caps live in `../Twistloom-web/src/lib/config/polling.ts`, and the web `AGENTS.md` §5 codifies visibility-gated polling, single-flight dedupe, `Retry-After` handling, and cacheable polling reads — treat these as implemented conventions to verify, then hunt for amplification *outside* them (RSC/prefetch fetches, metadata, repeated session/profile loads, duplicate hook observers). Separate expected development-only activity from production amplification.
 2. Use one active observer/transport for the same job where feasible. Back off with jitter during long waits; stop polling after completion/error/logout, when hidden/offline where appropriate, and after an explicit limit. Resume safely and expose stale/status feedback.
 3. Deduplicate identical read work with correctly scoped keys, cancel obsolete requests, and set freshness by data semantics. Do not coalesce mutations, reuse a different user's response, or hide status transitions with long stale windows.
 4. Limit speculative prefetch for large link lists and costly destinations; consider intent-based prefetch on selected links. Next.js supports disabling automatic prefetch, but navigation latency is the tradeoff. [Prefetching guide](https://nextjs.org/docs/app/guides/prefetching).
@@ -408,7 +428,7 @@ The diagram illustrates the recommended boundaries; it does not assert that this
 **Files:** Web `src/lib/services/api.ts`, Server Component/API/Server Action candidates, `src/proxy.ts`, `netlify.toml`; backend CORS/auth/routing candidates.
 **Effort:** Medium. **Savings driver:** Avoided extra function duration, requests, and transfer hops.
 
-1. Trace browser → Next.js → Hono calls. Count which layers actually execute functions and which are CDN rewrites. Do not assume every rewrite incurs frontend compute or assert an exact double charge without measurements.
+1. Trace browser → Next.js → Hono calls. Count which layers actually execute functions and which are CDN rewrites. **Concrete starting point:** the browser calls `/api/backend/:path*`, which `next.config.ts` `rewrites()` forwards to `https://twistloom-backend.netlify.app`, and `../Twistloom-web/src/lib/services/api.ts:144` prefixes relative URLs with `API_BASE_URL` — so every authenticated API call crosses that boundary. The open question is whether the Netlify adapter emits a CDN-level redirect/proxy for it (no frontend compute) or routes it through the Next serverless function (a second billed invocation per API call). Do not assume either outcome or assert an exact double charge without measurements.
 2. In server-side rendering, call the required backend service directly rather than calling the same frontend's route handler over HTTP merely to reach Hono, where contracts/security allow it.
 3. Compare direct browser backend calls, CDN-level proxying, and Next.js route-handler proxying. Keep a proxy where it is needed for credentials, origin policy, response transformation, or a stable public contract.
 4. Reuse identical reads within one render/request using version-appropriate memoization. Avoid serial duplicate data loading in layout, page, and metadata. Do not introduce shared caching of a user's session or permissions.
@@ -475,11 +495,11 @@ The diagram illustrates the recommended boundaries; it does not assert that this
 **Effort:** Medium–high; optional. **Savings driver:** Less redundant work or waiting, if demonstrated.
 
 1. Correct eligibility assumptions: Scheduled Functions are available on all plans and use UTC schedules, running automatically only for published deploys. Their execution cap is 30 seconds. [Scheduled Functions](https://docs.netlify.com/build/functions/scheduled-functions/).
-2. Background Functions are available on credit-based Free and can run up to 15 minutes. Returning `202` does not remove the background compute bill; automatic retry requires idempotency. Legacy plan eligibility differs. [Background Functions](https://docs.netlify.com/build/functions/background-functions/).
+2. Background Functions are available on credit-based Free and can run up to 15 minutes. Returning `202` does not remove the background compute bill, and Netlify retries background functions automatically (documented as one retry after ~1 minute and another after ~2 minutes). The platform docs do not state an idempotency requirement for background functions, so idempotency is a **design requirement this project must implement**, not something the platform enforces. Legacy plan eligibility differs. [Background Functions](https://docs.netlify.com/build/functions/background-functions/).
 3. Inventory all current schedules and providers; avoid running equivalent QStash and Netlify jobs simultaneously. Tune cadence, batch size, checkpoints, and overlap protection according to actual backlog and correctness needs. An empty frequent sweep still costs runtime.
 4. Keep existing scheduling if reliable and cheaper overall. Native schedules may simplify administration but are not a savings mandate, and a platform-wide credit pause can also affect hosted maintenance.
 5. Netlify Async Workloads offers durable steps and sleeps as a further option. Its workload functions are still Netlify functions; extra routing, reinvocations, persisted state, scheduler polling, and retries need a full usage model before adoption. Do not equate a durable sleep API with an ordinary `await sleep()` or assume the workflow is free. [Async Workloads overview](https://docs.netlify.com/build/async-workloads/overview/), [multi-step behavior](https://docs.netlify.com/build/async-workloads/multi-step-workloads/), [optional configuration](https://docs.netlify.com/build/async-workloads/optional-configuration/).
-6. Use short dispatch-only scheduled handlers for longer work where appropriate; compare this extra invocation with the retained external scheduler. Confirm extension eligibility and all additional meters before choosing Async Workloads.
+6. Use short dispatch-only scheduled handlers for longer work where appropriate; compare this extra invocation with the retained external scheduler. Extension eligibility is not an open question — Async Workloads is a Netlify Extension that can be enabled on any site and plan level; what must be verified before choosing it is the full billing/usage model (its provisioned functions and blobs are billed like any other provisioned resource) and all additional meters.
 
 **Non-breaking:** Exactly one intended schedule owns each job; durable retries and settlement sweeps remain reliable.
 **Exit evidence:** Scheduler inventory, cost/reliability decision, production/preview behavior, overlap/retry tests, and a reconciliation/rollback runbook. Mark the adoption portion skipped if the existing approach wins.
@@ -491,7 +511,7 @@ The diagram illustrates the recommended boundaries; it does not assert that this
 **Files:** Backend `src/app.ts`, `netlify/functions/api.mts`, `netlify.toml`, heavy route/service candidates, `package.json`; built function artifacts.
 **Effort:** Medium. **Savings driver:** Conditional initialization/invocation duration reduction.
 
-1. Inspect the deployed import graph and artifact sizes before changing imports. Identify heavy modules, eager client construction, barrel imports, unused code, templates/fonts, and native dependencies.
+1. Inspect the deployed import graph and artifact sizes before changing imports. Identify heavy modules, eager client construction, barrel imports, unused code, templates/fonts, and native dependencies. **Known configuration:** backend `netlify.toml` already sets `node_bundler = "esbuild"`, externalizes `pdfkit`, ships its font data via `included_files`, and builds with Bun (`bun.lockb` detection, build command `bun run typecheck`) — so packaging decisions must respect the existing pdfkit workaround rather than re-deriving it.
 2. Remove genuinely unused dependencies and unnecessary startup side effects first. Prefer supported granular package entrypoints; do not bypass package exports with brittle deep paths.
 3. Trial inline imports for rarely exercised, optional features. Keep common lightweight/auth dependencies simple; keep current session/standing checks on every protected request.
 4. Verify whether the actual Netlify bundler splits files or only defers initialization. Externalization can add filesystem/module resolution work and packaging hazards; it is not automatically an improvement. Netlify exposes packaging controls, while esbuild documents dynamic-import semantics. [Function bundling](https://docs.netlify.com/build/functions/configuration/#bundle), [esbuild](https://esbuild.github.io/api/#splitting), [AWS dependency guidance](https://aws.amazon.com/blogs/compute/optimizing-node-js-dependencies-in-aws-lambda/).
@@ -518,7 +538,7 @@ Repeated module loading in an instance does not imply repeated evaluation, but c
 **Files:** Web optional feature components, dependency imports, `next.config.ts`, `package.json`; generated route chunks.
 **Effort:** Low–medium. **Savings driver:** Initial bandwidth and browser work.
 
-1. Use route/chunk analysis to identify libraries downloaded by users who never use their features, such as rich editors, export tools, diagrams, or optional management panels. These are candidate classes, not verified current dependencies.
+1. Use route/chunk analysis to identify libraries downloaded by users who never use their features. **Audited candidates present in `package.json`** (dependency presence is verified; actual chunk weight is not): TipTap (`@tiptap/*` — rich editors), `@xyflow/react` (graph canvas), `recharts` (admin analytics), `html2canvas` (export), plus editor/export tooling behind conditional panels. Verify each is genuinely conditionally rendered before changing anything.
 2. Put deferred Client Components behind real conditional rendering/interaction, with `next/dynamic` and accessible loading/error states. Load large plain libraries on demand where appropriate. [Lazy loading](https://nextjs.org/docs/app/guides/lazy-loading).
 3. Keep above-the-fold content and core reader controls responsive. Avoid broad `ssr: false`; reserve it for appropriate browser-only features and test deep links and hydration.
 4. Preserve server-only boundaries so secrets and heavy backend SDKs never enter browser chunks. Compare supported package-import optimization with lazy loading; do not pile on custom bundler settings without artifact evidence.
@@ -534,13 +554,13 @@ Repeated module loading in an instance does not imply repeated evaluation, but c
 **Files:** Candidate edge handler(s), backend/web `netlify.toml`, `src/proxy.ts`, routing/header declarations; generated adapter artifacts.
 **Effort:** Medium–high; optional. **Savings driver:** Avoided serverless compute for suitable work.
 
-1. Credit-based Edge Functions do **not** contribute to the compute meter; they are metered through web requests, with served bytes still subject to bandwidth. This makes them a meaningful conditional lever. [How credits work](https://docs.netlify.com/manage/accounts-and-billing/billing/billing-for-credit-based-plans/how-credits-work/).
+1. Credit-based Edge Functions do **not** contribute to the compute meter; they are metered through web requests, with served bytes still subject to bandwidth. This makes them a meaningful conditional lever. They are also subject to a separate per-plan monthly **invocation allowance** visible in the usage & billing dashboard (exact quota varies by plan); edge responses configured for caching do not count toward that invocation allowance. [How credits work](https://docs.netlify.com/manage/accounts-and-billing/billing/billing-for-credit-based-plans/how-credits-work/), [Edge limits](https://docs.netlify.com/build/edge-functions/limits/).
 2. Prefer platform redirects/headers/CDN delivery when no code is needed. Evaluate small redirects, header decisions, or a standalone genuinely lightweight public response only if an Edge Function removes origin invocation.
 3. Respect the Deno-based runtime and dependencies; limits include 50 ms CPU per request, a 40-second response-header timeout, 512 MB shared deployed-edge memory, and 20 MB compressed code. Network waiting is excluded from the CPU limit, but latency, provider calls, and request/byte costs still matter. [Edge limits](https://docs.netlify.com/build/edge-functions/limits/), [Edge API](https://docs.netlify.com/build/edge-functions/api/).
 4. Do not move the full Hono backend or CPU-heavy auth/export processing without compatibility and correctness proof. A geographically distributed edge that repeatedly calls an Ohio database can add latency rather than remove useful work.
-5. Scope paths carefully and verify processing order with existing Next.js edge/proxy behavior. An edge layer that simply forwards to a Node function retains the Node compute bill. Durable cache is unavailable for Edge Function responses; cached edge responses need the appropriate edge declaration and deployed validation.
+5. Scope paths carefully and verify processing order with existing Next.js edge/proxy behavior. Before writing any new Edge Function, remember the adapter already runs Next.js middleware (`../Twistloom-web/src/proxy.ts`) at the edge — narrowing its matcher (Step 4) removes work without adding code, and every uncached edge response consumes part of the monthly edge invocation allowance. An edge layer that simply forwards to a Node function retains the Node compute bill. Durable cache is unavailable for Edge Function responses; cached edge responses need the appropriate edge declaration and deployed validation.
 
-**Non-breaking:** An edge check never replaces authoritative protected backend enforcement; static assets and private data keep correct handling.
+**Non-breaking:** An edge check never replaces authoritative protected backend enforcement; static assets and private data keep correct handling. Netlify custom headers — **including basic-authentication headers** — do not apply to edge function responses, and enabling Split Testing stops edge functions from executing entirely; verify that the private-site gate still covers every edge-declared path before rollout. [Edge limits](https://docs.netlify.com/build/edge-functions/limits/).
 **Exit evidence:** Measured origin avoidance and net cost/latency improvement, path-order/runtime tests, and clear rollback. Skip if static delivery/cache or the existing adapter already solves the case.
 
 ---
@@ -568,7 +588,7 @@ Repeated module loading in an instance does not imply repeated evaluation, but c
 
 1. Give each change a baseline, expected affected meter, representative workload, correctness tests, rollback, and acceptance threshold. Compare like traffic and actual allocated duration; separate cold/warm and preview/production data.
 2. Validate locally first, then on an authorized private preview using owner access. CDN hits, real function billing, runtime behavior, and private deployment gates require deployed evidence; report pending evidence honestly instead of publishing to remove the gate.
-3. Run required repository checks for actual code changes and meaningful targeted tests. Include public/private cache isolation, logout/revocation/ban behavior, mutation freshness, job idempotency, localization, callback integrity, and deferred UI behavior as applicable.
+3. Run required repository checks for actual code changes and meaningful targeted tests — note that Next.js 16 removed `next lint` and `next build` no longer lints, so ESLint/`pnpm lint` must be an explicit CI step rather than an implicit build side effect. Include public/private cache isolation, logout/revocation/ban behavior, mutation freshness, job idempotency, localization, callback integrity, and deferred UI behavior as applicable.
 4. Batch accepted improvements into a small number of production releases. Monitor the next comparable workload window and stop/revert changes that increase credits per useful action, failure rate, or unacceptable user latency.
 5. Update each status only with source and verification evidence. Preserve separate `code complete / deployment evidence pending` records where needed; adopt no-change completions when existing code already meets the requirement.
 6. Forecast realistic capacity including deploy reserve, bots, previews, idle jobs, and third-party quotas. If required usage cannot fit, choose an explicit scope/cadence reduction or paid capacity rather than assuming further micro-optimizations will solve it.
@@ -589,7 +609,7 @@ These are later audit/operational decisions, not requests to stop this research 
 - **(B)** Sites belong to different teams: separate confirmed envelopes and operational ownership; do not assume this topology.
 - **(C)** Legacy plan: different quotas/eligibility; current credit calculations do not apply directly.
 
-**Recommendation:** Verify in the owner-access dashboard before any budget-driven implementation. Use A only as this document's provisional planning assumption; do not reorganize accounts to evade limits.
+**Recommendation:** Verify in the owner-access dashboard before any budget-driven implementation. Use A only as this document's provisional planning assumption; do not reorganize accounts to evade limits. Treat C as a live branch, not a formality: accounts created before **2025-09-04** are Legacy by default, Legacy rates/eligibility differ from every table in §3.1, and the credit-based switch **cannot be reverted**.
 
 ---
 
@@ -647,7 +667,7 @@ These are later audit/operational decisions, not requests to stop this research 
 
 ### Research sources
 
-All below are primary vendor/tool documentation, checked on **2026-10-05**. Pricing/account UI take precedence for the actual account. Feature availability, runtime support, and rates must be rechecked when execution begins. Older AWS articles establish engineering principles only; their benchmarks and direct Lambda billing are not Netlify guarantees. Recommendations, priorities, and worked examples are this roadmap's analysis, not vendor-provided project savings.
+All below are primary vendor/tool documentation, checked on **2026-10-05** and **re-verified on 2026-10-07**. Pricing/account UI take precedence for the actual account. Feature availability, runtime support, and rates must be rechecked when execution begins. Older AWS articles establish engineering principles only; their benchmarks and direct Lambda billing are not Netlify guarantees. Recommendations, priorities, and worked examples are this roadmap's analysis, not vendor-provided project savings.
 
 | Source | Supports |
 |--------|----------|
@@ -687,11 +707,31 @@ All below are primary vendor/tool documentation, checked on **2026-10-05**. Pric
 | [Neon serverless driver](https://neon.com/blog/serverless-driver-ga) | HTTP/WebSocket mode considerations |
 | [Neon latency guidance](https://neon.com/blog/how-to-minimise-the-impact-of-database-latency) | Dependency distance and connection/query tradeoffs |
 
+### Fact-check log (2026-10-07)
+
+Read-only re-verification of every platform claim against vendor docs, plus a path/source audit of both repositories. Items marked "corrected" were changed in the text above.
+
+| Original claim | Verdict | Action |
+|----------------|---------|--------|
+| Rate-limit rules "can be declared in `netlify.toml` or as a `rateLimit` block" | **Wrong for functions** — Netlify: "rate limits for functions cannot be defined in the `netlify.toml` configuration file" (`[redirects.rate_limit]` is redirects-only); per-domain aggregation is Enterprise/HP-Edge | Corrected in Step 4; added path-only targeting, ~10 s enforcement lag, existing Upstash layer |
+| "Cache hits still consume this meter" stated as documented fact | Rate documented (2 credits/10,000); **no** documented cache-hit exemption either way | Rephrased as a conservative budget assumption in §3.1 |
+| "Netlify-specific cache headers outrank generic ones" (implying `Vary` too) | Cache-*control* precedence is real (`Netlify-CDN-Cache-Control` > `CDN-Cache-Control` > `Cache-Control`), but `Netlify-Vary` and `Vary` are **both** honored when present | Corrected in Step 7 |
+| Cross-deploy "`Netlify-Cache-ID` persistence" | Real, but it is the documented **opt-out of automatic deploy invalidation** for function/proxy responses (IDs auto-register as purge tags) | Clarified in Step 8 |
+| "automatic retry requires idempotency" (background functions) | Platform documents automatic retries (~1 min, then ~2 min) but **no** idempotency requirement | Reframed as our design requirement in Step 15 |
+| "Both projects … they remain private" | Backend 401 via **Netlify Edge Access Control**; web `twistloom-web.netlify.app` returned **404 (site not created)** on 2026-10-05 and its first build failed on 2026-10-07 | Corrected in §2 and Step 1 |
+| Usage notices "50/75/100, FAQ also 90" | Both official pages exist and **disagree** (monitoring page vs FAQ) | Stated explicitly as a documentation disagreement in §3.1 |
+| Region default "sites created before 2023-10-04 may differ" | **Verified** verbatim in function configuration docs | Kept |
+| — | Missing Free-plan constraints discovered | Added §3.1 "Additional Free-plan constraints" (1 concurrent build, 1 owner seat, build minutes not metered, no deploys while paused, Preview Server compute, Pro-gated security features, Free firewall rule caps) |
+| Next.js guidance was version-agnostic | Project is **Next.js 16.3.1** without `cacheComponents` | Made Step 9/20 version-specific (classic model, sync `cookies()` removed, 2-arg `revalidateTag`, `next lint` removed) |
+| §2 "no deep source audit" | Path/source audit performed 2026-10-07 | Evidence boundary and §2 baseline updated; §8 candidate paths all confirmed to exist |
+
+**Verified unchanged** (spot-checked, no edit needed): 300-credit pool and all five meter rates; 15-credit deploy with failed/rollback exceptions; preview deploys at 0 deployment credits; 1024 MB allocation billing; 60 s/30 s/15 min limits and payload sizes; 180 credits/USD AI meter; Edge Functions off the compute meter plus separate invocation allowance; edge limits (50 ms CPU, 40 s header timeout, 512 MB per set, 20 MB code); `durable` unsupported for edge responses; `basic-auth` disables site caching; purge rate limit of 2 per 5 s; `waitUntil()` duration billing; ignore-builds exit codes and build-hook bypass; scheduled functions on all plans/UTC/published-only; Async Workloads as an installable Extension billed like other provisioned resources; Image CDN for `next/image`; Observability free-to-view with no programmatic access; 1-day/24-hour Free retention; credit math in §3.2 (13.89, 27.78, 635, 210/90 examples all re-derived correctly).
+
 ### Actual documentation changes in this task
 
 | File | Change |
 |------|--------|
-| `docs/roadmap/NETLIFY_FREE_TIER_OPTIMIZATION_ROADMAP.md:1` | **NEW** — researched plan for both applications; implementation unverified |
+| `docs/roadmap/NETLIFY_FREE_TIER_OPTIMIZATION_ROADMAP.md:1` | **NEW** — researched plan for both applications; implementation unverified. Revised 2026-10-07: platform claims re-verified, both repositories path-audited, inaccuracies corrected (see fact-check log), web-specific evidence added |
 | `docs/roadmap/NETLIFY_MIGRATION_ROADMAP.md`, §11 | Companion link and notice that this roadmap supersedes its joint-budget/cache-cost examples; existing completion statuses retained |
 
 ### Existing references, not changed
@@ -725,6 +765,7 @@ Legend: ✅ Completed and verified · ⏳ In progress / partial · ⬜ Planned �
 ### Completed
 
 - ✅ **Research/documentation only:** Official pricing/runtime/caching/framework guidance checked; one combined budget model, selective-lazy-import guidance, and ordered audit/implementation candidates documented.
+- ✅ **Fact-check + source audit (2026-10-07):** Every platform claim re-verified against vendor docs; six claims corrected or sharpened (rate-limit declaration surface, cache-hit metering wording, `Vary` precedence, `Netlify-Cache-ID` semantics, background-function idempotency, "both sites private"), the 90%-notification page disagreement surfaced, missing Free-plan constraints added, and all referenced paths in both repositories confirmed to exist. Full log in §8.
 - ✅ **Roadmap scope:** Both Netlify applications covered, historical migration context linked, and code/live verification deliberately left for the next phase.
 
 ### In Progress

@@ -110,7 +110,8 @@ import { requireNotSuspended, requireNotMuted, requireGenerationQuota } from "..
 import { rateLimit } from "../middleware/rate-limit.js";
 import { books, branches, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress, userCompletedBooks, uploadedImages, userActivityLogs, pages, bookTestimonials, pageReactions, userSessions, companionAnswers, creatorWallets } from "../db/schema.js";
 import { deductUserItem, ConsumableError, cConsumableError } from "../services/consumables.js";
-import { getErrorMessage, cApiError, cForbiddenError, cNotFoundError, cRateLimitError, cUnauthorizedError, cValidationError } from "../utils/error.js";
+import { getErrorMessage, cApiError, cConflictError, cForbiddenError, cNotFoundError, cRateLimitError, cUnauthorizedError, cValidationError } from "../utils/error.js";
+import { isAnchorInRange, splitCanonicalParagraphs } from "../utils/paragraph_split.js";
 import { sanitizeKeywords, cleanMultilineText } from '../utils/text-processing.js';
 import { stripHtml } from '../utils/sanitize-html.js';
 import { coalescePoll, getCoalesced, setCoalesced, POLL_RETRY_AFTER_SECONDS } from "../utils/poll-coalesce.js";
@@ -4335,7 +4336,7 @@ router.post("/:id/comments", requireAuth, requireNotSuspended, requireNotMuted, 
     // Validate pageId belongs to this book when provided
     if (normalizedPageId) {
       const [page] = await dbRead
-        .select({ id: pages.id, bookId: pages.bookId })
+        .select({ id: pages.id, bookId: pages.bookId, text: pages.text })
         .from(pages)
         .where(eq(pages.id, normalizedPageId!))
         .limit(1);
@@ -4346,6 +4347,13 @@ router.post("/:id/comments", requireAuth, requireNotSuspended, requireNotMuted, 
 
       if (page.bookId !== id) {
         return cValidationError(c, "Page does not belong to this book");
+      }
+
+      if (normalizedParagraphNumber !== null) {
+        const anchorError = validateCommentAnchor(page.text, normalizedParagraphNumber);
+        if (anchorError) {
+          return cConflictError(c, anchorError, undefined, "comments.anchorOutOfRange");
+        }
       }
     }
 
@@ -4453,17 +4461,42 @@ function validateCommentContent(content: unknown): string | null {
 
 /**
  * Shared helper: validate that a page belongs to the given book.
- * Returns the page row (with bookId) or null when not found / mismatched.
+ * Returns the page row (with bookId and prose) or null when not found /
+ * mismatched. `text` is needed to check comment-anchor ranges (roadmap Step 4).
  */
-async function findPageInBook(pageId: string, bookId: string): Promise<{ id: string; bookId: string } | null> {
+async function findPageInBook(
+  pageId: string,
+  bookId: string,
+): Promise<{ id: string; bookId: string; text: string } | null> {
   const [page] = await dbRead
-    .select({ id: pages.id, bookId: pages.bookId })
+    .select({ id: pages.id, bookId: pages.bookId, text: pages.text })
     .from(pages)
     .where(eq(pages.id, pageId))
     .limit(1);
 
   if (!page || page.bookId !== bookId) return null;
   return page;
+}
+
+/**
+ * Shared helper: ensure a requested paragraph anchor still exists on the page.
+ *
+ * Returns a plain, cause-and-next-action error message when it does not (the
+ * caller answers 409 with code `comments.anchorOutOfRange`), or null when the
+ * anchor is valid. The range is whatever the page's *stored* prose currently
+ * splits into — a prose edit that removed or reordered paragraphs invalidates
+ * higher anchors, and accepting one would strand a comment on a paragraph that
+ * no longer exists.
+ */
+function validateCommentAnchor(pageText: string, anchor: number): string | null {
+  if (isAnchorInRange(pageText, anchor)) return null;
+
+  const count = splitCanonicalParagraphs(pageText).length;
+  if (count === 0) {
+    return "This page has no paragraphs to comment on. Reload the page and try again.";
+  }
+  return `paragraphNumber ${anchor} is outside this page's paragraph range (1-${count}). `
+    + "Reload the page to see its current paragraphs, then comment on one of them.";
 }
 
 /**
@@ -4794,6 +4827,11 @@ router.post("/:id/pages/:pageId/comments", requireAuth, requireNotSuspended, req
         return cValidationError(c, "paragraphNumber must be a positive integer");
       }
       normalizedParagraphNumber = parsed;
+
+      const anchorError = validateCommentAnchor(pageRow.text, parsed);
+      if (anchorError) {
+        return cConflictError(c, anchorError, undefined, "comments.anchorOutOfRange");
+      }
     }
 
     // Validate parentCommentId + scope consistency
@@ -4916,6 +4954,11 @@ router.post("/:id/pages/:pageId/paragraphs/:paragraphNumber/comments", requireAu
 
     const pageRow = await findPageInBook(pageId as string, id as string);
     if (!pageRow) return cNotFoundError(c, "Page not found");
+
+    const anchorError = validateCommentAnchor(pageRow.text, parsedParagraph);
+    if (anchorError) {
+      return cConflictError(c, anchorError, undefined, "comments.anchorOutOfRange");
+    }
 
     if (parentCommentId) {
       const [parentComment] = await dbRead

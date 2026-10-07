@@ -1,0 +1,108 @@
+{
+  "$comment": "Golden fixtures for the cross-platform paragraph-numbering contract (comment anchors). Canonical copy: Twistloom-web/tests/unit/fixtures/paragraph_segmentation.json, harnessed by tests/unit/utils/splitParagraphs.fixture.test.ts. Mirror: Twistloom-flutter/test/fixtures/paragraph_segmentation.json, harnessed by test/features/reader/anchor_paragraphs_test.dart. Rule: split on one-or-two escaped-newline sequences (backslash + n as two characters) or one-or-two literal newlines; segments are returned verbatim; whitespace-only segments are dropped. Each case's paragraphs array IS the 1-based paragraph numbering used by comment anchors on both platforms. Any change must land in BOTH repos in the same review: READER_PAGE_COMMENT_SECTION_ROADMAP.md (web) Step 1 and READER_PARAGRAPH_COMMENTS_ROADMAP.md (Flutter) Q2/Step 2.",
+  "cases": [
+    {
+      "name": "single_newline",
+      "input": "First line\nSecond line",
+      "paragraphs": ["First line", "Second line"]
+    },
+    {
+      "name": "double_newline",
+      "input": "Para one.\n\nPara two.",
+      "paragraphs": ["Para one.", "Para two."]
+    },
+    {
+      "name": "escaped_single_newline",
+      "input": "Line one\\nLine two",
+      "paragraphs": ["Line one", "Line two"]
+    },
+    {
+      "name": "escaped_double_newline",
+      "input": "Beat one\\n\\nBeat two",
+      "paragraphs": ["Beat one", "Beat two"]
+    },
+    {
+      "name": "triple_newline_collapse",
+      "input": "A pause.\n\n\nThen the door.",
+      "paragraphs": ["A pause.", "Then the door."]
+    },
+    {
+      "name": "quadruple_newline_collapse",
+      "input": "One.\n\n\n\nTwo.",
+      "paragraphs": ["One.", "Two."]
+    },
+    {
+      "name": "crlf_preserves_carriage_return",
+      "input": "Cold room.\r\nDoor locked.",
+      "paragraphs": ["Cold room.\r", "Door locked."]
+    },
+    {
+      "name": "leading_and_trailing_spaces_kept",
+      "input": "   Indented first.\n   Second line   ",
+      "paragraphs": ["   Indented first.", "   Second line   "]
+    },
+    {
+      "name": "whitespace_only_segment_dropped",
+      "input": "Para A.\n\n   \n\nPara B.",
+      "paragraphs": ["Para A.", "Para B."]
+    },
+    {
+      "name": "scene_divider_single_newlines",
+      "input": "She raised the lantern.\n***\nThe corridor answered.",
+      "paragraphs": ["She raised the lantern.", "***", "The corridor answered."]
+    },
+    {
+      "name": "scene_divider_blank_lines",
+      "input": "She stepped back.\n\n* * *\n\nSomething moved.",
+      "paragraphs": ["She stepped back.", "* * *", "Something moved."]
+    },
+    {
+      "name": "dialogue_lines_single_newline",
+      "input": "[marcus|low] Don't turn around.\n[elena] Too late for that.",
+      "paragraphs": ["[marcus|low] Don't turn around.", "[elena] Too late for that."]
+    },
+    {
+      "name": "empty_input",
+      "input": "",
+      "paragraphs": []
+    },
+    {
+      "name": "blank_lines_only",
+      "input": "\n\n   \n",
+      "paragraphs": []
+    },
+    {
+      "name": "leading_blank_lines",
+      "input": "\n\nThe night began.",
+      "paragraphs": ["The night began."]
+    },
+    {
+      "name": "trailing_newline",
+      "input": "End of the page.\n",
+      "paragraphs": ["End of the page."]
+    },
+    {
+      "name": "mixed_escaped_and_literal",
+      "input": "A\\nB\n\nC",
+      "paragraphs": ["A", "B", "C"]
+    },
+    {
+      "name": "real_noir_page",
+      "input": "Rain stitched the alley into the dark.\n\nVero counted the footsteps - one short, one dragging.\n\nSomewhere above, a window blinked shut.",
+      "paragraphs": [
+        "Rain stitched the alley into the dark.",
+        "Vero counted the footsteps - one short, one dragging.",
+        "Somewhere above, a window blinked shut."
+      ]
+    },
+    {
+      "name": "wrapped_prose_single_newlines",
+      "input": "The corridor curved left,\nthen right,\nthen nowhere at all.",
+      "paragraphs": [
+        "The corridor curved left,",
+        "then right,",
+        "then nowhere at all."
+      ]
+    }
+  ]
+}

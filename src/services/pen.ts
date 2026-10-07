@@ -11,7 +11,9 @@
 import { eq, and, desc, isNull, sql } from "drizzle-orm";
 import { penSessions, penEdits, penDrafts, penNotes, branches, pages, books, storyStates, uploadedImages } from "../db/schema.js";
 import { dbRead, dbWrite, type DBClient, type DBTransaction } from "../db/client.js";
-import { getBookFromDB, getBookPages, deleteStoryPage, updateBook } from "./book.js";
+import { getBookFromDB, getBookPages, deleteStoryPage, updateBook, invalidatePageOneCache } from "./book.js";
+import { remapPageComments, type CommentRemapStats } from "./comment_anchor_alignment.js";
+import { logger } from "../utils/logger.js";
 import { getTriggeredLoreEntries, listLoreEntries } from "./lore.js";
 import type { DBBook, DBPenSession, DBPenDraft } from "../types/schema.js";
 import type { AuthoringMode, AuthoringPov, CoWritingPersona, DraftSpan, PenDraft, PenDraftCharacter, PenDraftSceneEssentials, PenDraftSummary, PenDraftUpdates, PenEdit, PenSessionStatus, FinalizeViolation, CanonAmendment, PenEditType, PenOutlineData, PenOutlinePage, PenAuthorPage, AuthorshipOrigin, PenTransformInput, PenTransformResult, PenNote, PenNoteInput, PenNoteUpdate, LoreEntry, PenLatentBranch, DetectedCastCharacter, PenCastDetectInput, PenCastDetectResult, PenStateProposalPlotFlag, PenStateProposalFact } from "../types/pen.js";
@@ -4048,8 +4050,17 @@ export type UpdatePenPageProseInput = {
   force?: boolean;
 };
 
+/**
+ * Result of a published prose edit.
+ *
+ * `commentsRemapped`/`commentsDetached` report how this edit re-anchored the
+ * page's reader comments (`user_comments.paragraph_number`): `remapped` rows
+ * moved to a new paragraph anchor, `detached` rows demoted to page-level
+ * because their anchor no longer exists. Both are comment row counts, never
+ * anchor counts, so a caller can show "N comments affected" truthfully.
+ */
 export type UpdatePenPageProseOutput =
-  | { status: "updated"; page: PenAuthorPage }
+  | { status: "updated"; page: PenAuthorPage; commentsRemapped: number; commentsDetached: number }
   | { status: "needs_review"; violations: FinalizeViolation[] };
 
 /**
@@ -4153,8 +4164,89 @@ function validatePublishedPageCanonInvariance(
 }
 
 /**
+ * Reads a page's stored prose under a row lock, at the start of a prose-edit
+ * transaction.
+ *
+ * The caller-visible `oldText` is read before the slow path's AI round-trip,
+ * so it can be stale when a second save of the same page lands first. Remapping
+ * from that stale value would re-anchor comments against prose that is no
+ * longer stored — a double-tap of Save is enough to trigger it. Locking and
+ * re-reading here makes each edit remap from what is *actually* committed, and
+ * serializes the prose write itself on the same lock it already took.
+ *
+ * @returns The current stored prose of `pageId`.
+ * @throws `PenSessionNotFoundError` if the row vanished mid-flight — the
+ *   transaction rolls back rather than re-anchoring comments against nothing.
+ */
+async function readLockedPageText(tx: DBTransaction, pageId: string): Promise<string> {
+  const [current] = await tx
+    .select({ text: pages.text })
+    .from(pages)
+    .where(eq(pages.id, pageId))
+    .for("update");
+
+  if (!current) throw new PenSessionNotFoundError("Page not found");
+  return current.text ?? "";
+}
+
+/**
+ * Post-commit half of a published prose edit.
+ *
+ * Runs only after the writing transaction resolves, never inside it: clearing
+ * the page-1 payload early would republish pre-commit data if the transaction
+ * later rolled back. Two jobs:
+ *
+ * 1. Drop the Redis page-1 payload, which embeds `paragraphCommentCounts` that
+ *    this edit just changed. Best-effort — a cache miss is harmless, so a Redis
+ *    failure is logged and must never turn a committed edit into a 500.
+ * 2. Emit the single structured audit line for the comment-anchor remap, with
+ *    the exact key set the durability roadmap specifies.
+ *
+ * @param userId - Owner id, forwarded to the page payload read.
+ * @param bookId - Book whose page-1 payload is stale.
+ * @param pageId - Page that was just edited.
+ * @param stats - Remap outcome recorded inside the commit.
+ */
+async function finalizeProseUpdate(
+  userId: string,
+  bookId: string,
+  pageId: string,
+  stats: CommentRemapStats
+): Promise<UpdatePenPageProseOutput> {
+  logger.info("pen_page_prose_remapped", {
+    pageId,
+    bookId,
+    remapped: stats.remapped,
+    demoted: stats.demoted,
+    oldParagraphCount: stats.oldParagraphCount,
+    newParagraphCount: stats.newParagraphCount,
+  });
+
+  try {
+    await invalidatePageOneCache(bookId);
+  } catch (error) {
+    logger.error("pen_page_one_cache_invalidate_failed", {
+      bookId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  const updatedPage = await getPenAuthorPage(userId, pageId);
+  return {
+    status: "updated",
+    page: updatedPage,
+    commentsRemapped: stats.remapped,
+    commentsDetached: stats.demoted,
+  };
+}
+
+/**
  * Updates the prose text of a published page with ownership verification,
  * heuristic diffing (fast-path), and AI canon invariance verification (slow-path).
+ *
+ * Both tiers write prose and re-anchor reader comments in the *same*
+ * transaction (`updatePenPageProse` is today's only writer of published
+ * `pages.text`), so prose and anchors can never disagree across a rollback.
  *
  * @param userId - The authenticated user's id (ownership guard)
  * @param pageId - The published page to update
@@ -4187,20 +4279,26 @@ export async function updatePenPageProse(
   const isMinor = isPageProseDiffMinor(oldText, trimmedText, existingState);
 
   if (isMinor) {
-    await dbWrite.transaction(async (tx) => {
+    const remapStats = await dbWrite.transaction(async (tx) => {
+      const committedOldText = await readLockedPageText(tx, pageId);
+
       await tx
         .update(pages)
         .set({ text: trimmedText, updatedAt: new Date() })
         .where(eq(pages.id, pageId));
 
+      // Same tx as the prose write: comments re-anchor only if the prose commits.
+      const stats = await remapPageComments(tx, pageId, committedOldText, trimmedText);
+
       await tx
         .update(books)
         .set({ canonVersion: sql`${books.canonVersion} + 1`, updatedAt: new Date() })
         .where(eq(books.id, book.id));
+
+      return stats;
     });
 
-    const updatedPage = await getPenAuthorPage(userId, pageId);
-    return { status: "updated", page: updatedPage };
+    return await finalizeProseUpdate(userId, book.id, pageId, remapStats);
   }
 
   // ── Tier 2: Slow-Path (AI Canon Delta Verification) ─────────────────
@@ -4266,11 +4364,16 @@ export async function updatePenPageProse(
   }
 
   // Commit verified (or forced) major update
-  await dbWrite.transaction(async (tx) => {
+  const remapStats = await dbWrite.transaction(async (tx) => {
+    const committedOldText = await readLockedPageText(tx, pageId);
+
     await tx
       .update(pages)
       .set({ text: trimmedText, updatedAt: new Date() })
       .where(eq(pages.id, pageId));
+
+    // Same tx as the prose write: comments re-anchor only if the prose commits.
+    const stats = await remapPageComments(tx, pageId, committedOldText, trimmedText);
 
     if (proposal && existingState) {
       await tx
@@ -4287,10 +4390,11 @@ export async function updatePenPageProse(
       .update(books)
       .set({ canonVersion: sql`${books.canonVersion} + 1`, updatedAt: new Date() })
       .where(eq(books.id, book.id));
+
+    return stats;
   });
 
-  const updatedPage = await getPenAuthorPage(userId, pageId);
-  return { status: "updated", page: updatedPage };
+  return await finalizeProseUpdate(userId, book.id, pageId, remapStats);
 }
 
 /** Errors thrown when a note is not found or inaccessible. */
