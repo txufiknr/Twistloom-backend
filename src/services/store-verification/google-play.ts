@@ -33,6 +33,7 @@
 
 import { GoogleAuth, type JWTInput } from "google-auth-library";
 import { STORE_VERIFICATION_CONFIG, storeVerificationReady } from "../../config/store-verification.js";
+import { STORE_VERIFICATION_TIMEOUT_MS } from "../../config/timeouts.js";
 import type { StoreReceipt, StoreVerificationOutcome, StoreVerifier } from "./types.js";
 
 /**
@@ -161,7 +162,7 @@ async function playRequest(
   const url = `${STORE_VERIFICATION_CONFIG.googlePlay.apiBaseUrl}/${path}${
     path.includes("?") ? "&" : "?"
   }access_token=${encodeURIComponent(accessToken)}`;
-  const response = await fetch(url, init);
+  const response = await fetch(url, { ...init, signal: AbortSignal.timeout(STORE_VERIFICATION_TIMEOUT_MS) });
   if (response.status === 400 || response.status === 404) {
     await response.text();
     return { ok: false, status: response.status };

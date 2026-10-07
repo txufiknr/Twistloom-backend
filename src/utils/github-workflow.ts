@@ -6,6 +6,7 @@
  */
 
 import { GITHUB_DEFAULT_BRANCH, GITHUB_REPO_NAME, GITHUB_REPO_OWNER } from '../config/env.js';
+import { GITHUB_API_TIMEOUT_MS, GITHUB_WORKFLOW_DISPATCH_TIMEOUT_MS } from '../config/timeouts.js';
 import type { GitHubRepoConfig, WorkflowDispatchOptions, WorkflowDispatchParams, WorkflowDispatchResult } from '../types/github-workflow.js';
 import type { ErrorWithCustomProperties } from './retry.js';
 import { retryWithBackoff } from './retry.js';
@@ -116,7 +117,8 @@ export async function dispatchGitHubWorkflow(
             body: JSON.stringify({
               ref,
               inputs
-            })
+            }),
+            signal: AbortSignal.timeout(GITHUB_WORKFLOW_DISPATCH_TIMEOUT_MS)
           }
         );
 
@@ -249,6 +251,7 @@ export async function cancelGitHubWorkflowRuns(
           'Accept': 'application/vnd.github.v3+json',
           'User-Agent': 'Twistloom-Backend',
         },
+        signal: AbortSignal.timeout(GITHUB_API_TIMEOUT_MS),
       });
 
       if (listResponse.ok) {
@@ -277,6 +280,7 @@ export async function cancelGitHubWorkflowRuns(
             'Accept': 'application/vnd.github.v3+json',
             'User-Agent': 'Twistloom-Backend',
           },
+          signal: AbortSignal.timeout(GITHUB_API_TIMEOUT_MS),
         });
 
         if (cancelResponse.ok || cancelResponse.status === 202) {

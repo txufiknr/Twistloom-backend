@@ -40,6 +40,7 @@
  */
 
 import { getErrorMessage } from "../utils/error.js";
+import { QSTASH_REQUEST_TIMEOUT_MS } from "../config/timeouts.js";
 
 /** One QStash schedule definition — pure config, consumed by the registration run. */
 export interface QStashSchedule {
@@ -188,6 +189,7 @@ async function ensureSchedule(
     method: "POST",
     headers,
     body: "{}",
+    signal: AbortSignal.timeout(QSTASH_REQUEST_TIMEOUT_MS),
   });
 
   if (!res.ok) {

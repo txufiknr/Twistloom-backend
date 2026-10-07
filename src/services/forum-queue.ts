@@ -11,6 +11,7 @@
  */
 
 import type { BookMode, BookStatus, BookVisibility } from '../types/book.js';
+import { QSTASH_REQUEST_TIMEOUT_MS } from '../config/timeouts.js';
 
 export const ForumQueueEvent = {
   STORY_PUBLISHED: 'story.published',
@@ -113,6 +114,7 @@ export async function publishForumEvent<T>(
         ...(idempotencyKey ? { 'Upstash-Deduplication-Id': idempotencyKey.slice(0, 128) } : {}),
       },
       body: JSON.stringify(envelope),
+      signal: AbortSignal.timeout(QSTASH_REQUEST_TIMEOUT_MS),
     });
 
     if (!res.ok) {

@@ -31,6 +31,7 @@
 import { retryWithBackoff, isNonRetryableError, createNonRetryableError } from './retry.js';
 import { getErrorMessage } from './error.js';
 import { getJinaLimiter, incrementDailyUsageCount } from './ai-limiters.js';
+import { EMBEDDING_REQUEST_TIMEOUT_MS } from '../config/timeouts.js';
 import {
   EMBEDDING_MODEL,
   EMBEDDING_DIMENSIONS,
@@ -126,6 +127,7 @@ async function callJinaEmbeddingsAPI(inputs: string[], task: EmbeddingTask): Pro
           normalized: true, // Jina defaults this to false — must be explicit, see file header
           input: inputs,
         }),
+        signal: AbortSignal.timeout(EMBEDDING_REQUEST_TIMEOUT_MS),
       });
 
       if (!response.ok) {

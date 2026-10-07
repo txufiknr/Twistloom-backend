@@ -12,6 +12,9 @@
   # it fails early on type errors before esbuild bundles the function.
   command = "bun run typecheck"
   publish = "public"
+  # Skip docs-only deploys (0 credits). Conservative: any inability to
+  # determine the change set builds. See scripts/netlify-ignore.sh.
+  ignore = "sh scripts/netlify-ignore.sh"
 
 [functions]
   directory = "netlify/functions"
@@ -24,3 +27,10 @@
 [build.environment]
   NODE_VERSION = "24"
   BUN_VERSION = "1.3.14"
+
+[[headers]]
+  # publish/ ships only robots.txt; let the CDN hold it for a day so crawler
+  # hits never reach the function.
+  for = "/robots.txt"
+  [headers.values]
+    Cache-Control = "public, max-age=86400"

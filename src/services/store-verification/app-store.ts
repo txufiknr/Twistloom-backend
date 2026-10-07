@@ -44,6 +44,7 @@
 
 import { decodeJwt, importPKCS8, SignJWT } from "jose";
 import { STORE_VERIFICATION_CONFIG, storeVerificationReady } from "../../config/store-verification.js";
+import { STORE_VERIFICATION_TIMEOUT_MS } from "../../config/timeouts.js";
 import type { StoreReceipt, StoreVerificationOutcome, StoreVerifier } from "./types.js";
 
 /** Apple `status` values that still grant access to the period. */
@@ -118,6 +119,7 @@ async function requestHost(
 ): Promise<AppStoreResponse> {
   const response = await fetch(`${baseUrl}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(STORE_VERIFICATION_TIMEOUT_MS),
   });
   if (response.status === 404 || response.status === 409 || response.status === 401 || response.status === 403) {
     await response.text();

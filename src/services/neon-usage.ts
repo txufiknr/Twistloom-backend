@@ -17,6 +17,7 @@
  */
 
 import { withCache, CACHE_TTL } from "./cache.js";
+import { NEON_USAGE_REQUEST_TIMEOUT_MS } from "../config/timeouts.js";
 
 const NEON_API_BASE = "https://console.neon.tech/api/v2";
 const NEON_USAGE_CACHE_KEY = "neon:project:usage";
@@ -62,6 +63,7 @@ async function fetchNeonProjectUsage(): Promise<NeonProjectUsage> {
   const res = await fetch(`${NEON_API_BASE}/projects/${projectId}`, {
     headers: { Authorization: `Bearer ${apiKey}` },
     cache: "no-store",
+    signal: AbortSignal.timeout(NEON_USAGE_REQUEST_TIMEOUT_MS),
   });
 
   if (!res.ok) {

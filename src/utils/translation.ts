@@ -1,4 +1,5 @@
 import { franc } from 'franc';
+import { TRANSLATION_REQUEST_TIMEOUT_MS } from '../config/timeouts.js';
 
 /**
  * Translates text using LibreTranslate API
@@ -40,6 +41,7 @@ export async function translateText({
       target,
       format: "text",
     }),
+    signal: AbortSignal.timeout(TRANSLATION_REQUEST_TIMEOUT_MS),
   });
 
   if (!res.ok) {
@@ -103,6 +105,7 @@ export async function translateTexts({
       target,
       format: "text",
     }),
+    signal: AbortSignal.timeout(TRANSLATION_REQUEST_TIMEOUT_MS),
   });
 
   if (!res.ok) {

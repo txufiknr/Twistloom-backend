@@ -1,10 +1,10 @@
 # Netlify Free-Tier Optimization Roadmap
 
-> **Status:** Proposed — research complete and fact-checked; implementation assessment pending
+> **Status:** Proposed — research complete and fact-checked; safe-subset implementation pass applied and verified locally (2026-10-07); deployed evidence pending
 > **Date:** 2026-10-05 (revised 2026-10-07)
 > **Owner:** Backend + Web / Taufik Nur Rahmanda
 > **Scope:** `Twistloom-backend` (Hono, Node.js functions) and `Twistloom-web` (Next.js), both deployed on Netlify
-> **Evidence boundary:** Platform research plus a **read-only path/source audit of both repositories (2026-10-07)**. No deployment changes, account access, traffic measurements, or live implementation verification. Platform claims were re-verified against vendor docs on 2026-10-07; corrections are logged in §8 ("Fact-check log").
+> **Evidence boundary:** Platform research plus a **read-only path/source audit of both repositories (2026-10-07)**, followed by a **safe-subset implementation pass (2026-10-07)** — local code edits verified only by typecheck/lint/tests/build. No account access, traffic measurements, deployments, or live verification. Platform claims were re-verified against vendor docs on 2026-10-07 (§8 "Fact-check log"); the implementation pass is logged in §8 "Implementation pass log".
 
 ---
 
@@ -12,26 +12,26 @@
 
 | # | Item | Priority | Status |
 |---|------|----------|--------|
-| 1 | Confirm plan, ground existing implementation, and measure both sites | P0 | ⬜ Planned |
+| 1 | Confirm plan, ground existing implementation, and measure both sites | P0 | ⏳ In Progress |
 | 2 | Establish one credit budget and operational guardrails | P0 | ⬜ Planned |
-| 3 | Reduce unnecessary production deploys and preview side effects | P0 | ⬜ Planned |
-| 4 | Reject abusive or invalid traffic before expensive work | P1 | ⬜ Planned |
-| 5 | Reduce image, JavaScript, font, and response bandwidth | P1 | ⬜ Planned |
+| 3 | Reduce unnecessary production deploys and preview side effects | P0 | ⏳ In Progress |
+| 4 | Reject abusive or invalid traffic before expensive work | P1 | ⏳ In Progress |
+| 5 | Reduce image, JavaScript, font, and response bandwidth | P1 | ⏳ In Progress |
 | 6 | Avoid routing large uploads and downloads through functions | P1 | ⬜ Planned |
-| 7 | Verify and extend safe public backend CDN/durable caching | P1 | ⬜ Planned |
-| 8 | Coordinate invalidation across backend, Next.js, and browser caches | P1 | ⬜ Planned |
-| 9 | Prefer static rendering and deliberate revalidation for public pages | P1 | ⬜ Planned |
-| 10 | Reduce polling, speculative prefetch, and duplicate requests | P1 | ⬜ Planned |
-| 11 | Remove unnecessary frontend-to-backend proxy and rendering work | P1 | ⬜ Planned |
+| 7 | Verify and extend safe public backend CDN/durable caching | P1 | ⏳ In Progress |
+| 8 | Coordinate invalidation across backend, Next.js, and browser caches | P1 | ⏳ In Progress |
+| 9 | Prefer static rendering and deliberate revalidation for public pages | P1 | ⏳ In Progress |
+| 10 | Reduce polling, speculative prefetch, and duplicate requests | P1 | ✅ Completed |
+| 11 | Remove unnecessary frontend-to-backend proxy and rendering work | P1 | ⏳ In Progress |
 | 12 | Reduce database/cache round trips and connection overhead | P1 | ⬜ Planned |
-| 13 | Bound timeouts, concurrency, and retries on request paths | P1 | ⬜ Planned |
+| 13 | Bound timeouts, concurrency, and retries on request paths | P1 | ⏳ In Progress |
 | 14 | Choose economical streaming and long-job execution patterns | P1 | ⬜ Planned |
-| 15 | Evaluate scheduled, background, and durable workflow alternatives | P2 | ⬜ Planned |
-| 16 | Benchmark selective backend lazy imports and smaller function graphs | P2 | ⬜ Planned |
-| 17 | Defer optional frontend components and client libraries | P2 | ⬜ Planned |
-| 18 | Consider narrowly scoped Edge Functions where they remove compute | P2 | ⬜ Planned |
-| 19 | Keep observability useful and inexpensive | P2 | ⬜ Planned |
-| 20 | Validate savings, roll out incrementally, and define capacity limits | P2 | ⬜ Planned |
+| 15 | Evaluate scheduled, background, and durable workflow alternatives | P2 | ⏳ In Progress |
+| 16 | Benchmark selective backend lazy imports and smaller function graphs | P2 | ⏩ Skipped after assessment |
+| 17 | Defer optional frontend components and client libraries | P2 | ⏳ In Progress |
+| 18 | Consider narrowly scoped Edge Functions where they remove compute | P2 | ⏩ Skipped after assessment |
+| 19 | Keep observability useful and inexpensive | P2 | ⏳ In Progress |
+| 20 | Validate savings, roll out incrementally, and define capacity limits | P2 | ⏳ In Progress |
 
 **Planned means pending assessment, not proven absent.** The later audit may mark an item completed with evidence, narrow it to a gap, or skip it. The order favors broad savings and low implementation risk; measured dominant costs can move a later item forward after Steps 1–2.
 
@@ -254,7 +254,9 @@ The diagram illustrates the recommended boundaries; it does not assert that this
 
 **Execution rule:** Ground each step before changing code. Record `implemented and verified`, `partial`, `not implemented`, or `not applicable`, with current source/deployment evidence. Only implement the remaining gap. Exact files/lines and numeric targets are intentionally deferred to that audit, as requested.
 
-### Step 1: Confirm plan, ground existing implementation, and measure both sites — ⬜ Planned
+### Step 1: Confirm plan, ground existing implementation, and measure both sites — ⏳ In Progress
+
+> **Implementation pass (2026-10-07):** Local grounding complete — both repos audited read-only; upload ceilings (6/10 MB over a 6 MB function body) and the render-dynamic root cause (Step 9) recorded as audit findings. Blocked on owner account access: plan confirmation, live usage/credit dashboards, traffic measurement. No deployment changes made.
 
 **Files:** This roadmap; `docs/roadmap/NETLIFY_MIGRATION_ROADMAP.md`; `netlify.toml`; `netlify/functions/api.mts`; web `netlify.toml`, `next.config.ts`; generated deploy artifacts. Source details are future audit candidates.
 **Effort:** Low–medium. **Savings driver:** Accurate prioritization and avoiding duplicate work.
@@ -272,6 +274,8 @@ The diagram illustrates the recommended boundaries; it does not assert that this
 
 ### Step 2: Establish one credit budget and operational guardrails — ⬜ Planned
 
+> **Status note (2026-10-07):** Not started — requires the owner's Netlify account (usage, notifications, plan comparison) and Step 1 workload numbers to set credit quotas.
+
 **Files:** This roadmap; candidate deployment/runbook documentation; Netlify team settings outside Git.
 **Effort:** Low. **Savings driver:** Avoiding pool exhaustion and accidental optional usage.
 
@@ -286,7 +290,9 @@ The diagram illustrates the recommended boundaries; it does not assert that this
 
 ---
 
-### Step 3: Reduce unnecessary production deploys and preview side effects — ⬜ Planned
+### Step 3: Reduce unnecessary production deploys and preview side effects — ⏳ In Progress
+
+> **Implementation pass (2026-10-07):** Added `ignore = "sh scripts/netlify-ignore.sh"` to both `netlify.toml` files; the script skips builds only for docs-only change sets (`*.md` + `docs/**`) and builds on anything else or on any script/ref error. Verified with an 8-scenario harness (docs-only → skip, backend-docs → skip, code → build, workflow → build, missing ref → build, bogus ref → build, dot-dir .md → build [conservative], `docs/` non-md → skip). Release batching and preview-server inventory remain blocked on account access.
 
 **Files:** Backend/web `netlify.toml`; candidate build-ignore helper; release workflow files identified during audit.
 **Effort:** Low–medium. **Savings driver:** Deployment credits and post-deploy cache refill.
@@ -304,7 +310,9 @@ The diagram illustrates the recommended boundaries; it does not assert that this
 
 ---
 
-### Step 4: Reject abusive or invalid traffic before expensive work — ⬜ Planned
+### Step 4: Reject abusive or invalid traffic before expensive work — ⏳ In Progress
+
+> **Implementation pass (2026-10-07):** Proxy matcher now excludes all `/_next/*` paths (previously only `_next/static|_next/image`), with the existing guard proving safety; the `netlify.toml` note now states explicitly that redirect rules carry no `rate_limit` schema. Deferred: function-level IP rate-limit rules (Free tier: 2 per path, path-only matching, ~10 s propagation lag) and `ipFallback` on anonymous reads — quotas cannot be picked safely without Step 1 traffic data (NAT-shared networks would hit 429s).
 
 **Files:** Backend `netlify/functions/api.mts`, `netlify.toml`, middleware candidates; web `netlify.toml`, `src/proxy.ts` and generated adapter configuration, subject to support checks.
 **Effort:** Low–medium. **Savings driver:** Avoided origin duration, responses, and provider usage.
@@ -320,7 +328,9 @@ The diagram illustrates the recommended boundaries; it does not assert that this
 
 ---
 
-### Step 5: Reduce image, JavaScript, font, and response bandwidth — ⬜ Planned
+### Step 5: Reduce image, JavaScript, font, and response bandwidth — ⏳ In Progress
+
+> **Implementation pass (2026-10-07):** Serwist precache reduced **38.16 MB/233 entries → 8.83 MB/135 entries** via `globIgnores: ["public/images/**","public/videos/**"]` (the offline fallback page uses no raster assets; runtime caching still covers `/images/` on first use) — verified by build plus precache-manifest inspection; SW revision now falls back to `COMMIT_REF` instead of `randomUUID()` so offline entries are not re-downloaded every deploy; removed the unused `i.pravatar.cc` remotePattern; gated Vercel preconnect/dns-prefetch hints on `process.env.VERCEL` (retained for rollback parity when hosted on Vercel). Deferred: font `preload:false` experiment and the ImageKit vs `/_next/image` bandwidth split (both need deployed measurement).
 
 **Files:** Web `next.config.ts`, `src/lib/config/image.ts`, `src/lib/utils/image-url.ts`, `src/components/ui/OptimizedImage.tsx`, `src/app/layout.tsx` (Serwist service worker), asset/component families; backend response serializers identified later.
 **Effort:** Medium. **Savings driver:** Bandwidth, browser requests, and serialization work.
@@ -339,6 +349,8 @@ The diagram illustrates the recommended boundaries; it does not assert that this
 
 ### Step 6: Avoid routing large uploads and downloads through functions — ⬜ Planned
 
+> **Status note (2026-10-07):** Audit finding only — covers/web uploads are 6 MB and feedback media 10 MB, both proxied through the `/api/backend` rewrite, so a request above 6 MB would exceed the function body ceiling. No change made: the fix requires product-level decisions (direct-to-storage upload URLs, size caps, or CDN passthrough).
+
 **Files:** Candidate backend upload/export/download services and routes; web upload/download clients; media-provider configuration.
 **Effort:** Medium; high if storage changes are required. **Savings driver:** Avoided function transfer/holds and Netlify egress where delivery moves to another provider.
 
@@ -353,7 +365,9 @@ The diagram illustrates the recommended boundaries; it does not assert that this
 
 ---
 
-### Step 7: Verify and extend safe public backend CDN/durable caching — ⬜ Planned
+### Step 7: Verify and extend safe public backend CDN/durable caching — ⏳ In Progress
+
+> **Audit pass (2026-10-07):** Code-level verification found three issues to fix later: `applyPublicCdnCache` never affects route responses that already set `Cache-Control` (early return, `src/middleware/cache.ts`); the `/api/books/trending` whitelist entry is dead (no such route); purge tags `explore`/`trending` are never attached (only `stats` is). Also added a `[[headers]]` entry caching `robots.txt` for 24 h. **Deferred:** the cache-header fix itself — it changes CDN behavior for private/no-store responses and must ship with a guard test plus deployed purge verification (exit evidence).
 
 **Files:** Backend `src/utils/netlify-cache.ts`, `src/middleware/cache.ts`, public route candidates, `netlify.toml`; existing related tests.
 **Effort:** Medium. **Savings driver:** Avoided origin invocations and dependency calls.
@@ -372,7 +386,9 @@ The diagram illustrates the recommended boundaries; it does not assert that this
 
 ---
 
-### Step 8: Coordinate invalidation across backend, Next.js, and browser caches — ⬜ Planned
+### Step 8: Coordinate invalidation across backend, Next.js, and browser caches — ⏳ In Progress
+
+> **Audit pass (2026-10-07):** Purge-tag drift documented (ties to Step 7); web-side invalidation reviewed — centralized query-key factories, `refetchOnReconnect:false`/`refetchOnWindowFocus:false` defaults, and freshness-guarded `visibilitychange` handling already comply with AGENTS §5. No invalidation code changed.
 
 **Files:** Backend `src/utils/netlify-cache.ts`, `src/services/cache.ts`, mutation services; web revalidation/query invalidation candidates.
 **Effort:** Medium–high. **Savings driver:** Safely extending reuse without needless broad purges.
@@ -389,7 +405,9 @@ The diagram illustrates the recommended boundaries; it does not assert that this
 
 ---
 
-### Step 9: Prefer static rendering and deliberate revalidation for public pages — ⬜ Planned
+### Step 9: Prefer static rendering and deliberate revalidation for public pages — ⏳ In Progress
+
+> **Audit finding (2026-10-07) — largest identified lever; implementation deliberately deferred as risky:** every declared `revalidate` route is dynamic as built: the root layout reads `headers()` (`../Twistloom-web/src/app/layout.tsx`) and all public fetches go through `fetchWithLogs`, which reads `cookies()`/`headers()` (`../Twistloom-web/src/lib/utils/fetch.ts`). The generated prerender manifest contains zero `[locale]/*` routes, so every public page view is a function invocation. Static rendering requires moving locale derivation out of the root layout **and** a cookie-free public fetch path — shipping only one half yields zero benefit, and a partial mistake risks serving one user's data to another. Deferred pending a reviewed refactor design and deployed verification.
 
 **Files:** Web `src/app/` route/layout/metadata candidates, `next.config.ts`, data-loading and revalidation helpers.
 **Effort:** Medium. **Savings driver:** Avoided SSR and repeated backend rendering reads.
@@ -406,7 +424,9 @@ The diagram illustrates the recommended boundaries; it does not assert that this
 
 ---
 
-### Step 10: Reduce polling, speculative prefetch, and duplicate requests — ⬜ Planned
+### Step 10: Reduce polling, speculative prefetch, and duplicate requests — ✅ Completed
+
+> **No-change completion (2026-10-07):** Audit verified the requirements are already met — every polling loop pauses when the tab is hidden (`refetchIntervalInBackground: false` or manual `visibilityState` gates), global `refetchOnReconnect:false`/`refetchOnWindowFocus:false` with explicit per-query re-enables, `Retry-After` honored (`useCustomActionPolling`), and backoff caps in `src/lib/config/polling.ts`. No gaps found → no code change (Step 20.5 no-change completion).
 
 **Files:** Web `src/lib/config/polling.ts`, `src/lib/query-client.ts`, hook/query-key/link candidates; backend status/coalescing candidates.
 **Effort:** Medium. **Savings driver:** Requests, compute, and repeated bytes/provider reads.
@@ -423,7 +443,9 @@ The diagram illustrates the recommended boundaries; it does not assert that this
 
 ---
 
-### Step 11: Remove unnecessary frontend-to-backend proxy and rendering work — ⬜ Planned
+### Step 11: Remove unnecessary frontend-to-backend proxy and rendering work — ⏳ In Progress
+
+> **Implementation pass (2026-10-07):** The proxy now classifies the route before auth and skips the `auth()` call on non-protected routes (single-consumer proof in-file; avoids JWT decode/cookie plumbing per request and, on cache miss, a backend profile fetch per public page view); matcher narrowed to all `/_next` (Steps 4/5). Deferred: removing the `/api/backend` rewrite double-hop — architecture change with routing side effects.
 
 **Files:** Web `src/lib/services/api.ts`, Server Component/API/Server Action candidates, `src/proxy.ts`, `netlify.toml`; backend CORS/auth/routing candidates.
 **Effort:** Medium. **Savings driver:** Avoided extra function duration, requests, and transfer hops.
@@ -441,6 +463,8 @@ The diagram illustrates the recommended boundaries; it does not assert that this
 
 ### Step 12: Reduce database/cache round trips and connection overhead — ⬜ Planned
 
+> **Status note (2026-10-07):** Not started — needs Step 1 dependency-timing attribution first; per §12.4, no speculative warm-up traffic is allowed on Free-tier credits.
+
 **Files:** Backend database, query/service, cache-client, and instrumentation candidates; frontend server data loaders where relevant.
 **Effort:** Medium. **Savings driver:** Less wall-clock waiting and repeated external work.
 
@@ -456,7 +480,9 @@ The diagram illustrates the recommended boundaries; it does not assert that this
 
 ---
 
-### Step 13: Bound timeouts, concurrency, and retries on request paths — ⬜ Planned
+### Step 13: Bound timeouts, concurrency, and retries on request paths — ⏳ In Progress
+
+> **Implementation pass (2026-10-07):** Bounded previously-unbounded outbound calls with `AbortSignal.timeout`: LibreTranslate ×2 (30 s), Google Play/App Store verification requests (15 s), Neon usage query (10 s), QStash publish + schedule upsert (15 s), Jina embeddings (30 s, retry-aware), GitHub workflow dispatch/list/cancel (30/15/15 s). All durations are centralized as JSDoc'd constants in `src/config/timeouts.ts` (7 exported `*_TIMEOUT_MS` values covering the 11 call sites) so they are tunable in one place instead of scattered magic numbers. `TimeoutError` remains retryable per `src/utils/retry.ts`, so `retryWithBackoff` semantics are preserved. Verified: `bun run check` + 439 backend tests pass. **Deferred:** payment-path timeouts (Xendit/Stripe reads+writes) and OpenAI-compatible SDK `timeout`/`maxRetries: 0` layering — payment and idempotency risk.
 
 **Files:** Backend/web outbound-request wrappers, service orchestration, job/provider clients, and function-entrypoint candidates.
 **Effort:** Medium. **Savings driver:** Fewer wasted allocated seconds and retry storms.
@@ -474,6 +500,8 @@ The diagram illustrates the recommended boundaries; it does not assert that this
 
 ### Step 14: Choose economical streaming and long-job execution patterns — ⬜ Planned
 
+> **Status note (2026-10-07):** Not started — stream/latency measurements are required before comparing SSE-to-queued transports; no speculative changes (§14 waiting rule).
+
 **Files:** Backend streaming/AI/export/job routes and workers; web progress transport/polling clients.
 **Effort:** Medium–high. **Savings driver:** Avoided long holds and repeated generation.
 
@@ -489,7 +517,9 @@ The diagram illustrates the recommended boundaries; it does not assert that this
 
 ---
 
-### Step 15: Evaluate scheduled, background, and durable workflow alternatives — ⬜ Planned
+### Step 15: Evaluate scheduled, background, and durable workflow alternatives — ⏳ In Progress
+
+> **Audit pass (2026-10-07):** Inventory complete — zero Netlify scheduled/background functions; scheduling runs on QStash (10 free schedules, idempotent `Upstash-Schedule-Id` upsert) plus 9 GitHub Actions cron workflows; job idempotency verified (DB unique keys, dedup IDs, generation locks, failed-generation sweeps). **Decision per §15.4: keep the existing executor** — no Netlify job migration. Deferred: Async Workloads billing-model study; known gap: the weekly email job lacks a send ledger for dedupe.
 
 **Files:** Candidate `netlify/functions/` jobs, `netlify.toml`, cron/queue services, scheduler runbooks; existing external workflow configuration.
 **Effort:** Medium–high; optional. **Savings driver:** Less redundant work or waiting, if demonstrated.
@@ -506,7 +536,9 @@ The diagram illustrates the recommended boundaries; it does not assert that this
 
 ---
 
-### Step 16: Benchmark selective backend lazy imports and smaller function graphs — ⬜ Planned
+### Step 16: Benchmark selective backend lazy imports and smaller function graphs — ⏩ Skipped after assessment
+
+> **Assessment (2026-10-07): deferred —** confirmed the all-eager graph (`src/routes/index.ts` statically imports all providers, six AI SDKs, `google-auth-library`, `franc`, …) and `pdfkit` externalization in `netlify.toml`. Without deployed before/after cold-start durations, restructuring the import graph risks auth-path regressions for unmeasured gains. Re-evaluate after Step 1 measurement; candidate list recorded in §8.
 
 **Files:** Backend `src/app.ts`, `netlify/functions/api.mts`, `netlify.toml`, heavy route/service candidates, `package.json`; built function artifacts.
 **Effort:** Medium. **Savings driver:** Conditional initialization/invocation duration reduction.
@@ -533,7 +565,9 @@ Repeated module loading in an instance does not imply repeated evaluation, but c
 
 ---
 
-### Step 17: Defer optional frontend components and client libraries — ⬜ Planned
+### Step 17: Defer optional frontend components and client libraries — ⏳ In Progress
+
+> **Audit pass (2026-10-07):** Candidate libraries confirmed present (`@tiptap/*`, `@xyflow/react`, `recharts`, `html2canvas`); no chunk-size analysis is possible without a deployed bundle report, and lazy-loading risks above-fold/hydration regressions → no code changes this pass.
 
 **Files:** Web optional feature components, dependency imports, `next.config.ts`, `package.json`; generated route chunks.
 **Effort:** Low–medium. **Savings driver:** Initial bandwidth and browser work.
@@ -549,7 +583,9 @@ Repeated module loading in an instance does not imply repeated evaluation, but c
 
 ---
 
-### Step 18: Consider narrowly scoped Edge Functions where they remove compute — ⬜ Planned
+### Step 18: Consider narrowly scoped Edge Functions where they remove compute — ⏩ Skipped after assessment
+
+> **Assessment (2026-10-07): skipped —** no new Edge Functions added. The adapter's middleware (`src/proxy.ts`) already runs at the edge; its matcher was narrowed instead (Steps 4/11), removing per-request edge work with no new code and no growth in edge-invocation allowlists. Revisit only if Step 1 shows a hot origin path.
 
 **Files:** Candidate edge handler(s), backend/web `netlify.toml`, `src/proxy.ts`, routing/header declarations; generated adapter artifacts.
 **Effort:** Medium–high; optional. **Savings driver:** Avoided serverless compute for suitable work.
@@ -565,7 +601,9 @@ Repeated module loading in an instance does not imply repeated evaluation, but c
 
 ---
 
-### Step 19: Keep observability useful and inexpensive — ⬜ Planned
+### Step 19: Keep observability useful and inexpensive — ⏳ In Progress
+
+> **Implementation pass (2026-10-07):** Vercel analytics preconnect/dns-prefetch hints now render only when `process.env.VERCEL` is set (Netlify visitors no longer warm dead Vercel origins; Vercel rollback parity preserved); backend `/` and `/health` verified zero-compute (lazy `/health/db`). Deferred: `warmAIProviders()` dead-code removal (never called; stale health-endpoint doc) pending owner confirmation; hot-path `console.*` gating pending log-volume data (Free log retention is 24 h).
 
 **Files:** Existing logger, timing, sampling, deployment-verification scripts, and operational documentation candidates.
 **Effort:** Low–medium. **Savings driver:** Earlier detection without costly telemetry fan-out.
@@ -581,7 +619,9 @@ Repeated module loading in an instance does not imply repeated evaluation, but c
 
 ---
 
-### Step 20: Validate savings, roll out incrementally, and define capacity limits — ⬜ Planned
+### Step 20: Validate savings, roll out incrementally, and define capacity limits — ⏳ In Progress
+
+> **Verification run (2026-10-07):** Web — `pnpm typecheck` ✓, `pnpm lint` ✓ (0 errors; 2 pre-existing warnings in `tests/unit/_scratch_popover.test.tsx`), `pnpm test` 259/259 ✓, `pnpm build` ✓; backend — `bun run check` (lint + import-extensions + typecheck) ✓, `bun test` 439/439 ✓; ignore-gate harness 8/8 scenarios ✓. Deployed evidence (CDN hit rates, billing, private gates) still pending — no deploys or load tests triggered this pass.
 
 **Files:** This roadmap, relevant migration/register records, targeted tests/verification scripts, and operational runbooks identified after implementation.
 **Effort:** Medium, spread across rollout. **Savings driver:** Keeping only effective changes and avoiding regression-driven waste.
@@ -727,11 +767,36 @@ Read-only re-verification of every platform claim against vendor docs, plus a pa
 
 **Verified unchanged** (spot-checked, no edit needed): 300-credit pool and all five meter rates; 15-credit deploy with failed/rollback exceptions; preview deploys at 0 deployment credits; 1024 MB allocation billing; 60 s/30 s/15 min limits and payload sizes; 180 credits/USD AI meter; Edge Functions off the compute meter plus separate invocation allowance; edge limits (50 ms CPU, 40 s header timeout, 512 MB per set, 20 MB code); `durable` unsupported for edge responses; `basic-auth` disables site caching; purge rate limit of 2 per 5 s; `waitUntil()` duration billing; ignore-builds exit codes and build-hook bypass; scheduled functions on all plans/UTC/published-only; Async Workloads as an installable Extension billed like other provisioned resources; Image CDN for `next/image`; Observability free-to-view with no programmatic access; 1-day/24-hour Free retention; credit math in §3.2 (13.89, 27.78, 635, 210/90 examples all re-derived correctly).
 
+### Implementation pass log (2026-10-07)
+
+Non-breaking, locally verifiable changes only; nothing was deployed. Per-step scope and deferrals are recorded under each heading in §6; risky or account-blocked items were deliberately deferred (§9).
+
+| Repository | Files changed | Purpose |
+|------------|---------------|---------|
+| Backend | `netlify.toml`, `scripts/netlify-ignore.sh` (new) | Step 3 ignore-builds gate (exit 0 = skip, non-zero = build); Step 4 `rate_limit` note; `robots.txt` 24 h CDN cache header |
+| Backend | `src/config/timeouts.ts` (new), `src/utils/translation.ts`, `src/utils/embedding.ts`, `src/utils/github-workflow.ts`, `src/services/neon-usage.ts`, `src/services/forum-queue.ts`, `src/services/store-verification/google-play.ts`, `src/services/store-verification/app-store.ts`, `src/cron/ensure-qstash-schedules.ts` | Step 13 outbound timeouts via `AbortSignal.timeout` (11 call sites in 8 files), durations centralized as 7 JSDoc'd constants in `src/config/timeouts.ts`; `retryWithBackoff` semantics preserved because `TimeoutError` is already classified retryable |
+| Web | `src/proxy.ts` | Steps 4/11 — matcher narrowed to all `/_next`; `auth()` skipped on non-protected routes |
+| Web | `netlify.toml`, `scripts/netlify-ignore.sh` (new) | Step 3 ignore-builds gate |
+| Web | `src/app/serwist/[path]/route.ts` | Step 5 — precache `globIgnores` for `public/images/**` + `public/videos/**`; deterministic SW revision fallback (`COMMIT_REF` instead of `randomUUID()`) |
+| Web | `next.config.ts`, `src/app/layout.tsx` | Step 5 — unused `i.pravatar.cc` remotePattern removed; Vercel preconnect/dns-prefetch hints gated on `process.env.VERCEL` (Step 19) |
+
+**Verification (all local; nothing deployed):**
+
+| Check | Result |
+|-------|--------|
+| Backend `bun run check` (lint + import-extensions + typecheck) | Pass |
+| Backend `bun test` | 439 pass / 0 fail |
+| Web `pnpm typecheck` | Pass |
+| Web `pnpm lint` | 0 errors (2 pre-existing warnings in `tests/unit/_scratch_popover.test.tsx`) |
+| Web `pnpm test` | 259 pass |
+| Web `pnpm build` + Serwist precache-manifest inspection | Pass; precache 38.16 MB/233 → 8.83 MB/135 entries; zero `public/images`/`public/videos` entries; `/en/offline` + `/id/offline` retained |
+| Ignore-gate harness (8 scenarios against scratch git repos) | 8/8 expected exit codes |
+
 ### Actual documentation changes in this task
 
 | File | Change |
 |------|--------|
-| `docs/roadmap/NETLIFY_FREE_TIER_OPTIMIZATION_ROADMAP.md:1` | **NEW** — researched plan for both applications; implementation unverified. Revised 2026-10-07: platform claims re-verified, both repositories path-audited, inaccuracies corrected (see fact-check log), web-specific evidence added |
+| `docs/roadmap/NETLIFY_FREE_TIER_OPTIMIZATION_ROADMAP.md:1` | **NEW** — researched plan for both applications. Revised 2026-10-07: platform claims re-verified, both repositories path-audited, inaccuracies corrected (see fact-check log), web-specific evidence added; implementation-pass statuses, per-step notes, and the §8 implementation log added |
 | `docs/roadmap/NETLIFY_MIGRATION_ROADMAP.md`, §11 | Companion link and notice that this roadmap supersedes its joint-budget/cache-cost examples; existing completion statuses retained |
 
 ### Existing references, not changed
@@ -754,6 +819,8 @@ Read-only re-verification of every platform claim against vendor docs, plus a pa
 | Web verification | `../Twistloom-web/scripts/verify-deployment.mjs`, relevant tests identified later | Private deployed checks and regressions |
 | External operations | Netlify team/site settings; existing Neon/Redis/media/queue accounts | Actual quotas, budgets, regions and optional product usage |
 
+**Edited by the 2026-10-07 implementation pass (full list in §8):** backend `netlify.toml`, `scripts/netlify-ignore.sh` (new), and eight `src/` files (§8 implementation log); web `netlify.toml`, `scripts/netlify-ignore.sh` (new), `next.config.ts`, `src/proxy.ts`, `src/app/layout.tsx`, `src/app/serwist/[path]/route.ts`. Everything else in the table above remains untouched.
+
 Unqualified paths in this document refer to the backend unless explicitly marked web. Directory families are candidates, not a comprehensive approved edit list. Exact file/line targets and any new helper/test files must be recorded after grounding; no guessed line numbers or claims of discovered source bugs are included.
 
 ---
@@ -766,18 +833,17 @@ Legend: ✅ Completed and verified · ⏳ In progress / partial · ⬜ Planned �
 
 - ✅ **Research/documentation only:** Official pricing/runtime/caching/framework guidance checked; one combined budget model, selective-lazy-import guidance, and ordered audit/implementation candidates documented.
 - ✅ **Fact-check + source audit (2026-10-07):** Every platform claim re-verified against vendor docs; six claims corrected or sharpened (rate-limit declaration surface, cache-hit metering wording, `Vary` precedence, `Netlify-Cache-ID` semantics, background-function idempotency, "both sites private"), the 90%-notification page disagreement surfaced, missing Free-plan constraints added, and all referenced paths in both repositories confirmed to exist. Full log in §8.
-- ✅ **Roadmap scope:** Both Netlify applications covered, historical migration context linked, and code/live verification deliberately left for the next phase.
+- ✅ **Safe-subset implementation pass (2026-10-07):** Step 3 (ignore-builds gate in both repos, harness-verified 8/8), Steps 4/11 (proxy matcher narrowing + auth skip on public routes), Step 5 (Serwist precache 38.16 MB → 8.83 MB, deterministic SW revision, pravatar removal), Step 7 (partial: `robots.txt` 24 h cache header), Step 13 (eight outbound timeout groups), Step 19 (Vercel preconnect gating) implemented. Step 10 closed as a no-change completion (audit found all polling/refetch requirements already met). Full file list and verification matrix in §8.
+- ✅ **Local verification (2026-10-07):** backend `bun run check` + 439 tests; web typecheck + lint (0 errors) + 259 tests + build; no deploys, load tests, or account changes triggered.
 
 ### In Progress
 
-No application implementation or account/deployment changes were started by this research task.
+- ⏳ **Steps 1, 4, 5, 7, 8, 9, 11, 13, 15, 17, 19, 20:** partially implemented or audited this pass. Remaining work is either account-blocked (measurement, dashboards, deployed evidence) or deliberately deferred as risky — each step heading in §6 carries an "Implementation/Audit/Assessment" note stating exactly what is done and what is deferred.
 
 ### Future / Deferred
 
-- ⬜ **Steps 1–3:** Confirm actual plan and implementation, baseline usage, agree a joint envelope, and review release/preview discipline.
-- ⬜ **Steps 4–8:** Assess abuse controls, delivery bytes, file transfers, existing public caches, and cross-site invalidation.
-- ⬜ **Steps 9–14:** Assess Next.js rendering, client request volume, transport hops, dependency duration, deadlines, and long-job behavior.
-- ⬜ **Steps 15–19:** Evaluate optional scheduling/workflow changes, backend/frontend lazy imports, targeted Edge Functions, and telemetry.
-- ⬜ **Step 20:** Validate implemented gaps, gather authorized private-deployment evidence, update statuses, and forecast real capacity.
+- ⬜ **Account-blocked (Steps 2, remainder of Steps 1/3):** plan confirmation, credit budgets and guardrails, usage baselines, release/preview inventory — requires owner Netlify account access.
+- ⏩ **Deferred as risky — revisit only after Step 1 evidence:** Step 9 static-rendering refactor (largest identified lever; requires relocating `headers()`-based locale derivation and `cookies()`-dependent public fetches together, or the change yields zero benefit / risks cross-user data leakage); Steps 7/8 cache-header + purge-tag fixes (need a guard test and deployed purge verification); Step 13 payment-path timeouts and SDK retry layering (payment/idempotency risk); Step 16 lazy-import graph restructuring (auth-path risk without deployed cold-start baselines); Step 17 chunk-based code-splitting (needs deployed bundle report; above-fold/hydration risk); Step 18 new Edge Functions (assessed: middleware matcher narrowing suffices for now).
+- ⬜ **Measurement-gated (Steps 6, 12, 14):** upload passthrough product decision, dependency round trips, streaming transport comparison — all require Step 1 data first (§6 waiting rules).
 
 **Completion rule:** A suggestion is not a confirmed finding. A documented migration completion is not newly reverified deployment evidence. This roadmap becomes implementation-complete only when applicable items are implemented/verified or deliberately skipped with rationale, and remaining account/private-site evidence is identified explicitly.
