@@ -293,6 +293,8 @@ The diagram illustrates the recommended boundaries; it does not assert that this
 ### Step 3: Reduce unnecessary production deploys and preview side effects — ⏳ In Progress
 
 > **Implementation pass (2026-10-07):** Added `ignore = "sh scripts/netlify-ignore.sh"` to both `netlify.toml` files; the script skips builds only for docs-only change sets (`*.md` + `docs/**`) and builds on anything else or on any script/ref error. Verified with an 8-scenario harness (docs-only → skip, backend-docs → skip, code → build, workflow → build, missing ref → build, bogus ref → build, dot-dir .md → build [conservative], `docs/` non-md → skip). Release batching and preview-server inventory remain blocked on account access.
+>
+> **No-cache guard (2026-10-07, incident):** the first gated push (`524a6bae`, web) was cancelled with no logs: Netlify sets `CACHED_COMMIT_REF = COMMIT_REF` whenever a build runs without cache (no successful web build yet), so the script diffed `HEAD` against itself → empty diff → exit 0 → cancel — a catch-22 that would have cancelled every future build. Both scripts now resolve both refs to full SHAs via `rev-parse` and force `exit 1` when they are equal (conservative: no baseline ⇒ build). Harness extended with full-SHA/short-SHA `REF == HEAD` cases for both repos — 11/11 ✓.
 
 **Files:** Backend/web `netlify.toml`; candidate build-ignore helper; release workflow files identified during audit.
 **Effort:** Low–medium. **Savings driver:** Deployment credits and post-deploy cache refill.
@@ -621,7 +623,7 @@ Repeated module loading in an instance does not imply repeated evaluation, but c
 
 ### Step 20: Validate savings, roll out incrementally, and define capacity limits — ⏳ In Progress
 
-> **Verification run (2026-10-07):** Web — `pnpm typecheck` ✓, `pnpm lint` ✓ (0 errors; 2 pre-existing warnings in `tests/unit/_scratch_popover.test.tsx`), `pnpm test` 259/259 ✓, `pnpm build` ✓; backend — `bun run check` (lint + import-extensions + typecheck) ✓, `bun test` 439/439 ✓; ignore-gate harness 8/8 scenarios ✓. Deployed evidence (CDN hit rates, billing, private gates) still pending — no deploys or load tests triggered this pass.
+> **Verification run (2026-10-07):** Web — `pnpm typecheck` ✓, `pnpm lint` ✓ (0 errors; 2 pre-existing warnings in `tests/unit/_scratch_popover.test.tsx`), `pnpm test` 259/259 ✓, `pnpm build` ✓; backend — `bun run check` (lint + import-extensions + typecheck) ✓, `bun test` 439/439 ✓; ignore-gate harness 11/11 scenarios ✓ (incl. no-cache `REF == HEAD` regression cases added after the `524a6bae` cancel incident). Deployed evidence (CDN hit rates, billing, private gates) still pending — no deploys or load tests triggered this pass.
 
 **Files:** This roadmap, relevant migration/register records, targeted tests/verification scripts, and operational runbooks identified after implementation.
 **Effort:** Medium, spread across rollout. **Savings driver:** Keeping only effective changes and avoiding regression-driven waste.
@@ -773,10 +775,10 @@ Non-breaking, locally verifiable changes only; nothing was deployed. Per-step sc
 
 | Repository | Files changed | Purpose |
 |------------|---------------|---------|
-| Backend | `netlify.toml`, `scripts/netlify-ignore.sh` (new) | Step 3 ignore-builds gate (exit 0 = skip, non-zero = build); Step 4 `rate_limit` note; `robots.txt` 24 h CDN cache header |
+| Backend | `netlify.toml`, `scripts/netlify-ignore.sh` (new) | Step 3 ignore-builds gate (exit 0 = skip, non-zero = build; no-cache `REF == HEAD` guard forces build); Step 4 `rate_limit` note; `robots.txt` 24 h CDN cache header |
 | Backend | `src/config/timeouts.ts` (new), `src/utils/translation.ts`, `src/utils/embedding.ts`, `src/utils/github-workflow.ts`, `src/services/neon-usage.ts`, `src/services/forum-queue.ts`, `src/services/store-verification/google-play.ts`, `src/services/store-verification/app-store.ts`, `src/cron/ensure-qstash-schedules.ts` | Step 13 outbound timeouts via `AbortSignal.timeout` (11 call sites in 8 files), durations centralized as 7 JSDoc'd constants in `src/config/timeouts.ts`; `retryWithBackoff` semantics preserved because `TimeoutError` is already classified retryable |
 | Web | `src/proxy.ts` | Steps 4/11 — matcher narrowed to all `/_next`; `auth()` skipped on non-protected routes |
-| Web | `netlify.toml`, `scripts/netlify-ignore.sh` (new) | Step 3 ignore-builds gate |
+| Web | `netlify.toml`, `scripts/netlify-ignore.sh` (new) | Step 3 ignore-builds gate (incl. no-cache `REF == HEAD` guard added after the `524a6bae` cancel incident) |
 | Web | `src/app/serwist/[path]/route.ts` | Step 5 — precache `globIgnores` for `public/images/**` + `public/videos/**`; deterministic SW revision fallback (`COMMIT_REF` instead of `randomUUID()`) |
 | Web | `next.config.ts`, `src/app/layout.tsx` | Step 5 — unused `i.pravatar.cc` remotePattern removed; Vercel preconnect/dns-prefetch hints gated on `process.env.VERCEL` (Step 19) |
 
@@ -790,7 +792,7 @@ Non-breaking, locally verifiable changes only; nothing was deployed. Per-step sc
 | Web `pnpm lint` | 0 errors (2 pre-existing warnings in `tests/unit/_scratch_popover.test.tsx`) |
 | Web `pnpm test` | 259 pass |
 | Web `pnpm build` + Serwist precache-manifest inspection | Pass; precache 38.16 MB/233 → 8.83 MB/135 entries; zero `public/images`/`public/videos` entries; `/en/offline` + `/id/offline` retained |
-| Ignore-gate harness (8 scenarios against scratch git repos) | 8/8 expected exit codes |
+| Ignore-gate harness (11 scenarios against scratch git repos, incl. no-cache `REF == HEAD` regression for both scripts) | 11/11 expected exit codes |
 
 ### Actual documentation changes in this task
 
@@ -833,7 +835,7 @@ Legend: ✅ Completed and verified · ⏳ In progress / partial · ⬜ Planned �
 
 - ✅ **Research/documentation only:** Official pricing/runtime/caching/framework guidance checked; one combined budget model, selective-lazy-import guidance, and ordered audit/implementation candidates documented.
 - ✅ **Fact-check + source audit (2026-10-07):** Every platform claim re-verified against vendor docs; six claims corrected or sharpened (rate-limit declaration surface, cache-hit metering wording, `Vary` precedence, `Netlify-Cache-ID` semantics, background-function idempotency, "both sites private"), the 90%-notification page disagreement surfaced, missing Free-plan constraints added, and all referenced paths in both repositories confirmed to exist. Full log in §8.
-- ✅ **Safe-subset implementation pass (2026-10-07):** Step 3 (ignore-builds gate in both repos, harness-verified 8/8), Steps 4/11 (proxy matcher narrowing + auth skip on public routes), Step 5 (Serwist precache 38.16 MB → 8.83 MB, deterministic SW revision, pravatar removal), Step 7 (partial: `robots.txt` 24 h cache header), Step 13 (eight outbound timeout groups), Step 19 (Vercel preconnect gating) implemented. Step 10 closed as a no-change completion (audit found all polling/refetch requirements already met). Full file list and verification matrix in §8.
+- ✅ **Safe-subset implementation pass (2026-10-07):** Step 3 (ignore-builds gate in both repos, harness-verified 11/11 incl. the no-cache `REF == HEAD` guard), Steps 4/11 (proxy matcher narrowing + auth skip on public routes), Step 5 (Serwist precache 38.16 MB → 8.83 MB, deterministic SW revision, pravatar removal), Step 7 (partial: `robots.txt` 24 h cache header), Step 13 (eight outbound timeout groups), Step 19 (Vercel preconnect gating) implemented. Step 10 closed as a no-change completion (audit found all polling/refetch requirements already met). Full file list and verification matrix in §8.
 - ✅ **Local verification (2026-10-07):** backend `bun run check` + 439 tests; web typecheck + lint (0 errors) + 259 tests + build; no deploys, load tests, or account changes triggered.
 
 ### In Progress
