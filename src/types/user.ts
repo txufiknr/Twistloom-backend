@@ -212,6 +212,7 @@ export type UserActivityType =
   'page_dwell' |
   'time_travel_preview' |
   'time_travel_commit' |
+  'story_reset' |
   'page_reacted' |
   'book_completed' |
   'testimonial_created' |

@@ -12,7 +12,7 @@
  */
 
 import { type DBClient, dbRead, dbWrite, isTransaction } from "../db/client.js";
-import { pages, books, branches, users, userPageProgress, userCompletedBooks, userActionHints, customActions, bookGenerations, userComments, canonValidations, loreEntries, uploadedImages, bookPlaceBgm } from "../db/schema.js";
+import { pages, books, branches, users, userPageProgress, userCompletedBooks, userActionHints, customActions, bookGenerations, userComments, canonValidations, loreEntries, uploadedImages, bookPlaceBgm, userSessions, userLikes, userFavorites } from "../db/schema.js";
 import type { ImageKitUploadResponse } from "../types/image.js";
 import { and, eq, asc, or, desc, ne, sql, isNull, lt, countDistinct } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
@@ -47,7 +47,7 @@ import { normalizeDialogueMarkers } from "../utils/dialogue-parser.js";
 import { applyPageTranslation, getPageToTranslate, getPageTranslation, shouldTranslate } from "./translation.js";
 import { LRUCache } from "lru-cache";
 import { createCacheKey } from "../utils/cache.js";
-import { getFromCache, setCache, deleteCachePattern, CACHE_KEYS, CACHE_TTL } from "./cache.js";
+import { getFromCache, setCache, deleteCachePattern, withCache, CACHE_KEYS, CACHE_TTL } from "./cache.js";
 import { isRedisAvailable } from "../utils/redis.js";
 import { daysBetween } from "../utils/time.js";
 import type { CandidateGenerationPage } from "../types/candidate-generation.js";
@@ -3247,6 +3247,151 @@ export async function getPopularTags(limit: number = 20, language?: string | nul
   } catch (error) {
     console.error('[getPopularTags] Failed to fetch popular tags:', getErrorMessage(error));
     return [];
+  }
+}
+
+/** A single personalized interest tag with its signal count and weighted score. */
+export interface RecommendedTag {
+  keyword: string;
+  count: number;
+  score: number;
+}
+
+/** Result of personalized tag recommendation, with cold-start fallback marker. */
+export interface RecommendedTagsResult {
+  /** false when the user had no usable signals and popular tags were returned instead */
+  personalized: boolean;
+  tags: RecommendedTag[];
+}
+
+/**
+ * Get personalized interest tags for a user, derived from implicit engagement
+ * signals (reading history, likes, favorites) and weighted by signal strength.
+ *
+ * @param userId - The user whose interest profile is being computed
+ * @param limit - Maximum number of tags to return (default: 20)
+ * @param language - Optional ISO 639-1 language (matched with English fallback,
+ *   mirroring getPopularTags)
+ * @returns `{ personalized, tags }` — `personalized: false` means cold start:
+ *   the user has no signal rows (or none of their tags are clickable), and the
+ *   response fell back to the global popular tags so the chip carousel always
+ *   has content.
+ *
+ * Behavior:
+ * - Signal weights: read sessions 1.0, likes 0.7, favorites 0.5. A keyword
+ *   appearing in 3 read books scores 3.0; the same keyword merely favorited
+ *   once scores 0.5.
+ * - Clickability guard: every returned tag is kept only if at least one
+ *   active + public book (in the target language, English fallback) carries
+ *   it — so `GET /explore?tags={keyword}` never returns an empty page.
+ * - Redis-cached per (userId, limit, language) with a 5-minute TTL
+ *   (CACHE_KEYS.RECOMMENDED_TAGS). Short TTL only: signals change on every
+ *   interaction, so no write-path invalidation fan-out is performed.
+ *
+ * Performance:
+ * - Keyword expansion happens per signal table via indexed user lookups
+ *   (user_sessions_user_book_unique, user_likes_user_idx,
+ *   user_favorites_user_idx); the clickability probe uses the GIN index on
+ *   books.keywords (`@>` containment).
+ *
+ * Example:
+ * ```typescript
+ * const { personalized, tags } = await getRecommendedTags(userId, 10, 'en');
+ * // personalized: true
+ * // tags: [{ keyword: "psychological-horror", count: 4, score: 4.3 }, ...]
+ * ```
+ */
+export async function getRecommendedTags(
+  userId: string,
+  limit: number = 20,
+  language?: string | null
+): Promise<RecommendedTagsResult> {
+  const lang = language?.split('-')[0]?.toLowerCase() || null;
+  const cacheKey = CACHE_KEYS.RECOMMENDED_TAGS(userId, limit, lang || 'all');
+
+  // NOTE: the try/catch wraps `withCache` — NOT the fetch callback. `withCache`
+  // stores whatever the callback resolves with, so catching inside it would
+  // memoize a transient DB failure as `personalized: false` for the full TTL.
+  // Rethrowing (by letting the error escape the callback) means nothing is
+  // written on failure, and this outer catch still fails OPEN to popular tags.
+  try {
+    return await withCache(cacheKey, async () => {
+      // Match the user's language OR English as fallback — identical policy to
+      // getPopularTags so chips behave consistently across both endpoints.
+      const langFilter = lang
+        ? sql`AND (${books.language} = ${lang} OR ${books.language} = 'en')`
+        : sql``;
+
+      // Weighted interest-tag aggregation across three implicit signals, then
+      // an EXISTS clickability guard so every chip resolves to ≥1 public book.
+      const result = await dbRead.execute(sql`
+        WITH signal_keywords AS (
+          SELECT unnest(rb.keywords) AS keyword, 1.0 AS weight
+          FROM ${userSessions}
+          INNER JOIN ${books} rb ON rb.id = ${userSessions.bookId}
+          WHERE ${userSessions.userId} = ${userId}
+          UNION ALL
+          SELECT unnest(lb.keywords) AS keyword, 0.7 AS weight
+          FROM ${userLikes}
+          INNER JOIN ${books} lb ON lb.id = ${userLikes.targetId}
+          WHERE ${userLikes.userId} = ${userId} AND ${userLikes.targetType} = 'book'
+          UNION ALL
+          SELECT unnest(fb.keywords) AS keyword, 0.5 AS weight
+          FROM ${userFavorites}
+          INNER JOIN ${books} fb ON fb.id = ${userFavorites.bookId}
+          WHERE ${userFavorites.userId} = ${userId}
+        ),
+        scored AS (
+          SELECT sk.keyword,
+                 COUNT(*)::int AS count,
+                 SUM(sk.weight)::float AS score
+          FROM signal_keywords sk
+          WHERE sk.keyword IS NOT NULL AND sk.keyword != ''
+          GROUP BY sk.keyword
+        )
+        SELECT s.keyword, s.count, s.score
+        FROM scored s
+        WHERE EXISTS (
+          SELECT 1 FROM ${books}
+          WHERE ${books.status} = 'active'
+            AND ${books.visibility} = 'public'
+            AND ${books.keywords} @> ARRAY[s.keyword]
+            ${langFilter}
+        )
+        ORDER BY s.score DESC, s.count DESC, s.keyword ASC
+        LIMIT ${limit}
+      `);
+
+      let personalized = true;
+      let tags: RecommendedTag[] = result.rows.map((row) => ({
+        keyword: String(row.keyword),
+        count: Number(row.count),
+        score: Number(row.score),
+      }));
+
+      // Cold start: no signal rows, or none of the user's tags are clickable.
+      // Fall back to global popular tags (itself LRU-cached and language-aware)
+      // so the client's chip carousel never renders empty. This is a SUCCESS
+      // path (the query worked, there was simply nothing to personalize), so it
+      // IS cached — only real failures below stay uncached.
+      if (tags.length === 0) {
+        personalized = false;
+        const popular = await getPopularTags(limit, language);
+        tags = popular.map((t) => ({ keyword: t.keyword, count: t.count, score: t.count }));
+      }
+
+      return { personalized, tags };
+    }, CACHE_TTL.RECOMMENDED_TAGS);
+  } catch (error) {
+    // Fail open to popular tags: a personalized-chips outage must never
+    // break the explore page's filter UI. Deliberately NOT cached — the next
+    // request retries the personalized query instead of serving the outage.
+    console.error('[getRecommendedTags] Failed to fetch recommended tags:', getErrorMessage(error));
+    const popular = await getPopularTags(limit, language);
+    return {
+      personalized: false,
+      tags: popular.map((t) => ({ keyword: t.keyword, count: t.count, score: t.count })),
+    };
   }
 }
 

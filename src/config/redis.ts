@@ -24,6 +24,8 @@ export const REDIS_CACHE_TTL = {
   EXPLORE_PAGE_1_TRENDING: 5 * 60,
   /** User profile: 2 minutes */
   USER_PROFILE: 2 * 60,
+  /** Per-user recommended tags: 5 minutes (interest signals change on every read/like) */
+  RECOMMENDED_TAGS: 5 * 60,
   /** Page 1 of an active book: 30 days. Page 1 content is immutable per book
    * (only created at book initialization), so a long TTL acts as "always
    * cached". Cleared on book deletion via invalidatePageOneCache. */
@@ -79,6 +81,17 @@ export const REDIS_CACHE_KEYS = {
   EXPLORE_PAGE_1_TRENDING: 'books:explore:page:1:trending',
   /** User profile: user:profile:{userId} */
   USER_PROFILE: (userId: string) => `user:profile:${userId}`,
+  /**
+   * Per-user recommended (interest) tags: `tags:recommended:{userId}:{limit}:{lang|all}`.
+   *
+   * Per-user key — never shareable across users, so responses must carry
+   * `Cache-Control: private` and must NOT be folded into the shared explore
+   * page-1 cache. Short TTL only: no write-path invalidation fan-out (the
+   * underlying signals — reads/likes/favorites — change on every interaction,
+   * and a 5-minute staleness window is invisible to the chip carousel).
+   */
+  RECOMMENDED_TAGS: (userId: string, limit: number, language: string) =>
+    `tags:recommended:${userId}:${limit}:${language}`,
   /** Top creators this week (homepage): users:top-creators:{limit} */
   TOP_CREATORS: (limit: number) => `users:top-creators:${limit}`,
   /** Static page 1 payload for a book: book:page1:{bookId}:{contentLanguage}

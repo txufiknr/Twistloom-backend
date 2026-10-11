@@ -41,6 +41,7 @@
  * - DELETE /api/books/:id - Delete a book and queue image for deletion (requires auth)
  * - GET /api/books/:id/similar - Get similar books by keyword Jaccard similarity (optional auth)
  * - GET /api/books/tags/popular - Get popular tags for filtering (no auth required)
+ * - GET /api/books/tags/recommended - Get personalized interest tags from read/like/favorite signals (requires auth)
  * - GET /api/books/stats - Get public book statistics (optional auth)
  * - POST /api/books/:identifier/purchase - Purchase a paid book with credits (requires auth)
  * 
@@ -118,7 +119,7 @@ import { coalescePoll, getCoalesced, setCoalesced, POLL_RETRY_AFTER_SECONDS } fr
 import { eq, and, or, desc, sql, ne, inArray, arrayOverlaps, isNull, isNotNull } from "drizzle-orm";
 import { hashSHA256 } from "../utils/hash.js";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
-import { getBook, getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage, tryAcquireWorkflowDispatchGate, getAllBookEndings, insertUserCompletedBook, invalidateEnrichedPageCache, getUserActionHints, sanitizeActionHints } from "../services/book.js";
+import { getBook, getBookFromDB, getEnrichedBook, getFirstPage, getPageFromDB, mapToEnrichedPage, tryAcquireWorkflowDispatchGate, getAllBookEndings, insertUserCompletedBook, invalidateEnrichedPageCache, getUserActionHints, sanitizeActionHints } from "../services/book.js";
 import { getBookAnalytics } from "../services/analytics.js";
 import { getBookPageCacheControl } from "../services/book-page-cache.js";
 import { getModerationThresholds } from "../services/admin-settings.js";
@@ -135,7 +136,7 @@ import { extractPaginationParams, createPaginatedResponse, calculatePaginationMe
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import { validateSearchQuery, validateLanguageCode, isValidLanguageCode, validateAgeRange, validateGender, validateRatingFilter, validateRatingCountFilter, createRelevanceExpression, buildTokenizedSearchCondition, intentJaccardSimilarity, trigramSimilarity, jaccardSimilarity } from "../utils/search.js";
 import type { ImageUploadSource } from "../types/image.js";
-import { updateBook, updateBookVisibility, insertBook, uploadBookCoverImage, uploadBookCharacterAvatarImage, sanitizeBookTextField, sanitizeBookEnding, sanitizeMainCharacter, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage, mapBookFromDb, invalidatePopularTagsCache, invalidateBookCache, invalidateEnrichedBookCache, invalidatePageOneCache, loadParagraphCommentCounts, loadCommunityActions, isValidSlug, RESERVED_BOOK_SLUGS, slugExists } from "../services/book.js";
+import { updateBook, updateBookVisibility, insertBook, uploadBookCoverImage, uploadBookCharacterAvatarImage, sanitizeBookTextField, sanitizeBookEnding, sanitizeMainCharacter, resolveBook, getPublicBookStats, getPopularTags, getRecommendedTags, mapToUserStoryPage, mapBookFromDb, invalidatePopularTagsCache, invalidateBookCache, invalidateEnrichedBookCache, invalidatePageOneCache, loadParagraphCommentCounts, loadCommunityActions, isValidSlug, RESERVED_BOOK_SLUGS, slugExists } from "../services/book.js";
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
 import { parseBulkLikeIds } from "../utils/book-likes.js";
 import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookPage, enrichBooksWithUserData } from "../services/book-controller.js";
@@ -177,6 +178,7 @@ import type { AIPromptForJson } from "../types/ai-chat.js";
 import { MAX_BRANCHING_PREGENERATION_DEPTH, COMPANION_CACHE_JACCARD_THRESHOLD, COMPANION_CACHE_CANDIDATE_SCAN_LIMIT, COMPANION_SUGGESTIONS_QUERY_MAX_CHARS, COMPANION_HISTORY_LIMIT } from "../config/story.js";
 import { getBookModeCreditCostForUser, getCreditCostForUser, calculateBranchSwitchCost } from "../config/credits.js";
 import { parseIdempotencyKey, findBookByIdempotencyKey, replayOnUniqueViolation, buildAsyncReplay, buildCreationReplay, BOOK_CREATION_STARTED_MESSAGE, isUniqueViolation } from "../services/book-idempotency.js";
+import { setIdempotencyProcessing } from "../utils/redis.js";
 import { getJourneyForks, reconstructFork, resolveCurrentPageId, narrateForkAlternative } from "../services/time-travel.js";
 import { savedPaths } from "../db/schema.js";
 import { CREDIT_ERRORS } from "../config/errors.js";
@@ -2672,7 +2674,9 @@ router.patch("/:id/completion", requireAuth, async (c) => {
 router.get("/:id/similar", optionalAuth, async (c) => {
   try {
     const { id } = c.req.param();
-    const limit = Math.min(parseInt(c.req.query().limit as string) || 10, 50);
+    // Clamp BOTH bounds: a negative limit would reach `LIMIT $n` and Postgres
+    // rejects it ("LIMIT must not be negative") as a 500 instead of a 400.
+    const limit = Math.max(1, Math.min(parseInt(c.req.query().limit as string) || 10, 50));
     const currentUserId = c.get("userId") || null;
 
     // Handle array case for id (route params may be string[])
@@ -2755,7 +2759,7 @@ router.get("/:id/similar", optionalAuth, async (c) => {
  * @query search - Search query for title, hook, summary, keywords
  * @query language - Filter by language code (e.g., "en", "es")
  * @query tags - Comma-separated tags for filtering (e.g., "thriller,mystery,horror"). Books matching ANY tag will be included (OR logic)
- * @query sortBy - Field to sort by (default: newest). Options: newest, popular, trending, top-picks, originals, reads, recommendations, creations, pen-drafts
+ * @query sortBy - Field to sort by (default: newest). Options: for-you, popular, newest, trending, top-picks, originals, pen, reads, recommendations, creations, pen-drafts, favorites, likes, following
  * @query sortOrder - Sort direction (default: desc)
  * @query lastUpdated - Filter by last update time: anytime|today|this-week|this-month|this-year
  * @query ageRange - Filter by main character age range (format: n-m, e.g., 18-30)
@@ -2777,14 +2781,23 @@ router.get("/:id/similar", optionalAuth, async (c) => {
  *                 Absent = no filter. Distinct from sortBy=pen (public Pen showcase category).
  *                 Note: when present, the request bypasses the shared page-1 browse cache and the
  *                 unfiltered grandTotal shortcut (see shouldCache / noNarrowingFilters guards).
+ * @query personalized - "true"|"1" (requires auth): narrow the requested sortBy shelf to the viewer's
+ *                 interest profile (reads + likes + favorites keyword overlap) while PRESERVING the
+ *                 shelf's own ranking — e.g. "popular for you", "trending for you", "newest for you".
+ *                 Distinct from sortBy=for-you, which REPLACES the ranking with an overlap score.
+ *                 Cold start (no signals): returns the unfiltered shelf. Anonymous: empty page.
+ *                 Ignored when profileUserId is set (personalization always targets the viewer).
+ *                 Note: bypasses the shared page-1 browse cache and the grandTotal shortcut.
  * @returns Paginated list of books
  * 
  * @remarks
  * - creations: Shows user's own created books (requires authentication). Optionally filtered by `status` query param.
  * - reads: Shows books the user has read, sorted by lastReadAt (requires authentication)
+ * - for-you: "You Might Like" — unread books ranked by keyword overlap with the user's read/like/favorite profile (requires authentication). Cold start (no signals): ranks the public catalogue by trending instead of returning an empty page.
  * - recommendations: Recommends books based on user likes (requires authentication)
  * - favorites: Shows user's saved/favorited books (requires authentication)
  * - All other options: Show published books only (optional authentication, status filter ignored)
+ * - personalized=true composes with any sort (and with `tags=`) as an AND filter: see @query personalized.
  * 
  * @example
  * // Get user's own active and draft books
@@ -2804,6 +2817,14 @@ router.get("/:id/similar", optionalAuth, async (c) => {
  *
  * // Filter by rating range and require at least 5 approved ratings
  * GET /api/books/explore?rating=4-5&minRatingCount=5&sortBy=newest&page=1&limit=20
+ *
+ * // Personalized shelves for the home screen (3 parallel requests)
+ * GET /api/books/explore?sortBy=popular&personalized=true
+ * GET /api/books/explore?sortBy=trending&personalized=true
+ * GET /api/books/explore?sortBy=newest&personalized=true
+ *
+ * // Personalized + tag filter (AND): popular books tagged psychological-thriller matching the viewer's taste
+ * GET /api/books/explore?sortBy=popular&personalized=true&tags=psychological-thriller
  *
  * // Response
  * {
@@ -2849,6 +2870,16 @@ router.get("/explore", optionalAuth, async (c) => {
     const followingFirstParam = c.req.query().followingFirst as string | undefined;
     const followingFirst = followingFirstParam === 'true' || followingFirstParam === '1';
     const userId = c.get("userId") || null;
+
+    // Personalized modifier: narrow the requested sort (popular/trending/
+    // newest/...) to the VIEWER's interest profile while preserving the
+    // section's own ranking. Distinct from `sortBy=for-you`, which REPLACES
+    // the ranking with a keyword-overlap score.
+    // Ignored when profileUserId is set: browsing another user's profile is
+    // not a home-screen personalization context, and the interest predicate
+    // must always target the authenticated viewer.
+    const personalizedParam = c.req.query().personalized as string | undefined;
+    const applyPersonalized = (personalizedParam === 'true' || personalizedParam === '1') && !profileUserId;
     
     // Extract tags from query parameter (comma-separated)
     const tagsParam = tags as string;
@@ -2956,7 +2987,7 @@ router.get("/explore", optionalAuth, async (c) => {
     // auth because they use the viewer's own reading history.
     const sortNeedsAuth = ['creations', 'reads', 'recommendations', 'favorites', 'likes', 'for-you', 'pen-drafts', 'following'].includes(bookSortBy);
     const profileUserIdBypasses = ['creations', 'reads', 'favorites', 'likes'];
-    const requiresAuth = sortNeedsAuth && !(profileUserId && profileUserIdBypasses.includes(bookSortBy));
+    const requiresAuth = (sortNeedsAuth || applyPersonalized) && !(profileUserId && profileUserIdBypasses.includes(bookSortBy));
     if (requiresAuth && !userId) {
       const emptyBooks: EnrichedBookData[] = [];
       const pagination = calculatePaginationMeta(page, limit, 0);
@@ -3049,8 +3080,9 @@ router.get("/explore", optionalAuth, async (c) => {
 
     // Unfiltered denominator for the "found M from N total" label. Counted over
     // the same base condition as the result set but WITHOUT the tag/search/age/
-    // gender/mode/rating/lastUpdated filters, so it reflects the true catalogue
-    // size regardless of active filters. Single indexed COUNT(*), cheap.
+    // gender/mode/rating/lastUpdated/personalized filters, so it reflects the
+    // true catalogue size regardless of active filters. Single indexed COUNT(*),
+    // cheap.
     //
     // Optimisation: when NO narrowing filters are active, the filtered count
     // (`totalCount`) is by definition identical to the unfiltered grandTotal, so
@@ -3073,6 +3105,7 @@ router.get("/explore", optionalAuth, async (c) => {
       !visibilityFilter &&
       !ratingParam &&
       !ratingCountParam &&
+      !applyPersonalized &&
       bookSortBy !== 'reads' &&
       bookSortBy !== 'favorites' &&
       bookSortBy !== 'recommendations' &&
@@ -3088,11 +3121,11 @@ router.get("/explore", optionalAuth, async (c) => {
     }
 
     // Cache strategy: don't cache user-specific or filtered queries.
-    // `sanitizedSource` and `visibilityFilter` must be listed here: the per-sort
-    // cache key below is sort-only (not query-string keyed), so a source- or
-    // visibility-filtered page would otherwise poison the shared public browse
-    // slot for the TTL.
-    const shouldCache = page === 1 && !profileUserId && !isCreations && !isPenDrafts && !search && tagsArray.length === 0 && !language && !lastUpdated && !ageRange && !gender && !mode && !sanitizedSource && !statusFilter && !visibilityFilter && !ratingParam && !ratingCountParam && bookSortBy !== 'reads' && bookSortBy !== 'favorites' && bookSortBy !== 'recommendations' && bookSortBy !== 'for-you';
+    // `sanitizedSource`, `visibilityFilter`, and `applyPersonalized` must be
+    // listed here: the per-sort cache key below is sort-only (not query-string
+    // keyed), so a source-, visibility-, or personalization-filtered page would
+    // otherwise poison the shared public browse slot for the TTL.
+    const shouldCache = page === 1 && !profileUserId && !isCreations && !isPenDrafts && !search && tagsArray.length === 0 && !language && !lastUpdated && !ageRange && !gender && !mode && !sanitizedSource && !statusFilter && !visibilityFilter && !ratingParam && !ratingCountParam && !applyPersonalized && bookSortBy !== 'reads' && bookSortBy !== 'favorites' && bookSortBy !== 'recommendations' && bookSortBy !== 'for-you';
     //
     // Per-sort cache key (see CACHE_KEYS.EXPLORE_PAGE_1_BY_SORT). Each public
     // sort option caches page 1 under its OWN key. This fixes a cache-key
@@ -3142,6 +3175,10 @@ router.get("/explore", optionalAuth, async (c) => {
         currentUserId: null,
         collection,
         followingFirst,
+        // Unreachable while `applyPersonalized` is true (that forces
+        // shouldCache=false), but passed for symmetry so the cached and
+        // direct paths can never diverge in shape.
+        personalized: applyPersonalized,
       });
 
       const [totalCountResult] = await countQuery;
@@ -3186,6 +3223,7 @@ router.get("/explore", optionalAuth, async (c) => {
         currentUserId: profileUserId || userId,
         collection,
         followingFirst,
+        personalized: applyPersonalized,
       });
 
       const [totalCountResult] = await countQuery;
@@ -3270,7 +3308,9 @@ router.get("/explore", optionalAuth, async (c) => {
  */
 router.get("/tags/popular", async (c) => {
   try {
-    const limit = Math.min(parseInt(c.req.query().limit as string) || 20, 100);
+    // Clamp BOTH bounds: a negative limit would reach `LIMIT $n` and Postgres
+    // rejects it ("LIMIT must not be negative") as a 500 instead of a 400.
+    const limit = Math.max(1, Math.min(parseInt(c.req.query().limit as string) || 20, 100));
     const headerLanguage = c.get("headerLanguage") || 'en';
     
     // Uses LRU cache internally via getPopularTags
@@ -3280,6 +3320,62 @@ router.get("/tags/popular", async (c) => {
     return c.json({ tags });
   } catch (error) {
     return cApiError(c, "Failed to fetch popular tags", error);
+  }
+});
+
+/**
+ * GET /api/books/tags/recommended
+ *
+ * Fetches personalized interest tags for the authenticated user, derived from
+ * implicit engagement signals (reading history, likes, favorites) weighted by
+ * signal strength (read 1.0 > like 0.7 > favorite 0.5). Every returned tag is
+ * guaranteed clickable: it exists on at least one active + public book in the
+ * user's language (English fallback), so `explore?tags={keyword}` never
+ * returns an empty page.
+ *
+ * Cold start: users with no signal rows (or no clickable tags) receive the
+ * global popular tags with `personalized: false`, so the chip carousel always
+ * has content and the client knows whether the list is tailored.
+ *
+ * @route GET /api/books/tags/recommended
+ * @auth Required (interest signals are per-user)
+ * @query limit - Maximum number of tags to return (default: 20, max: 100)
+ * @returns {Object} response
+ * @returns {boolean} response.personalized - false when popular-tag fallback was used
+ * @returns {Array} response.tags - Tags sorted by weighted score descending
+ * @returns {string} response.tags[].keyword - Tag keyword (use with explore `?tags=`)
+ * @returns {number} response.tags[].count - Number of signal rows carrying this tag
+ * @returns {number} response.tags[].score - Weighted signal score (read=1.0, like=0.7, fav=0.5)
+ *
+ * @example
+ * // Request
+ * GET /api/books/tags/recommended?limit=10
+ *
+ * // Response
+ * {
+ *   "personalized": true,
+ *   "tags": [
+ *     { "keyword": "psychological-horror", "count": 4, "score": 4.3 },
+ *     { "keyword": "unreliable-narrator", "count": 2, "score": 1.9 }
+ *   ]
+ * }
+ */
+router.get("/tags/recommended", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId")!;
+    // Clamp BOTH bounds: a negative limit would reach `LIMIT $n` and Postgres
+    // rejects it ("LIMIT must not be negative") as a 500 instead of a 400.
+    const limit = Math.max(1, Math.min(parseInt(c.req.query().limit as string) || 20, 100));
+    const headerLanguage = c.get("headerLanguage") || 'en';
+
+    // Redis-cached per (userId, limit, language) with a 5-minute TTL.
+    // Per-user payload — must never enter the shared explore cache.
+    const result = await getRecommendedTags(userId, limit, headerLanguage);
+
+    c.header('Cache-Control', 'private, max-age=300, stale-while-revalidate=60');
+    return c.json(result);
+  } catch (error) {
+    return cApiError(c, "Failed to fetch recommended tags", error);
   }
 });
 
@@ -7855,6 +7951,182 @@ router.post("/:identifier/close-session", requireAuth, async (c) => {
   } catch (error) {
     console.error('[POST /:identifier/close-session] ❌ Error:', error);
     return cApiError(c, 'Failed to close reading session', error);
+  }
+});
+
+/**
+ * Crash-only backstop TTL (seconds) for the per-(user, book) story-reset
+ * idempotency lock. Every normal path releases the lock in `finally`, so this
+ * TTL only bounds a hard crash (process kill between lock acquire and
+ * cleanup). Kept short (60s) so a crash cannot block legitimate resets for
+ * long, while still far exceeding the duration of the reset transaction.
+ */
+const STORY_RESET_LOCK_TTL_SECONDS = 60;
+
+/**
+ * POST /api/books/:identifier/reset-story
+ *
+ * Story Reset / Read Again (READER_STORY_RESET_AND_REREAD_ROADMAP). Discards
+ * the caller's action-selection history for this book and re-bases their
+ * session onto the book's first page so the next read behaves like a first
+ * read (choices unlocked, typewriter plays, front matter reachable again).
+ *
+ * Eligibility & cost are derived HERE, never taken from the client:
+ * - completed (`user_completed_books`) or `status = 'past'` -> cost 0 (free replay)
+ * - `novel` mode -> flat `STORY_RESET` cost key (0 for demo / free-demo)
+ * - `interactive` / `multiverse` -> same distance formula as a Journey
+ *   time-travel commit to page 1 (`calculateBranchSwitchCost(frontier, 1, u)`)
+ *
+ * Invariant: ONE `executeWithCredits` transaction deletes `user_page_progress`
+ * and UPDATEs `user_sessions` in place — the session row is never deleted (it
+ * backs the `isRead` EXISTS probe) and `user_completed_books` / `custom_actions`
+ * / shared `pages` are never touched. Power-up columns (`prismPagesRemaining`,
+ * `dangerSightFromPage`) ride the in-place UPDATE, so they survive.
+ *
+ * Concurrency: a distributed idempotency lock (scoped per user+book) serialises
+ * double-taps and in-flight retries so the eligibility check and the credit
+ * charge cannot run twice. It fails open when Redis is unavailable — the
+ * `executeWithCredits` row lock remains the authoritative charge guard.
+ */
+router.post("/:identifier/reset-story", requireAuth, async (c) => {
+  try {
+    const bookIdentifier = c.req.param("identifier") as string;
+    const userId = c.get("userId")!;
+
+    const book = await resolveBook(bookIdentifier);
+    if (!book) return cNotFoundError(c, "Book not found");
+
+    // Idempotency lock: acquired BEFORE the eligibility read so a second
+    // concurrent tap cannot observe the pre-reset progress row and race a
+    // second charge. Scoped to (user, book) — two different books reset in
+    // parallel; the same book serialises. TTL is a crash-only backstop (every
+    // normal path releases the lock in `finally`), kept short so a hard crash
+    // cannot block legitimate resets for long.
+    const resetLock = await setIdempotencyProcessing({
+      key: `reset-story:${userId}:${book.id}`,
+      prefix: "story-reset",
+      ttl: STORY_RESET_LOCK_TTL_SECONDS,
+    });
+    if (!resetLock.set) {
+      return cConflictError(c, "A story reset is already in progress for this book");
+    }
+
+    try {
+      const firstPage = await getFirstPage(book.id);
+      if (!firstPage) return cValidationError(c, "Book has no pages yet");
+
+      const [session] = await dbRead
+        .select({
+          status: userSessions.status,
+          frontierPageNumber: userSessions.frontierPageNumber,
+        })
+        .from(userSessions)
+        .where(and(eq(userSessions.userId, userId), eq(userSessions.bookId, book.id)))
+        .limit(1);
+
+      const [progressRow] = await dbRead
+        .select({ id: userPageProgress.id })
+        .from(userPageProgress)
+        .where(and(eq(userPageProgress.userId, userId), eq(userPageProgress.bookId, book.id)))
+        .limit(1);
+
+      const frontier = session?.frontierPageNumber ?? 1;
+      if (!progressRow && frontier <= 1) {
+        return cValidationError(c, "Nothing to reset");
+      }
+
+      // Server-derived free-replay eligibility — a client cannot claim it.
+      const [completedRow] = await dbRead
+        .select({ id: userCompletedBooks.id })
+        .from(userCompletedBooks)
+        .where(and(eq(userCompletedBooks.userId, userId), eq(userCompletedBooks.bookId, book.id)))
+        .limit(1);
+      const isFreeReplay = session?.status === "past" || Boolean(completedRow);
+
+      const resetCost = isFreeReplay
+        ? 0
+        : book.mode === "novel"
+          ? getCreditCostForUser(userId, "STORY_RESET")
+          : calculateBranchSwitchCost(frontier, 1, userId);
+
+      let remainingCredits = 0;
+      try {
+        const creditResult = await executeWithCredits(
+          userId,
+          resetCost,
+          async (tx) => {
+            await tx
+              .delete(userPageProgress)
+              .where(and(eq(userPageProgress.userId, userId), eq(userPageProgress.bookId, book.id)));
+            if (session) {
+              await tx
+                .update(userSessions)
+                .set({
+                  pageId: firstPage.id,
+                  previousPageId: null,
+                  frontierPageId: firstPage.id,
+                  frontierPageNumber: 1,
+                  // Clearing the ancestry defeats frontier retention on back-nav
+                  // (services/story.ts), so a page-1 visit truly rewinds to 1.
+                  frontierAncestorIds: [firstPage.id],
+                  status: "active",
+                  // The endpoint contract is "front matter reachable again" —
+                  // reset the cross-device "reader has seen front matter" flag
+                  // so the typewriter replays on every synced client.
+                  frontMatterSeen: false,
+                  updatedAt: new Date(),
+                })
+                .where(and(eq(userSessions.userId, userId), eq(userSessions.bookId, book.id)));
+            }
+            return { firstPageId: firstPage.id as string };
+          },
+          {
+            context: "story_reset",
+            metadata: { bookId: book.id, mode: book.mode, cost: resetCost, frontier, freeReplay: isFreeReplay },
+          },
+        );
+        remainingCredits = creditResult.remainingCredits;
+      } catch (error) {
+        const errorMessage = getErrorMessage(error);
+        if (errorMessage.includes(CREDIT_ERRORS.INSUFFICIENT_CREDITS)) {
+          return c.json(
+            {
+              error: "Insufficient credits",
+              message: `You need ${resetCost} credits to reset this story`,
+              code: "pageInfo.insufficientCredits",
+            },
+            402,
+          );
+        }
+        throw error;
+      }
+
+      invalidateBookCache(book.id);
+      invalidateEnrichedBookCache(book.id);
+
+      // Fire-and-forget: the transaction has already committed (story reset +
+      // credits deducted). An analytics failure must NOT surface a 500 here —
+      // the client would see a failed request for a succeeded operation and a
+      // naive retry would double-charge.
+      void logUserActivity({
+        userId,
+        activityType: "story_reset",
+        targetType: "book",
+        targetId: book.id,
+        metadata: { mode: book.mode, cost: resetCost, frontier, freeReplay: isFreeReplay },
+      }).catch((error) => {
+        console.error("[POST /:identifier/reset-story] ⚠️ logUserActivity failed:", getErrorMessage(error));
+      });
+
+      return c.json({ ok: true, firstPageId: firstPage.id, credits: remainingCredits });
+    } finally {
+      // Always release the lock — success, validation reject, insufficient
+      // credits, or a thrown error. Only a hard crash leaves it to the TTL.
+      await resetLock.cleanup();
+    }
+  } catch (error) {
+    console.error("[POST /:identifier/reset-story] ❌ Error:", error);
+    return cApiError(c, "Failed to reset story", error);
   }
 });
 

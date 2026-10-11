@@ -168,13 +168,40 @@ The explore endpoint supports two dimensions of ordering: **Primary Book-Specifi
 | `top-picks` | Editor's Picks | Filters `books.top_pick IS NOT NULL`, `ORDER BY books.top_pick DESC`. | ✅ Yes (30m) | Public |
 | `originals` | Twistloom Originals | Filters `books.is_original = true AND books.image_id IS NOT NULL`, `ORDER BY books.created_at DESC`. | ✅ Yes (30m) | Public |
 | `pen` | Pen Published | Filters `books.is_pen_book = true AND books.authoring_status = 'complete'`, `ORDER BY books.created_at DESC`. | ✅ Yes (30m) | Public |
-| `for-you` | You Might Like | Aggregates keywords from reader's history (`user_sessions`), scores keyword overlap, excludes read books. | ❌ No | Requires Auth |
+| `for-you` | You Might Like | Aggregates keywords from the reader's engagement profile — reads (`user_sessions`), likes (`user_likes`), favorites (`user_favorites`) via shared `buildInterestKeywordsSql` — scores keyword overlap, excludes read books. **Cold start:** when the profile is empty (`cardinality(interestKeywords) = 0`) the overlap predicate is skipped and the catalogue is ranked by `trendingScore`, so new users see content instead of an empty shelf. | ❌ No | Requires Auth |
 | `recommendations` | Recommended | Finds unread books sharing keywords with books the user has **liked** (`user_likes`). | ❌ No | Requires Auth |
 | `reads` | Recently Read | Filters to viewer's `user_sessions`, ordered by `user_sessions.updated_at DESC`. | ❌ No | Requires Auth (or `profileUserId`) |
 | `favorites` | Saved / Bookmarked | Filters to viewer's `user_favorites`, ordered by `user_favorites.created_at DESC`. Supports `collection` folder filter. | ❌ No | Requires Auth (or `profileUserId`) |
 | `likes` | Liked Stories | Filters to viewer's `user_likes` (`target_type = 'book'`), ordered by `user_likes.created_at DESC`. | ❌ No | Requires Auth (or `profileUserId`) |
 | `creations` | My Stories / Author's Books | Scoped to owner's `user_id`, bypasses public visibility, supports status filtering (`active,draft,archived`). | ❌ No | Requires Auth (or `profileUserId`) |
 | `pen-drafts` | In-Progress Pen Drafts | Scoped to owner's `user_id`, filters `is_pen_book = true AND authoring_status = 'draft'`, `ORDER BY updated_at DESC`. | ❌ No | Requires Auth |
+| `following` | From Creators You Follow | Filters to books authored by users in the viewer's `user_follows`, `ORDER BY books.created_at DESC`. | ❌ No | Requires Auth |
+
+### Personalized Filter Modifier (`personalized=true`)
+
+`personalized=true` is a **filter modifier, not a sort** — the dual of `sortBy=for-you`:
+
+| Dimension | `sortBy=for-you` | `personalized=true` |
+|---|---|---|
+| Role | Replaces the ordering with a keyword-overlap score | ANDs the interest predicate onto the requested sort |
+| Ranking | overlap count → trendingScore → id | the shelf's OWN ranking (branching ratio / trendingScore / createdAt) preserved |
+| Use case | single "You Might Like" shelf | "popular for you", "trending for you", "newest for you" — the home-screen tri-section |
+| Example | `?sortBy=for-you` | `?sortBy=popular&personalized=true` |
+
+Both share the same signal profile and cold-start/read-exclusion semantics through `buildPersonalizedFilterCondition` (`src/services/book-controller.ts`):
+
+1. **Interest profile** — `buildInterestKeywordsSql(userId)`: DISTINCT keywords across reads + likes + favorites (weighting only matters in `getRecommendedTags` ranking; here it is a flat set).
+2. **Overlap** — `(cardinality(profile) = 0 OR books.keywords && profile)`: GIN-optimised `&&`; the cardinality guard makes cold start a no-op so shelves never render empty.
+3. **Read exclusion** — `NOT EXISTS (SELECT 1 FROM user_sessions ...)`: "For You" surfaces new content matching the user's taste.
+
+Because it enters `finalCondition`, the predicate applies to **both** the result query and the pagination COUNT query automatically. It composes with `tags=` (AND) and any sort, bypasses the shared page-1 browse cache and the `grandTotal` shortcut, requires auth (anonymous → empty page), and is ignored when `profileUserId` is set (personalization always targets the authenticated viewer).
+
+### Personalized Tags Companion Endpoint
+
+The explore `tags=` filter composes with any sort (including `for-you` and the `personalized=true` modifier). To render personalized tag chips that feed `explore?tags={keyword}&personalized=true`, the backend exposes:
+
+- `GET /api/books/tags/recommended` (auth required) — weighted keyword aggregation over the viewer's implicit signals (read 1.0 / like 0.7 / favorite 0.5), with a **clickability guard** (each tag must exist on ≥1 active + public book in the viewer's language) and a **cold-start fallback** to global popular tags (`personalized: false`). Redis-cached per (userId, limit, language), 5-minute TTL, `Cache-Control: private`.
+- `GET /api/books/tags/popular` (no auth) — global frequency ranking (process LRU, 10-minute TTL).
 
 ---
 
@@ -197,6 +224,7 @@ export interface FilterParams {
   minRatingCount?: number; // Minimum approved testimonials threshold
   collection?: string;     // Named favorites folder (only with sortBy=favorites)
   profileUserId?: string;  // Target user ID for public profile showcase
+  personalized?: boolean;  // ANDs the viewer's read/like/favorite interest profile onto the sort (buildPersonalizedFilterCondition)
 }
 ```
 

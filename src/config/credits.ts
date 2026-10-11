@@ -118,6 +118,15 @@ export const CREDIT_COSTS_BASE = {
   SUMMON_NEW_CHARACTER: 50, // TODO: use
   /** Cost to generate an AI-narrated "what happens if" summary of an alternative (Q5) */
   TIME_TRAVEL_NARRATE: 2,
+  /**
+   * Cost to reset a mid-progress story back to front matter / page 1
+   * (`POST /books/:identifier/reset-story`). Only ever charged when the book is
+   * neither completed nor closed — a completed / `past` session costs 0 and is
+   * free by server-derived eligibility (see `calculateStoryResetCost` contract
+   * in the web repo). Interactive / multiverse books normally charge the
+   * time-travel distance formula instead of this flat key.
+   */
+  STORY_RESET: 2,
   /** Cost to unlock alternate endings (future feature) */
   UNLOCK_ALTERNATE_ENDING: 10, // TODO: use
 

@@ -388,6 +388,97 @@ export function buildTagsFilterCondition(tags: string[]) {
 }
 
 /**
+ * Builds the viewer's interest-keyword profile as a single SQL subquery.
+ *
+ * Aggregates the DISTINCT keywords of every book the user has engaged with
+ * across three implicit signals (matching the `getRecommendedTags` signal set):
+ * 1. Reads   — `user_sessions` (weight 1.0 in tag ranking)
+ * 2. Likes   — `user_likes` where `targetType = 'book'` (weight 0.7)
+ * 3. Favs    — `user_favorites` (weight 0.5)
+ *
+ * Weights only matter for tag *ranking* (`getRecommendedTags`); here the
+ * result is a flat keyword set consumed by overlap predicates, so no weighting
+ * is applied. The read-books join intentionally does NOT filter on
+ * `visibility = 'public'`: a user reading their own private/draft book still
+ * has a real `user_sessions` row, and its keywords are legitimate
+ * personalization signal.
+ *
+ * Returns `'{}'` (empty array) when the user has no signals — callers must
+ * handle the cold-start case (see `buildPersonalizedFilterCondition`).
+ *
+ * @param userId - The user whose interest profile is built
+ * @returns SQL subquery evaluating to `text[]`
+ *
+ * @example
+ * ```typescript
+ * const interestKeywords = buildInterestKeywordsSql(userId);
+ * // cards where the book overlaps the profile: books.keywords && interestKeywords
+ * ```
+ */
+export function buildInterestKeywordsSql(userId: string) {
+  return sql`(
+    SELECT COALESCE(array_agg(DISTINCT kw), '{}')
+    FROM (
+      SELECT unnest(rb.keywords) AS kw
+      FROM ${userSessions}
+      INNER JOIN ${books} rb ON rb.id = ${userSessions.bookId}
+      WHERE ${userSessions.userId} = ${userId}
+      UNION ALL
+      SELECT unnest(lb.keywords) AS kw
+      FROM ${userLikes}
+      INNER JOIN ${books} lb ON lb.id = ${userLikes.targetId}
+      WHERE ${userLikes.userId} = ${userId} AND ${userLikes.targetType} = 'book'
+      UNION ALL
+      SELECT unnest(fb.keywords) AS kw
+      FROM ${userFavorites}
+      INNER JOIN ${books} fb ON fb.id = ${userFavorites.bookId}
+      WHERE ${userFavorites.userId} = ${userId}
+    ) signals
+  )`;
+}
+
+/**
+ * Builds the "For You" personalization FILTER predicate.
+ *
+ * Unlike `sortBy = 'for-you'` (which *replaces* the section's ordering with a
+ * keyword-overlap score), this predicate is designed to be ANDed onto any
+ * sort — it narrows the popular/trending/newest shelves to the user's
+ * interest profile while PRESERVING the section's own ranking
+ * (branching ratio / trendingScore / createdAt).
+ *
+ * Semantics:
+ * 1. Cold start (`cardinality(...) = 0`): the user has no read/like/favorite
+ *    signals, so the interest branch is a no-op and the unfiltered shelf is
+ *    returned — sections on the home screen never render empty for new users.
+ * 2. Interest overlap: `books.keywords && profile` (GIN-optimised `&&`).
+ * 3. Read exclusion: books already in `user_sessions` for this user are hidden
+ *    (consistent with `sortBy = 'for-you'`) — "For You" surfaces new content
+ *    matching the user's taste, not re-reads.
+ *
+ * Single correlated-free SQL statement; safe to apply to both the result
+ * query and the pagination COUNT query via `finalCondition`.
+ *
+ * @param userId - The viewer whose interests are matched against book keywords
+ * @returns SQL condition ready for `combineFilterConditions`
+ *
+ * @example
+ * ```typescript
+ * // Popular books matching the user's taste, still ranked by popularity:
+ * GET /api/books/explore?sortBy=popular&personalized=true
+ * ```
+ */
+export function buildPersonalizedFilterCondition(userId: string) {
+  const interestKeywords = buildInterestKeywordsSql(userId);
+
+  return sql`(
+    cardinality(${interestKeywords}) = 0 OR ${books.keywords} && ${interestKeywords}
+  ) AND NOT EXISTS (
+    SELECT 1 FROM ${userSessions}
+    WHERE ${userSessions.userId} = ${userId} AND ${userSessions.bookId} = ${books.id}
+  )`;
+}
+
+/**
  * Builds language filter condition
  * Matches either the book's primary authoring language OR any verified translation
  * in the book_translations table.
@@ -735,9 +826,17 @@ export function buildBookQuery<T>(
     collection?: string;
     /** When true + authenticated + default `newest` sort: bubble books from followed authors to the top. */
     followingFirst?: boolean;
+    /**
+     * When true + `currentUserId` present: ANDs the viewer's interest profile
+     * onto whatever sort is active — popular/trending/newest shelves are
+     * narrowed to books matching the user's read/like/favorite keywords while
+     * the section's own ranking is preserved. Cold start (no signals) returns
+     * the unfiltered shelf. Applied to both result and COUNT queries.
+     */
+    personalized?: boolean;
   }
 ) {
-  const { baseQuery, baseCondition, search, bookSortBy, tags, language, lastUpdated, minAge, maxAge, gender, mode, source, minRating, maxRating, minRatingCount, currentUserId, collection, followingFirst } = params;
+  const { baseQuery, baseCondition, search, bookSortBy, tags, language, lastUpdated, minAge, maxAge, gender, mode, source, minRating, maxRating, minRatingCount, currentUserId, collection, followingFirst, personalized } = params;
 
   // Build filter conditions using shared helpers
   const timeCondition      = buildTimeFilterCondition(lastUpdated);
@@ -749,6 +848,24 @@ export function buildBookQuery<T>(
   const modeCondition      = buildModeFilterCondition(mode);
   const sourceCondition    = buildSourceFilterCondition(source);
   const ratingCondition    = buildRatingFilterCondition(minRating, maxRating, minRatingCount);
+  // Personalization is a FILTER, not a sort: it must never apply without an
+  // authenticated user (the route also guards this, but the builder is
+  // exported and reused, so the invariant is enforced here too).
+  //
+  // `sortBy=for-you` already applies the same predicate via
+  // `buildBookSortCondition`, so folding `personalizedCondition` in as well
+  // would be a redundant (and confusing) duplicate.
+  const personalizedCondition = personalized && currentUserId && bookSortBy !== 'for-you'
+    ? buildPersonalizedFilterCondition(currentUserId)
+    : null;
+
+  // Sort-specific membership predicates (top-picks, originals, reads,
+  // favorites, ...) are FILTERS, not merely ordering. They are folded into
+  // `finalCondition` here — never applied via a second `.where()` call,
+  // because drizzle's `.where()` ASSIGNS `config.where` (last call wins) and
+  // would silently discard every earlier predicate, including the
+  // status='active' + visibility='public' base scope.
+  const sortCondition = buildBookSortCondition(bookSortBy, currentUserId, collection);
 
   // Combine all conditions with base condition
   const finalCondition = combineFilterConditions(
@@ -761,7 +878,9 @@ export function buildBookQuery<T>(
     genderCondition,
     modeCondition,
     sourceCondition,
-    ratingCondition
+    ratingCondition,
+    personalizedCondition,
+    sortCondition
   );
 
   // Apply secondary sorting: contextual sorting
@@ -771,17 +890,17 @@ export function buildBookQuery<T>(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   query = (query as any).where(finalCondition);
 
-  // Build count query for pagination (must be created before applying sort conditions
-  // so that sort-specific WHERE filters can be applied to both queries)
+  // Build count query for pagination — shares the exact same combined
+  // predicate as the result query so totalCount always matches.
   const countQuery = dbRead
     .select({ count: sql`COUNT(*)::int` })
     .from(books)
     .where(finalCondition);
 
-  // Apply primary sorting: book-specific sorting (acts as category filter).
-  // Pass countQuery so sort-specific WHERE conditions are applied to both queries.
+  // Apply primary sorting: book-specific ORDER BY (the membership half of each
+  // sort already lives in `sortCondition` above).
   if (bookSortBy) {
-    query = applyBookSorting(query, bookSortBy, currentUserId, collection, countQuery, followingFirst);
+    query = applyBookSortOrder(query, bookSortBy, currentUserId, followingFirst);
   }
 
   // Apply orderBy for search relevance
@@ -817,22 +936,165 @@ export function combineFilterConditions(...conditions: (ReturnType<typeof sql> |
 }
 
 /**
- * Applies book-specific sorting to a query based on sort option
+ * Builds the sort-specific membership predicate for a book sort option.
  *
- * @param query - Drizzle query builder
- * @param sortBy - Sort option (popular, newest, trending, top-picks, originals, reads, favorites, recommendations)
- * @param currentUserId - Optional current user ID for user-specific sorting (reads, recommendations)
- * @returns Modified query builder with sorting applied
+ * Several sorts are not pure ORDER BY clauses — they also restrict WHICH rows
+ * appear (top-picks → `top_pick IS NOT NULL`, reads → the viewer's sessions,
+ * originals → `is_original` with a cover, ...). Those predicates are returned
+ * here so {@link buildBookQuery} can AND them into the single combined
+ * `finalCondition`.
+ *
+ * ⚠️ These predicates must NEVER be applied by chaining a second `.where()`
+ * onto a query that already has one: drizzle's `.where()` assigns
+ * `config.where` (last call wins), which silently discards the base
+ * status='active' + visibility='public' scope and every other active filter.
+ *
+ * @param sortBy - Sort option
+ * @param currentUserId - Viewer ID for user-scoped sorts (reads, favorites, ...)
+ * @param collection - Optional favorites collection name to scope `favorites`
+ * @returns Sort-specific predicate, or `null` when the sort is ordering-only
+ *   (newest, popular, trending, creations)
+ */
+function buildBookSortCondition(
+  sortBy: BookSortOption | undefined,
+  currentUserId?: string | null,
+  collection?: string
+): ReturnType<typeof sql> | null {
+  switch (sortBy) {
+    case 'for-you': {
+      // Recommend books based on the user's engagement history — reads
+      // (userSessions), likes (userLikes), and favorites (userFavorites).
+      // Finds unread books with overlapping keywords.
+      // Requires authentication; anonymous viewers get an empty page instead of
+      // falling through to the `popular` ordering: the fall-through used to
+      // silently present the entire public catalogue under a "You Might Like"
+      // label, and combined with the old single-slot explore cache this could
+      // even surface a stale cached list.
+      //
+      // NOTE: unlike `personalized=true` (which FILTERS a section while keeping
+      // its own popular/trending/newest ranking), this sort REPLACES the
+      // ordering with the keyword-overlap score. Both share the same signal
+      // profile and cold-start/read-exclusion semantics via
+      // `buildPersonalizedFilterCondition`.
+      if (!currentUserId) return sql`1=0`;
+      return buildPersonalizedFilterCondition(currentUserId);
+    }
+
+    case 'top-picks':
+      // Only books marked as editor's top picks
+      return sql`${books.topPick} IS NOT NULL`;
+
+    case 'originals':
+      // Auto-generated books (cron job) that also have a cover image.
+      // Note: Intentionally filtering to only show originals with covers for
+      // quality control — auto-generated books without covers are excluded.
+      return sql`${books.isOriginal} AND ${books.imageId} IS NOT NULL`;
+
+    case 'pen':
+      // Public Pen-written books (is_pen_book) that the author has marked
+      // complete (authoring_status='complete'). In-progress Pen drafts are
+      // intentionally excluded from this showcase — they are surfaced in the
+      // owner-scoped 'pen-drafts' sort instead.
+      return sql`${books.isPenBook} AND ${books.authoringStatus} = 'complete'`;
+
+    case 'reads':
+      // Books the user has read (from userSessions)
+      if (!currentUserId) return sql`1=0`;
+      return sql`EXISTS (
+        SELECT 1 FROM user_sessions
+        WHERE user_id = ${currentUserId} AND book_id = books.id
+      )`;
+
+    case 'favorites':
+      // Books the user has favorited (from userFavorites), optionally scoped
+      // to a named collection.
+      if (!currentUserId) return sql`1=0`;
+      return sql`EXISTS (
+        SELECT 1 FROM user_favorites uf
+        WHERE uf.user_id = ${currentUserId}
+          AND uf.book_id = books.id
+          ${collection ? sql`AND uf.collection = ${collection}` : sql``}
+      )`;
+
+    case 'likes':
+      // Books the user has liked (from user_likes where target_type = 'book')
+      if (!currentUserId) return sql`1=0`;
+      return sql`EXISTS (
+        SELECT 1 FROM user_likes ul
+        WHERE ul.user_id = ${currentUserId}
+          AND ul.target_type = 'book'
+          AND ul.target_id = books.id
+      )`;
+
+    case 'recommendations':
+      // Books similar to what the user has liked (keyword overlap with liked books)
+      if (!currentUserId) return sql`1=0`;
+      return sql`EXISTS (
+        SELECT 1
+        FROM user_likes ul
+        INNER JOIN books liked_books ON ul.target_id = liked_books.id
+        WHERE ul.user_id = ${currentUserId}
+          AND ul.target_type = 'book'
+          AND liked_books.id != books.id
+          AND books.keywords && liked_books.keywords
+      )`;
+
+    case 'pen-drafts':
+      // User's own in-progress Pen books (is_pen_book + authoring_status='draft').
+      // baseCondition already scopes to the owner via requireAuth, but we
+      // re-assert the pen-draft predicate so a completed pen book drops off the
+      // list as soon as it's marked complete.
+      if (!currentUserId) return sql`1=0`;
+      return sql`${books.isPenBook} AND ${books.authoringStatus} = 'draft'`;
+
+    case 'following':
+      // Books authored by people the current user follows (requires auth).
+      // Anonymous viewers get an empty result.
+      if (!currentUserId) return sql`1=0`;
+      return sql`EXISTS (
+        SELECT 1 FROM ${userFollows}
+        WHERE ${userFollows.followerId} = ${currentUserId}
+          AND ${userFollows.followingId} = ${books.userId}
+      )`;
+
+    case 'popular':
+    case 'trending':
+    case 'creations':
+    case 'newest':
+    default:
+      // Ordering-only sorts — no membership restriction.
+      return null;
+  }
+}
+
+/**
+ * Applies the book-specific ORDER BY clause for a sort option.
+ *
+ * Ordering ONLY — membership filtering lives in
+ * {@link buildBookSortCondition} and is folded into `finalCondition` by
+ * {@link buildBookQuery}. Keeping the two halves separate is what makes
+ * drizzle's single-`.where()`-per-query contract safe.
+ *
+ * @param query - Drizzle query builder (WHERE already applied)
+ * @param sortBy - Sort option (popular, newest, trending, top-picks, originals, reads, favorites, recommendations, for-you)
+ * @param currentUserId - Optional current user ID for user-specific ordering (reads, favorites, likes, followingFirst)
+ * @param followingFirst - When true + authenticated + default `newest` sort: bubble books from followed authors to the top
+ * @returns Modified query builder with ORDER BY applied
  *
  * Behaviour:
  * - popular: Sorts by branchesCount/totalPages ratio (highest first)
- * - newest: Sorts by createdAt (latest first)
- * - trending: Sorts by weighted formula: readCount(0.5) + likesCount(0.3) + favoritedCount(0.2)
- * - top-picks: Sorts by latest topPick timestamp (only books marked as editor's picks)
- * - originals: Filters by isOriginal: true (auto-generated books via cron job), sorts by createdAt (newest first)
- * - reads: Filters to books the user has read (from userSessions), sorts by lastReadAt (most recent first)
- * - favorites: Filters to books the user has favorited (from userFavorites), sorts by favoritedAt (most recent first)
- * - recommendations: Recommends books based on user likes (similar books to what user liked)
+ * - newest: Sorts by createdAt (latest first); optionally followed-authors-first
+ * - trending: Sorts by pre-calculated trendingScore (time decay, cron-updated)
+ * - top-picks: Sorts by latest topPick timestamp
+ * - originals / pen / following: Sorts by createdAt (newest first)
+ * - reads: Sorts by last-read timestamp (most recent first)
+ * - favorites: Sorts by favorite creation date (most recent first)
+ * - likes: Sorts by like creation date (most recent first)
+ * - for-you: Scores by keyword overlap with the user's engagement profile,
+ *   then trendingScore. Cold start (no profile) ranks by trendingScore so new
+ *   users see content instead of an empty shelf.
+ * - recommendations: Sorts by trendingScore
+ * - creations / pen-drafts: Sorts by updatedAt (most recently edited first)
  *
  * @remarks
  * Uses `any` type for query parameter because Drizzle ORM query builder types
@@ -840,56 +1102,21 @@ export function combineFilterConditions(...conditions: (ReturnType<typeof sql> |
  * Type safety is maintained through the actual database operations and SQL generation.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', currentUserId?: string | null, collection?: string, countQuery?: any, followingFirst?: boolean): any {
+function applyBookSortOrder(query: any, sortBy: BookSortOption = 'newest', currentUserId?: string | null, followingFirst?: boolean): any {
   switch (sortBy) {
     case 'for-you': {
-      // Recommend books based on user's reading history (from userSessions)
-      // Finds unread books with overlapping keywords, sorted by similarity count
-      // Requires authentication, fall through to 'popular' books
-      if (!currentUserId) {
-        // Anonymous viewer → nothing to personalize against. Return an EMPTY
-        // result instead of falling through to the `popular` case below: the
-        // fall-through used to silently present the entire public catalogue
-        // under a "You Might Like" label, and combined with the old single-slot
-        // explore cache this could even surface a stale cached list.
-        const noop = query.where(sql`1=0`);
-        if (countQuery) countQuery.where(sql`1=0`);
-        return noop;
-      }
+      // Rank by keyword overlap count between the candidate book and the
+      // user's engagement profile, then trendingScore, then id as a stable
+      // tie-breaker. (Anonymous viewers get `1=0` from
+      // `buildBookSortCondition`, so the ordering never surfaces rows.)
+      const interestKeywords = buildInterestKeywordsSql(currentUserId!);
 
-      // Aggregate all distinct keywords from books the user has read.
-      // NOTE: the read-books join intentionally does NOT filter on
-      // `visibility='public'` — a user reading their own private/draft book
-      // still has a real user_sessions row, and its keywords are legitimate
-      // personalization signal for "You Might Like".
-      const userReadKeywords = sql`(
-        SELECT COALESCE(array_agg(DISTINCT kw), '{}')
-        FROM user_sessions us_src
-        INNER JOIN books rb ON us_src.book_id = rb.id
-        CROSS JOIN LATERAL unnest(rb.keywords) AS kw
-        WHERE us_src.user_id = ${currentUserId}
-      )`;
-
-      // Keyword overlap count between the candidate book and user's read books
       const overlapScore = sql`(
         SELECT COUNT(*)::int
         FROM unnest(${books.keywords}) AS kw
-        WHERE kw = ANY(${userReadKeywords})
+        WHERE kw = ANY(${interestKeywords})
       )`;
 
-      query = query
-        .where(sql`${books.keywords} && ${userReadKeywords}`)
-        .where(sql`NOT EXISTS (
-          SELECT 1 FROM user_sessions us_exclude
-          WHERE us_exclude.user_id = ${currentUserId} AND us_exclude.book_id = books.id
-        )`);
-      if (countQuery) {
-        countQuery.where(sql`${books.keywords} && ${userReadKeywords}`)
-          .where(sql`NOT EXISTS (
-            SELECT 1 FROM user_sessions us_exclude
-            WHERE us_exclude.user_id = ${currentUserId} AND us_exclude.book_id = books.id
-          )`);
-      }
       return query.orderBy(desc(overlapScore), desc(books.trendingScore), desc(books.id));
     }
 
@@ -907,67 +1134,24 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
     }
 
     case 'top-picks': {
-      // Sort by latest topPick timestamp (only books marked as top picks)
-      query = query
-        .where(sql`${books.topPick} IS NOT NULL`)
-        .orderBy(desc(books.topPick), desc(books.id));
-      if (countQuery) countQuery.where(sql`${books.topPick} IS NOT NULL`);
-      return query;
+      // Sort by latest topPick timestamp
+      return query.orderBy(desc(books.topPick), desc(books.id));
     }
 
-    case 'originals': {
-      // Filter by isOriginal: true (auto-generated books via cron job) and has cover image
+    case 'originals':
+    case 'pen':
+    case 'following': {
       // Sort by creation date (newest first)
-      // Note: Intentionally filtering to only show originals with covers for quality control
-      // Auto-generated books without covers are excluded from the originals list
-      query = query
-        .where(eq(books.isOriginal, true))
-        .where(sql`${books.imageId} IS NOT NULL`)
-        .orderBy(desc(books.createdAt), desc(books.id));
-      if (countQuery) {
-        countQuery.where(eq(books.isOriginal, true))
-          .where(sql`${books.imageId} IS NOT NULL`);
-      }
-      return query;
+      return query.orderBy(desc(books.createdAt), desc(books.id));
     }
 
-    case 'pen': {
-      // Filter to public Pen-written books (is_pen_book) that the author has
-      // marked complete (authoring_status='complete'). In-progress Pen drafts
-      // are intentionally excluded from this showcase — they are surfaced in
-      // the owner-scoped 'pen-drafts' sort instead. The explore route's base
-      // condition already scopes to status='active' + visibility='public'.
-      // Sort by creation date (newest first), mirroring 'originals'.
-      query = query
-        .where(eq(books.isPenBook, true))
-        .where(sql`${books.authoringStatus} = 'complete'`)
-        .orderBy(desc(books.createdAt), desc(books.id));
-      if (countQuery) {
-        countQuery.where(eq(books.isPenBook, true))
-          .where(sql`${books.authoringStatus} = 'complete'`);
-      }
-      return query;
-    }
     case 'reads': {
-      // Filter to books the user has read (from userSessions)
-      // Sort by lastReadAt (most recent first)
-      // Requires authentication
-      if (!currentUserId) {
-        const noop = query.where(sql`1=0`);
-        if (countQuery) countQuery.where(sql`1=0`);
-        return noop;
-      }
-      const readCondition = sql`EXISTS (
-        SELECT 1 FROM user_sessions
-        WHERE user_id = ${currentUserId} AND book_id = books.id
-      )`;
-      query = query.where(readCondition);
-      if (countQuery) countQuery.where(readCondition);
       // Sort by the most recent read timestamp. A user has at most one
       // user_sessions row per book (unique (user_id, book_id)), upserted on
       // every visit, so its updated_at is the last-read time. Falls back to
       // the book's updatedAt when no session exists (shouldn't happen here
-      // due to the readCondition filter above).
+      // due to the membership predicate).
+      if (!currentUserId) return query.orderBy(desc(books.id));
       return query.orderBy(sql`COALESCE((
         SELECT us.updated_at FROM user_sessions us
         WHERE us.user_id = ${currentUserId} AND us.book_id = books.id
@@ -975,22 +1159,8 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
     }
 
     case 'favorites': {
-      // Filter to books the user has favorited (from userFavorites table)
       // Sort by favorite creation date (most recent first)
-      // Requires authentication
-      if (!currentUserId) {
-        const noop = query.where(sql`1=0`);
-        if (countQuery) countQuery.where(sql`1=0`);
-        return noop;
-      }
-      const favCondition = sql`EXISTS (
-        SELECT 1 FROM user_favorites uf
-        WHERE uf.user_id = ${currentUserId}
-          AND uf.book_id = books.id
-          ${collection ? sql`AND uf.collection = ${collection}` : sql``}
-      )`;
-      query = query.where(favCondition);
-      if (countQuery) countQuery.where(favCondition);
+      if (!currentUserId) return query.orderBy(desc(books.id));
       return query.orderBy(sql`(
         SELECT uf.created_at FROM user_favorites uf
         WHERE uf.user_id = ${currentUserId} AND uf.book_id = books.id
@@ -998,21 +1168,8 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
     }
 
     case 'likes': {
-      // Filter to books the user has liked (from user_likes where target_type = 'book')
       // Sort by like creation date (most recent first)
-      if (!currentUserId) {
-        const noop = query.where(sql`1=0`);
-        if (countQuery) countQuery.where(sql`1=0`);
-        return noop;
-      }
-      const likeCondition = sql`EXISTS (
-        SELECT 1 FROM user_likes ul
-        WHERE ul.user_id = ${currentUserId}
-          AND ul.target_type = 'book'
-          AND ul.target_id = books.id
-      )`;
-      query = query.where(likeCondition);
-      if (countQuery) countQuery.where(likeCondition);
+      if (!currentUserId) return query.orderBy(desc(books.id));
       return query.orderBy(sql`(
         SELECT ul.created_at FROM user_likes ul
         WHERE ul.user_id = ${currentUserId} AND ul.target_type = 'book' AND ul.target_id = books.id
@@ -1020,26 +1177,6 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
     }
 
     case 'recommendations': {
-      // Recommend books based on user likes
-      // Get books similar to what the user has liked using keyword similarity
-      // Requires authentication
-      if (!currentUserId) {
-        const noop = query.where(sql`1=0`);
-        if (countQuery) countQuery.where(sql`1=0`);
-        return noop;
-      }
-
-      const recCondition = sql`EXISTS (
-        SELECT 1
-        FROM user_likes ul
-        INNER JOIN books liked_books ON ul.target_id = liked_books.id
-        WHERE ul.user_id = ${currentUserId}
-          AND ul.target_type = 'book'
-          AND liked_books.id != books.id
-          AND books.keywords && liked_books.keywords
-      )`;
-      query = query.where(recCondition);
-      if (countQuery) countQuery.where(recCondition);
       return query.orderBy(desc(books.trendingScore), desc(books.id));
     }
 
@@ -1052,38 +1189,8 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
     }
 
     case 'pen-drafts': {
-      // User's own in-progress Pen books (is_pen_book + authoring_status='draft').
-      // baseCondition already scopes to the owner via requireAuth, but we
-      // re-assert the pen-draft predicate on both query + countQuery so a
-      // completed pen book drops off the list as soon as it's marked complete.
-      if (!currentUserId) {
-        const noop = query.where(sql`1=0`);
-        if (countQuery) countQuery.where(sql`1=0`);
-        return noop;
-      }
-      const penDraftCondition = sql`${books.isPenBook} AND ${books.authoringStatus} = 'draft'`;
-      query = query.where(penDraftCondition);
-      if (countQuery) countQuery.where(penDraftCondition);
       // Most recently edited in-progress draft first.
       return query.orderBy(desc(books.updatedAt), desc(books.id));
-    }
-
-    case 'following': {
-      // Books authored by people the current user follows (requires auth).
-      // Sorted newest-first. Anonymous viewers get an empty result.
-      if (!currentUserId) {
-        const noop = query.where(sql`1=0`);
-        if (countQuery) countQuery.where(sql`1=0`);
-        return noop;
-      }
-      const followingCondition = sql`EXISTS (
-        SELECT 1 FROM ${userFollows}
-        WHERE ${userFollows.followerId} = ${currentUserId}
-          AND ${userFollows.followingId} = ${books.userId}
-      )`;
-      query = query.where(followingCondition);
-      if (countQuery) countQuery.where(followingCondition);
-      return query.orderBy(desc(books.createdAt), desc(books.id));
     }
 
     case 'newest':

@@ -90,6 +90,9 @@ please write a comprehensive roadmap MD for this in @docs/roadmap\ , grounded on
 [ ] create QStash schedules — `bun qstash:setup:prod` registers both (credit-reservation `*/10`, custom-action `*/5`); runbook curl is in §4 (needs your QSTASH_TOKEN/host).
 [ ] Required env: `QSTASH_TOKEN` before `bun qstash:setup`.
 [ ] google play & app store env vars
+
+---
+
 [ ] OG-5 Play sandbox pass (answer before OG-1/OG-2 — one purchased item settles both): does REST `purchases.products.consume` accept a purchase the client already acknowledged? does `purchaseState` stay `0` after a consume (else a replay answers `denied` for a pack that was granted)? — `docs/roadmap/OWNER_GATES_REGISTER.md`
 [ ] flutter: App Store `finishTransaction` — the Apple half of OG-5; Play now finalizes server-side (`finalizeStorePurchase`)
 [ ] flutter: consume retry is lost once acknowledged — `pendingCompletePurchase` drops the purchase when `acknowledgePurchase` succeeds, so a failed `consumeAsync` is never retried (OG-5 follow-up a)
@@ -117,11 +120,6 @@ TO PURCHASE:
 @src/utils/ai-chat.ts @src/types/ai-chat.ts in my multi-provider fallback, is it good idea to have timeout config param to limit duration per model? if exceeds, then fail and fallback to next model/provider
 if yes, please implement
 also ensure `maxRetries` be customized too via config param (defaults to: AI_CHAT_MODEL_RETRY_COUNT)
-
----
-
-2026-07-21T11:26:04.2343652Z [classifyGenAIError] ❓ Bad request (other): ApiError: {"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}
-2026-07-21T11:26:04.2353100Z     at async generateNextPage (file:///home/runner/work/Twistloom-backend/Twistloom-backend/dist/utils/prompt.js:4243:22) {
 
 ---
 

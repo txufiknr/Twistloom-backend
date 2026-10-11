@@ -296,16 +296,24 @@ Book sorting options for explore endpoint.
 
 ```typescript
 type BookSortingOptions = 
+  | 'for-you'        // "You Might Like": unread books ranked by keyword overlap with the reader's read/like/favorite profile (requires authentication). Cold start (no signals): ranks the public catalogue by trendingScore instead of returning an empty page.
   | 'popular'        // Sorts by branchesCount (pre-calculated branchesCount maintained by database triggers)
   | 'newest'         // Sorts by createdAt timestamp (latest books)
   | 'trending'       // Sorts by pre-calculated trendingScore (hybrid: cron-based with time decay + incremental updates on likes/favorites)
   | 'top-picks'      // Sorts by latest topPick timestamp (only books marked as editor's picks)
   | 'originals'      // Filters by isOriginal: true (auto-generated books via cron job), sorts by createdAt (newest first)
+  | 'pen'            // Public Pen-written books marked complete (is_pen_book + authoring_status='complete'), newest first
   | 'reads'          // Shows books the user has read, sorted by lastReadAt (requires auth, or set profileUserId to view another user's reads)
   | 'recommendations' // Recommends books based on user likes (requires authentication — not scoped by profileUserId)
   | 'creations'      // Shows user's own created books (requires auth, or set profileUserId to view another user's creations)
+  | 'pen-drafts'     // User's own in-progress Pen books (requires auth)
   | 'favorites'      // Shows user's saved/favorited books (requires auth, or set profileUserId to view another user's favorites)
-  | 'for-you';       // Personalized recommendations based on user preferences (requires authentication)
+  | 'likes'          // Books the user liked (requires auth, or set profileUserId to view another user's likes)
+  | 'following';     // Books authored by people the user follows (requires authentication)
+
+// Note: for personalizing a shelf ("popular for you", "trending for you", "newest for you")
+// use the `personalized=true` query modifier instead of `sortBy=for-you` — it ANDs the
+// viewer's interest profile onto the requested sort while preserving its ranking.
 ```
 
 ---
@@ -2815,7 +2823,7 @@ Retrieves books for exploration or user's own creations. Supports both authentic
 - `language` (string, optional): Filter by language code (e.g., "en", "es")
 - `tags` (string, optional): Comma-separated tags for filtering (e.g., "thriller,mystery,horror"). Books matching ANY tag will be included (OR logic)
 - `ageRange` (string, optional): Filter by main character age range (format: n-m, e.g. 18-30)
-- `sortBy` (string, optional): Field to sort by (default: newest). Options: newest, popular, trending, top-picks, originals, reads, recommendations, creations, favorites
+- `sortBy` (string, optional): Field to sort by (default: newest). Options: for-you, popular, newest, trending, top-picks, originals, pen, reads, recommendations, creations, pen-drafts, favorites, likes, following
 - `sortOrder` (string, optional): Sort direction (default: desc)
 - `lastUpdated` (string, optional): Filter by last update time: anytime|today|this-week|this-month|this-year
 - `status` (string, optional): Filter by comma-separated statuses (only applies with `sortBy=creations`). Values: active, draft, archived. E.g., "active,draft"
@@ -2828,6 +2836,12 @@ Retrieves books for exploration or user's own creations. Supports both authentic
 - `minRatingCount` (number, optional): Minimum number of approved ratings a book must have to qualify. Combine with `rating` for "4★ & up by at least 5 people" (e.g. `rating=4&minRatingCount=5`). Prevents a lone 5-star vote from dominating a bucket.
 - `profileUserId` (string, optional): User ID to scope books to — used with `sortBy=creations`, `sortBy=reads`, or `sortBy=favorites` to view another user's authored/read/favorited books. When set, authentication is not required for those sort options. Cache is skipped when `profileUserId` is used.
 - `userId` (string, optional): Alias for `profileUserId`. When set, filters books by the given user's authorship (works with any `sortBy`, not just `creations`).
+- `personalized` (string, optional): `"true"` or `"1"` (requires auth). Narrows the requested `sortBy` shelf to the **viewer's** interest profile — DISTINCT keywords of books they have read (`user_sessions`), liked (`user_likes`), or favorited (`user_favorites`) — while **preserving the shelf's own ranking**. This is how "popular for you" / "trending for you" / "newest for you" are served, unlike `sortBy=for-you` which *replaces* the ranking with a keyword-overlap score. Composes with `tags=` (AND) and any sort.
+  - **Cold start:** no signals → predicate is a no-op; the unfiltered shelf is returned (home-screen sections never render empty).
+  - **Read exclusion:** books already in `user_sessions` are hidden (consistent with `sortBy=for-you`) — "For You" surfaces *new* content matching the user's taste.
+  - Anonymous request → empty page (same convention as auth-required sorts).
+  - Ignored when `profileUserId` is set (personalization always targets the authenticated viewer).
+  - Bypasses the shared page-1 browse cache and the `grandTotal` shortcut (responses are `Cache-Control: private`).
 
 **Shared Implementation:**
 - Uses same filter building helpers as GET /api/books (buildSearchCondition, buildTagsFilterCondition, combineFilterConditions)
@@ -2839,7 +2853,7 @@ Retrieves books for exploration or user's own creations. Supports both authentic
 - `creations`: Shows the authenticated user's own books (requires auth). Use `status` query param to filter by book status — `status=draft` includes pending, generating, failed, and cancelled generations. Check each book's `generationStatus` via `GET /api/books/:bookId/status` to see its exact state.
 - `reads`: Shows books the authenticated user has read, sorted by `lastReadAt` (requires auth unless `profileUserId` is set).
 - `favorites`: Shows books the authenticated user has favorited/saved (requires auth unless `profileUserId` is set).
-- `recommendations` / `for-you`: Always require authentication — not scoped by `profileUserId`.
+- `recommendations` / `for-you`: Always require authentication — not scoped by `profileUserId`. Both derive their keyword profile from reads + likes + favorites (shared `buildInterestKeywordsSql`).
 - All other sort options: Show published books only (optional auth, status filter ignored).
 
 **`profileUserId` / `userId` behavior:**
@@ -2887,6 +2901,28 @@ GET /api/books/explore?rating=4&sortBy=trending&page=1&limit=20
 ```
 GET /api/books/explore?rating=4-5&minRatingCount=5&sortBy=newest&page=1&limit=20
 ```
+
+**Example — Personalized shelves for the home screen (3 parallel requests):**
+```
+GET /api/books/explore?sortBy=popular&personalized=true
+GET /api/books/explore?sortBy=trending&personalized=true
+GET /api/books/explore?sortBy=newest&personalized=true
+```
+
+**Example — Personalized + tag filter (AND): popular books tagged `psychological-thriller` matching the viewer's taste:**
+```
+GET /api/books/explore?sortBy=popular&personalized=true&tags=psychological-thriller
+```
+
+**Home-screen filter pattern (Flutter / web):** the Popular / Trending / Newest sections always render; a single active filter chip drives all 3 requests in parallel:
+
+| Filter chip | Requests |
+|---|---|
+| *(none)* | `sortBy=popular` · `sortBy=trending` · `sortBy=newest` |
+| **For You** | the same 3 + `&personalized=true` |
+| **Tag** (e.g. `psychological-thriller`) | the same 3 + `&tags=psychological-thriller` |
+
+Chip options themselves come from `GET /api/books/tags/recommended` (auth) — see [Personalized Interest Tags](#get-apibookstagsrecommended).
 
 **Response (200 OK) — Published books (explore):**
 ```json
@@ -2944,7 +2980,7 @@ GET /api/books/explore?rating=4-5&minRatingCount=5&sortBy=newest&page=1&limit=20
 
 ### GET /api/books/tags/popular
 
-Fetches popular tags/keywords from books for filtering. Returns most frequently used tags across all published books. Useful for building tag filters and tag clouds.
+Fetches popular tags/keywords from books for filtering. Returns most frequently used tags across all published books with usage counts. Useful for building tag filters and tag clouds.
 
 **Authentication:** Not required
 
@@ -2954,7 +2990,11 @@ Fetches popular tags/keywords from books for filtering. Returns most frequently 
 **Response (200 OK):**
 ```json
 {
-  "tags": ["thriller", "mystery", "horror", "suspense", "detective", "psychological", "crime", "adventure"]
+  "tags": [
+    { "keyword": "thriller", "count": 42 },
+    { "keyword": "mystery", "count": 38 },
+    { "keyword": "horror", "count": 31 }
+  ]
 }
 ```
 
@@ -2964,10 +3004,44 @@ GET /api/books/tags/popular?limit=10
 ```
 
 **Behavior:**
-- Queries all books' keywords (JSONB array)
-- Flattens and counts keyword occurrences
+- Aggregates keywords from active + public books (language-filtered with English fallback) at the database level
 - Returns most popular tags sorted by frequency
 - Filters out empty arrays and null values
+- Cached in-process (LRU, 10-minute TTL)
+
+---
+
+### GET /api/books/tags/recommended
+
+Fetches personalized interest tags for the authenticated user, derived from implicit engagement signals (reading history, likes, favorites). Every returned tag is guaranteed clickable: it exists on at least one active + public book in the user's language, so `explore?tags={keyword}` never returns an empty page.
+
+**Authentication:** Required
+
+**Query Parameters:**
+- `limit` (number, optional): Maximum number of tags to return (default: 20, max: 100)
+
+**Response (200 OK):**
+```json
+{
+  "personalized": true,
+  "tags": [
+    { "keyword": "psychological-horror", "count": 4, "score": 4.3 },
+    { "keyword": "unreliable-narrator", "count": 2, "score": 1.9 }
+  ]
+}
+```
+
+**Example:**
+```
+GET /api/books/tags/recommended?limit=10
+```
+
+**Behavior:**
+- Aggregates keywords from the user's read sessions (weight 1.0), likes (weight 0.7), and favorites (weight 0.5)
+- Scores each tag as the weighted sum of signal rows; `count` is the raw number of signal rows
+- **Clickability guard:** tags are kept only if ≥1 active + public book (user's language, English fallback) carries them
+- **Cold start:** users with no signals (or no clickable tags) get the global popular tags with `personalized: false`
+- Cached in Redis per (userId, limit, language) with a 5-minute TTL; responses carry `Cache-Control: private`
 
 ---
 
