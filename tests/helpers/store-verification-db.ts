@@ -31,15 +31,21 @@
  */
 
 import { Table } from "drizzle-orm";
+import { generateId } from "../../src/utils/uuid.js";
 import {
   adminSettings,
   adminUsers,
+  announcements,
   books,
+  broadcasts,
   subscriptionTransactions,
   subscriptions,
   transactions,
   users,
+  userCompletedBooks,
   userNotifications,
+  userPageProgress,
+  userSessions,
   webhookDeliveries,
 } from "../../src/db/schema.js";
 
@@ -50,6 +56,8 @@ const KNOWN_TABLES: Record<string, Table> = {
   subscriptionTransactions,
   webhookDeliveries,
   userNotifications,
+  announcements,
+  broadcasts,
   // Book access policy + admin moderation tests (`book-access-gate`,
   // `admin-moderation`): the gate reads `books` by primary key, the admin
   // routers resolve membership from `admin_users`, and ban takedowns read the
@@ -57,6 +65,13 @@ const KNOWN_TABLES: Record<string, Table> = {
   books,
   adminUsers,
   adminSettings,
+  // Story-reset eligibility tests (`story-reset-idempotency`,
+  // `credits-cost-resolver`): `evaluateStoryReset` reads the reader's session
+  // frontier, action-selection progress, and completion row to decide
+  // eligibility and cost.
+  userSessions,
+  userPageProgress,
+  userCompletedBooks,
 };
 
 const TABLE_NAMES = new Map<Table, string>(
@@ -202,19 +217,33 @@ const UNIQUE_RULES: Array<{
     columns: ["userId"],
     where: (record) => record.type === "first_purchase_bonus",
   },
+  // Partial unique: Cap-1 singleton for announcements (at most one scheduled or active)
+  {
+    table: "announcements",
+    columns: [],
+    where: (record) => ["scheduled", "active"].includes(record.status as string),
+  },
 ];
 
-function assertUnique(table: string, record: Record<string, unknown>, store: Record<string, any[]>): void {
+function assertUnique(
+  table: string,
+  record: Record<string, unknown>,
+  store: Record<string, any[]>,
+  ignoreRow?: unknown,
+): void {
   for (const rule of UNIQUE_RULES) {
     if (rule.table !== table) continue;
     if (rule.where && !rule.where(record)) continue;
     const values = rule.columns.map((column) => record[column]);
     if (values.some((value) => value === null || value === undefined)) continue;
     for (const existing of store[table]) {
+      if (existing === record || existing === ignoreRow) continue;
       if (rule.where && !rule.where(existing)) continue;
       if (rule.columns.every((column, index) => existing[column] === values[index])) {
+        const constraintName =
+          rule.columns.length > 0 ? `${table}_${rule.columns.join("_")}_unique` : "announcements_one_published_unique";
         const error = new Error(
-          `duplicate key value violates unique constraint "${table}_${rule.columns.join("_")}_unique"`,
+          `duplicate key value violates unique constraint "${constraintName}"`,
         ) as Error & { code: string };
         error.code = "23505";
         throw error;
@@ -241,7 +270,7 @@ export interface FakeDb {
 export function createFakeDb(): FakeDb {
   const rows: Record<string, any[]> = Object.fromEntries(Object.keys(KNOWN_TABLES).map((name) => [name, []]));
 
-  function selectChain(): any {
+  function selectChain(projection?: any): any {
     let table: unknown = null;
     let predicate: unknown = null;
     let limit: number | null = null;
@@ -271,6 +300,33 @@ export function createFakeDb(): FakeDb {
         try {
           let found = [...rows[tableNameOf(table)]];
           if (predicate) found = found.filter((row) => evalSql(predicate, row));
+          if (projection && typeof projection === "object" && !Array.isArray(projection)) {
+            const entries = Object.entries(projection);
+            const isCount = entries.some(
+              ([_, col]) =>
+                isSql(col) && (col as any).queryChunks?.some((c: any) => stringChunkText(c).toLowerCase().includes("count")),
+            );
+            if (isCount) {
+              const res: Record<string, any> = {};
+              for (const [k] of entries) res[k] = found.length;
+              resolve([res]);
+              return undefined;
+            }
+            found = found.map((row) => {
+              const mapped: Record<string, any> = {};
+              for (const [key, col] of entries) {
+                const colKey = jsKeyOfColumn(col);
+                if (colKey) {
+                  mapped[key] = row[colKey];
+                } else if ((col as any)?.name && typeof (col as any).name === "string") {
+                  mapped[key] = row[(col as any).name];
+                } else {
+                  mapped[key] = row[key];
+                }
+              }
+              return mapped;
+            });
+          }
           // SQL applies OFFSET before LIMIT; admin list endpoints rely on it.
           if (offsetFrom !== null) found = found.slice(offsetFrom);
           if (limit !== null) found = found.slice(0, limit);
@@ -293,7 +349,12 @@ export function createFakeDb(): FakeDb {
       if (settled) return result;
       settled = true;
       const name = tableNameOf(table);
-      const candidate = { id: `${name}_${rows[name].length + 1}`, ...payload };
+      const candidate = {
+        id: name === "announcements" ? (payload.id ?? generateId()) : `${name}_${rows[name].length + 1}`,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        ...payload,
+      };
       try {
         assertUnique(name, candidate, rows);
       } catch (error) {
@@ -350,12 +411,16 @@ export function createFakeDb(): FakeDb {
       returning: () => chain,
       then(resolve: (value: any) => void, reject: (error: unknown) => void) {
         try {
+          const name = tableNameOf(table);
           const matched: any[] = [];
-          for (const row of rows[tableNameOf(table)]) {
+          for (const row of rows[name]) {
             if (predicate && !evalSql(predicate, row)) continue;
+            const updated = { ...row };
             for (const [key, value] of Object.entries(patch)) {
-              row[key] = applyPatchValue(row[key], value);
+              updated[key] = applyPatchValue(updated[key], value);
             }
+            assertUnique(name, updated, rows, row);
+            Object.assign(row, updated);
             matched.push({ ...row });
           }
           resolve(matched);
@@ -368,19 +433,48 @@ export function createFakeDb(): FakeDb {
     return chain;
   }
 
+  function deleteChain(table: unknown): any {
+    let predicate: unknown = null;
+    const chain: any = {
+      where(next: unknown) {
+        predicate = next;
+        return chain;
+      },
+      returning: () => chain,
+      then(resolve: (value: any) => void, reject: (error: unknown) => void) {
+        try {
+          const name = tableNameOf(table);
+          const remaining: any[] = [];
+          const deleted: any[] = [];
+          for (const row of rows[name]) {
+            if (predicate && evalSql(predicate, row)) {
+              deleted.push(row);
+            } else {
+              remaining.push(row);
+            }
+          }
+          rows[name] = remaining;
+          resolve(deleted);
+        } catch (error) {
+          reject(error);
+        }
+        return undefined;
+      },
+    };
+    return chain;
+  }
+
   const dbWrite = {
-    select: () => selectChain(),
+    select: (projection?: any) => selectChain(projection),
     insert: (table: unknown) => insertChain(table),
     update: (table: unknown) => updateChain(table),
-    delete: () => {
-      throw new Error("FakeDb: delete is not used by these tests");
-    },
+    delete: (table: unknown) => deleteChain(table),
     transaction: (callback: (tx: any) => Promise<any>) => Promise.resolve().then(() => callback(dbWrite)),
   };
 
   return {
     rows,
-    dbRead: { select: () => selectChain() },
+    dbRead: { select: (projection?: any) => selectChain(projection) },
     dbWrite,
     reset(seed = {}) {
       for (const name of Object.keys(KNOWN_TABLES)) {

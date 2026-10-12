@@ -63,9 +63,19 @@ export interface PublicBroadcast {
   source: BroadcastSource;
   /** i18n key for structured system broadcasts (e.g. "broadcast.system.firstEasterEgg"). */
   messageKey?: string | null;
-  /** JSONB params passed to the i18n key at render time. */
+  /** JSONB params passed to the i18n key at render time (e.g. { username, endingName }). */
   messageParams?: Record<string, string> | null;
   containsSpoiler: boolean;
+  /**
+   * Present only when this row is the banner instance of a platform
+   * announcement (additive — user megaphone broadcasts carry null/undefined
+   * and render through the existing path unchanged).
+   */
+  announcementId?: string | null;
+  /** Announcement severity for banner styling; null on ordinary broadcasts. */
+  severity?: "info" | "warning" | "critical" | null;
+  /** Announcement CTA (deep link + label); null when absent. */
+  cta?: { url: string; text: string } | null;
   startsAt: string;
   expiresAt: string;
 }

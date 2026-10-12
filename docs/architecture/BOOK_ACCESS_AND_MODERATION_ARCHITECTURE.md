@@ -2,7 +2,7 @@
 
 > Living architecture document · Twistloom Backend · 2026-10-01
 > Scope: how a book's read permission is decided (reader page surface, book detail surface, admin bypass) and how admin moderation propagates through every cache tier.
-> Status: **Implemented & verified** · last verified against the working tree on 2026-10-01
+> Status: **Implemented & verified** · last verified against the working tree on 2026-10-12
 > Anchor contract: source files cite this document's `§N` sections in their
 > doc comments — see the Section Anchor Map at the end. Renumbering requires
 > updating those comments in the same change.
@@ -95,7 +95,7 @@ flowchart TB
 
 1. **Authorization reads the primary.** Every read-authorization decision is made against `getBookAccessSnapshot()`'s single-row primary-key read on `dbWrite` — never against `getEnrichedBook()`'s LRU projection and never against `dbRead` (`src/services/book-page-access.ts:67`).
 2. **One policy predicate.** `isRestrictedToOwner()` is the only expression of "owner-only book" (`archived` OR `private`); both surfaces consume it (`src/services/book-page-access.ts:39`).
-3. **Detail denial is a 404 and is never cacheable.** Restricted books answer `404` + `Cache-Control: no-store` to non-owners/non-admins (`src/routes/books.ts:9345-9349`); 200 responses for restricted books are `Cache-Control: private, no-store` (`src/routes/books.ts:9375-9376`).
+3. **Detail denial is a 404 and is never cacheable.** Restricted books answer `404` + `Cache-Control: no-store` to non-owners/non-admins (`src/routes/books.ts:9948-9951`); 200 responses for restricted books are `Cache-Control: private, no-store` (`src/routes/books.ts:9980-9981`).
 4. **Page denial keeps the shipped 401/403 contract.** Anonymous → `401`, authenticated non-owner → `403`, evaluated *before* visit persistence or credit processing (`src/services/book-controller.ts:1198-1203`).
 5. **Admin bypass requires the `books` capability.** `resolveAdminAccess()` + `adminHasPermission(access, "books")` — super-admin passes unconditionally (`src/services/book-page-access.ts:176`, `src/middleware/admin-auth.ts:95`).
 6. **Moderation is not a parallel mutation path.** `PATCH /admin/books/:id` writes through `updateBook()` and then invalidates the author list and Explore page-1 and notifies the forum feed (`src/routes/admin.ts:2281-2304`).
@@ -128,16 +128,16 @@ Rejection semantics (`src/services/book-page-access.ts:107`): restricted + anony
 
 ### 4.3 Book detail surface (404 + admin bypass + cache headers)
 
-`GET /api/books/:identifier` (`src/routes/books.ts:9326`) resolves **one authoritative snapshot** that serves both the gate and every cache-header/body decision, running it **after** resolving the book and **before** ETag/304 handling, so a 304 can never be issued to someone who is not allowed to read (`src/routes/books.ts:9343`):
+`GET /api/books/:identifier` (`src/routes/books.ts:9929`) resolves **one authoritative snapshot** that serves both the gate and every cache-header/body decision, running it **after** resolving the book and **before** ETag/304 handling, so a 304 can never be issued to someone who is not allowed to read (`src/routes/books.ts:9945`):
 
 | Step | Behavior | Evidence |
 |---|---|---|
-| Resolve | `getEnrichedBook(identifier, …)`; unknown → 404 | `src/routes/books.ts:9332-9333` |
-| Snapshot | `getBookAccessSnapshot(enrichedBook.id)` — primary read; row gone → 404 | `src/routes/books.ts:9343-9344`, `src/services/book-page-access.ts:67` |
-| Authorize | `getBookDetailAccessError(c, snapshot, userId)` — applies `isRestrictedToOwner`, owner, then admin-with-`books` (no query of its own) | `src/routes/books.ts:9345`, `src/services/book-page-access.ts:165-179` |
-| Deny | 404 envelope + `Cache-Control: no-store` | `src/routes/books.ts:9346-9349` |
-| Allow (restricted) | `isRestrictedToOwner(snapshot)` → `private, no-store`; body's `status`/`visibility` synced from the snapshot so a stale enriched LRU never serves pre-moderation values | `src/routes/books.ts:9375-9376`, `src/routes/books.ts:9351-9355` |
-| Allow (open) | existing `private, max-age=300, stale-while-revalidate=150` | `src/routes/books.ts:9377-9378` |
+| Resolve | `getEnrichedBook(identifier, …)`; unknown → 404 | `src/routes/books.ts:9934-9935` |
+| Snapshot | `getBookAccessSnapshot(enrichedBook.id)` — primary read; row gone → 404 | `src/routes/books.ts:9945-9946`, `src/services/book-page-access.ts:67` |
+| Authorize | `getBookDetailAccessError(c, snapshot, userId)` — applies `isRestrictedToOwner`, owner, then admin-with-`books` (no query of its own) | `src/routes/books.ts:9947`, `src/services/book-page-access.ts:165` |
+| Deny | 404 envelope + `Cache-Control: no-store` | `src/routes/books.ts:9948-9951` |
+| Allow (restricted) | `isRestrictedToOwner(snapshot)` → `private, no-store`; body's `status`/`visibility` synced from the snapshot so a stale enriched LRU never serves pre-moderation values | `src/routes/books.ts:9980-9981`, `src/routes/books.ts:9953-9957` |
+| Allow (open) | `private, no-cache` — ETag revalidation on every load; the payload carries per-user mutable fields (`isLiked`, `isRead`, `lastReadAt`, `lastPageId`, `contextHistory`) that a browser `max-age` would serve stale. (Pre-fix this tier was `private, max-age=300, stale-while-revalidate=150`.) | `src/routes/books.ts:9982-9983` |
 
 The admin bypass exists because the web moderation panel reads other users' private books **through this public endpoint** (`Twistloom-web/src/lib/hooks/query/useAdminBooks.ts:43`).
 

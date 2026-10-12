@@ -240,8 +240,8 @@ sequenceDiagram
 ## Custom actions (on-demand destinations)
 
 Flow (`src/routes/books.ts` + `src/services/custom-actions.ts`):
-1. `POST /:identifier/:pageId/custom-actions/preview` (books.ts:5521) — Gate 0/Gate 1 validation prompting + action preview.
-2. `POST /:identifier/:pageId/custom-actions/submit` (books.ts:5677) — persist the resolved custom action row.
+1. `POST /:identifier/:pageId/custom-actions/preview` (books.ts:8849) — Gate 0/Gate 1 validation prompting + action preview (no charge).
+2. `POST /:identifier/:pageId/custom-actions/submit` (books.ts:9025) — credits via `executeWithCredits` with an in-transaction cost resolver (the after-choice tier price is read from `tx`, not a replica; see [PAYMENTS_ARCHITECTURE_BACKEND.md §4](./PAYMENTS_ARCHITECTURE_BACKEND.md)) and persist the resolved custom action row.
 3. `GET /:identifier/:pageId/custom-actions` reads rows; generation is triggered via `generatePageForCustomAction` (custom-actions.ts:547) using the shared single-candidate `generateNextPage` path, then the action's `destinationPageIds` is populated pointing at the new page.
 
 Notes:

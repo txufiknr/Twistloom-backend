@@ -24,6 +24,26 @@ import { aiPrompt } from "../utils/ai-chat.js";
 import { AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 
+/**
+ * Thrown inside the `time-travel/commit` charge transaction when the reader's
+ * session has ALREADY been re-based onto the requested alternative.
+ *
+ * This is the idempotency guard for a duplicate "Take this path" tap: the first
+ * request committed and moved the frontier to `nextPageId`, so a second,
+ * concurrent request must not charge again for a switch that already happened.
+ * `executeWithCredits` rolls the transaction back, so nothing is deducted.
+ *
+ * Routes map this to an idempotent **200** (the desired end state — reader on
+ * the alternative — is already true), not an error, because the caller's
+ * intent was fulfilled.
+ */
+export class TimeTravelAlreadyCommittedError extends Error {
+  constructor(message = "Already on this alternative path") {
+    super(message);
+    this.name = "TimeTravelAlreadyCommittedError";
+  }
+}
+
 /** A set-membership change between the reader's path and an alternative. */
 export type TimeTravelSetChange = "added" | "removed";
 

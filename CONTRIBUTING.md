@@ -307,6 +307,10 @@ const { result, correlationId, transactionId } = await executeWithCredits(
 - **Atomic Batch Claims**: When claiming batch rewards (e.g. `claimAllBetaDutyRewards`, quests), execute `UPDATE ... WHERE ... RETURNING duty_id` and compute rewards strictly from rows returned by that query. If 0 rows return, yield early with 0 credits to eliminate concurrent double-spending.
 - **Insert Deduplication Guard**: When evaluating criteria via `insert().onConflictDoNothing()`, chain `.returning({ id })` to ensure activity logging and side-effect dispatches only occur if rows were actually created.
 - **Authentic Balance Preservation**: Never return a fabricated `credits: 0` on failed or redundant claims. Always query and return the authentic `user.credits` balance.
+- **In-Transaction Cost Resolver**: When the price depends on **mutable user state** (session frontier, existing choices, generation status), never compute the cost from a `dbRead` replica read before calling — pass an async resolver `(tx) => Promise<number>` as the cost argument instead. It runs inside the transaction *after* the row lock, so the read is authoritative; a resolver throw vetoes the charge (rollback, nothing deducted) and routes map it to **409** (or an idempotent 200 when intent was already satisfied). Static `CreditCostKey`/numeric costs stay correct when the price is a property of the action itself.
+- **Authoritative In-Transaction Status Guard**: An optimistic `dbRead` pre-check ("still `failed`?", "frontier still page N?") is defense-in-depth only. The authoritative guard re-checks from `tx` or carries the predicate in an `UPDATE ... WHERE <status> ... RETURNING` inside the operation — **0 rows** means a concurrent request won; throw a typed error so the deduction rolls back and answer **409**.
+- **Unique-Constraint Idempotency**: Purchase/hint inserts use a `dbWrite` pre-check plus `.onConflictDoNothing().returning({ id })`. **0 rows** means a concurrent request created the row — throw a typed error (rollback of the duplicate charge) and answer with the same graceful **200** (`alreadyPurchased: true` + the authentic balance).
+- **Per-User Mutable Payloads**: Endpoints returning fields the reader themselves mutate (`isLiked`, `isRead`, `lastReadAt`, personalized tags) must use `private, no-store` or `private, no-cache` — never a browser `max-age`, never `public` (see [`src/middleware/cache.ts`](file:///d:/Projects/Twistloom/Twistloom-backend/src/middleware/cache.ts)).
 
 ---
 
@@ -550,6 +554,9 @@ Before opening a pull request, ensure:
 - [ ] Heartbeat / last-seen endpoints use lightweight atomic updates.
 - [ ] Verified session results are cached on hot paths (short TTL, token-hash keyed, invalidated on logout).
 - [ ] Batch claim endpoints compute and award rewards strictly from affected rows via `UPDATE ... RETURNING` to eliminate double-spend race conditions.
+- [ ] State-dependent credit costs are resolved by an in-transaction `CreditCostResolver`; eligibility/status guards re-check inside the operation (409 or idempotent 200 on conflict).
+- [ ] Unique-constraint purchase/hint inserts use `dbWrite` pre-checks + `.onConflictDoNothing().returning()` and answer duplicates with a graceful 200 carrying the authentic balance.
+- [ ] Per-user mutable payloads use `private, no-store`/`private, no-cache` — never a browser `max-age` and never `public`.
 - [ ] Subsystem-level authorization guards (roles, beta tester status, creator tiers) are applied uniformly across all subsystem endpoints.
 - [ ] Temporary test/scratch files have been removed.
 

@@ -12,6 +12,8 @@ See `AGENTS.md` for the full financial integrity invariants. This file adds path
 - Use `executeWithCredits` for all credit-consuming operations — it acquires a row-level lock (`SELECT ... FOR UPDATE`).
 - Pass `tx` to ALL internal database operations inside `executeWithCredits` callbacks.
 - Never bypass `executeWithCredits` with direct `dbWrite` credit updates.
+- When the cost depends on mutable user state, pass an in-transaction `CreditCostResolver` `(tx) => Promise<number>` instead of pre-computing from a replica read — a resolver throw vetoes the charge (nothing deducted).
+- Re-check eligibility/status authoritatively inside the operation (tx re-read or `UPDATE ... WHERE <status> ... RETURNING`); 0 rows returned → throw a typed error and map to 409 (or an idempotent 200 when intent was already satisfied).
 - Activity logging goes OUTSIDE the transaction boundary so analytics errors never roll back purchases.
 
 ## Payment Gateways

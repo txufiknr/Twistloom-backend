@@ -19,7 +19,7 @@
  * @see src/routes/broadcasts.ts for the HTTP layer
  */
 
-import { and, desc, eq, gt, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, lte, sql } from "drizzle-orm";
 import { type DBClient, dbRead, dbWrite } from "../db/client.js";
 import { broadcasts, broadcastReports, users } from "../db/schema.js";
 import { generateId } from "../utils/uuid.js";
@@ -347,13 +347,25 @@ async function armBroadcastCooldown(userId: string): Promise<void> {
 /**
  * Counts broadcasts currently queued (approved, not yet expired) — used to cap
  * the FIFO queue length.
+ *
+ * Announcement banner rows (`announcement_id IS NOT NULL`) are deliberately
+ * excluded: they are platform-level, not user-queued megaphones, and must
+ * never consume a capacity slot. They still participate in `computeSchedule`
+ * ordering (that is what parks user broadcasts behind an active announcement,
+ * per Q3 of ADMIN_ANNOUNCEMENTS_BROADCAST_ROADMAP.md).
  */
 async function countPendingBroadcasts(): Promise<number> {
   const now = new Date();
   const [row] = await dbRead
     .select({ count: sql<number>`COUNT(*)::int` })
     .from(broadcasts)
-    .where(and(eq(broadcasts.status, "queued"), gt(broadcasts.expiresAt, now)));
+    .where(
+      and(
+        eq(broadcasts.status, "queued"),
+        gt(broadcasts.expiresAt, now),
+        isNull(broadcasts.announcementId),
+      ),
+    );
   return row?.count ?? 0;
 }
 
@@ -405,10 +417,18 @@ async function computeSchedule(tx?: DBClient): Promise<BroadcastSchedule> {
   const expiresAt = new Date(startsAt.getTime() + BROADCAST_DISPLAY_SECONDS * 1000);
 
   // Position = number of queued broadcasts starting strictly after `now` + 1.
+  // Announcement banner rows are excluded — they are not user queue entries,
+  // and counting them would inflate every user's position by one.
   const [ahead] = await client
     .select({ count: sql<number>`COUNT(*)::int` })
     .from(broadcasts)
-    .where(and(eq(broadcasts.status, "queued"), gt(broadcasts.startsAt, now)));
+    .where(
+      and(
+        eq(broadcasts.status, "queued"),
+        gt(broadcasts.startsAt, now),
+        isNull(broadcasts.announcementId),
+      ),
+    );
   const queuePosition = (ahead?.count ?? 0) + 1;
 
   return { startsAt, expiresAt, queuePosition };
@@ -731,7 +751,15 @@ function userFacingRejectMessage(reason?: BroadcastRejectReason): string {
 
 const CURRENT_CACHE_KEY = "broadcast:current";
 
-async function invalidateCurrentBroadcastCache(): Promise<void> {
+/**
+ * Drops the cached "current broadcast" value so the next `/broadcasts/current`
+ * read (and SSE tick) reflects a change. Exported for the announcement publish
+ * /end pipeline, which inserts or revokes banner rows directly.
+ *
+ * Failures are swallowed — a stale cache for up to the TTL is acceptable and
+ * must never break the calling mutation.
+ */
+export async function invalidateCurrentBroadcastCache(): Promise<void> {
   const redis = getRedisClient();
   if (!redis) return;
   try {
@@ -799,6 +827,10 @@ export async function getCurrentBroadcast(): Promise<PublicBroadcast | null> {
       messageParams: broadcasts.messageParams,
       source: broadcasts.source,
       containsSpoiler: broadcasts.containsSpoiler,
+      announcementId: broadcasts.announcementId,
+      severity: broadcasts.severity,
+      ctaUrl: broadcasts.ctaUrl,
+      ctaText: broadcasts.ctaText,
       startsAt: broadcasts.startsAt,
       expiresAt: broadcasts.expiresAt,
     })
@@ -816,17 +848,23 @@ export async function getCurrentBroadcast(): Promise<PublicBroadcast | null> {
 
   const result: PublicBroadcast | null = live
     ? {
-        id: live.id,
-        userId: live.userId,
-        username: live.username,
-        message: live.message,
-        messageKey: live.messageKey ?? null,
-        messageParams: (live.messageParams as Record<string, string> | null) ?? null,
-        source: live.source as BroadcastSource,
-        containsSpoiler: live.containsSpoiler,
-        startsAt: live.startsAt.toISOString(),
-        expiresAt: live.expiresAt.toISOString(),
-      }
+          id: live.id,
+          userId: live.userId,
+          username: live.username,
+          message: live.message,
+          messageKey: live.messageKey ?? null,
+          messageParams: (live.messageParams as Record<string, string> | null) ?? null,
+          source: live.source as BroadcastSource,
+          containsSpoiler: live.containsSpoiler,
+          announcementId: live.announcementId ?? null,
+          severity: live.severity ?? null,
+          cta:
+            live.ctaUrl && live.ctaText
+              ? { url: live.ctaUrl, text: live.ctaText }
+              : null,
+          startsAt: live.startsAt.toISOString(),
+          expiresAt: live.expiresAt.toISOString(),
+        }
     : null;
 
   if (redis) {

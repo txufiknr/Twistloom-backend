@@ -179,7 +179,8 @@ import { MAX_BRANCHING_PREGENERATION_DEPTH, COMPANION_CACHE_JACCARD_THRESHOLD, C
 import { getBookModeCreditCostForUser, getCreditCostForUser, calculateBranchSwitchCost } from "../config/credits.js";
 import { parseIdempotencyKey, findBookByIdempotencyKey, replayOnUniqueViolation, buildAsyncReplay, buildCreationReplay, BOOK_CREATION_STARTED_MESSAGE, isUniqueViolation } from "../services/book-idempotency.js";
 import { setIdempotencyProcessing } from "../utils/redis.js";
-import { getJourneyForks, reconstructFork, resolveCurrentPageId, narrateForkAlternative } from "../services/time-travel.js";
+import { evaluateStoryReset, StoryResetAlreadyAppliedError, type StoryResetEvaluation } from "../services/story-reset.js";
+import { getJourneyForks, reconstructFork, resolveCurrentPageId, narrateForkAlternative, TimeTravelAlreadyCommittedError } from "../services/time-travel.js";
 import { savedPaths } from "../db/schema.js";
 import { CREDIT_ERRORS } from "../config/errors.js";
 import { getRefundForStep, isAtPointOfNoReturn } from "../config/generation-refund.js";
@@ -1478,6 +1479,20 @@ router.post('/:bookId/cancel', requireAuth, async (c) => {
  * // Not retryable
  * → 400 { "error": "Book generation is not in a retryable state (current: completed)" }
  */
+/**
+ * Thrown inside the retry charge transaction when the generation is no longer
+ * in a retryable state (`failed` / `cancelled`) — a concurrent retry already
+ * re-queued it, or the optimistic replica check was stale. `executeWithCredits`
+ * rolls back the deduction, so the reader is never charged for a retry that
+ * another request already performed.
+ */
+class GenerationRetryConflictError extends Error {
+  constructor(message = "This book's generation is no longer in a retryable state") {
+    super(message);
+    this.name = "GenerationRetryConflictError";
+  }
+}
+
 router.post('/:bookId/retry', requireAuth, async (c) => {
   try {
     const { bookId } = c.req.param();
@@ -1520,11 +1535,18 @@ router.post('/:bookId/retry', requireAuth, async (c) => {
     // Consume credits atomically with resetting the generation state.
     // Credits were refunded when the generation failed or was cancelled,
     // so retrying re-deducts them. Cost matches the book's original mode.
+    //
+    // The UPDATE re-checks the retryable state ON the write primary, inside the
+    // charged transaction. The optimistic pre-check above ran on the replica
+    // before the limit check; a concurrent retry that committed in between (or
+    // replica lag) would otherwise double-charge and re-queue a generation that
+    // is already pending. The `WHERE … status IN (failed, cancelled)` guard
+    // matches 0 rows in that case and we throw, rolling back the deduction.
     await executeWithCredits(
       userId,
       getBookModeCreditCostForUser(userId, data.mode),
       async (tx) => {
-        await tx
+        const updated = await tx
           .update(bookGenerations)
           .set({
             generationStatus:      'pending',
@@ -1534,7 +1556,14 @@ router.post('/:bookId/retry', requireAuth, async (c) => {
             generationCompletedAt: null,
             isRefunded:            null,
           })
-          .where(eq(bookGenerations.bookId, bookId));
+          .where(and(
+            eq(bookGenerations.bookId, bookId),
+            inArray(bookGenerations.generationStatus, ['failed', 'cancelled']),
+          ))
+          .returning({ bookId: bookGenerations.bookId });
+        if (updated.length === 0) {
+          throw new GenerationRetryConflictError();
+        }
       },
       {
         context:  'book_generation_retry',
@@ -1555,6 +1584,11 @@ router.post('/:bookId/retry', requireAuth, async (c) => {
     const message = `Book generation retry initiated. ${getBookModeCreditCostForUser(userId, data.mode)} credits consumed.`;
     return c.json({ success: true, message });
   } catch (error) {
+    // A concurrent retry won the race (or the replica pre-check was stale) —
+    // the deduction was rolled back, so report the conflict cleanly.
+    if (error instanceof GenerationRetryConflictError) {
+      return cConflictError(c, error.message);
+    }
     console.error('[POST /api/books/:bookId/retry] ❌ Error:', error);
     return cApiError(c, 'Failed to retry book generation', error);
   }
@@ -3329,9 +3363,15 @@ router.get("/tags/popular", async (c) => {
  * Fetches personalized interest tags for the authenticated user, derived from
  * implicit engagement signals (reading history, likes, favorites) weighted by
  * signal strength (read 1.0 > like 0.7 > favorite 0.5). Every returned tag is
- * guaranteed clickable: it exists on at least one active + public book in the
- * user's language (English fallback), so `explore?tags={keyword}` never
- * returns an empty page.
+ * guaranteed clickable on the BASE explore query: it exists on at least one
+ * active + public book in the user's language (English fallback), so
+ * `explore?tags={keyword}` returns results.
+ *
+ * Note: the guarantee does NOT extend to `explore?tags={keyword}&personalized=true`.
+ * The personalized filter additionally excludes books the reader has already
+ * opened (any `user_sessions` row), so a tag whose entire catalog the reader
+ * has exhausted legitimately returns an empty personalized page — that is the
+ * intended "nothing new in this tag" signal, not a bug.
  *
  * Cold start: users with no signal rows (or no clickable tags) receive the
  * global popular tags with `personalized: false`, so the chip carousel always
@@ -3372,7 +3412,11 @@ router.get("/tags/recommended", requireAuth, async (c) => {
     // Per-user payload — must never enter the shared explore cache.
     const result = await getRecommendedTags(userId, limit, headerLanguage);
 
-    c.header('Cache-Control', 'private, max-age=300, stale-while-revalidate=60');
+    // Per-user, read-history-derived payload: a browser cache (max-age) would
+    // keep serving stale recommendations for minutes after the user finishes a
+    // book. The Redis layer already dedupes bursts server-side, so the edge
+    // must not re-cache — `no-store` guarantees freshness.
+    c.header('Cache-Control', 'private, no-store');
     return c.json(result);
   } catch (error) {
     return cApiError(c, "Failed to fetch recommended tags", error);
@@ -5594,7 +5638,10 @@ router.post("/:identifier/:pageId/time-travel/commit", requireAuth, async (c) =>
     if (!action) return cNotFoundError(c, "Alternative path not found at this fork");
 
     // Defense-in-depth: reject re-committing the reader's *own* (already-taken)
-    // path. The frontend never sends it, but the API must not trust that.
+    // path. The frontend never sends it, but the API must not trust that. This
+    // is an OPTIMISTIC replica check — the authoritative duplicate guard is the
+    // in-transaction resolver below (which catches a concurrent tap that
+    // committed in between).
     const readerPageId = await resolveCurrentPageId(bookId, userId, undefined);
     if (readerPageId) {
       const readerState = await getStoryState(readerPageId);
@@ -5604,48 +5651,94 @@ router.post("/:identifier/:pageId/time-travel/commit", requireAuth, async (c) =>
       }
     }
 
-    // Resolve current session frontier page number for distance calculation
-    const [session] = await dbRead
-      .select({ frontierPageNumber: userSessions.frontierPageNumber })
-      .from(userSessions)
-      .where(and(eq(userSessions.userId, userId), eq(userSessions.bookId, bookId)))
-      .limit(1);
-
     const forkPageNumber = forkPage?.page ?? 1;
-    const frontierPageNumber = session?.frontierPageNumber ?? forkPageNumber;
-    const commitCost = calculateBranchSwitchCost(frontierPageNumber, forkPageNumber, userId);
+    // Filled by the resolver from the AUTHORITATIVE frontier so the ledger row
+    // and the response reflect the true distance, not a replica snapshot.
+    let commitCost = 0;
+    let distance = 1;
+    const ledgerMetadata: Record<string, unknown> = { bookId, forkPageId: pageId, nextPageId };
 
     try {
       await executeWithCredits(
         userId,
-        commitCost,
-        async () => ({ ok: true as const }),
-        { context: "time_travel_commit", metadata: { bookId, forkPageId: pageId, nextPageId, cost: commitCost, distance: Math.max(1, frontierPageNumber - forkPageNumber) } },
+        // ── Authoritative cost resolver ──────────────────────────────────
+        // Runs inside the charge transaction, after the users row lock. It
+        // re-reads the frontier from the write primary, so a concurrent
+        // commit (or a stale replica that served the optimistic checks) can
+        // no longer set the price. It also refuses to charge when the
+        // session has ALREADY been re-based onto this alternative — a
+        // duplicate "Take this path" tap must not bill a second time.
+        async (tx) => {
+          const [session] = await tx
+            .select({
+              frontierPageId: userSessions.frontierPageId,
+              frontierPageNumber: userSessions.frontierPageNumber,
+            })
+            .from(userSessions)
+            .where(and(eq(userSessions.userId, userId), eq(userSessions.bookId, bookId)))
+            .limit(1);
+
+          // Idempotency guard: the alternative's page is already the reader's
+          // frontier, so the switch this endpoint performs already happened.
+          if (session?.frontierPageId === nextPageId) {
+            throw new TimeTravelAlreadyCommittedError();
+          }
+
+          const frontierPageNumber = session?.frontierPageNumber ?? forkPageNumber;
+          commitCost = calculateBranchSwitchCost(frontierPageNumber, forkPageNumber, userId);
+          distance = Math.max(1, frontierPageNumber - forkPageNumber);
+          ledgerMetadata.cost = commitCost;
+          ledgerMetadata.distance = distance;
+          return commitCost;
+        },
+        // Atomic with the charge: the session re-base commits or rolls back
+        // together with the deduction, so a committed charge can never exist
+        // without its re-base (previously a crash between the two left the
+        // reader billed but un-switched).
+        async (tx) => {
+          const [nextPage] = await tx
+            .select({ page: pages.page })
+            .from(pages)
+            .where(eq(pages.id, nextPageId))
+            .limit(1);
+          if (!nextPage) {
+            // The action's destination vanished between the pre-flight and the
+            // charge — refuse rather than bill for a switch we cannot apply.
+            throw new Error(`Alternative destination page not found: ${nextPageId}`);
+          }
+          await tx
+            .update(userSessions)
+            .set({ frontierPageId: nextPageId, frontierPageNumber: nextPage.page })
+            .where(and(eq(userSessions.userId, userId), eq(userSessions.bookId, bookId)));
+          return { ok: true as const };
+        },
+        { context: "time_travel_commit", metadata: ledgerMetadata },
       );
-    } catch {
-      return c.json({ error: "Credit charge failed. You may not have enough credits." }, 402);
+    } catch (error) {
+      // Idempotent success: the reader is already on this alternative, so the
+      // caller's intent is satisfied. Return 200 (not an error) so a duplicate
+      // tap resolves the same way the first one did.
+      if (error instanceof TimeTravelAlreadyCommittedError) {
+        return c.json({ ok: true, nextPageId, alreadyCommitted: true });
+      }
+      const errorMessage = getErrorMessage(error);
+      if (errorMessage.includes(CREDIT_ERRORS.INSUFFICIENT_CREDITS)) {
+        return c.json({ error: "Credit charge failed. You may not have enough credits." }, 402);
+      }
+      throw error;
     }
 
-    // Explicitly re-base the session onto the alternative's first page so Phase
-    // 2 doesn't silently depend on the client navigation GET's side effects.
-    const [nextPage] = await dbRead
-      .select({ page: pages.page })
-      .from(pages)
-      .where(eq(pages.id, nextPageId))
-      .limit(1);
-    if (nextPage) {
-      await dbWrite
-        .update(userSessions)
-        .set({ frontierPageId: nextPageId, frontierPageNumber: nextPage.page })
-        .where(and(eq(userSessions.userId, userId), eq(userSessions.bookId, bookId)));
-    }
-
-    await logUserActivity({
+    // Fire-and-forget: the transaction has committed (charge + re-base). An
+    // analytics failure must not surface a 500 for a succeeded operation — the
+    // client would see a failed request and a naive retry would re-charge.
+    void logUserActivity({
       userId,
       activityType: "time_travel_commit",
       targetType: "book",
       targetId: bookId,
-      metadata: { forkPageId: pageId, nextPageId },
+      metadata: { forkPageId: pageId, nextPageId, cost: commitCost, distance },
+    }).catch((error) => {
+      console.error("[POST /time-travel/commit] ⚠️ logUserActivity failed:", getErrorMessage(error));
     });
 
     return c.json({ ok: true, nextPageId });
@@ -6424,13 +6517,32 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (c) => 
  *   "alreadyPurchased": false
  * }
  */
+/**
+ * Thrown inside the action-hint charge transaction when the insert conflicts on
+ * the unique `(userId, pageId, actionText)` constraint — a concurrent request
+ * (or a replica-lagged pre-check) already purchased this hint. The charge is
+ * rolled back, so the reader is never billed twice for the same hint. Routes
+ * map this to the same graceful 200 the pre-check returns.
+ */
+class ActionHintAlreadyPurchasedError extends Error {
+  constructor(message = "This action hint was already purchased") {
+    super(message);
+    this.name = "ActionHintAlreadyPurchasedError";
+  }
+}
+
 router.post("/:identifier/:pageId/actions/hint", requireAuth, rateLimit(ACTION_HINT_RATE_LIMIT), async (c) => {
+  // Hoisted to handler scope so the catch block can reference them when
+  // mapping a concurrent-purchase conflict to the graceful already-owned 200.
+  const userId = c.get("userId")!;
+  let pageId = "";
+  let actionText = "";
+  let dbPage: Awaited<ReturnType<typeof getPageFromDB>> = null;
   try {
     const { identifier, pageId: pageIdParam } = c.req.param();
     const { actionText: rawActionText } = c.get("body");
-    const userId = c.get("userId")!;
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
-    const pageId = Array.isArray(pageIdParam) ? pageIdParam[0] : pageIdParam;
+    pageId = Array.isArray(pageIdParam) ? pageIdParam[0] : pageIdParam;
 
     // Validate actionText parameter
     if (!rawActionText || typeof rawActionText !== 'string') {
@@ -6438,14 +6550,14 @@ router.post("/:identifier/:pageId/actions/hint", requireAuth, rateLimit(ACTION_H
     }
 
     // Strip HTML as defense-in-depth for plain-text inputs
-    const actionText = stripHtml(rawActionText);
+    actionText = stripHtml(rawActionText);
 
     if (!actionText) {
       return cValidationError(c, "actionText is empty after sanitization");
     }
 
     // Validate that the page exists and belongs to the book
-    const dbPage = await getPageFromDB(pageId);
+    dbPage = await getPageFromDB(pageId);
     if (!dbPage) {
       return cNotFoundError(c, "Page not found");
     }
@@ -6498,17 +6610,27 @@ router.post("/:identifier/:pageId/actions/hint", requireAuth, rateLimit(ACTION_H
 
     // Consume credits and insert hint record in a single transaction
     // Note: executeWithCredits handles automatic refund if the operation fails
+    //
+    // The insert uses ON CONFLICT DO NOTHING + RETURNING so a concurrent
+    // purchase of the same hint (which the replica pre-check above could miss)
+    // matches 0 rows instead of throwing a raw unique violation. We then throw
+    // ActionHintAlreadyPurchasedError, which rolls back the deduction; the
+    // catch block maps it to the same graceful 200 the pre-check returns.
     const creditResult = await executeWithCredits(
       userId,
       "SHOW_ACTION_HINT",
       async (tx) => {
-        // Insert the action hint record
-        await tx.insert(userActionHints).values({
+        const inserted = await tx.insert(userActionHints).values({
           userId,
           pageId,
           actionText,
           createdAt: new Date()
-        });
+        })
+          .onConflictDoNothing()
+          .returning({ id: userActionHints.id });
+        if (inserted.length === 0) {
+          throw new ActionHintAlreadyPurchasedError();
+        }
       },
       {
         context: "action_hint_purchase",
@@ -6542,6 +6664,29 @@ router.post("/:identifier/:pageId/actions/hint", requireAuth, rateLimit(ACTION_H
     });
 
   } catch (error) {
+    // A concurrent request already purchased this hint (or the replica
+    // pre-check was stale) — the deduction was rolled back, so report the
+    // already-owned state gracefully instead of a 500 unique violation.
+    if (error instanceof ActionHintAlreadyPurchasedError) {
+      const [userRow] = await dbWrite
+        .select({ credits: users.credits })
+        .from(users)
+        .where(eq(users.userId, userId))
+        .limit(1);
+      const shownActionHint = await getUserActionHints(userId, pageId);
+      return c.json({
+        success: true,
+        actionText,
+        alreadyPurchased: true,
+        // dbPage is always loaded by the time the conflict error can fire
+        // (executeWithCredits runs after it), but guard for strict null checks.
+        hintText: dbPage?.actions.find(a => a.text === actionText)?.hint?.text ?? "",
+        credits: userRow?.credits ?? 0,
+        shownActionHint,
+        message: "You have already purchased this hint"
+      });
+    }
+
     const errorMessage = getErrorMessage(error);
     
     // Handle insufficient credits error
@@ -8015,50 +8160,65 @@ router.post("/:identifier/reset-story", requireAuth, async (c) => {
       const firstPage = await getFirstPage(book.id);
       if (!firstPage) return cValidationError(c, "Book has no pages yet");
 
-      const [session] = await dbRead
-        .select({
-          status: userSessions.status,
-          frontierPageNumber: userSessions.frontierPageNumber,
-        })
-        .from(userSessions)
-        .where(and(eq(userSessions.userId, userId), eq(userSessions.bookId, book.id)))
-        .limit(1);
-
-      const [progressRow] = await dbRead
-        .select({ id: userPageProgress.id })
-        .from(userPageProgress)
-        .where(and(eq(userPageProgress.userId, userId), eq(userPageProgress.bookId, book.id)))
-        .limit(1);
-
-      const frontier = session?.frontierPageNumber ?? 1;
-      if (!progressRow && frontier <= 1) {
+      // Pre-flight on the replica: a cheap fast-fail for "nothing to reset"
+      // before any lock or charge is attempted. This is an OPTIMISTIC check —
+      // it is not authoritative. The decision that governs the charge is the
+      // in-transaction resolver below.
+      const preflight = await evaluateStoryReset(dbRead, userId, book.id, book.mode);
+      if (!preflight.eligible) {
         return cValidationError(c, "Nothing to reset");
       }
 
-      // Server-derived free-replay eligibility — a client cannot claim it.
-      const [completedRow] = await dbRead
-        .select({ id: userCompletedBooks.id })
-        .from(userCompletedBooks)
-        .where(and(eq(userCompletedBooks.userId, userId), eq(userCompletedBooks.bookId, book.id)))
-        .limit(1);
-      const isFreeReplay = session?.status === "past" || Boolean(completedRow);
-
-      const resetCost = isFreeReplay
-        ? 0
-        : book.mode === "novel"
-          ? getCreditCostForUser(userId, "STORY_RESET")
-          : calculateBranchSwitchCost(frontier, 1, userId);
+      // Shared with the ledger row and the activity log. The resolver fills in
+      // the AUTHORITATIVE numbers before the deduction happens, so what is
+      // recorded reflects what was actually charged, not the replica snapshot.
+      let resetCost = preflight.cost;
+      let resetFrontier = preflight.frontier;
+      let resetFreeReplay = preflight.isFreeReplay;
+      const ledgerMetadata: Record<string, unknown> = {
+        bookId: book.id,
+        mode: book.mode,
+        cost: resetCost,
+        frontier: resetFrontier,
+        freeReplay: resetFreeReplay,
+      };
 
       let remainingCredits = 0;
+      // Captured by the resolver below. The operation MUST use the
+      // authoritative session (read under the row lock), not the replica
+      // snapshot from the pre-flight — they can differ.
+      let authoritativeSession: StoryResetEvaluation["session"] = null;
       try {
         const creditResult = await executeWithCredits(
           userId,
-          resetCost,
+          // ── Authoritative cost resolver ──────────────────────────────────
+          // Runs INSIDE the charge transaction, after executeWithCredits has
+          // taken the users row lock. It therefore reads state no concurrent
+          // credit operation can still be mutating: a reset that already
+          // committed (Redis lock expired, unavailable, or a stale replica
+          // served the pre-flight) is now visible, and we refuse to charge
+          // for it. Throwing rolls the whole transaction back — the reader
+          // is never billed twice for one reset, and the price always comes
+          // from the true frontier rather than a possibly-stale one.
+          async (tx) => {
+            const authoritative = await evaluateStoryReset(tx, userId, book.id, book.mode);
+            if (!authoritative.eligible) {
+              throw new StoryResetAlreadyAppliedError();
+            }
+            authoritativeSession = authoritative.session;
+            resetCost = authoritative.cost;
+            resetFrontier = authoritative.frontier;
+            resetFreeReplay = authoritative.isFreeReplay;
+            ledgerMetadata.cost = resetCost;
+            ledgerMetadata.frontier = resetFrontier;
+            ledgerMetadata.freeReplay = resetFreeReplay;
+            return authoritative.cost;
+          },
           async (tx) => {
             await tx
               .delete(userPageProgress)
               .where(and(eq(userPageProgress.userId, userId), eq(userPageProgress.bookId, book.id)));
-            if (session) {
+            if (authoritativeSession) {
               await tx
                 .update(userSessions)
                 .set({
@@ -8082,11 +8242,18 @@ router.post("/:identifier/reset-story", requireAuth, async (c) => {
           },
           {
             context: "story_reset",
-            metadata: { bookId: book.id, mode: book.mode, cost: resetCost, frontier, freeReplay: isFreeReplay },
+            metadata: ledgerMetadata,
           },
         );
         remainingCredits = creditResult.remainingCredits;
       } catch (error) {
+        // The authoritative re-check vetoed the charge: the reset already
+        // happened (a concurrent request won, or the replica pre-flight was
+        // stale). executeWithCredits rolled everything back, so no credits
+        // moved. 409, not 400 — the caller's intent WAS fulfilled.
+        if (error instanceof StoryResetAlreadyAppliedError) {
+          return cConflictError(c, "This story has already been reset");
+        }
         const errorMessage = getErrorMessage(error);
         if (errorMessage.includes(CREDIT_ERRORS.INSUFFICIENT_CREDITS)) {
           return c.json(
@@ -8113,7 +8280,7 @@ router.post("/:identifier/reset-story", requireAuth, async (c) => {
         activityType: "story_reset",
         targetType: "book",
         targetId: book.id,
-        metadata: { mode: book.mode, cost: resetCost, frontier, freeReplay: isFreeReplay },
+        metadata: { mode: book.mode, cost: resetCost, frontier: resetFrontier, freeReplay: resetFreeReplay },
       }).catch((error) => {
         console.error("[POST /:identifier/reset-story] ⚠️ logUserActivity failed:", getErrorMessage(error));
       });
@@ -8277,14 +8444,31 @@ router.get("/share/:username/:bookSlug/:pageId", async (c) => {
  *   "alreadyPurchased": false
  * }
  */
+/**
+ * Thrown inside the book-purchase charge transaction when the insert conflicts
+ * on the unique `(userId, bookId)` constraint — a concurrent purchase (which
+ * the replica pre-check could miss) already unlocked the book. The charge is
+ * rolled back, so the reader is never billed twice for the same book. Routes
+ * map this to the same graceful 200 the pre-check returns.
+ */
+class BookAlreadyPurchasedError extends Error {
+  constructor(message = "This book was already purchased") {
+    super(message);
+    this.name = "BookAlreadyPurchasedError";
+  }
+}
+
 router.post("/:identifier/purchase", requireAuth, async (c) => {
+  // Hoisted so the catch block can reference it when mapping a concurrent
+  // purchase conflict to the graceful already-owned 200.
+  let dbBook: Awaited<ReturnType<typeof getBookFromDB>> = null;
   try {
     const { identifier } = c.req.param();
     const userId = c.get("userId")!;
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
 
     // Validate that the book exists
-    const dbBook = await getBookFromDB(bookIdentifier);
+    dbBook = await getBookFromDB(bookIdentifier);
     if (!dbBook) {
       return cNotFoundError(c, "Book not found");
     }
@@ -8294,8 +8478,11 @@ router.post("/:identifier/purchase", requireAuth, async (c) => {
       return cValidationError(c, "This book is not available for purchase");
     }
 
-    // Check if user already purchased this book
-    const existingPurchase = await dbRead
+    // Check if user already purchased this book. This pre-check runs on the
+    // WRITE connection (not the replica) so a purchase committed a moment ago
+    // is visible immediately; the ON CONFLICT guard inside the transaction
+    // below is the authoritative race backstop for anything this still misses.
+    const existingPurchase = await dbWrite
       .select()
       .from(userPurchasedBooks)
       .where(and(
@@ -8316,17 +8503,28 @@ router.post("/:identifier/purchase", requireAuth, async (c) => {
 
     // Consume credits and insert purchase record in a single transaction
     // Note: executeWithCredits handles automatic refund if the operation fails
+    //
+    // ON CONFLICT DO NOTHING + RETURNING: a concurrent purchase of the same
+    // book matches 0 rows instead of throwing a raw unique violation, and we
+    // throw BookAlreadyPurchasedError to roll back the duplicate deduction.
     await executeWithCredits(
       userId,
-      dbBook.creditsPrice!,
+      dbBook.creditsPrice!, // Non-null assertion: validated above
       async (tx) => {
         // Insert the book purchase record
-        await tx.insert(userPurchasedBooks).values({
+        // (dbBook is non-null: guarded above; non-null assertions needed inside
+        // the closure because TS does not flow narrowing for mutable lets.)
+        const inserted = await tx.insert(userPurchasedBooks).values({
           userId,
-          bookId: dbBook.id,
-          creditsPrice: dbBook.creditsPrice!, // Non-null assertion: validated above
+          bookId: dbBook!.id,
+          creditsPrice: dbBook!.creditsPrice!, // Non-null assertion: validated above
           createdAt: new Date()
-        });
+        })
+          .onConflictDoNothing()
+          .returning({ id: userPurchasedBooks.id });
+        if (inserted.length === 0) {
+          throw new BookAlreadyPurchasedError();
+        }
       },
       {
         context: "book_purchase",
@@ -8353,6 +8551,19 @@ router.post("/:identifier/purchase", requireAuth, async (c) => {
     });
 
   } catch (error) {
+    // A concurrent request already purchased this book (or the pre-check was
+    // stale) — the deduction was rolled back, so report the already-owned
+    // state gracefully instead of a 500 unique violation.
+    if (error instanceof BookAlreadyPurchasedError && dbBook) {
+      return c.json({
+        success: true,
+        bookId: dbBook.id,
+        creditsPrice: dbBook.creditsPrice,
+        alreadyPurchased: true,
+        message: "You have already purchased this book"
+      });
+    }
+
     const errorMessage = getErrorMessage(error);
     
     // Handle insufficient credits error
@@ -8813,6 +9024,12 @@ router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, rateLimi
  */
 router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit(CUSTOM_ACTION_SUBMIT_RATE_LIMIT), requireNotSuspended, requireGenerationQuota, async (c) => {
   let creditsCost: number = getCreditCostForUser(c.get("userId") || null, 'CUSTOM_ACTION');
+  // Authoritative cost, set by the in-transaction resolver inside the charged
+  // transaction below. The replica-computed `creditsCost` above is only an
+  // optimistic estimate; the charge, the audit row, and the insufficient-credits
+  // message all use this value (declared at handler scope so the catch block
+  // can reference it).
+  let authorizedCost: number = creditsCost;
   // Bound to the concrete book/page once resolved — lets the catch block answer
   // a lost concurrent-submit race (audit R1) with the winning row's poll info.
   let raceScope: { bookIdentifier: string; pageId: string; bookId: string; userId: string } | null = null;
@@ -9003,7 +9220,27 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit
     const auditId = generateId();
     const creditResult = await executeWithCredits(
       userId,
-      creditsCost,
+      // ── Authoritative cost resolver ──────────────────────────────────
+      // The after-choice tier depends on `user_page_progress`, a mutable
+      // table. The replica read at :9021 can lag behind a choice committed on
+      // the write primary between that read and this charge, under-billing a
+      // custom action that should be at the after-choice tier. Re-reading it
+      // inside the transaction (after the users-row lock) closes that window.
+      async (tx) => {
+        const [exists] = await tx
+          .select({ exists: sql`1` })
+          .from(userPageProgress)
+          .where(and(
+            eq(userPageProgress.userId, userId),
+            eq(userPageProgress.bookId, book.id),
+            eq(userPageProgress.actionedPageId, pageId),
+          ))
+          .limit(1);
+        authorizedCost = exists
+          ? getCreditCostForUser(userId, 'CUSTOM_ACTION_AFTER_CHOICE')
+          : getCreditCostForUser(userId, 'CUSTOM_ACTION');
+        return authorizedCost;
+      },
       async (tx) => {
         // Audit R1 — re-check on the WRITE connection inside the charged
         // transaction. The fast-path pre-check above ran on the replica before
@@ -9042,7 +9279,7 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit
           rejectionCategory: result.rejectionCategory,
           plausibilityScore: result.plausibilityScore,
           progressionScore: result.progressionScore,
-          creditsCharged: creditsCost,
+          creditsCharged: authorizedCost,
           language: result.language,
           createdAt: new Date(),
           updatedAt: new Date(),
@@ -9137,7 +9374,7 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, rateLimit
     if (errorMessage.includes(CREDIT_ERRORS.INSUFFICIENT_CREDITS)) {
       return c.json({
         error: 'Insufficient credits',
-        message: `You need at least ${creditsCost} credits to submit a custom action`,
+        message: `You need at least ${authorizedCost} credits to submit a custom action`,
         code: 'customActions.insufficientCredits',
       }, 402);
     }
@@ -9733,14 +9970,15 @@ router.get("/:identifier", optionalAuth, async (c) => {
 
     // Owner-restricted books (private/archived): never stored — the requester
     // proved ownership/admin once, that must not become a reusable cache entry.
-    // Active public-ish books: private cache so Vercel edge doesn't serve stale
-    // user-specific data. Non-active (draft/archived) books: no cache — these
-    // change frequently during generation and must never be served stale.
+    // All other books: `no-cache` forces an ETag revalidation on every load
+    // (cheap 304s when unchanged) because the payload carries per-user, mutable
+    // fields (isLiked, isRead, lastReadAt, lastPageId, contextHistory) that a
+    // browser `max-age` would serve stale for minutes after the reader liked
+    // the book or advanced a page. Draft/archived books additionally change
+    // frequently during generation.
     // Evaluated on the snapshot, never on the LRU projection.
     if (isRestrictedToOwner(snapshot)) {
       c.header('Cache-Control', 'private, no-store');
-    } else if (book.status === 'active') {
-      c.header('Cache-Control', 'private, max-age=300, stale-while-revalidate=150');
     } else {
       c.header('Cache-Control', 'private, no-cache');
     }

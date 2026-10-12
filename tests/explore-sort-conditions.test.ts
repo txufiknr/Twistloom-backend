@@ -227,4 +227,102 @@ describe("Explore sort membership predicates fold into the combined WHERE", () =
     const occurrences = where.split("cardinality").length - 1;
     expect(occurrences).toBe(1);
   });
+
+  it("popular retains the base scope (ordering-only sort, no membership predicate)", () => {
+    const { query, countQuery } = buildExploreQuery({ bookSortBy: "popular" });
+    const resultWhere = whereClause(query.toSQL().sql);
+    const countWhere = whereClause(countQuery.toSQL().sql);
+    expectRetainsBaseScope(resultWhere, "popular");
+    expectRetainsBaseScope(countWhere, "popular/count");
+    // Ordering-only: no extra membership predicate beyond the base scope.
+    expect(resultWhere).not.toContain("EXISTS");
+  });
+
+  it("trending retains the base scope (ordering-only sort, no membership predicate)", () => {
+    const { query, countQuery } = buildExploreQuery({ bookSortBy: "trending" });
+    const resultWhere = whereClause(query.toSQL().sql);
+    const countWhere = whereClause(countQuery.toSQL().sql);
+    expectRetainsBaseScope(resultWhere, "trending");
+    expectRetainsBaseScope(countWhere, "trending/count");
+    expect(resultWhere).not.toContain("EXISTS");
+  });
+
+  it("likes scopes the EXISTS predicate to user_likes (target_type='book')", () => {
+    const { countQuery } = buildExploreQuery({
+      bookSortBy: "likes",
+      currentUserId: "user-123",
+    });
+    const where = whereClause(countQuery.toSQL().sql);
+    expectRetainsBaseScope(where, "likes");
+    expect(where).toContain("EXISTS");
+    expect(where).toContain("user_likes");
+    expect(where).toContain("target_type");
+  });
+
+  it("likes for an anonymous viewer collapses to 1=0 while keeping the base scope", () => {
+    const { countQuery } = buildExploreQuery({ bookSortBy: "likes", currentUserId: null });
+    const where = whereClause(countQuery.toSQL().sql);
+    expectRetainsBaseScope(where, "likes/anonymous");
+    expect(where).toContain("1=0");
+  });
+
+  it("recommendations joins liked books on keyword overlap", () => {
+    const { countQuery } = buildExploreQuery({
+      bookSortBy: "recommendations",
+      currentUserId: "user-123",
+    });
+    const where = whereClause(countQuery.toSQL().sql);
+    expectRetainsBaseScope(where, "recommendations");
+    expect(where).toContain("EXISTS");
+    expect(where).toContain("keywords");
+    // Excludes the liked book itself from its own recommendations.
+    expect(where).toContain("!= ");
+  });
+
+  it("recommendations for an anonymous viewer collapses to 1=0 while keeping the base scope", () => {
+    const { countQuery } = buildExploreQuery({
+      bookSortBy: "recommendations",
+      currentUserId: null,
+    });
+    const where = whereClause(countQuery.toSQL().sql);
+    expectRetainsBaseScope(where, "recommendations/anonymous");
+    expect(where).toContain("1=0");
+  });
+
+  it("following scopes the EXISTS predicate to user_follows", () => {
+    const { countQuery } = buildExploreQuery({
+      bookSortBy: "following",
+      currentUserId: "user-123",
+    });
+    const where = whereClause(countQuery.toSQL().sql);
+    expectRetainsBaseScope(where, "following");
+    expect(where).toContain("EXISTS");
+    expect(where).toContain("user_follows");
+  });
+
+  it("following for an anonymous viewer collapses to 1=0 while keeping the base scope", () => {
+    const { countQuery } = buildExploreQuery({ bookSortBy: "following", currentUserId: null });
+    const where = whereClause(countQuery.toSQL().sql);
+    expectRetainsBaseScope(where, "following/anonymous");
+    expect(where).toContain("1=0");
+  });
+
+  it("pen-drafts retains is_pen_book + authoring_status='draft' AND the base scope", () => {
+    const { countQuery } = buildExploreQuery({
+      bookSortBy: "pen-drafts",
+      currentUserId: "user-123",
+    });
+    const where = whereClause(countQuery.toSQL().sql);
+    expectRetainsBaseScope(where, "pen-drafts");
+    expect(where).toContain('"books"."is_pen_book"');
+    expect(where).toContain("authoring_status");
+    expect(where).toContain("draft");
+  });
+
+  it("pen-drafts for an anonymous viewer collapses to 1=0 while keeping the base scope", () => {
+    const { countQuery } = buildExploreQuery({ bookSortBy: "pen-drafts", currentUserId: null });
+    const where = whereClause(countQuery.toSQL().sql);
+    expectRetainsBaseScope(where, "pen-drafts/anonymous");
+    expect(where).toContain("1=0");
+  });
 });

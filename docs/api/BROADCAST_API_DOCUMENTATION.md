@@ -10,6 +10,7 @@ Key design properties:
 - **Scarce & rate-limited.** Per-user cooldown, a global spacing interval, a short max length (140), and a bounded pending queue keep the banner usable.
 - **Fail-closed moderation.** Rejected messages never consume the item (no refund logic needed — nothing was spent).
 - **Public read, authenticated write.** Anyone can poll the live banner; only owners can preview/purchase/submit.
+- **Dual payload.** The live slot carries both user 📣 messages and admin platform announcements (`announcementId != null`, severity tint + optional CTA) — see the [Announcements API](./ANNOUNCEMENTS_API_DOCUMENTATION.md).
 
 **Base URL:** `/api/broadcasts`
 
@@ -57,10 +58,37 @@ Returns the single live broadcast (or `null` when the banner is empty). Intended
     "userId": "user_0194…",
     "username": "whispering_mara",
     "message": "Just published my first Multiverse story — would love feedback! 📚",
+    "messageKey": null,
+    "messageParams": null,
     "source": "user",
     "containsSpoiler": false,
+    "announcementId": null,
+    "severity": null,
+    "cta": null,
     "startsAt": "2026-08-29T12:00:00.000Z",
     "expiresAt": "2026-08-29T12:00:08.000Z"
+  }
+}
+```
+
+When the live slot is occupied by an admin announcement (guest-visible — this is how logged-out visitors see platform notices):
+
+```json
+{
+  "broadcast": {
+    "id": "bc_0198f1c2…",
+    "userId": "user_admin…",
+    "username": "Twistloom",
+    "message": "Twistloom will be read-only between 22:00–23:00 WIB while we upgrade the generator cluster.",
+    "messageKey": null,
+    "messageParams": null,
+    "source": "system",
+    "containsSpoiler": false,
+    "announcementId": "0198f1c2-9a4e-7c3b-8f21-4d5e6a7b8c9d",
+    "severity": "warning",
+    "cta": { "url": "/status", "text": "View status" },
+    "startsAt": "2026-10-12T21:00:00.000Z",
+    "expiresAt": "2026-10-13T21:00:00.000Z"
   }
 }
 ```
@@ -75,6 +103,9 @@ When nothing is live:
 - A broadcast is "live" when `status = 'queued'` and `startsAt <= now < expiresAt`.
 - `username` is the broadcaster's handle (joined from `users`); no other PII is returned.
 - Stale `queued` rows are lazily expired to `expired` on each read.
+- **Announcement rows** (set by the admin publish pipeline): `announcementId` is the linked announcement uuid; `source = "system"`; `username` is the platform account; `severity` (`info` | `warning` | `critical`, else `null`) drives the banner tint; `cta` is `{ url, text }` or `null`; `messageKey = null` means the admin-authored `message` renders verbatim (no i18n lookup). User broadcasts never set these fields (`null` / `false` as in the first example).
+- `messageKey` + `messageParams` are the i18n template contract for structured system broadcasts (Easter Eggs etc.); the client falls back to the DB `message` when the key is missing or `null`.
+- The `/stream` SSE event carries the same payload shape as `/current`.
 
 ---
 

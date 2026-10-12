@@ -317,15 +317,19 @@ describe("GET /:identifier — snapshot-keyed cache header & body (audit §1.2 r
     expect(response.headers.get("Cache-Control")).toBe("no-store");
   });
 
-  it("an active public book keeps the 300s private-cache tier", async () => {
+  it("an active public book uses no-cache (ETag revalidation) for its per-user payload", async () => {
     seedBook(primaryDb, { id: "hdr-2", status: "active", visibility: "public" });
 
     const response = await routeRequest("/hdr-2", OTHER);
 
     expect(response.status).toBe(200);
-    expect(response.headers.get("Cache-Control")).toBe(
-      "private, max-age=300, stale-while-revalidate=150",
-    );
+    // Pre-fix this tier was `private, max-age=300, stale-while-revalidate=150`.
+    // The payload carries per-user, mutable fields (isLiked, isRead,
+    // lastReadAt, lastPageId, contextHistory), so a browser `max-age` served
+    // them stale for minutes after the reader liked a book or advanced a page.
+    // `no-cache` forces an ETag revalidation on every load — cheap 304s when
+    // unchanged, fresh user state when it did change.
+    expect(response.headers.get("Cache-Control")).toBe("private, no-cache");
   });
 });
 

@@ -50,14 +50,21 @@ endpoints described here require authentication via NextAuth JWT.
    - [Get Usage Chart Data](#get-apiaadminusagechart)
 7. [Email Announcements (Super Admin)](#email-announcements-super-admin)
    - [Send Announcement](#post-apiaadminemailannouncements)
-8. [User Feedbacks](#user-feedbacks)
+8. [Announcements (Admin)](#announcements-admin)
+   - [List Announcements](#get-apiaadminannouncements)
+   - [Create Draft](#post-apiaadminannouncements)
+   - [Update Announcement](#patch-apiaadminannouncementsid)
+   - [Publish / Schedule](#post-apiaadminannouncementsidpublish)
+   - [End Announcement](#post-apiaadminannouncementsidend)
+   - [Send Announcement Email](#post-apiaadminannouncementsidemail)
+9. [User Feedbacks](#user-feedbacks)
    - [List Feedbacks](#get-apiaadminfeedbacks)
    - [Update Feedback Status](#patch-apiaadminfeedbacksid)
-9. [Books (Admin)](#books-admin)
-   - [List Books](#get-apiaadminbooks)
-10. [Platform Users](#platform-users)
+10. [Books (Admin)](#books-admin)
+    - [List Books](#get-apiaadminbooks)
+11. [Platform Users](#platform-users)
     - [List Users](#get-apiaadminusers)
-11. [Social Mentions (Public)](#social-mentions-public)
+12. [Social Mentions (Public)](#social-mentions-public)
     - [Public Wall](#get-apisocial-mentions)
     - [Public Single Mention](#get-apisocial-mentionsid)
 
@@ -622,6 +629,207 @@ When `dryRun: true`:
 - `400 Bad Request`: `title` is required
 - `400 Bad Request`: `bodyHtml` is required
 - `403 Forbidden`: Not the super admin
+
+---
+
+## Announcements (Admin)
+
+Full CRUD + lifecycle for in-app platform announcements — the record-based successor to the email-only blast above. An announcement is authored once, then surfaced on the broadcast banner (public slot) and the notification center (per-user unseen flag); email becomes an explicit per-record action that stamps `emailSentAt`. See the [Announcements API](./ANNOUNCEMENTS_API_DOCUMENTATION.md) for the user-facing read side.
+
+**Authentication:** `requireAuth` + `requirePermission("announcements")` on every endpoint (the `announcements` capability has always existed in `ADMIN_PERMISSIONS`).
+
+**Shared vocabulary:**
+
+| Field | Values | Notes |
+|-------|--------|-------|
+| `kind` | `maintenance` \| `feature` \| `promo` \| `incident` | Content category (not access control) |
+| `severity` | `info` \| `warning` \| `critical` | Drives banner/panel tint |
+| `status` | `draft` → `scheduled` / `active` → `ended` | Cap-1: only one row may be `scheduled`/`active` (partial unique index) |
+
+**Record shape (`announcement`, returned by every endpoint below):**
+
+```json
+{
+  "id": "0198f1c2-9a4e-7c3b-8f21-4d5e6a7b8c9d",
+  "kind": "maintenance",
+  "severity": "warning",
+  "title": "Scheduled maintenance tonight",
+  "body": "Twistloom will be read-only between 22:00–23:00 WIB…",
+  "bodyHtml": null,
+  "ctaUrl": "/status",
+  "ctaText": "View status",
+  "i18nKey": null,
+  "i18nParams": null,
+  "status": "active",
+  "startsAt": "2026-10-12T21:00:00.000Z",
+  "expiresAt": "2026-10-13T21:00:00.000Z",
+  "broadcastId": "0198f1c2-9a4e-7c3b-8f21-4d5e6a7b8c9e",
+  "emailSentAt": null,
+  "createdBy": "user_admin…",
+  "createdAt": "2026-10-12T08:15:00.000Z",
+  "updatedAt": "2026-10-12T20:58:00.000Z"
+}
+```
+
+**Limits:** `title` ≤ 200 chars, `body` ≤ 2000 chars (newlines preserved), `bodyHtml` ≤ 50 000 chars (sanitized), `ctaText` ≤ 80 chars, `ctaUrl` ≤ 2048 chars (absolute http(s) or internal `/…` path; `ctaText` required when `ctaUrl` is set), `i18nParams` ≤ 20 keys. Publishing without `expiresAt` stamps a default 24 h window (`ANNOUNCEMENT_DEFAULT_WINDOW_SECONDS`).
+
+---
+
+### GET /api/admin/announcements
+
+Paginated history, newest first. Runs the lifecycle sweep first so elapsed rows report honest status chips.
+
+**Authentication:** `requireAuth` + `requirePermission("announcements")`
+
+**Query Parameters:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `status` | string | Optional: `draft` \| `scheduled` \| `active` \| `ended` |
+| `kind` | string | Optional: `maintenance` \| `feature` \| `promo` \| `incident` |
+| `limit` | integer | Rows per page (default `20`, max `100`) |
+| `offset` | integer | Rows to skip (default `0`) |
+
+**Response (200 OK):**
+```json
+{
+  "announcements": [ /* record objects */ ],
+  "total": 14,
+  "limit": 20,
+  "offset": 0
+}
+```
+
+---
+
+### POST /api/admin/announcements
+
+Creates a **draft** (`status = "draft"`). Drafts never touch the cap-1 invariant or the banner slot — publishing is the separate step below.
+
+**Authentication:** `requireAuth` + `requirePermission("announcements")`
+
+**Request Body:**
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `kind` | string | yes | One of the four kinds |
+| `severity` | string | yes | `info` \| `warning` \| `critical` |
+| `title` | string | yes | ≤ 200 chars |
+| `body` | string | yes | ≤ 2000 chars, newlines preserved |
+| `bodyHtml` | string | no | Sanitized rich-detail body (email/detail view) |
+| `ctaUrl` | string | no | http(s) URL or internal `/…` path |
+| `ctaText` | string | no | Required when `ctaUrl` is set |
+| `i18nKey` | string | no | Templated-copy key (≤ 200 chars); `null` = freeform |
+| `i18nParams` | object | no | String→string, ≤ 20 keys |
+| `startsAt` | string (ISO) | no | Window start (activation happens at publish) |
+| `expiresAt` | string (ISO) | no | Must be after `startsAt` |
+
+```json
+{
+  "kind": "maintenance",
+  "severity": "warning",
+  "title": "Scheduled maintenance tonight",
+  "body": "Twistloom will be read-only between 22:00–23:00 WIB.",
+  "ctaUrl": "/status",
+  "ctaText": "View status"
+}
+```
+
+**Response:** `200 OK` → `{ "announcement": { …record… } }`
+
+---
+
+### PATCH /api/admin/announcements/:id
+
+Edits a draft or scheduled announcement. **Active and ended rows are locked** (`announcements.locked`, 409) so a live message can't be mutated under readers. Scheduled rows keep their linked banner row in sync. Partial update: omitted fields keep their values.
+
+**Authentication:** `requireAuth` + `requirePermission("announcements")`
+
+**Request Body:** same fields as create (all optional).
+
+**Response:** `200 OK` → `{ "announcement": { …record… } }`
+
+---
+
+### POST /api/admin/announcements/:id/publish
+
+Activates the announcement now, or schedules it for a future `startsAt` (status becomes `scheduled`; the linked banner row waits on its own `starts_at`, so no scheduler process is needed).
+
+**What publishing does:**
+1. Enforces cap-1 — a concurrent/already-published row fails with `announcements.anotherActiveExists` (409, race-proofed by the partial unique index).
+2. Upserts the linked `broadcasts` row (source `system`) that occupies the single live banner slot — guests included; parked user megaphone broadcasts queue behind the announcement window.
+3. Stamps `expiresAt` with the 24 h default when omitted (announcement and banner rows always agree).
+
+**Authentication:** `requireAuth` + `requirePermission("announcements")`
+
+**Request Body:**
+```json
+{ "startsAt": "2026-10-12T21:00:00.000Z", "expiresAt": "2026-10-13T21:00:00.000Z" }
+```
+Both fields optional — omit `startsAt` (or send `now`) to go live immediately; omit `expiresAt` for the default window.
+
+**Response:** `200 OK` → `{ "announcement": { …record… } }`
+
+---
+
+### POST /api/admin/announcements/:id/end
+
+Revokes the announcement: flips status to `ended`, expires the linked banner row (the live slot drops to `null` for every client within one poll), and releases parked user megaphone broadcasts to the front of the queue. Idempotent on already-ended rows.
+
+**Authentication:** `requireAuth` + `requirePermission("announcements")`
+
+**Request Body:** none.
+
+**Response:** `200 OK` → `{ "announcement": { …record… } }`
+
+---
+
+### DELETE /api/admin/announcements/:id
+
+Deletes an announcement draft (`status = "draft"`). **Scheduled, active, and ended rows are locked** (`announcements.locked`, 409) to preserve audit trails and publication history.
+
+**Authentication:** `requireAuth` + `requirePermission("announcements")`
+
+**Request Body:** none.
+
+**Response:** `200 OK` → `{ "success": true, "id": "…" }`
+
+---
+
+### POST /api/admin/announcements/:id/email
+
+Fires the product-announcement email blast for this record — same audience as `POST /api/admin/email/announcements` above (non-new users with an email and `emailPreferences.productAnnouncements`), using the record's `title`, `bodyHtml` (falls back to a sanitized `<p>body</p>`), and CTA. Stamps `emailSentAt` when at least one message is delivered.
+
+**Authentication:** `requireAuth` + `requireSuperAdmin`
+
+**Request Body:**
+```json
+{ "dryRun": false, "force": false }
+```
+- `dryRun: true`: `{ "dryRun": true, "recipientCount": 1240, "title": "…" }` (no sends, no `emailSentAt` stamp).
+- Duplicate prevention: If an email blast was already dispatched for this announcement (`emailSentAt` is set), subsequent requests return `409 Conflict` (`announcements.emailAlreadySent`) unless `{ "force": true }` is explicitly provided.
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "title": "Scheduled maintenance tonight",
+  "recipientCount": 1240,
+  "sent": 1238,
+  "failed": 2
+}
+```
+
+---
+
+**Announcements error codes** (self-describing; clients translate `code` → `announcements.errors.<key>`):
+
+| Code | HTTP | Meaning |
+|------|------|---------|
+| `announcements.validation` | 400 | Invalid/missing fields, bad uuid, bad time window |
+| `announcements.notFound` | 404 | No announcement for the given id |
+| `announcements.anotherActiveExists` | 409 | Cap-1 invariant — another announcement is already scheduled/active |
+| `announcements.locked` | 409 | Edit or delete attempted on an active/ended announcement (only drafts can be deleted) |
+| `announcements.notPublishable` | 400 | Publish/end attempted from a state that does not allow it |
+| `announcements.emailAlreadySent` | 409 | Email blast was already dispatched for this announcement (pass `force=true` to re-send) |
 
 ---
 

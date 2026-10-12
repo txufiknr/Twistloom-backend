@@ -48,6 +48,44 @@ export interface CreditPack {
 export type TransactionType = "purchase" | "usage" | "refund" | "reward" | "conversion" | "first_purchase_bonus" | "reserve";
 
 /**
+ * In-transaction, authoritative cost resolver.
+ *
+ * A pre-computed cost is evaluated from reads that necessarily happen BEFORE
+ * the charge transaction opens — on the read replica, so subject to replica
+ * lag, and before any row lock is held, so subject to a concurrent writer
+ * committing in between. For costs that depend on mutable user state (a
+ * session frontier, an existing choice, an unpaid progress row) that means the
+ * charge can be computed from state that is already stale by the time it is
+ * applied.
+ *
+ * Passing a resolver instead of a number moves the decision inside the charge
+ * transaction, AFTER `executeWithCredits` has taken the user's `FOR UPDATE`
+ * row lock. The resolver therefore reads state that no concurrent credit
+ * operation for that user can still be mutating, and it may throw to veto the
+ * charge entirely (the transaction rolls back with nothing deducted).
+ *
+ * The resolver MUST use the supplied `tx` for every read — reading through
+ * `dbRead` here reintroduces exactly the staleness this mechanism exists to
+ * remove.
+ *
+ * @param tx - The open charge transaction (write primary, user row locked)
+ * @returns The authoritative cost in credits. Zero runs the operation without
+ *   charging (demo-account zeroing is applied by `executeWithCredits`).
+ * @throws Any error aborts the charge; nothing is deducted.
+ *
+ * @example
+ * ```typescript
+ * await executeWithCredits(
+ *   userId,
+ *   async (tx) => calculateBranchSwitchCost(session.frontier, 1, userId),
+ *   async (tx) => tx.update(userSessions).set({ frontierPageNumber: 1 }).where(...),
+ *   { context: 'story_reset' },
+ * );
+ * ```
+ */
+export type CreditCostResolver = (tx: DBTransaction) => Promise<number>;
+
+/**
  * Options shared by credit consumption, addition, and refund helpers.
  */
 export interface ConsumeCreditsOptions {

@@ -3041,7 +3041,7 @@ GET /api/books/tags/recommended?limit=10
 - Scores each tag as the weighted sum of signal rows; `count` is the raw number of signal rows
 - **Clickability guard:** tags are kept only if ≥1 active + public book (user's language, English fallback) carries them
 - **Cold start:** users with no signals (or no clickable tags) get the global popular tags with `personalized: false`
-- Cached in Redis per (userId, limit, language) with a 5-minute TTL; responses carry `Cache-Control: private`
+- Cached in Redis per (userId, limit, language) with a 5-minute TTL; responses carry `Cache-Control: private, no-store` (personalized payload — never browser-cached)
 
 ---
 

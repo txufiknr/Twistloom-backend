@@ -39,7 +39,7 @@ import { eq, and, sql } from 'drizzle-orm';
 import { CREDIT_ERRORS } from '../config/errors.js';
 import { logUserActivity } from './user.js';
 import { retryWithBackoffOrNull } from '../utils/retry.js';
-import type { ConsumeCreditsOptions, ConsumeCreditsResult, CreditReservation, TransactionType } from '../types/credits.js';
+import type { ConsumeCreditsOptions, ConsumeCreditsResult, CreditReservation, TransactionType, CreditCostResolver } from '../types/credits.js';
 import { PAYMENT_GATEWAY, type PaymentGateway } from '../types/payment.js';
 import { requireNoFraudFlags } from './fraud-detection.js';
 import { sweepExpiredReservationsOpportunistically } from './credit-reservations.js';
@@ -481,12 +481,22 @@ export async function refundCreditsIdempotent(
  * or treat them as fire-and-forget side effects.
  *
  * @param userId    - User to charge
- * @param costKey   - Key into `CREDIT_COSTS`, **or** a raw numeric cost. The two
- *                    shapes take different demo paths on purpose: a key is
- *                    resolved by `getCreditCostForUser`, which is zero for the
- *                    demo account *or* while `FEATURE_FREE_DEMO` is on; a number
+ * @param costKey   - Key into `CREDIT_COSTS`, **or** a raw numeric cost, **or** a
+ *                    {@link CreditCostResolver}. The two static shapes take
+ *                    different demo paths on purpose: a key is resolved by
+ *                    `getCreditCostForUser`, which is zero for the demo account
+ *                    *or* while `FEATURE_FREE_DEMO` is on; a number
  *                    (credit-priced store purchases) is zero for `isDemoUser`
  *                    alone and ignores the flag — see `FEATURE_FREE_DEMO`.
+ *
+ *                    A resolver defers the cost decision INTO the transaction,
+ *                    after the `users` row lock is taken, so it reads state no
+ *                    concurrent credit operation can still be mutating. Use it
+ *                    whenever the price depends on mutable user state (session
+ *                    frontier, an existing choice, an unpaid progress row) — a
+ *                    pre-computed number would be evaluated from stale replica
+ *                    reads. It may throw to veto the charge outright. The
+ *                    resolver's return value takes the numeric demo path.
  * @param operation - Async callback receiving the open transaction; must use `tx` for all DB work
  * @param options   - Context, metadata, correlation ID
  * @returns `{ result, correlationId, transactionId }` on success
@@ -508,17 +518,75 @@ export async function refundCreditsIdempotent(
  */
 export async function executeWithCredits<T>(
   userId: string,
-  costKey: CreditCostKey | number,
+  costKey: CreditCostKey | number | CreditCostResolver,
   operation: (tx: DBTransaction) => Promise<T>,
   options: ConsumeCreditsOptions = {}
 ): Promise<ConsumeCreditsResult<T>> {
+  const correlationId = options.correlationId || generateId();
+
+  // ── In-transaction cost resolution ────────────────────────────────────────
+  // A resolver is used when the price depends on mutable user state (session
+  // frontier, an existing choice, an unpaid progress row). Deciding that cost
+  // BEFORE this call means reading it from the replica with no lock held, so a
+  // concurrent writer can commit in between and the charge is computed from
+  // state that is already stale. Resolving inside the transaction — after the
+  // `users` row lock below — is what makes the decision authoritative.
+  if (typeof costKey === 'function') {
+    const resolveCost = costKey;
+
+    return dbWrite.transaction(async (tx) => {
+      // 1. Take the users row lock FIRST, before resolving. This serialises all
+      //    concurrent credit operations for this user, so the resolver reads
+      //    state no in-flight transaction can still be mutating. Ordering matches
+      //    `consumeCreditsInTransaction`, so no new deadlock edge is introduced.
+      const [lockedUser] = await tx
+        .select({ credits: users.credits })
+        .from(users)
+        .where(eq(users.userId, userId))
+        .for('update')
+        .limit(1);
+      if (!lockedUser) throw new Error(`User not found: ${userId}`);
+
+      // 2. Authoritative cost, evaluated under the lock.
+      const resolvedCost = await resolveCost(tx);
+      // A resolved number takes the NUMERIC demo path (demo account only) —
+      // consistent with a pre-computed number. See the @param costKey contract.
+      const cost = isDemoUser(userId) ? 0 : resolvedCost;
+      if (cost < 0) throw new Error(`Invalid credit cost: resolver returned ${cost}`);
+
+      // 3. Fraud detection — same gate as the static paths, now cost-aware.
+      if (cost > 0) {
+        await requireNoFraudFlags(userId, undefined, 'usage');
+      }
+
+      // 4a. Free / demo — run the operation without charging.
+      if (cost === 0) {
+        console.log('[executeWithCredits] ⏩ Free action (cost 0): resolved in-transaction');
+        const result = await operation(tx);
+        return { result, correlationId, transactionId: generateId(), remainingCredits: lockedUser.credits };
+      }
+
+      // 4b. Deduct (the FOR UPDATE inside is re-entrant — we already hold it).
+      const { remainingCredits, transactionId } = await consumeCreditsInTransaction(tx, userId, cost, {
+        ...options,
+        correlationId,
+      });
+
+      try {
+        const result = await operation(tx);
+        return { result, correlationId, transactionId, remainingCredits };
+      } catch (operationError) {
+        console.error('[executeWithCredits] ❌ Operation failed — transaction rolled back (deduction reverted):', operationError);
+        throw operationError;
+      }
+    });
+  }
+
   // Two demo paths, deliberately different: a numeric cost honours only the
   // demo account (store stock is per-item capped, so it is not blanket-waived),
   // a cost key also honours FEATURE_FREE_DEMO. See the @param costKey contract.
   const cost = typeof costKey === 'number' ? (isDemoUser(userId) ? 0 : costKey) : getCreditCostForUser(userId, costKey);
   if (cost < 0) throw new Error(`Invalid credit cost: ${costKey} must be greater than or equal to 0`);
-
-  const correlationId = options.correlationId || generateId();
 
   // Fraud detection: block high-risk users from credit-sensitive operations
   if (cost > 0) {

@@ -59,8 +59,13 @@ import {
 import type { ViolationType, ViolationSeverity } from "../types/trust-safety.js";
 import { violationTypes, violationSeverities, enforcementActions, isViolationType, isViolationSeverity, isEnforcementAction } from "../types/trust-safety.js";
 import { parsePaymentGateway, formatPaymentAmount, getGatewayCurrency, getSubscriptionPlanName } from "../utils/payment.js";
+import adminAnnouncementsRouter from "./admin/announcements.js";
 
 const router = new Hono<AppEnv>();
+
+// Platform announcements (cap-1 active) — CRUD + publish/end/email lifecycle.
+// Lives in its own module; permission gating ("announcements") is inside.
+router.route("/announcements", adminAnnouncementsRouter);
 
 // /**
 //  * GET /admin/books/:bookId/snapshots

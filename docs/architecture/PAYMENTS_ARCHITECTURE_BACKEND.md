@@ -2,7 +2,7 @@
 
 **Scope:** Gateway-agnostic payment system — Stripe (international USD) + Xendit (Indonesian IDR), credits system, VIP subscriptions, VIP free trial  
 **Stack:** Hono.js 4.12+ · PostgreSQL 18 (Neon) · Drizzle ORM 0.45+ · Stripe Node SDK `^22.2.0` · Xendit REST API (raw fetch)  
-**Last updated:** September 2026  
+**Last updated:** October 2026 (added in-transaction cost resolver, authoritative status guard, unique-constraint idempotency, per-user Cache-Control rules to §4)  
 
 ---
 
@@ -375,6 +375,91 @@ const result = await executeWithCredits(userId, CREDIT_COSTS.STORY_GENERATION, a
 ```
 
 Credit consumption and the operation it pays for happen inside the same DB transaction boundary, with a `correlationId` returned so the caller can issue a `refundCreditsIdempotent()` if the downstream operation fails *after* credits were already deducted.
+
+### In-transaction cost resolver (`CreditCostResolver`)
+
+**Implemented & verified** · `src/types/credits.ts` (`CreditCostResolver`), `src/services/credits.ts:519` (`executeWithCredits` resolver branch)
+
+A static `CreditCostKey` or numeric cost is correct when the price is a property of the *action* (e.g. `STORY_RESET` is always 2). It is **wrong** when the price depends on mutable user state — the reader's session frontier, whether they already made a choice on this page, whether a generation is still retryable. Computing that cost *before* `executeWithCredits` means reading it from the **replica** with **no row lock held**, so a concurrent writer committing in between (or replica lag) produces a charge calculated from state that is already stale. That is how a reader gets billed twice for one reset, or under-billed for a custom action.
+
+The third `costKey` shape closes this window: an **async resolver** `(tx) => Promise<number>` that `executeWithCredits` invokes **inside** the charge transaction, **after** it has taken the `SELECT … FOR UPDATE` lock on the `users` row. Because all concurrent credit operations for that user serialize on the same lock, the resolver reads state no in-flight transaction can still be mutating.
+
+```mermaid
+flowchart TB
+    Route["Route: cost depends on mutable state"]
+    EWC["executeWithCredits(userId, resolver, op)"]
+    Lock["1. tx: SELECT users FOR UPDATE<br/>(serialises all credit ops for this user)"]
+    Resolve["2. cost = await resolver(tx)<br/>reads authoritative frontier / progress / status"]
+    Demo{"isDemoUser?"}
+    Free["3a. cost = 0 → run op, no deduction"]
+    Deduct["3b. consumeCreditsInTransaction(tx, cost)"]
+    Op["4. operation(tx)"]
+    Err["resolver throws →<br/>rollback, NOTHING deducted"]
+
+    Route --> EWC --> Lock --> Resolve --> Demo
+    Demo -->|yes| Free --> Op
+    Demo -->|no| Deduct --> Op
+    Resolve -.->|throws| Err
+    Op -.->|throws| Err
+```
+
+**Contract:**
+
+| Rule | Detail |
+|---|---|
+| **Resolver runs after the row lock** | Lock ordering matches `consumeCreditsInTransaction`, so no new deadlock edge is introduced (`src/services/credits.ts:538-548`). |
+| **A resolved number takes the numeric demo path** | `isDemoUser(userId) ? 0 : resolvedCost` — identical to a pre-computed number, so demo behaviour is unchanged (`credits.ts:554`). |
+| **Resolver throw = veto, not error** | The whole transaction rolls back; nothing is deducted. Routes map the typed error to **409 Conflict** (the caller's intent was already fulfilled), not 400/500. |
+| **Negative cost is rejected** | `executeWithCredits` throws before any deduction if the resolver returns `< 0` (`credits.ts:555`). |
+| **Free path preserved** | `cost === 0` runs the operation without charging and re-selects the authentic balance — same semantics as the static free path (`credits.ts:563-572`). |
+
+**Migrated call sites** (all previously computed the cost from a replica read before the call):
+
+| Endpoint | Resolver reads | Typed veto error → status |
+|---|---|---|
+| `POST /:identifier/reset-story` (`src/routes/books.ts`) | `evaluateStoryReset(tx, …)` — session frontier + progress + completion | `StoryResetAlreadyAppliedError` → **409** (`src/services/story-reset.ts`) |
+| `POST /:identifier/:pageId/time-travel/commit` | session `frontierPageId`/`frontierPageNumber` (write primary) | `TimeTravelAlreadyCommittedError` → **200** idempotent (`src/services/time-travel.ts`) |
+| `POST /:identifier/:pageId/custom-actions/submit` | `user_page_progress` existence (after-choice tier) | — (eligibility gate re-checks separately) |
+
+> **Note — time-travel commit returns 200, not 409.** A duplicate "Take this path" tap means the reader is *already on* the alternative, so the caller's intent is satisfied; the endpoint answers with the same success shape the first request did, and the resolver's throw simply prevented a second charge.
+
+The eligibility gate (already-active / already-chosen) is re-checked **separately** inside the same operation, mirroring the documented `CUSTOM-ACTION-CONCURRENCY` audit pattern — the resolver prices the charge, the operation vetoes a duplicate insert.
+
+### Authoritative status guard (generation retry)
+
+`POST /:bookId/retry` (`src/routes/books.ts`) does not need a resolver — its cost is a deterministic mode key. It *does* need the same authoritative re-check, because the optimistic replica pre-check that "this generation is still `failed`/`cancelled`" can be stale by the time the charge runs. The `UPDATE` therefore carries the status predicate **inside** the transaction and `.returning()`s; 0 rows means a concurrent retry won, and `GenerationRetryConflictError` rolls the deduction back (**409**).
+
+```typescript
+// Inside executeWithCredits' operation — the guard lives in the WHERE clause:
+const updated = await tx
+  .update(bookGenerations)
+  .set({ generationStatus: 'pending', /* … */ })
+  .where(and(
+    eq(bookGenerations.bookId, bookId),
+    inArray(bookGenerations.generationStatus, ['failed', 'cancelled']),
+  ))
+  .returning({ bookId: bookGenerations.bookId });
+if (updated.length === 0) throw new GenerationRetryConflictError();
+```
+
+### Unique-constraint idempotency (`.onConflictDoNothing().returning()`)
+
+**Implemented & verified** · action hints (`src/routes/books.ts`, `userActionHints`), book purchase (`userPurchasedBooks`)
+
+Endpoints backed by a unique constraint (`(userId, pageId, actionText)`, `(userId, bookId)`) must never surface a raw unique violation as a 500 when a concurrent request (or a lagging replica pre-check) already created the row. The insert runs with `ON CONFLICT DO NOTHING` + `RETURNING({ id })`; **0 rows returned** means the row already exists, so a typed error (`ActionHintAlreadyPurchasedError`, `BookAlreadyPurchasedError`) rolls the duplicate charge back and the route answers with the **same graceful 200** the fast-path pre-check returns (`alreadyPurchased: true` + the authentic balance, never a fabricated `0`). The purchase pre-check additionally reads via `dbWrite` so a just-committed purchase is visible immediately.
+
+### Cache-Control for per-user payloads
+
+**Implemented & verified** · `src/routes/books.ts`
+
+A per-user, read-history-derived payload must never carry a browser `max-age`, because the user's own actions (finishing a book, liking a title, advancing a page) mutate it between loads:
+
+| Endpoint | Header | Why |
+|---|---|---|
+| `GET /tags/recommended` | `private, no-store` | Personalized tags derived from the reader's engagement signals; Redis already dedupes bursts server-side, so the edge must not re-cache. |
+| `GET /:identifier` (book detail) | `private, no-cache` (active + non-restricted) / `private, no-store` (owner-restricted) | The payload carries `isLiked`, `isRead`, `lastReadAt`, `lastPageId`, `contextHistory`. `no-cache` forces an ETag revalidation every load — cheap 304s when unchanged, fresh user state when it changed. |
+
+The route-level convention (from `src/middleware/cache.ts`) is `private, max-age=0, must-revalidate` for authed reads that do not opt into a short edge TTL. **Always `private`, never `public`** — a per-user payload must never be shareable at the CDN.
 
 ### Two-phase credit reservations & the leak sweeper
 

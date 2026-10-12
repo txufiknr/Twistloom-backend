@@ -15,6 +15,7 @@ import type { StoryThread, StoryThreadTranslation } from "../types/story-thread.
 import type { CustomActionOutcome, CustomActionRejectionCategory } from "../types/custom-action.js";
 import type { InventoryItemType } from "../types/consumable.js";
 import type { BroadcastSource, BroadcastType, BroadcastStatus, BroadcastRejectReason, BroadcastModerationResult } from "../types/broadcast.js";
+import type { AnnouncementKind, AnnouncementSeverity, AnnouncementStatus } from "../types/announcements.js";
 import type { QuestStatus } from "../types/quests.js";
 import type { BetaDutyStatus } from "../types/beta-duties.js";
 import type { CanonValidationOutcome, CanonViolation, CanonViolationType } from "../types/canon-validation.js";
@@ -464,6 +465,17 @@ export const users = pgTable(
     loreStatusStoryId: uuid("lore_status_story_id"),
     loreStatusUpdatedAt: timestamp("lore_status_updated_at", { withTimezone: true }),
     loreStatusExpiresAt: timestamp("lore_status_expires_at", { withTimezone: true }),
+    /**
+     * ID of the last platform announcement this user has seen — the entire
+     * per-user seen-state for the cap-1 announcement system (Alternative D,
+     * see ADMIN_ANNOUNCEMENTS_BROADCAST_ROADMAP.md). Cap-1 ⇒ a user has seen
+     * at most one announcement ever, so one nullable pointer replaces an
+     * `announcement_reads` table; the future reads-table backfill is a single
+     * INSERT..SELECT. Deliberately FK-less: a pure display pointer that stays
+     * harmless if the announcement row is ever removed, keeping the users
+     * migration a single additive ALTER TABLE.
+     */
+    lastSeenAnnouncementId: uuid("last_seen_announcement_id"),
     lastActive,
     createdAt,
     updatedAt,
@@ -2438,6 +2450,18 @@ export const broadcasts = pgTable(
     moderationResult: jsonb("moderation_result").$type<BroadcastModerationResult>(),
     rejectionReason: text("rejection_reason").$type<BroadcastRejectReason>(),
     containsSpoiler: boolean("contains_spoiler").notNull().default(false),
+    /**
+     * Set when this row is the banner instance of a platform announcement.
+     * Absent (null) for ordinary user megaphone broadcasts and event system
+     * broadcasts. Also the marker that excludes the row from user-queue
+     * capacity counting (`countPendingBroadcasts`).
+     */
+    announcementId: uuid("announcement_id"),
+    /** Announcement severity for banner styling; null on user broadcasts. */
+    severity: text("severity").$type<AnnouncementSeverity>(),
+    /** Optional announcement CTA rendered inline on the banner. */
+    ctaUrl: text("cta_url"),
+    ctaText: text("cta_text"),
     /** When this broadcast becomes visible. */
     startsAt: timestamp("starts_at", { withTimezone: true }).notNull(),
     /** When this broadcast stops being visible. */
@@ -2449,6 +2473,10 @@ export const broadcasts = pgTable(
     index("broadcasts_status_starts_idx").on(t.status, t.startsAt),
     index("broadcasts_starts_idx").on(t.startsAt),
     index("broadcasts_user_idx").on(t.userId),
+    // Announcement banner rows are rare; partial index keeps it tiny.
+    index("broadcasts_announcement_idx")
+      .on(t.announcementId)
+      .where(sql`${t.announcementId} IS NOT NULL`),
   ]
 );
 
@@ -3290,6 +3318,86 @@ export const portalBlogPosts = pgTable(
     unique("portal_blog_posts_slug_unique").on(t.slug),
     index("portal_blog_posts_status_idx").on(t.status),
     index("portal_blog_posts_published_idx").on(t.status, t.publishedAt.desc()),
+  ]
+);
+
+/**
+ * Platform announcements (admin-authored, cap-1 active).
+ *
+ * One row per announcement: authored as a `draft`, published (immediately or
+ * scheduled) into a single concurrent published window, then `ended`. The
+ * cap-1 invariant — at most one `scheduled`/`active` row at any time — is
+ * enforced race-proof by the partial unique index below; publish attempts
+ * that violate it surface as `announcements.anotherActiveExists`.
+ *
+ * Publishing links a `broadcasts` row (banner surface) via `broadcastId`;
+ * per-user seen-state lives on `users.last_seen_announcement_id` (Alternative
+ * D — see ADMIN_ANNOUNCEMENTS_BROADCAST_ROADMAP.md).
+ *
+ * @example
+ * {
+ *   "id": "0199...",
+ *   "kind": "maintenance",
+ *   "severity": "warning",
+ *   "title": "Scheduled maintenance",
+ *   "body": "We'll be down for 30 minutes at 22:00 UTC.",
+ *   "status": "active",
+ *   "starts_at": "2026-10-12T21:00:00.000Z",
+ *   "expires_at": "2026-10-13T21:00:00.000Z",
+ *   "email_sent_at": null,
+ *   "created_at": "2026-10-12T20:00:00.000Z"
+ * }
+ */
+export const announcements = pgTable(
+  "announcements",
+  {
+    id: id(),
+    kind: text("kind").$type<AnnouncementKind>().notNull(),
+    severity: text("severity").$type<AnnouncementSeverity>().notNull().default("info"),
+    title: text("title").notNull(),
+    /** Plain-text body (banner chip + pinned-section row). */
+    body: text("body").notNull(),
+    /** Optional sanitized rich-detail body (future detail view). */
+    bodyHtml: text("body_html"),
+    ctaUrl: text("cta_url"),
+    ctaText: text("cta_text"),
+    /** Optional i18n key for templated copy (Q2 — open; null = freeform). */
+    i18nKey: text("i18n_key"),
+    i18nParams: jsonb("i18n_params").$type<Record<string, string>>(),
+    status: text("status").$type<AnnouncementStatus>().notNull().default("draft"),
+    /** Publish/schedule start; set once published. */
+    startsAt: timestamp("starts_at", { withTimezone: true }),
+    /** Hard end of the window; stamped with the default window at publish if omitted. */
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    /** Banner row created by the publish pipeline; set-null keeps history if broadcasts are purged. */
+    broadcastId: uuid("broadcast_id").references(() => broadcasts.id, { onDelete: "set null" }),
+    /** Stamped when the optional email blast fired for this record. */
+    emailSentAt: timestamp("email_sent_at", { withTimezone: true }),
+    /**
+     * Author. Nullable with set-null so GDPR user erasure never deletes
+     * announcement history (mirrors `portal_blog_posts.author_id`).
+     */
+    createdBy: uuid("created_by").references(() => users.userId, { onDelete: "set null" }),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    // Cap-1 invariant (race-proof): only ONE row may be published
+    // (scheduled or active) at a time — a concurrent second publish loses on
+    // this index and surfaces as `announcements.anotherActiveExists`.
+    uniqueIndex("announcements_one_published_unique")
+      .on(sql`((1))`)
+      .where(sql`${t.status} IN ('scheduled', 'active')`),
+    // History listing (newest first) + status filter.
+    index("announcements_status_idx").on(t.status, t.createdAt.desc()),
+    // Lazy expiry sweep (status IN published AND window elapsed).
+    index("announcements_status_expires_idx")
+      .on(t.status, t.expiresAt)
+      .where(sql`${t.expiresAt} IS NOT NULL`),
+    // Linked banner row lookups.
+    index("announcements_broadcast_idx")
+      .on(t.broadcastId)
+      .where(sql`${t.broadcastId} IS NOT NULL`),
   ]
 );
 

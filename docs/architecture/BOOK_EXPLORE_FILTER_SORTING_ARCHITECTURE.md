@@ -200,7 +200,7 @@ Because it enters `finalCondition`, the predicate applies to **both** the result
 
 The explore `tags=` filter composes with any sort (including `for-you` and the `personalized=true` modifier). To render personalized tag chips that feed `explore?tags={keyword}&personalized=true`, the backend exposes:
 
-- `GET /api/books/tags/recommended` (auth required) — weighted keyword aggregation over the viewer's implicit signals (read 1.0 / like 0.7 / favorite 0.5), with a **clickability guard** (each tag must exist on ≥1 active + public book in the viewer's language) and a **cold-start fallback** to global popular tags (`personalized: false`). Redis-cached per (userId, limit, language), 5-minute TTL, `Cache-Control: private`.
+- `GET /api/books/tags/recommended` (auth required) — weighted keyword aggregation over the viewer's implicit signals (read 1.0 / like 0.7 / favorite 0.5), with a **clickability guard** (each tag must exist on ≥1 active + public book in the viewer's language) and a **cold-start fallback** to global popular tags (`personalized: false`). Redis-cached per (userId, limit, language), 5-minute TTL, `Cache-Control: private, no-store` (personalized payload — never browser-cached).
 - `GET /api/books/tags/popular` (no auth) — global frequency ranking (process LRU, 10-minute TTL).
 
 ---

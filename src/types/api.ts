@@ -18,7 +18,8 @@ export type ResourceName =
   | 'items'          // Generic collection (fallback)
   | 'users'          // Collection of users
   | 'transactions'   // Collection of transactions
-  | 'testimonials';  // Collection of testimonials
+  | 'testimonials'   // Collection of testimonials
+  | 'announcements'; // Collection of platform announcements
 
 export type ResourceTranslatorType = 'ai' | 'translator';
 export type ResourceTranslatorProvider = 'providerType' | 'providerName' | 'aiModel';

@@ -189,6 +189,13 @@ The public `GET /current` reads `WHERE status='queued' AND starts_at <= now < ex
 
 `BROADCAST_MAX_PENDING` (20) bounds future-queued rows. When at capacity, `submitBroadcast` returns `429 queue_full`, capping wait time and preventing a broadcast storm from backing up for hours.
 
+### 4.1 Platform Announcements Integration
+
+Platform announcements occupy the single live broadcast slot as system broadcasts (`source = "system"`, `announcementId` set) during their visibility window:
+
+1. **Window Parking (`parkUserBroadcastsBehind`):** When an announcement is published or scheduled, any overlapping queued user broadcasts are shifted forward to begin after the announcement's `expiresAt`, maintaining user broadcast durations and FIFO ordering without dropping messages.
+2. **Early Release & Overlap Prevention (`releaseUserBroadcasts`):** When an announcement is revoked early via `endAnnouncement()`, parked user broadcasts are pulled forward immediately. If another user broadcast is currently live (`startsAt <= now < expiresAt`), the scheduling cursor begins from that active broadcast's `expiresAt` rather than `now`, ensuring subsequent broadcasts never overlap live displays.
+
 ---
 
 ## 5. Rate Limiting & Abuse Surface

@@ -224,6 +224,20 @@ const { result, correlationId, transactionId } = await executeWithCredits(
 7. **Atomic Batch Claims via `UPDATE ... RETURNING` (Zero-Sum Double-Spend Mitigation)**: When claiming batch rewards (e.g. `claimAllBetaDutyRewards`, quest claims, achievements), never read claimable items, compute the reward in app memory, and issue a blind update. Concurrent duplicate requests can both read claimable records and award double credits! Always run `UPDATE <table_name> SET is_claimed = true, claimed_at = now() WHERE ... RETURNING id, ...` and compute/award rewards **strictly** from the rows returned by that single transaction. If 0 rows are returned, yield early with 0 credits awarded (`none_claimable`).
 8. **Insertion Deduplication & Side-Effect Guard (`.returning({ id })` on Conflict)**: When evaluating event-driven or periodic duties/quests using `insert(...).onConflictDoNothing()`, the query resolves successfully even if 0 rows were inserted because they already exist. Never fire analytics (`logUserActivity('duty_completed')`) or dispatch notifications based merely on in-memory eligibility. Chain `.returning({ id })` and trigger completion side-effects only for IDs actually inserted into the database.
 9. **Authentic Balance Preservation on Rejection**: When rejecting a claim request (e.g. duty/quest not completed or already claimed), never return a hardcoded `credits: 0`. Always fetch and return the user's authentic `user.credits` balance so client-side state is preserved without visual balance wipes.
+10. **In-Transaction Cost Resolver (`CreditCostResolver`)**: When the price of an action depends on **mutable user state** (session frontier, existing custom-action choices, generation status), never compute the cost from a replica read (`dbRead`) before calling `executeWithCredits` — replica lag or a concurrent commit produces a stale charge. Pass an async resolver `(tx) => Promise<number>` as the third argument instead; `executeWithCredits` invokes it **inside** the transaction **after** the `SELECT ... FOR UPDATE` lock, so the read is authoritative. A resolver that throws vetoes the charge (whole transaction rolls back, nothing deducted); routes map typed vetoes (e.g. `StoryResetAlreadyAppliedError`) to **409 Conflict**. Static `CreditCostKey`/numeric costs remain correct when the price is a property of the action itself.
+    ```typescript
+    // ✅ Price depends on the reader's session frontier → resolve inside the tx:
+    let authorizedCost: number = CREDIT_COSTS.STORY_RESET;
+    await executeWithCredits(userId, async (tx) => {
+      const evaln = await evaluateStoryReset(tx, userId, bookId, bookMode);
+      if (evaln.alreadyActive) throw new StoryResetAlreadyAppliedError();
+      authorizedCost = evaln.cost;
+      return evaln.cost;
+    }, async (tx) => { /* operation uses tx */ });
+    ```
+11. **Authoritative In-Transaction Status/Eligibility Guard**: An optimistic pre-check against `dbRead` (e.g. "this generation is still `failed`", "the session frontier is still page N") is defense-in-depth only — it can be stale by the time the charge runs. The authoritative guard must live **inside** the `executeWithCredits` operation: either re-read the state from `tx`, or carry the predicate in an `UPDATE ... WHERE <status/status-in-array> ... RETURNING`. **0 rows returned** means a concurrent request won — throw a typed error (e.g. `GenerationRetryConflictError`) so the deduction rolls back, and map it to **409** (or an idempotent success payload when the caller's intent was already satisfied, as time-travel commit returns 200).
+12. **Unique-Constraint Idempotency for Purchases/Hints (Graceful 200)**: For inserts backed by a unique constraint (`(userId, pageId, actionText)`, `(userId, bookId)`), the pre-check must use the **write** client (`dbWrite`) and the insert must chain `.onConflictDoNothing().returning({ id })`. If 0 rows are returned, a concurrent request already created the row — throw a typed error (`ActionHintAlreadyPurchasedError`, `BookAlreadyPurchasedError`) to roll back the duplicate charge, and let the route answer with the **same graceful 200** the fast path returns (`alreadyPurchased: true` + the authentic balance, never a fabricated `0`).
+13. **Per-User Mutable Payloads — `Cache-Control: private` Only**: A payload that embeds per-user, mutable fields (`isLiked`, `isRead`, `lastReadAt`, `lastPageId`, personalized recommendations) must never carry a browser `max-age`. Use `private, no-store` (personalized recommendations, Redis already dedupes bursts) or `private, no-cache` (ETag revalidation — cheap 304s, fresh user state when it changed). **Always `private`, never `public`** — never shareable at the CDN. See [`src/middleware/cache.ts`](file:///d:/Projects/Twistloom/Twistloom-backend/src/middleware/cache.ts) for the route-default convention.
 
 ---
 
@@ -349,6 +363,7 @@ Presence endpoints (`POST /touch`, session heartbeats) must be O(1) atomic upser
 #### D. Coalesce High-Frequency Polls & Allow Edge/Browser SWR for Semi-Static Auth'd Reads
 - For status/poll endpoints, collapse burst client calls at the source: return `Retry-After` and serve a coalesced/cached response when the same `(user, resource)` polled within N seconds (see `coalescePoll` / `getCoalesced` in [`src/utils/poll-coalesce.ts`](file:///d:/Projects/Twistloom/Twistloom-backend/src/utils/poll-coalesce.ts)).
 - Auth'd reads that don't need per-request freshness may relax `Cache-Control` to `private, max-age=1, s-maxage=1, stale-while-revalidate=2` ([`src/middleware/cache.ts`](file:///d:/Projects/Twistloom/Twistloom-backend/src/middleware/cache.ts)). **Always use `private`** (never `public`) so per-user payloads are never shared across users at the CDN; `s-maxage` lets the edge collapse same-user bursts.
+- **Exception — per-user *mutable* payloads** (derived from the reader's own engagement: `isLiked`, `isRead`, `lastReadAt`, `lastPageId`, personalized recommendations): never give them a browser `max-age`, because the reader's own actions mutate them between loads. Use `private, no-store` (personalized, Redis already dedupes) or `private, no-cache` (ETag revalidation) instead — see §3.3 rule 13.
 
 ---
 
@@ -681,6 +696,10 @@ Before providing code modifications:
 - [ ] Error response envelopes containing user state (`newBalance`, `credits`, counters) preserve authentic database values instead of defaulting to 0 or null on missing auxiliary rows.
 - [ ] Batch claim endpoints compute and award rewards strictly from affected rows via `UPDATE ... RETURNING` to eliminate race conditions and double-spending.
 - [ ] Automated evaluation inserts (`insert().onConflictDoNothing()`) chain `.returning({ id })` to guard completion side effects and activity logs against duplicate firing.
+- [ ] Costs derived from mutable user state are resolved via an in-transaction `CreditCostResolver` (not a pre-call `dbRead` read); resolver vetoes map to 409/idempotent-200.
+- [ ] Eligibility/status guards for charged operations re-check inside the `executeWithCredits` operation (tx re-read or `UPDATE ... RETURNING` with the predicate), not only in a pre-flight replica read.
+- [ ] Purchase/hint endpoints guarded by unique constraints use `dbWrite` pre-checks + `.onConflictDoNothing().returning()` and answer idempotent duplicates with a graceful 200 carrying the authentic balance.
+- [ ] Per-user mutable payloads (`isLiked`, `isRead`, personalized tags) use `private, no-store`/`private, no-cache`, never a browser `max-age`, and never `public`.
 - [ ] Subsystem-level access controls (roles, beta tester status, creator tiers) are applied consistently across all subsystem routes (reads, writes, rechecks, and batch mutations).
 - [ ] Relational child queries avoid unbounded `inArray` parameter lists, preferring indexed SQL joins with `LIMIT 1`.
 
