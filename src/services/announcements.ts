@@ -16,7 +16,7 @@
  * that routes map to HTTP and clients translate (AGENTS.md §9).
  */
 
-import { and, asc, count, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
+import { and, count, desc, eq, gt, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { type DBClient, dbRead, dbWrite } from "../db/client.js";
 import { announcements, broadcasts, users } from "../db/schema.js";
 import {
@@ -44,21 +44,17 @@ import { cleanSingleLineText, sanitizeText } from "../utils/text-processing.js";
 import { sanitizeBlogHtml } from "../utils/sanitize-html.js";
 import { getErrorMessage } from "../utils/error.js";
 import { generateId, isValidUuid } from "../utils/uuid.js";
-import { getRedisClient } from "../utils/redis.js";
+import { cacheDate, isCacheObject, invalidateWindowCache, readWindowCache } from "../utils/window-cache.js";
 import { invalidateCurrentBroadcastCache } from "./broadcast.js";
+import { lockBroadcastSchedule, preserveLiveBroadcast, rescheduleBroadcastQueue } from "./broadcast-scheduler.js";
+import { BROADCAST_GLOBAL_INTERVAL_SECONDS } from "../config/broadcast.js";
 
-const LIVE_ANNOUNCEMENT_CACHE_KEY = "announcement:live";
+const LIVE_ANNOUNCEMENT_CACHE_KEY = "announcement:live:v2";
 const LIVE_ANNOUNCEMENT_CACHE_TTL_SECONDS = 30;
 
 /** Invalidates the cached active announcement row in Redis. */
 export async function invalidateLiveAnnouncementCache(): Promise<void> {
-  const redis = getRedisClient();
-  if (!redis) return;
-  try {
-    await redis.del(LIVE_ANNOUNCEMENT_CACHE_KEY);
-  } catch {
-    /* non-fatal */
-  }
+  await invalidateWindowCache(LIVE_ANNOUNCEMENT_CACHE_KEY);
 }
 
 /** Tagged error carrying a client-translatable `announcements.*` code. */
@@ -73,6 +69,7 @@ export class AnnouncementError extends Error {
 }
 
 type AnnouncementRow = typeof announcements.$inferSelect;
+type LiveAnnouncementRow = Pick<AnnouncementRow, "id" | "kind" | "severity" | "title" | "body" | "ctaUrl" | "ctaText" | "createdAt" | "startsAt" | "expiresAt">;
 
 // ---------------------------------------------------------------------------
 // Validation helpers
@@ -201,12 +198,11 @@ function validateI18nParams(value: unknown): Record<string, string> | null {
 }
 
 function isUniqueViolation(error: unknown): boolean {
-  const message = getErrorMessage(error);
-  return (
-    (typeof (error as { code?: unknown })?.code === "string" && (error as { code: string }).code === "23505") ||
-    message.includes("announcements_one_published_unique") ||
-    message.toLowerCase().includes("duplicate key value violates unique constraint")
-  );
+  const constraint = "announcements_one_published_unique";
+  if (getErrorMessage(error).includes(constraint)) return true;
+  if (!isCacheObject(error)) return false;
+  return error.constraint === constraint || (isCacheObject(error.cause) &&
+    (error.cause.constraint === constraint || getErrorMessage(error.cause).includes(constraint)));
 }
 
 // ---------------------------------------------------------------------------
@@ -214,7 +210,7 @@ function isUniqueViolation(error: unknown): boolean {
 // ---------------------------------------------------------------------------
 
 /** Maps a row to the user-facing projection (never leaks author/draft data). */
-export function toPublicAnnouncement(row: AnnouncementRow): AnnouncementPublic {
+export function toPublicAnnouncement(row: LiveAnnouncementRow): AnnouncementPublic {
   return {
     id: row.id,
     kind: row.kind,
@@ -275,57 +271,27 @@ async function sweepAnnouncementLifecycle(client: DBClient): Promise<void> {
  * time has arrived are treated as live (their status is promoted on admin
  * write paths, never on this hot read).
  */
-async function getLiveAnnouncementRow(): Promise<AnnouncementRow | null> {
-  const redis = getRedisClient();
-  if (redis) {
-    try {
-      const cached = await redis.get(LIVE_ANNOUNCEMENT_CACHE_KEY);
-      if (cached !== null && cached !== undefined) {
-        if (cached === "null") return null;
-        const parsed = JSON.parse(cached as string);
-        return {
-          ...parsed,
-          startsAt: parsed.startsAt ? new Date(parsed.startsAt) : null,
-          expiresAt: parsed.expiresAt ? new Date(parsed.expiresAt) : null,
-          emailSentAt: parsed.emailSentAt ? new Date(parsed.emailSentAt) : null,
-          createdAt: new Date(parsed.createdAt),
-          updatedAt: new Date(parsed.updatedAt),
-        } as AnnouncementRow;
-      }
-    } catch {
-      /* fall through to DB */
-    }
-  }
-
-  const now = new Date();
-  const [row] = await dbRead
-    .select()
-    .from(announcements)
-    .where(
-      and(
-        publishedStatusFilter,
-        or(isNull(announcements.startsAt), lte(announcements.startsAt, now)),
-        or(isNull(announcements.expiresAt), gt(announcements.expiresAt, now)),
-      ),
-    )
-    .limit(1);
-
-  const result = row ?? null;
-  if (redis) {
-    try {
-      await redis.set(
-        LIVE_ANNOUNCEMENT_CACHE_KEY,
-        result ? JSON.stringify(result) : "null",
-        { ex: LIVE_ANNOUNCEMENT_CACHE_TTL_SECONDS },
-      );
-    } catch {
-      /* non-fatal */
-    }
-  }
-
-  return result;
+function decodeLiveAnnouncement(value: unknown): LiveAnnouncementRow | undefined {
+  if (!isCacheObject(value) || typeof value.id !== "string" || !isAnnouncementKind(value.kind) || !isAnnouncementSeverity(value.severity) || typeof value.title !== "string" || typeof value.body !== "string" || !(value.ctaUrl === null || typeof value.ctaUrl === "string") || !(value.ctaText === null || typeof value.ctaText === "string")) return undefined;
+  const createdAt = cacheDate(value.createdAt);
+  const startsAt = value.startsAt === null ? null : cacheDate(value.startsAt);
+  const expiresAt = value.expiresAt === null ? null : cacheDate(value.expiresAt);
+  if (!createdAt || startsAt === undefined || expiresAt === undefined) return undefined;
+  return { id: value.id, kind: value.kind, severity: value.severity, title: value.title, body: value.body, ctaUrl: value.ctaUrl, ctaText: value.ctaText, createdAt, startsAt, expiresAt };
 }
 
+async function getLiveAnnouncementRow(): Promise<LiveAnnouncementRow | null> {
+  const candidate = await readWindowCache(LIVE_ANNOUNCEMENT_CACHE_KEY, LIVE_ANNOUNCEMENT_CACHE_TTL_SECONDS,
+    decodeLiveAnnouncement, async () => {
+      const [row] = await dbWrite.select({ id: announcements.id, kind: announcements.kind, severity: announcements.severity,
+        title: announcements.title, body: announcements.body, ctaUrl: announcements.ctaUrl, ctaText: announcements.ctaText,
+        createdAt: announcements.createdAt, startsAt: announcements.startsAt, expiresAt: announcements.expiresAt })
+        .from(announcements).where(and(publishedStatusFilter, or(isNull(announcements.expiresAt), gt(announcements.expiresAt, new Date())))).limit(1);
+      return row ?? null;
+    }, row => [row.startsAt?.getTime() ?? 0, row.expiresAt?.getTime() ?? 0]);
+  const now = Date.now();
+  return candidate && (!candidate.startsAt || candidate.startsAt.getTime() <= now) && (!candidate.expiresAt || candidate.expiresAt.getTime() > now) ? candidate : null;
+}
 async function getLastSeenId(userId: string): Promise<string | null> {
   const [user] = await dbRead
     .select({ lastSeenId: users.lastSeenAnnouncementId })
@@ -381,7 +347,7 @@ export async function markAnnouncementSeen(userId: string, announcementId: strin
     throw new AnnouncementError("announcements.validation", "Invalid announcement ID.");
   }
 
-  const [exists] = await dbRead
+  const [exists] = await dbWrite
     .select({ id: announcements.id })
     .from(announcements)
     .where(eq(announcements.id, announcementId))
@@ -548,9 +514,10 @@ export interface UpdateAnnouncementInput {
  */
 export async function updateAnnouncement(id: string, input: UpdateAnnouncementInput): Promise<AnnouncementRow> {
   const result = await dbWrite.transaction(async (tx) => {
+    await lockBroadcastSchedule(tx);
     await sweepAnnouncementLifecycle(tx);
 
-    const [row] = await tx.select().from(announcements).where(eq(announcements.id, id)).limit(1);
+    const [row] = await tx.select().from(announcements).where(eq(announcements.id, id)).for("update").limit(1);
     if (!row) throw new AnnouncementError("announcements.notFound", "Announcement not found.");
     if (row.status === "active" || row.status === "ended") {
       throw new AnnouncementError("announcements.locked", "Only draft or scheduled announcements can be edited.");
@@ -582,8 +549,17 @@ export async function updateAnnouncement(id: string, input: UpdateAnnouncementIn
     if (startsAt && expiresAt && expiresAt.getTime() <= startsAt.getTime()) {
       throw new AnnouncementError("announcements.validation", "expiresAt must be after startsAt.");
     }
-    if (input.startsAt !== undefined) patch.startsAt = startsAt;
-    if (input.expiresAt !== undefined) patch.expiresAt = expiresAt;
+    if (row.status === "scheduled") {
+      if (!startsAt || !expiresAt || expiresAt <= new Date()) {
+        throw new AnnouncementError("announcements.validation", "Published announcements require a future, finite window.");
+      }
+      const window = await preserveLiveBroadcast(tx, { startsAt, expiresAt });
+      patch.startsAt = window.startsAt;
+      patch.expiresAt = window.expiresAt;
+      patch.status = window.startsAt > new Date() ? "scheduled" : "active";
+    }
+    if (row.status === "draft" && input.startsAt !== undefined) patch.startsAt = startsAt;
+    if (row.status === "draft" && input.expiresAt !== undefined) patch.expiresAt = expiresAt;
 
     const [updated] = await tx
       .update(announcements)
@@ -593,7 +569,7 @@ export async function updateAnnouncement(id: string, input: UpdateAnnouncementIn
     if (!updated) throw new AnnouncementError("announcements.notFound", "Announcement not found.");
 
     // Keep the pre-created banner row in sync for scheduled announcements.
-    if (updated.status === "scheduled" && updated.broadcastId) {
+    if (row.status === "scheduled" && updated.broadcastId) {
       await tx
         .update(broadcasts)
         .set({
@@ -608,12 +584,15 @@ export async function updateAnnouncement(id: string, input: UpdateAnnouncementIn
           updatedAt: new Date(),
         })
         .where(eq(broadcasts.id, updated.broadcastId));
-      await invalidateCurrentBroadcastCache();
+      if (updated.startsAt && updated.expiresAt) {
+        await rescheduleBroadcastQueue(tx, { startsAt: updated.startsAt, expiresAt: updated.expiresAt }, true);
+      }
     }
 
     return updated;
   });
 
+  await invalidateCurrentBroadcastCache();
   await invalidateLiveAnnouncementCache();
   return result;
 }
@@ -640,91 +619,6 @@ async function resolveBannerUserId(client: DBClient, publisherId: string): Promi
   return publisherId;
 }
 
-/**
- * Parks overlapping queued user megaphone broadcasts behind the banner window
- * so an active announcement truly owns the single live slot (Q3). Durations
- * and FIFO order are preserved; nothing is deleted. Rows already scheduled
- * after the banner are untouched.
- */
-async function parkUserBroadcastsBehind(tx: DBClient, bannerStart: Date, bannerEnd: Date): Promise<void> {
-  const now = new Date();
-  const overlapping = await tx
-    .select({ id: broadcasts.id, startsAt: broadcasts.startsAt, expiresAt: broadcasts.expiresAt })
-    .from(broadcasts)
-    .where(
-      and(
-        eq(broadcasts.status, "queued"),
-        eq(broadcasts.source, "user"),
-        gt(broadcasts.expiresAt, now),
-        lt(broadcasts.startsAt, bannerEnd),
-        gt(broadcasts.expiresAt, bannerStart),
-      ),
-    )
-    .orderBy(asc(broadcasts.startsAt));
-
-  let cursor = bannerEnd.getTime();
-  for (const row of overlapping) {
-    const duration = row.expiresAt.getTime() - row.startsAt.getTime();
-    const newStart = Math.max(cursor, row.startsAt.getTime());
-    const newExpires = newStart + duration;
-    if (newStart === row.startsAt.getTime()) {
-      cursor = newExpires;
-      continue;
-    }
-    await tx
-      .update(broadcasts)
-      .set({ startsAt: new Date(newStart), expiresAt: new Date(newExpires), updatedAt: now })
-      .where(eq(broadcasts.id, row.id));
-    cursor = newExpires;
-  }
-}
-
-/**
- * Pulls every queued user broadcast forward to resume right now (FIFO order
- * and durations preserved). Called when an announcement ends early so
- * broadcasts parked behind a multi-hour/day window aren't stranded until the
- * original window end. If a user broadcast is currently live, the cursor
- * starts from its expiry rather than `now` to prevent overlapping banners.
- */
-async function releaseUserBroadcasts(tx: DBClient): Promise<void> {
-  const now = new Date();
-  const [activeUserBroadcast] = await tx
-    .select({ expiresAt: broadcasts.expiresAt })
-    .from(broadcasts)
-    .where(
-      and(
-        eq(broadcasts.status, "queued"),
-        eq(broadcasts.source, "user"),
-        lte(broadcasts.startsAt, now),
-        gt(broadcasts.expiresAt, now),
-      ),
-    )
-    .limit(1);
-
-  const pending = await tx
-    .select({ id: broadcasts.id, startsAt: broadcasts.startsAt, expiresAt: broadcasts.expiresAt })
-    .from(broadcasts)
-    .where(
-      and(
-        eq(broadcasts.status, "queued"),
-        eq(broadcasts.source, "user"),
-        gt(broadcasts.startsAt, now),
-        gt(broadcasts.expiresAt, now),
-      ),
-    )
-    .orderBy(asc(broadcasts.startsAt));
-
-  let cursor = activeUserBroadcast ? activeUserBroadcast.expiresAt.getTime() : now.getTime();
-  for (const row of pending) {
-    const duration = row.expiresAt.getTime() - row.startsAt.getTime();
-    await tx
-      .update(broadcasts)
-      .set({ startsAt: new Date(cursor), expiresAt: new Date(cursor + duration), updatedAt: now })
-      .where(eq(broadcasts.id, row.id));
-    cursor += duration;
-  }
-}
-
 export interface PublishAnnouncementOptions {
   startsAt?: unknown;
   expiresAt?: unknown;
@@ -735,7 +629,7 @@ export interface PublishAnnouncementOptions {
  * race-proof partial unique index), resolves the visibility window, inserts
  * the banner row, and parks queued user broadcasts behind the window.
  *
- * - Publishing a row that is already `active` is a no-op (double-click safe).
+ * - Publishing a scheduled/active row is a no-op; ended rows are terminal.
  * - `startsAt` in the future ⇒ status `scheduled`; the banner row waits via
  *   its own `starts_at` (no scheduler process needed for the banner).
  *
@@ -750,11 +644,13 @@ export async function publishAnnouncement(
   let result: AnnouncementRow;
   try {
     result = await dbWrite.transaction(async (tx) => {
+      await lockBroadcastSchedule(tx);
       await sweepAnnouncementLifecycle(tx);
 
-      const [row] = await tx.select().from(announcements).where(eq(announcements.id, id)).limit(1);
+      const [row] = await tx.select().from(announcements).where(eq(announcements.id, id)).for("update").limit(1);
       if (!row) throw new AnnouncementError("announcements.notFound", "Announcement not found.");
-      if (row.status === "active") return row;
+      if (row.status === "active" || row.status === "scheduled") return row;
+      if (row.status !== "draft") throw new AnnouncementError("announcements.notPublishable", "Only a draft can be published.");
 
       const [other] = await tx
         .select({ id: announcements.id })
@@ -769,15 +665,19 @@ export async function publishAnnouncement(
       }
 
       const now = new Date();
-      const startsAt = parseIsoDate(options.startsAt, "startsAt") ?? row.startsAt ?? now;
-      const expiresAt =
+      let startsAt = parseIsoDate(options.startsAt, "startsAt") ?? row.startsAt ?? now;
+      let expiresAt =
         parseIsoDate(options.expiresAt, "expiresAt") ??
         row.expiresAt ??
         new Date(startsAt.getTime() + ANNOUNCEMENT_DEFAULT_WINDOW_SECONDS * 1000);
       if (expiresAt.getTime() <= startsAt.getTime()) {
         throw new AnnouncementError("announcements.validation", "expiresAt must be after startsAt.");
       }
-      const status: AnnouncementStatus = startsAt.getTime() > now.getTime() ? "scheduled" : "active";
+      if (expiresAt <= now) throw new AnnouncementError("announcements.validation", "The publish window has already elapsed.");
+      ({ startsAt, expiresAt } = await preserveLiveBroadcast(tx, { startsAt, expiresAt }));
+      // The planner can move an immediate window to its slightly later clock.
+      // Classify against the current clock, not the pre-planning snapshot.
+      const status: AnnouncementStatus = startsAt.getTime() > Date.now() ? "scheduled" : "active";
 
       // Banner row — direct insert (not sendSystemBroadcast): the window is
       // admin-defined, not the 8-second event display window.
@@ -804,7 +704,7 @@ export async function publishAnnouncement(
         updatedAt: now,
       });
 
-      await parkUserBroadcastsBehind(tx, startsAt, expiresAt);
+      await rescheduleBroadcastQueue(tx, { startsAt, expiresAt }, false);
 
       const [updated] = await tx
         .update(announcements)
@@ -840,9 +740,9 @@ export async function publishAnnouncement(
  */
 export async function endAnnouncement(id: string): Promise<AnnouncementRow> {
   const result = await dbWrite.transaction(async (tx) => {
-    const [row] = await tx.select().from(announcements).where(eq(announcements.id, id)).limit(1);
+    await lockBroadcastSchedule(tx);
+    const [row] = await tx.select().from(announcements).where(eq(announcements.id, id)).for("update").limit(1);
     if (!row) throw new AnnouncementError("announcements.notFound", "Announcement not found.");
-    if (row.status === "ended") return row;
     if (row.status === "draft") {
       throw new AnnouncementError("announcements.notPublishable", "A draft cannot be ended — publish it first.");
     }
@@ -854,13 +754,11 @@ export async function endAnnouncement(id: string): Promise<AnnouncementRow> {
       .where(eq(announcements.id, id))
       .returning();
 
-    if (row.broadcastId) {
-      await tx
-        .update(broadcasts)
-        .set({ status: "expired" satisfies BroadcastStatus, expiresAt: now, updatedAt: now })
-        .where(eq(broadcasts.id, row.broadcastId));
-    }
-    await releaseUserBroadcasts(tx);
+    await tx.update(broadcasts).set({ status: "expired" satisfies BroadcastStatus, expiresAt: now, updatedAt: now })
+      .where(or(eq(broadcasts.announcementId, id), row.broadcastId ? eq(broadcasts.id, row.broadcastId) : undefined));
+    const wasLive = row.status !== "ended" && !!row.startsAt && row.startsAt <= now && !!row.expiresAt && row.expiresAt > now;
+    if (row.status !== "ended") await rescheduleBroadcastQueue(tx, null, true,
+      wasLive ? new Date(now.getTime() + BROADCAST_GLOBAL_INTERVAL_SECONDS * 1000) : undefined);
     return updated ?? row;
   });
 
@@ -878,7 +776,8 @@ export async function endAnnouncement(id: string): Promise<AnnouncementRow> {
  */
 export async function deleteAnnouncement(id: string): Promise<void> {
   await dbWrite.transaction(async (tx) => {
-    const [row] = await tx.select().from(announcements).where(eq(announcements.id, id)).limit(1);
+    await lockBroadcastSchedule(tx);
+    const [row] = await tx.select().from(announcements).where(eq(announcements.id, id)).for("update").limit(1);
     if (!row) throw new AnnouncementError("announcements.notFound", "Announcement not found.");
     if (row.status !== "draft") {
       throw new AnnouncementError("announcements.locked", "Only draft announcements can be deleted.");
@@ -907,7 +806,7 @@ export interface ListAnnouncementsResult {
 /** Paginated history, newest first, with optional status/kind filters. */
 export async function listAnnouncements(params: ListAnnouncementsParams): Promise<ListAnnouncementsResult> {
   // Keep chips honest before reporting (rare, admin-triggered writes).
-  await sweepAnnouncementLifecycle(dbWrite);
+  await dbWrite.transaction(async (tx) => { await lockBroadcastSchedule(tx); await sweepAnnouncementLifecycle(tx); });
 
   const filters = [];
   if (params.status !== undefined && params.status !== "") {

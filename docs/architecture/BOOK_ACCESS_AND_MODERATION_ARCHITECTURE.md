@@ -166,7 +166,7 @@ flowchart TB
 4. `invalidateExploreCache({ before, after })` — global Explore page-1, all sorts (`src/routes/admin.ts:2289`).
 5. `notifyForumOfBookChange({ before, after })` — portal forum feed (`src/routes/admin.ts:2290-2304`).
 
-**Read discipline (audit §3.1 read sweep):** every read in this route — and in `src/services/trust-safety.ts` — that gates or accompanies a mutation runs on `dbWrite`, so a replica-lagged miss can never skip a write the operator asked for. The single deliberate exception is the announcement broadcast's full-table recipient scan (`src/routes/admin.ts:1789-1793`): it must not load every user onto the primary, and second-stale email-preference reads are acceptable there.
+**Read discipline (audit §3.1 read sweep):** every read in this route — and in `src/services/trust-safety.ts` — that gates or accompanies a mutation runs on `dbWrite`, so a replica-lagged miss can never skip a write the operator asked for. Announcement email delivery now uses a bounded primary-key audience scan and authoritative preference checks in the durable worker; it never loads the complete audience into an admin request.
 
 | Layer | Scope | Freshness | Refreshed by |
 |---|---|---|---|

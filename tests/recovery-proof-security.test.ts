@@ -34,7 +34,7 @@ function select() {
   const rows = () => {
     if (table === users) {
       const account = [...accounts].find(([id, email]) => params.includes(id) || params.includes(email));
-      return account ? [{ userId: account[0], id: account[0] }] : [];
+      return account ? [{ userId: account[0], id: account[0], email: account[1], name: 'User' }] : [];
     }
     const byEmail = [...accounts].find(([, email]) => params.includes(email));
     if (byEmail) return proofs.has(byEmail[0]) ? [proofs.get(byEmail[0])!] : [];

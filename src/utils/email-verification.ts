@@ -11,7 +11,7 @@
  * 
  * // Create verification token and send email
  * const token = await createEmailVerificationToken('user-123');
- * await sendVerificationEmail('user@example.com', `https://app.com/verify-email?token=${token}`);
+ * // Email intent is committed with the token; the shared worker delivers it.
  * 
  * // Verify token and mark email as verified
  * const userId = await verifyEmailToken(token);
@@ -24,10 +24,12 @@
  * ```
  */
 
-import { dbRead, dbWrite } from '../db/client.js';
+import { dbRead, dbWrite, type DBTransaction } from '../db/client.js';
 import { userAuth, users } from '../db/schema.js';
 import { eq, and, gt } from 'drizzle-orm';
 import { randomInt, createHmac } from 'node:crypto';
+import { sendVerificationEmail } from './email.js';
+import { generateId } from './uuid.js';
 
 /** A pepper prevents offline enumeration of the small OTP space from DB hashes.
  * Key changes retire outstanding OTPs; resend issues a proof under the new key. */
@@ -46,18 +48,21 @@ function otpHash(userId: string, token: string): string {
  * @example
  * ```typescript
  * const token = await createEmailVerificationToken('user-123');
- * await sendVerificationEmail('user@example.com', `https://app.com/verify-email?token=${token}`);
+ * // Email intent is committed with the token; the shared worker delivers it.
  * ```
  */
-export async function createEmailVerificationToken(userId: string): Promise<string> {
+export async function createEmailVerificationToken(userId: string, client?: DBTransaction): Promise<string> {
   // Cryptographic six-digit UX, hashed with the account UUID. Equal codes on
   // different accounts no longer collide with the global database unique key.
   const token = randomInt(100000, 1000000).toString();
   const storedToken = otpHash(userId, token);
   const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
 
+  const persist = async (tx: DBTransaction) => {
+    const [user] = await tx.select({ email: users.email }).from(users).where(eq(users.userId, userId)).limit(1).for('update');
+    if (!user) throw new Error('Verification user unavailable');
   // Create or update user_auth record
-  await dbWrite
+  await tx
     .insert(userAuth)
     .values({
       userId,
@@ -73,6 +78,13 @@ export async function createEmailVerificationToken(userId: string): Promise<stri
         updatedAt: new Date(),
       },
     });
+
+
+    if (user.email) await sendVerificationEmail(user.email,
+      `${process.env.FRONTEND_URL}/verify-email?token=${token}&email=${encodeURIComponent(user.email)}`,
+      token, { userId, tx, expiresAt, credentialHash: storedToken, requestKey: `verification/${userId}/${generateId()}` });
+  };
+  if (client) await persist(client); else await dbWrite.transaction(persist);
 
   return token;
 }

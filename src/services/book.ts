@@ -1185,6 +1185,20 @@ export async function updateBook(
   options?: { client?: DBClient; invalidateCache?: boolean }
 ): Promise<DBBook> {
   const { client = dbWrite, invalidateCache = true } = options ?? {};
+  if (!isTransaction(client)) {
+    const { result, previousSlug } = await dbWrite.transaction(async tx => {
+      const [previous] = invalidateCache && updates.slug !== undefined
+        ? await tx.select({ slug: books.slug }).from(books).where(eq(books.id, bookId)).limit(1).for("update") : [];
+      return { result: await updateBook(bookId, updates, { client: tx, invalidateCache: false }), previousSlug: previous?.slug };
+    });
+    if (invalidateCache) {
+      invalidateBookCache(bookId); invalidateEnrichedBookCache(bookId);
+      if (previousSlug) invalidateEnrichedBookCache(previousSlug);
+      if (result.slug) invalidateEnrichedBookCache(result.slug);
+      await invalidatePageOneCache(bookId);
+    }
+    return result;
+  }
 
   // Check if we need to query current book state:
   // - Visibility transition or publish notification
@@ -1315,14 +1329,7 @@ export async function updateBook(
     await invalidatePageOneCache(bookId);
   }
 
-  // Fire follower notifications outside the (possible) transaction so a publish
-  // is always announced even if this call is nested in a larger tx. Best-effort:
-  // a failure here must never break the publish itself.
-  if (publishNotify) {
-    void notifyFollowersOfPublishedBook(publishNotify).catch((e) => {
-      console.error('[updateBook] ❌ Failed to notify followers of published book:', getErrorMessage(e));
-    });
-  }
+  if (publishNotify) await notifyFollowersOfPublishedBook(publishNotify, client);
 
   return updated;
 }

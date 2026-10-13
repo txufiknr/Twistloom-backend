@@ -226,4 +226,49 @@ async function handleSweepCustomActions(c: Context<AppEnv>) {
 router.post("/sweep-custom-actions", handleSweepCustomActions);
 router.get("/sweep-custom-actions", handleSweepCustomActions);
 
+/** Bounded email slice; existing CRON_SECRET middleware protects this endpoint. */
+async function handleEmailDelivery(c: Context<AppEnv>) {
+  const { emailDeliveryEnabled } = await import("../config/email-delivery.js");
+  if (!emailDeliveryEnabled()) return c.json({ success: false, error: "Shared email delivery is disabled" }, 503);
+  try {
+    const { processEmailCampaigns } = await import("../services/email-campaigns.js");
+    const { processEmailMessages } = await import("../services/email-delivery.js");
+    const { emailProviderPausedUntil } = await import("../services/email-gate.js");
+    const pausedUntil = await emailProviderPausedUntil();
+    if (pausedUntil) {
+      // Publication's in-app channel must not wait for an email quota reset.
+      await processEmailCampaigns(true);
+      return c.json({ success: true, pausedUntil });
+    }
+    await processEmailCampaigns();
+    return c.json({ success: true, data: await processEmailMessages() });
+  } catch (error) { return cApiError(c, "Failed to process email delivery", error); }
+}
+router.post("/emails", handleEmailDelivery);
+// Retained URI for existing schedules; all categories run through the same handler.
+router.post("/announcement-emails", handleEmailDelivery);
+router.post("/email-cleanup", async c => {
+  const { emailDeliveryEnabled } = await import("../config/email-delivery.js");
+  if (!emailDeliveryEnabled()) return c.json({ success: false, error: "Shared email delivery is disabled" }, 503);
+  try {
+    const { cleanupEmailMessages } = await import("../services/email-delivery.js");
+    await cleanupEmailMessages(); return c.json({ success: true });
+  } catch (error) { return cApiError(c, "Failed to clean email receipts", error); }
+});
+router.post("/email-weekly", async c => {
+  const { emailDeliveryEnabled } = await import("../config/email-delivery.js");
+  if (!emailDeliveryEnabled()) return c.json({ success: false, error: "Shared email delivery is disabled" }, 503);
+  try {
+    const { runWeeklyRecommendationsEmail } = await import("../cron/email-weekly-recommendations.js");
+    await runWeeklyRecommendationsEmail(); return c.json({ success: true });
+  } catch (error) { return cApiError(c, "Failed to queue weekly email", error); }
+});
+router.post("/email-monthly", async c => {
+  const { emailDeliveryEnabled } = await import("../config/email-delivery.js");
+  if (!emailDeliveryEnabled()) return c.json({ success: false, error: "Shared email delivery is disabled" }, 503);
+  try {
+    const { runMonthlyActivitySummaryEmail } = await import("../cron/email-monthly-summary.js");
+    await runMonthlyActivitySummaryEmail(); return c.json({ success: true });
+  } catch (error) { return cApiError(c, "Failed to queue monthly email", error); }
+});
 export default router;

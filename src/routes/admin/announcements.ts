@@ -12,15 +12,16 @@
  * - PATCH  /admin/announcements/:id          — edit draft/scheduled (locked once active)
  * - POST   /admin/announcements/:id/publish  — activate now or schedule (startsAt)
  * - POST   /admin/announcements/:id/end      — revoke; clears the banner slot
- * - POST   /admin/announcements/:id/email    — fire the existing email blast; stamps email_sent_at
+ * - POST   /admin/announcements/:id/email    — queue a durable email campaign
+ * - GET    /admin/announcements/email-jobs/:jobId — campaign progress
  */
 
 import { Hono } from "hono";
-import { and, eq, isNotNull } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { requireAuth } from "../../middleware/nextauth.js";
 import { requirePermission, requireSuperAdmin } from "../../middleware/admin-auth.js";
-import { dbRead, dbWrite } from "../../db/client.js";
-import { announcements, users } from "../../db/schema.js";
+import { dbWrite } from "../../db/client.js";
+import { announcements } from "../../db/schema.js";
 import {
   AnnouncementError,
   createAnnouncement,
@@ -30,7 +31,7 @@ import {
   publishAnnouncement,
   updateAnnouncement,
 } from "../../services/announcements.js";
-import { sanitizeBlogHtml } from "../../utils/sanitize-html.js";
+import { countAnnouncementEmailRecipients, getAnnouncementEmailJob, queueAnnouncementEmail, requireAnnouncementEmailJobs } from "../../services/announcement-email.js";
 import { isValidUuid } from "../../utils/uuid.js";
 import {
   cApiError,
@@ -45,14 +46,18 @@ import type { AppEnv } from "../../hono/env.js";
 const router = new Hono<AppEnv>();
 
 /** Maps a tagged `AnnouncementError` to its HTTP envelope; rethrows nothing. */
-function announcementErrorResponse(c: Context<AppEnv>, error: unknown) {
+export function announcementErrorResponse(c: Context<AppEnv>, error: unknown) {
   if (!(error instanceof AnnouncementError)) return null;
   switch (error.code) {
     case "announcements.notFound":
       return cNotFoundError(c, error.message, error, error.code);
     case "announcements.anotherActiveExists":
     case "announcements.locked":
+    case "announcements.emailInProgress":
+    case "announcements.emailAlreadySent":
       return cConflictError(c, error.message, error, error.code);
+    case "announcements.emailUnavailable":
+      return cApiError(c, error.message, error, 503, error.code);
     case "announcements.validation":
     case "announcements.notPublishable":
       return cValidationError(c, error.message, error, 400, error.code);
@@ -202,95 +207,45 @@ router.delete("/:id", requireAuth, requirePermission("announcements"), async (c)
   }
 });
 
-/**
- * POST /admin/announcements/:id/email
- *
- * Fires the existing product-announcement blast (same audience filter as
- * `POST /admin/email/announcements`: opted-in, non-new users with an email)
- * using this record's title/body/CTA, then stamps `email_sent_at`.
- * Gated by `requireSuperAdmin` to match `POST /admin/email/announcements`.
- * Body: { dryRun?: boolean, force?: boolean }. Response mirrors the legacy blast endpoint.
- */
+/** Campaign creation returns promptly; the protected cron drains the durable outbox. */
 router.post("/:id/email", requireAuth, requireSuperAdmin, async (c) => {
   const { id } = c.req.param();
   const invalid = invalidIdResponse(c, id);
   if (invalid) return invalid;
   try {
-    const [row] = await dbRead.select().from(announcements).where(eq(announcements.id, id)).limit(1);
-    if (!row) return cNotFoundError(c, "Announcement not found", undefined, "announcements.notFound");
-
-    const body = (c.get("body") ?? {}) as { dryRun?: boolean; force?: boolean };
-
-    if (row.emailSentAt && !body.force) {
-      return cConflictError(
-        c,
-        "Email blast was already sent for this announcement. Pass force=true to re-send.",
-        undefined,
-        "announcements.emailAlreadySent",
-      );
+    requireAnnouncementEmailJobs();
+    const body: unknown = c.get("body") ?? {};
+    if (typeof body !== "object" || body === null || Array.isArray(body)) {
+      return cValidationError(c, "Invalid email request");
     }
-
-    const { normalizeEmailPreferences } = await import("../../services/email-preferences.js");
-    const { sendAnnouncementEmail } = await import("../../utils/email.js");
-
-    // Deliberately dbRead: full-table recipient fan-out must not load every
-    // user onto the primary (same rationale as POST /admin/email/announcements).
-    const rows = await dbRead
-      .select({
-        userId: users.userId,
-        email: users.email,
-        emailPreferences: users.emailPreferences,
-        isNewUser: users.isNewUser,
-      })
-      .from(users)
-      .where(and(eq(users.isNewUser, false), isNotNull(users.email)));
-
-    const recipients = rows.filter((r) => {
-      const prefs = normalizeEmailPreferences(r.emailPreferences);
-      return prefs.productAnnouncements && !!r.email;
-    });
-
-    if (body.dryRun) {
-      return c.json({
-        dryRun: true,
-        recipientCount: recipients.length,
-        title: row.title,
-      });
+    const dryRun = "dryRun" in body ? body.dryRun : false;
+    const force = "force" in body ? body.force : false;
+    const requestId = "requestId" in body ? body.requestId : undefined;
+    if (typeof dryRun !== "boolean" || typeof force !== "boolean") return cValidationError(c, "Invalid email options");
+    if (dryRun) {
+      const [row] = await dbWrite.select({ title: announcements.title }).from(announcements).where(eq(announcements.id, id)).limit(1);
+      if (!row) return cNotFoundError(c, "Announcement not found", undefined, "announcements.notFound");
+      return c.json({ dryRun: true, title: row.title, recipientCount: await countAnnouncementEmailRecipients() });
     }
-
-    // bodyHtml wins; the plain-text body is sanitized already, and
-    // sanitizeBlogHtml is the repo's defensive wrapper for email HTML.
-    const html = row.bodyHtml ?? (await sanitizeBlogHtml(`<p>${row.body}</p>`));
-    const cta = row.ctaUrl && row.ctaText ? { url: row.ctaUrl, text: row.ctaText } : undefined;
-
-    let sent = 0;
-    let failed = 0;
-    for (const r of recipients) {
-      const ok = await sendAnnouncementEmail(r.email, row.title, html, cta, { userId: r.userId });
-      if (ok) sent++;
-      else failed++;
-    }
-
-    if (sent > 0) {
-      await dbWrite
-        .update(announcements)
-        .set({ emailSentAt: new Date() })
-        .where(eq(announcements.id, id));
-    }
-
-    console.log(
-      `[admin] 📢 Announcement email "${row.title}" sent=${sent} failed=${failed} eligible=${recipients.length}`,
-    );
-
-    return c.json({
-      success: true,
-      title: row.title,
-      recipientCount: recipients.length,
-      sent,
-      failed,
-    });
+    const userId = c.get("userId");
+    if (!userId) return cUnauthorizedError(c, "Authentication required");
+    const job = await queueAnnouncementEmail({ announcementId: id, force, requestId }, userId);
+    return c.json({ success: true, queued: true, ...job }, 202);
   } catch (error) {
-    return cApiError(c, "Failed to send announcement", error);
+    return announcementErrorResponse(c, error) ?? cApiError(c, "Failed to queue announcement", error);
+  }
+});
+
+router.get("/email-jobs/:jobId", requireAuth, requireSuperAdmin, async (c) => {
+  const { jobId } = c.req.param();
+  const invalid = invalidIdResponse(c, jobId);
+  if (invalid) return invalid;
+  try {
+    requireAnnouncementEmailJobs();
+    c.header("Cache-Control", "private, no-store");
+    return c.json(await getAnnouncementEmailJob(jobId));
+  } catch (error) {
+    return announcementErrorResponse(c, error) ?? cApiError(c, "Failed to read email progress", error);
   }
 });
 

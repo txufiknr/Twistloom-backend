@@ -52,6 +52,7 @@ mock.module("../src/config/credits.js", () => ({
 const { executeWithCredits } = await import("../src/services/credits.js");
 const { getCreditCostForUser } = await import("../src/config/credits.js");
 const { users } = await import("../src/db/schema.js");
+const { authorizeTimeTravelSession, rebaseTimeTravelSession } = await import("../src/services/time-travel.js");
 
 afterAll(() => {
   mock.module("../src/db/client.js", () => actualDbClient);
@@ -137,10 +138,8 @@ describe("executeWithCredits — in-transaction cost resolver", () => {
   it("rethrows when the operation throws (real Postgres rolls back the deduction)", async () => {
     seedUser(30);
 
-    // The fake DB has no rollback semantics, so we assert the error is
-    // PROPAGATED (executeWithCredits does not swallow it). On real Postgres a
-    // thrown operation aborts the transaction, reverting the deduction — that
-    // guarantee is enforced by the database, not by this in-memory stand-in.
+    // A thrown operation must propagate and restore the transaction snapshot.
+    // Real lock contention and isolation require PostgreSQL integration tests.
     await expect(
       executeWithCredits(
         USER,
@@ -151,6 +150,8 @@ describe("executeWithCredits — in-transaction cost resolver", () => {
         { context: "resolver_test" },
       ),
     ).rejects.toThrow("operation failed");
+    expect(fakeDb.rows.users[0].credits).toBe(30);
+    expect(fakeDb.rows.transactions).toHaveLength(0);
   });
 
   it("takes the free path when the resolver returns 0 (operation runs, nothing deducted)", async () => {
@@ -166,6 +167,31 @@ describe("executeWithCredits — in-transaction cost resolver", () => {
     expect(remainingCredits).toBe(25);
     expect(creditsOf()).toBe(25);
     expect(fakeDb.rows.transactions).toHaveLength(0);
+  });
+
+  it("refuses to charge Time Travel without an authoritative reader session", async () => {
+    seedUser(25);
+    await expect(executeWithCredits(USER, async tx => {
+      await authorizeTimeTravelSession(tx, USER, "book", "next");
+      return 5;
+    }, async () => undefined, { context: "time_travel_commit" })).rejects.toThrow("reader session");
+    expect(fakeDb.rows.users[0].credits).toBe(25);
+    expect(fakeDb.rows.transactions).toHaveLength(0);
+  });
+
+  it("rolls back a Time Travel charge when its conditional session update affects zero rows", async () => {
+    seedUser(25);
+    fakeDb.rows.userSessions.push({ userId: USER, bookId: "book", frontierPageId: "before", frontierPageNumber: 3 });
+    await expect(executeWithCredits(USER, async tx => {
+      await authorizeTimeTravelSession(tx, USER, "book", "next");
+      return 5;
+    }, async tx => {
+      fakeDb.rows.userSessions[0].frontierPageId = "changed";
+      await rebaseTimeTravelSession(tx, USER, "book", "before", "next", 4);
+    }, { context: "time_travel_commit" })).rejects.toThrow("reader session");
+    expect(fakeDb.rows.users[0].credits).toBe(25);
+    expect(fakeDb.rows.transactions).toHaveLength(0);
+    expect(fakeDb.rows.userSessions[0].frontierPageId).toBe("before");
   });
 
   it("zeroes a resolved numeric cost for the demo account (numeric demo path)", async () => {

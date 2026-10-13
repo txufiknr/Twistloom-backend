@@ -1,3 +1,5 @@
+import { sendRefundProcessedEmail } from '../../utils/email.js';
+import { dispatchEmailWorkers } from '../email-dispatch.js';
 /**
  * Stripe webhook event handlers.
  *
@@ -10,8 +12,8 @@
 
 import type Stripe from "stripe";
 import { eq, and, sql } from "drizzle-orm";
-import { dbRead, dbWrite } from "../../db/client.js";
-import { users, transactions, webhookDeliveries, userNotifications, subscriptions } from "../../db/schema.js";
+import { dbWrite } from "../../db/client.js";
+import { users, transactions, webhookDeliveries, userNotifications } from "../../db/schema.js";
 import { CREDIT_PACKS, FIRST_PURCHASE_BONUS } from "../../config/credits.js";
 import { PAYMENT_GATEWAY } from "../../types/payment.js";
 import { createSubscription, updateSubscription, renewSubscription, cancelSubscription, handleTrialWillEnd } from "../subscription.js";
@@ -104,27 +106,6 @@ export async function handleSubscriptionDeleted(event: Stripe.Event): Promise<vo
   });
   console.log(`[stripe] ❌ Canceled subscription ${subscription.id}`);
 
-  try {
-    const [row] = await dbRead
-      .select({
-        userId: users.userId,
-        email: users.email,
-        name: users.name,
-        currentPeriodEnd: subscriptions.currentPeriodEnd,
-      })
-      .from(subscriptions)
-      .innerJoin(users, eq(subscriptions.userId, users.userId))
-      .where(and(eq(subscriptions.providerSubscriptionId, subscription.id), eq(subscriptions.gateway, PAYMENT_GATEWAY.stripe)))
-      .limit(1);
-    if (row?.email) {
-      const { sendSubscriptionCanceledEmail, sendEmailSafe } = await import("../../utils/email.js");
-      sendEmailSafe("subscription.deleted", () =>
-        sendSubscriptionCanceledEmail(row.email, row.name || "there", row.currentPeriodEnd ?? undefined, { userId: row.userId }),
-      );
-    }
-  } catch (emailError) {
-    console.error("[stripe] ❌ Failed to send subscription-canceled email:", emailError);
-  }
 }
 
 export async function handleInvoicePaymentSucceeded(event: Stripe.Event): Promise<void> {
@@ -161,28 +142,10 @@ export async function handleInvoicePaymentFailed(event: Stripe.Event): Promise<v
     gateway: PAYMENT_GATEWAY.stripe,
     providerSubscriptionId: subscriptionId,
     status: "past_due",
+    paymentFailureEventId: event.id,
   });
   console.log(`[stripe] ❌ Payment failed for subscription ${subscriptionId}`);
 
-  try {
-    const [row] = await dbRead
-      .select({ userId: users.userId, email: users.email, name: users.name })
-      .from(subscriptions)
-      .innerJoin(users, eq(subscriptions.userId, users.userId))
-      .where(and(eq(subscriptions.providerSubscriptionId, subscriptionId), eq(subscriptions.gateway, PAYMENT_GATEWAY.stripe)))
-      .limit(1);
-    if (row?.email) {
-      const { sendPaymentFailedEmail, sendEmailSafe } = await import("../../utils/email.js");
-      const portalUrl = process.env.FRONTEND_URL
-        ? `${process.env.FRONTEND_URL.replace(/\/$/, "")}/dashboard/account/subscription`
-        : undefined;
-      sendEmailSafe("invoice.payment_failed", () =>
-        sendPaymentFailedEmail(row.email, row.name || "there", portalUrl, { userId: row.userId }),
-      );
-    }
-  } catch (emailError) {
-    console.error("[stripe] ❌ Failed to send payment-failed email:", emailError);
-  }
 }
 
 export async function handleTrialWillEndEvent(event: Stripe.Event): Promise<void> {
@@ -277,7 +240,7 @@ export async function handleChargeRefunded(
   const providerEventId = event.id;
   if (!providerPaymentId) throw new Error("Missing payment intent");
 
-  const refundEmailMeta: { userId: string; credits: number }[] = [];
+
   let isDuplicateTx = false;
 
   try {
@@ -319,7 +282,9 @@ export async function handleChargeRefunded(
           message: `${creditsToDeduct} credits have been deducted from your account due to a refund`,
           data: { creditsDeducted: creditsToDeduct, refundCents, refundAmount: refundCents / 100, originalPaymentId: providerPaymentId },
         });
-        refundEmailMeta.push({ userId: transaction.userId, credits: creditsToDeduct });
+        const [recipient] = await tx.select({ email: users.email, name: users.name }).from(users).where(eq(users.userId, transaction.userId)).limit(1);
+        if (recipient?.email) await sendRefundProcessedEmail(recipient.email, recipient.name || 'there', creditsToDeduct,
+          { userId: transaction.userId, tx, requestKey: `refund/stripe/${providerEventId}` });
       }
       if (webhookDeliveryId) {
         await tx.update(webhookDeliveries).set({ status: "success", processedAt: new Date(), updatedAt: new Date() }).where(eq(webhookDeliveries.id, webhookDeliveryId));
@@ -334,24 +299,7 @@ export async function handleChargeRefunded(
     }
   }
 
-  const refundMeta = refundEmailMeta[0];
-  if (refundMeta) {
-    try {
-      const [u] = await dbRead
-        .select({ email: users.email, name: users.name })
-        .from(users)
-        .where(eq(users.userId, refundMeta.userId))
-        .limit(1);
-      if (u?.email) {
-        const { sendRefundProcessedEmail, sendEmailSafe } = await import("../../utils/email.js");
-        sendEmailSafe("charge.refunded", () =>
-          sendRefundProcessedEmail(u.email, u.name || "there", refundMeta.credits, { userId: refundMeta.userId }),
-        );
-      }
-    } catch (emailError) {
-      console.error("[stripe] ❌ Failed to send refund email:", emailError);
-    }
-  }
+  if (!isDuplicateTx) await dispatchEmailWorkers('refund/' + providerEventId);
 
   return { duplicate: isDuplicateTx };
 }

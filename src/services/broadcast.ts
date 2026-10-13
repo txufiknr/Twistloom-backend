@@ -19,12 +19,14 @@
  * @see src/routes/broadcasts.ts for the HTTP layer
  */
 
-import { and, desc, eq, gt, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
 import { type DBClient, dbRead, dbWrite } from "../db/client.js";
 import { broadcasts, broadcastReports, users } from "../db/schema.js";
 import { generateId } from "../utils/uuid.js";
 import { getErrorMessage } from "../utils/error.js";
 import { getRedisClient } from "../utils/redis.js";
+import { cacheDate, isCacheObject, invalidateWindowCache, readWindowCache } from "../utils/window-cache.js";
+import { isAnnouncementSeverity } from "../types/announcements.js";
 import { sanitizeText, cleanSingleLineText } from "../utils/text-processing.js";
 import { stripHtml } from "../utils/sanitize-html.js";
 import { aiPrompt, createAIOptionsWithSchema } from "../utils/ai-chat.js";
@@ -46,6 +48,7 @@ import {
   type BroadcastErrorCode,
 } from "../config/broadcast.js";
 import { hasActiveVipSubscription } from "./subscription.js";
+import { lockBroadcastSchedule } from "./broadcast-scheduler.js";
 import { recordViolationEvent } from "./trust-safety.js";
 import {
   getUserItemCount,
@@ -404,16 +407,17 @@ async function reapStaleQueuedBroadcasts(tx: DBClient): Promise<void> {
 async function computeSchedule(tx?: DBClient): Promise<BroadcastSchedule> {
   const client = tx || dbRead;
   const now = new Date();
+  const intervalMs = BROADCAST_GLOBAL_INTERVAL_SECONDS * 1000;
   const [last] = await client
     .select({ expiresAt: broadcasts.expiresAt })
     .from(broadcasts)
-    .where(and(eq(broadcasts.status, "queued"), gt(broadcasts.expiresAt, now)))
+    .where(or(and(eq(broadcasts.status, "queued"), gt(broadcasts.expiresAt, now)),
+      and(eq(broadcasts.status, "expired"), lte(broadcasts.startsAt, now),
+        gt(broadcasts.expiresAt, new Date(now.getTime() - intervalMs)))))
     .orderBy(desc(broadcasts.expiresAt))
     .limit(1);
 
-  const intervalMs = BROADCAST_GLOBAL_INTERVAL_SECONDS * 1000;
-  const base = last?.expiresAt && last.expiresAt.getTime() > now.getTime() ? last.expiresAt.getTime() : now.getTime();
-  const startsAt = new Date(base + (last ? intervalMs : 0));
+  const startsAt = new Date(Math.max(now.getTime(), last ? last.expiresAt.getTime() + intervalMs : 0));
   const expiresAt = new Date(startsAt.getTime() + BROADCAST_DISPLAY_SECONDS * 1000);
 
   // Position = number of queued broadcasts starting strictly after `now` + 1.
@@ -563,6 +567,7 @@ export async function submitBroadcast(
   let schedule: BroadcastSchedule;
 
   await dbWrite.transaction(async (tx) => {
+    await lockBroadcastSchedule(tx);
     // 1. Lazily reap any stale queued rows whose display window has elapsed
     await reapStaleQueuedBroadcasts(tx);
 
@@ -582,6 +587,9 @@ export async function submitBroadcast(
 
     // 3. Compute FIFO schedule inside the same transaction
     schedule = await computeSchedule(tx);
+    if (schedule.queuePosition > BROADCAST_MAX_PENDING) {
+      throw new BroadcastSubmitError("broadcast.queueFull", "The broadcast queue is full. Please try again later.");
+    }
 
     // 4. Insert broadcast row
     broadcastId = generateId();
@@ -749,7 +757,7 @@ function userFacingRejectMessage(reason?: BroadcastRejectReason): string {
 // Public current broadcast
 // ---------------------------------------------------------------------------
 
-const CURRENT_CACHE_KEY = "broadcast:current";
+const CURRENT_CACHE_KEY = "broadcast:current:v2";
 
 /**
  * Drops the cached "current broadcast" value so the next `/broadcasts/current`
@@ -760,13 +768,7 @@ const CURRENT_CACHE_KEY = "broadcast:current";
  * must never break the calling mutation.
  */
 export async function invalidateCurrentBroadcastCache(): Promise<void> {
-  const redis = getRedisClient();
-  if (!redis) return;
-  try {
-    await redis.del(CURRENT_CACHE_KEY);
-  } catch {
-    /* non-fatal */
-  }
+  await invalidateWindowCache(CURRENT_CACHE_KEY);
 }
 
 /**
@@ -793,21 +795,37 @@ async function expireStaleBroadcasts(): Promise<void> {
  * message. Results are cached in Redis for a few seconds to keep polling cheap.
  * Safe to call unauthenticated.
  */
-export async function getCurrentBroadcast(): Promise<PublicBroadcast | null> {
-  const redis = getRedisClient();
-  if (redis) {
-    try {
-      const cached = await redis.get(CURRENT_CACHE_KEY);
-      if (cached !== null && cached !== undefined) {
-        if (cached === "null") return null;
-        const parsed = JSON.parse(cached as string) as PublicBroadcast | null;
-        return parsed;
-      }
-    } catch {
-      /* fall through to DB */
+function decodePublicBroadcast(value: unknown): PublicBroadcast | undefined {
+  if (!isCacheObject(value) || typeof value.id !== "string" || typeof value.userId !== "string" || typeof value.username !== "string" || typeof value.message !== "string" || !(value.source === "user" || value.source === "system") || typeof value.containsSpoiler !== "boolean" || !cacheDate(value.startsAt) || !cacheDate(value.expiresAt)) return undefined;
+  if (!(value.messageKey === null || typeof value.messageKey === "string") || !(value.announcementId === null || typeof value.announcementId === "string") || !(value.severity === null || isAnnouncementSeverity(value.severity))) return undefined;
+  let messageParams: Record<string, string> | null = null;
+  if (value.messageParams !== null) {
+    if (!isCacheObject(value.messageParams)) return undefined;
+    messageParams = {};
+    for (const [key, param] of Object.entries(value.messageParams)) {
+      if (typeof param !== "string") return undefined;
+      messageParams[key] = param;
     }
   }
+  let cta: { url: string; text: string } | null = null;
+  if (value.cta !== null) {
+    if (!isCacheObject(value.cta) || typeof value.cta.url !== "string" || typeof value.cta.text !== "string") return undefined;
+    cta = { url: value.cta.url, text: value.cta.text };
+  }
+  if (typeof value.startsAt !== "string" || typeof value.expiresAt !== "string") return undefined;
+  return { id: value.id, userId: value.userId, username: value.username, message: value.message, source: value.source,
+    containsSpoiler: value.containsSpoiler, messageKey: value.messageKey, messageParams, announcementId: value.announcementId,
+    severity: value.severity, cta, startsAt: value.startsAt, expiresAt: value.expiresAt };
+}
 
+export async function getCurrentBroadcast(): Promise<PublicBroadcast | null> {
+  const candidate = await readWindowCache(CURRENT_CACHE_KEY, BROADCAST_CURRENT_CACHE_TTL_SECONDS,
+    decodePublicBroadcast, loadCurrentBroadcastCandidate, row => [Date.parse(row.startsAt), Date.parse(row.expiresAt)]);
+  const now = Date.now();
+  return candidate && Date.parse(candidate.startsAt) <= now && Date.parse(candidate.expiresAt) > now ? candidate : null;
+}
+
+async function loadCurrentBroadcastCandidate(): Promise<PublicBroadcast | null> {
   // Reap stale queued rows (documented lazy-expiry behavior) before reading live.
   await expireStaleBroadcasts();
 
@@ -817,7 +835,7 @@ export async function getCurrentBroadcast(): Promise<PublicBroadcast | null> {
   // (status, startsAt, expiresAt) which are already indexed. `messageKey` is
   // selected but never used as a filter. If future queries need to filter by key,
   // an index can be added later.
-  const [live] = await dbRead
+  const [live] = await dbWrite
     .select({
       id: broadcasts.id,
       userId: broadcasts.userId,
@@ -839,11 +857,10 @@ export async function getCurrentBroadcast(): Promise<PublicBroadcast | null> {
     .where(
       and(
         eq(broadcasts.status, "queued"),
-        lte(broadcasts.startsAt, now),
         gt(broadcasts.expiresAt, now),
       ),
     )
-    .orderBy(desc(broadcasts.startsAt))
+    .orderBy(asc(broadcasts.startsAt))
     .limit(1);
 
   const result: PublicBroadcast | null = live
@@ -853,8 +870,8 @@ export async function getCurrentBroadcast(): Promise<PublicBroadcast | null> {
           username: live.username,
           message: live.message,
           messageKey: live.messageKey ?? null,
-          messageParams: (live.messageParams as Record<string, string> | null) ?? null,
-          source: live.source as BroadcastSource,
+          messageParams: live.messageParams ?? null,
+          source: live.source,
           containsSpoiler: live.containsSpoiler,
           announcementId: live.announcementId ?? null,
           severity: live.severity ?? null,
@@ -866,18 +883,6 @@ export async function getCurrentBroadcast(): Promise<PublicBroadcast | null> {
           expiresAt: live.expiresAt.toISOString(),
         }
     : null;
-
-  if (redis) {
-    try {
-      await redis.set(
-        CURRENT_CACHE_KEY,
-        result ? JSON.stringify(result) : "null",
-        { ex: BROADCAST_CURRENT_CACHE_TTL_SECONDS },
-      );
-    } catch {
-      /* non-fatal */
-    }
-  }
 
   return result;
 }
@@ -958,8 +963,10 @@ export async function sendSystemBroadcast(
 
     const broadcastId = generateId();
     const result = await dbWrite.transaction(async (tx) => {
+      await lockBroadcastSchedule(tx);
       await reapStaleQueuedBroadcasts(tx);
       const schedule = await computeSchedule(tx);
+      if (schedule.queuePosition > BROADCAST_MAX_PENDING) return null;
       await tx.insert(broadcasts).values({
         id: broadcastId,
         userId,

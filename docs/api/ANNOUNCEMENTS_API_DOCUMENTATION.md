@@ -13,7 +13,7 @@ Key design properties:
 - **Cap-1 active.** At most one announcement may be `scheduled` or `active` at any time, enforced race-proof by the partial unique index `announcements_one_published_unique` indexing constant expression `((1))` across `WHERE status IN ('scheduled', 'active')`. A second publish fails with `announcements.anotherActiveExists` (409).
 - **O(1) per-user state.** "Seen" is one nullable column (`users.last_seen_announcement_id`) pointing at the single live announcement — no per-user fan-out, no `announcement_reads` table, no O(N) writes at publish/end.
 - **Announcements are a parallel collection.** They are never rows in `user_notifications`; the notification-center section fetches them from `/api/announcements` directly.
-- **Redis caching.** The live announcement row is cached in Redis at `announcement:live` (TTL 30s) and automatically invalidated on every draft update, publish, revocation, or deletion mutation.
+- **Redis caching.** `announcement:live:v2` stores a validated SDK-decoded envelope with a public-field candidate, including future schedules. Validity ends at the next start/expiry (at most 30s); visibility is checked on every hit. Primary fills avoid replica-lagged negative entries. After-commit invalidation uses revisions to prevent an older read from restoring stale data.
 - **User endpoints are strictly read-only.** Lifecycle sweeps (`scheduled → active → ended`) run on admin write paths only; user reads filter by time, so the hot path never writes.
 
 **Base URL:** `/api/announcements`

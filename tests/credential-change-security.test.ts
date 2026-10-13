@@ -15,7 +15,7 @@ let failAudit = false;
 const primary = {
   select: (fields: Record<string, unknown>) => {
     const result = async () => {
-      if (fields.email && failNotification) throw new Error('Optional post-commit lookup failed');
+      if (fields.email && failNotification) throw new Error('Required recipient lookup failed');
       return [{ passwordHash: hash, email: 'user@example.test', name: 'User' }];
     };
     return { from: () => ({ where: () => ({ limit: () => ({ then: (resolve: (value: unknown) => void, reject: (error: unknown) => void) => result().then(resolve, reject), for: result, catch: (handler: (error: unknown) => unknown) => result().catch(handler) }) }) }) };
@@ -47,7 +47,7 @@ mock.module('../src/utils/password.js', () => ({ ...actualPassword,
   hashPassword: async () => { if (race) hash = 'concurrent-reset-hash'; return 'next-hash'; },
 }));
 mock.module('../src/middleware/rate-limit.js', () => ({ ...actualRate, checkRateLimitByIP: async () => true }));
-mock.module('../src/utils/email.js', () => ({ ...actualEmail, sendEmailSafe: () => {} }));
+mock.module('../src/utils/email.js', () => actualEmail);
 mock.module('../src/utils/audit-log.js', () => ({ ...actualAudit,
   logAuditEvent: async () => { if (failAudit) throw new Error('Optional audit failed'); },
 }));
@@ -70,10 +70,15 @@ afterAll(() => {
   mock.module('../src/utils/audit-log.js', () => actualAudit);
 });
 describe('credential change transaction and response', () => {
-  it('removes all tracked sessions despite optional notification/audit outage after commit', async () => {
-    failNotification = true; failAudit = true;
+  it('removes all tracked sessions despite optional audit outage after commit', async () => {
+    failAudit = true;
     expect((await change()).status).toBe(200);
     expect(hash).toBe('next-hash'); expect(sessions).toBe(0); expect(familiesRevoked).toBe(true);
+  });
+  it('keeps credentials and sessions unchanged if the transactional recipient lookup fails', async () => {
+    failNotification = true;
+    expect((await change()).status).toBe(500);
+    expect(hash).toBe('current-hash'); expect(sessions).toBe(2); expect(familiesRevoked).toBe(false);
   });
   it('rolls back password and sessions if required revocation fails', async () => {
     failRevocation = true;

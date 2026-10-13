@@ -180,7 +180,7 @@ import { getBookModeCreditCostForUser, getCreditCostForUser, calculateBranchSwit
 import { parseIdempotencyKey, findBookByIdempotencyKey, replayOnUniqueViolation, buildAsyncReplay, buildCreationReplay, BOOK_CREATION_STARTED_MESSAGE, isUniqueViolation } from "../services/book-idempotency.js";
 import { setIdempotencyProcessing } from "../utils/redis.js";
 import { evaluateStoryReset, StoryResetAlreadyAppliedError, type StoryResetEvaluation } from "../services/story-reset.js";
-import { getJourneyForks, reconstructFork, resolveCurrentPageId, narrateForkAlternative, TimeTravelAlreadyCommittedError } from "../services/time-travel.js";
+import { getJourneyForks, reconstructFork, resolveCurrentPageId, narrateForkAlternative, TimeTravelAlreadyCommittedError, TimeTravelSessionConflictError, authorizeTimeTravelSession, rebaseTimeTravelSession } from "../services/time-travel.js";
 import { savedPaths } from "../db/schema.js";
 import { CREDIT_ERRORS } from "../config/errors.js";
 import { getRefundForStep, isAtPointOfNoReturn } from "../config/generation-refund.js";
@@ -5656,6 +5656,7 @@ router.post("/:identifier/:pageId/time-travel/commit", requireAuth, async (c) =>
     // and the response reflect the true distance, not a replica snapshot.
     let commitCost = 0;
     let distance = 1;
+    let authorizedFrontier: string | null = null;
     const ledgerMetadata: Record<string, unknown> = { bookId, forkPageId: pageId, nextPageId };
 
     try {
@@ -5669,22 +5670,9 @@ router.post("/:identifier/:pageId/time-travel/commit", requireAuth, async (c) =>
         // session has ALREADY been re-based onto this alternative — a
         // duplicate "Take this path" tap must not bill a second time.
         async (tx) => {
-          const [session] = await tx
-            .select({
-              frontierPageId: userSessions.frontierPageId,
-              frontierPageNumber: userSessions.frontierPageNumber,
-            })
-            .from(userSessions)
-            .where(and(eq(userSessions.userId, userId), eq(userSessions.bookId, bookId)))
-            .limit(1);
-
-          // Idempotency guard: the alternative's page is already the reader's
-          // frontier, so the switch this endpoint performs already happened.
-          if (session?.frontierPageId === nextPageId) {
-            throw new TimeTravelAlreadyCommittedError();
-          }
-
-          const frontierPageNumber = session?.frontierPageNumber ?? forkPageNumber;
+          const session = await authorizeTimeTravelSession(tx, userId, bookId, nextPageId);
+          authorizedFrontier = session.frontierPageId;
+          const frontierPageNumber = session.frontierPageNumber ?? forkPageNumber;
           commitCost = calculateBranchSwitchCost(frontierPageNumber, forkPageNumber, userId);
           distance = Math.max(1, frontierPageNumber - forkPageNumber);
           ledgerMetadata.cost = commitCost;
@@ -5706,10 +5694,7 @@ router.post("/:identifier/:pageId/time-travel/commit", requireAuth, async (c) =>
             // charge — refuse rather than bill for a switch we cannot apply.
             throw new Error(`Alternative destination page not found: ${nextPageId}`);
           }
-          await tx
-            .update(userSessions)
-            .set({ frontierPageId: nextPageId, frontierPageNumber: nextPage.page })
-            .where(and(eq(userSessions.userId, userId), eq(userSessions.bookId, bookId)));
+          await rebaseTimeTravelSession(tx, userId, bookId, authorizedFrontier, nextPageId, nextPage.page);
           return { ok: true as const };
         },
         { context: "time_travel_commit", metadata: ledgerMetadata },
@@ -5721,6 +5706,7 @@ router.post("/:identifier/:pageId/time-travel/commit", requireAuth, async (c) =>
       if (error instanceof TimeTravelAlreadyCommittedError) {
         return c.json({ ok: true, nextPageId, alreadyCommitted: true });
       }
+      if (error instanceof TimeTravelSessionConflictError) return cConflictError(c, error.message, error, "books.timeTravelSessionChanged");
       const errorMessage = getErrorMessage(error);
       if (errorMessage.includes(CREDIT_ERRORS.INSUFFICIENT_CREDITS)) {
         return c.json({ error: "Credit charge failed. You may not have enough credits." }, 402);

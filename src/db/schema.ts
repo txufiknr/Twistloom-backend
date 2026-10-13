@@ -41,6 +41,8 @@ import type {
 import type { PrivacyPreferences } from "../types/privacy-preferences.js";
 import type { WallAttachmentSnapshot, WallPostFlair, WallPostType, WallReactionCounts, WallReactionType } from "../types/wall.js";
 import type { EmailPreferencesUpdate } from "../types/email-preferences.js";
+import type { EmailCampaignStatus, EmailMessageStatus, EmailTemplate, EmailType, EmailAudience } from "../types/email-delivery.js";
+import type { EmailLocale } from "../types/email-locale.js";
 
 /** Pre-defined columns */
 // const id = () => uuid("id").primaryKey().$defaultFn(generateId);
@@ -2471,10 +2473,11 @@ export const broadcasts = pgTable(
   },
   (t) => [
     index("broadcasts_status_starts_idx").on(t.status, t.startsAt),
+    index("broadcasts_status_expires_idx").on(t.status, t.expiresAt),
     index("broadcasts_starts_idx").on(t.startsAt),
     index("broadcasts_user_idx").on(t.userId),
     // Announcement banner rows are rare; partial index keeps it tiny.
-    index("broadcasts_announcement_idx")
+    uniqueIndex("broadcasts_announcement_unique")
       .on(t.announcementId)
       .where(sql`${t.announcementId} IS NOT NULL`),
   ]
@@ -3400,6 +3403,76 @@ export const announcements = pgTable(
       .where(sql`${t.broadcastId} IS NOT NULL`),
   ]
 );
+
+/** Shared bulk requests, resumable audience cursors, and aggregated delivery receipts. */
+export const emailCampaigns = pgTable("email_campaigns", {
+  id: id(),
+  announcementId: uuid("announcement_id").references(() => announcements.id, { onDelete: "set null" }),
+  requestKey: text("request_key").notNull(),
+  type: text("type").$type<EmailAudience["kind"]>().notNull(),
+  audience: jsonb("audience").$type<EmailAudience>().notNull(),
+  contentHash: text("content_hash").notNull(),
+  title: text("title").notNull(),
+  templates: jsonb("templates").$type<Partial<Record<EmailLocale, EmailTemplate>>>().notNull(),
+  status: text("status").$type<EmailCampaignStatus>().notNull().default("queued"),
+  audienceCursor: uuid("audience_cursor"),
+  audienceComplete: boolean("audience_complete").notNull().default(false),
+  recipientCount: integer("recipient_count").notNull().default(0),
+  pendingCount: integer("pending_count").notNull().default(0),
+  sent: integer("sent").notNull().default(0),
+  failed: integer("failed").notNull().default(0),
+  skipped: integer("skipped").notNull().default(0),
+  needsReview: integer("needs_review").notNull().default(0),
+  leaseToken: uuid("lease_token"),
+  leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+  nextRunAt: timestamp("next_run_at", { withTimezone: true }).notNull().defaultNow(),
+  nextDispatchAt: timestamp("next_dispatch_at", { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  createdBy: uuid("created_by").references(() => users.userId, { onDelete: "set null" }),
+  createdAt, updatedAt,
+}, (t) => [
+  uniqueIndex("email_request_unique").on(t.requestKey),
+  uniqueIndex("email_one_open_unique").on(t.announcementId)
+    .where(sql`${t.announcementId} IS NOT NULL AND ${t.status} IN ('queued', 'running')`),
+  index("email_due_idx").on(t.nextRunAt, t.createdAt, t.id)
+    .where(sql`${t.status} IN ('queued', 'running')`),
+  index("email_campaign_dispatch_idx").on(t.nextDispatchAt, t.id).where(sql`${t.pendingCount} > 0`),
+]);
+
+/** Shared transactional outbox and independently resumable recipient receipts. */
+export const emailMessages = pgTable("email_messages", {
+  id: id(),
+  campaignId: uuid("campaign_id").references(() => emailCampaigns.id, { onDelete: "cascade" }),
+  // Retain the cohort key on user erasure; the primary lookup will mark this row skipped.
+  userId: uuid("user_id"),
+  requestKey: text("request_key").notNull(),
+  type: text("type").$type<EmailType>().notNull(),
+  priority: integer("priority").notNull(),
+  payloadEncrypted: text("payload_encrypted"),
+  recipientEncrypted: text("recipient_encrypted"),
+  credentialHash: text("credential_hash"),
+  status: text("status").$type<EmailMessageStatus>().notNull().default("pending"),
+  locale: text("locale").$type<EmailLocale>().notNull(),
+  attempts: integer("attempts").notNull().default(0),
+  firstAttemptAt: timestamp("first_attempt_at", { withTimezone: true }),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+  leaseToken: uuid("lease_token"),
+  leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  ambiguous: boolean("ambiguous").notNull().default(false),
+  providerId: text("provider_id"),
+  lastError: text("last_error"),
+  createdAt, updatedAt,
+}, (t) => [
+  uniqueIndex("email_message_request_unique").on(t.requestKey),
+  index("email_message_due_idx").on(t.priority, t.nextAttemptAt, t.id).where(sql`${t.status} = 'pending' AND ${t.campaignId} IS NULL`),
+  index("email_message_campaign_due_idx").on(t.campaignId, t.nextAttemptAt, t.id).where(sql`${t.status} = 'pending'`),
+  index("email_message_lease_idx").on(t.leaseExpiresAt, t.id).where(sql`${t.status} = 'sending'`),
+  index("email_message_campaign_idx").on(t.campaignId, t.status, t.id),
+  index("email_message_retention_idx").on(t.createdAt, t.id),
+  index("email_message_provider_idx").on(t.providerId).where(sql`${t.providerId} IS NOT NULL`),
+]);
 
 /**
  * One in-flight draft row in the Pen's multi-draft workspace (draft shelf).

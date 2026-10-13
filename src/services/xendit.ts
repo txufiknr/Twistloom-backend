@@ -171,12 +171,13 @@ export async function handleXenditCycleSucceeded(
  */
 export async function handleXenditCycleFailed(
   data: XenditCycleFailedPayload,
-  _eventId: string
+  eventId: string
 ): Promise<void> {
   await updateSubscription({
     providerSubscriptionId: data.plan_id,
     gateway: XENDIT_GATEWAY,
     status: "past_due",
+    paymentFailureEventId: eventId,
   });
 
   console.log(`[xendit] ❌ Cycle ${data.id} failed for plan ${data.plan_id}: ${data.failure_code || data.failure_message || "unknown"}`);

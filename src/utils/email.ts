@@ -4,10 +4,16 @@
  * Provides transactional email sending via Resend. Templates are locale-aware
  * (C+D hybrid: emailLocale override ?? preferredLocale ?? en).
  *
- * Use {@link sendEmailSafe} for fire-and-forget best-effort sends.
+ * Delivery uses the shared durable outbox. Always await persistence.
  */
 
-import { Resend } from 'resend';
+import { type DBTransaction } from '../db/client.js';
+import { users } from '../db/schema.js';
+import { eq } from 'drizzle-orm';
+import type { EmailType } from '../types/email-delivery.js';
+import { queueEmailMessage, deliverEmailNow } from '../services/email-delivery.js';
+import { dispatchEmailWorkers } from '../services/email-dispatch.js';
+import { emailDeliveryEnabled } from '../config/email-delivery.js';
 import { APP_NAME } from '../config/constants.js';
 import {
   getPasswordResetTemplate,
@@ -31,7 +37,7 @@ import {
   type MonthlyActivityStats,
 } from '../config/emails/index.js';
 import { t, emailLocalePathPrefix } from '../config/emails/i18n.js';
-import { getErrorMessage } from './error.js';
+
 import {
   resolveEmailLocale,
   resolveEmailLocaleByEmail,
@@ -47,73 +53,29 @@ import {
 // Client initialisation
 // ---------------------------------------------------------------------------
 
-let resendClient: Resend | null = null;
-
-function getResendClient(): Resend {
-  if (resendClient) return resendClient;
-
-  const apiKey = process.env.RESEND_API_KEY;
-  if (!apiKey) {
-    throw new Error('RESEND_API_KEY is not configured; unable to send email');
-  }
-
-  resendClient = new Resend(apiKey);
-  return resendClient;
-}
-
 const DEFAULT_FROM_EMAIL = process.env.RESEND_FROM_EMAIL || 'noreply@twistloom.com';
 
 // ---------------------------------------------------------------------------
 // Shared send helper
 // ---------------------------------------------------------------------------
 
-interface SendEmailOptions {
-  to: string;
-  subject: string;
-  html: string;
-  from?: string;
+export interface EmailSendOptions {
+  userId?: string; locale?: EmailLocale; tx?: DBTransaction; requestKey?: string;
+  expiresAt?: Date; credentialHash?: string; enqueueOnly?: boolean;
 }
-
+interface SendEmailOptions { to: string; subject: string; html: string; from?: string; type: EmailType; locale: EmailLocale; context?: EmailSendOptions }
+/** Templates may enqueue inside domain transactions; provider calls happen only after commit. */
 async function sendEmail(options: SendEmailOptions): Promise<boolean> {
-  const { to, subject, html, from } = options;
-
-  try {
-    const { error } = await getResendClient().emails.send({
-      from: from ?? DEFAULT_FROM_EMAIL,
-      to,
-      subject,
-      html,
-    });
-
-    if (error) {
-      console.error(`[sendEmail] ❌ Resend API error for "${subject}" to ${to}:`, error);
-      return false;
-    }
-
-    console.log(`[sendEmail] ✅ "${subject}" sent to ${to}`);
-    return true;
-  } catch (error) {
-    console.error(`[sendEmail] ❌ Failed to send "${subject}" to ${to}:`, error);
-    return false;
-  }
+  if (!emailDeliveryEnabled()) return false;
+  const { context, type, locale, ...content } = options;
+  if (!context?.requestKey) throw new Error('Email producer requires a stable requestKey');
+  const id = await queueEmailMessage({ type, locale, payload: { ...content, from: content.from ?? DEFAULT_FROM_EMAIL },
+    requestKey: context.requestKey, userId: context.userId,
+    expiresAt: context?.expiresAt, credentialHash: context?.credentialHash }, context?.tx);
+  if (context?.tx) return false;
+  if (context?.enqueueOnly) { await dispatchEmailWorkers(`message/${id}`); return false; }
+  return (await deliverEmailNow(id)).status === 'sent';
 }
-
-/**
- * Best-effort fire-and-forget wrapper for route/service call sites.
- */
-export function sendEmailSafe(label: string, sendFn: () => Promise<boolean>): void {
-  void (async () => {
-    try {
-      const sent = await sendFn();
-      if (!sent) {
-        console.error(`[${label}] ❌ Email send returned false`);
-      }
-    } catch (error) {
-      console.error(`[${label}] ❌ Email send failed:`, getErrorMessage(error));
-    }
-  })();
-}
-
 /** Formats optional security context for password/email-change mails */
 export function formatSecurityDetailHtml(opts?: {
   at?: Date;
@@ -150,9 +112,15 @@ export function maskEmail(email: string): string {
   return `${local[0]}${'*'.repeat(Math.min(local.length - 1, 4))}@${domain}`;
 }
 
-async function localeForUser(userId?: string | null): Promise<EmailLocale> {
+async function localeForUser(userId?: string | null, tx?: DBTransaction): Promise<EmailLocale> {
   if (!userId) return DEFAULT_EMAIL_LOCALE;
   try {
+    if (tx) {
+      const [row] = await tx.select({ preferredLocale: users.preferredLocale, emailPreferences: users.emailPreferences }).from(users).where(eq(users.userId, userId)).limit(1);
+      const prefs = row?.emailPreferences;
+      const override = prefs && typeof prefs === 'object' && 'emailLocale' in prefs ? prefs.emailLocale : null;
+      return isEmailLocale(override) ? override : isEmailLocale(row?.preferredLocale) ? row.preferredLocale : DEFAULT_EMAIL_LOCALE;
+    }
     return await resolveEmailLocale(userId);
   } catch {
     return DEFAULT_EMAIL_LOCALE;
@@ -178,14 +146,15 @@ function coerceLocale(locale?: EmailLocale | string | null): EmailLocale {
 export async function sendPasswordResetEmail(
   email: string,
   resetUrl: string,
-  opts?: { userId?: string; locale?: EmailLocale },
+  opts?: EmailSendOptions,
 ): Promise<boolean> {
   const locale = opts?.locale
     ? coerceLocale(opts.locale)
     : opts?.userId
-      ? await localeForUser(opts.userId)
+      ? await localeForUser(opts.userId, opts.tx)
       : await localeForEmail(email);
   return sendEmail({
+    type: 'password_reset', locale, context: opts,
     to: email,
     subject: t(locale, 'passwordReset.subject', { appName: APP_NAME }),
     html: getPasswordResetTemplate(locale, APP_NAME, resetUrl),
@@ -196,14 +165,15 @@ export async function sendVerificationEmail(
   email: string,
   verificationUrl: string,
   otpCode?: string,
-  opts?: { userId?: string; locale?: EmailLocale },
+  opts?: EmailSendOptions,
 ): Promise<boolean> {
   const locale = opts?.locale
     ? coerceLocale(opts.locale)
     : opts?.userId
-      ? await localeForUser(opts.userId)
+      ? await localeForUser(opts.userId, opts.tx)
       : await localeForEmail(email);
   return sendEmail({
+    type: 'verification', locale, context: opts,
     to: email,
     subject: t(locale, 'verification.subject', { appName: APP_NAME }),
     html: getVerificationTemplate(locale, APP_NAME, verificationUrl, otpCode),
@@ -213,14 +183,15 @@ export async function sendVerificationEmail(
 export async function sendWelcomeEmail(
   email: string,
   username: string,
-  opts?: { userId?: string; locale?: EmailLocale },
+  opts?: EmailSendOptions,
 ): Promise<boolean> {
   const locale = opts?.locale
     ? coerceLocale(opts.locale)
     : opts?.userId
-      ? await localeForUser(opts.userId)
+      ? await localeForUser(opts.userId, opts.tx)
       : await localeForEmail(email);
   return sendEmail({
+    type: 'welcome', locale, context: opts,
     to: email,
     subject: t(locale, 'welcome.subject', { appName: APP_NAME }),
     html: getWelcomeTemplate(locale, APP_NAME, username),
@@ -231,14 +202,15 @@ export async function sendPasswordChangedEmail(
   email: string,
   name: string,
   detailHtml?: string,
-  opts?: { userId?: string; locale?: EmailLocale },
+  opts?: EmailSendOptions,
 ): Promise<boolean> {
   const locale = opts?.locale
     ? coerceLocale(opts.locale)
     : opts?.userId
-      ? await localeForUser(opts.userId)
+      ? await localeForUser(opts.userId, opts.tx)
       : await localeForEmail(email);
   return sendEmail({
+    type: 'password_changed', locale, context: opts,
     to: email,
     subject: t(locale, 'passwordChanged.subject', { appName: APP_NAME }),
     html: getPasswordChangedTemplate(locale, APP_NAME, name, detailHtml),
@@ -250,14 +222,15 @@ export async function sendEmailChangedAlertEmail(
   name: string,
   newEmail: string,
   detailHtml?: string,
-  opts?: { userId?: string; locale?: EmailLocale },
+  opts?: EmailSendOptions,
 ): Promise<boolean> {
   const locale = opts?.locale
     ? coerceLocale(opts.locale)
     : opts?.userId
-      ? await localeForUser(opts.userId)
+      ? await localeForUser(opts.userId, opts.tx)
       : await localeForEmail(oldEmail);
   return sendEmail({
+    type: 'email_changed', locale, context: opts,
     to: oldEmail,
     subject: t(locale, 'emailChanged.subject', { appName: APP_NAME }),
     html: getEmailChangedTemplate(locale, APP_NAME, name, maskEmail(newEmail), detailHtml),
@@ -267,10 +240,11 @@ export async function sendEmailChangedAlertEmail(
 export async function sendAccountDeletedEmail(
   email: string,
   name: string,
-  opts?: { locale?: EmailLocale },
+  opts?: EmailSendOptions,
 ): Promise<boolean> {
   const locale = opts?.locale ? coerceLocale(opts.locale) : await localeForEmail(email);
   return sendEmail({
+    type: 'account_deleted', locale, context: opts,
     to: email,
     subject: t(locale, 'accountDeleted.subject', { appName: APP_NAME }),
     html: getAccountDeletedTemplate(locale, APP_NAME, name),
@@ -285,14 +259,15 @@ export async function sendTrialEndingEmail(
   email: string,
   name: string,
   trialEndDate: Date,
-  opts?: { userId?: string; locale?: EmailLocale },
+  opts?: EmailSendOptions,
 ): Promise<boolean> {
   const locale = opts?.locale
     ? coerceLocale(opts.locale)
     : opts?.userId
-      ? await localeForUser(opts.userId)
+      ? await localeForUser(opts.userId, opts.tx)
       : await localeForEmail(email);
   return sendEmail({
+    type: 'trial_ending', locale, context: opts,
     to: email,
     subject: t(locale, 'trialEnding.subject', { appName: APP_NAME }),
     html: getTrialEndingTemplate(locale, APP_NAME, name, trialEndDate),
@@ -303,14 +278,15 @@ export async function sendPaymentFailedEmail(
   email: string,
   name: string,
   portalUrl?: string,
-  opts?: { userId?: string; locale?: EmailLocale },
+  opts?: EmailSendOptions,
 ): Promise<boolean> {
   const locale = opts?.locale
     ? coerceLocale(opts.locale)
     : opts?.userId
-      ? await localeForUser(opts.userId)
+      ? await localeForUser(opts.userId, opts.tx)
       : await localeForEmail(email);
   return sendEmail({
+    type: 'payment_failed', locale, context: opts,
     to: email,
     subject: t(locale, 'paymentFailed.subject', { appName: APP_NAME }),
     html: getPaymentFailedTemplate(locale, APP_NAME, name, portalUrl),
@@ -321,14 +297,15 @@ export async function sendRefundProcessedEmail(
   email: string,
   name: string,
   creditsDeducted: number,
-  opts?: { userId?: string; locale?: EmailLocale },
+  opts?: EmailSendOptions,
 ): Promise<boolean> {
   const locale = opts?.locale
     ? coerceLocale(opts.locale)
     : opts?.userId
-      ? await localeForUser(opts.userId)
+      ? await localeForUser(opts.userId, opts.tx)
       : await localeForEmail(email);
   return sendEmail({
+    type: 'refund', locale, context: opts,
     to: email,
     subject: t(locale, 'refund.subject', { appName: APP_NAME }),
     html: getRefundProcessedTemplate(locale, APP_NAME, name, creditsDeducted),
@@ -339,14 +316,15 @@ export async function sendSubscriptionCanceledEmail(
   email: string,
   name: string,
   accessEndsAt?: Date,
-  opts?: { userId?: string; locale?: EmailLocale },
+  opts?: EmailSendOptions,
 ): Promise<boolean> {
   const locale = opts?.locale
     ? coerceLocale(opts.locale)
     : opts?.userId
-      ? await localeForUser(opts.userId)
+      ? await localeForUser(opts.userId, opts.tx)
       : await localeForEmail(email);
   return sendEmail({
+    type: 'subscription_canceled', locale, context: opts,
     to: email,
     subject: t(locale, 'subCanceled.subject', { appName: APP_NAME }),
     html: getSubscriptionCanceledTemplate(locale, APP_NAME, name, accessEndsAt),
@@ -360,14 +338,15 @@ export async function sendSubscriptionCanceledEmail(
 export async function sendFeedbackAcknowledgmentEmail(
   email: string,
   name: string,
-  opts?: { userId?: string; locale?: EmailLocale },
+  opts?: EmailSendOptions,
 ): Promise<boolean> {
   const locale = opts?.locale
     ? coerceLocale(opts.locale)
     : opts?.userId
-      ? await localeForUser(opts.userId)
+      ? await localeForUser(opts.userId, opts.tx)
       : await localeForEmail(email);
   return sendEmail({
+    type: 'feedback_ack', locale, context: opts,
     to: email,
     subject: t(locale, 'feedbackAck.subject', { appName: APP_NAME }),
     html: getFeedbackAcknowledgmentTemplate(locale, APP_NAME, name),
@@ -377,9 +356,11 @@ export async function sendFeedbackAcknowledgmentEmail(
 export async function sendFeedbackInternalEmail(
   to: string,
   params: Omit<FeedbackInternalTemplateParams, 'appName'>,
+  opts?: EmailSendOptions,
 ): Promise<boolean> {
   // Ops inbox stays English
   return sendEmail({
+    type: 'feedback_internal', locale: DEFAULT_EMAIL_LOCALE, context: opts,
     to,
     subject: `[Feedback] ${params.category} — ${APP_NAME}`,
     html: getFeedbackInternalTemplate({ ...params, appName: APP_NAME }),
@@ -394,14 +375,15 @@ export async function sendWeeklyRecommendationsEmail(
   email: string,
   name: string,
   books: RecommendedBookEmailItem[],
-  opts?: { userId?: string; locale?: EmailLocale },
+  opts?: EmailSendOptions,
 ): Promise<boolean> {
   const locale = opts?.locale
     ? coerceLocale(opts.locale)
     : opts?.userId
-      ? await localeForUser(opts.userId)
+      ? await localeForUser(opts.userId, opts.tx)
       : await localeForEmail(email);
   return sendEmail({
+    type: 'weekly', locale, context: opts,
     to: email,
     subject: t(locale, 'weekly.subject', { appName: APP_NAME }),
     html: getWeeklyRecommendationsTemplate(
@@ -419,14 +401,15 @@ export async function sendMonthlyActivityEmail(
   name: string,
   monthLabel: string,
   stats: MonthlyActivityStats,
-  opts?: { userId?: string; locale?: EmailLocale },
+  opts?: EmailSendOptions,
 ): Promise<boolean> {
   const locale = opts?.locale
     ? coerceLocale(opts.locale)
     : opts?.userId
-      ? await localeForUser(opts.userId)
+      ? await localeForUser(opts.userId, opts.tx)
       : await localeForEmail(email);
   return sendEmail({
+    type: 'monthly', locale, context: opts,
     to: email,
     subject: t(locale, 'monthly.subject', { appName: APP_NAME, month: monthLabel }),
     html: getMonthlyActivityTemplate(
@@ -445,14 +428,15 @@ export async function sendAnnouncementEmail(
   title: string,
   bodyHtml: string,
   cta?: { url: string; text: string },
-  opts?: { userId?: string; locale?: EmailLocale },
+  opts?: EmailSendOptions,
 ): Promise<boolean> {
   const locale = opts?.locale
     ? coerceLocale(opts.locale)
     : opts?.userId
-      ? await localeForUser(opts.userId)
+      ? await localeForUser(opts.userId, opts.tx)
       : await localeForEmail(email);
   return sendEmail({
+    type: 'announcement', locale, context: opts,
     to: email,
     subject: `${title} — ${APP_NAME}`,
     html: getAnnouncementTemplate(
@@ -470,7 +454,7 @@ export async function sendAnnouncementEmail(
 // Follower engagement: new story published by a followed author
 // ---------------------------------------------------------------------------
 
-interface SendStoryPublishedEmailOptions {
+interface SendStoryPublishedEmailOptions extends EmailSendOptions {
   /** Recipient (follower) email */
   to: string;
   /** Recipient display name */
@@ -492,13 +476,14 @@ export async function sendStoryPublishedEmail(
 ): Promise<boolean> {
   const locale = opts.locale
     ? coerceLocale(opts.locale)
-    : await localeForUser(opts.userId);
+    : await localeForUser(opts.userId, opts.tx);
 
   const base = process.env.FRONTEND_URL?.replace(/\/$/, '') ?? '';
   const prefix = emailLocalePathPrefix(locale);
   const bookUrl = `${base}${prefix}/books/${encodeURIComponent(opts.bookSlug)}`;
 
   return sendEmail({
+    type: 'story_published', locale, context: opts,
     to: opts.to,
     subject: t(locale, 'storyPublished.subject', { appName: APP_NAME }),
     html: getStoryPublishedTemplate(

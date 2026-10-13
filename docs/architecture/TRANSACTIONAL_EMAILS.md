@@ -1,4 +1,9 @@
-# Twistloom — Transactional & Engagement Emails Architecture
+# Twistloom — Email Catalogue, Templates & Preferences
+
+> Living companion document · Twistloom Backend · 2026-10-13
+> Status: **Implemented** · template catalogue and preference behavior.
+> Delivery, persistence, retries and rollout are owned by the
+> [Shared Email Delivery Architecture](./EMAIL_DELIVERY_ARCHITECTURE.md).
 
 **Scope:** All backend-sent emails to Twistloom users (+ internal feedback alert)  
 **Stack:** Resend · shared HTML layout · TypeScript templates  
@@ -15,7 +20,7 @@
 4. [Email catalogue](#4-email-catalogue)
 5. [Mandatory vs optional](#5-mandatory-vs-optional)
 6. [Trigger map](#6-trigger-map)
-7. [User preferences](#7-user-preferences)
+7. [User preferences](#7-user-preferences--locale)
 8. [Failure handling](#8-failure-handling)
 9. [Environment & configuration](#9-environment--configuration)
 10. [File reference map](#10-file-reference-map)
@@ -30,17 +35,18 @@
 | Provider | [Resend](https://resend.com) |
 | Default from | `noreply@twistloom.com` (`RESEND_FROM_EMAIL`) |
 | Brand layout | `buildEmailHtml` (`base-layout.ts`) |
-| Send API | `sendEmail` → public `send*Email` · fire-and-forget via `sendEmailSafe` |
+| Send API | Awaited `send*Email` → shared durable outbox; stable event key required |
 | Preferences | `users.email_preferences` jsonb · GET/PATCH `/user/email-preferences` |
 | Locale (C+D) | `users.preferred_locale` + optional `emailLocale` override · catalogs `en`/`id` |
 | Unsubscribe | HMAC tokens · public `GET/POST /email/unsubscribe` |
 
 ```mermaid
 flowchart LR
-  Trigger["Route / webhook / cron / admin"] --> Safe["sendEmailSafe / send*Email"]
+  Trigger["Route / webhook / cron / admin"] --> Safe["Awaited template producer"]
   Safe --> Template["get*Template"]
   Template --> Layout["buildEmailHtml"]
-  Safe --> Resend["Resend API"]
+  Safe --> Outbox["Shared SQL outbox"]
+  Outbox --> Worker["Shared worker and Redis provider admission"] --> Resend["Resend API"]
   Prefs["emailPreferences"] -.->|gate engagement only| Trigger
 ```
 
@@ -48,12 +54,20 @@ flowchart LR
 
 ## 2. Architecture
 
+Every category shares the outbox, campaign creation, provider adapter, admission,
+dispatch and worker state machine. Feature services own event identity and
+transactional intent; they do not require parallel provider/worker files.
+Announcement's retained service owns admin validation, intentional resends and
+progress only. See the [category parity and feature boundaries](./EMAIL_DELIVERY_ARCHITECTURE.md#55-category-parity-and-feature-file-boundaries)
+and [adding a future email](./EMAIL_DELIVERY_ARCHITECTURE.md#54-adding-a-future-email)
+for implementation rules.
+
 | Layer | Path | Role |
 |-------|------|------|
 | Templates | `src/config/emails/*.ts` | Locale-aware HTML via `t(locale, key)` |
 | Catalogs | `src/config/emails/locales/{en,id}.json` | Subjects + bodies |
 | i18n helper | `src/config/emails/i18n.ts` | `t`, `formatEmailDate`, path prefix |
-| Send utils | `src/utils/email.ts` | Resend + locale resolve + `sendEmailSafe` |
+| Send utils | `src/utils/email.ts` | Template/locales + shared intent; no provider client |
 | Preferences | `src/services/email-preferences.ts` | Toggles, locale resolve, unsubscribe |
 | Call sites | routes / subscription / crons / admin | When to send |
 
@@ -125,7 +139,8 @@ Twistloom emails share one brand, but **not one intensity of noir**. Copy must m
 | 12 | Feedback internal | `[Feedback] {category}` | `sendFeedbackInternalEmail` | Same (if `FEEDBACK_INBOX`) | ✅ |
 | 13 | Weekly might-like | `This week's dossiers — {APP}` | `sendWeeklyRecommendationsEmail` | Cron `email-weekly` | ✅ |
 | 14 | Monthly activity | `Your {month} dossier — {APP}` | `sendMonthlyActivityEmail` | Cron `email-monthly` | ✅ |
-| 15 | Announcement | `{title} — {APP}` | `sendAnnouncementEmail` | POST /admin/email/announcements | ✅ |
+| 15 | Announcement | `{title} — {APP}` | `queueAnnouncementEmail` → durable worker | Both admin announcement email endpoints | ✅ |
+| 16 | Story published | Localized story-publication subject | Shared publication campaign | Book visibility transition | ✅ |
 
 ---
 
@@ -137,7 +152,7 @@ Twistloom emails share one brand, but **not one intensity of noir**. Copy must m
 | **Billing** | trial ending, payment failed, refund, subscription canceled | No |
 | **Support** | feedback ack (user), feedback internal (ops) | No |
 | **Product lifecycle** | welcome | No (once via onboarding) |
-| **Engagement** | weekly, monthly, announcements | **Yes** via prefs + unsubscribe |
+| **Engagement** | weekly, monthly, announcements, story published | **Yes** via prefs + unsubscribe |
 
 ---
 
@@ -158,8 +173,8 @@ Twistloom emails share one brand, but **not one intensity of noir**. Copy must m
 | Invoice failed | Stripe webhook | Payment failed |
 | Charge refunded | Stripe webhook | Refund (credit packs) |
 | Sub deleted | Stripe webhook | Subscription canceled |
-| Weekly cron | `pnpm dev:cron:email-weekly` | Weekly recommendations |
-| Monthly cron | `pnpm dev:cron:email-monthly` | Monthly activity |
+| Weekly cron | `POST /api/cron/email-weekly` | Durable weekly campaign |
+| Monthly cron | `POST /api/cron/email-monthly` | Durable monthly campaign |
 | Admin broadcast | `POST /admin/email/announcements` | Announcement |
 
 ---
@@ -175,6 +190,7 @@ Twistloom emails share one brand, but **not one intensity of noir**. Copy must m
   weeklyRecommendations: boolean;   // default true
   monthlyActivitySummary: boolean;  // default true
   productAnnouncements: boolean;    // default true
+  storyPublished: boolean;          // default true; email requires verified address
   emailLocale: 'en' | 'id' | null;  // null = follow preferredLocale
 }
 ```
@@ -207,7 +223,7 @@ Defaults applied at onboarding (`ensureDefaultEmailPreferences`) and lazily on f
 - `src/config/emails/locales/en.json`, `id.json`  
 - Templates call `t(locale, key, vars)` — missing ID keys fall back to English  
 - Internal ops (`FEEDBACK_INBOX`) stays English  
-- See [EMAIL_I18N_ROADMAP.md](../roadmap/EMAIL_I18N_ROADMAP.md) for history & support-burden notes
+- See [EMAIL_I18N_ROADMAP.md](../roadmap/done/EMAIL_I18N_ROADMAP.md) for history & support-burden notes
 
 ---
 
@@ -215,10 +231,11 @@ Defaults applied at onboarding (`ensureDefaultEmailPreferences`) and lazily on f
 
 | Pattern | Usage |
 |---------|--------|
-| `sendEmail` returns `boolean` | Never throws |
-| `sendEmailSafe(label, fn)` | Fire-and-forget from routes |
-| Auth signup/forgot | May surface `emailSent` / `verificationEmailSent` |
-| Webhooks / feedback / onboarding | Non-blocking; primary action already done |
+| Awaited template producer | Persists required intent; persistence errors may roll back its domain transaction |
+| Transactional invocation | Queues only; provider calls happen after commit |
+| Immediate result boolean | True means provider accepted; false can mean pending/disabled/terminal non-success |
+| Forgot/resend acknowledgement | Uniform `emailSent: true` preserves anti-enumeration; not delivery proof |
+| Provider outage | Shared receipt recovers through workers; no open business transaction waits for provider |
 
 ---
 
@@ -231,6 +248,8 @@ Defaults applied at onboarding (`ensureDefaultEmailPreferences`) and lazily on f
 | `FRONTEND_URL` | Yes (links) | Verify/reset/prefs/unsubscribe deep links |
 | `FEEDBACK_INBOX` | No | Internal feedback alert recipient |
 | `EMAIL_UNSUBSCRIBE_SECRET` | No | HMAC secret (falls back to `NEXTAUTH_SECRET` / `RESEND_API_KEY`) |
+| `EMAIL_DELIVERY_ENABLED` | Yes (to send) | Shared schema/configuration rollout gate, default false |
+| Shared infrastructure | Yes (to send) | Redis, QStash, cron secret, backend URL and production encryption key; see owning architecture |
 
 ---
 
@@ -239,7 +258,7 @@ Defaults applied at onboarding (`ensureDefaultEmailPreferences`) and lazily on f
 ```
 src/
 ├── config/emails/          # templates + index barrel
-├── utils/email.ts          # Resend + send* + sendEmailSafe
+├── utils/email.ts          # templates + locale + durable send* producers
 ├── services/email-preferences.ts
 ├── types/email-preferences.ts
 ├── routes/
@@ -274,10 +293,10 @@ Migrations:
 | Resend bounce/complaint webhooks | Not built |
 | Email HTML locale (`en`/`id`) | ✅ Catalogs + resolve path |
 | Weekly cron ML ranking | v1 = trending public books |
-| Send log / idempotency table | Not built (rely on schedule) |
-| In-app notification prefs | Still local-only UI stub |
+| Shared outbox / idempotency receipts | Implemented; schema deployment gated |
+| In-app publication prefs | Read by resumable campaign enumerator independently of email preference |
 | Multi-device UI/backend locale force-sync | Optional |
 
 ---
 
-*Last updated: Jul 2026 — security, billing, prefs, engagement, email i18n (C+D hybrid) implemented.*
+*Last updated: 2026-10-13 — delivery ownership consolidated; no database migration or live delivery validation performed.*

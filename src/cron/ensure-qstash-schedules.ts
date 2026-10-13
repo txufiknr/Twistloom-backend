@@ -70,6 +70,17 @@ const QSTASH_API_BASE = "https://qstash.upstash.io/v2";
  */
 export const QSTASH_SCHEDULES: readonly QStashSchedule[] = [
   {
+    id: "email-worker",
+    path: "/api/cron/emails",
+    cron: "* * * * *",
+    method: "POST",
+    forwardCronSecret: true,
+    retries: 3,
+  },
+  { id: "email-cleanup", path: "/api/cron/email-cleanup", cron: "*/10 * * * *", method: "POST", forwardCronSecret: true, retries: 3 },
+  { id: "email-weekly", path: "/api/cron/email-weekly", cron: "0 8 * * 1", method: "POST", forwardCronSecret: true, retries: 3 },
+  { id: "email-monthly", path: "/api/cron/email-monthly", cron: "0 8 1 * *", method: "POST", forwardCronSecret: true, retries: 3 },
+  {
     id: "credit-reservation-sweep",
     path: "/api/cron/sweep-credit-reservations",
     cron: "*/10 * * * *",

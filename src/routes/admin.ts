@@ -23,7 +23,7 @@ import { Hono } from "hono";
 import { eq, desc, and, or, ne, inArray, sql, gte, lte, isNotNull, isNull, ilike, count, countDistinct, avg, sum } from "drizzle-orm";
 import { requireAuth } from "../middleware/nextauth.js";
 import { requireSuperAdmin, requirePermission, resolveAdminAccess, normalizePermissions, isSuperAdminUserId, ADMIN_PERMISSIONS } from "../middleware/admin-auth.js";
-import { cApiError, cValidationError, cNotFoundError } from "../utils/error.js";
+import { cApiError, cValidationError, cNotFoundError, cUnauthorizedError } from "../utils/error.js";
 import { reconstructStoryState } from "../utils/branch-traversal.js";
 import { getBookAnalytics, getCommunityAnalytics } from "../services/analytics.js";
 import { getAdminBusinessMetrics } from "../services/admin-business-analytics.js";
@@ -59,7 +59,8 @@ import {
 import type { ViolationType, ViolationSeverity } from "../types/trust-safety.js";
 import { violationTypes, violationSeverities, enforcementActions, isViolationType, isViolationSeverity, isEnforcementAction } from "../types/trust-safety.js";
 import { parsePaymentGateway, formatPaymentAmount, getGatewayCurrency, getSubscriptionPlanName } from "../utils/payment.js";
-import adminAnnouncementsRouter from "./admin/announcements.js";
+import adminAnnouncementsRouter, { announcementErrorResponse } from "./admin/announcements.js";
+import { countAnnouncementEmailRecipients, queueAnnouncementEmail, requireAnnouncementEmailJobs } from "../services/announcement-email.js";
 
 const router = new Hono<AppEnv>();
 
@@ -1765,90 +1766,31 @@ router.get("/analytics/:bookId",
 /**
  * POST /admin/email/announcements
  *
- * Sends a product announcement to users with productAnnouncements=true.
- * Super-admin only. Body: { title, bodyHtml, cta?: { url, text }, dryRun?: boolean }
+ * Queues a durable product-announcement campaign for opted-in users.
+ * Super-admin only. Body: { title, bodyHtml, cta?, dryRun?, requestId? }.
  */
-router.post(
-  "/email/announcements",
-  requireAuth,
-  requireSuperAdmin,
-  async (c) => {
-    try {
-      const body = c.get("body") as {
-        title?: string;
-        bodyHtml?: string;
-        cta?: { url: string; text: string };
-        dryRun?: boolean;
-      };
-
-      if (!body?.title || typeof body.title !== "string" || !body.title.trim()) {
-        return cValidationError(c, "title is required");
-      }
-      if (!body?.bodyHtml || typeof body.bodyHtml !== "string" || !body.bodyHtml.trim()) {
-        return cValidationError(c, "bodyHtml is required");
-      }
-
-      const { normalizeEmailPreferences } = await import("../services/email-preferences.js");
-      const { sendAnnouncementEmail } = await import("../utils/email.js");
-
-      // Deliberately dbRead: this is a full-table recipient fan-out for an
-      // announcement broadcast — it must not load every user onto the primary.
-      // Second-stale email-preference reads are acceptable here (and every
-      // other read-then-write guard in this file uses dbWrite, audit §3.1).
-      const rows = await dbRead
-        .select({
-          userId: users.userId,
-          email: users.email,
-          emailPreferences: users.emailPreferences,
-          isNewUser: users.isNewUser,
-        })
-        .from(users)
-        .where(and(eq(users.isNewUser, false), isNotNull(users.email)));
-
-      const recipients = rows.filter((r) => {
-        const prefs = normalizeEmailPreferences(r.emailPreferences);
-        return prefs.productAnnouncements && !!r.email;
-      });
-
-      if (body.dryRun) {
-        return c.json({
-          dryRun: true,
-          recipientCount: recipients.length,
-          title: body.title.trim(),
-        });
-      }
-
-      let sent = 0;
-      let failed = 0;
-      for (const r of recipients) {
-        const ok = await sendAnnouncementEmail(
-          r.email,
-          body.title.trim(),
-          body.bodyHtml.trim(),
-          body.cta,
-          { userId: r.userId },
-        );
-        if (ok) sent++;
-        else failed++;
-      }
-
-      console.log(
-        `[admin] ðŸ“¢ Announcement "${body.title}" sent=${sent} failed=${failed} eligible=${recipients.length}`,
-      );
-
-      return c.json({
-        success: true,
-        title: body.title.trim(),
-        recipientCount: recipients.length,
-        sent,
-        failed,
-      });
-    } catch (error) {
-      return cApiError(c, "Failed to send announcement", error);
+router.post("/email/announcements", requireAuth, requireSuperAdmin, async (c) => {
+  try {
+    requireAnnouncementEmailJobs();
+    const body: unknown = c.get("body");
+    if (typeof body !== "object" || body === null || !("title" in body) || typeof body.title !== "string" || !body.title.trim() || !("bodyHtml" in body) || typeof body.bodyHtml !== "string" || !body.bodyHtml.trim()) {
+      return cValidationError(c, "title and bodyHtml are required");
     }
-  },
-);
-
+    let cta: { url: string; text: string } | undefined;
+    if ("cta" in body && body.cta !== undefined) {
+      if (typeof body.cta !== "object" || body.cta === null || !("url" in body.cta) || !("text" in body.cta) || typeof body.cta.url !== "string" || typeof body.cta.text !== "string") return cValidationError(c, "Invalid CTA");
+      cta = { url: body.cta.url, text: body.cta.text };
+    }
+    if ("dryRun" in body && typeof body.dryRun !== "boolean") return cValidationError(c, "Invalid dryRun");
+    if ("dryRun" in body && body.dryRun) return c.json({ dryRun: true, title: body.title.trim(), recipientCount: await countAnnouncementEmailRecipients() });
+    const userId = c.get("userId");
+    if (!userId) return cUnauthorizedError(c, "Authentication required");
+    const job = await queueAnnouncementEmail({ title: body.title, bodyHtml: body.bodyHtml, cta, requestId: "requestId" in body ? body.requestId : undefined }, userId);
+    return c.json({ success: true, queued: true, ...job }, 202);
+  } catch (error) {
+    return announcementErrorResponse(c, error) ?? cApiError(c, "Failed to queue announcement", error);
+  }
+});
 // ============================================================================
 // FEEDBACKS ADMIN ROUTES (P3)
 // ============================================================================

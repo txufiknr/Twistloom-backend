@@ -1,3 +1,5 @@
+import { deliverCredentialEmail } from '../services/email-delivery.js';
+import { dispatchEmailWorkers } from '../services/email-dispatch.js';
 /**
  * Authentication Routes
  *
@@ -48,14 +50,11 @@ import { validatePasswordStrength } from '../utils/password-validation.js';
 import { checkAccountLockout, recordFailedLogin, resetFailedLoginAttempts } from '../utils/account-lockout.js';
 import { createPasswordResetToken, resetPassword, verifyPasswordResetToken, revokePasswordResetTokens } from '../utils/password-reset.js';
 import {
-  sendPasswordResetEmail,
-  sendVerificationEmail,
   sendPasswordChangedEmail,
   sendEmailChangedAlertEmail,
-  sendEmailSafe,
   formatSecurityDetailHtml,
 } from '../utils/email.js';
-import { createEmailVerificationToken, verifyEmailToken, isEmailVerified } from '../utils/email-verification.js';
+import { createEmailVerificationToken, verifyEmailToken } from '../utils/email-verification.js';
 import { cApiError, cRateLimitError, cUnauthorizedError, cValidationError } from '../utils/error.js';
 import { CURRENT_TERMS_VERSION } from '../config/legal.js';
 import { checkRateLimitByIP } from '../middleware/rate-limit.js';
@@ -76,7 +75,7 @@ import { getUserSessions, logoutFromSpecificDevice, logoutFromAllOtherDevices, l
 import { revokeAllFamiliesForUser, revokeFamiliesForSession, rotateRefreshToken, peekFamilyIdByPresentedHash } from '../services/token-family.js';
 import { issueAccessToken } from '../services/mobile-tokens.js';
 import { invalidateBearerCache, extractBearerToken } from '../middleware/bearer.js';
-import { sanitizeUserData, getUserForAuth, getUserIdByEmail } from '../services/user.js';
+import { sanitizeUserData, getUserForAuth } from '../services/user.js';
 import { hashSHA256 } from '../utils/hash.js';
 import type { AppEnv } from '../hono/env.js';
 import { getClientIp } from '../hono/express-shim.js';
@@ -402,19 +401,13 @@ router.post('/signup', async (c) => {
         ageConfirmedAt: new Date(),
       }).returning();
       await tx.insert(userAuth).values({ userId: user.userId });
+      await createEmailVerificationToken(user.userId, tx);
       return user;
     });
 
     // Account creation has committed. Recovery delivery failure must retain its
     // explicit 201 result and let the user resend, rather than obscure creation.
-    const verificationToken = await createEmailVerificationToken(newUser.userId).catch(() => null);
-    const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}&email=${encodeURIComponent(newUser.email)}`;
-    const verificationEmailSent = verificationToken ? await sendVerificationEmail(
-      newUser.email,
-      verificationUrl,
-      verificationToken,
-      { userId: newUser.userId },
-    ).catch(() => false) : false;
+    const verificationEmailSent = await deliverCredentialEmail(newUser.userId, 'verification').catch(() => false);
 
     let referralApplied = false;
     if (referrer && typeof referrer === 'string') {
@@ -423,7 +416,7 @@ router.post('/signup', async (c) => {
 
     const message = verificationEmailSent
       ? 'Account created. Please check your email to verify your account.'
-      : 'Account created. Verification email failed to send.';
+      : 'Account created. Verification email has not been accepted yet. You can request another if it does not arrive.';
 
     // Q1-A (USER_ONBOARDING_WIZARD_ROADMAP): mobile signup = account creation +
     // first session. Uses the same issueMobileLoginPair SSOT as POST
@@ -580,13 +573,13 @@ router.post('/forgot-password', async (c) => {
   if (!await checkRateLimitByIP(getClientIp(c), email)) return cRateLimitError(c);
   const work = (async () => {
     try {
-      const token = await createPasswordResetToken(email);
-      if (token) await sendPasswordResetEmail(email, process.env.FRONTEND_URL + '/reset-password?token=' + token);
+      await createPasswordResetToken(email);
     } catch { console.error('[forgot-password] Recovery delivery failed'); }
   })();
-  // Netlify extends the invocation for this work. Other local adapters execute
-  // the handled promise best-effort; this acknowledgement is not delivery proof.
-  try { c.executionCtx.waitUntil(work); } catch { void work; }
+  // Persist intent before acknowledgement. Both existing and unknown accounts
+  // use the same wakeup; provider latency must not reveal account existence.
+  await work;
+  await dispatchEmailWorkers(`password-recovery/${crypto.randomUUID()}`);
   return c.json({ message: 'Password reset email sent if account exists', emailSent: true });
 });
 
@@ -642,27 +635,12 @@ router.post('/reset-password', async (c) => {
       return cValidationError(c, 'Invalid or expired reset token');
     }
 
-    const success = await resetPassword(token, password);
+    const success = await resetPassword(token, password, formatSecurityDetailHtml({ at: new Date(), ip, userAgent: c.req.header('user-agent') }));
     if (!success) {
       return cValidationError(c, 'Failed to reset password');
     }
 
-    // Security notification (always on) — non-blocking
-    const [userRow] = await dbRead
-      .select({ email: users.email, name: users.name })
-      .from(users)
-      .where(eq(users.userId, userId))
-      .limit(1);
-    if (userRow?.email) {
-      const detailHtml = formatSecurityDetailHtml({
-        at: new Date(),
-        ip,
-        userAgent: c.req.header('user-agent'),
-      });
-      sendEmailSafe('POST /auth/reset-password', () =>
-        sendPasswordChangedEmail(userRow.email, userRow.name || 'there', detailHtml, { userId }),
-      );
-    }
+    await dispatchEmailWorkers('password-reset/' + userId);
 
     return c.json({ message: 'Password reset successfully' });
   } catch (error) {
@@ -760,16 +738,16 @@ router.post('/resend-verification', async (c) => {
   if (!await checkRateLimitByIP(getClientIp(c), email)) return cRateLimitError(c);
   const work = (async () => {
     try {
-      const userId = await getUserIdByEmail(email);
-      if (userId && !await isEmailVerified(userId)) {
-        const token = await createEmailVerificationToken(userId);
-        await sendVerificationEmail(email, process.env.FRONTEND_URL + '/verify-email?token=' + token + '&email=' + encodeURIComponent(email), token);
+      const [account] = await dbWrite.select({ userId: users.userId, verified: userAuth.emailVerified }).from(users)
+        .leftJoin(userAuth, eq(userAuth.userId, users.userId)).where(eq(users.email, email.trim().toLowerCase())).limit(1);
+      if (account && !account.verified) {
+        await createEmailVerificationToken(account.userId);
       }
     } catch { console.error('[resend-verification] Recovery delivery failed'); }
   })();
-  // Netlify extends the invocation for this work. Other local adapters execute
-  // the handled promise best-effort; this acknowledgement is not delivery proof.
-  try { c.executionCtx.waitUntil(work); } catch { void work; }
+  // Persist intent first; the acknowledgement intentionally does not prove delivery.
+  await work;
+  await dispatchEmailWorkers(`verification-recovery/${crypto.randomUUID()}`);
   return c.json({ message: 'Verification email sent if account exists', emailSent: true });
 });
 
@@ -1695,36 +1673,19 @@ router.put('/email', requireAuth, async (c) => {
       .where(eq(users.userId, userId))
       .limit(1);
 
-    const oldEmail = currentUser?.email;
     const now = new Date();
-    await dbWrite
-      .update(users)
-      .set({ email: sanitizedEmail, updatedAt: now })
-      .where(eq(users.userId, userId));
-
-    await dbWrite
-      .update(userAuth)
-      .set({ emailVerified: null, updatedAt: now })
-      .where(eq(userAuth.userId, userId));
-
-    // Security: alert old address + verify new address (always on, non-blocking)
-    const detailHtml = formatSecurityDetailHtml({
-      at: now,
-      ip,
-      userAgent: c.req.header('user-agent'),
+    const detailHtml = formatSecurityDetailHtml({ at: now, ip, userAgent: c.req.header('user-agent') });
+    await dbWrite.transaction(async tx => {
+      const [live] = await tx.select({ email: users.email, name: users.name }).from(users).where(eq(users.userId, userId)).for('update').limit(1);
+      if (!live || live.email !== currentUser?.email) throw new Error('Email changed concurrently');
+      await tx.update(users).set({ email: sanitizedEmail, updatedAt: now }).where(eq(users.userId, userId));
+      await tx.update(userAuth).set({ emailVerified: null, updatedAt: now }).where(eq(userAuth.userId, userId));
+      if (live.email && live.email !== sanitizedEmail) await sendEmailChangedAlertEmail(live.email, live.name || 'there', sanitizedEmail, detailHtml,
+        { userId, tx, requestKey: `email_changed/${userId}/${now.getTime()}` });
+      await createEmailVerificationToken(userId, tx);
     });
-    if (oldEmail && oldEmail !== sanitizedEmail) {
-      sendEmailSafe('PUT /auth/email (old)', () =>
-        sendEmailChangedAlertEmail(oldEmail, currentUser?.name || 'there', sanitizedEmail, detailHtml, {
-          userId,
-        }),
-      );
-    }
-    sendEmailSafe('PUT /auth/email (verify)', async () => {
-      const verificationToken = await createEmailVerificationToken(userId);
-      const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}&email=${encodeURIComponent(sanitizedEmail)}`;
-      return sendVerificationEmail(sanitizedEmail, verificationUrl, verificationToken, { userId });
-    });
+    await deliverCredentialEmail(userId, 'verification').catch(() => false);
+    await dispatchEmailWorkers('email-change/' + userId);
 
     await logAuditEvent(c, 'security_email_changed', 'auth');
     return c.json({ message: 'Email updated successfully' });
@@ -1803,7 +1764,7 @@ router.put('/password', requireAuth, async (c) => {
     // transaction with all tracked-session deletion. Both native and copied
     // browser credentials fail their next primary standing check; current reauthenticates.
     await dbWrite.transaction(async (tx) => {
-      const [live] = await tx.select({ passwordHash: users.passwordHash }).from(users)
+      const [live] = await tx.select({ passwordHash: users.passwordHash, email: users.email, name: users.name }).from(users)
         .where(eq(users.userId, userId)).limit(1).for("update");
       if (!live || live.passwordHash !== user.passwordHash) throw new Error("Credentials changed concurrently");
       await tx
@@ -1821,27 +1782,12 @@ router.put('/password', requireAuth, async (c) => {
         .update(userAuth)
         .set({ failedLoginAttempts: 0, lockUntil: null, passwordResetToken: null, passwordResetExpires: null, updatedAt: now })
         .where(eq(userAuth.userId, userId));
+      if (live.email) await sendPasswordChangedEmail(live.email, live.name || 'there',
+        formatSecurityDetailHtml({ at: now, ip, userAgent: c.req.header('user-agent') }),
+        { userId, tx, requestKey: `password_changed/${userId}/${now.getTime()}` });
     });
 
-    // Security notification (always on) — non-blocking
-    const [userRow] = await dbWrite
-      .select({ email: users.email, name: users.name })
-      .from(users)
-      .where(eq(users.userId, userId))
-      .limit(1).catch(() => {
-        console.error('[auth] Password-change notification lookup failed after commit');
-        return [];
-      });
-    if (userRow?.email) {
-      const detailHtml = formatSecurityDetailHtml({
-        at: now,
-        ip,
-        userAgent: c.req.header('user-agent'),
-      });
-      sendEmailSafe('PUT /auth/password', () =>
-        sendPasswordChangedEmail(userRow.email, userRow.name || 'there', detailHtml, { userId }),
-      );
-    }
+    await dispatchEmailWorkers('password-change/' + userId);
 
     await logAuditEvent(c, 'security_password_changed', 'auth').catch(() => {
       console.error('[auth] Password-change audit failed after commit');

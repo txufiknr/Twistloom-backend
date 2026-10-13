@@ -14,9 +14,9 @@
  * `TIME_TRAVEL_COMMIT` credit key.
  */
 
-import { dbRead } from "../db/client.js";
+import { dbRead, type DBTransaction } from "../db/client.js";
 import { pages, userSessions, actionProgress, userPageProgress } from "../db/schema.js";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { StoryState } from "../types/story.js";
 import type { CharacterStatus } from "../types/character.js";
 import { getStoryState } from "./story.js";
@@ -42,6 +42,31 @@ export class TimeTravelAlreadyCommittedError extends Error {
     super(message);
     this.name = "TimeTravelAlreadyCommittedError";
   }
+}
+
+/** A missing/changed session vetoes a charged rebase, rolling back credits. */
+export class TimeTravelSessionConflictError extends Error {
+  constructor() { super("The reader session no longer permits this switch"); this.name = "TimeTravelSessionConflictError"; }
+}
+
+/** Lock and authorize the session after executeWithCredits locks the user. */
+export async function authorizeTimeTravelSession(tx: DBTransaction, userId: string, bookId: string, nextPageId: string) {
+  const [session] = await tx.select({ frontierPageId: userSessions.frontierPageId,
+    frontierPageNumber: userSessions.frontierPageNumber }).from(userSessions)
+    .where(and(eq(userSessions.userId, userId), eq(userSessions.bookId, bookId))).for("update").limit(1);
+  if (!session) throw new TimeTravelSessionConflictError();
+  if (session.frontierPageId === nextPageId) throw new TimeTravelAlreadyCommittedError();
+  return session;
+}
+
+/** Require an affected row: a successful charge must always have a corresponding rebase. */
+export async function rebaseTimeTravelSession(tx: DBTransaction, userId: string, bookId: string,
+  expectedFrontier: string | null, nextPageId: string, nextPageNumber: number): Promise<void> {
+  const updated = await tx.update(userSessions).set({ frontierPageId: nextPageId, frontierPageNumber: nextPageNumber })
+    .where(and(eq(userSessions.userId, userId), eq(userSessions.bookId, bookId),
+      expectedFrontier === null ? isNull(userSessions.frontierPageId) : eq(userSessions.frontierPageId, expectedFrontier)))
+    .returning({ userId: userSessions.userId });
+  if (updated.length !== 1) throw new TimeTravelSessionConflictError();
 }
 
 /** A set-membership change between the reader's path and an alternative. */

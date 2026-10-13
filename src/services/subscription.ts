@@ -1,3 +1,5 @@
+import { sendSubscriptionCanceledEmail, sendPaymentFailedEmail, sendTrialEndingEmail } from '../utils/email.js';
+import { dispatchEmailWorkers } from './email-dispatch.js';
 /**
  * Subscription Service Module
  *
@@ -189,9 +191,11 @@ export async function updateSubscription(params: {
   status: SubscriptionStatus;
   currentPeriodEnd?: Date; // Omit when only status is being updated
   cancelAtPeriodEnd?: boolean;
+  paymentFailureEventId?: string;
 }): Promise<void> {
   const gateway = params.gateway ?? PAYMENT_GATEWAY.stripe;
-  await dbWrite
+  await dbWrite.transaction(async tx => {
+  await tx
     .update(subscriptions)
     .set({
       status: params.status,
@@ -207,6 +211,19 @@ export async function updateSubscription(params: {
       eq(subscriptions.providerSubscriptionId, params.providerSubscriptionId),
       eq(subscriptions.gateway, gateway)
     ));
+    // Status-sync events can accompany invoice failure events. Only the
+    // explicit failure event owns its alert, avoiding two emails for one failure.
+    if (params.status === 'past_due' && params.paymentFailureEventId) {
+      const [row] = await tx.select({ userId: subscriptions.userId, email: users.email, name: users.name }).from(subscriptions)
+        .innerJoin(users, eq(subscriptions.userId, users.userId))
+        .where(and(eq(subscriptions.providerSubscriptionId, params.providerSubscriptionId), eq(subscriptions.gateway, gateway))).limit(1);
+      if (row?.email) await sendPaymentFailedEmail(row.email, row.name || 'there',
+        process.env.FRONTEND_URL ? `${process.env.FRONTEND_URL.replace(/\/$/, '')}/dashboard/account/subscription` : undefined,
+        { userId: row.userId, tx, requestKey: `payment_failed/${gateway}/${params.paymentFailureEventId}` });
+    }
+  });
+  if (params.paymentFailureEventId) await dispatchEmailWorkers('payment-failed/' + params.paymentFailureEventId);
+
 }
 
 /**
@@ -401,7 +418,11 @@ export async function cancelSubscription(params: {
 
       console.log(`[subscription] 📊 Trial expired without converting for user ${subscription.userId} — ${user?.credits ?? 'unknown'} credits remaining`);
     }
+    const [recipient] = await tx.select({ email: users.email, name: users.name }).from(users).where(eq(users.userId, subscription.userId)).limit(1);
+    if (recipient?.email) await sendSubscriptionCanceledEmail(recipient.email, recipient.name || 'there', subscription.currentPeriodEnd,
+      { userId: subscription.userId, tx, requestKey: `subscription_canceled/${gateway}/${params.providerEventId ?? params.providerSubscriptionId}` });
   });
+  await dispatchEmailWorkers('subscription-canceled/' + params.providerSubscriptionId);
 }
 
 /**
@@ -572,52 +593,23 @@ export async function isTrialEligible(userId: string, gateway?: PaymentGateway):
  * in-app-consistent complement, since a generic Stripe-branded email is easy for
  * a user to not recognize as being from Twistloom specifically.
  *
- * The email send is deliberately non-blocking: a Resend outage or bad address
- * must not prevent the in-app notification from being created, and must not
- * fail the webhook (which would make Stripe retry an event that was otherwise
- * handled correctly).
+ * Email intent commits with the in-app notification. Provider delivery happens
+ * later, so a Resend outage does not hold the business transaction open.
+ * Failure to persist intent rolls back and allows the webhook to retry.
  *
  * @param providerSubscriptionId - The gateway subscription ID that's ending its trial
  *
  * @see VIP_FREE_TRIAL_ROADMAP.md §4.4b, Q5
  */
 export async function handleTrialWillEnd(providerSubscriptionId: string): Promise<void> {
-  const [row] = await dbRead
-    .select({
-      subscriptionId: subscriptions.id,
-      userId: subscriptions.userId,
-      trialEnd: subscriptions.trialEnd,
-      email: users.email,
-      name: users.name,
-    })
-    .from(subscriptions)
-    .innerJoin(users, eq(subscriptions.userId, users.userId))
-    .where(eq(subscriptions.providerSubscriptionId, providerSubscriptionId))
-    .limit(1);
-
-  if (!row) {
-    console.log(`[subscription] ⚠️ trial_will_end for unknown subscription ${providerSubscriptionId} — skipping`);
-    return;
-  }
-
-  await dbWrite.insert(userNotifications).values({
-    userId: row.userId,
-    type: 'trial_ending_soon',
-    title: 'Your VIP trial ends soon',
-    message: 'Your free trial ends in 3 days. Make sure your payment method is up to date to keep your VIP benefits.',
-    data: { trialEnd: row.trialEnd },
-    read: false,
-    createdAt: new Date(),
-    updatedAt: new Date(),
+  await dbWrite.transaction(async tx => {
+    const [row] = await tx.select({ userId: subscriptions.userId, trialEnd: subscriptions.trialEnd, email: users.email, name: users.name })
+      .from(subscriptions).innerJoin(users, eq(subscriptions.userId, users.userId)).where(eq(subscriptions.providerSubscriptionId, providerSubscriptionId)).limit(1);
+    if (!row) return;
+    await tx.insert(userNotifications).values({ userId: row.userId, type: 'trial_ending_soon', title: 'Your VIP trial ends soon',
+      message: 'Your free trial ends in 3 days. Make sure your payment method is up to date to keep your VIP benefits.', data: { trialEnd: row.trialEnd }, read: false });
+    if (row.email && row.trialEnd) await sendTrialEndingEmail(row.email, row.name || 'there', row.trialEnd,
+      { userId: row.userId, tx, expiresAt: row.trialEnd, requestKey: `trial_ending/${providerSubscriptionId}/${row.trialEnd.getTime()}` });
   });
-
-  console.log(`[subscription] 🔔 Sent trial-ending-soon notification for user ${row.userId}`);
-
-  // Non-blocking: in-app notification already succeeded; Stripe email is a fallback.
-  if (row.trialEnd && row.email) {
-    const { sendTrialEndingEmail, sendEmailSafe } = await import("../utils/email.js");
-    sendEmailSafe(`trial_will_end user=${row.userId}`, () =>
-      sendTrialEndingEmail(row.email, row.name || "there", row.trialEnd!, { userId: row.userId }),
-    );
-  }
+  await dispatchEmailWorkers('trial-ending/' + providerSubscriptionId);
 }

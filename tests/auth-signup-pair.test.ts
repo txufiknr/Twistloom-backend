@@ -155,7 +155,6 @@ mock.module("../src/utils/email.js", () => ({
   sendPasswordResetEmail: mock(async () => true),
   sendPasswordChangedEmail: mock(async () => true),
   sendEmailChangedAlertEmail: mock(async () => true),
-  sendEmailSafe: mock(() => {}),
   formatSecurityDetailHtml: mock(() => ""),
 }));
 

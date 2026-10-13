@@ -10,7 +10,7 @@
  * 
  * // Create reset token and send email
  * const token = await createPasswordResetToken('user@example.com');
- * await sendPasswordResetEmail('user@example.com', `https://app.com/reset-password?token=${token}`);
+ * // Email intent is committed with the token; the shared worker delivers it.
  * 
  * // Verify token and reset password
  * const userId = await verifyPasswordResetToken(token);
@@ -20,11 +20,13 @@
  * ```
  */
 
-import { dbRead, dbWrite } from '../db/client.js';
+import { dbRead, dbWrite, type DBTransaction } from '../db/client.js';
 import { users, userAuth } from '../db/schema.js';
 import { eq, and, sql, gt, or } from 'drizzle-orm';
 import { hashSHA256 } from './hash.js';
 import { hashPassword } from './password.js';
+import { sendPasswordResetEmail, sendPasswordChangedEmail } from './email.js';
+import { generateId } from './uuid.js';
 import { revokeAllFamiliesForUser } from '../services/token-family.js';
 import { deleteUserSessions } from '../services/credential-revocation.js';
 
@@ -65,8 +67,11 @@ export async function createPasswordResetToken(email: string): Promise<string | 
   const storedToken = `sha256:${await hashSHA256(token)}`;
   const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour expiry
 
+  await dbWrite.transaction(async (tx: DBTransaction) => {
+    const [recipient] = await tx.select({ email: users.email }).from(users).where(eq(users.userId, user[0].userId)).limit(1).for('update');
+    if (!recipient?.email) throw new Error('Reset recipient unavailable');
   // Create or update user_auth record
-  await dbWrite
+  await tx
     .insert(userAuth)
     .values({
       userId: user[0].userId,
@@ -82,6 +87,11 @@ export async function createPasswordResetToken(email: string): Promise<string | 
         updatedAt: new Date(),
       },
     });
+
+
+    await sendPasswordResetEmail(recipient.email, `${process.env.FRONTEND_URL}/reset-password?token=${token}`,
+      { userId: user[0].userId, tx, expiresAt, credentialHash: storedToken, requestKey: `password_reset/${user[0].userId}/${generateId()}` });
+  });
 
   return token;
 }
@@ -138,7 +148,7 @@ export async function verifyPasswordResetToken(token: string): Promise<string | 
  * }
  * ```
  */
-export async function resetPassword(token: string, newPassword: string): Promise<boolean> {
+export async function resetPassword(token: string, newPassword: string, detailHtml?: string): Promise<boolean> {
   if (!/^[0-9a-f]{64}$/.test(token) && !/^[0-9a-f-]{36}$/i.test(token)) return false;
   // Verify token first (fresh read — the transaction below locks the row)
   const auth = await dbWrite
@@ -166,7 +176,7 @@ export async function resetPassword(token: string, newPassword: string): Promise
   const result = await dbWrite.transaction(async (tx) => {
     // Consistent lock order: user first, then proof. Issuance/password changes
     // serialize on this same user row. A losing proof causes NO mutations.
-    const [user] = await tx.select({ id: users.userId }).from(users)
+    const [user] = await tx.select({ id: users.userId, email: users.email, name: users.name }).from(users)
       .where(eq(users.userId, userId)).limit(1).for('update');
     if (!user) return false;
     const consumed = await tx
@@ -189,6 +199,8 @@ export async function resetPassword(token: string, newPassword: string): Promise
       .where(eq(users.userId, userId));
     await revokeAllFamiliesForUser(userId, tx);
     await deleteUserSessions(userId, tx);
+    if (user.email) await sendPasswordChangedEmail(user.email, user.name || 'there', detailHtml,
+      { userId, tx, requestKey: `password_changed/reset/${await hashSHA256(token)}` });
     return true;
   });
 

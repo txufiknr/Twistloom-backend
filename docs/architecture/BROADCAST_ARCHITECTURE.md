@@ -183,8 +183,7 @@ There is exactly **one live broadcast** at a time. Scheduling is computed at ins
 - `expires_at = starts_at + BROADCAST_DISPLAY_SECONDS` (8s).
 - `queuePosition` = (count of `queued` rows with `starts_at > now`) + 1.
 
-The public `GET /current` reads `WHERE status='queued' AND starts_at <= now < expires_at ORDER BY starts_at DESC LIMIT 1`. Stale `queued` rows (`expires_at <= now`) are lazily flipped to `expired` on each read. A Redis cache (`broadcast:current`, TTL `BROADCAST_CURRENT_CACHE_TTL_SECONDS` = 3s) keeps polling cheap; it is invalidated on every successful submit.
-
+The public `GET /current` fills its Redis cache from the primary with the earliest unexpired queued candidate, including a future slot. `broadcast:current:v2` stores a validated SDK-decoded envelope; visibility is checked on every hit and cache validity is bounded to the next start/expiry. Revision-guarded invalidation prevents an older in-flight read from refilling a committed change. Stale queued rows are lazily expired on misses.
 ### Queue capacity
 
 `BROADCAST_MAX_PENDING` (20) bounds future-queued rows. When at capacity, `submitBroadcast` returns `429 queue_full`, capping wait time and preventing a broadcast storm from backing up for hours.
@@ -193,9 +192,12 @@ The public `GET /current` reads `WHERE status='queued' AND starts_at <= now < ex
 
 Platform announcements occupy the single live broadcast slot as system broadcasts (`source = "system"`, `announcementId` set) during their visibility window:
 
-1. **Window Parking (`parkUserBroadcastsBehind`):** When an announcement is published or scheduled, any overlapping queued user broadcasts are shifted forward to begin after the announcement's `expiresAt`, maintaining user broadcast durations and FIFO ordering without dropping messages.
-2. **Early Release & Overlap Prevention (`releaseUserBroadcasts`):** When an announcement is revoked early via `endAnnouncement()`, parked user broadcasts are pulled forward immediately. If another user broadcast is currently live (`startsAt <= now < expiresAt`), the scheduling cursor begins from that active broadcast's `expiresAt` rather than `now`, ensuring subsequent broadcasts never overlap live displays.
+1. All announcement publish/edit/end and ordinary user/system insertions acquire the same transaction advisory lock before row or inventory locks. Capacity is checked authoritatively before committing consumption.
+2. `broadcast-scheduler.ts` cascades the whole pending suffix in creation-order FIFO, preserving duration and the configured global gap. Live paid slots finish before an announcement starts. Recently-ended slots also retain their trailing gap.
+3. Scheduled edits compact the queue around the updated window in the same transaction; ending a live announcement releases pending slots after its trailing gap. Cache invalidation follows commit.
+4. Repeated publication reuses the scheduled/active row. Ended announcements cannot be republished. The reviewed `broadcasts_announcement_unique` schema index provides a second guard; ending also expires every linked legacy banner.
 
+See [Durable announcement delivery](./ANNOUNCEMENT_EMAIL_JOBS.md) for email jobs, rollout prerequisites and verification limits.
 ---
 
 ## 5. Rate Limiting & Abuse Surface

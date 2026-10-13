@@ -586,52 +586,13 @@ computed client-side).
 
 ### POST /api/admin/email/announcements
 
-Sends a product announcement email to all opted-in users
-(`emailPreferences.productAnnouncements === true`). Supports a dry-run mode to
-preview recipient count before sending.
+Queues a durable product-announcement email campaign. Authentication: `requireAuth` + `requireSuperAdmin`. Body: `{ title, bodyHtml, cta?: { url, text }, dryRun?: boolean, requestId?: UUID }`. Reuse the request UUID on HTTP retries. An omitted UUID replays the same author/content hash.
 
-**Authentication:** `requireAuth` + `requireSuperAdmin`
+A send returns **202 Accepted** with `{ success: true, queued: true, jobId, status, title, recipientCount, sent, failed, skipped, needsReview, audienceComplete }`. Initial counters are zero because recipients are enumerated asynchronously. `sent` counts provider acceptance. A dry run still returns **200** with `{ dryRun: true, title, recipientCount }` and performs no sends.
 
-**Request Body:**
-```json
-{
-  "title": "New feature: co-author mode",
-  "bodyHtml": "<h1>We're excited to announce...</h1><p>...</p>",
-  "cta": {
-    "url": "https://twistloom.com/coauthor",
-    "text": "Try it now"
-  },
-  "dryRun": false
-}
-```
-
-**Response (200 OK):**
-```json
-{
-  "success": true,
-  "title": "New feature: co-author mode",
-  "recipientCount": 1240,
-  "sent": 1240,
-  "failed": 0
-}
-```
-
-When `dryRun: true`:
-```json
-{
-  "dryRun": true,
-  "recipientCount": 1240,
-  "title": "New feature: co-author mode"
-}
-```
-
-**Error Responses:**
-- `400 Bad Request`: `title` is required
-- `400 Bad Request`: `bodyHtml` is required
-- `403 Forbidden`: Not the super admin
+Poll `GET /api/admin/announcements/email-jobs/:jobId` for progress. The feature returns **503** (`announcements.emailUnavailable`) until the reviewed schema and worker have been provisioned and enabled. See [activation and retry rules](../architecture/ANNOUNCEMENT_EMAIL_JOBS.md).
 
 ---
-
 ## Announcements (Admin)
 
 Full CRUD + lifecycle for in-app platform announcements — the record-based successor to the email-only blast above. An announcement is authored once, then surfaced on the broadcast banner (public slot) and the notification center (per-user unseen flag); email becomes an explicit per-record action that stamps `emailSentAt`. See the [Announcements API](./ANNOUNCEMENTS_API_DOCUMENTATION.md) for the user-facing read side.
@@ -755,7 +716,7 @@ Activates the announcement now, or schedules it for a future `startsAt` (status 
 
 **What publishing does:**
 1. Enforces cap-1 — a concurrent/already-published row fails with `announcements.anotherActiveExists` (409, race-proofed by the partial unique index).
-2. Upserts the linked `broadcasts` row (source `system`) that occupies the single live banner slot — guests included; parked user megaphone broadcasts queue behind the announcement window.
+2. Inserts one linked banner for a draft; scheduled/active publication replays the original record, and ended rows reject publication. Use PATCH to edit a scheduled window. The shared queue planner preserves live paid slots, FIFO and configured gaps.
 3. Stamps `expiresAt` with the 24 h default when omitted (announcement and banner rows always agree).
 
 **Authentication:** `requireAuth` + `requirePermission("announcements")`
@@ -796,30 +757,17 @@ Deletes an announcement draft (`status = "draft"`). **Scheduled, active, and end
 
 ### POST /api/admin/announcements/:id/email
 
-Fires the product-announcement email blast for this record — same audience as `POST /api/admin/email/announcements` above (non-new users with an email and `emailPreferences.productAnnouncements`), using the record's `title`, `bodyHtml` (falls back to a sanitized `<p>body</p>`), and CTA. Stamps `emailSentAt` when at least one message is delivered.
+Queues the record's frozen title/body/CTA using the same durable worker as the legacy compose endpoint. Authentication: `requireAuth` + `requireSuperAdmin`.
 
-**Authentication:** `requireAuth` + `requireSuperAdmin`
+Body: `{ dryRun?: boolean, force?: boolean, requestId?: UUID }`. Ordinary retries replay the original campaign. Deliberate resends require `force: true` and a fresh request UUID; retries must reuse that UUID. A different campaign cannot be opened for this record while one is already in progress. A historical `emailSentAt` without a campaign requires an explicit resend.
 
-**Request Body:**
-```json
-{ "dryRun": false, "force": false }
-```
-- `dryRun: true`: `{ "dryRun": true, "recipientCount": 1240, "title": "…" }` (no sends, no `emailSentAt` stamp).
-- Duplicate prevention: If an email blast was already dispatched for this announcement (`emailSentAt` is set), subsequent requests return `409 Conflict` (`announcements.emailAlreadySent`) unless `{ "force": true }` is explicitly provided.
+Response: **202 Accepted**, using the campaign envelope above. Dry runs return **200** with audience count and title. `emailSentAt` is stamped only when the entire campaign reaches terminal results, including failed/skipped/review-required recipients; inspect progress counters for the actual outcome.
 
-**Response (200 OK):**
-```json
-{
-  "success": true,
-  "title": "Scheduled maintenance tonight",
-  "recipientCount": 1240,
-  "sent": 1238,
-  "failed": 2
-}
-```
+### GET /api/admin/announcements/email-jobs/:jobId
+
+Super-admin-only progress lookup with `Cache-Control: private, no-store`. Returns `{ jobId, status, title, recipientCount, sent, failed, skipped, needsReview, audienceComplete }`. Status is `queued`, `running`, `completed` or `completed_with_errors`. No recipient addresses or HTML are returned.
 
 ---
-
 **Announcements error codes** (self-describing; clients translate `code` → `announcements.errors.<key>`):
 
 | Code | HTTP | Meaning |
@@ -829,7 +777,9 @@ Fires the product-announcement email blast for this record — same audience as 
 | `announcements.anotherActiveExists` | 409 | Cap-1 invariant — another announcement is already scheduled/active |
 | `announcements.locked` | 409 | Edit or delete attempted on an active/ended announcement (only drafts can be deleted) |
 | `announcements.notPublishable` | 400 | Publish/end attempted from a state that does not allow it |
-| `announcements.emailAlreadySent` | 409 | Email blast was already dispatched for this announcement (pass `force=true` to re-send) |
+| `announcements.emailAlreadySent` | 409 | Legacy completed blast requires an explicit resend with force and requestId |
+| `announcements.emailInProgress` | 409 | A different campaign is already in progress |
+| `announcements.emailUnavailable` | 503 | Durable jobs are not configured/enabled |
 
 ---
 

@@ -1,3 +1,4 @@
+import { dispatchEmailWorkers } from '../services/email-dispatch.js';
 import { DEFAULT_EMAIL_PREFERENCES } from '../types/email-preferences.js';
 import { DEFAULT_IN_APP_PREFERENCES } from '../types/in-app-preferences.js';
 import { DEFAULT_PRIVACY_PREFERENCES } from '../types/privacy-preferences.js';
@@ -728,8 +729,14 @@ router.post('/', requireAuth, async (c: Context<AppEnv>) => {
         privacyPreferences: locked.privacyPreferences ?? DEFAULT_PRIVACY_PREFERENCES,
         ...(isEmailLocale(body.preferredLocale) ? { preferredLocale: body.preferredLocale } : {}),
       }).where(eq(users.userId, userId));
+      if (locked.isNewUser && locked.email) {
+        const { sendWelcomeEmail } = await import('../utils/email.js');
+        await sendWelcomeEmail(locked.email, data.username ?? locked.username, { userId, tx, requestKey: `welcome/${userId}` });
+      }
       return { first: locked.isNewUser, email: locked.email, username: data.username ?? locked.username };
     });
+
+    await dispatchEmailWorkers('welcome/' + userId);
 
     // Optional work cannot turn a committed completion into a failed response.
     // Referral claiming is idempotent and is retried on repeat completion.
@@ -742,10 +749,6 @@ router.post('/', requireAuth, async (c: Context<AppEnv>) => {
         )] : []),
       ]);
       if (results.some(result => result.status === 'rejected')) console.error('[onboarding] Post-commit work failed');
-      if (completed.first && completed.email) {
-        const { sendWelcomeEmail } = await import('../utils/email.js');
-        await sendWelcomeEmail(completed.email, completed.username, { userId });
-      }
     })().catch(() => { console.error('[onboarding] Welcome delivery failed'); });
     try { c.executionCtx.waitUntil(effects); } catch { void effects; }
 
@@ -1326,26 +1329,21 @@ router.delete("/", requireAuth, async (c: Context<AppEnv>) => {
     // Capture contact + locale before cascade delete for confirmation email
     const { resolveEmailLocale } = await import('../services/email-preferences.js');
     const deleteLocale = await resolveEmailLocale(userId);
-    const [userRow] = await dbRead
-      .select({ email: users.email, name: users.name })
-      .from(users)
-      .where(eq(users.userId, userId))
-      .limit(1);
-
     // Delete user - cascade delete will handle all related tables automatically
     // Tables with cascade delete on userId:
     // - userAuth, userPageProgress
     // - userFollows, userCompletedBooks, userActivityLogs, transactions
     // - userNotifications, userCheckins, userLikes, userFavorites, userComments, userSessions
     await logAuditEvent(c, 'security_account_deleted', 'user');
-    await dbWrite.delete(users).where(eq(users.userId, userId));
-
-    if (userRow?.email) {
-      const { sendAccountDeletedEmail, sendEmailSafe } = await import('../utils/email.js');
-      sendEmailSafe('DELETE /user', () =>
-        sendAccountDeletedEmail(userRow.email, userRow.name || 'there', { locale: deleteLocale }),
-      );
-    }
+    await dbWrite.transaction(async tx => {
+      const [live] = await tx.select({ email: users.email, name: users.name }).from(users).where(eq(users.userId, userId)).for('update').limit(1);
+      if (live?.email) {
+        const { sendAccountDeletedEmail } = await import('../utils/email.js');
+        await sendAccountDeletedEmail(live.email, live.name || 'there', { locale: deleteLocale, tx, requestKey: `account_deleted/${userId}` });
+      }
+      await tx.delete(users).where(eq(users.userId, userId));
+    });
+    await dispatchEmailWorkers('account-deleted/' + userId);
 
     // Invalidate all relevant user cache entries
     await Promise.all([
@@ -3878,42 +3876,20 @@ router.post("/feedbacks", requireAuth, async (c: Context<AppEnv>) => {
       status: 'success',
     };
 
-    const [feedback] = await dbWrite
-      .insert(userFeedbacks)
-      .values(feedbackData)
-      .returning();
-
-    // Non-blocking: user ack + optional internal ops alert
-    const [userRow] = await dbRead
-      .select({ email: users.email, name: users.name, username: users.username })
-      .from(users)
-      .where(eq(users.userId, userId))
-      .limit(1);
-
-    if (userRow?.email) {
-      const {
-        sendFeedbackAcknowledgmentEmail,
-        sendFeedbackInternalEmail,
-        sendEmailSafe,
-      } = await import('../utils/email.js');
-      sendEmailSafe('POST /user/feedbacks ack', () =>
-        sendFeedbackAcknowledgmentEmail(userRow.email, userRow.name || 'there', { userId }),
-      );
-
-      const feedbackInbox = process.env.FEEDBACK_INBOX;
-      if (feedbackInbox) {
-        sendEmailSafe('POST /user/feedbacks internal', () =>
-          sendFeedbackInternalEmail(feedbackInbox, {
-            category: category as string,
-            message: message.trim(),
-            userId,
-            username: userRow.username,
-            email: userRow.email,
-            imageUrl: imageUrlResult ?? null,
-          }),
-        );
-      }
-    }
+    const feedback = await dbWrite.transaction(async tx => {
+      const [created] = await tx.insert(userFeedbacks).values(feedbackData).returning();
+      if (!created) throw new Error('Feedback was not created');
+      const [recipient] = await tx.select({ email: users.email, name: users.name, username: users.username }).from(users).where(eq(users.userId, userId)).limit(1);
+      const { sendFeedbackAcknowledgmentEmail, sendFeedbackInternalEmail } = await import('../utils/email.js');
+      if (recipient?.email) await sendFeedbackAcknowledgmentEmail(recipient.email, recipient.name || 'there',
+        { userId, tx, requestKey: `feedback_ack/${created.id}` });
+      if (process.env.FEEDBACK_INBOX) await sendFeedbackInternalEmail(process.env.FEEDBACK_INBOX, {
+        category: feedbackData.category, message: feedbackData.message, userId, username: recipient?.username ?? null,
+        email: recipient?.email ?? null, imageUrl: imageUrlResult ?? null,
+      }, { tx, requestKey: `feedback_internal/${created.id}` });
+      return created;
+    });
+    await dispatchEmailWorkers('feedback/' + feedback.id);
 
     c.status(201);
     return c.json({ feedback });

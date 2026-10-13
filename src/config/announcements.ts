@@ -44,6 +44,9 @@ export const ANNOUNCEMENT_ERROR_CODES = [
   "announcements.locked",
   /** Publish/end attempted in a state that does not allow it. */
   "announcements.notPublishable",
+  "announcements.emailUnavailable",
+  "announcements.emailInProgress",
+  "announcements.emailAlreadySent",
 ] as const;
 
 export type AnnouncementErrorCode = (typeof ANNOUNCEMENT_ERROR_CODES)[number];

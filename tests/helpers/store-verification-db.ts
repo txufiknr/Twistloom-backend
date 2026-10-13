@@ -36,12 +36,15 @@ import {
   adminSettings,
   adminUsers,
   announcements,
+  emailCampaigns,
+  emailMessages,
   books,
   broadcasts,
   subscriptionTransactions,
   subscriptions,
   transactions,
   users,
+  userAuth,
   userCompletedBooks,
   userNotifications,
   userPageProgress,
@@ -51,12 +54,15 @@ import {
 
 const KNOWN_TABLES: Record<string, Table> = {
   users,
+  userAuth,
   subscriptions,
   transactions,
   subscriptionTransactions,
   webhookDeliveries,
   userNotifications,
   announcements,
+  emailCampaigns,
+  emailMessages,
   broadcasts,
   // Book access policy + admin moderation tests (`book-access-gate`,
   // `admin-moderation`): the gate reads `books` by primary key, the admin
@@ -103,6 +109,10 @@ function stringChunkText(chunk: any): string {
 
 /** Evaluates a drizzle boolean expression against one row. */
 export function evalSql(node: unknown, row: Record<string, unknown>): boolean {
+  if (isSql(node) && node.queryChunks.some(chunk => typeof chunk === "object" && chunk !== null && stringChunkText(chunk).includes("COALESCE("))) {
+    const prefs = row.emailPreferences;
+    return !(typeof prefs === "object" && prefs !== null && "productAnnouncements" in prefs && prefs.productAnnouncements === false);
+  }
   const chunks: any[] = (node as any)?.queryChunks ?? [];
 
   // Composite expressions are nested SQL nodes joined by " and "/" or ".
@@ -159,13 +169,14 @@ export function evalSql(node: unknown, row: Record<string, unknown>): boolean {
           .slice(columnAt + 2)
           .filter((chunk) => chunk && chunk.constructor?.name === "Param")
           .map((chunk) => chunk.value);
-    const list = raw.map((entry) =>
+    const list = raw.length ? raw.map((entry) =>
       entry && typeof entry === "object" && entry.constructor?.name === "Param" ? entry.value : entry,
-    );
+    ) : [...operator.matchAll(/'([^']+)'/g)].map(match => match[1]);
     return list.some((entry) => entry === value);
   };
-  if (/\bnot\s+in\b/.test(operator)) return !inList();
-  if (/\bin\b/.test(operator)) return inList();
+  if (/\bnot\s+in\b/i.test(operator)) return !inList();
+  if (/\bin\b/i.test(operator)) return inList();
+  if (/^=\s*'([^']+)'$/.test(operator)) return value === operator.match(/^=\s*'([^']+)'$/)?.[1];
   if (operator === "=") return value === rhs;
   if (operator === "!=" || operator === "<>") return value !== rhs;
   if (operator === ">") return (value as any) > (rhs as any);
@@ -176,9 +187,20 @@ export function evalSql(node: unknown, row: Record<string, unknown>): boolean {
 }
 
 /** Applies a `.set()` patch value, interpreting SQL increment fragments. */
-function applyPatchValue(current: unknown, next: unknown): unknown {
+function applyPatchValue(current: unknown, next: unknown, rowId?: string): unknown {
   if (!isSql(next)) return next;
   const text = next.queryChunks.map(stringChunkText).join("");
+  if (text.includes('CASE')) {
+    const flatten = (node: any): any[] => node?.queryChunks ? node.queryChunks.flatMap(flatten) : [node];
+    const all = flatten(next);
+    for (let i = 0; i < all.length; i++) {
+      if (!stringChunkText(all[i]).includes('WHEN')) continue;
+      const id = all[i + 1]?.constructor?.name === 'Param' ? all[i + 1].value : all[i + 1];
+      const then = all[i + 3]?.constructor?.name === 'Param' ? all[i + 3].value : all[i + 3];
+      if (id === rowId) return then;
+    }
+    return current;
+  }
   // Drizzle pushes literal numbers raw and strings as `Param`; accept both.
   const params = next.queryChunks.filter(
     (chunk: any) =>
@@ -223,6 +245,9 @@ const UNIQUE_RULES: Array<{
     columns: [],
     where: (record) => ["scheduled", "active"].includes(record.status as string),
   },
+  { table: "emailCampaigns", columns: ["requestKey"] },
+  { table: "emailMessages", columns: ["requestKey"] },
+  { table: "emailCampaigns", columns: ["announcementId"], where: record => record.status === "queued" || record.status === "running" },
 ];
 
 function assertUnique(
@@ -257,6 +282,8 @@ export interface FakeDb {
   rows: Record<string, any[]>;
   dbRead: any;
   dbWrite: any;
+  /** Acquisition order only; this fake does not simulate PostgreSQL lock contention. */
+  locks: string[];
   /** Replaces every table's rows (call between tests). */
   reset(seed?: Partial<Record<string, any[]>>): void;
 }
@@ -269,12 +296,14 @@ export interface FakeDb {
  */
 export function createFakeDb(): FakeDb {
   const rows: Record<string, any[]> = Object.fromEntries(Object.keys(KNOWN_TABLES).map((name) => [name, []]));
+  const locks: string[] = [];
 
   function selectChain(projection?: any): any {
     let table: unknown = null;
     let predicate: unknown = null;
     let limit: number | null = null;
     let offsetFrom: number | null = null;
+    let order: unknown[] = [];
     const chain: any = {
       from(next: unknown) {
         table = next;
@@ -292,14 +321,25 @@ export function createFakeDb(): FakeDb {
         offsetFrom = next;
         return chain;
       },
-      orderBy: () => chain,
-      for: () => chain,
+      orderBy: (...next: unknown[]) => { order = next; return chain; },
+      for: () => { locks.push(tableNameOf(table)); return chain; },
       innerJoin: () => chain,
       leftJoin: () => chain,
       then(resolve: (value: any) => void, reject: (error: unknown) => void) {
         try {
-          let found = [...rows[tableNameOf(table)]];
+          let found = rows[tableNameOf(table)].map(row => ({ ...row }));
           if (predicate) found = found.filter((row) => evalSql(predicate, row));
+          for (const term of [...order].reverse()) {
+            if (!isSql(term)) continue;
+            const key = term.queryChunks.map(jsKeyOfColumn).find(value => value !== undefined);
+            if (!key) continue;
+            const direction = term.queryChunks.some(chunk => stringChunkText(chunk).toLowerCase().includes("desc")) ? -1 : 1;
+            found.sort((a, b) => {
+              const left = a[key] instanceof Date ? a[key].getTime() : a[key];
+              const right = b[key] instanceof Date ? b[key].getTime() : b[key];
+              return (left < right ? -1 : left > right ? 1 : 0) * direction;
+            });
+          }
           if (projection && typeof projection === "object" && !Array.isArray(projection)) {
             const entries = Object.entries(projection);
             const isCount = entries.some(
@@ -349,11 +389,14 @@ export function createFakeDb(): FakeDb {
       if (settled) return result;
       settled = true;
       const name = tableNameOf(table);
+      const payloads: Record<string, unknown>[] = Array.isArray(payload) ? payload : [payload];
+      const inserted: Record<string, unknown>[] = [];
+      for (const item of payloads) {
       const candidate = {
-        id: name === "announcements" ? (payload.id ?? generateId()) : `${name}_${rows[name].length + 1}`,
+        id: name === "announcements" ? (item.id ?? generateId()) : `${name}_${rows[name].length + 1}`,
         createdAt: new Date(),
         updatedAt: new Date(),
-        ...payload,
+        ...item,
       };
       try {
         assertUnique(name, candidate, rows);
@@ -361,13 +404,14 @@ export function createFakeDb(): FakeDb {
         const uniqueViolation =
           typeof error === "object" && error !== null && (error as { code?: unknown }).code === "23505";
         if (ignoreConflict && uniqueViolation) {
-          result = undefined; // ON CONFLICT DO NOTHING — no row inserted
-          return result;
+          continue; // ON CONFLICT DO NOTHING — no row inserted
         }
         throw error;
       }
-      result = candidate;
       rows[name].push(candidate);
+      inserted.push(candidate);
+      }
+      result = inserted;
       return result;
     };
     const chain: any = {
@@ -383,7 +427,7 @@ export function createFakeDb(): FakeDb {
       then(resolve: (value: any) => void, reject: (error: unknown) => void) {
         try {
           const row = commit();
-          resolve(row === undefined ? [] : [row]);
+          resolve(row);
         } catch (error) {
           reject(error);
         }
@@ -417,7 +461,7 @@ export function createFakeDb(): FakeDb {
             if (predicate && !evalSql(predicate, row)) continue;
             const updated = { ...row };
             for (const [key, value] of Object.entries(patch)) {
-              updated[key] = applyPatchValue(updated[key], value);
+              updated[key] = applyPatchValue(updated[key], value, row.id);
             }
             assertUnique(name, updated, rows, row);
             Object.assign(row, updated);
@@ -454,6 +498,11 @@ export function createFakeDb(): FakeDb {
             }
           }
           rows[name] = remaining;
+          if (name === "announcements") {
+            for (const campaign of rows.emailCampaigns) {
+              if (deleted.some(row => row.id === campaign.announcementId)) campaign.announcementId = null;
+            }
+          }
           resolve(deleted);
         } catch (error) {
           reject(error);
@@ -465,18 +514,28 @@ export function createFakeDb(): FakeDb {
   }
 
   const dbWrite = {
+    // Unit tests do not model database lock contention. Integration tests must.
+    execute: async () => ({ rows: [] }),
     select: (projection?: any) => selectChain(projection),
     insert: (table: unknown) => insertChain(table),
     update: (table: unknown) => updateChain(table),
     delete: (table: unknown) => deleteChain(table),
-    transaction: (callback: (tx: any) => Promise<any>) => Promise.resolve().then(() => callback(dbWrite)),
+    transaction: (callback: (tx: any) => Promise<any>) => {
+      const snapshot = structuredClone(rows);
+      return Promise.resolve().then(() => callback(dbWrite)).catch(error => {
+        for (const name of Object.keys(rows)) rows[name] = snapshot[name];
+        throw error;
+      });
+    },
   };
 
   return {
     rows,
     dbRead: { select: (projection?: any) => selectChain(projection) },
     dbWrite,
+    locks,
     reset(seed = {}) {
+      locks.length = 0;
       for (const name of Object.keys(KNOWN_TABLES)) {
         rows[name] = seed[name] ? [...seed[name]] : [];
       }

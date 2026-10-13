@@ -12,6 +12,7 @@
 import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test";
 import { createFakeDb } from "./helpers/store-verification-db.js";
 import { generateId } from "../src/utils/uuid.js";
+import { BROADCAST_GLOBAL_INTERVAL_SECONDS } from "../src/config/broadcast.js";
 
 const fakeDb = createFakeDb();
 
@@ -83,6 +84,51 @@ beforeEach(() => {
 });
 
 describe("Announcements Subsystem", () => {
+  describe("audit regressions", () => {
+    const draft = () => createAnnouncement({ kind: "feature", severity: "info", title: "Audit", body: "Notice" }, ADMIN_ID);
+    it("reuses one scheduled banner on repeated publication and rejects ended publication", async () => {
+      const announcement = await draft();
+      const startsAt = new Date(Date.now() + 60_000).toISOString();
+      const first = await publishAnnouncement(announcement.id, { startsAt }, ADMIN_ID);
+      const second = await publishAnnouncement(announcement.id, { startsAt: new Date().toISOString() }, ADMIN_ID);
+      expect(second.broadcastId).toBe(first.broadcastId);
+      expect(fakeDb.rows.broadcasts).toHaveLength(1);
+      await endAnnouncement(announcement.id);
+      await expect(publishAnnouncement(announcement.id, {}, ADMIN_ID)).rejects.toThrow("Only a draft");
+    });
+    it("expires every legacy banner when ending an announcement, including repeated end", async () => {
+      const announcement = await draft();
+      await publishAnnouncement(announcement.id, {}, ADMIN_ID);
+      fakeDb.rows.broadcasts.push({ id: generateId(), announcementId: announcement.id, status: "queued", startsAt: new Date(), expiresAt: new Date(Date.now() + 60000) });
+      await endAnnouncement(announcement.id);
+      expect(fakeDb.rows.broadcasts.every(row => row.status === "expired")).toBe(true);
+      fakeDb.rows.broadcasts[0].status = "queued";
+      await endAnnouncement(announcement.id);
+      expect(fakeDb.rows.broadcasts.every(row => row.status === "expired")).toBe(true);
+    });
+    it("reflows user and system slots after a scheduled window extension and shortening", async () => {
+      const now = Date.now();
+      const announcement = await draft();
+      await publishAnnouncement(announcement.id, { startsAt: new Date(now + 30000).toISOString(), expiresAt: new Date(now + 60000).toISOString() }, ADMIN_ID);
+      fakeDb.rows.broadcasts.push(...["user", "system"].map((source, index) => ({ id: generateId(), source, announcementId: null, status: "queued",
+        startsAt: new Date(now + 70000 + index * 18000), expiresAt: new Date(now + 80000 + index * 18000), createdAt: new Date(now + index) })));
+      await updateAnnouncement(announcement.id, { expiresAt: new Date(now + 90000).toISOString() });
+      const ordinary = fakeDb.rows.broadcasts.filter(row => !row.announcementId);
+      expect(ordinary[0].startsAt.getTime()).toBeLessThan(now + 30000);
+      expect(ordinary[1].startsAt.getTime()).toBe(now + 90000 + BROADCAST_GLOBAL_INTERVAL_SECONDS * 1000);
+      await updateAnnouncement(announcement.id, { expiresAt: new Date(now + 45000).toISOString() });
+      expect(ordinary[0].startsAt.getTime()).toBeLessThan(now + 30000);
+      expect(ordinary[1].startsAt.getTime()).toBe(now + 45000 + BROADCAST_GLOBAL_INTERVAL_SECONDS * 1000);
+    });
+    it("marks a freshly-created announcement seen without consulting the replica", async () => {
+      const announcement = await draft();
+      const select = fakeDb.dbRead.select;
+      fakeDb.dbRead.select = () => { throw new Error("Replica must not authorize this write"); };
+      try { await markAnnouncementSeen(USER_ID, announcement.id); }
+      finally { fakeDb.dbRead.select = select; }
+      expect(fakeDb.rows.users[0].lastSeenAnnouncementId).toBe(announcement.id);
+    });
+  });
   describe("Draft Lifecycle & Deletion", () => {
     it("creates a draft announcement without affecting cap-1 live slot", async () => {
       const draft = await createAnnouncement(
@@ -204,8 +250,10 @@ describe("Announcements Subsystem", () => {
       expect(fakeDb.rows.announcements.find((r) => r.id === a1.id)?.status).toBe("ended");
 
       // Now publishing second announcement must succeed
-      await publishAnnouncement(a2.id, {}, ADMIN_ID);
-      expect(fakeDb.rows.announcements.find((r) => r.id === a2.id)?.status).toBe("active");
+      const second = await publishAnnouncement(a2.id, {}, ADMIN_ID);
+      expect(second.status).toBe("scheduled");
+      const endedBanner = fakeDb.rows.broadcasts.find(row => row.announcementId === a1.id);
+      expect(second.startsAt?.getTime()).toBeGreaterThanOrEqual(endedBanner.expiresAt.getTime() + BROADCAST_GLOBAL_INTERVAL_SECONDS * 1000);
     });
   });
 
@@ -250,7 +298,9 @@ describe("Announcements Subsystem", () => {
         ADMIN_ID,
       );
 
-      await publishAnnouncement(ann.id, {}, ADMIN_ID);
+      const scheduled = await publishAnnouncement(ann.id, {}, ADMIN_ID);
+      expect(scheduled.startsAt?.getTime()).toBeGreaterThanOrEqual(liveBroadcastExpiry.getTime() + BROADCAST_GLOBAL_INTERVAL_SECONDS * 1000);
+      expect(fakeDb.rows.broadcasts.find(row => row.id === "b_live")?.expiresAt).toEqual(liveBroadcastExpiry);
       await endAnnouncement(ann.id);
 
       // Inspect b_pending: its startsAt must NOT be now; it must be at or after liveBroadcastExpiry!
