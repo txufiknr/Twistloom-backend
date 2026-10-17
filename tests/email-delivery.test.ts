@@ -154,4 +154,14 @@ describe("shared durable delivery", () => {
     expect(db.rows.emailCampaigns.map(row => row.sent)).toEqual([1, 1]);
     expect(db.rows.emailCampaigns.map(row => row.pendingCount)).toEqual([1, 1]);
   });
+  it("redirects billing mail to the live account address after an email change", async () => {
+    const id = await queue("payment_failed"); db.rows.users[0].email = "new@example.test";
+    expect((await deliverEmailNow(id)).status).toBe("sent"); expect(sends[0].to).toBe("new@example.test");
+  });
+  it("schedules the worker continuation no earlier than a denied admission retry", async () => {
+    await queue(); await queue();
+    allowed = false;
+    await processEmailMessages();
+    expect(wakeups).toHaveLength(1); expect(wakeups[0].getTime()).toBeGreaterThan(Date.now());
+  });
 });

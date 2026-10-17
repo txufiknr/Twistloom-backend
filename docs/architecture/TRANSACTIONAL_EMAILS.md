@@ -154,6 +154,14 @@ Twistloom emails share one brand, but **not one intensity of noir**. Copy must m
 | **Product lifecycle** | welcome | No (once via onboarding) |
 | **Engagement** | weekly, monthly, announcements, story published | **Yes** via prefs + unsubscribe |
 
+**Destination authority:** billing (`trial ending`, `payment failed`, `refund`,
+`subscription canceled`) and `welcome` resolve to the live account address at
+send time, so an email change between event and delivery retargets instead of
+disclosing to the previous mailbox. `email changed` intentionally targets the old
+address and `account deleted` the deletion-time address; `feedback internal` goes
+to the configured ops inbox. Story mail additionally requires the book to still
+be active/public at enumeration and at send time.
+
 ---
 
 ## 6. Trigger map
@@ -294,9 +302,9 @@ Migrations:
 | Email HTML locale (`en`/`id`) | ✅ Catalogs + resolve path |
 | Weekly cron ML ranking | v1 = trending public books |
 | Shared outbox / idempotency receipts | Implemented; schema deployment gated |
-| In-app publication prefs | Read by resumable campaign enumerator independently of email preference |
+| In-app publication prefs | Read by resumable campaign enumerator independently of email preference; direct insert fallback while the delivery gate is disabled |
 | Multi-device UI/backend locale force-sync | Optional |
 
 ---
 
-*Last updated: 2026-10-13 — delivery ownership consolidated; no database migration or live delivery validation performed.*
+*Last updated: 2026-10-16 — billing/welcome live-address delivery and publication visibility revalidation recorded; no database migration or live delivery validation performed.*

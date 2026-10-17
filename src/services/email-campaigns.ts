@@ -70,6 +70,18 @@ async function enumerate(campaign: Campaign): Promise<void> {
       .where(and(eq(campaigns.id, campaign.id), eq(campaigns.leaseToken, campaign.leaseToken ?? ""))).for("update").limit(1);
     if (!owned) return;
     const audience = campaign.audience;
+    // Delayed fan-out must not notify about a book that left public since the
+    // campaign was queued. One primary read per slice; already-queued pending
+    // recipients are suppressed at send time by the delivery eligibility check.
+    // Closing the cursor here stops future pages without touching counters —
+    // completion derives from audienceComplete + zero pending.
+    if (audience.kind === "story_published") {
+      const [book] = await tx.select({ status: books.status, visibility: books.visibility }).from(books).where(eq(books.id, audience.bookId)).limit(1);
+      if (!book || book.status !== "active" || book.visibility !== "public") {
+        await tx.update(campaigns).set({ audienceComplete: true }).where(eq(campaigns.id, campaign.id));
+        return;
+      }
+    }
     const following = audience.kind === "story_published"
       ? inArray(users.userId, tx.select({ id: userFollows.followerId }).from(userFollows).where(eq(userFollows.followingId, audience.authorId))) : undefined;
     // Include opted-out followers for their independent in-app channel; other campaigns filter their email category.

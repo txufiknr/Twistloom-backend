@@ -534,11 +534,13 @@ export async function markPageVisited(params: {
   actionedPageId?: string, // Omit for page 1
   action?: Action // Omit for page 1
   shouldConsumeCredits?: boolean // Whether to consume credits for choosing a different action (only applicable for page 2 onwards)
+  creditContext?: "choose_other_action" | "choose_custom_action",
+  creditAmount?: number,
 }, options: { req?: { ip?: string | null; get?: (header: string) => string | undefined | null } }): Promise<BookPageVisit> {
-  const { userId, book, visitedPage, actionedPageId, action, shouldConsumeCredits = false } = params;
+  const { userId, book, visitedPage, actionedPageId, action, shouldConsumeCredits = false, creditContext = "choose_other_action", creditAmount } = params;
   const { req } = options;
 
-  console.log(`[markPageVisited] 👣 Mark page visited:`, { visitedPage, actionedPageId, action, shouldConsumeCredits });
+  console.log(`[markPageVisited] 👣 Mark page visited:`, { visitedPage, actionedPageId, action, shouldConsumeCredits, creditContext, creditAmount });
 
   const { id: bookId, totalPages, stats } = book;
   const { id: pageId, page: pageNumber, branchId, visitCount } = visitedPage;
@@ -576,7 +578,7 @@ export async function markPageVisited(params: {
       }
 
       const frontierPageNumber = session?.frontierPageNumber ?? forkPageNumber;
-      calculatedCost = calculateBranchSwitchCost(frontierPageNumber, forkPageNumber, userId);
+      calculatedCost = creditAmount !== undefined ? creditAmount : calculateBranchSwitchCost(frontierPageNumber, forkPageNumber, userId);
 
       // User request: consume credits and mark page visited atomically
       // This ensures credits are refunded if marking page visited fails
@@ -601,7 +603,7 @@ export async function markPageVisited(params: {
           });
         },
         {
-          context: "choose_other_action",
+          context: creditContext,
           metadata: { bookId, pageId, pageNumber, actionedPageId, forkPageNumber, frontierPageNumber, cost: calculatedCost }
         }
       );
@@ -639,7 +641,7 @@ export async function markPageVisited(params: {
     if (shouldConsumeCredits && !isInternal && correlationId) {
       try {
         await refundCredits(userId, calculatedCost, {
-          context: "choose_other_action_failed",
+          context: `${creditContext}_failed`,
           metadata: { bookId, pageId, pageNumber, cost: calculatedCost },
           correlationId // Use correlation ID from executeWithCredits for idempotency
         });

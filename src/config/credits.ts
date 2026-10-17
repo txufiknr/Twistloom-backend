@@ -112,8 +112,8 @@ export const CREDIT_COSTS_BASE = {
   CUSTOM_ACTION: 5,
   /** Cost to generate custom actions (after choice has been made) */
   CUSTOM_ACTION_AFTER_CHOICE: 7,
-  /** Cost to select community actions (future feature) */
-  CHOOSE_CUSTOM_ACTION: 2, // TODO: use
+  /** Cost to select community actions (free for the author, 2 credits for other readers on first selection) */
+  CHOOSE_CUSTOM_ACTION: 2,
   /** Cost to add new custom characters (future feature) */
   SUMMON_NEW_CHARACTER: 50, // TODO: use
   /** Cost to generate an AI-narrated "what happens if" summary of an alternative (Q5) */

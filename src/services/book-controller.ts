@@ -32,6 +32,7 @@ import { getClientIp } from "../hono/express-shim.js";
 import { computeVisitStats, mapActionToSelectedAction, markPageVisited } from "./story.js";
 import { sendSystemBroadcast, type SystemBroadcastI18nPayload } from "./broadcast.js";
 import { FREE_ACTION_SELECTION_UNTIL_PAGE, PHASE_EARLY_CEILING, PHASE_LATE_FLOOR, PHASE_FINALE_FLOOR } from "../config/story.js";
+import { getCreditCostForUser } from "../config/credits.js";
 import { buildCustomActionAction } from "../utils/custom-action.js";
 import type { BookAuthor, BookMode, BookPageVisit, BookSortOption, BookSource, BookStats, BookTranslation, EnrichedBookData, EnrichedBookFirstPage, EnrichedBookGeneration, EnrichedBookSession, VisitBookPageParams, VisitBookPageResult } from "../types/book.js";
 import type { Action, ActionHintType, ActionType, Ending, SelectedAction, StoryPhase } from "../types/story.js";
@@ -1335,8 +1336,10 @@ export async function visitBookPage(
 
     action = parentDbPage.actions.filter(a => a.destinationPageIds?.some(p => p === pageId))[0];
 
+    let customActionAuthorId: string | undefined;
+
     // Custom action pages live in the custom_actions table, not in the
-    // parent page's canonical actions[].  When the canonical lookup fails,
+    // parent page's canonical actions[]. When the canonical lookup fails,
     // fall back to querying the custom_actions row that generated this page.
     if (!action) {
       const [customRow] = await dbRead
@@ -1345,13 +1348,13 @@ export async function visitBookPage(
         .where(
           and(
             eq(customActions.pageId, parentPageId!),
-            eq(customActions.nextPageId, pageId),
-            eq(customActions.userId, userId)
+            eq(customActions.nextPageId, pageId)
           )
         )
         .limit(1);
 
       if (customRow) {
+        customActionAuthorId = customRow.userId ?? undefined;
         action = buildCustomActionAction({
           originalText: customRow.originalText,
           interpretedIntent: customRow.canonicalIntent ?? '',
@@ -1371,25 +1374,43 @@ export async function visitBookPage(
 
     selectedAction = mapActionToSelectedAction(action, parentPageId!, parentDbPage.page, pageId);
 
-    // Users can go back and select any action they like until FREE_ACTION_SELECTION_UNTIL_PAGE
-    if (pageNumber > FREE_ACTION_SELECTION_UNTIL_PAGE + 1) {
+    let creditContext: "choose_other_action" | "choose_custom_action" = "choose_other_action";
+    let creditAmount: number | undefined;
+
+    const isCustomAction = action.source === 'custom' || Boolean(action.customActionId);
+    const isOwnCustomAction = customActionAuthorId
+      ? customActionAuthorId === userId
+      : isCustomAction;
+    const isCommunityAction = isCustomAction && !isOwnCustomAction;
+
+    const selectedActions = await getPageActionsFromDB(userId, book.id, parentPageId!);
+    const hasAlreadyChosenThisAction = selectedActions.some((a) => a.text === action!.text);
+
+    if (isCommunityAction) {
+      // Community action created by another user:
+      // Costs CHOOSE_CUSTOM_ACTION (2 credits) to explore on first selection.
+      // Free for the original creator or if the user has already chosen/unlocked this branch.
+      if (!hasAlreadyChosenThisAction) {
+        if (!consumeCredits) {
+          console.error(`[visit] 💥 Community action requires credit confirmation`);
+          return { errorResponse: cForbiddenError(res, "Credits required to choose community action") };
+        }
+        shouldConsumeCredits = true;
+        creditContext = "choose_custom_action";
+        creditAmount = getCreditCostForUser(userId, 'CHOOSE_CUSTOM_ACTION');
+      }
+    } else if (pageNumber > FREE_ACTION_SELECTION_UNTIL_PAGE + 1) {
+      // Canonical actions (or own custom actions):
       // Validate user's action choice: check if user already chose a different action on previous page
-      const selectedActions = await getPageActionsFromDB(userId, book.id, parentPageId!);
-      if (selectedActions.length) {
-        if (!selectedActions.some((a) => a.text === action!.text)) {
-          // If this action is the user's own authored custom action, they were already
-          // charged credits at submission time (Zero Double-Charge Invariant #4).
-          // Authored custom actions are permanently exempt from branch-switch penalties.
-          const isOwnCustomAction = action.source === 'custom' || Boolean(action.customActionId);
-          if (isOwnCustomAction) {
-            shouldConsumeCredits = false;
-          } else if (!consumeCredits) {
-            // User already chose a different action on this page; can't continue except they pay credits
-            console.error(`[visit] 💥 Choice made, can't make another choice`);
-            return { errorResponse: cForbiddenError(res, "Choice made, can't make another choice") };
-          } else {
-            shouldConsumeCredits = true;
-          }
+      if (selectedActions.length && !hasAlreadyChosenThisAction) {
+        if (isOwnCustomAction) {
+          shouldConsumeCredits = false;
+        } else if (!consumeCredits) {
+          console.error(`[visit] 💥 Choice made, can't make another choice`);
+          return { errorResponse: cForbiddenError(res, "Choice made, can't make another choice") };
+        } else {
+          shouldConsumeCredits = true;
+          creditContext = "choose_other_action";
         }
       }
     }
@@ -1402,7 +1423,9 @@ export async function visitBookPage(
     visitedPage: dbPage,
     actionedPageId: parentPageId ?? undefined,
     action,
-    shouldConsumeCredits
+    shouldConsumeCredits,
+    creditContext,
+    creditAmount,
   }, { req: { ip: getClientIp(c), get: (h: string) => c.req.header(h) } });
 
   // The `book` object was freshly fetched (enriched book cache was

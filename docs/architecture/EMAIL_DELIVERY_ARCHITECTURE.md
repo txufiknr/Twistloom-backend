@@ -1,9 +1,12 @@
 # Shared Email Delivery Architecture
 
-> Living architecture document · Twistloom Backend · 2026-10-13
+> Living architecture document · Twistloom Backend · 2026-10-16
 > Scope: All application-generated email, durable intent, transactional producers,
 > bulk audience enumeration, provider admission, retries, privacy, and operations.
-> Status: **Implemented** · last verified against the working tree on 2026-10-13.
+> Status: **Implemented** · last verified against the working tree on 2026-10-16.
+> 2026-10-14 audit fixes applied: in-app publication decoupled from the email
+> flag, denial-floor worker scheduling, live-address billing delivery, and
+> publication visibility revalidation (code + regressions verified locally).
 > Schema deployment and live integration/load validation have not been performed.
 > Anchor contract: source files cite this document's `§N` sections. Renumbering
 > requires updating those comments in the same change; see the final anchor map.
@@ -131,10 +134,17 @@ or account standing; those existing domain authorities remain in place.
 5. Ambiguous outcomes stop before the provider's 24-hour key lifetime: at six
    transient attempts or 23 hours from the unresolved intent, whichever comes first.
 6. Quota/rate/configuration pauses restore the pre-call attempt count. Redis
-   refusal takes no SQL send claim and consumes no recipient attempt.
+   refusal takes no SQL send claim and consumes no recipient attempt. A denied
+   permit's retry time is authoritative for worker scheduling: the drain
+   continuation never runs before it, even when still-due rows keep past
+   timestamps (`src/services/email-delivery.ts:267`).
 7. Optional email rechecks primary account address and preferences; credentials
-   recheck the live proof and expiry. Mandatory old-address/deletion recipients
-   remain explicit snapshots, independently of engagement toggles.
+   recheck the live proof and expiry. Billing and welcome mail resolve to the
+   live account address at send time, so an email change between event and
+   delivery retargets rather than disclosing to the previous mailbox.
+   Mandatory old-address/deletion recipients remain explicit snapshots,
+   independently of engagement toggles. Story mail additionally revalidates
+   that the book is still active/public at enumeration and at send time.
 8. Audience pages, selected messages, concurrent calls, cleanup pages, and
    campaign progress writes are bounded. No producer collects the entire audience.
 9. Message completion and campaign progress commit together. Announcement
@@ -290,16 +300,25 @@ Locale is frozen at message creation (`emailLocale ?? preferredLocale ?? en`).
 Monthly activity executes three aggregate queries per selected page rather than
 three per recipient. Its `pagesRead` remains zero because this refactor does not
 invent a page-read metric. Weekly selection remains five trending active public
-books. Both scheduled requests use deterministic UTC period keys.
+books. Both scheduled requests use deterministic UTC period keys. Story
+publication enumeration revalidates `books.status = active AND visibility =
+public` on the primary connection once per slice and closes the cursor without
+new inserts when the book left public; already-queued pending recipients are
+suppressed at send time by the same primary check, which flows through the
+existing fenced `skipped` completion so campaign counters stay consistent.
 
 Publication in-app notifications share the page/cursor transaction, preserving
 each follower's independent in-app preference. They need no verified email;
 email requires both opt-in and verification. This changes delivery from an
 unbounded inline fan-out to resumable asynchronous fan-out. During an email quota
 pause, the supervisor still enumerates publication campaigns so their in-app
-notifications progress; other email-only enumeration waits. Both channels depend
-on activating the shared campaign infrastructure. Deploying this code with its
-flag off also disables publication fan-out; deploy schema/config together.
+notifications progress; other email-only enumeration waits. In-app delivery does
+not depend on the email transport flag: when the shared gate is disabled
+(pre-provision rollout window) publication falls back to a direct
+`user_notifications` insert using only long-lived tables
+(`src/services/book-publish-notification.ts:8`), so followers are still notified
+while email intent is not persisted. The email campaign path resumes once the
+gate is enabled; the two paths never run for the same publication event.
 
 ### 5.2 Fairness and completion
 
@@ -393,9 +412,9 @@ policies are intentional (`src/config/email-delivery.ts:6`):
 | `verification`, `password_reset` | Urgent; 15 minutes / 1 hour | Live credential proof, account destination, supersession and expiry |
 | `password_changed`, `email_changed` | Urgent; 7 days | Mandatory security alert; explicit old address for email change |
 | `account_deleted` | Urgent; 24 hours | Explicit destination retained without account FK |
-| `welcome` | Normal; 48 hours | Onboarding identity; no engagement toggle |
-| `trial_ending`, `payment_failed` | Normal; 24 / 48 hours | Mandatory billing; trial message also expires at trial end |
-| `refund`, `subscription_canceled` | Normal; 7 days | Mandatory billing event |
+| `welcome` | Normal; 48 hours | Onboarding identity; no engagement toggle; live account address |
+| `trial_ending`, `payment_failed` | Normal; 24 / 48 hours | Mandatory billing, live account address; trial message also expires at trial end |
+| `refund`, `subscription_canceled` | Normal; 7 days | Mandatory billing event, live account address |
 | `feedback_ack`, `feedback_internal` | Normal; 48 hours | Feedback identity; internal inbox is an explicit recipient |
 | `weekly`, `story_published` | Bulk; 48 hours | Category preference and current address; story additionally requires verified email |
 | `monthly`, `announcement` | Bulk; 7 days | Category preference and current address |
@@ -459,6 +478,10 @@ QStash publication (`src/services/email-dispatch.ts:4`) uses three queue retries
 four-worker flow-control parallelism, dispatch IDs, and a four-second timeout.
 Queue retry re-enters the SQL state machine; it does not create a second recipient
 retry authority. Continuations and the minute supervisor may overlap safely.
+A drain that hit provider denial clamps its continuation to the admission retry
+time rather than the earliest still-due row timestamp, so ordinary rate limiting
+cannot produce an immediate redispatch loop; unrelated urgent work is delayed by
+at most the ~1s admission floor and no extra SQL is spent.
 
 ---
 
@@ -517,6 +540,8 @@ it also means these helpers do not persist email intent. **Deploying this refact
 without activation disables outgoing application email**, including signup/reset
 delivery. This is a coordinated schema/configuration rollout, not a safe enabled
 replacement for a previously deployed direct sender before provisioning.
+Publication in-app notifications are the exception: they fall back to a direct
+insert while the gate is disabled (see §5.1).
 
 ### 7.3 Operational interpretation
 
@@ -536,7 +561,7 @@ bounce, complaint, and uncertain-response investigation.
 
 | # | Failure | Detection / error | Recovery / client behavior |
 |---|---------|-------------------|----------------------------|
-| 1 | Disabled/missing infrastructure | Shared cron returns HTTP 503; announcement admin uses `announcements.emailUnavailable` / 503 | Provision before enabling; ordinary helpers return false and create no email row |
+| 1 | Disabled/missing infrastructure | Shared cron returns HTTP 503; announcement admin uses `announcements.emailUnavailable` / 503 | Provision before enabling; ordinary email helpers return false and create no email row; publication in-app still inserts directly |
 | 2 | Invalid cron secret | Existing cron middleware HTTP 401; absent secret outside dev/test HTTP 500 | Fix authenticated dispatch/schedule configuration |
 | 3 | Domain transaction or outbox insert fails | SQL exception; route's existing error handling or webhook retry | Both mutation and intent roll back; no external email inside the transaction |
 | 4 | Commit succeeds but QStash wakeup fails | Dispatcher returns false and logs a sanitized warning | Durable row survives; minute supervisor discovers it |
@@ -646,7 +671,7 @@ revisions remain covered by the [broadcast architecture](./BROADCAST_ARCHITECTUR
 |-------|--------|------------------|
 | Local source structure | **Implemented & verified** | Sole Resend POST in provider adapter; shared producers and two schema tables traced on 2026-10-13 |
 | Static checks | **Implemented & verified** | `bun run check`: lint, `.js` import extensions, TypeScript |
-| Delivery regressions | **Implemented & verified** | `tests/email-delivery.test.ts`: rollback, replay, frozen payload, fencing, lease recovery, quota attempts, opt-out, credential supersession, expiry, fairness and progress |
+| Delivery regressions | **Implemented & verified** | `tests/email-delivery.test.ts`: rollback, replay, frozen payload, fencing, lease recovery, quota attempts, opt-out, credential supersession, expiry, fairness and progress, billing live-address redirect, denial-floor continuation scheduling |
 | Provider/admission | **Implemented & verified** | `tests/email-provider.test.ts`, `tests/email-gate.test.ts`: named errors, stable request key, Retry-After, missing Redis, SDK timeout refusal and bucket routing |
 | Campaign creation / cron parity | **Implemented & verified** | `tests/email-campaigns.test.ts`, `tests/email-cron.test.ts`: immutable period replay, identity collision, rollback, common defaults and both authenticated/paused worker URIs |
 | Producer/security | **Implemented & verified** | `tests/announcement-email.test.ts`, `tests/email-dispatch.test.ts`; `tests/recovery-proof-security.test.ts`, `tests/credential-change-security.test.ts` validate proof/session transaction boundaries |

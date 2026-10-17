@@ -14,7 +14,7 @@
 import { type DBClient, dbRead, dbWrite, isTransaction } from "../db/client.js";
 import { pages, books, branches, users, userPageProgress, userCompletedBooks, userActionHints, customActions, bookGenerations, userComments, canonValidations, loreEntries, uploadedImages, bookPlaceBgm, userSessions, userLikes, userFavorites } from "../db/schema.js";
 import type { ImageKitUploadResponse } from "../types/image.js";
-import { and, eq, asc, or, desc, ne, sql, isNull, lt, countDistinct } from "drizzle-orm";
+import { and, eq, asc, or, desc, ne, sql, isNull, isNotNull, lt, countDistinct } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
 import { sanitizeActionsForMode } from "../utils/book-mode.js";
 import { validateGeneratedPage } from "../utils/page-validation.js";
@@ -27,7 +27,7 @@ import type { DBBook, DBNewBook, DBNewPage, DBPage, DBUpdateBook } from "../type
 import type { Book, BookSlugGenerationResult, BookStatus, BookVisibility, EnrichedBookData, EnrichedPageOptions, PublicStats, UserBookEnding, UserBookEndingsResponse, BookEndingSummary, BookEndingsResponse } from "../types/book.js";
 import { bookVisibilities } from "../types/book.js";
 import { classifyRarity } from "../types/rarity.js";
-import { actionTypes, endingTypes, type StoryPage, type PersistedStoryPage, type UserStoryPage, type StoryState, type StoryPageMeta, type EnrichedStoryPage, type StateDelta, type StoryGeneration, type SelectedAction, type Action, type EnrichedStoryPageContext, type TranslatedStoryPage, type EnrichedStoryPagePlace, type EnrichedStoryPageCharacter, type ActionType, type ActionHintType, type Ending, type EndingType, type StoryOutline } from "../types/story.js";
+import { actionTypes, endingTypes, type StoryPage, type PersistedStoryPage, type UserStoryPage, type StoryState, type StoryPageMeta, type EnrichedStoryPage, type StateDelta, type StoryGeneration, type SelectedAction, type Action, type ActionSource, type EnrichedStoryPageContext, type TranslatedStoryPage, type EnrichedStoryPagePlace, type EnrichedStoryPageCharacter, type ActionType, type ActionHintType, type Ending, type EndingType, type StoryOutline } from "../types/story.js";
 import type { CanonValidationSummary } from "../types/canon-validation.js";
 import { getStoryStateFromPage, insertStoryState, computeBatchEndingStats } from "./story.js";
 import { formatPlacesForPrompt, resolvePlaceDisplayName, resolvePlaceLoreNames } from "../utils/places.js";
@@ -1738,6 +1738,7 @@ export function loadCommunityActions(bookId: string, pageId: string, userId?: st
       eq(customActions.pageId, pageId),
       ...(userId ? [ne(customActions.userId, userId)] : []),
       ne(customActions.outcome, 'reject'),
+      isNotNull(customActions.nextPageId),
       eq(customActions.language, language),
     ))
     .orderBy(desc(customActions.plausibilityScore))
@@ -2320,6 +2321,28 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
 
   if (isUserTakeAction && dbPage.page > 1 && !sourceAction) {
     console.error(`[mapToEnrichedPage] ❌ Source action should be exists for page ${dbPage.page}`);
+  }
+
+  // If the reader selected a community action that is not in the canonical page actions
+  // or user's own custom actions, append it to visibleActions/allActions so that once
+  // selected, it is displayed alongside the original action buttons (F-30 parity).
+  if (selectedActions.length > 0) {
+    const existingActionTexts = new Set(allActions.map(a => a.text));
+    for (const sel of selectedActions) {
+      if (!existingActionTexts.has(sel.text)) {
+        const actionFromSelected: Action = {
+          text: sel.text,
+          originalText: sel.text,
+          source: sel.source ?? 'custom',
+          type: sel.type ?? 'custom',
+          destinationPageIds: sel.nextPageId ? [sel.nextPageId] : [],
+          hint: sel.hint ?? { text: '', type: 'custom' },
+        };
+        allActions = [...allActions, actionFromSelected];
+        visibleActions = allActions;
+        existingActionTexts.add(sel.text);
+      }
+    }
   }
 
   // Redact unpurchased hint text server-side (F-22): secret consequence hints

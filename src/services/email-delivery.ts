@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { dbWrite, type DBTransaction } from "../db/client.js";
-import { emailMessages as messages, emailCampaigns as campaigns, users, userAuth } from "../db/schema.js";
+import { emailMessages as messages, emailCampaigns as campaigns, users, userAuth, books } from "../db/schema.js";
 import { encryptPII, decryptPII } from "../utils/crypto.js";
 import { generateId } from "../utils/uuid.js";
 import { EMAIL_POLICIES, emailDeliveryEnabled, EMAIL_LEASE_MS, EMAIL_MAX_ATTEMPTS, EMAIL_SAFE_RETRY_MS,
@@ -61,23 +61,60 @@ async function payloadFor(row: Message): Promise<EmailPayload> {
   if (!template) throw new Error("Frozen email template is missing");
   return { ...template, to: await decryptPII(row.recipientEncrypted) };
 }
-async function eligibility(row: Message, payload: EmailPayload): Promise<boolean> {
+/**
+ * Destination authority per email type.
+ *
+ * Billing and welcome mail must reach the live account address: the queue
+ * delay between event and send can span an email change, and the frozen
+ * snapshot would otherwise disclose account/subscription facts to a previous
+ * mailbox. Security alerts (`email_changed` → old address, `account_deleted` →
+ * deletion-time address) and the operator inbox stay frozen by design.
+ */
+const CURRENT_ADDRESS_TYPES: ReadonlySet<EmailType> = new Set<EmailType>([
+  "payment_failed",
+  "refund",
+  "subscription_canceled",
+  "trial_ending",
+  "welcome",
+]);
+
+async function eligibility(row: Message, payload: EmailPayload): Promise<{ eligible: boolean; redirectTo?: string }> {
+  // Live-address types: revalidate against the primary account row first.
+  if (CURRENT_ADDRESS_TYPES.has(row.type) && row.userId) {
+    const [account] = await dbWrite.select({ email: users.email }).from(users).where(eq(users.userId, row.userId)).limit(1);
+    if (!account) return { eligible: false };
+    if (account.email !== payload.to) return { eligible: true, redirectTo: account.email };
+    return { eligible: true };
+  }
   const preference = EMAIL_POLICIES[row.type].preference;
-  if (!preference && !row.credentialHash) return true;
-  if (!row.userId) return false;
+  if (!preference && !row.credentialHash) return { eligible: true };
+  if (!row.userId) return { eligible: false };
   const [user] = await dbWrite.select({ email: users.email, isNewUser: users.isNewUser, preferences: users.emailPreferences })
     .from(users).where(eq(users.userId, row.userId)).limit(1);
-  if (!user || user.email !== payload.to) return false;
-  if (preference && (user.isNewUser || !normalizeEmailPreferences(user.preferences)[preference])) return false;
+  if (!user || user.email !== payload.to) return { eligible: false };
+  if (preference && (user.isNewUser || !normalizeEmailPreferences(user.preferences)[preference])) return { eligible: false };
   if (row.credentialHash || row.type === "story_published") {
     const [auth] = await dbWrite.select({ verification: userAuth.emailVerificationToken, reset: userAuth.passwordResetToken,
       verificationExpires: userAuth.emailVerificationExpires, resetExpires: userAuth.passwordResetExpires, verified: userAuth.emailVerified })
       .from(userAuth).where(eq(userAuth.userId, row.userId)).limit(1);
-    if (row.type === "verification") return auth?.verification === row.credentialHash && Boolean(auth.verificationExpires && auth.verificationExpires > new Date());
-    if (row.type === "password_reset") return auth?.reset === row.credentialHash && Boolean(auth.resetExpires && auth.resetExpires > new Date());
-    if (row.type === "story_published") return Boolean(auth?.verified);
+    if (row.type === "verification") return { eligible: auth?.verification === row.credentialHash && Boolean(auth.verificationExpires && auth.verificationExpires > new Date()) };
+    if (row.type === "password_reset") return { eligible: auth?.reset === row.credentialHash && Boolean(auth.resetExpires && auth.resetExpires > new Date()) };
+    if (row.type === "story_published") {
+      if (!auth?.verified) return { eligible: false };
+      // Delayed fan-out must respect a book that left public since enumeration.
+      // Primary read: this is an authorization-sensitive suppression decision.
+      if (row.campaignId) {
+        const [campaign] = await dbWrite.select({ audience: campaigns.audience }).from(campaigns).where(eq(campaigns.id, row.campaignId)).limit(1);
+        const audience = campaign?.audience;
+        if (audience && audience.kind === "story_published") {
+          const [book] = await dbWrite.select({ status: books.status, visibility: books.visibility }).from(books).where(eq(books.id, audience.bookId)).limit(1);
+          if (!book || book.status !== "active" || book.visibility !== "public") return { eligible: false };
+        }
+      }
+      return { eligible: true };
+    }
   }
-  return true;
+  return { eligible: true };
 }
 
 /** One conditional write records ownership and send intent; no campaign lock or open HTTP transaction. */
@@ -104,7 +141,11 @@ async function attempt(row: Message): Promise<AttemptOutcome> {
     let payload: EmailPayload | null = null;
     try { payload = await payloadFor(claimed); }
     catch { status = "needs_review"; patch.lastError = "invalid_frozen_payload"; }
-    if (!status && payload && !await eligibility(claimed, payload)) { status = ambiguous ? "needs_review" : "skipped"; patch.lastError = "recipient_ineligible_or_superseded"; }
+    if (!status && payload) {
+      const check = await eligibility(claimed, payload);
+      if (!check.eligible) { status = ambiguous ? "needs_review" : "skipped"; patch.lastError = "recipient_ineligible_or_superseded"; }
+      else if (check.redirectTo) payload = { ...payload, to: check.redirectTo };
+    }
     if (!status && payload && permit?.allowed) {
       const sent = await sendProviderEmail(payload, payload.to, claimed.requestKey);
       await recordEmailProviderResult(sent, permit.probeToken);
@@ -201,14 +242,14 @@ export async function processEmailMessages(): Promise<{ processed: number; nextR
   ]);
   // Campaigns rotate between slices; urgent standalone work takes precedence within a slice.
   const rows = [...standalone, ...recovery, ...page].sort((a, b) => a.priority - b.priority).slice(0, EMAIL_SEND_BATCH);
-  let cursor = 0; let processed = 0; let retryAt: Date | null = null;
+  let cursor = 0; let processed = 0; const denial: { at: Date | null } = { at: null };
   const completions: Completion[] = [];
   const tasks = await Promise.allSettled(Array.from({ length: Math.min(rows.length, emailConcurrency()) }, async () => {
     while (performance.now() - start < EMAIL_WORK_BUDGET_MS - 12_000) {
       const row = rows[cursor++]; if (!row) return;
       const outcome = await attempt(row); processed++;
       if (outcome.completion) completions.push(outcome.completion);
-      if (outcome.retryAt && (!retryAt || outcome.retryAt < retryAt)) retryAt = outcome.retryAt;
+      if (outcome.retryAt && (!denial.at || outcome.retryAt < denial.at)) denial.at = outcome.retryAt;
       if (outcome.retryAt && outcome.result.status === row.status) return;
     }
   }));
@@ -223,9 +264,14 @@ export async function processEmailMessages(): Promise<{ processed: number; nextR
       .where(and(eq(messages.campaignId, campaign.id), sql`${messages.status} = 'pending'`))
       .orderBy(asc(messages.nextAttemptAt), asc(messages.id)).limit(1) : Promise.resolve([]),
   ]);
-  const future = [retryAt, nextStandalone[0]?.nextAttemptAt, nextCampaign[0]?.nextAttemptAt]
+  const future = [denial.at, nextStandalone[0]?.nextAttemptAt, nextCampaign[0]?.nextAttemptAt]
     .filter((value): value is Date => value instanceof Date).sort((a, b) => a.getTime() - b.getTime());
-  const nextRunAt = future[0] ?? null;
+  // Provider denial is authoritative: a still-due row keeps its past timestamp,
+  // which would otherwise win over the admission retry time and cause an
+  // immediate redispatch loop under ordinary rate limiting. Clamping costs no
+  // extra SQL and delays unrelated urgent work by at most the 1s admission floor.
+  let nextRunAt: Date | null = future[0] ?? null;
+  if (denial.at !== null && nextRunAt !== null && nextRunAt.getTime() < denial.at.getTime()) nextRunAt = denial.at;
   if (nextRunAt) await dispatchEmailWorkers(`drain/${generateId()}`, 1, nextRunAt);
   return { processed, nextRunAt };
 }
