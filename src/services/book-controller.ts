@@ -1326,6 +1326,8 @@ export async function visitBookPage(
   let action: Action | undefined;
   let shouldConsumeCredits = false;
   let selectedAction: SelectedAction | undefined;
+  let creditContext: "choose_other_action" | "choose_custom_action" = "choose_other_action";
+  let creditAmount: number | undefined;
 
   if (pageNumber > 1) {
     const parentDbPage = parentPageId ? await getPageFromDB(parentPageId) : null;
@@ -1373,9 +1375,6 @@ export async function visitBookPage(
     }
 
     selectedAction = mapActionToSelectedAction(action, parentPageId!, parentDbPage.page, pageId);
-
-    let creditContext: "choose_other_action" | "choose_custom_action" = "choose_other_action";
-    let creditAmount: number | undefined;
 
     const isCustomAction = action.source === 'custom' || Boolean(action.customActionId);
     const isOwnCustomAction = customActionAuthorId
