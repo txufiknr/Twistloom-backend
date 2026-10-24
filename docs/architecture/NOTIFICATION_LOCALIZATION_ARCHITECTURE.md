@@ -72,7 +72,7 @@ flowchart TB
 ## 3. Key Architectural Invariants
 
 1. **Non-Breaking Prose Fallback (§3.1):** Every notification row written to `user_notifications` must have non-empty, human-readable English `title` and `message` strings. Clients encountering an unmapped `i18n_key` gracefully render these strings.
-2. **Scalar Parameter Values (§3.2):** `i18n_params` values must be primitive scalars (strings or numbers). Nested prose or translated snippets must never be embedded in parameters.
+2. **Scalar Parameter Values (§3.2):** `i18n_params` values must be primitive scalars (strings or numbers). Nested prose or translated snippets must never be embedded in parameters. When actor or entity names are absent (e.g. anonymous tips, unlinked stories), the parameter must carry an empty string (`""`); generic fallback nouns (`"A reader"`, `"The author"`, `"a story"`) must never be persisted in `i18n_params` and are resolved exclusively on the client according to the viewer's active locale.
 3. **Immutability of Intent Taxonomy (§3.3):** The `type` column represents the domain categorization (e.g. `referral_bonus`, `payment_success`) for indexing and filtering. Copy variance within a domain is expressed exclusively via `i18n_key`.
 4. **Fire-and-Forget Safety (§3.4):** In-app notification creation must never break primary business transactions (e.g. AI story persistence or auto-refund).
 
@@ -105,19 +105,27 @@ export const NOTIFICATION_I18N_KEYS = {
 } as const;
 ```
 
-### 4.2 Write Site Retrofit Pattern
-Services write machine keys during event dispatch:
-- **Credit Grants (`src/services/credits.ts`):** `awardCredits()` accepts `notificationI18nKey` and `notificationI18nParams`, persisting them in the database transaction.
-- **AI Story Synthesis (`src/services/ai-generation-notification.ts`):** `buildGenerationOutcomeRow()` generates typed envelopes with `notification.aiStoryCompleted` or `notification.aiStoryFailed`.
-- **Wall Social Feed (`src/services/wall-mutations.ts`):** Deduplicated reactions update `i18n_key` and `i18n_params` in-place alongside updated fallback text.
+### 4.2 Unified Service Helpers (`src/services/notifications.ts`)
+All database writes to `user_notifications` are strictly encapsulated within centralized helper functions:
+- `createNotification(params)`: Standard atomic insertion enforcing `read: false`, `createdAt: now`, `updatedAt: now`, and strict typing for `type: NotificationType` and `i18nKey: NotificationI18nKey`.
+- `createNotificationsBatch(items, tx)`: Single-query multi-row insertion for high-throughput author follower fan-outs (`book-publish-notification.ts` and `email-campaigns.ts`).
+- `upsertNotification(params)`: Atomic deduplication targeting the partial unique index `user_notifications_unread_group_unique` on `(userId, type, groupKey) WHERE read = false AND groupKey IS NOT NULL`. Eliminates concurrency race conditions for review likes and wall reactions.
 
-### 4.3 Read Projection API
+### 4.3 Write Site Retrofit Pattern
+All 10 services route their notifications exclusively through these helpers:
+- **Credit Grants (`src/services/credits.ts`):** `awardCredits()` and `awardFirstPurchaseBonusOnce()` invoke `createNotification()` within the active transaction.
+- **AI Story Synthesis (`src/services/ai-generation-notification.ts`):** `notifyBookGenerationOutcome()` builds typed envelopes and calls `createNotification()`.
+- **Wall Social Feed (`src/services/wall-mutations.ts`):** `notifyWallReaction()` assigns `groupKey: `wall:${postId}`` and calls `upsertNotification()`, ensuring concurrent reactions coalesce atomically without race conditions.
+- **Reader Thanks & Wallet (`src/services/thanks.ts`, `src/services/wallet.ts`):** Sanitizes parameter values, passing raw entity identifiers, `grossAmount`, and `currency`.
+
+### 4.4 Read Projection API
 `GET /api/notifications` in `src/routes/notifications.ts` projects `i18nKey` and `i18nParams` directly to authenticated clients:
 ```ts
 .select({
   id: userNotifications.id,
   userId: userNotifications.userId,
   type: userNotifications.type,
+  groupKey: userNotifications.groupKey,
   title: userNotifications.title,
   message: userNotifications.message,
   i18nKey: userNotifications.i18nKey,
@@ -166,7 +174,8 @@ Services write machine keys during event dispatch:
 |------|-------|----------------|
 | `src/db/schema.ts` | Schema | Defines `userNotifications` table with `i18n_key` and `i18n_params` |
 | `src/config/notifications.ts` | Config | SSOT for notification types and translation machine keys |
-| `src/services/notifications.ts` | Service | Unified insertion helper `createNotification()` |
+| `src/services/notifications.ts` | Service | Unified helpers `createNotification()`, `createNotificationsBatch()`, `upsertNotification()` |
+| `tests/unit/notifications.test.ts` | Test | Unit tests for taxonomy, parameter hygiene, and deduplication contracts |
 | `src/routes/notifications.ts` | Route | Read API projecting `i18nKey` and `i18nParams` to clients |
 | `src/services/credits.ts` | Service | Credit purchase and first purchase bonus notifications |
 | `src/services/user-controller.ts` | Service | Referral program bonus notifications |
@@ -188,9 +197,10 @@ Services write machine keys during event dispatch:
 
 | Layer | Status | Evidence |
 |-------|--------|----------|
-| Static Check | **Implemented & verified** | `bun run typecheck` passed with 0 errors on 2026-10-24 |
+| Static Check | **Implemented & verified** | `bun run typecheck` (`bunx tsc --noEmit`) passed with 0 errors on 2026-10-24 |
 | Schema Consistency | **Implemented & verified** | `user_notifications` schema compiles with typed `Record<string, string \| number>` |
-| Service Retrofits | **Implemented & verified** | All 15 write call-sites compile cleanly with typed `NOTIFICATION_I18N_KEYS` |
+| Service Encapsulation | **Implemented & verified** | All 10 services route writes exclusively through `src/services/notifications.ts` |
+| Unit Tests | **Implemented & verified** | `bun test tests/unit/notifications.test.ts` (8/8 pass) and `bun test tests/ai-generation-notification.test.ts` (13/13 pass) |
 
 ---
 

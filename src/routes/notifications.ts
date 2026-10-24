@@ -56,6 +56,7 @@ router.get('/', requireAuth, async (c) => {
           id: userNotifications.id,
           userId: userNotifications.userId,
           type: userNotifications.type,
+          groupKey: userNotifications.groupKey,
           title: userNotifications.title,
           message: userNotifications.message,
           i18nKey: userNotifications.i18nKey,

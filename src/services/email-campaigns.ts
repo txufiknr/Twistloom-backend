@@ -3,6 +3,7 @@ import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from
 import { dbWrite, type DBTransaction } from "../db/client.js";
 import { emailCampaigns as campaigns, emailMessages as messages, users, userFollows, userAuth, books, userCompletedBooks, userLikes, userNotifications, announcements } from "../db/schema.js";
 import { NOTIFICATION_I18N_KEYS } from "../config/notifications.js";
+import { createNotificationsBatch, type InsertNotificationParams } from "./notifications.js";
 import { EMAIL_AUDIENCE_BATCH, EMAIL_LEASE_MS, EMAIL_POLICIES } from "../config/email-delivery.js";
 import { DEFAULT_EMAIL_LOCALE, isEmailLocale } from "../types/email-locale.js";
 import type { EmailAudience, EmailTemplate } from "../types/email-delivery.js";
@@ -107,13 +108,14 @@ async function enumerate(campaign: Campaign): Promise<void> {
     const verified = audience.kind === "story_published" && ids.length
       ? new Set((await tx.select({ userId: userAuth.userId }).from(userAuth).where(and(inArray(userAuth.userId, ids), isNotNull(userAuth.emailVerified)))).map(row => row.userId)) : null;
     const pending: Array<typeof messages.$inferInsert> = [];
-    const notifications: Array<typeof userNotifications.$inferInsert> = [];
+    const notifications: InsertNotificationParams[] = [];
     for (const row of rows) {
       if (audience.kind === "story_published" && normalizeInAppPreferences(row.inAppPreferences).storyPublished) notifications.push({
-        userId: row.userId, type: "story_published", title: "New story from someone you follow", message: audience.bookTitle,
+        userId: row.userId, type: "story_published", fallbackTitle: "New story from someone you follow", fallbackMessage: audience.bookTitle,
         i18nKey: NOTIFICATION_I18N_KEYS.STORY_PUBLISHED,
-        i18nParams: { bookTitle: audience.bookTitle, authorId: audience.authorId, bookSlug: audience.bookSlug },
-        data: { authorId: audience.authorId, bookId: audience.bookId, bookSlug: audience.bookSlug, bookTitle: audience.bookTitle }, read: false });
+        i18nParams: { bookTitle: audience.bookTitle, authorId: audience.authorId, bookSlug: audience.bookSlug, authorName: audience.authorName ?? "" },
+        data: { authorId: audience.authorId, bookId: audience.bookId, bookSlug: audience.bookSlug, bookTitle: audience.bookTitle, authorName: audience.authorName },
+      });
       const prefs = normalizeEmailPreferences(row.emailPreferences);
       if (!row.email || (preference && !prefs[preference]) || (verified && !verified.has(row.userId))) continue;
       const locale = prefs.emailLocale ?? (isEmailLocale(row.preferredLocale) ? row.preferredLocale : DEFAULT_EMAIL_LOCALE);
@@ -141,7 +143,7 @@ async function enumerate(campaign: Campaign): Promise<void> {
         payloadEncrypted: audience.kind === "announcement" ? null : await encryptPII(JSON.stringify({ ...template, to: row.email })),
         status: "pending", attempts: 0, ambiguous: false, nextAttemptAt: new Date(), expiresAt: campaign.expiresAt });
     }
-    if (notifications.length) await tx.insert(userNotifications).values(notifications);
+    if (notifications.length) await createNotificationsBatch(notifications, tx);
     const inserted = pending.length ? await tx.insert(messages).values(pending).onConflictDoNothing().returning({ id: messages.id }) : [];
     await tx.update(campaigns).set({ audienceCursor: rows.at(-1)?.userId ?? campaign.audienceCursor,
       audienceComplete: rows.length < EMAIL_AUDIENCE_BATCH, recipientCount: sql`${campaigns.recipientCount} + ${inserted.length}`,

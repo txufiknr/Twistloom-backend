@@ -10,6 +10,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { dbRead, dbWrite } from '../db/client.js';
 import { bookTestimonials, userNotifications, users } from '../db/schema.js';
 import { NOTIFICATION_I18N_KEYS } from '../config/notifications.js';
+import { createNotification, upsertNotification } from './notifications.js';
 import { normalizeInAppPreferences } from './in-app-preferences.js';
 
 export interface NotifyTestimonialLikeParams {
@@ -86,45 +87,36 @@ export async function notifyTestimonialLike(
         .limit(1);
       if (existing) return;
 
-      await tx.insert(userNotifications).values({
+      await createNotification({
         userId: recipientId,
         type: 'testimonial_like',
         groupKey,
-        title: 'New like on your review',
-        message: `${actorName} liked your testimonial for "${title}"`,
+        fallbackTitle: 'New like on your review',
+        fallbackMessage: `${actorName} liked your testimonial for "${title}"`,
         i18nKey: NOTIFICATION_I18N_KEYS.TESTIMONIAL_LIKE_SINGLE,
-        i18nParams: { actorName, bookTitle: title },
+        i18nParams: { actorName: actor?.name ?? '', bookTitle: bookTitle ?? '' },
         data,
-        read: false,
-        createdAt: now,
-        updatedAt: now,
-      }).onConflictDoNothing();
+        onConflictDoNothing: true,
+        tx,
+      });
       return;
     }
 
-    await tx.insert(userNotifications).values({
+    await upsertNotification({
       userId: recipientId,
       type: 'testimonial_like',
       groupKey,
-      title: 'New like on your review',
-      message: `${actorName} liked your testimonial for "${title}"`,
+      fallbackTitle: 'New like on your review',
+      fallbackMessage: `${actorName} liked your testimonial for "${title}"`,
       i18nKey: NOTIFICATION_I18N_KEYS.TESTIMONIAL_LIKE_SINGLE,
-      i18nParams: { actorName, bookTitle: title },
+      i18nParams: { actorName: actor?.name ?? '', bookTitle: bookTitle ?? '' },
       data,
-      read: false,
-      createdAt: now,
-      updatedAt: now,
-    }).onConflictDoUpdate({
-      target: [userNotifications.userId, userNotifications.type, userNotifications.groupKey],
-      targetWhere: sql`${userNotifications.read} = false AND ${userNotifications.groupKey} IS NOT NULL`,
-      set: {
-        title: 'New like on your review',
-        message: `${actorName} and others liked your testimonial for "${title}"`,
-        i18nKey: NOTIFICATION_I18N_KEYS.TESTIMONIAL_LIKE_MULTIPLE,
-        i18nParams: { actorName, bookTitle: title },
-        data,
-        updatedAt: now,
-      },
+      updateTitle: 'New like on your review',
+      updateMessage: `${actorName} and others liked your testimonial for "${title}"`,
+      updateI18nKey: NOTIFICATION_I18N_KEYS.TESTIMONIAL_LIKE_MULTIPLE,
+      updateI18nParams: { actorName: actor?.name ?? '', bookTitle: bookTitle ?? '' },
+      updateData: data,
+      tx,
     });
   });
 }

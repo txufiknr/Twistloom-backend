@@ -2,6 +2,7 @@
 import { dbRead, dbWrite, type DBTransaction } from '../db/client.js';
 import { userFollows, userNotifications, users } from '../db/schema.js';
 import { NOTIFICATION_I18N_KEYS } from '../config/notifications.js';
+import { createNotificationsBatch } from './notifications.js';
 import { eq } from 'drizzle-orm';
 import { queueEmailCampaign } from './email-campaigns.js';
 import { emailDeliveryEnabled } from '../config/email-delivery.js';
@@ -36,25 +37,24 @@ export async function notifyFollowersOfPublishedBook(params: NotifyFollowersOfPu
 async function insertPublicationInAppDirect(params: NotifyFollowersOfPublishedBookParams, tx?: DBTransaction): Promise<void> {
   // Reads see the publish transaction when one is supplied; otherwise use replica.
   const reader = tx ?? dbRead;
-  const writer = tx ?? dbWrite;
-  const rows = await reader.select({ followerId: userFollows.followerId, inAppPreferences: users.inAppPreferences })
-    .from(userFollows).innerJoin(users, eq(users.userId, userFollows.followerId))
-    .where(eq(userFollows.followingId, params.authorId));
-  const now = new Date();
+  const [rows, [author]] = await Promise.all([
+    reader.select({ followerId: userFollows.followerId, inAppPreferences: users.inAppPreferences })
+      .from(userFollows).innerJoin(users, eq(users.userId, userFollows.followerId))
+      .where(eq(userFollows.followingId, params.authorId)),
+    reader.select({ name: users.name }).from(users).where(eq(users.userId, params.authorId)).limit(1),
+  ]);
+  const authorName = author?.name ?? '';
   const notifications = rows
     .filter((f) => normalizeInAppPreferences(f.inAppPreferences).storyPublished)
     .map((f) => ({
       userId: f.followerId,
       type: 'story_published' as const,
-      title: 'New story from someone you follow',
-      message: params.bookTitle,
+      fallbackTitle: 'New story from someone you follow',
+      fallbackMessage: params.bookTitle,
       i18nKey: NOTIFICATION_I18N_KEYS.STORY_PUBLISHED,
-      i18nParams: { bookTitle: params.bookTitle, authorId: params.authorId, bookSlug: params.bookSlug },
-      data: { authorId: params.authorId, bookId: params.bookId, bookSlug: params.bookSlug, bookTitle: params.bookTitle },
-      read: false,
-      createdAt: now,
-      updatedAt: now,
+      i18nParams: { bookTitle: params.bookTitle, authorId: params.authorId, bookSlug: params.bookSlug, authorName },
+      data: { authorId: params.authorId, bookId: params.bookId, bookSlug: params.bookSlug, bookTitle: params.bookTitle, authorName },
     }));
   if (!notifications.length) return;
-  await writer.insert(userNotifications).values(notifications);
+  await createNotificationsBatch(notifications, tx);
 }

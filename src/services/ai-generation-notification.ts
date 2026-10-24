@@ -29,6 +29,7 @@ import { eq } from 'drizzle-orm';
 import { dbRead, dbWrite } from '../db/client.js';
 import { books, users, userNotifications } from '../db/schema.js';
 import { NOTIFICATION_I18N_KEYS, type NotificationI18nKey } from '../config/notifications.js';
+import { createNotification } from './notifications.js';
 import { normalizeInAppPreferences } from './in-app-preferences.js';
 import { getErrorMessage } from '../utils/error.js';
 import type { BookGenerationStatus } from '../types/book.js';
@@ -153,15 +154,22 @@ export async function notifyBookGenerationOutcome(
     if (!row?.userId) return;
     if (!normalizeInAppPreferences(row.inAppPreferences).aiCompleted) return;
 
-    await dbWrite.insert(userNotifications).values(
-      buildGenerationOutcomeRow({
-        userId: row.userId,
-        bookId,
-        bookSlug: row.slug,
-        bookTitle: row.title,
-        outcome,
-      }),
-    );
+    const rowValues = buildGenerationOutcomeRow({
+      userId: row.userId,
+      bookId,
+      bookSlug: row.slug,
+      bookTitle: row.title,
+      outcome,
+    });
+    await createNotification({
+      userId: rowValues.userId,
+      type: rowValues.type,
+      i18nKey: rowValues.i18nKey,
+      i18nParams: rowValues.i18nParams,
+      fallbackTitle: rowValues.title,
+      fallbackMessage: rowValues.message,
+      data: rowValues.data,
+    });
   } catch (err) {
     // Best-effort channel: never break generation persistence (F-8 contract).
     console.error(

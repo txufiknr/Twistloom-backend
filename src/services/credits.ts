@@ -34,6 +34,7 @@
 import { type DBTransaction, dbWrite, dbRead } from '../db/client.js';
 import { users, transactions, userNotifications } from '../db/schema.js';
 import { NOTIFICATION_I18N_KEYS, type NotificationI18nKey } from '../config/notifications.js';
+import { createNotification } from './notifications.js';
 import { CREDIT_COSTS, getCreditCostForUser, isDemoUser, CREDIT_RESERVATION_TTL_MS, type CreditCostKey } from '../config/credits.js';
 import { generateId } from '../utils/uuid.js';
 import { eq, and, sql } from 'drizzle-orm';
@@ -1039,17 +1040,15 @@ export async function awardCredits(
     });
 
     // Create user notification
-    await tx.insert(userNotifications).values({
+    await createNotification({
       userId,
-      type: notificationType,
-      title: notificationTitle,
-      message: notificationMessage,
-      i18nKey: notificationI18nKey ?? null,
+      type: notificationType as any,
+      i18nKey: notificationI18nKey ?? (notificationType === 'first_purchase_bonus' ? NOTIFICATION_I18N_KEYS.FIRST_PURCHASE_BONUS : NOTIFICATION_I18N_KEYS.PAYMENT_SUCCESS),
       i18nParams: notificationI18nParams ?? null,
+      fallbackTitle: notificationTitle,
+      fallbackMessage: notificationMessage,
       data: { credits: creditsAmount, ...notificationData },
-      read: false,
-      createdAt: new Date(),
-      updatedAt: new Date()
+      tx,
     });
 
     return newBalance;
@@ -1170,17 +1169,15 @@ export async function awardFirstPurchaseBonusOnce(
       .set({ credits: sql`${users.credits} + ${creditsAmount}` })
       .where(eq(users.userId, userId));
 
-    await tx.insert(userNotifications).values({
+    await createNotification({
       userId,
       type: 'first_purchase_bonus',
-      title: 'First Purchase Bonus',
-      message: `You received ${creditsAmount} credits for your first purchase`,
       i18nKey: NOTIFICATION_I18N_KEYS.FIRST_PURCHASE_BONUS,
       i18nParams: { credits: creditsAmount },
+      fallbackTitle: 'First Purchase Bonus',
+      fallbackMessage: `You received ${creditsAmount} credits for your first purchase`,
       data: { credits: creditsAmount, ...notificationData },
-      read: false,
-      createdAt: new Date(),
-      updatedAt: new Date()
+      tx,
     });
 
     return { inserted: true, balance: startingCredits + creditsAmount };

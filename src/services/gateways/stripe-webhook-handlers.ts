@@ -18,6 +18,7 @@ import { NOTIFICATION_I18N_KEYS } from "../../config/notifications.js";
 import { CREDIT_PACKS, FIRST_PURCHASE_BONUS } from "../../config/credits.js";
 import { PAYMENT_GATEWAY } from "../../types/payment.js";
 import { createSubscription, updateSubscription, renewSubscription, cancelSubscription, handleTrialWillEnd } from "../subscription.js";
+import { createNotification } from "../notifications.js";
 import { awardCredits, awardFirstPurchaseBonusOnce } from "../credits.js";
 import { isUniqueConstraintError } from "../../utils/retry.js";
 
@@ -278,14 +279,15 @@ export async function handleChargeRefunded(
           providerPaymentId,
           providerEventId: event.id,
         });
-        await tx.insert(userNotifications).values({
+        await createNotification({
           userId: transaction.userId,
           type: "refund",
-          title: "Refund Processed",
-          message: `${creditsToDeduct} credits have been deducted from your account due to a refund`,
+          fallbackTitle: "Refund Processed",
+          fallbackMessage: `${creditsToDeduct} credits have been deducted from your account due to a refund`,
           i18nKey: NOTIFICATION_I18N_KEYS.REFUND_PROCESSED,
           i18nParams: { credits: creditsToDeduct },
           data: { creditsDeducted: creditsToDeduct, refundCents, refundAmount: refundCents / 100, originalPaymentId: providerPaymentId },
+          tx,
         });
         const [recipient] = await tx.select({ email: users.email, name: users.name }).from(users).where(eq(users.userId, transaction.userId)).limit(1);
         if (recipient?.email) await sendRefundProcessedEmail(recipient.email, recipient.name || 'there', creditsToDeduct,

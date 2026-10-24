@@ -11,7 +11,7 @@
 
 | # | Item | Priority | Status |
 |---|------|----------|--------|
-| 1 | Database schema migration: add `i18n_key` and `i18n_params` columns to `user_notifications` | `P0` | ⏳ In Progress (schema updated; migration run deferred per owner) |
+| 1 | Database schema migration: add `i18n_key` and `i18n_params` columns to `user_notifications` | `P0` | ⏳ In Progress (SQL 0110 generated; migration run deferred per owner) |
 | 2 | Notification vocabulary and typing config module (`config/notifications.ts`) | `P0` | ✅ Completed |
 | 3 | Unified notification creation service (`services/notifications.ts`) | `P0` | ✅ Completed |
 | 4 | Retrofit payment and credit grant notification writers | `P0` | ✅ Completed |
@@ -371,14 +371,14 @@ Legend: ✅ Implemented & verified · ⏳ Partial / scoped down · ⬜ Future wo
 - ✅ End-to-end design alignment with web and mobile platforms
 - ✅ Selection and formalization of machine-key architecture
 - ✅ Step 2 — Notification taxonomy and typing module (`src/config/notifications.ts`)
-- ✅ Step 3 — Unified notification creation service (`src/services/notifications.ts`)
+- ✅ Step 3 — Unified notification creation service (`src/services/notifications.ts` with `createNotification`, `createNotificationsBatch`, `upsertNotification`)
 - ✅ Step 4 — Retrofit payment and credit notification writers (`credits.ts`, `user-controller.ts`, `stripe-webhook-handlers.ts`, `xendit.ts`, `store-verification/grant.ts`, `subscription.ts`)
-- ✅ Step 5 — Retrofit social, story, and AI generation writers (`book-publish-notification.ts`, `email-campaigns.ts`, `ai-generation-notification.ts`, `testimonial-notifications.ts`, `thanks.ts`, `wallet.ts`, `wall-mutations.ts`)
-- ✅ Step 6 — API response DTO projection in `src/routes/notifications.ts` (`i18nKey`, `i18nParams`)
-- ✅ Step 7 — Verification and typecheck verification (`bun run typecheck` passed with 0 errors)
+- ✅ Step 5 — Retrofit social, story, and AI generation writers (`book-publish-notification.ts`, `email-campaigns.ts`, `ai-generation-notification.ts`, `testimonial-notifications.ts`, `thanks.ts`, `wallet.ts`, `wall-mutations.ts`) with sanitized scalar parameters and wall reaction deduplication
+- ✅ Step 6 — API response DTO projection in `src/routes/notifications.ts` (`groupKey`, `i18nKey`, `i18nParams`)
+- ✅ Step 7 — Unit and integration test coverage (`tests/unit/notifications.test.ts` and `tests/ai-generation-notification.test.ts` verified clean, 21 tests pass)
 
 ### In Progress
-- ⏳ Step 1 — Database schema migration (`userNotifications` table updated in `src/db/schema.ts`; Drizzle generate & migration application deferred per user instructions)
+- ⏳ Step 1 — Database schema migration (`userNotifications` schema updated, Drizzle migration `0110_parched_millenium_guard.sql` generated; live DB migration execution deferred per user instructions)
 
 ### Future / Deferred
 - ⬜ Step 8 — FCM/APNs push localization

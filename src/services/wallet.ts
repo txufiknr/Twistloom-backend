@@ -27,6 +27,7 @@ import {
   userNotifications,
 } from "../db/schema.js";
 import { NOTIFICATION_I18N_KEYS } from "../config/notifications.js";
+import { createNotification } from "./notifications.js";
 import { encryptPII, generateBlindIndex, extractLast4, maskAccountNumber } from "../utils/crypto.js";
 import { calculateNameMatchScore } from "../utils/fuzzy-name.js";
 import { inquireXenditBankAccount } from "../utils/xendit.js";
@@ -276,13 +277,17 @@ export async function replyToCreatorEarning(
 
   // Send in-app notification to reader (best-effort)
   try {
-    await dbWrite.insert(userNotifications).values({
+    const creatorName = creatorUser?.name ?? "";
+    const bookTitle = book?.title ?? "";
+    const fallbackAuthor = creatorName || "The author";
+
+    await createNotification({
       userId: earning.readerId,
       type: "thanks_reply",
-      title: `${creatorUser?.name || "The author"} replied to your Thanks!`,
-      message: `"${trimmed}"`,
+      fallbackTitle: `${fallbackAuthor} replied to your Thanks!`,
+      fallbackMessage: `"${trimmed}"`,
       i18nKey: NOTIFICATION_I18N_KEYS.THANKS_REPLY,
-      i18nParams: { creatorName: creatorUser?.name || "The author", replyText: trimmed, bookTitle: book?.title || "" },
+      i18nParams: { creatorName, replyText: trimmed, bookTitle },
       data: {
         earningId,
         bookId: earning.bookId,

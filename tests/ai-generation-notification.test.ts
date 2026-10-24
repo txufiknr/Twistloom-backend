@@ -90,6 +90,8 @@ describe("buildGenerationOutcomeRow", () => {
     expect(row.title).toContain("The Haunted Loom");
     expect(row.read).toBe(false);
     expect(row.userId).toBe("u1");
+    expect(row.i18nKey).toBe("notification.aiStoryCompleted");
+    expect(row.i18nParams).toEqual({ bookTitle: "The Haunted Loom", bookSlug: "the-haunted-loom" });
   });
 
   it("builds the failed row with the ai_failed type", () => {
@@ -98,6 +100,8 @@ describe("buildGenerationOutcomeRow", () => {
     expect(row.title).toContain("The Haunted Loom");
     expect(row.message.length).toBeGreaterThan(0);
     expect(row.read).toBe(false);
+    expect(row.i18nKey).toBe("notification.aiStoryFailed");
+    expect(row.i18nParams).toEqual({ bookTitle: "The Haunted Loom" });
   });
 
   it("carries the data.bookSlug deep-link payload web's notification feed opens", () => {

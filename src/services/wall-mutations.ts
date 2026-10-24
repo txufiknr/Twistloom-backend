@@ -1,5 +1,6 @@
 import { ACHIEVEMENT_REGISTRY } from '../config/achievements.js';
 import { NOTIFICATION_I18N_KEYS } from '../config/notifications.js';
+import { createNotification, upsertNotification } from './notifications.js';
 import { and, eq, isNull, or, sql } from 'drizzle-orm';
 import { dbWrite } from '../db/client.js';
 import {
@@ -844,42 +845,23 @@ async function notifyWallReaction(
 ): Promise<void> {
   if (!await notificationRecipientAllows(recipientId, 'likes')) return;
   const name = await actorName(actorId);
-  const [existing] = await dbWrite
-    .select({ id: userNotifications.id })
-    .from(userNotifications)
-    .where(and(
-      eq(userNotifications.userId, recipientId),
-      eq(userNotifications.type, 'wall_post_reaction'),
-      eq(userNotifications.read, false),
-      sql`${userNotifications.data}->>'postId' = ${postId}`,
-    ))
-    .limit(1);
-
+  const groupKey = `wall:${postId}`;
   const data = { postId, actorId, actorName: name, reaction, href: `/wall?post=${postId}` };
-  if (existing) {
-    await dbWrite
-      .update(userNotifications)
-      .set({
-        message: `${name} reacted to your Note`,
-        i18nKey: NOTIFICATION_I18N_KEYS.WALL_POST_REACTION,
-        i18nParams: { actorName: name, postId },
-        data,
-        updatedAt: new Date()
-      })
-      .where(eq(userNotifications.id, existing.id));
-    return;
-  }
-  await dbWrite.insert(userNotifications).values({
+
+  await upsertNotification({
     userId: recipientId,
     type: 'wall_post_reaction',
-    title: 'New reaction on your Note',
-    message: `${name} reacted to your Note`,
+    groupKey,
+    fallbackTitle: 'New reaction on your Note',
+    fallbackMessage: `${name || 'Someone'} reacted to your Note`,
     i18nKey: NOTIFICATION_I18N_KEYS.WALL_POST_REACTION,
-    i18nParams: { actorName: name, postId },
+    i18nParams: { actorName: name ?? '', postId },
     data,
-    read: false,
-    createdAt: new Date(),
-    updatedAt: new Date(),
+    updateTitle: 'New reaction on your Note',
+    updateMessage: `${name || 'Someone'} reacted to your Note`,
+    updateI18nKey: NOTIFICATION_I18N_KEYS.WALL_POST_REACTION,
+    updateI18nParams: { actorName: name ?? '', postId },
+    updateData: data,
   });
 }
 
@@ -891,17 +873,14 @@ async function notifyWallReply(
 ): Promise<void> {
   if (!await notificationRecipientAllows(recipientId, 'comments')) return;
   const name = await actorName(actorId);
-  await dbWrite.insert(userNotifications).values({
+  await createNotification({
     userId: recipientId,
     type: 'wall_post_reply',
-    title: 'New reply to your Note',
-    message: `${name} replied to your Note`,
+    fallbackTitle: 'New reply to your Note',
+    fallbackMessage: `${name || 'Someone'} replied to your Note`,
     i18nKey: NOTIFICATION_I18N_KEYS.WALL_POST_REPLY,
-    i18nParams: { actorName: name, postId },
+    i18nParams: { actorName: name ?? '', postId },
     data: { postId, commentId, actorId, actorName: name, href: `/wall?post=${postId}` },
-    read: false,
-    createdAt: new Date(),
-    updatedAt: new Date(),
   });
 }
 
@@ -912,16 +891,13 @@ async function notifyIncomingWallPost(
 ): Promise<void> {
   if (!await notificationRecipientAllows(recipientId, 'comments')) return;
   const name = await actorName(actorId);
-  await dbWrite.insert(userNotifications).values({
+  await createNotification({
     userId: recipientId,
     type: 'wall_post_incoming',
-    title: 'A new Note appeared on your Wall',
-    message: `${name} left a Note on your Wall`,
+    fallbackTitle: 'A new Note appeared on your Wall',
+    fallbackMessage: `${name || 'Someone'} left a Note on your Wall`,
     i18nKey: NOTIFICATION_I18N_KEYS.WALL_POST_INCOMING,
-    i18nParams: { actorName: name, postId },
+    i18nParams: { actorName: name ?? '', postId },
     data: { postId, actorId, actorName: name, href: `/wall?post=${postId}` },
-    read: false,
-    createdAt: new Date(),
-    updatedAt: new Date(),
   });
 }
