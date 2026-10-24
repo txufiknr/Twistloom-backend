@@ -101,6 +101,7 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
     createdAt:   books.createdAt,
     updatedAt:   books.updatedAt,
     mc:          books.mc,
+    guestProgressImportVersion: sql<number>`1`,
     
     // Cover image URL subquery (Consider moving to a standard LEFT JOIN in the parent query)
     imageUrl: sql<string | null>`(
@@ -159,6 +160,7 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
       ? sql<EnrichedBookSession | null>`(
           SELECT jsonb_build_object(
             'lastReadAt', us.updated_at,
+            'lastGuestImportId', us.last_guest_import_id,
             'lastPageId', us.page_id,
             'lastPageNumber', p.page,
             'frontierPageId', us.frontier_page_id,
@@ -451,13 +453,15 @@ export function buildInterestKeywordsSql(userId: string) {
  * 1. Cold start (`cardinality(...) = 0`): the user has no read/like/favorite
  *    signals, so the interest branch is a no-op and the unfiltered shelf is
  *    returned — sections on the home screen never render empty for new users.
- * 2. Interest overlap: `books.keywords && profile` (GIN-optimised `&&`).
- * 3. Read exclusion: books already in `user_sessions` for this user are hidden
- *    (consistent with `sortBy = 'for-you'`) — "For You" surfaces new content
- *    matching the user's taste, not re-reads.
+ * 2. Ongoing reads stay eligible through a positive `user_sessions` probe,
+ *    even when the book has no keywords. Other candidates match the interest
+ *    profile via `books.keywords && profile` (GIN-optimised `&&`).
+ * 3. Only completed reads are excluded, using `user_completed_books`, the
+ *    same authoritative source as the returned `isCompleted` flag. Completion
+ *    wins even when a session still exists (for example after a replay).
  *
- * Single correlated-free SQL statement; safe to apply to both the result
- * query and the pagination COUNT query via `finalCondition`.
+ * A single SQL predicate with indexed per-user session/completion probes;
+ * applies equally to results and pagination COUNT via `finalCondition`.
  *
  * @param userId - The viewer whose interests are matched against book keywords
  * @returns SQL condition ready for `combineFilterConditions`
@@ -472,10 +476,13 @@ export function buildPersonalizedFilterCondition(userId: string) {
   const interestKeywords = buildInterestKeywordsSql(userId);
 
   return sql`(
-    cardinality(${interestKeywords}) = 0 OR ${books.keywords} && ${interestKeywords}
+    EXISTS (
+      SELECT 1 FROM ${userSessions}
+      WHERE ${userSessions.userId} = ${userId} AND ${userSessions.bookId} = ${books.id}
+    ) OR cardinality(${interestKeywords}) = 0 OR ${books.keywords} && ${interestKeywords}
   ) AND NOT EXISTS (
-    SELECT 1 FROM ${userSessions}
-    WHERE ${userSessions.userId} = ${userId} AND ${userSessions.bookId} = ${books.id}
+    SELECT 1 FROM ${userCompletedBooks}
+    WHERE ${userCompletedBooks.userId} = ${userId} AND ${userCompletedBooks.bookId} = ${books.id}
   )`;
 }
 
@@ -684,6 +691,7 @@ export async function enrichBooksWithUserData(
       .select({
         bookId: userSessions.bookId,
         lastReadAt: userSessions.updatedAt,
+        lastGuestImportId: userSessions.lastGuestImportId,
         lastPageId: userSessions.pageId,
         lastPageNumber: pages.page,
         frontierPageId: userSessions.frontierPageId,
@@ -733,6 +741,7 @@ export async function enrichBooksWithUserData(
         s.bookId,
       {
         lastReadAt: s.lastReadAt,
+        lastGuestImportId: s.lastGuestImportId,
         lastPageId: s.lastPageId,
         lastPageNumber: s.lastPageNumber ?? null,
         frontierPageId: s.frontierPageId ?? null,
@@ -965,7 +974,8 @@ function buildBookSortCondition(
     case 'for-you': {
       // Recommend books based on the user's engagement history — reads
       // (userSessions), likes (userLikes), and favorites (userFavorites).
-      // Finds unread books with overlapping keywords.
+      // Keeps ongoing reads and finds other books with overlapping keywords;
+      // only completed reads are excluded.
       // Requires authentication; anonymous viewers get an empty page instead of
       // falling through to the `popular` ordering: the fall-through used to
       // silently present the entire public catalogue under a "You Might Like"
@@ -975,7 +985,7 @@ function buildBookSortCondition(
       // NOTE: unlike `personalized=true` (which FILTERS a section while keeping
       // its own popular/trending/newest ranking), this sort REPLACES the
       // ordering with the keyword-overlap score. Both share the same signal
-      // profile and cold-start/read-exclusion semantics via
+      // profile and cold-start/completed-read-exclusion semantics via
       // `buildPersonalizedFilterCondition`.
       if (!currentUserId) return sql`1=0`;
       return buildPersonalizedFilterCondition(currentUserId);

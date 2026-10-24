@@ -104,6 +104,22 @@ import type { AppEnv } from "../hono/env.js";
 import { getClientIp } from "../hono/express-shim.js";
 import { getUserMindMatrix } from "../services/psychological-profile.js";
 import { normalizePrivacyPreferences } from '../services/privacy-preferences.js';
+import { setTestimonialLike } from '../services/testimonial-likes.js';
+import { notifyTestimonialLike } from '../services/testimonial-notifications.js';
+
+/** Counts the current active, public books for one author. */
+async function countPublishedBooks(userId: string): Promise<number> {
+  const [result] = await dbRead
+    .select({ count: sql<number>`count(*)::int` })
+    .from(books)
+    .where(and(
+      eq(books.userId, userId),
+      eq(books.status, 'active'),
+      eq(books.visibility, 'public'),
+    ));
+
+  return Number(result?.count ?? 0);
+}
 
 const router = new Hono<AppEnv>();
 
@@ -134,7 +150,8 @@ const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
  * @returns {boolean} user.hasReferrer - Whether a referrer is already set (SSOT for welcome modal)
  * @returns {boolean} user.emailVerified - Whether email is verified
  * @returns {boolean} user.havePurchased - Whether user has made purchases
- * @returns {number} user.booksGenerated - Books generated count
+ * @returns {number} user.stats.booksGenerated - Lifetime books generated count
+ * @returns {number} user.stats.booksPublished - Active public books count
  * @returns {number} user.booksCompleted - Books completed count
  * @returns {number} user.readsCount - Reading sessions count
  * @returns {number} user.pagesRead - Total pages read
@@ -227,6 +244,8 @@ router.get('/', requireAuth, async (c: Context<AppEnv>) => {
       .where(eq(users.userId, userId))
       .limit(1);
 
+    const booksPublished = await countPublishedBooks(userId);
+
     // Normalize: move tier into subscription sub-object for consistent API shape
     // with GET /api/users/:identifier. The frontend reads user.subscription.tier
     // for VIP gating — keeping it as a single authoritative field prevents SSOT drift.
@@ -242,6 +261,7 @@ router.get('/', requireAuth, async (c: Context<AppEnv>) => {
       emailVerified: user.emailVerified,
       havePurchased: user.havePurchased,
       booksGenerated: user.booksGenerated,
+      booksPublished,
       booksCompleted: user.booksCompleted,
       pagesRead: user.pagesRead,
       pagesGenerated: user.pagesGenerated,
@@ -1012,6 +1032,7 @@ router.get("/users/top-creators", async (c: Context<AppEnv>) => {
  *       "emailVerified": null,
  *       "havePurchased": false,
  *       "booksGenerated": 10,
+ *       "booksPublished": 4,
  *       "booksCompleted": 5,
  *       "pagesRead": 350,
  *       "pagesGenerated": 80,
@@ -1056,7 +1077,9 @@ router.get("/users/:identifier", optionalAuth, async (c: Context<AppEnv>) => {
 
       // Format response to match frontend expectations.
       // Intentionally omit hasReferrer — private to own profile (GET /user).
-      const formattedUser: User = {
+      const formattedUser: Omit<User, 'stats'> & {
+        stats: Omit<User['stats'], 'booksPublished'>;
+      } = {
         id: userData.id,
         username: userData.username,
         name: userData.name,
@@ -1104,7 +1127,7 @@ router.get("/users/:identifier", optionalAuth, async (c: Context<AppEnv>) => {
           maxCheckinStreak: userData.maxCheckinStreak,
           customActionsWritten: userData.customActionsWritten,
           alternateEndingsDiscovered: userData.alternateEndingsDiscovered,
-        } satisfies UserStats,
+        } satisfies Omit<UserStats, 'booksPublished'>,
 
         // Profile metadata — typed columns
         profileMetadata: {
@@ -1175,12 +1198,18 @@ router.get("/users/:identifier", optionalAuth, async (c: Context<AppEnv>) => {
     // profile cache. Recompute them live and overlay onto a fresh object (never
     // mutate the cached entry, which may be reused by other viewers).
     const liveStreaks = await getCheckInStreaks(result.user.id);
+
+    // This state-based count stays outside the cached profile payload so it is
+    // both fresh and queried only once per request.
+    const booksPublished = await countPublishedBooks(result.user.id);
+
     const liveUser = {
       ...result.user,
       isFollowing,
       isBlocked,
       stats: {
         ...result.user.stats,
+        booksPublished,
         activeCheckinStreak: liveStreaks.activeStreak,
         maxCheckinStreak: liveStreaks.longestStreak,
       },
@@ -1410,10 +1439,10 @@ router.post("/likes", requireAuth, async (c: Context<AppEnv>) => {
     const { targetType, targetId } = body;
 
     // Validate target type
-    if (!["book", "comment", "user"].includes(targetType)) {
+    if (!["book", "comment", "user", "testimonial"].includes(targetType)) {
       return c.json({
         success: false,
-        error: "Invalid target type. Must be 'book', 'comment', or 'user'",
+        error: "Invalid target type. Must be 'book', 'comment', 'user', or 'testimonial'",
       }, 400);
     }
 
@@ -1423,6 +1452,9 @@ router.post("/likes", requireAuth, async (c: Context<AppEnv>) => {
         error: "Target ID is required",
       }, 400);
     }
+    if (targetType === 'testimonial' && !isValidUuid(targetId)) {
+      return cValidationError(c, 'Invalid testimonial ID');
+    }
 
     // Prepare like data for upsert
     const likeData: DBNewUserLike = {
@@ -1431,12 +1463,15 @@ router.post("/likes", requireAuth, async (c: Context<AppEnv>) => {
       targetId,
     };
 
-    // Book targets own denormalized counters (books.likes_count /
-    // trending_score), so the insert and the bump must share one transaction
-    // and only move when a row was actually created — the same semantics as
-    // POST /books/:id/like. Without this, mixing this route with the /books
-    // family permanently inflates counts (Step 13, USER_ONBOARDING_WIZARD_ROADMAP).
+    // Book and testimonial targets own denormalized counters, so the insert
+    // and the bump must share one transaction and only move when a row was created.
     let row: (typeof userLikes.$inferSelect) | undefined;
+    let testimonialNotification: {
+      authorId: string;
+      title: string | null;
+      slug: string | null;
+      ensureMissingOnly: boolean;
+    } | null = null;
     if (targetType === 'book') {
       row = await dbWrite.transaction(async (tx) => {
         const [inserted] = await tx
@@ -1456,6 +1491,19 @@ router.post("/likes", requireAuth, async (c: Context<AppEnv>) => {
         }
         return inserted;
       });
+    } else if (targetType === 'testimonial') {
+      const mutation = await setTestimonialLike({ userId, testimonialId: targetId, liked: true });
+      if (mutation.kind === 'not-found') return cNotFoundError(c, 'Testimonial not found');
+      if (!mutation.like) return cNotFoundError(c, 'Testimonial like not found');
+      row = mutation.like;
+      if (mutation.authorId && mutation.authorId !== userId) {
+        testimonialNotification = {
+          authorId: mutation.authorId,
+          title: mutation.bookTitle,
+          slug: mutation.bookSlug,
+          ensureMissingOnly: !mutation.changed,
+        };
+      }
     } else {
       const [inserted] = await dbWrite
         .insert(userLikes)
@@ -1481,7 +1529,23 @@ router.post("/likes", requireAuth, async (c: Context<AppEnv>) => {
       like,
     });
 
-    // Log user activity
+    if (testimonialNotification) {
+      try {
+        await notifyTestimonialLike({
+          recipientId: testimonialNotification.authorId,
+          actorId: userId,
+          testimonialId: targetId,
+          bookTitle: testimonialNotification.title,
+          bookSlug: testimonialNotification.slug,
+          ensureMissingOnly: testimonialNotification.ensureMissingOnly,
+        });
+      } catch (err) {
+        console.error('Failed to dispatch testimonial like notification', err);
+      }
+    }
+
+    // Log user activity after the user-facing testimonial notification path;
+    // analytics failures must not suppress a notification for a committed like.
     await logUserActivity({
       userId,
       activityType: 'liked',
@@ -1546,10 +1610,10 @@ router.delete("/likes", requireAuth, async (c: Context<AppEnv>) => {
     const { targetType, targetId } = c.req.query();
 
     // Validate target type
-    if (!targetType || !["book", "comment", "user"].includes(targetType as string)) {
+    if (!targetType || !["book", "comment", "user", "testimonial"].includes(targetType as string)) {
       return c.json({
         success: false,
-        error: "Valid target type is required. Must be 'book', 'comment', or 'user'",
+        error: "Valid target type is required. Must be 'book', 'comment', 'user', or 'testimonial'",
       }, 400);
     }
 
@@ -1560,11 +1624,20 @@ router.delete("/likes", requireAuth, async (c: Context<AppEnv>) => {
       }, 400);
     }
 
-    // Book targets keep the denormalized counters in step: the delete and the
-    // decrement share one transaction and only move when a row was removed —
-    // mirroring DELETE /books/:id/like. Floors use GREATEST so likes that predate
-    // the counter fix (inserted here without a bump) cannot drive counts negative
-    // (Step 13, USER_ONBOARDING_WIZARD_ROADMAP).
+    if (targetType === 'testimonial' && !isValidUuid(targetId)) {
+      return cValidationError(c, 'Invalid testimonial ID');
+    }
+
+    if (targetType === 'testimonial') {
+      const mutation = await setTestimonialLike({ userId, testimonialId: targetId, liked: false });
+      if (mutation.kind === 'not-found') return cNotFoundError(c, 'Testimonial not found');
+      if (!mutation.changed) return cNotFoundError(c, 'Like not found');
+      await updateUserLastActivity(userId);
+      return c.json({ message: 'Like removed successfully' });
+    }
+
+    // Book targets keep their denormalized counters in step. Testimonial
+    // mutations are handled above by the shared testimonial service.
     const result = targetType === 'book'
       ? await dbWrite.transaction(async (tx) => {
           const deleted = await tx
@@ -1670,7 +1743,7 @@ router.get("/likes", requireAuth, async (c: Context<AppEnv>) => {
     const baseConditions = [eq(userLikes.userId, userId)];
 
     // Add target type filter if provided
-    if (targetType && ["book", "comment", "user"].includes(targetType as string)) {
+    if (targetType && ["book", "comment", "user", "testimonial"].includes(targetType as string)) {
       baseConditions.push(eq(userLikes.targetType, targetType as LikeTargetType));
     }
 

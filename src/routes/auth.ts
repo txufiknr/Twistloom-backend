@@ -116,7 +116,7 @@ async function handleGoogleAuth(idToken: string, c: Context<AppEnv>): Promise<Re
   // Rate limiting based on IP address
   const ip = getClientIp(c);
   const signedExchange = await isWebExchange(c.req.header("x-twistloom-web-control"), c.get("body"));
-  if (!signedExchange && !await checkRateLimitByIP(ip)) return cRateLimitError(c);
+  if (!signedExchange && !await checkRateLimitByIP(ip, 'web-google-login')) return cRateLimitError(c);
 
   // Verify Google ID token (works for both One Tap credentials and standard OAuth id_token)
   const ticket = await googleClient.verifyIdToken({
@@ -131,7 +131,7 @@ async function handleGoogleAuth(idToken: string, c: Context<AppEnv>): Promise<Re
   const { email, name, picture: image, sub } = payload;
   if (signedExchange) {
     const signedLimit = await allowWebExchange(c.req.header('x-twistloom-web-control'), c.get('body'), 'google:' + sub, ip);
-    if (!(signedLimit ?? await checkRateLimitByIP(ip))) return cRateLimitError(c);
+    if (!(signedLimit ?? await checkRateLimitByIP(ip, 'web-google-login'))) return cRateLimitError(c);
   }
 
   // Create user if new, or update profile fields if existing
@@ -224,7 +224,7 @@ router.post('/verify-credentials', async (c) => {
     const ip = getClientIp(c);
     const signedLimit = await allowWebExchange(c.req.header("x-twistloom-web-control"), c.get("body"),
       String(c.get("body")?.emailOrUsername ?? ""), ip);
-    if (!(signedLimit ?? await checkRateLimitByIP(ip))) return cRateLimitError(c);
+    if (!(signedLimit ?? await checkRateLimitByIP(ip, 'web-password-login', String(c.get("body")?.emailOrUsername ?? "")))) return cRateLimitError(c);
 
     const { emailOrUsername, password } = c.get("body");
 
@@ -360,7 +360,7 @@ router.post('/signup', async (c) => {
   try {
     // Rate limit
     const ip = getClientIp(c);
-    if (!await checkRateLimitByIP(ip)) {
+    if (!await checkRateLimitByIP(ip, 'signup')) {
       return c.json({ error: 'Too many requests. Please try again later.' }, 429);
     }
 
@@ -473,9 +473,9 @@ router.post('/signup', async (c) => {
  * this probe and a real registration never creates a duplicate account.
  *
  * Rate limiting uses the Redis `checkRateLimit` (AGENTS.md 3.9.C — fail open
- * when Redis is unavailable) under a **dedicated key**: the distributed
- * `checkRateLimitByIP` bucket is shared with login/signup attempts, so a
- * burst of keystroke-driven probes must never consume that budget.
+ * when Redis is unavailable) under a **dedicated IP key**: keystroke-driven
+ * probes have a higher-volume budget and must not consume tighter credential
+ * attempt buckets.
  *
  * @route GET /api/auth/username-available
  * @description Check whether a username is free (public, unauthenticated)
@@ -504,11 +504,13 @@ router.get('/username-available', async (c) => {
     const ip = getClientIp(c);
     // Keystroke-driven (debounced client-side, still high-frequency): a loose
     // per-IP budget that cannot be spent by other auth endpoints.
-    const limit = await checkRateLimit(`auth-username-available:${ip}`, {
-      maxRequests: 60,
-      windowSeconds: 60,
-    });
-    if (!limit.allowed) return cRateLimitError(c);
+    if (ip !== 'unknown') {
+      const limit = await checkRateLimit(`auth-username-available:${await hashSHA256(ip)}`, {
+        maxRequests: 60,
+        windowSeconds: 60,
+      });
+      if (!limit.allowed) return cRateLimitError(c);
+    }
 
     const raw = c.req.query('username');
     if (!raw || !raw.trim()) {
@@ -570,7 +572,7 @@ router.get('/username-available', async (c) => {
 router.post('/forgot-password', async (c) => {
   const { email } = c.get('body');
   if (typeof email !== 'string' || !email.trim()) return cValidationError(c, 'Email is required');
-  if (!await checkRateLimitByIP(getClientIp(c), email)) return cRateLimitError(c);
+  if (!await checkRateLimitByIP(getClientIp(c), 'password-recovery', email)) return cRateLimitError(c);
   const work = (async () => {
     try {
       await createPasswordResetToken(email);
@@ -612,7 +614,7 @@ router.post('/forgot-password', async (c) => {
 router.post('/reset-password', async (c) => {
   try {
     const ip = getClientIp(c);
-    if (!await checkRateLimitByIP(ip)) {
+    if (!await checkRateLimitByIP(ip, 'password-reset')) {
       return c.json({ error: 'Too many requests. Please try again later.' }, 429);
     }
 
@@ -681,7 +683,7 @@ router.post('/reset-password', async (c) => {
 router.post('/verify-email', async (c) => {
   try {
     const ip = getClientIp(c);
-    if (!await checkRateLimitByIP(ip, String(c.get("body")?.email ?? ""))) {
+    if (!await checkRateLimitByIP(ip, 'email-verification', String(c.get("body")?.email ?? ""))) {
       return c.json({ error: 'Too many requests. Please try again later.' }, 429);
     }
 
@@ -735,7 +737,7 @@ router.post('/verify-email', async (c) => {
 router.post('/resend-verification', async (c) => {
   const { email } = c.get('body');
   if (typeof email !== 'string' || !email.trim()) return cValidationError(c, 'Email is required');
-  if (!await checkRateLimitByIP(getClientIp(c), email)) return cRateLimitError(c);
+  if (!await checkRateLimitByIP(getClientIp(c), 'verification-resend', email)) return cRateLimitError(c);
   const work = (async () => {
     try {
       const [account] = await dbWrite.select({ userId: users.userId, verified: userAuth.emailVerified }).from(users)
@@ -815,13 +817,8 @@ router.post('/resend-verification', async (c) => {
  */
 router.post('/mobile/token', async (c) => {
   try {
-    const ip = getClientIp(c);
-    // Redis-backed limit (AGENTS.md §3.9.C — separate from the shared auth checkRateLimitByIP budget)
-    const limit = await checkRateLimit(`auth-mobile-token:${ip}`, {
-      maxRequests: 10,
-      windowSeconds: 60,
-    });
-    if (!limit.allowed) return cRateLimitError(c);
+    const limited = await limitMobileIssuanceByIp(c, 'password');
+    if (limited) return limited;
 
     const { emailOrUsername, password } = c.get("body");
     if (typeof emailOrUsername !== 'string' || !emailOrUsername.trim() || typeof password !== 'string' || !password) {
@@ -885,10 +882,20 @@ router.post('/mobile/token', async (c) => {
 // Shared mobile OAuth exchange helpers (Google / Apple → token pair)
 // ---------------------------------------------------------------------------
 
-/** Redis IP limit shared by all mobile issuance routes (AGENTS.md §3.9.C). */
-async function limitMobileIssuanceByIp(c: Context<AppEnv>): Promise<Response | null> {
+/** Shared coarse IP guard plus per-flow IP budget for mobile credential issuance. */
+async function limitMobileIssuanceByIp(
+  c: Context<AppEnv>,
+  flow: 'password' | 'google' | 'apple',
+): Promise<Response | null> {
   const ip = getClientIp(c);
-  const limit = await checkRateLimit(`auth-mobile-token:${ip}`, {
+  if (ip === 'unknown') return null;
+  const ipDigest = await hashSHA256(ip);
+  const shared = await checkRateLimit(`auth-mobile-ip:${ipDigest}`, {
+    maxRequests: 60,
+    windowSeconds: 60,
+  });
+  if (!shared.allowed) return cRateLimitError(c);
+  const limit = await checkRateLimit(`auth-mobile-token:${flow}:${ipDigest}`, {
     maxRequests: 10,
     windowSeconds: 60,
   });
@@ -916,7 +923,7 @@ function mobileLoginJson(
  */
 router.post('/mobile/google', async (c) => {
   try {
-    const limited = await limitMobileIssuanceByIp(c);
+    const limited = await limitMobileIssuanceByIp(c, 'google');
     if (limited) return limited;
 
     const { idToken } = c.get('body') as { idToken?: unknown };
@@ -976,7 +983,7 @@ router.post('/mobile/google', async (c) => {
  */
 router.post('/mobile/apple', async (c) => {
   try {
-    const limited = await limitMobileIssuanceByIp(c);
+    const limited = await limitMobileIssuanceByIp(c, 'apple');
     if (limited) return limited;
 
     const body = c.get('body') as {
@@ -1072,11 +1079,13 @@ router.post('/mobile/apple', async (c) => {
 router.post('/mobile/refresh', async (c) => {
   try {
     const ip = getClientIp(c);
-    const limit = await checkRateLimit(`auth-mobile-refresh:${ip}`, {
-      maxRequests: 30,
-      windowSeconds: 60,
-    });
-    if (!limit.allowed) return cRateLimitError(c);
+    if (ip !== 'unknown') {
+      const limit = await checkRateLimit(`auth-mobile-refresh:${await hashSHA256(ip)}`, {
+        maxRequests: 30,
+        windowSeconds: 60,
+      });
+      if (!limit.allowed) return cRateLimitError(c);
+    }
 
     const { refreshToken } = c.get("body");
     if (!refreshToken || typeof refreshToken !== 'string') {
@@ -1608,7 +1617,7 @@ router.delete('/sessions/:id', requireAuth, async (c) => {
 router.put('/email', requireAuth, async (c) => {
   try {
     const ip = getClientIp(c);
-    if (!await checkRateLimitByIP(ip)) return cRateLimitError(c);
+    if (!await checkRateLimitByIP(ip, 'email-change')) return cRateLimitError(c);
 
     const userId = c.get("userId")!;
     const { newEmail, currentPassword } = c.get("body");
@@ -1723,7 +1732,7 @@ router.put('/email', requireAuth, async (c) => {
 router.put('/password', requireAuth, async (c) => {
   try {
     const ip = getClientIp(c);
-    if (!await checkRateLimitByIP(ip)) return cRateLimitError(c);
+    if (!await checkRateLimitByIP(ip, 'password-change')) return cRateLimitError(c);
 
     const userId = c.get("userId")!;
     const { currentPassword, newPassword } = c.get("body");
@@ -1824,7 +1833,7 @@ router.put('/password', requireAuth, async (c) => {
 router.put('/username', requireAuth, async (c) => {
   try {
     const ip = getClientIp(c);
-    if (!await checkRateLimitByIP(ip)) return cRateLimitError(c);
+    if (!await checkRateLimitByIP(ip, 'username-change')) return cRateLimitError(c);
 
     const userId = c.get("userId")!;
     const { newUsername } = c.get("body");

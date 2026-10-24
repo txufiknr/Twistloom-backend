@@ -20,7 +20,8 @@
  * @note
  * - Requires UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN environment variables
  * - Fails open when Redis is absent or unavailable (explicit infrastructure policy)
- * - Only applies rate limiting to requests with userId (set by NextAuth auth middleware)
+ * - Default middleware keys authenticated requests by userId; anonymous IP
+ *   fallback is opt-in, and auth attempts use separate helper buckets below
  */
 
 import { createMiddleware } from 'hono/factory';
@@ -116,7 +117,19 @@ export function rateLimit(config: RateLimitConfig = DEFAULT_RATE_LIMIT, opts?: R
     // is set (optionalAuth, expensive endpoints), anonymous requests key on client
     // IP so they are still throttled. Without an identifier we cannot limit.
     const userId = c.get('userId');
-    const identifier = userId ?? (opts?.ipFallback ? getClientIp(c) : undefined);
+    let identifier = userId;
+    if (!userId && opts?.ipFallback) {
+      const clientIp = getClientIp(c);
+      if (clientIp !== 'unknown') {
+        try {
+          identifier = `ip:${await hashSHA256(clientIp)}`;
+        } catch (error) {
+          console.error('[rate-limit] Error hashing client IP:', getErrorMessage(error));
+          await next();
+          return;
+        }
+      }
+    }
     if (!identifier || identifier === 'unknown') {
       await next();
       return;
@@ -129,42 +142,38 @@ export function rateLimit(config: RateLimitConfig = DEFAULT_RATE_LIMIT, opts?: R
       return;
     }
 
+    let result: Awaited<ReturnType<Ratelimit['limit']>>;
     try {
-      // Check rate limit (atomic operation in Redis)
-      const result = await ratelimit.limit(identifier);
-
-      // Check if limit exceeded
-      if (!result.success) {
-        const resetTime = new Date(result.reset);
-        const retryAfter = Math.ceil((resetTime.getTime() - Date.now()) / 1000);
-
-        // Set Retry-After header for better UX
-        c.header('Retry-After', retryAfter.toString());
-        c.header('X-RateLimit-Limit', maxRequests.toString());
-        c.header('X-RateLimit-Remaining', result.limit.toString());
-        c.header('X-RateLimit-Reset', resetTime.toISOString());
-
-        throw new HTTPException(429, {
-          message:
-            message ||
-            `Rate limit exceeded. Maximum ${maxRequests} requests per ${windowSeconds} seconds. Retry after ${retryAfter} seconds.`,
-        });
-      }
-
-      // Set rate limit headers for successful requests
-      c.header('X-RateLimit-Limit', maxRequests.toString());
-      c.header('X-RateLimit-Remaining', result.limit.toString());
-      c.header('X-RateLimit-Reset', new Date(result.reset).toISOString());
-
-      // Request allowed, continue
-      await next();
+      // Check rate limit (atomic operation in Redis).
+      result = await ratelimit.limit(identifier);
     } catch (error) {
-      if (error instanceof HTTPException) throw error;
-      // On error, allow request to proceed (fail open for availability)
-      // Log error for monitoring but don't block legitimate users
-      console.error('[rate-limit] ❌ Error checking rate limit:', getErrorMessage(error));
+      // Fail open only when the limiter itself fails. Keep downstream route
+      // exceptions outside this catch so `next()` is never run a second time.
+      console.error('[rate-limit] Error checking rate limit:', getErrorMessage(error));
       await next();
+      return;
     }
+
+    if (!result.success) {
+      const resetTime = new Date(result.reset);
+      const retryAfter = Math.max(1, Math.ceil((resetTime.getTime() - Date.now()) / 1000));
+
+      c.header('Retry-After', retryAfter.toString());
+      c.header('X-RateLimit-Limit', maxRequests.toString());
+      c.header('X-RateLimit-Remaining', result.remaining.toString());
+      c.header('X-RateLimit-Reset', resetTime.toISOString());
+
+      throw new HTTPException(429, {
+        message:
+          message ||
+          `Rate limit exceeded. Maximum ${maxRequests} requests per ${windowSeconds} seconds. Retry after ${retryAfter} seconds.`,
+      });
+    }
+
+    c.header('X-RateLimit-Limit', maxRequests.toString());
+    c.header('X-RateLimit-Remaining', result.remaining.toString());
+    c.header('X-RateLimit-Reset', new Date(result.reset).toISOString());
+    await next();
   });
 }
 
@@ -194,38 +203,72 @@ export const rateLimitByUser = rateLimit(DEFAULT_RATE_LIMIT);
  * Distributed IP attempts for unauthenticated auth/recovery routes.
  *
  * Uses the shared atomic Redis fixed-window helper rather than warm-instance
- * counters. Optional normalized account buckets bind OTP guesses across IPs.
- * Neither layer is an account-existence oracle; bucket keys contain SHA-256
- * digests rather than plaintext emails/IPs. Account lockout is separate.
+ * counters. A broad IP burst ceiling is combined with a tighter per-action IP
+ * bucket and optional normalized account bucket. Account lockout is separate.
+ * Keys contain SHA-256 digests rather than plaintext IPs or account values.
  *
  * @remarks Redis absence/outage fails open by repository policy. Netlify
  *   supplies trusted context.ip; arbitrary forwarded headers are not authority.
  *   Signed web exchanges use separate egress/account limits to avoid pooling
  *   every browser into one five-attempt frontend-server bucket.
  * @example
- * if (!await checkRateLimitByIP(getClientIp(c), email)) return cRateLimitError(c);
+ * if (!await checkRateLimitByIP(getClientIp(c), 'password-recovery', email)) return cRateLimitError(c);
  * @param ip - Adapter-provided address (or the shared local unknown fallback).
- * @param account - Optional normalized recovery/verification email identifier.
+ * @param scope - Server-defined action key; never derive this from request data.
+ * @param account - Optional normalized account identifier.
  * @returns Whether distributed attempt admission permits this request.
  */
 function positiveAuthSetting(raw: string | undefined, fallback: number): number {
   const value = Number(raw);
   return Number.isSafeInteger(value) && value > 0 ? value : fallback;
 }
-const IP_RATE_LIMIT = positiveAuthSetting(process.env.AUTH_RATE_LIMIT_MAX_ATTEMPTS, 5); // Max attempts per window
-const IP_RATE_WINDOW = positiveAuthSetting(process.env.AUTH_RATE_LIMIT_WINDOW_MS, 60000); // Time window in milliseconds
+const AUTH_IP_BURST_LIMIT = positiveAuthSetting(process.env.AUTH_RATE_LIMIT_IP_MAX_REQUESTS, 60);
+const AUTH_IP_BURST_WINDOW_MS = positiveAuthSetting(process.env.AUTH_RATE_LIMIT_IP_WINDOW_MS, 60000);
+const AUTH_SCOPE_LIMIT = positiveAuthSetting(process.env.AUTH_RATE_LIMIT_MAX_ATTEMPTS, 5);
+const AUTH_SCOPE_WINDOW_MS = positiveAuthSetting(process.env.AUTH_RATE_LIMIT_WINDOW_MS, 60000);
 
-/** Distributed attempts; infrastructure failures follow the explicit fail-open policy.
- * Optional account buckets bind OTP/recovery guesses across changing source IPs. */
-export async function checkRateLimitByIP(ip: string, account?: string): Promise<boolean> {
+export type AuthRateLimitScope =
+  | 'web-password-login'
+  | 'web-google-login'
+  | 'signup'
+  | 'password-recovery'
+  | 'password-reset'
+  | 'email-verification'
+  | 'verification-resend'
+  | 'email-change'
+  | 'password-change'
+  | 'username-change';
+
+/**
+ * Distributed auth admission has three independent buckets: a higher shared
+ * source-IP ceiling for broad abuse, a tighter per-action IP ceiling to avoid
+ * cross-route coupling, and an optional normalized-account ceiling. Redis keys
+ * contain digests, not raw IPs or account identifiers. Infrastructure failures
+ * follow the repository's explicit fail-open policy.
+ */
+export async function checkRateLimitByIP(
+  ip: string,
+  scope: AuthRateLimitScope,
+  account?: string,
+): Promise<boolean> {
   try {
-    const windowSeconds = Math.max(1, Math.ceil(IP_RATE_WINDOW / 1000));
-    const ipResult = await checkRateLimit('auth:ip:' + await hashSHA256(ip),
-      { maxRequests: IP_RATE_LIMIT, windowSeconds });
-    if (!ipResult.allowed) return false;
-    if (!account) return true;
-    return (await checkRateLimit('auth:account:' + await hashSHA256(account.trim().toLowerCase()),
-      { maxRequests: IP_RATE_LIMIT, windowSeconds: 15 * 60 })).allowed;
+    if (ip !== 'unknown') {
+      const ipDigest = await hashSHA256(ip);
+      const ipWindowSeconds = Math.max(1, Math.ceil(AUTH_IP_BURST_WINDOW_MS / 1000));
+      const scopeWindowSeconds = Math.max(1, Math.ceil(AUTH_SCOPE_WINDOW_MS / 1000));
+
+      const burstResult = await checkRateLimit('auth:ip:' + ipDigest,
+        { maxRequests: AUTH_IP_BURST_LIMIT, windowSeconds: ipWindowSeconds });
+      if (!burstResult.allowed) return false;
+
+      const scopeResult = await checkRateLimit(`auth:ip-scope:${scope}:` + ipDigest,
+        { maxRequests: AUTH_SCOPE_LIMIT, windowSeconds: scopeWindowSeconds });
+      if (!scopeResult.allowed) return false;
+    }
+
+    if (!account?.trim()) return true;
+    return (await checkRateLimit(`auth:account:${scope}:` + await hashSHA256(account.trim().toLowerCase()),
+      { maxRequests: AUTH_SCOPE_LIMIT, windowSeconds: 15 * 60 })).allowed;
   } catch {
     console.error('[auth] Distributed attempt limiter unavailable (fail open)');
     return true;

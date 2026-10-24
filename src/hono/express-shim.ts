@@ -23,10 +23,11 @@ import type { Context } from "hono";
 import type { AppEnv } from "./env.js";
 
 /**
- * Resolves the best-effort client IP address from a Hono context.
+ * Resolves the client IP from trusted platform context or an explicitly trusted proxy.
  *
- * Honours the `x-forwarded-for` header (set by Vercel / reverse proxies) and
- * falls back to "unknown". Replaces Express's `req.ip` / `req.socket.remoteAddress`.
+ * An arbitrary `x-forwarded-for` header is ignored by default. When no trusted
+ * address is available, returns "unknown". Replaces Express's `req.ip` /
+ * `req.socket.remoteAddress`.
  *
  * @param c - Hono context
  * @returns Client IP string
@@ -101,14 +102,13 @@ export function toExpressRequest(c: Context<AppEnv>): ExpressLikeRequest {
     }
   }
 
+  const clientIp = getClientIp(c);
   return {
     headers,
     method: c.req.method,
     url: c.req.url,
-    ip: c.req.raw.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown",
-    socket: {
-      remoteAddress: c.req.raw.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown",
-    },
+    ip: clientIp,
+    socket: { remoteAddress: clientIp },
     body: (c as unknown as { _body?: unknown })._body ?? {},
     cookies,
     get(header: string): string | undefined {

@@ -168,7 +168,7 @@ The explore endpoint supports two dimensions of ordering: **Primary Book-Specifi
 | `top-picks` | Editor's Picks | Filters `books.top_pick IS NOT NULL`, `ORDER BY books.top_pick DESC`. | ✅ Yes (30m) | Public |
 | `originals` | Twistloom Originals | Filters `books.is_original = true AND books.image_id IS NOT NULL`, `ORDER BY books.created_at DESC`. | ✅ Yes (30m) | Public |
 | `pen` | Pen Published | Filters `books.is_pen_book = true AND books.authoring_status = 'complete'`, `ORDER BY books.created_at DESC`. | ✅ Yes (30m) | Public |
-| `for-you` | You Might Like | Aggregates keywords from the reader's engagement profile — reads (`user_sessions`), likes (`user_likes`), favorites (`user_favorites`) via shared `buildInterestKeywordsSql` — scores keyword overlap, excludes read books. **Cold start:** when the profile is empty (`cardinality(interestKeywords) = 0`) the overlap predicate is skipped and the catalogue is ranked by `trendingScore`, so new users see content instead of an empty shelf. | ❌ No | Requires Auth |
+| `for-you` | You Might Like | Aggregates keywords from the reader's engagement profile — reads (`user_sessions`), likes (`user_likes`), favorites (`user_favorites`) via shared `buildInterestKeywordsSql` — scores keyword overlap, keeps ongoing reads (even without keywords), and excludes completed reads. **Cold start:** when the profile is empty (`cardinality(interestKeywords) = 0`) the overlap predicate is skipped and the catalogue is ranked by `trendingScore`. | ❌ No | Requires Auth |
 | `recommendations` | Recommended | Finds unread books sharing keywords with books the user has **liked** (`user_likes`). | ❌ No | Requires Auth |
 | `reads` | Recently Read | Filters to viewer's `user_sessions`, ordered by `user_sessions.updated_at DESC`. | ❌ No | Requires Auth (or `profileUserId`) |
 | `favorites` | Saved / Bookmarked | Filters to viewer's `user_favorites`, ordered by `user_favorites.created_at DESC`. Supports `collection` folder filter. | ❌ No | Requires Auth (or `profileUserId`) |
@@ -188,11 +188,11 @@ The explore endpoint supports two dimensions of ordering: **Primary Book-Specifi
 | Use case | single "You Might Like" shelf | "popular for you", "trending for you", "newest for you" — the home-screen tri-section |
 | Example | `?sortBy=for-you` | `?sortBy=popular&personalized=true` |
 
-Both share the same signal profile and cold-start/read-exclusion semantics through `buildPersonalizedFilterCondition` (`src/services/book-controller.ts`):
+Both share the same signal profile and cold-start/completed-read-exclusion semantics through `buildPersonalizedFilterCondition` (`src/services/book-controller.ts`):
 
 1. **Interest profile** — `buildInterestKeywordsSql(userId)`: DISTINCT keywords across reads + likes + favorites (weighting only matters in `getRecommendedTags` ranking; here it is a flat set).
-2. **Overlap** — `(cardinality(profile) = 0 OR books.keywords && profile)`: GIN-optimised `&&`; the cardinality guard makes cold start a no-op so shelves never render empty.
-3. **Read exclusion** — `NOT EXISTS (SELECT 1 FROM user_sessions ...)`: "For You" surfaces new content matching the user's taste.
+2. **Ongoing reads or overlap** — `(EXISTS (SELECT 1 FROM user_sessions WHERE user_id = viewer AND book_id = books.id) OR cardinality(profile) = 0 OR books.keywords && profile)`: ongoing reads remain eligible even without keywords; other books match the GIN-optimised overlap predicate. The cardinality guard handles cold start.
+3. **Completed-read exclusion** — `NOT EXISTS (SELECT 1 FROM user_completed_books WHERE user_id = viewer AND book_id = books.id)`: only completed reads are omitted, including books that still have a session. This is the same completion source as `isCompleted`; completed reads continue to contribute taste signals. An exhausted shelf can correctly be empty; clients must not bypass the exclusion with an unpersonalized fallback.
 
 Because it enters `finalCondition`, the predicate applies to **both** the result query and the pagination COUNT query automatically. It composes with `tags=` (AND) and any sort, bypasses the shared page-1 browse cache and the `grandTotal` shortcut, requires auth (anonymous → empty page), and is ignored when `profileUserId` is set (personalization always targets the authenticated viewer).
 

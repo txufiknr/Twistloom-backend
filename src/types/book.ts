@@ -350,6 +350,7 @@ export type EnrichedBookData = Pick<DBBook,
   translation: BookTranslation | null;
   generation: EnrichedBookGeneration | null;
   collection: string | null;
+  guestProgressImportVersion: number;
 }
 
 export type EnrichedBookFirstPage = { id: string; text: string };
@@ -389,6 +390,8 @@ export type EnrichedBookFirstPage = { id: string; text: string };
 export type EnrichedBookSession = {
   /** Timestamp of the reader's last activity in this book */
   lastReadAt: Date;
+  /** Latest successful guest import; private CAS token, never a result history. */
+  lastGuestImportId?: string | null;
   /** The reader's current page id (updates on every navigation) */
   lastPageId: string;
   /** The reader's current page number (display hint only) */

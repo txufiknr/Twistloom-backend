@@ -24,6 +24,7 @@ import { CREDIT_PACKS, FIRST_PURCHASE_BONUS } from "../config/credits.js";
 import { dbWrite } from "../db/client.js";
 import { transactions, webhookDeliveries } from "../db/schema.js";
 import { awardCredits, awardFirstPurchaseBonusOnce } from "./credits.js";
+import { NOTIFICATION_I18N_KEYS } from "../config/notifications.js";
 import { recordThanks } from "./thanks.js";
 import { createSubscription, renewSubscription, cancelSubscription, updateSubscription } from "./subscription.js";
 import { isUniqueConstraintError } from "../utils/retry.js";
@@ -392,6 +393,8 @@ export async function handleXenditInvoicePaid(
         notificationType: "payment_success",
         notificationTitle: "Payment Successful",
         notificationMessage: `Your purchase of ${creditsAmount} credits (${pack.title}) was successful`,
+        notificationI18nKey: NOTIFICATION_I18N_KEYS.PAYMENT_SUCCESS,
+        notificationI18nParams: { credits: creditsAmount, packTitle: pack.title },
         notificationData: { amountIdr: paidAmount, providerPaymentId, packId },
         metadata: {
           providerPaymentId,

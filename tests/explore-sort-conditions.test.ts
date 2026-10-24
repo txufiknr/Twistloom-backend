@@ -133,12 +133,38 @@ describe("Explore sort membership predicates fold into the combined WHERE", () =
     expect(resultWhere).toContain('"books"."keywords" &&');
     expect(countWhere).toContain('"books"."keywords" &&');
 
-    // Interest predicate: cold-start cardinality guard + read exclusion.
+    // Interest predicate: cold-start cardinality guard + completed-read exclusion.
     expect(resultWhere).toContain("cardinality");
     expect(resultWhere).toContain("NOT EXISTS");
     expect(countWhere).toContain("cardinality");
     expect(countWhere).toContain("NOT EXISTS");
   });
+
+  for (const sort of ["popular", "trending", "newest", "for-you"] as const) {
+    it(`${sort} keeps ongoing sessions but excludes only completed reads in results and counts`, () => {
+      const { query, countQuery } = buildExploreQuery({
+        bookSortBy: sort,
+        personalized: true,
+        currentUserId: "reader-ongoing",
+      });
+
+      for (const statement of [query.toSQL(), countQuery.toSQL()]) {
+        const where = whereClause(statement.sql);
+        expectRetainsBaseScope(where, sort);
+        // A positive session membership branch is independent of keywords,
+        // so ongoing books with an empty keyword array are still candidates.
+        expect(where).toMatch(/EXISTS\s*\(\s*SELECT 1 FROM "user_sessions"/);
+        expect(where).toMatch(/\) OR cardinality/);
+        // Completion wins over every inclusion branch, including a retained
+        // session for a completed book. Never use the session table to exclude.
+        expect(where).toMatch(/\) AND NOT EXISTS\s*\(\s*SELECT 1 FROM "user_completed_books"/);
+        expect(where).not.toMatch(/NOT EXISTS\s*\(\s*SELECT 1 FROM "user_sessions"/);
+        expect(where).toContain('"user_completed_books"."user_id"');
+        expect(where).toContain('"user_completed_books"."book_id" = "books"."id"');
+        expect(statement.params).toContain("reader-ongoing");
+      }
+    });
+  }
 
   it("for-you for an anonymous viewer collapses to 1=0 while keeping the base scope", () => {
     const { countQuery } = buildExploreQuery({

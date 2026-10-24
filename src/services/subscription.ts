@@ -33,6 +33,7 @@ import { dispatchEmailWorkers } from './email-dispatch.js';
 
 import { dbWrite, dbRead } from "../db/client.js";
 import { subscriptions, subscriptionTransactions, users, userNotifications } from "../db/schema.js";
+import { NOTIFICATION_I18N_KEYS } from "../config/notifications.js";
 import { eq, and, inArray, sql } from "drizzle-orm";
 import { addCredits } from "./credits.js";
 import { VIP_BENEFITS, VIP_TRIAL } from "../config/subscription.js";
@@ -606,8 +607,16 @@ export async function handleTrialWillEnd(providerSubscriptionId: string): Promis
     const [row] = await tx.select({ userId: subscriptions.userId, trialEnd: subscriptions.trialEnd, email: users.email, name: users.name })
       .from(subscriptions).innerJoin(users, eq(subscriptions.userId, users.userId)).where(eq(subscriptions.providerSubscriptionId, providerSubscriptionId)).limit(1);
     if (!row) return;
-    await tx.insert(userNotifications).values({ userId: row.userId, type: 'trial_ending_soon', title: 'Your VIP trial ends soon',
-      message: 'Your free trial ends in 3 days. Make sure your payment method is up to date to keep your VIP benefits.', data: { trialEnd: row.trialEnd }, read: false });
+    await tx.insert(userNotifications).values({
+      userId: row.userId,
+      type: 'trial_ending_soon',
+      title: 'Your VIP trial ends soon',
+      message: 'Your free trial ends in 3 days. Make sure your payment method is up to date to keep your VIP benefits.',
+      i18nKey: NOTIFICATION_I18N_KEYS.TRIAL_ENDING_SOON,
+      i18nParams: row.trialEnd ? { trialEnd: row.trialEnd.toISOString() } : undefined,
+      data: { trialEnd: row.trialEnd },
+      read: false
+    });
     if (row.email && row.trialEnd) await sendTrialEndingEmail(row.email, row.name || 'there', row.trialEnd,
       { userId: row.userId, tx, expiresAt: row.trialEnd, requestKey: `trial_ending/${providerSubscriptionId}/${row.trialEnd.getTime()}` });
   });

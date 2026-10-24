@@ -28,6 +28,7 @@
 import { eq } from 'drizzle-orm';
 import { dbRead, dbWrite } from '../db/client.js';
 import { books, users, userNotifications } from '../db/schema.js';
+import { NOTIFICATION_I18N_KEYS, type NotificationI18nKey } from '../config/notifications.js';
 import { normalizeInAppPreferences } from './in-app-preferences.js';
 import { getErrorMessage } from '../utils/error.js';
 import type { BookGenerationStatus } from '../types/book.js';
@@ -72,6 +73,8 @@ export interface GenerationOutcomeNotificationRow {
   type: 'ai_completed' | 'ai_failed';
   title: string;
   message: string;
+  i18nKey: NotificationI18nKey;
+  i18nParams: Record<string, string | number>;
   data: { bookId: string; bookSlug: string | null; bookTitle: string; status: GenerationOutcome };
   read: false;
 }
@@ -100,6 +103,8 @@ export function buildGenerationOutcomeRow(ctx: {
       type: 'ai_completed',
       title: `Story ready: ${bookTitle}`,
       message: 'Your story finished generating — open it to start reading.',
+      i18nKey: NOTIFICATION_I18N_KEYS.AI_STORY_COMPLETED,
+      i18nParams: { bookTitle, bookSlug: bookSlug ?? '' },
       data,
       read: false,
     };
@@ -110,6 +115,8 @@ export function buildGenerationOutcomeRow(ctx: {
     type: 'ai_failed',
     title: `Story generation failed: ${bookTitle}`,
     message: 'We could not finish generating this story.',
+    i18nKey: NOTIFICATION_I18N_KEYS.AI_STORY_FAILED,
+    i18nParams: { bookTitle },
     data,
     read: false,
   };

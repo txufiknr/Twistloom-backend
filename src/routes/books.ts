@@ -142,6 +142,8 @@ import { parseBulkLikeIds } from "../utils/book-likes.js";
 import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookPage, enrichBooksWithUserData } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache } from "../services/cache.js";
 import { getBookAccessSnapshot, getBookDetailAccessError, isRestrictedToOwner } from "../services/book-page-access.js";
+import { guestImportMutationTime, importGuestProgress } from '../services/guest-progress.js';
+import { clearedGuestImportMarker } from '../utils/guest-progress.js';
 import type { BookCreationStatus, BookGenerationPayload, BookMode, BookSortOption, BookSource, BookStatus, BookVisibility, EnrichedBookData } from "../types/book.js";
 import { bookStatuses, bookVisibilities, bookModes, bookSources, lastUpdatedFilterOptions, storyGenerationSteps } from "../types/book.js";
 import { createBookCore, createBookValidate, handleBookCreationError, updateBookGenerationStatus } from "../services/book-creation.js";
@@ -158,6 +160,8 @@ import type { StoryMC } from "../types/character.js";
 import { releaseGenerationClaim, triggerCandidateGenerationWorkflow, validateAndRetrievePageForGeneration } from "../utils/candidate-generation.js";
 import { SSE_POLLING_CONFIG } from "../config/candidate-generation.js";
 import { getPsychologicalProfileResult } from "../services/psychological-profile.js";
+import { notifyTestimonialLike } from "../services/testimonial-notifications.js";
+import { setTestimonialLike } from "../services/testimonial-likes.js";
 import { getLockedPaths } from "../services/locked-paths.js";
 import { runGate0, runGate1, buildCustomActionValidationPrompt, buildCanonicalAction, getRejectionMessage, getRejectionCode, CUSTOM_ACTION_VALIDATION_SCHEMA_DEFINITION, CUSTOM_ACTION_VALIDATION_REQUIRED_FIELDS, CUSTOM_ACTION_GENERATION_STALE_MS, CustomActionAlreadyActiveError } from "../services/custom-actions.js";
 import { getMaxCustomActionChars, CUSTOM_ACTION_POLLING_INTERVAL_MS, CUSTOM_ACTION_MAX_POLLING_TIME_MS } from "../config/custom-actions.js";
@@ -165,8 +169,6 @@ import { recordViolationEvent } from "../services/trust-safety.js";
 import { loadOwnCustomActions, mapCustomActionRowToAction } from "../services/book.js";
 import { customActions } from "../db/schema.js";
 import { getStoryStateFromPage, getStoryState, computeEndingStats, touchReadingSession } from "../services/story.js";
-import type { SelectedAction } from "../types/story.js";
-import { actionTypes, actionHintTypes } from "../types/story.js";
 import { getStoryStateWithBranch } from "../services/story-branch.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 import { notifyForumOfBookChange, notifyForumStoryArchived } from "../services/forum-queue.js";
@@ -207,7 +209,6 @@ import {
 } from "../services/companion-ask.js";
 import { streamCompanionAnswerSSE, companionAnswerIsComplete } from "../utils/companion-stream.js";
 import { retrieveSimilarPages, retrieveBookCluesForQuery } from "../services/vector-memory.js";
-import { assembleBookPages, sanitizeDownloadFilename } from "../services/book-export.js";
 
 const router = new Hono<AppEnv>();
 
@@ -2820,6 +2821,8 @@ router.get("/:id/similar", optionalAuth, async (c) => {
  *                 shelf's own ranking — e.g. "popular for you", "trending for you", "newest for you".
  *                 Distinct from sortBy=for-you, which REPLACES the ranking with an overlap score.
  *                 Cold start (no signals): returns the unfiltered shelf. Anonymous: empty page.
+ *                 Keeps ongoing reads (including books without keywords); excludes only reads
+ *                 recorded in user_completed_books. Existing visibility/status filters still apply.
  *                 Ignored when profileUserId is set (personalization always targets the viewer).
  *                 Note: bypasses the shared page-1 browse cache and the grandTotal shortcut.
  * @returns Paginated list of books
@@ -2827,7 +2830,7 @@ router.get("/:id/similar", optionalAuth, async (c) => {
  * @remarks
  * - creations: Shows user's own created books (requires authentication). Optionally filtered by `status` query param.
  * - reads: Shows books the user has read, sorted by lastReadAt (requires authentication)
- * - for-you: "You Might Like" — unread books ranked by keyword overlap with the user's read/like/favorite profile (requires authentication). Cold start (no signals): ranks the public catalogue by trending instead of returning an empty page.
+ * - for-you: "You Might Like" — ongoing reads and matching recommendations, excluding completed reads, ranked by keyword overlap with the user's read/like/favorite profile (requires authentication). Cold start (no signals): ranks the public catalogue by trending instead of returning an empty page.
  * - recommendations: Recommends books based on user likes (requires authentication)
  * - favorites: Shows user's saved/favorited books (requires authentication)
  * - All other options: Show published books only (optional authentication, status filter ignored)
@@ -3368,10 +3371,9 @@ router.get("/tags/popular", async (c) => {
  * `explore?tags={keyword}` returns results.
  *
  * Note: the guarantee does NOT extend to `explore?tags={keyword}&personalized=true`.
- * The personalized filter additionally excludes books the reader has already
- * opened (any `user_sessions` row), so a tag whose entire catalog the reader
- * has exhausted legitimately returns an empty personalized page — that is the
- * intended "nothing new in this tag" signal, not a bug.
+ * The personalized filter excludes completed reads (`user_completed_books`),
+ * while ongoing sessions stay eligible. A tag whose entire catalogue the reader
+ * has completed legitimately returns an empty personalized page.
  *
  * Cold start: users with no signal rows (or no clickable tags) receive the
  * global popular tags with `personalized: false`, so the chip carousel always
@@ -5396,6 +5398,7 @@ const testimonialWithAuthorSelect = {
   status: bookTestimonials.status,
   featured: bookTestimonials.featured,
   curatorQuill: bookTestimonials.curatorQuill,
+  likesCount: bookTestimonials.likesCount,
   createdAt: bookTestimonials.createdAt,
   updatedAt: bookTestimonials.updatedAt,
   name: users.name,
@@ -5441,10 +5444,30 @@ router.get("/:identifier/testimonials", optionalAuth, async (c) => {
     conditions.push(eq(bookTestimonials.featured, true));
   }
 
-  const rows = await dbRead
-    .select(testimonialWithAuthorSelect)
+  const selectFields = {
+    ...testimonialWithAuthorSelect,
+    isLiked: userId
+      ? sql<boolean>`(${userLikes.userId} IS NOT NULL)`
+      : sql<boolean>`false`,
+  };
+
+  let query = dbRead
+    .select(selectFields)
     .from(bookTestimonials)
-    .leftJoin(users, eq(bookTestimonials.userId, users.userId))
+    .leftJoin(users, eq(bookTestimonials.userId, users.userId));
+
+  if (userId) {
+    query = query.leftJoin(
+      userLikes,
+      and(
+        eq(userLikes.targetId, bookTestimonials.id),
+        eq(userLikes.targetType, 'testimonial'),
+        eq(userLikes.userId, userId),
+      ),
+    ) as any;
+  }
+
+  const rows = await query
     .where(and(...conditions))
     .orderBy(desc(bookTestimonials.createdAt))
     .limit(limit)
@@ -7577,20 +7600,10 @@ router.post("/:identifier/:pageId/touch", requireAuth, async (c) => {
   return c.json({ success: true, lastReadAt: session?.updatedAt ?? now });
 });
 
-// ── Guest Progress Migration ────────────────────────────────────────────────
+// ── Guest Progress Import ──────────────────────────────────────────────────
 
-/**
- * Migrate a guest's locally-cached reading progress to the database after
- * signup. Accepts selectedActions (from sessionStorage) and an optional
- * reading session (from IndexedDB), upserting both user_page_progress and
- * user_sessions in a single atomic transaction.
- *
- * POST /api/books/:identifier/migrate-guest-progress
- * Authorization: requireAuth
- *
- * @see docs/roadmap/GUEST_SELECTED_ACTIONS_MIGRATION_ROADMAP.md
- */
-router.post("/:identifier/migrate-guest-progress", requireAuth, async (c) => {
+/** Import a guest journey using the V1 conditional, replay-safe contract. */
+router.post('/:identifier/guest-progress/import', requireAuth, async (c) => {
   const { identifier } = c.req.param();
   const userId = c.get("userId")!;
   const identifierStr = Array.isArray(identifier) ? identifier[0] : identifier;
@@ -7609,157 +7622,16 @@ router.post("/:identifier/migrate-guest-progress", requireAuth, async (c) => {
   if (!bookRow) return cNotFoundError(c, "Book not found");
   const bookId = bookRow.id;
 
-  // ── 2. Parse & validate body ───────────────────────────────────────────
-  const body = await c.req.json<{
-    actions?: Array<{
-      actionedPageId: string;
-      nextPageId: string;
-      action: { text: string; type: string; hint: { text: string; type: string }; source?: string; pageId: string; page: number; nextPageId: string };
-    }>;
-    session?: {
-      pageId: string;
-      frontierPageId: string;
-      frontierPageNumber: number;
-      frontierAncestorIds: string[];
-    };
-  }>().catch(() => null);
 
-  if (!body || (typeof body !== "object")) {
-    return cValidationError(c, "Invalid request body");
-  }
+  const snapshot = await getBookAccessSnapshot(bookId);
+  if (!snapshot) return cNotFoundError(c, 'Book not found');
+  const denied = await getBookDetailAccessError(c, snapshot, userId);
+  if (denied) return denied;
 
-  const actions = Array.isArray(body.actions) ? body.actions : [];
-  const session = body.session && typeof body.session === "object" ? body.session : null;
-
-  // Validate actions array (max 50 — covers 10 pages × ~3 actions + buffer)
-  if (actions.length > 50) {
-    return cValidationError(c, "Too many actions (max 50)");
-  }
-
-  // Validate each action
-  const validActionTypes = new Set<string>(Object.keys(actionTypes));
-  const validHintTypes = new Set<string>(actionHintTypes);
-  for (let i = 0; i < actions.length; i++) {
-    const a = actions[i];
-    if (!a || typeof a !== "object") return cValidationError(c, `Invalid action at index ${i}`);
-    if (!isValidUuid(a.actionedPageId)) return cValidationError(c, `Invalid actionedPageId at index ${i}`);
-    if (!isValidUuid(a.nextPageId)) return cValidationError(c, `Invalid nextPageId at index ${i}`);
-    if (!a.action || typeof a.action !== "object") return cValidationError(c, `Invalid action payload at index ${i}`);
-    if (typeof a.action.text !== "string") return cValidationError(c, `Invalid action.text at index ${i}`);
-    if (!validActionTypes.has(a.action.type)) return cValidationError(c, `Invalid action.type at index ${i}`);
-    if (!a.action.hint || typeof a.action.hint !== "object") return cValidationError(c, `Invalid action.hint at index ${i}`);
-    if (typeof a.action.hint.text !== "string") return cValidationError(c, `Invalid action.hint.text at index ${i}`);
-    if (!validHintTypes.has(a.action.hint.type)) return cValidationError(c, `Invalid action.hint.type at index ${i}`);
-  }
-
-  // Validate session if present
-  if (session) {
-    if (!isValidUuid(session.pageId)) return cValidationError(c, "Invalid session.pageId");
-    if (!isValidUuid(session.frontierPageId)) return cValidationError(c, "Invalid session.frontierPageId");
-    if (typeof session.frontierPageNumber !== "number" || session.frontierPageNumber < 1) {
-      return cValidationError(c, "Invalid session.frontierPageNumber");
-    }
-    if (!Array.isArray(session.frontierAncestorIds)) {
-      return cValidationError(c, "Invalid session.frontierAncestorIds");
-    }
-  }
-
-  // ── 3. Batch-validate page existence (skip references to deleted pages) ──
-  // Collect all page IDs from actions AND session into a single set for one query.
-  const allPageIds = new Set<string>();
-  for (const a of actions) {
-    allPageIds.add(a.actionedPageId);
-    allPageIds.add(a.nextPageId);
-  }
-  if (session) {
-    allPageIds.add(session.pageId);
-  }
-
-  let validActions = actions;
-  let validSession = session;
-
-  if (allPageIds.size > 0) {
-    const pageIdArr = Array.from(allPageIds);
-    const existingRows = await dbRead
-      .select({ id: pages.id })
-      .from(pages)
-      .where(inArray(pages.id, pageIdArr));
-    const existingIds = new Set<string>(existingRows.map((r) => r.id));
-
-    // Filter actions to only those whose page references still exist
-    validActions = actions.filter(
-      (a) => existingIds.has(a.actionedPageId) && existingIds.has(a.nextPageId),
-    );
-
-    // Validate session page existence from the same result
-    if (session && !existingIds.has(session.pageId)) {
-      validSession = null; // session page deleted, skip session migration
-    }
-  }
-
-  // Nothing to migrate
-  if (validActions.length === 0 && !validSession) {
-    return c.json({ actionsMigrated: 0, sessionMigrated: false });
-  }
-
-  // ── 4. Atomic transaction: upsert user_page_progress + user_sessions ───
-  const result = await dbWrite.transaction(async (tx) => {
-    let actionsMigrated = 0;
-
-    // Upsert each action — onConflictDoUpdate keeps the last write
-    for (const a of validActions) {
-      const selectedAction: SelectedAction = {
-        text: a.action.text,
-        type: a.action.type as SelectedAction['type'],
-        hint: a.action.hint as SelectedAction['hint'],
-        source: (a.action.source ?? 'ai') as SelectedAction['source'],
-        pageId: a.action.pageId,
-        page: a.action.page,
-        nextPageId: a.action.nextPageId,
-      };
-      await tx
-        .insert(userPageProgress)
-        .values({
-          userId,
-          bookId,
-          actionedPageId: a.actionedPageId,
-          nextPageId: a.nextPageId,
-          action: selectedAction,
-        })
-        .onConflictDoUpdate({
-          target: [userPageProgress.userId, userPageProgress.bookId, userPageProgress.actionedPageId],
-          set: {
-            action: selectedAction,
-            updatedAt: new Date(),
-          },
-        });
-      actionsMigrated++;
-    }
-
-    // Upsert session (only if no existing row — avoid overwriting newer server state)
-    // Uses onConflictDoNothing to avoid TOCTOU race on the (userId, bookId) unique constraint.
-    let sessionMigrated = false;
-    if (validSession) {
-      const [inserted] = await tx
-        .insert(userSessions)
-        .values({
-          userId,
-          bookId,
-          pageId: validSession.pageId,
-          frontierPageId: validSession.frontierPageId,
-          frontierPageNumber: validSession.frontierPageNumber,
-          frontierAncestorIds: validSession.frontierAncestorIds,
-          status: "active",
-        })
-        .onConflictDoNothing()
-        .returning({ id: userSessions.id });
-      sessionMigrated = !!inserted;
-    }
-
-    return { actionsMigrated, sessionMigrated };
-  });
-
-  return c.json(result);
+  const importBody: unknown = await c.req.raw.clone().json().catch(() => null);
+  const result = await importGuestProgress(userId, bookId, importBody);
+  if ('error' in result) return cValidationError(c, result.error);
+  return c.json(result, 'reason' in result ? 409 : 200);
 });
 
 /**
@@ -8220,7 +8092,8 @@ router.post("/:identifier/reset-story", requireAuth, async (c) => {
                   // reset the cross-device "reader has seen front matter" flag
                   // so the typewriter replays on every synced client.
                   frontMatterSeen: false,
-                  updatedAt: new Date(),
+                  ...clearedGuestImportMarker,
+                  updatedAt: guestImportMutationTime,
                 })
                 .where(and(eq(userSessions.userId, userId), eq(userSessions.bookId, book.id)));
             }
@@ -8418,10 +8291,10 @@ router.get("/share/:username/:bookSlug/:pageId", async (c) => {
  * @authentication Required
  * @param identifier - Book slug or ID
  * @returns Success response with purchased book info
- * 
+ *
  * @example
  * POST /api/books/the-haunting/purchase
- * 
+ *
  * Response:
  * {
  *   "success": true,
@@ -9604,10 +9477,30 @@ router.get("/:identifier/testimonials/:id", optionalAuth, async (c) => {
     return cNotFoundError(c, "Book not found");
   }
 
-  const [testimonial] = await dbRead
-    .select(testimonialWithAuthorSelect)
+  const selectFields = {
+    ...testimonialWithAuthorSelect,
+    isLiked: userId
+      ? sql<boolean>`(${userLikes.userId} IS NOT NULL)`
+      : sql<boolean>`false`,
+  };
+
+  let query = dbRead
+    .select(selectFields)
     .from(bookTestimonials)
-    .leftJoin(users, eq(bookTestimonials.userId, users.userId))
+    .leftJoin(users, eq(bookTestimonials.userId, users.userId));
+
+  if (userId) {
+    query = query.leftJoin(
+      userLikes,
+      and(
+        eq(userLikes.targetId, bookTestimonials.id),
+        eq(userLikes.targetType, 'testimonial'),
+        eq(userLikes.userId, userId),
+      ),
+    ) as any;
+  }
+
+  const [testimonial] = await query
     .where(and(eq(bookTestimonials.id, id), eq(bookTestimonials.bookId, book.id)))
     .limit(1);
 
@@ -9728,7 +9621,7 @@ router.patch("/:identifier/testimonials/:id", requireAuth, async (c) => {
  * 
  * @param {string} c.req.param().identifier - Book slug or id
  * @param {string} c.req.param().id - Testimonial id
- * 
+ *
  * @returns {Object} 200 - Deletion confirmation
  * @returns {Error} 403 - Forbidden (not the owner)
  * @returns {Error} 404 - Testimonial not found
@@ -9756,6 +9649,9 @@ router.delete("/:identifier/testimonials/:id", requireAuth, async (c) => {
     return cForbiddenError(c, "You can only delete your own testimonial");
   }
 
+  // A database DELETE trigger removes the polymorphic testimonial likes and
+  // their grouped notifications in this same statement/transaction, including
+  // testimonials removed indirectly by a book cascade.
   await dbWrite
     .delete(bookTestimonials)
     .where(eq(bookTestimonials.id, id));
@@ -9770,145 +9666,72 @@ router.delete("/:identifier/testimonials/:id", requireAuth, async (c) => {
 });
 
 /**
- * GET /api/books/:identifier
+ * @route POST /api/books/:identifier/testimonials/:id/like
+ * @description Like a book testimonial
  * 
- * Retrieves a book by slug or UUID v7 identifier.
- * Returns complete book information including metadata, author details,
- * engagement statistics, and user-specific engagement flags.
- *
- * @route GET /api/books/:identifier
- * @description Retrieve a book by slug or UUID
- * @auth Optional (optionalAuth)
+ * Atomically records the like in `userLikes` (with targetType: 'testimonial')
+ * and increments `bookTestimonials.likesCount`. Dispatches an in-app
+ * notification to the author if not a self-like.
  * 
- * @param identifier - Book slug or UUID v7
- * @returns Object with enriched book metadata including author, stats, and user flags
- * 
- * @example
- * GET /api/books/whispering-halls
- * 
- * Response (200):
- * {
- *   "book": {
- *     "id": "book123",
- *     "userId": "user456",
- *     "slug": "whispering-halls",
- *     "title": "The Whispering Halls",
- *     "totalPages": 120,
- *     "language": "en",
- *     "hook": "Sarah never believed in ghosts until she found the diary",
- *     "summary": "A psychological thriller about a librarian who discovers dark secrets",
- *     "imageUrl": "https://example.com/cover.jpg",
- *     "keywords": ["mystery", "thriller", "haunted"],
- *     "status": "active",
- *     "trendingScore": 0.85,
- *     "topPick": null,
- *     "isOriginal": false,
- *     "branchesCount": 12,
- *     "firstPageId": "page456",
- *     "mc": {
- *       "name": "Sarah",
- *       "age": 28,
- *       "gender": "female",
- *       "bio": "Shy librarian with hidden past"
- *     },
- *     "author": {
- *       "id": "user456",
- *       "name": "John Doe",
- *       "username": "johndoe",
- *       "imageUrl": "https://example.com/avatar.jpg"
- *     },
- *     "stats": {
- *       "likesCount": 42,
- *       "readCount": 156,
- *       "completeCount": 23,
- *       "commentsCount": 25,
- *       "branchesCount": 12
- *     },
- *     "isLiked": false,
- *     "isRead": true,
- *     "isMine": false,
- *     "isSaved": false,
- *     "isCompleted": false,
- *     "isPurchased": false,
- *     "session": null,
- *     "collection": null,
- *     "createdAt": "2023-01-01T00:00:00.000Z",
- *     "updatedAt": "2023-01-15T10:30:00.000Z"
- *   }
- * }
+ * @access Private (requires auth)
  */
-/**
- * @summary Export an author-owned story to EPUB, DOCX, or PDF
- * @description Compiles the story pages into an in-memory document Buffer and streams with Content-Disposition.
- * Strictly gated to the author (isMine === true).
- */
-router.post("/:identifier/export", requireAuth, async (c) => {
+router.post("/:identifier/testimonials/:id/like", requireAuth, async (c) => {
   try {
-    const { identifier } = c.req.param();
-    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
     const userId = c.get("userId")!;
+    const { id } = c.req.param();
+    if (!isValidUuid(id)) return cValidationError(c, "Invalid testimonial ID");
+    const book = await resolveBook(c.req.param().identifier);
+    if (!book) return cNotFoundError(c, "Book not found");
 
-    // 1. Resolve book with caller's userId context
-    const enrichedBook = await getEnrichedBook(bookIdentifier, userId, c.get("headerLanguage"));
-    if (!enrichedBook) return cNotFoundError(c, "Book not found");
+    const mutation = await setTestimonialLike({ userId, testimonialId: id, bookId: book.id, liked: true });
+    if (mutation.kind === 'not-found') return cNotFoundError(c, "Testimonial not found");
 
-    // 2. VIP Subscription Gate: Manuscript Studio export is exclusive to VIP members
-    const isVip = await hasActiveVipSubscription(userId);
-    if (!isVip) {
-      return cForbiddenError(c, "Manuscript Studio export is an exclusive VIP perk.");
+    if (mutation.authorId && mutation.authorId !== userId) {
+      try {
+        await notifyTestimonialLike({
+          recipientId: mutation.authorId,
+          actorId: userId,
+          testimonialId: id,
+          bookTitle: mutation.bookTitle,
+          bookSlug: mutation.bookSlug,
+          ensureMissingOnly: !mutation.changed,
+        });
+      } catch (err) {
+        console.error('Failed to dispatch testimonial like notification', err);
+      }
     }
 
-    // 3. Strict Ownership Gate: Only the story author can export manuscripts
-    if (!enrichedBook.isMine && enrichedBook.userId !== userId) {
-      return cForbiddenError(c, "Only the author can export manuscripts for this story.");
-    }
-
-    const body = (await c.req.json().catch(() => ({}))) as {
-      format?: "epub" | "docx" | "pdf";
-      branchId?: string;
-    };
-
-    const format = body.format || "epub";
-    if (!["epub", "docx", "pdf"].includes(format)) {
-      return cValidationError(c, "Invalid format. Supported formats: epub, docx, pdf");
-    }
-
-    // 3. Assemble pages via indexed single query (O(1) database execution)
-    const branchId = body.branchId || "main";
-    const pages = await assembleBookPages(enrichedBook.id, branchId);
-    if (pages.length === 0) {
-      return cValidationError(c, "No story pages found to export for this branch.");
-    }
-
-    // 4. Generate document buffer in memory.
-    // Lazy dynamic import: pdfkit/docx/epub-gen pull heavy font assets and SDK
-    // singletons, so they must not initialize on every request that merely
-    // loads this router. Shaves cold-start/init wall-clock (Netlify bills
-    // wall-clock duration; Vercel bills active CPU — both benefit).
-    const { generateDocument } = await import("../services/document-generators/index.js");
-    const { buffer, contentType, ext } = await generateDocument(
-      {
-        title: enrichedBook.title || "Untitled Story",
-        authorName: enrichedBook.author?.name || "Twistloom Creator",
-        summary: enrichedBook.summary,
-        coverImageUrl: enrichedBook.imageUrl,
-        language: enrichedBook.language,
-      },
-      pages,
-      format,
-    );
-
-    // 5. Stream response with RFC 5987 headers
-    const sanitizedTitle = sanitizeDownloadFilename(enrichedBook.title || "untitled");
-    const encodedFilename = encodeURIComponent(`${sanitizedTitle}.${ext}`);
-
-    return c.newResponse(new Uint8Array(buffer), 200, {
-      "Content-Type": contentType,
-      "Content-Disposition": `attachment; filename="${sanitizedTitle}.${ext}"; filename*=UTF-8''${encodedFilename}`,
-      "Cache-Control": "no-cache, no-store, must-revalidate",
-    });
+    c.status(200);
+    return c.json({ liked: true, likesCount: mutation.likesCount });
   } catch (error) {
-    return cApiError(c, "Failed to export book manuscript", error);
+    return cApiError(c, "Failed to like testimonial", error);
+  }
+});
+
+/**
+ * @route DELETE /api/books/:identifier/testimonials/:id/like
+ * @description Unlike a book testimonial
+ *
+ * Atomically removes the like from `userLikes` and decrements
+ * `bookTestimonials.likesCount` (floored at 0).
+ *
+ * @access Private (requires auth)
+ */
+router.delete("/:identifier/testimonials/:id/like", requireAuth, async (c) => {
+  try {
+    const userId = c.get("userId")!;
+    const { id } = c.req.param();
+    if (!isValidUuid(id)) return cValidationError(c, "Invalid testimonial ID");
+    const book = await resolveBook(c.req.param().identifier);
+    if (!book) return cNotFoundError(c, "Book not found");
+
+    const mutation = await setTestimonialLike({ userId, testimonialId: id, bookId: book.id, liked: false });
+    if (mutation.kind === 'not-found') return cNotFoundError(c, "Testimonial not found");
+
+    c.status(200);
+    return c.json({ liked: false, likesCount: mutation.likesCount });
+  } catch (error) {
+    return cApiError(c, "Failed to unlike testimonial", error);
   }
 });
 

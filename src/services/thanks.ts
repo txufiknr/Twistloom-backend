@@ -11,6 +11,7 @@
 import { eq, sql, and, count } from "drizzle-orm";
 import { dbRead, dbWrite } from "../db/client.js";
 import { creatorEarnings, creatorWallets, users, books, userNotifications } from "../db/schema.js";
+import { NOTIFICATION_I18N_KEYS } from "../config/notifications.js";
 import { calculatePlatformFee, calculateCreatorAmount, THANKS_CONFIG } from "../config/thanks.js";
 import { XENDIT_CONFIG } from "../config/xendit.js";
 import { getErrorMessage } from "../utils/error.js";
@@ -198,6 +199,8 @@ export async function recordThanks(options: RecordThanksOptions): Promise<{ dupl
       type: "thanks_received",
       title: "Thanks Received!",
       message: `${readerName} sent you a Thanks for "${bookTitle}"`,
+      i18nKey: NOTIFICATION_I18N_KEYS.THANKS_RECEIVED,
+      i18nParams: { readerName, bookTitle, grossAmount: settlementGross },
       data: {
         readerId,
         readerName,

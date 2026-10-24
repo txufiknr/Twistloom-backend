@@ -1,5 +1,7 @@
 # Guest User Flow Documentation
 
+> Client-local reading progress import is a separate boundary from the cookie-based guest identity below. Its single V1 route, bounded session marker, and transactional compare-and-set are documented in [Guest progress import architecture](GUEST_PROGRESS_IMPORT_ARCHITECTURE.md).
+
 ## Overview
 
 Twistloom supports a seamless guest user experience that allows users to immediately start reading books without creating an account. This design prioritizes accessibility while providing a clear path to account creation with data migration.

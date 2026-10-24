@@ -27,7 +27,7 @@ import type { DBBook, DBNewBook, DBNewPage, DBPage, DBUpdateBook } from "../type
 import type { Book, BookSlugGenerationResult, BookStatus, BookVisibility, EnrichedBookData, EnrichedPageOptions, PublicStats, UserBookEnding, UserBookEndingsResponse, BookEndingSummary, BookEndingsResponse } from "../types/book.js";
 import { bookVisibilities } from "../types/book.js";
 import { classifyRarity } from "../types/rarity.js";
-import { actionTypes, endingTypes, type StoryPage, type PersistedStoryPage, type UserStoryPage, type StoryState, type StoryPageMeta, type EnrichedStoryPage, type StateDelta, type StoryGeneration, type SelectedAction, type Action, type ActionSource, type EnrichedStoryPageContext, type TranslatedStoryPage, type EnrichedStoryPagePlace, type EnrichedStoryPageCharacter, type ActionType, type ActionHintType, type Ending, type EndingType, type StoryOutline } from "../types/story.js";
+import { actionTypes, endingTypes, type StoryPage, type PersistedStoryPage, type UserStoryPage, type StoryState, type StoryPageMeta, type EnrichedStoryPage, type StateDelta, type StoryGeneration, type SelectedAction, type Action, type EnrichedStoryPageContext, type TranslatedStoryPage, type EnrichedStoryPagePlace, type EnrichedStoryPageCharacter, type ActionType, type ActionHintType, type Ending, type EndingType, type StoryOutline } from "../types/story.js";
 import type { CanonValidationSummary } from "../types/canon-validation.js";
 import { getStoryStateFromPage, insertStoryState, computeBatchEndingStats } from "./story.js";
 import { formatPlacesForPrompt, resolvePlaceDisplayName, resolvePlaceLoreNames } from "../utils/places.js";
@@ -3311,6 +3311,9 @@ export interface RecommendedTagsResult {
  * - Signal weights: read sessions 1.0, likes 0.7, favorites 0.5. A keyword
  *   appearing in 3 read books scores 3.0; the same keyword merely favorited
  *   once scores 0.5.
+ * - Both ongoing and completed reads contribute taste signals. Excluding
+ *   completed books from explore results belongs to
+ *   `buildPersonalizedFilterCondition`, not to this tag aggregation.
  * - Clickability guard: every returned tag is kept only if at least one
  *   active + public book (in the target language, English fallback) carries
  *   it — so `GET /explore?tags={keyword}` never returns an empty page.

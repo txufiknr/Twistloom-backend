@@ -38,6 +38,7 @@ import { VIP_BENEFITS } from "../../config/subscription.js";
 import type { PaymentGateway } from "../../types/payment.js";
 import { isUniqueConstraintError } from "../../utils/retry.js";
 import { awardCredits, awardFirstPurchaseBonusOnce } from "../credits.js";
+import { NOTIFICATION_I18N_KEYS } from "../../config/notifications.js";
 import { cancelSubscription, createSubscription, renewSubscription, updateSubscription } from "../subscription.js";
 import { storeGatewayFor, type ResolvedStoreProduct } from "./index.js";
 import type { StoreReceipt } from "./types.js";
@@ -427,6 +428,8 @@ export async function grantStoreCreditPurchase(
         notificationType: "payment_success",
         notificationTitle: "Payment Successful",
         notificationMessage: `Your purchase of ${resolved.credits} credits (${resolved.title}) was successful`,
+        notificationI18nKey: NOTIFICATION_I18N_KEYS.PAYMENT_SUCCESS,
+        notificationI18nParams: { credits: resolved.credits, packTitle: resolved.title },
         notificationData: { packId: resolved.packId, providerPaymentId },
         metadata: {
           providerPaymentId,

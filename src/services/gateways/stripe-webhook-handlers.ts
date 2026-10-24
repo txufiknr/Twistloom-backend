@@ -14,6 +14,7 @@ import type Stripe from "stripe";
 import { eq, and, sql } from "drizzle-orm";
 import { dbWrite } from "../../db/client.js";
 import { users, transactions, webhookDeliveries, userNotifications } from "../../db/schema.js";
+import { NOTIFICATION_I18N_KEYS } from "../../config/notifications.js";
 import { CREDIT_PACKS, FIRST_PURCHASE_BONUS } from "../../config/credits.js";
 import { PAYMENT_GATEWAY } from "../../types/payment.js";
 import { createSubscription, updateSubscription, renewSubscription, cancelSubscription, handleTrialWillEnd } from "../subscription.js";
@@ -191,6 +192,8 @@ export async function handleCheckoutSessionCompleted(
         notificationType: "payment_success",
         notificationTitle: "Payment Successful",
         notificationMessage: `Your purchase of ${creditsAmount} credits (${pack.title}) was successful`,
+        notificationI18nKey: NOTIFICATION_I18N_KEYS.PAYMENT_SUCCESS,
+        notificationI18nParams: { credits: creditsAmount, packTitle: pack.title },
         notificationData: { amountCents: session.amount_total, providerPaymentId, packId },
         metadata: { providerPaymentId, providerEventId, amountCents: session.amount_total, packId },
         amountCents: session.amount_total ?? undefined,
@@ -280,6 +283,8 @@ export async function handleChargeRefunded(
           type: "refund",
           title: "Refund Processed",
           message: `${creditsToDeduct} credits have been deducted from your account due to a refund`,
+          i18nKey: NOTIFICATION_I18N_KEYS.REFUND_PROCESSED,
+          i18nParams: { credits: creditsToDeduct },
           data: { creditsDeducted: creditsToDeduct, refundCents, refundAmount: refundCents / 100, originalPaymentId: providerPaymentId },
         });
         const [recipient] = await tx.select({ email: users.email, name: users.name }).from(users).where(eq(users.userId, transaction.userId)).limit(1);

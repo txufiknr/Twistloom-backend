@@ -23,6 +23,8 @@ export const wallCreateRateLimit = createMiddleware<AppEnv>(async (c, next) => {
     return;
   }
 
+  let limiter: Ratelimit | null = null;
+  let maximum = 0;
   try {
     const [user] = await dbRead
       .select({
@@ -34,41 +36,48 @@ export const wallCreateRateLimit = createMiddleware<AppEnv>(async (c, next) => {
       .where(eq(users.userId, userId))
       .limit(1);
 
-    if (!user) {
-      await next();
-      return;
+    if (user) {
+      const accountIsNew = Date.now() - user.createdAt.getTime() < NEW_ACCOUNT_AGE_MS;
+      const activeVip = isUserVipActive(user);
+      limiter = accountIsNew ? newAccountLimiter : activeVip ? vipLimiter : freeLimiter;
+      maximum = accountIsNew ? 3 : activeVip ? 30 : 10;
     }
-
-    const accountIsNew = Date.now() - user.createdAt.getTime() < NEW_ACCOUNT_AGE_MS;
-    const activeVip = isUserVipActive(user);
-    const limiter = accountIsNew ? newAccountLimiter : activeVip ? vipLimiter : freeLimiter;
-    const maximum = accountIsNew ? 3 : activeVip ? 30 : 10;
-    if (!limiter) {
-      await next();
-      return;
-    }
-
-    const result = await limiter.limit(userId);
-    const retryAfter = Math.max(1, Math.ceil((result.reset - Date.now()) / 1_000));
-    c.header('X-RateLimit-Limit', String(maximum));
-    c.header('X-RateLimit-Remaining', String(result.remaining));
-    c.header('X-RateLimit-Reset', new Date(result.reset).toISOString());
-
-    if (!result.success) {
-      c.header('Retry-After', String(retryAfter));
-      return c.json({
-        success: false,
-        error: 'Wall Note creation rate limit exceeded',
-        code: 'WALL_RATE_LIMITED',
-        retryAfter,
-      }, 429);
-    }
-
-    await next();
   } catch (error) {
-    console.error('[wall-rate-limit] Redis/entitlement check failed open:', getErrorMessage(error));
+    console.error('[wall-rate-limit] Entitlement lookup failed open:', getErrorMessage(error));
     await next();
+    return;
   }
+
+  if (!limiter) {
+    await next();
+    return;
+  }
+
+  let result: Awaited<ReturnType<Ratelimit['limit']>>;
+  try {
+    result = await limiter.limit(userId);
+  } catch (error) {
+    console.error('[wall-rate-limit] Redis check failed open:', getErrorMessage(error));
+    await next();
+    return;
+  }
+
+  const retryAfter = Math.max(1, Math.ceil((result.reset - Date.now()) / 1_000));
+  c.header('X-RateLimit-Limit', String(maximum));
+  c.header('X-RateLimit-Remaining', String(result.remaining));
+  c.header('X-RateLimit-Reset', new Date(result.reset).toISOString());
+
+  if (!result.success) {
+    c.header('Retry-After', String(retryAfter));
+    return c.json({
+      success: false,
+      error: 'Wall Note creation rate limit exceeded',
+      code: 'WALL_RATE_LIMITED',
+      retryAfter,
+    }, 429);
+  }
+
+  await next();
 });
 
 function createLimiter(maximum: number, prefix: string): Ratelimit | null {

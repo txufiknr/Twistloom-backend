@@ -26,6 +26,7 @@ import {
   transactions,
   userNotifications,
 } from "../db/schema.js";
+import { NOTIFICATION_I18N_KEYS } from "../config/notifications.js";
 import { encryptPII, generateBlindIndex, extractLast4, maskAccountNumber } from "../utils/crypto.js";
 import { calculateNameMatchScore } from "../utils/fuzzy-name.js";
 import { inquireXenditBankAccount } from "../utils/xendit.js";
@@ -280,6 +281,8 @@ export async function replyToCreatorEarning(
       type: "thanks_reply",
       title: `${creatorUser?.name || "The author"} replied to your Thanks!`,
       message: `"${trimmed}"`,
+      i18nKey: NOTIFICATION_I18N_KEYS.THANKS_REPLY,
+      i18nParams: { creatorName: creatorUser?.name || "The author", replyText: trimmed, bookTitle: book?.title || "" },
       data: {
         earningId,
         bookId: earning.bookId,

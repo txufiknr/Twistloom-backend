@@ -33,6 +33,7 @@
 
 import { type DBTransaction, dbWrite, dbRead } from '../db/client.js';
 import { users, transactions, userNotifications } from '../db/schema.js';
+import { NOTIFICATION_I18N_KEYS, type NotificationI18nKey } from '../config/notifications.js';
 import { CREDIT_COSTS, getCreditCostForUser, isDemoUser, CREDIT_RESERVATION_TTL_MS, type CreditCostKey } from '../config/credits.js';
 import { generateId } from '../utils/uuid.js';
 import { eq, and, sql } from 'drizzle-orm';
@@ -947,6 +948,10 @@ interface AwardCreditsOptions {
   notificationTitle: string;
   /** Notification body shown to the user */
   notificationMessage: string;
+  /** Machine translation key for client-side localization */
+  notificationI18nKey?: NotificationI18nKey;
+  /** Structured parameters for translation template */
+  notificationI18nParams?: Record<string, string | number>;
   /** Additional payload stored in the notification's `data` column */
   notificationData?: Record<string, unknown>;
   /** Metadata for the transaction record */
@@ -988,6 +993,8 @@ export async function awardCredits(
     notificationType,
     notificationTitle,
     notificationMessage,
+    notificationI18nKey,
+    notificationI18nParams,
     notificationData = {},
     metadata = {},
     amountCents = null,
@@ -1037,6 +1044,8 @@ export async function awardCredits(
       type: notificationType,
       title: notificationTitle,
       message: notificationMessage,
+      i18nKey: notificationI18nKey ?? null,
+      i18nParams: notificationI18nParams ?? null,
       data: { credits: creditsAmount, ...notificationData },
       read: false,
       createdAt: new Date(),
@@ -1166,6 +1175,8 @@ export async function awardFirstPurchaseBonusOnce(
       type: 'first_purchase_bonus',
       title: 'First Purchase Bonus',
       message: `You received ${creditsAmount} credits for your first purchase`,
+      i18nKey: NOTIFICATION_I18N_KEYS.FIRST_PURCHASE_BONUS,
+      i18nParams: { credits: creditsAmount },
       data: { credits: creditsAmount, ...notificationData },
       read: false,
       createdAt: new Date(),

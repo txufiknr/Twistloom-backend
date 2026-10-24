@@ -26,6 +26,7 @@ import { BETA_TESTER_REWARD_CREDITS, getReferralBonus } from '../config/credits.
 import { hasActiveVipSubscription } from './subscription.js';
 import { CURRENT_TERMS_VERSION } from '../config/legal.js';
 import { awardCredits } from './credits.js';
+import { NOTIFICATION_I18N_KEYS } from '../config/notifications.js';
 import type { Context } from 'hono';
 import { getClientIp } from '../hono/express-shim.js';
 import type { DBNewUser } from '../types/schema.js';
@@ -691,6 +692,10 @@ export async function tryAwardReferralBonus(userId: string): Promise<boolean> {
         notificationType: 'referral_bonus',
         notificationTitle: isVipReferrer ? 'VIP Referral Bonus' : 'Referral Bonus',
         notificationMessage: `You received ${referrerBonus} credits for referring a new user`,
+        notificationI18nKey: isVipReferrer
+          ? NOTIFICATION_I18N_KEYS.REFERRAL_VIP_BONUS
+          : NOTIFICATION_I18N_KEYS.REFERRAL_STANDARD_BONUS,
+        notificationI18nParams: { credits: referrerBonus },
         metadata: { referredUserId: userId, isVipReferrer },
         context: 'referral_bonus',
         tx,
@@ -700,6 +705,8 @@ export async function tryAwardReferralBonus(userId: string): Promise<boolean> {
         notificationType: 'referral_bonus',
         notificationTitle: 'Referral Welcome Bonus',
         notificationMessage: `You received ${refereeBonus} credits for using a referral code`,
+        notificationI18nKey: NOTIFICATION_I18N_KEYS.REFERRAL_WELCOME_BONUS,
+        notificationI18nParams: { credits: refereeBonus },
         metadata: { referrerId: rid },
         context: 'referral_bonus',
         tx,

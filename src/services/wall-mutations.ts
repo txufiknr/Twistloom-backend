@@ -1,4 +1,5 @@
 import { ACHIEVEMENT_REGISTRY } from '../config/achievements.js';
+import { NOTIFICATION_I18N_KEYS } from '../config/notifications.js';
 import { and, eq, isNull, or, sql } from 'drizzle-orm';
 import { dbWrite } from '../db/client.js';
 import {
@@ -858,7 +859,13 @@ async function notifyWallReaction(
   if (existing) {
     await dbWrite
       .update(userNotifications)
-      .set({ message: `${name} reacted to your Note`, data, updatedAt: new Date() })
+      .set({
+        message: `${name} reacted to your Note`,
+        i18nKey: NOTIFICATION_I18N_KEYS.WALL_POST_REACTION,
+        i18nParams: { actorName: name, postId },
+        data,
+        updatedAt: new Date()
+      })
       .where(eq(userNotifications.id, existing.id));
     return;
   }
@@ -867,6 +874,8 @@ async function notifyWallReaction(
     type: 'wall_post_reaction',
     title: 'New reaction on your Note',
     message: `${name} reacted to your Note`,
+    i18nKey: NOTIFICATION_I18N_KEYS.WALL_POST_REACTION,
+    i18nParams: { actorName: name, postId },
     data,
     read: false,
     createdAt: new Date(),
@@ -887,6 +896,8 @@ async function notifyWallReply(
     type: 'wall_post_reply',
     title: 'New reply to your Note',
     message: `${name} replied to your Note`,
+    i18nKey: NOTIFICATION_I18N_KEYS.WALL_POST_REPLY,
+    i18nParams: { actorName: name, postId },
     data: { postId, commentId, actorId, actorName: name, href: `/wall?post=${postId}` },
     read: false,
     createdAt: new Date(),
@@ -906,6 +917,8 @@ async function notifyIncomingWallPost(
     type: 'wall_post_incoming',
     title: 'A new Note appeared on your Wall',
     message: `${name} left a Note on your Wall`,
+    i18nKey: NOTIFICATION_I18N_KEYS.WALL_POST_INCOMING,
+    i18nParams: { actorName: name, postId },
     data: { postId, actorId, actorName: name, href: `/wall?post=${postId}` },
     read: false,
     createdAt: new Date(),

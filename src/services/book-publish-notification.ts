@@ -1,6 +1,7 @@
 /** Durable publication fan-out; enumeration and in-app inserts share the campaign cursor transaction. */
 import { dbRead, dbWrite, type DBTransaction } from '../db/client.js';
 import { userFollows, userNotifications, users } from '../db/schema.js';
+import { NOTIFICATION_I18N_KEYS } from '../config/notifications.js';
 import { eq } from 'drizzle-orm';
 import { queueEmailCampaign } from './email-campaigns.js';
 import { emailDeliveryEnabled } from '../config/email-delivery.js';
@@ -47,6 +48,8 @@ async function insertPublicationInAppDirect(params: NotifyFollowersOfPublishedBo
       type: 'story_published' as const,
       title: 'New story from someone you follow',
       message: params.bookTitle,
+      i18nKey: NOTIFICATION_I18N_KEYS.STORY_PUBLISHED,
+      i18nParams: { bookTitle: params.bookTitle, authorId: params.authorId, bookSlug: params.bookSlug },
       data: { authorId: params.authorId, bookId: params.bookId, bookSlug: params.bookSlug, bookTitle: params.bookTitle },
       read: false,
       createdAt: now,

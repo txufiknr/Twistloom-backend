@@ -81,7 +81,7 @@ export type FeedbackAdminStatus = typeof feedbackAdminStatuses[number];
  * 
  * Used for user likes system to type-safe target identification.
  */
-export const likeTargetTypes = [ 'book', 'page', 'comment', 'user', 'post' ] as const;
+export const likeTargetTypes = [ 'book', 'page', 'comment', 'user', 'post', 'testimonial' ] as const;
 export type LikeTargetType = typeof likeTargetTypes[number];
 
 /**
@@ -96,8 +96,12 @@ export interface UserStats {
   emailVerified: Date | null;
   havePurchased: boolean;
 
+  /** Current count of the user's active, publicly visible books. */
+  booksPublished?: number;
+
   // Denormalized counters from the `user_counters` table (single source of truth)
   // These are included so callers can read SSOT fields directly when available.
+  /** Lifetime book creation count; used by achievement and quest progress. */
   booksGenerated: number;
   booksCompleted: number;
   pagesRead: number;
@@ -331,7 +335,7 @@ export type UserAchievement = {
   isNotified: boolean;
 };
 
-export type EnrichedUserSelect = Omit<User, 'stats' | 'subscription' | 'isFollowing' | 'isBlocked' | 'hasReferrer' | 'profileMetadata'> & UserStats & UserSubscription & {
+export type EnrichedUserSelect = Omit<User, 'stats' | 'subscription' | 'isFollowing' | 'isBlocked' | 'hasReferrer' | 'profileMetadata'> & Omit<UserStats, 'booksPublished'> & UserSubscription & {
   hasReferrer: boolean;
   isBanned: boolean;
   /** VIP expiry half of the subscription SSOT (nullable column). */

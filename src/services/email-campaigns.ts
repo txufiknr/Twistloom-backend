@@ -2,6 +2,7 @@
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import { dbWrite, type DBTransaction } from "../db/client.js";
 import { emailCampaigns as campaigns, emailMessages as messages, users, userFollows, userAuth, books, userCompletedBooks, userLikes, userNotifications, announcements } from "../db/schema.js";
+import { NOTIFICATION_I18N_KEYS } from "../config/notifications.js";
 import { EMAIL_AUDIENCE_BATCH, EMAIL_LEASE_MS, EMAIL_POLICIES } from "../config/email-delivery.js";
 import { DEFAULT_EMAIL_LOCALE, isEmailLocale } from "../types/email-locale.js";
 import type { EmailAudience, EmailTemplate } from "../types/email-delivery.js";
@@ -110,6 +111,8 @@ async function enumerate(campaign: Campaign): Promise<void> {
     for (const row of rows) {
       if (audience.kind === "story_published" && normalizeInAppPreferences(row.inAppPreferences).storyPublished) notifications.push({
         userId: row.userId, type: "story_published", title: "New story from someone you follow", message: audience.bookTitle,
+        i18nKey: NOTIFICATION_I18N_KEYS.STORY_PUBLISHED,
+        i18nParams: { bookTitle: audience.bookTitle, authorId: audience.authorId, bookSlug: audience.bookSlug },
         data: { authorId: audience.authorId, bookId: audience.bookId, bookSlug: audience.bookSlug, bookTitle: audience.bookTitle }, read: false });
       const prefs = normalizeEmailPreferences(row.emailPreferences);
       if (!row.email || (preference && !prefs[preference]) || (verified && !verified.has(row.userId))) continue;

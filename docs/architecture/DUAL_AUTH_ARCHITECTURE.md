@@ -490,8 +490,8 @@ Web policy exceptions produce `{ success: false, error, code }`. Credential sign
 
 Abuse controls are distinct:
 
-- Public auth IP attempts use atomic Redis fixed windows (five/minute default) and hashed identifiers. Recovery/verification additionally use five/account/15 minutes. Netlify supplies trusted context.ip; arbitrary forwarded headers are ignored unless TRUST_PROXY_HEADERS=true explicitly configures a trusted proxy. Local fallback is unknown. Signed frontend exchanges bind the serialized body and use separate 300/minute egress plus five/minute account buckets, avoiding a shared five-attempt frontend bottleneck.
-- Authenticated traffic retains Redis per-user sliding 100/minute; native login retains 10/minute and refresh IP/family 30/minute. The fixed-window helper increments and sets/repairs TTL in one Lua operation. Redis absence/outage fails open by repository policy; provisioning/monitoring is necessary.
+- Public auth attempts use atomic Redis fixed windows: a shared 60/minute IP burst ceiling, a five/minute per-action IP ceiling, and (for recovery/verification and unsigned password login) a five/account/15-minute bucket where supplied. IP and account identifiers are hashed. Netlify supplies trusted `context.ip`; arbitrary forwarded headers are ignored unless `TRUST_PROXY_HEADERS=true` explicitly configures a trusted proxy. Local fallback is `unknown`, which skips IP-only buckets while any account bucket still applies. Signed frontend exchanges bind the serialized body and use separate 300/minute egress plus five/minute account buckets, avoiding a shared low IP ceiling across browser users.
+- Authenticated traffic retains Redis per-user sliding 100/minute; mobile credential issuance has a shared 60/minute IP ceiling plus 10/minute per-flow IP buckets, and refresh has a hashed-IP/family-or-token 30/minute limit. The fixed-window helper increments and sets/repairs TTL in one Lua operation. Redis absence/outage fails open by repository policy; provisioning/monitoring is necessary.
 - Primary lockout uses one SQL UPDATE with highest thresholds: 5 attempts→5 minutes, 10→15, 15→60. Expired locks preserve escalation; active lock deadlines stay. Success/change clears counts. After 24 hours of shared user_auth.updatedAt inactivity with no active lock, a new failure starts at one. This is an inactivity window, not a dedicated fixed-window column.
 
 Hono CORS uses the explicit origin set in `app.ts`, allows credentials/Authorization, and is separate from authentication. Hono CSRF middleware checks unsafe requests with form-compatible content types, using Fetch Metadata/origin; it is not a blanket origin validator for JSON requests. Server-to-server JSON exchanges work without an Origin header. Frontend Auth.js has its own auth-action protections.
@@ -553,7 +553,8 @@ Cross-origin deployment does not share host-only cookies between the two Netlify
 | MOBILE_ACCESS_SECRET / PREVIOUS | Backend native JWT verification | Separate minimum-32-character secret and overlapping rotation |
 | MOBILE_ACCESS_AUD / TTL_MINUTES | Backend native access audience/lifetime | Default reader / 15; cache cannot extend encoded expiry |
 | MOBILE_REFRESH_TTL_DAYS | Backend family expiry | Default 30; original deadline does not roll on rotation |
-| AUTH_RATE_LIMIT_WINDOW_MS / MAX_ATTEMPTS | Web IP limiter | Defaults 60000 / 5; distributed Redis enforcement |
+| AUTH_RATE_LIMIT_IP_WINDOW_MS / AUTH_RATE_LIMIT_IP_MAX_REQUESTS | Shared public auth IP burst ceiling | Defaults 60000 / 60; distributed Redis enforcement |
+| AUTH_RATE_LIMIT_WINDOW_MS / AUTH_RATE_LIMIT_MAX_ATTEMPTS | Per-action public auth IP and account ceiling | Defaults 60000 / 5; account window remains 15 minutes |
 | DISABLE_CPU_OPTIMIZATIONS | Diagnostic positive-cache bypass | Fresh primary checks remain in both adapters; metadata throttle stays independent |
 
 ### 11.2 Coordinated rollout and local investigation

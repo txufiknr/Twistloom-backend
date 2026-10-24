@@ -53,6 +53,7 @@ const pageId = (onDelete: UpdateDeleteAction = "cascade") => uuid("page_id").not
 const gender = text("gender").$type<Gender>(); // 'male', 'female', 'unknown'
 const date = text("date").notNull(); // YYYY-MM-DD format
 const createdAt = timestamp("created_at", { withTimezone: true }).defaultNow().notNull();
+
 const updatedAt = timestamp('updated_at', { withTimezone: true }).defaultNow().notNull().$onUpdate(() => new Date());
 const lastActive = timestamp("last_active", { withTimezone: true }).defaultNow().notNull();
 const branchId = text("branch_id").notNull().default("main"); // Which reality you're in
@@ -1331,6 +1332,10 @@ export const userSessions = pgTable(
     frontierAncestorIds: uuid("frontier_ancestor_ids").array().notNull().default(sql`ARRAY[]::uuid[]`), // frontier page id + its actionsHistory pageIds
     /** Whether the reader has seen the front matter page (cross-device sync). */
     frontMatterSeen: boolean("front_matter_seen").notNull().default(false),
+    /** Latest confirmed guest import only; preserved by normal reading and
+     * invalidated by reset/legacy import. No receipt history or extra index. */
+    lastGuestImportId: uuid('last_guest_import_id'),
+    lastGuestImportHash: text('last_guest_import_hash'),
     /** Remaining pages covered by active Resonance Prism Easter Egg boost (+50%). */
     prismPagesRemaining: integer("prism_pages_remaining").notNull().default(0),
     /**
@@ -1689,7 +1694,10 @@ export const userNotifications = pgTable(
     type: text("type").notNull(), // Notification type: payment_success, refund, etc.
     title: text("title").notNull(),
     message: text("message").notNull(),
+    i18nKey: text("i18n_key"),
+    i18nParams: jsonb("i18n_params").$type<Record<string, string | number>>(),
     data: jsonb("data"), // Additional structured data
+    groupKey: text("group_key"), // Stable identity for coalesced unread notification groups
     read: boolean("read").notNull().default(false),
     createdAt,
     updatedAt,
@@ -1703,6 +1711,10 @@ export const userNotifications = pgTable(
     index("user_notifications_type_idx").on(t.type),
     // Index for cleanup (old read notifications)
     index("user_notifications_created_idx").on(t.createdAt.desc()),
+    // At most one unread notification may exist for a user/type/group.
+    uniqueIndex("user_notifications_unread_group_unique")
+      .on(t.userId, t.type, t.groupKey)
+      .where(sql`${t.read} = false AND ${t.groupKey} IS NOT NULL`),
   ]
 );
 
@@ -2946,6 +2958,7 @@ export const bookTestimonials = pgTable(
     featured: boolean("featured").default(false).notNull(),
     /** Endorsed with Curator's Quill tribute (gilded calligraphy glow). */
     curatorQuill: boolean("curator_quill").default(false).notNull(),
+    likesCount: integer("likes_count").notNull().default(0),
     createdAt,
     updatedAt,
   },

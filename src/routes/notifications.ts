@@ -52,7 +52,19 @@ router.get('/', requireAuth, async (c) => {
 
     const [items, totalRow, unreadRow, announcementUnread] = await Promise.all([
       dbRead
-        .select()
+        .select({
+          id: userNotifications.id,
+          userId: userNotifications.userId,
+          type: userNotifications.type,
+          title: userNotifications.title,
+          message: userNotifications.message,
+          i18nKey: userNotifications.i18nKey,
+          i18nParams: userNotifications.i18nParams,
+          data: userNotifications.data,
+          read: userNotifications.read,
+          createdAt: userNotifications.createdAt,
+          updatedAt: userNotifications.updatedAt,
+        })
         .from(userNotifications)
         .where(eq(userNotifications.userId, userId))
         .orderBy(desc(userNotifications.createdAt))

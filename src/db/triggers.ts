@@ -738,6 +738,43 @@ async function ensureBookTestimonialsCountTrigger(): Promise<void> {
   }
 }
 
+/** Keeps polymorphic testimonial likes/notifications aligned with testimonial deletion. */
+async function ensureBookTestimonialReferencesCleanupTrigger(): Promise<void> {
+  try {
+    await dbWrite.execute(`
+      CREATE OR REPLACE FUNCTION cleanup_book_testimonial_references()
+      RETURNS TRIGGER AS $$
+      BEGIN
+        DELETE FROM user_likes
+        WHERE target_type = 'testimonial' AND target_id = OLD.id;
+
+        DELETE FROM user_notifications
+        WHERE type = 'testimonial_like'
+          AND (
+            group_key = 'testimonial:' || OLD.id::text
+            OR data->>'testimonialId' = OLD.id::text
+          );
+
+        RETURN OLD;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+
+    await dbWrite.execute(`
+      DROP TRIGGER IF EXISTS book_testimonial_cleanup_references ON book_testimonials;
+    `);
+    await dbWrite.execute(`
+      CREATE TRIGGER book_testimonial_cleanup_references
+        AFTER DELETE ON book_testimonials
+        FOR EACH ROW
+        EXECUTE FUNCTION cleanup_book_testimonial_references();
+    `);
+  } catch (error) {
+    console.error("❌ Failed to create book testimonial cleanup trigger:", getErrorMessage(error));
+    throw error;
+  }
+}
+
 /**
  * Creates trigger to update book complete count when users complete books
  * 
@@ -2075,6 +2112,7 @@ export async function ensureWallTriggers(): Promise<void> {
  * | `page_visit_count` | `page_visits` | AFTER INSERT | Increments `pages.visit_count` |
  * | `book_comments_count` | `comments` | AFTER INSERT OR DELETE | Recomputes `books.comments_count` (parent comments only) |
  * | `book_testimonials_count` | `testimonials` | AFTER INSERT OR DELETE | Recomputes `books.testimonials_count`, `rating`, and `ratingCount` |
+ * | `book_testimonial_cleanup_references` | `book_testimonials` | AFTER DELETE | Removes polymorphic testimonial likes and notifications |
  * | `book_complete_count` | `user_completed_books` | AFTER INSERT | Recomputes `books.complete_count` and `completion_rate` |
  * | `book_endings_found` | `user_completed_books` | AFTER INSERT | Recomputes `books.endings_found` (distinct endings discovered) |
  * | `book_ai_contribution` | `pages` | AFTER INSERT OR UPDATE OR DELETE | Recomcomputes `books.ai_contribution_percent` as average across pages |
@@ -2104,6 +2142,7 @@ export async function ensureTriggers(): Promise<void> {
     await ensurePageVisitCountIncrementTrigger();
     await ensureBookCommentsCountTrigger();
     await ensureBookTestimonialsCountTrigger();
+    await ensureBookTestimonialReferencesCleanupTrigger();
     await ensureBookCompleteCountTrigger();
     await ensureBookEndingsFoundTrigger();
     await ensureBookAiContributionTrigger();
