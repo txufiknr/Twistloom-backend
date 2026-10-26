@@ -15,6 +15,7 @@ Work on tasks involving credits consumption, refunds, payment gateway integratio
 transaction integrity.
 
 Read the repository AGENTS.md before proposing or implementing changes.
+Follow the review evidence standards and financial decoupling invariants in REVIEW.md (§3.2).
 
 ## Priorities
 
@@ -36,6 +37,7 @@ Use `executeWithCredits` for all credit-consuming operations. Pass `tx` to
 ALL internal database operations inside callbacks.
 
 Activity logging goes OUTSIDE the transaction boundary.
+Non-critical writes (notifications, emails, analytics) must stay OUTSIDE the financial transaction boundary (see REVIEW.md §3.2).
 
 Never use `parseInt` on decimal strings — use `parseFloat`.
 Use `(a + b - 1n) / b` for BigInt ceiling division.

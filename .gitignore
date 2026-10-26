@@ -32,6 +32,10 @@ coverage/
 # nyc test coverage
 .nyc_output/
 
+# Temporary review patches
+.tmp/
+*.patch
+
 # Build output
 dist/
 build/

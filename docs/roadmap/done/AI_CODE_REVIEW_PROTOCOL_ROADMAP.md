@@ -1,6 +1,6 @@
 # AI Code Review Protocol (`REVIEW.md`) Roadmap
 
-> **Status:** Proposed  
+> **Status:** Completed  
 > **Date:** 2026-10-26  
 > **Owner:** Solo Founder / Twistloom Engineering  
 > **Scope:** Repository-wide AI review governance, `REVIEW.md` root specification, anti-pattern radar, severity triage rubrics, and integration with `.agents/skills/critique-workflow`.
@@ -11,11 +11,11 @@
 
 | # | Item | Priority | Status |
 |---|------|----------|--------|
-| 1 | Root `REVIEW.md` Specification — Establish review mandate, evidence standards, and severity triage rubrics | `P0` | ⬜ Planned |
-| 2 | Twistloom Anti-Pattern Radar — Encode concrete checks for Hono streams, route replacements, financial decoupling, and counter backfills | `P0` | ⬜ Planned |
-| 3 | Integration with `.agents/skills/critique-workflow` — Wire `REVIEW.md` as the authoritative evaluation rubric for audit skills | `P1` | ⬜ Planned |
-| 4 | Alignment with `.github/agents/` Specialist Reviewers — Connect review rubrics with existing quality, payments, and security agent personas | `P1` | ⬜ Planned |
-| 5 | Tool-Agnostic Local Review Command — Provide zero-cost review execution via agent skills or Bun CLI script | `P2` | ⬜ Planned |
+| 1 | Root `REVIEW.md` Specification — Establish review mandate, evidence standards, and severity triage rubrics | `P0` | ✅ Completed |
+| 2 | Twistloom Anti-Pattern Radar — Encode concrete checks for Hono streams, route replacements, financial decoupling, and counter backfills | `P0` | ✅ Completed |
+| 3 | Integration with `.agents/skills/critique-workflow` — Wire `REVIEW.md` as the authoritative evaluation rubric for audit skills | `P1` | ✅ Completed |
+| 4 | Alignment with `.github/agents/` Specialist Reviewers — Connect review rubrics with existing quality, payments, and security agent personas | `P1` | ✅ Completed |
+| 5 | Tool-Agnostic Local Review Command — Provide zero-cost review execution via agent skills or Bun CLI script | `P2` | ✅ Completed |
 
 ---
 
@@ -166,7 +166,7 @@ flowchart TD
 
 ## 6. Implementation Plan
 
-### Step 1: Author Root `REVIEW.md` Specification — ⬜ Planned
+### Step 1: Author Root `REVIEW.md` Specification — ✅ Completed
 
 **Files:** `REVIEW.md:1-250` (NEW)  
 **Effort:** Low (1 hour)
@@ -176,13 +176,13 @@ Draft and commit the canonical `REVIEW.md` at the repository root. Define:
 2. **Evidence Standards:** Mandate that every finding provide an end-to-end execution path showing: `Trigger` → `Execution Path` → `Concrete Failure` → `Impact`.
 3. **Severity Taxonomy:** Explicit definitions for Critical, High, Medium, and Low.
 4. **Decision Boundary:** Clear demarcation between Merge Blockers and Deployment Blockers.
-5. **Output Schema:** Standardized report layout (Verdict, Findings, Missing Tests, Deployment Prerequisites).
+5. **Output Schema:** Standardized report layout (Verdict, Positive Highlights, Findings, Missing Tests, Deployment Prerequisites).
 
 **Non-breaking:** Adds a single root markdown document; does not alter build, tests, or runtime.
 
 ---
 
-### Step 2: Encode Twistloom Anti-Pattern Radar — ⬜ Planned
+### Step 2: Encode Twistloom Anti-Pattern Radar — ✅ Completed
 
 **Files:** `REVIEW.md:80-180` (NEW)  
 **Effort:** Low (1 hour)
@@ -198,7 +198,7 @@ Incorporate the 5 domain anti-pattern categories directly into `REVIEW.md`, capt
 
 ---
 
-### Step 3: Integrate with `.agents/skills/critique-workflow` — ⬜ Planned
+### Step 3: Integrate with `.agents/skills/critique-workflow` — ✅ Completed
 
 **Files:** `.agents/skills/critique-workflow/SKILL.md:15-55`  
 **Effort:** Low (30 minutes)
@@ -212,7 +212,7 @@ Update `.agents/skills/critique-workflow/SKILL.md` to establish `REVIEW.md` as i
 
 ---
 
-### Step 4: Align Specialist Agents (`.github/agents/`) with Review Rubrics — ⬜ Planned
+### Step 4: Align Specialist Agents (`.github/agents/`) with Review Rubrics — ✅ Completed
 
 **Files:** `.github/agents/backend-quality-engineer.agent.md:18-38`, `.github/agents/payments-economy-reviewer.agent.md:18-35`  
 **Effort:** Low (30 minutes)
@@ -225,14 +225,14 @@ Update specialist agent personas to cite `REVIEW.md`:
 
 ---
 
-### Step 5: Add Tool-Agnostic Local Review Command — ⬜ Planned
+### Step 5: Add Tool-Agnostic Local Review Command — ✅ Completed
 
-**Files:** `package.json:20-30`, `scripts/review.js` (NEW, conditional)  
-**Effort:** Low (1 hour)
+**Files:** `package.json:18`, `scripts/review-diff.js:1-40` (NEW)  
+**Effort:** Low (30 minutes)
 
-Add an optional npm script in `package.json`:
+Add cross-platform npm script in `package.json`:
 ```json
-"review:diff": "git diff main...HEAD > .tmp/current-diff.patch && echo 'Diff saved to .tmp/current-diff.patch for AI review against REVIEW.md'"
+"review:diff": "bun ./scripts/review-diff.js"
 ```
 Allows developers to generate a clean diff patch ready for local agent evaluation without paid subscriptions.
 
@@ -301,12 +301,12 @@ Allows developers to generate a clean diff patch ready for local agent evaluatio
 
 Legend: ✅ Implemented & verified · ⏳ In Progress · ⬜ Planned · ⏩ Deferred
 
-### Planned Work
-- ⬜ Item 1: Author root `REVIEW.md` specification
-- ⬜ Item 2: Encode Twistloom Anti-Pattern Radar
-- ⬜ Item 3: Integrate with `.agents/skills/critique-workflow`
-- ⬜ Item 4: Align `.github/agents/` specialist reviewers
-- ⬜ Item 5: Add tool-agnostic local review helper script
+### Completed Work
+- ✅ Item 1: Author root `REVIEW.md` specification
+- ✅ Item 2: Encode Twistloom Anti-Pattern Radar
+- ✅ Item 3: Integrate with `.agents/skills/critique-workflow`
+- ✅ Item 4: Align `.github/agents/` specialist reviewers
+- ✅ Item 5: Add tool-agnostic local review helper script
 
 ### Decided Architecture
 - ✅ Tiered AI instruction model (`AGENTS.md` constitution vs. `REVIEW.md` review gate)

@@ -14,6 +14,7 @@ Work on tasks involving bug investigation, TypeScript correctness,
 regression testing, concurrency analysis, error path verification, and code quality.
 
 Read the repository AGENTS.md before proposing or implementing changes.
+Follow the review evidence standards, severity rubrics, and Anti-Pattern Radar in REVIEW.md when evaluating code diffs.
 
 ## Priorities
 

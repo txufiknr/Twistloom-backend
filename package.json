@@ -15,6 +15,7 @@
     "lint:fast": "bunx eslint . --rule '@typescript-eslint/no-floating-promises: off'",
     "lint:imports": "bun --env-file=.env.local ./scripts/check-import-extensions.js",
     "check": "bun run lint && bun run lint:imports && bun run typecheck",
+    "review:diff": "bun ./scripts/review-diff.js",
     "test": "bun test",
     "db:generate": "node --env-file=.env.local node_modules/drizzle-kit/bin.cjs generate",
     "db:migrate": "node --env-file=.env.local node_modules/drizzle-kit/bin.cjs migrate",
