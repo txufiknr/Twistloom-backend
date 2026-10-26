@@ -61,6 +61,7 @@ import { violationTypes, violationSeverities, enforcementActions, isViolationTyp
 import { parsePaymentGateway, formatPaymentAmount, getGatewayCurrency, getSubscriptionPlanName } from "../utils/payment.js";
 import adminAnnouncementsRouter, { announcementErrorResponse } from "./admin/announcements.js";
 import { countAnnouncementEmailRecipients, queueAnnouncementEmail, requireAnnouncementEmailJobs } from "../services/announcement-email.js";
+import { MAX_ADMIN_BULK_IDS } from "../utils/batch.js";
 
 const router = new Hono<AppEnv>();
 
@@ -626,6 +627,9 @@ router.post("/social-mentions/bulk-status",
       if (!Array.isArray(ids) || ids.length === 0) {
         return cValidationError(c, "ids must be a non-empty array");
       }
+      if (ids.length > MAX_ADMIN_BULK_IDS) {
+        return cValidationError(c, `ids array cannot exceed ${MAX_ADMIN_BULK_IDS} items`);
+      }
       if (!isSocialMentionStatus(status)) {
         return cValidationError(c, "Invalid status. Must be 'pending', 'approved', or 'rejected'");
       }
@@ -827,6 +831,9 @@ router.post("/testimonials/bulk-status",
       if (!Array.isArray(ids) || ids.length === 0) {
         return cValidationError(c, "ids must be a non-empty array");
       }
+      if (ids.length > MAX_ADMIN_BULK_IDS) {
+        return cValidationError(c, `ids array cannot exceed ${MAX_ADMIN_BULK_IDS} items`);
+      }
       if (status !== "pending" && status !== "approved" && status !== "rejected") {
         return cValidationError(c, "Invalid status. Must be 'pending', 'approved', or 'rejected'");
       }
@@ -982,6 +989,9 @@ router.post("/platform-testimonials/bulk-status",
 
       if (!Array.isArray(ids) || ids.length === 0) {
         return cValidationError(c, "ids must be a non-empty array");
+      }
+      if (ids.length > MAX_ADMIN_BULK_IDS) {
+        return cValidationError(c, `ids array cannot exceed ${MAX_ADMIN_BULK_IDS} items`);
       }
       if (status !== "pending" && status !== "approved" && status !== "rejected") {
         return cValidationError(c, "Invalid status. Must be 'pending', 'approved', or 'rejected'");
@@ -1958,6 +1968,9 @@ router.post("/feedbacks/bulk-status",
 
       if (!Array.isArray(ids) || ids.length === 0) {
         return cValidationError(c, "ids must be a non-empty array");
+      }
+      if (ids.length > MAX_ADMIN_BULK_IDS) {
+        return cValidationError(c, `ids array cannot exceed ${MAX_ADMIN_BULK_IDS} items`);
       }
       if (!isFeedbackAdminStatus(adminStatus)) {
         return cValidationError(c, "Invalid adminStatus. Must be 'unread', 'read', or 'solved'");

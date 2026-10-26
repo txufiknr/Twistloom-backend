@@ -78,12 +78,18 @@ export async function runDailyCleanup(): Promise<void> {
     const cutoffDate = new Date();
     cutoffDate.setMonth(cutoffDate.getMonth() - ACTIVITY_LOG_RETENTION_MONTHS);
     
-    const deletedLogs = await dbWrite
-      .delete(userActivityLogs)
-      .where(lt(userActivityLogs.createdAt, cutoffDate))
-      .returning({ id: userActivityLogs.id });
+    const { batchDelete } = await import("../utils/batch.js");
+    const { totalDeleted: totalDeletedLogs } = await batchDelete(
+      dbWrite,
+      userActivityLogs,
+      {
+        where: lt(userActivityLogs.createdAt, cutoffDate),
+        idColumn: userActivityLogs.id,
+        batchSize: 2500,
+      }
+    );
     
-    console.log(`[cleanup] 📊 Deleted ${deletedLogs.length} activity logs older than ${ACTIVITY_LOG_RETENTION_MONTHS} months`);
+    console.log(`[cleanup] 📊 Deleted ${totalDeletedLogs} activity logs older than ${ACTIVITY_LOG_RETENTION_MONTHS} months`);
 
     // Cleanup story prompts (expired, low-quality, over-used)
     console.log("[cleanup] 🎨 Cleaning up story prompts...");
@@ -93,7 +99,7 @@ export async function runDailyCleanup(): Promise<void> {
     const durationMs = Date.now() - startedAt;
     console.log(`[cleanup] ✅ Cleanup completed in ${durationMs}ms:`, {
       images: imageCleanupStats.processed,
-      activityLogs: deletedLogs.length,
+      activityLogs: totalDeletedLogs,
     });
   } catch (error) {
     console.error("[cleanup] ❌ Daily cleanup failed:", getErrorMessage(error));

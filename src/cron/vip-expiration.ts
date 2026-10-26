@@ -22,45 +22,57 @@ export async function runVipExpirationCheck(): Promise<void> {
     const { downgradeUserFromVip } = await import("../services/subscription.js");
     const { dbRead } = await import("../db/client.js");
     const { users } = await import("../db/schema.js");
-    const { eq, and, lt, or, isNull } = await import("drizzle-orm");
+    const { eq, and, lt, or, isNull, gt, asc } = await import("drizzle-orm");
+    const { paginateWithKeysetCursor } = await import("../utils/batch.js");
     
-    // Find users with expired VIP subscriptions (including corrupted/orphaned rows where vipExpiresAt IS NULL)
-    const expiredUsers = await dbRead
-      .select({ userId: users.userId })
-      .from(users)
-      .where(and(
-        eq(users.tier, 'vip'),
-        or(
-          isNull(users.vipExpiresAt),
-          lt(users.vipExpiresAt, new Date())
-        )
-      ));
-    
-    if (expiredUsers.length === 0) {
+    let downgradedCount = 0;
+    let failedCount = 0;
+    const now = new Date();
+
+    const { totalProcessed } = await paginateWithKeysetCursor<{ userId: string }, string>({
+      pageSize: 100,
+      fetchPage: async (cursor, limit) => {
+        const conditions = [
+          eq(users.tier, 'vip'),
+          or(
+            isNull(users.vipExpiresAt),
+            lt(users.vipExpiresAt, now),
+          ),
+        ];
+        if (cursor) {
+          conditions.push(gt(users.userId, cursor));
+        }
+
+        return dbRead
+          .select({ userId: users.userId })
+          .from(users)
+          .where(and(...conditions))
+          .orderBy(asc(users.userId))
+          .limit(limit);
+      },
+      getCursor: (row) => row.userId,
+      processBatch: async (batch) => {
+        for (const user of batch) {
+          try {
+            await downgradeUserFromVip(user.userId);
+            downgradedCount++;
+            console.log(`[vip-expiration] ✅ Downgraded user ${user.userId} from VIP to standard`);
+          } catch (error) {
+            failedCount++;
+            console.error(`[vip-expiration] ❌ Failed to downgrade user ${user.userId}:`, getErrorMessage(error));
+          }
+        }
+      },
+    });
+
+    if (totalProcessed === 0) {
       console.log("[vip-expiration] ✨ No expired VIP subscriptions found");
       return;
     }
     
-    console.log(`[vip-expiration] ⚠️ Found ${expiredUsers.length} expired VIP subscriptions, downgrading...`);
-    
-    let downgradedCount = 0;
-    let failedCount = 0;
-    
-    // Downgrade each expired user
-    for (const user of expiredUsers) {
-      try {
-        await downgradeUserFromVip(user.userId);
-        downgradedCount++;
-        console.log(`[vip-expiration] ✅ Downgraded user ${user.userId} from VIP to standard`);
-      } catch (error) {
-        failedCount++;
-        console.error(`[vip-expiration] ❌ Failed to downgrade user ${user.userId}:`, getErrorMessage(error));
-      }
-    }
-    
     const durationMs = Date.now() - startedAt;
     console.log(`[vip-expiration] ✅ VIP expiration check completed in ${durationMs}ms:`, {
-      total: expiredUsers.length,
+      total: totalProcessed,
       downgraded: downgradedCount,
       failed: failedCount,
     });

@@ -17,6 +17,7 @@ import {
 } from "../db/schema.js";
 import { generateId } from "../utils/uuid.js";
 import { addCredits } from "./credits.js";
+import { batchInsert } from "../utils/batch.js";
 import type {
   RedeemCreditVoucherResponse,
   AdminVoucherCampaignListItem,
@@ -250,7 +251,7 @@ export async function generateCodes(
     });
   }
 
-  await dbWrite.insert(creditVoucherCodes).values(codeRows);
+  await batchInsert(dbWrite, creditVoucherCodes, codeRows);
 
   return { campaignId, generated: count, codes: rawCodes };
 }

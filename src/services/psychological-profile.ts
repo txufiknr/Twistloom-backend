@@ -1,6 +1,7 @@
 import { eq, desc, inArray, and } from 'drizzle-orm';
 import { dbRead } from '../db/client.js';
 import { storyStates, userCompletedBooks } from '../db/schema.js';
+import { chunkArray } from '../utils/batch.js';
 import type {
   StoryState,
   SelectedAction,
@@ -578,10 +579,8 @@ export async function getUserMindMatrix(userId: string): Promise<ReaderMindMatri
   const pageIds = completions.map((c) => c.pageId);
 
   // Chunk pageIds if large (safety against SQL parameter limits)
-  const chunkSize = 100;
   const states: unknown[] = [];
-  for (let i = 0; i < pageIds.length; i += chunkSize) {
-    const chunk = pageIds.slice(i, i + chunkSize);
+  for (const chunk of chunkArray(pageIds, 100)) {
     const chunkStates = await dbRead
       .select()
       .from(storyStates)

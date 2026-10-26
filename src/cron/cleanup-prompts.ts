@@ -6,9 +6,10 @@
  */
 
 import { deactivateExpiredPrompts, deactivateLowQualityPrompts, deactivateOverusedPrompts } from "../services/prompt-cache.js";
-import { dbRead } from "../db/client.js";
+import { dbRead, dbWrite } from "../db/client.js";
 import { storyPrompts, userPromptHistory } from "../db/schema.js";
 import { eq, and, sql } from "drizzle-orm";
+import { batchDelete } from "../utils/batch.js";
 
 /**
  * Cron job: Clean up old prompts
@@ -49,22 +50,25 @@ export async function cleanupPrompts() {
     // Task 4: Archive old user prompt history (> 90 days)
     const ninetyDaysAgo = new Date();
     ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
-    
-    const archivedHistory = await dbRead
-      .delete(userPromptHistory)
-      .where(
-        and(
+
+    const { totalDeleted: archivedCount } = await batchDelete(
+      dbWrite,
+      userPromptHistory,
+      {
+        where: and(
           eq(userPromptHistory.usedForBook, false), // Only delete if not used for book
-          sql`${userPromptHistory.viewedAt} < ${ninetyDaysAgo}`
-        )
-      )
-      .returning({ id: userPromptHistory.id });
-    
-    if (archivedHistory.length > 0) {
-      console.log(`[cleanupPrompts] Archived ${archivedHistory.length} old user prompt history entries`);
+          sql`${userPromptHistory.viewedAt} < ${ninetyDaysAgo}`,
+        )!,
+        idColumn: userPromptHistory.id,
+        batchSize: 2500,
+      },
+    );
+
+    if (archivedCount > 0) {
+      console.log(`[cleanupPrompts] Archived ${archivedCount} old user prompt history entries`);
     }
-    
-    console.log(`[cleanupPrompts] ✅ Complete. Total deactivated: ${totalDeactivated}, Archived: ${archivedHistory.length}`);
+
+    console.log(`[cleanupPrompts] ✅ Complete. Total deactivated: ${totalDeactivated}, Archived: ${archivedCount}`);
     
   } catch (error) {
     console.error('[cleanupPrompts] ❌ Error:', error);

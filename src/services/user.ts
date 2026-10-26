@@ -79,42 +79,38 @@ export async function cleanupOrphanedUsers(): Promise<number> {
   try {
     console.log("[user] 👤 Checking for orphaned users...");
     
-    // Find users without user_auth records using LEFT JOIN
+    // Find users without user_auth records using bounded batch chunks
     const systemUserId = requireEnv('SYSTEM_USER_ID');
-    const orphanedUsers = await dbWrite
-      .select({ userId: users.userId })
-      .from(users)
-      .leftJoin(userAuth, eq(users.userId, userAuth.userId))
-      .where(and(
-        sql`${userAuth.userId} IS NULL`,
-        ne(users.userId, systemUserId)
-      ));
-    
-    if (orphanedUsers.length === 0) {
+    const BATCH_SIZE = 500;
+    let totalDeleted = 0;
+
+    while (true) {
+      const orphanedUsers = await dbWrite
+        .select({ userId: users.userId })
+        .from(users)
+        .leftJoin(userAuth, eq(users.userId, userAuth.userId))
+        .where(and(
+          sql`${userAuth.userId} IS NULL`,
+          ne(users.userId, systemUserId)
+        ))
+        .limit(BATCH_SIZE);
+
+      if (orphanedUsers.length === 0) break;
+
+      const userIds = orphanedUsers.map(u => u.userId);
+      await dbWrite
+        .delete(users)
+        .where(inArray(users.userId, userIds));
+
+      totalDeleted += userIds.length;
+      if (orphanedUsers.length < BATCH_SIZE) break;
+    }
+
+    if (totalDeleted === 0) {
       console.log("[user] ✨ No orphaned users found");
       return 0;
     }
-    
-    console.log(`[user] ⚠️ Found ${orphanedUsers.length} orphaned users, deleting...`);
-    
-    // Delete orphaned users using parameterized bulk delete
-    const userIds = orphanedUsers.map(u => u.userId);
-    
-    // Delete in batches to avoid query size limits
-    const CHUNK_SIZE = 100;
-    let totalDeleted = 0;
-    
-    for (let i = 0; i < userIds.length; i += CHUNK_SIZE) {
-      const chunk = userIds.slice(i, i + CHUNK_SIZE);
-      
-      // Using sql.join for parameterized bulk delete (secure, not sql.raw)
-      await dbWrite
-        .delete(users)
-        .where(sql`${users.userId} IN (${sql.join(chunk, sql`, `)})`);
-      
-      totalDeleted += chunk.length;
-    }
-    
+
     console.log(`[user] ✅ Deleted ${totalDeleted} orphaned users`);
     return totalDeleted;
   } catch (error) {

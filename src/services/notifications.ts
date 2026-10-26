@@ -8,6 +8,7 @@ import { sql } from 'drizzle-orm';
 import { dbWrite, type DBTransaction, type DBClient } from '../db/client.js';
 import { userNotifications } from '../db/schema.js';
 import type { NotificationI18nKey, NotificationType } from '../config/notifications.js';
+import { batchInsert } from '../utils/batch.js';
 
 export interface InsertNotificationParams {
   userId: string;
@@ -62,7 +63,8 @@ export async function createNotification(params: InsertNotificationParams): Prom
 }
 
 /**
- * Inserts multiple localized user notifications in a single batch insert.
+ * Inserts multiple localized user notifications in bounded, parameter-safe batch chunks.
+ * Automatically guards against PostgreSQL 65,535 wire-protocol parameter overflows.
  */
 export async function createNotificationsBatch(
   items: InsertNotificationParams[],
@@ -86,7 +88,7 @@ export async function createNotificationsBatch(
     updatedAt: now,
   }));
 
-  await conn.insert(userNotifications).values(rows);
+  await batchInsert(conn, userNotifications, rows);
 }
 
 /**

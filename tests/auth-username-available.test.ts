@@ -50,6 +50,10 @@ const { default: authRouter } = await import("../src/routes/auth.js");
 
 function buildAuthApp(): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
+  app.use("*", async (c, next) => {
+    (c.env as any) = { ...(c.env ?? {}), trustedClientIp: "203.0.113.195" };
+    await next();
+  });
   app.use("*", parseJsonBody);
   app.route("/api/auth", authRouter);
   return app;

@@ -27,8 +27,9 @@
  */
 import { dbWrite } from "../db/client.js";
 import { books, userFavorites } from "../db/schema.js";
-import { eq, sql, count } from "drizzle-orm";
+import { and, asc, count, eq, gt, inArray, sql } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
+import { paginateWithKeysetCursor } from "../utils/batch.js";
 
 const DECAY_RANGES = [
   { days: 7, factor: 1.0 },    // Last 7 days: full score
@@ -77,82 +78,91 @@ export async function updateTrendingScores(): Promise<void> {
   try {
     console.log("[trending-scores] 📊 Starting trending score update...");
     
-    // Get all active books with their engagement metrics
-    const activeBooks = await dbWrite
-      .select({
-        id: books.id,
-        readCount: books.readCount,
-        likesCount: books.likesCount,
-        createdAt: books.createdAt,
-      })
-      .from(books)
-      .where(eq(books.status, 'active'));
-    
-    console.log(`[trending-scores] 📚 Processing ${activeBooks.length} active books...`);
-    
-    if (activeBooks.length === 0) {
+    let totalUpdated = 0;
+    const allScores: number[] = [];
+
+    const { totalProcessed } = await paginateWithKeysetCursor<{
+      id: string;
+      readCount: number;
+      likesCount: number;
+      createdAt: Date;
+    }, string>({
+      pageSize: 250,
+      fetchPage: async (cursor, limit) => {
+        const conditions = [eq(books.status, 'active')];
+        if (cursor) {
+          conditions.push(gt(books.id, cursor));
+        }
+
+        return dbWrite
+          .select({
+            id: books.id,
+            readCount: books.readCount,
+            likesCount: books.likesCount,
+            createdAt: books.createdAt,
+          })
+          .from(books)
+          .where(and(...conditions))
+          .orderBy(asc(books.id))
+          .limit(limit);
+      },
+      getCursor: (row) => row.id,
+      processBatch: async (batch) => {
+        const bookIds = batch.map((b) => b.id);
+        const favoritedCounts = await dbWrite
+          .select({
+            bookId: userFavorites.bookId,
+            favoritedCount: count(userFavorites.userId).as('favoritedCount'),
+          })
+          .from(userFavorites)
+          .where(inArray(userFavorites.bookId, bookIds))
+          .groupBy(userFavorites.bookId);
+
+        const favoritedMap = new Map(
+          favoritedCounts.map((f) => [f.bookId, Number(f.favoritedCount)])
+        );
+
+        const updates = batch.map((book) => {
+          const favoritedCount = favoritedMap.get(book.id) || 0;
+          const decayFactor = getDecayFactor(book.createdAt);
+          const trendingScore = (book.readCount * 0.5 + book.likesCount * 0.3 + favoritedCount * 0.2) * decayFactor;
+          return {
+            id: book.id,
+            trendingScore,
+          };
+        });
+
+        allScores.push(...updates.map((u) => u.trendingScore));
+
+        const caseExpressions = updates.map((u) => 
+          sql`WHEN ${u.id}::uuid THEN ${u.trendingScore}`
+        );
+
+        await dbWrite.execute(sql`
+          UPDATE books 
+          SET trending_score = CASE id 
+            ${sql.join(caseExpressions, sql`\n          `)}
+            ELSE trending_score 
+          END,
+          updated_at = NOW()
+          WHERE id IN (${sql.join(updates.map((u) => u.id), sql`, `)})
+        `);
+
+        totalUpdated += updates.length;
+      },
+    });
+
+    if (totalProcessed === 0) {
       console.log("[trending-scores] ✅ No active books to process");
       return;
     }
     
-    // Get favorited counts for all books in a single query
-    const favoritedCounts = await dbWrite
-      .select({
-        bookId: userFavorites.bookId,
-        favoritedCount: count(userFavorites.userId).as('favoritedCount'),
-      })
-      .from(userFavorites)
-      .groupBy(userFavorites.bookId);
-    
-    // Create a map for quick lookup
-    const favoritedMap = new Map(
-      favoritedCounts.map(f => [f.bookId, Number(f.favoritedCount)])
-    );
-    
-    // Calculate trending scores for all books
-    const updates = activeBooks.map(book => {
-      const favoritedCount = favoritedMap.get(book.id) || 0;
-      const decayFactor = getDecayFactor(book.createdAt);
-      const trendingScore = (book.readCount * 0.5 + book.likesCount * 0.3 + favoritedCount * 0.2) * decayFactor;
-      return {
-        id: book.id,
-        trendingScore,
-      };
-    });
-    
-    // Batch update books in chunks of 100 to avoid query size limits
-    const CHUNK_SIZE = 100;
-    let totalUpdated = 0;
-    
-    for (let i = 0; i < updates.length; i += CHUNK_SIZE) {
-      const chunk = updates.slice(i, i + CHUNK_SIZE);
-      
-      // Build parameterized CASE statement for single bulk update
-      // Using sql template tag with parameter binding (secure, not sql.raw)
-      const caseExpressions = chunk.map(u => 
-        sql`WHEN ${u.id}::uuid THEN ${u.trendingScore}`
-      );
-      
-      await dbWrite.execute(sql`
-        UPDATE books 
-        SET trending_score = CASE id 
-          ${sql.join(caseExpressions, sql`\n          `)}
-          ELSE trending_score 
-        END,
-        updated_at = NOW()
-        WHERE id IN (${sql.join(chunk.map(u => u.id), sql`, `)})
-      `);
-      
-      totalUpdated += chunk.length;
-    }
-    
     // Calculate and log trending score summary
-    const scores = updates.map(u => u.trendingScore);
-    const maxScore = Math.max(...scores);
-    const minScore = Math.min(...scores);
-    const avgScore = scores.reduce((sum, score) => sum + score, 0) / scores.length;
-    const highScoreCount = scores.filter(score => score > avgScore * 1.5).length;
-    const zeroScoreCount = scores.filter(score => score === 0).length;
+    const maxScore = allScores.length ? Math.max(...allScores) : 0;
+    const minScore = allScores.length ? Math.min(...allScores) : 0;
+    const avgScore = allScores.length ? allScores.reduce((sum, score) => sum + score, 0) / allScores.length : 0;
+    const highScoreCount = allScores.filter(score => score > avgScore * 1.5).length;
+    const zeroScoreCount = allScores.filter(score => score === 0).length;
     
     console.log(`[trending-scores] 📊 Score summary: max=${maxScore.toFixed(2)}, min=${minScore.toFixed(2)}, avg=${avgScore.toFixed(2)}`);
     console.log(`[trending-scores] 🎯 High performers: ${highScoreCount} books, Zero scores: ${zeroScoreCount} books`);
