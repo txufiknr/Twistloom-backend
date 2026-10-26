@@ -32,8 +32,8 @@
  */
 
 import { type DBTransaction, dbWrite, dbRead } from '../db/client.js';
-import { users, transactions, userNotifications } from '../db/schema.js';
-import { NOTIFICATION_I18N_KEYS, type NotificationI18nKey } from '../config/notifications.js';
+import { users, transactions } from '../db/schema.js';
+import { NOTIFICATION_I18N_KEYS, type NotificationI18nKey, type NotificationType } from '../config/notifications.js';
 import { createNotification } from './notifications.js';
 import { CREDIT_COSTS, getCreditCostForUser, isDemoUser, CREDIT_RESERVATION_TTL_MS, type CreditCostKey } from '../config/credits.js';
 import { generateId } from '../utils/uuid.js';
@@ -944,7 +944,7 @@ interface AwardCreditsOptions {
   /** Payment gateway for this award; defaults to `stripe` */
   gateway?: PaymentGateway;
   /** Notification type identifier */
-  notificationType: string;
+  notificationType: NotificationType;
   /** Notification title shown to the user */
   notificationTitle: string;
   /** Notification body shown to the user */
@@ -1042,7 +1042,7 @@ export async function awardCredits(
     // Create user notification
     await createNotification({
       userId,
-      type: notificationType as any,
+      type: notificationType,
       i18nKey: notificationI18nKey ?? (notificationType === 'first_purchase_bonus' ? NOTIFICATION_I18N_KEYS.FIRST_PURCHASE_BONUS : NOTIFICATION_I18N_KEYS.PAYMENT_SUCCESS),
       i18nParams: notificationI18nParams ?? null,
       fallbackTitle: notificationTitle,

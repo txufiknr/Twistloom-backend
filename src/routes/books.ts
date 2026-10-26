@@ -209,6 +209,7 @@ import {
 } from "../services/companion-ask.js";
 import { streamCompanionAnswerSSE, companionAnswerIsComplete } from "../utils/companion-stream.js";
 import { retrieveSimilarPages, retrieveBookCluesForQuery } from "../services/vector-memory.js";
+import { assembleBookPages, sanitizeDownloadFilename } from "../services/book-export.js";
 
 const router = new Hono<AppEnv>();
 
@@ -7628,7 +7629,7 @@ router.post('/:identifier/guest-progress/import', requireAuth, async (c) => {
   const denied = await getBookDetailAccessError(c, snapshot, userId);
   if (denied) return denied;
 
-  const importBody: unknown = await c.req.raw.clone().json().catch(() => null);
+  const importBody: unknown = c.get("body") ?? await c.req.json().catch(() => null);
   const result = await importGuestProgress(userId, bookId, importBody);
   if ('error' in result) return cValidationError(c, result.error);
   return c.json(result, 'reason' in result ? 409 : 200);
@@ -9732,6 +9733,80 @@ router.delete("/:identifier/testimonials/:id/like", requireAuth, async (c) => {
     return c.json({ liked: false, likesCount: mutation.likesCount });
   } catch (error) {
     return cApiError(c, "Failed to unlike testimonial", error);
+  }
+});
+
+/**
+ * @summary Export an author-owned story to EPUB, DOCX, or PDF
+ * @description Compiles the story pages into an in-memory document Buffer and streams with Content-Disposition.
+ * Strictly gated to the author (isMine === true) and VIP subscribers.
+ */
+router.post("/:identifier/export", requireAuth, async (c) => {
+  try {
+    const { identifier } = c.req.param();
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+    const userId = c.get("userId")!;
+
+    // 1. Resolve book with caller's userId context
+    const enrichedBook = await getEnrichedBook(bookIdentifier, userId, c.get("headerLanguage"));
+    if (!enrichedBook) return cNotFoundError(c, "Book not found");
+
+    // 2. VIP Subscription Gate: Manuscript Studio export is exclusive to VIP members
+    const isVip = await hasActiveVipSubscription(userId);
+    if (!isVip) {
+      return cForbiddenError(c, "Manuscript Studio export is an exclusive VIP perk.");
+    }
+
+    // 3. Strict Ownership Gate: Only the story author can export manuscripts
+    if (!enrichedBook.isMine && enrichedBook.userId !== userId) {
+      return cForbiddenError(c, "Only the author can export manuscripts for this story.");
+    }
+
+    const body = ((c.get("body") as Record<string, unknown>) ?? await c.req.json().catch(() => ({}))) as {
+      format?: "epub" | "docx" | "pdf";
+      branchId?: string;
+    };
+
+    const format = body.format || "epub";
+    if (!["epub", "docx", "pdf"].includes(format)) {
+      return cValidationError(c, "Invalid format. Supported formats: epub, docx, pdf");
+    }
+
+    // 4. Assemble pages via indexed single query (O(1) database execution)
+    const branchId = body.branchId || "main";
+    const pages = await assembleBookPages(enrichedBook.id, branchId);
+    if (pages.length === 0) {
+      return cValidationError(c, "No story pages found to export for this branch.");
+    }
+
+    // 5. Generate document buffer in memory.
+    // Lazy dynamic import: pdfkit/docx/epub-gen pull heavy font assets and SDK
+    // singletons, so they must not initialize on every request that merely
+    // loads this router. Shaves cold-start/init wall-clock.
+    const { generateDocument } = await import("../services/document-generators/index.js");
+    const { buffer, contentType, ext } = await generateDocument(
+      {
+        title: enrichedBook.title || "Untitled Story",
+        authorName: enrichedBook.author?.name || "Twistloom Creator",
+        summary: enrichedBook.summary,
+        coverImageUrl: enrichedBook.imageUrl,
+        language: enrichedBook.language,
+      },
+      pages,
+      format,
+    );
+
+    // 6. Stream response with RFC 5987 headers
+    const sanitizedTitle = sanitizeDownloadFilename(enrichedBook.title || "untitled");
+    const encodedFilename = encodeURIComponent(`${sanitizedTitle}.${ext}`);
+
+    return c.newResponse(new Uint8Array(buffer), 200, {
+      "Content-Type": contentType,
+      "Content-Disposition": `attachment; filename="${sanitizedTitle}.${ext}"; filename*=UTF-8''${encodedFilename}`,
+      "Cache-Control": "no-cache, no-store, must-revalidate",
+    });
+  } catch (error) {
+    return cApiError(c, "Failed to export book manuscript", error);
   }
 });
 

@@ -58,6 +58,8 @@ flowchart TD
 5. At most one unread `testimonial_like` group exists per `(user_id, type, group_key)`.
 6. Deleting a testimonial removes polymorphic testimonial likes and matching notifications in the same transaction, including book cascades.
 7. Notification failures do not roll back committed likes and are logged; no durable outbox is implemented.
+8. The notification dispatcher verifies that the actor still actively likes the testimonial in `user_likes` within its serialized transaction before creating or updating the recipient's notification. Rapid unlike requests committed prior to notification delivery cleanly abort without emitting phantom alerts.
+9. Polymorphic consistency on deletion is enforced via database trigger `book_testimonial_cleanup_references` (defined in `src/db/triggers.ts` and created in migration 0109). Because backend deployment is paused, database state remains pristine and counters begin cleanly from zero without historical backfill scripts.
 
 ---
 

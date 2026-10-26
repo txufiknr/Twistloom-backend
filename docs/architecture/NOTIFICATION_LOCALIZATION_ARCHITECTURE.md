@@ -75,6 +75,8 @@ flowchart TB
 2. **Scalar Parameter Values (§3.2):** `i18n_params` values must be primitive scalars (strings or numbers). Nested prose or translated snippets must never be embedded in parameters. When actor or entity names are absent (e.g. anonymous tips, unlinked stories), the parameter must carry an empty string (`""`); generic fallback nouns (`"A reader"`, `"The author"`, `"a story"`) must never be persisted in `i18n_params` and are resolved exclusively on the client according to the viewer's active locale.
 3. **Immutability of Intent Taxonomy (§3.3):** The `type` column represents the domain categorization (e.g. `referral_bonus`, `payment_success`) for indexing and filtering. Copy variance within a domain is expressed exclusively via `i18n_key`.
 4. **Fire-and-Forget Safety (§3.4):** In-app notification creation must never break primary business transactions (e.g. AI story persistence or auto-refund).
+5. **Strict Taxonomy Compile-Time Safety (§3.5):** All caller services and DTOs (e.g. `AwardCreditsOptions.notificationType`) strictly type notification categories as the `NotificationType` union without unsafe `as any` casts, ensuring typo resistance across all financial and reward pipelines.
+6. **Bounded Publication Fan-Out (§3.6):** Synchronous follower in-app fan-outs (`insertPublicationInAppDirect`) process followers in bounded chunks of 500 rows, preventing memory exhaustion and PostgreSQL query parameter limit violations.
 
 ---
 

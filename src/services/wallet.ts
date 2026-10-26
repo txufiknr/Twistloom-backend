@@ -24,7 +24,6 @@ import {
   users,
   books,
   transactions,
-  userNotifications,
 } from "../db/schema.js";
 import { NOTIFICATION_I18N_KEYS } from "../config/notifications.js";
 import { createNotification } from "./notifications.js";

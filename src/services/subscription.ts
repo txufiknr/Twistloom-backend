@@ -32,7 +32,7 @@ import { dispatchEmailWorkers } from './email-dispatch.js';
  */
 
 import { dbWrite, dbRead } from "../db/client.js";
-import { subscriptions, subscriptionTransactions, users, userNotifications } from "../db/schema.js";
+import { subscriptions, subscriptionTransactions, users } from "../db/schema.js";
 import { NOTIFICATION_I18N_KEYS } from "../config/notifications.js";
 import { createNotification } from "./notifications.js";
 import { eq, and, inArray, sql } from "drizzle-orm";

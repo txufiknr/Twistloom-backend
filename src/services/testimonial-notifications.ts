@@ -8,7 +8,7 @@
 
 import { and, eq, sql } from 'drizzle-orm';
 import { dbRead, dbWrite } from '../db/client.js';
-import { bookTestimonials, userNotifications, users } from '../db/schema.js';
+import { bookTestimonials, userLikes, userNotifications, users } from '../db/schema.js';
 import { NOTIFICATION_I18N_KEYS } from '../config/notifications.js';
 import { createNotification, upsertNotification } from './notifications.js';
 import { normalizeInAppPreferences } from './in-app-preferences.js';
@@ -51,7 +51,6 @@ export async function notifyTestimonialLike(
 
   const actorName = actor?.name || 'A reader';
 
-  const now = new Date();
   const groupKey = `testimonial:${testimonialId}`;
   const data = {
     testimonialId,
@@ -71,6 +70,18 @@ export async function notifyTestimonialLike(
       .limit(1)
       .for('update');
     if (!testimonial || testimonial.authorId !== recipientId || testimonial.status !== 'approved') return;
+
+    // Verify actor still likes this testimonial (prevents race condition when unliked rapidly)
+    const [activeLike] = await tx
+      .select({ userId: userLikes.userId })
+      .from(userLikes)
+      .where(and(
+        eq(userLikes.userId, actorId),
+        eq(userLikes.targetType, 'testimonial'),
+        eq(userLikes.targetId, testimonialId),
+      ))
+      .limit(1);
+    if (!activeLike) return;
 
     // Repair likes created before every endpoint dispatched notifications.
     // A duplicate like request should only backfill a notification when no

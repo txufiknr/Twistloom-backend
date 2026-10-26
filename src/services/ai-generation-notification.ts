@@ -26,8 +26,8 @@
  */
 
 import { eq } from 'drizzle-orm';
-import { dbRead, dbWrite } from '../db/client.js';
-import { books, users, userNotifications } from '../db/schema.js';
+import { dbRead } from '../db/client.js';
+import { books, users } from '../db/schema.js';
 import { NOTIFICATION_I18N_KEYS, type NotificationI18nKey } from '../config/notifications.js';
 import { createNotification } from './notifications.js';
 import { normalizeInAppPreferences } from './in-app-preferences.js';

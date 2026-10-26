@@ -13,7 +13,7 @@ import { dispatchEmailWorkers } from '../email-dispatch.js';
 import type Stripe from "stripe";
 import { eq, and, sql } from "drizzle-orm";
 import { dbWrite } from "../../db/client.js";
-import { users, transactions, webhookDeliveries, userNotifications } from "../../db/schema.js";
+import { users, transactions, webhookDeliveries } from "../../db/schema.js";
 import { NOTIFICATION_I18N_KEYS } from "../../config/notifications.js";
 import { CREDIT_PACKS, FIRST_PURCHASE_BONUS } from "../../config/credits.js";
 import { PAYMENT_GATEWAY } from "../../types/payment.js";

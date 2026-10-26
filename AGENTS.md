@@ -647,6 +647,49 @@ if (!existing) {
 
 ---
 
+### 3.12 Bounded Fan-Out Batching & Keyset Cursor Pagination
+
+When an event triggers fan-out writes across large relational sets (e.g. author publication notifications, broadcast campaign dispatches, batch migrations), unbounded processing causes database parameter overflows, serverless heap exhaustion, and quadratic query slowdowns.
+
+#### The Four Scaling Invariants:
+1. **PostgreSQL Parameter Ceiling ($rows \times columns \le 65,535$)**: The PostgreSQL wire protocol limits prepared statement parameters to $65,535$. A multi-row batch insert binding 11 fields per row will crash with `bind message has X parameter formats` at $\approx 5,957$ rows. Bounding inserts to chunks of 250–500 rows guarantees parameter usage remains safely $< 10\%$ of protocol limits.
+2. **Serverless Heap & GC Budgeting**: In serverless containers (Vercel, Netlify Functions with 512–1024MB RAM), loading tens of thousands of joined follower rows into V8 memory triggers stop-the-world GC pauses or out-of-memory container termination (`JavaScript heap out of memory`). Slicing processing into bounded chunks enforces $O(1)$ constant working memory instead of $O(N)$ heap growth.
+3. **Keyset Cursor Pagination Over `OFFSET`**: Never use `OFFSET N` to iterate through pages of relational data. In PostgreSQL, `OFFSET N` forces scanning and discarding $N$ B-tree records on every page step, leading to cumulative $O(N^2)$ query execution time and data drift under concurrent writes. Always use Keyset Cursor Pagination (`WHERE id > $lastId ORDER BY id ASC LIMIT $chunk`), which executes an $O(1)$ B-tree index seek per batch.
+4. **Transaction Lock & WAL Pressure**: Slicing bulk writes into bounded batches minimizes row/index lock duration and prevents Write-Ahead Log (WAL) buffer spikes, allowing concurrent user reads and writes to interleave without lock contention.
+
+```typescript
+// ❌ WRONG — OFFSET pagination and unbounded memory/parameters:
+let offset = 0;
+while (true) {
+  const rows = await dbRead.select().from(userFollows).where(...).limit(500).offset(offset); // O(N^2) work!
+  if (!rows.length) break;
+  await dbWrite.insert(notifications).values(rows.map(...)); // Risks parameter ceiling explosion!
+  offset += 500;
+}
+
+// ✅ RIGHT — Keyset cursor pagination with bounded batch inserts:
+const CHUNK_SIZE = 500;
+let lastFollowerId: string | null = null;
+while (true) {
+  const conditions = [eq(userFollows.followingId, authorId)];
+  if (lastFollowerId) conditions.push(gt(userFollows.followerId, lastFollowerId));
+
+  const rows = await dbRead
+    .select({ followerId: userFollows.followerId })
+    .from(userFollows)
+    .where(and(...conditions))
+    .orderBy(asc(userFollows.followerId)) // O(1) B-tree seek per page
+    .limit(CHUNK_SIZE);
+
+  if (rows.length === 0) break;
+  await createNotificationsBatch(rows.map(...), tx); // Bounded 500-row batch (~5,500 params)
+  if (rows.length < CHUNK_SIZE) break;
+  lastFollowerId = rows[rows.length - 1].followerId;
+}
+```
+
+---
+
 ## 4. Coding Standards & Conventions
 
 ### Naming Conventions
@@ -702,6 +745,7 @@ Before providing code modifications:
 - [ ] Per-user mutable payloads (`isLiked`, `isRead`, personalized tags) use `private, no-store`/`private, no-cache`, never a browser `max-age`, and never `public`.
 - [ ] Subsystem-level access controls (roles, beta tester status, creator tiers) are applied consistently across all subsystem routes (reads, writes, rechecks, and batch mutations).
 - [ ] Relational child queries avoid unbounded `inArray` parameter lists, preferring indexed SQL joins with `LIMIT 1`.
+- [ ] Bulk operations and fan-out notifications use bounded batch chunks (<= 500 rows) with Keyset Cursor Pagination (`ORDER BY id ASC` + `WHERE id > cursor`) instead of `OFFSET`, preventing PostgreSQL parameter overflow ($rows \times columns \le 65,535$) and $O(N^2)$ query degradation.
 
 ---
 

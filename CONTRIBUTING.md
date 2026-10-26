@@ -400,6 +400,10 @@ These rules emerged from a comprehensive audit of the Stripe + Xendit payment sy
 #### Unbounded SQL Parameter Lists
 - **Avoid `inArray` with dynamic unbounded arrays.** Replace `inArray(pages.bookId, penBookIds)` with an indexed `innerJoin` on `pages.book_id = books.id WHERE books.user_id = $1 ... LIMIT 1`. This runs in $O(1)$ indexed lookup time and avoids PostgreSQL query parameter explosion.
 
+#### Bounded Batching & Keyset Cursor Pagination
+- **PostgreSQL Parameter Wire-Protocol Ceiling**: Prepared statements in PostgreSQL enforce an upper limit of $65,535$ parameters. Multi-row bulk inserts (such as `createNotificationsBatch`) bind ~11 columns per row ($500 \times 11 = 5,500$ parameters). Unbounded single-statement inserts for large recipient lists will exceed this limit and fail with a fatal protocol error (`bind message has X parameter formats but 65535 parameters`). Always slice bulk inserts into bounded batches of $250$ to $500$ rows.
+- **Keyset Cursor Pagination Over `OFFSET`**: Never iterate over large relational datasets using `LIMIT N OFFSET M`. In PostgreSQL, `OFFSET M` scans and discards $M$ B-tree index entries on every page, accumulating $O(N^2)$ execution cost and suffering from data drift under concurrent writes. Always use Keyset Cursor Pagination (`WHERE id > $lastId ORDER BY id ASC LIMIT $chunk`) to guarantee $O(1)$ B-tree index seeks per page and constant $O(\text{CHUNK\_SIZE})$ serverless memory overhead.
+
 #### Subsystem-Wide Authorization Consistency
 - **Enforce role/flag gating across all subsystem endpoints.** If a feature requires `isBetaTesterUser` or VIP membership, guard `GET`, `POST /recheck`, `POST /claim`, and `POST /claim-all` with uniform `403 Forbidden` checks. Apply `requireNotSuspended` and `requireNotMuted` to all user-generated content mutations.
 

@@ -39,6 +39,8 @@ The backend advertises `guestProgressImportVersion: 1` from the shared enriched-
 | Page/action authority | Resolve all IDs inside the requested book; rebuild selected action from stored page actions | Trust client metadata | Missing or changed ancestry is rejected |
 | Replay | Latest UUID plus SHA-256 normalized-request fingerprint on session row | Permanent operation receipt table | Only the latest command can be confirmed after a lost response |
 | Database evolution | Keep marker columns already declared in `src/db/schema.ts` | Hand-edit generated SQL | No database generation or migration is part of this change |
+| HTTP body ingestion | Read parsed body via `c.get("body")` (populated by `parseJsonBody`) | Raw stream `c.req.raw.clone()` | Avoids disturbed stream exceptions under standard fetch pipeline |
+| Client legacy deprecation | Clean canonical V1 cutover: legacy /migrate and /adopt endpoints removed across backend, web, and Flutter | Maintain backward-compatibility polyfill shims | Deployment paused allows direct canonical rollout without shims or polyfills |
 
 ---
 

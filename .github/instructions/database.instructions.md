@@ -32,6 +32,7 @@ See `AGENTS.md` for the full architectural invariants. This file adds path-speci
 - Avoid N+1 queries — use Drizzle relational queries or batch loading.
 - Preserve existing indexes unless necessary.
 - Add indexes for new query patterns.
+- **Bounded Batching & Keyset Cursor Pagination**: Never execute unbounded bulk inserts or unpaginated fan-out writes. Synchronous bulk writes must be sliced into bounded chunks (e.g. 250–500 rows) to stay well under the 65,535 PostgreSQL parameter wire-protocol ceiling ($rows \times columns \le 65,535$) and prevent serverless heap exhaustion. Bulk relational reads across unbounded sets must use Keyset Cursor Pagination (`WHERE id > $lastId ORDER BY id ASC LIMIT $chunk`) rather than `OFFSET` to avoid $O(N^2)$ table scan degradation and concurrent pagination drift.
 
 ## Migrations
 

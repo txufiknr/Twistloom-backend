@@ -10,7 +10,7 @@
 
 import { eq, sql, and, count } from "drizzle-orm";
 import { dbRead, dbWrite } from "../db/client.js";
-import { creatorEarnings, creatorWallets, users, books, userNotifications } from "../db/schema.js";
+import { creatorEarnings, creatorWallets, users, books } from "../db/schema.js";
 import { NOTIFICATION_I18N_KEYS } from "../config/notifications.js";
 import { createNotification } from "./notifications.js";
 import { calculatePlatformFee, calculateCreatorAmount, THANKS_CONFIG } from "../config/thanks.js";

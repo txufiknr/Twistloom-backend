@@ -13,7 +13,6 @@ import {
   userBlocks,
   userCompletedBooks,
   userLikes,
-  userNotifications,
   userSavedPosts,
   users,
 } from '../db/schema.js';

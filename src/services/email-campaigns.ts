@@ -1,7 +1,7 @@
 /** Bounded shared campaign enumeration and progress. EMAIL_DELIVERY_ARCHITECTURE.md §5. */
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import { dbWrite, type DBTransaction } from "../db/client.js";
-import { emailCampaigns as campaigns, emailMessages as messages, users, userFollows, userAuth, books, userCompletedBooks, userLikes, userNotifications, announcements } from "../db/schema.js";
+import { emailCampaigns as campaigns, emailMessages as messages, users, userFollows, userAuth, books, userCompletedBooks, userLikes, announcements } from "../db/schema.js";
 import { NOTIFICATION_I18N_KEYS } from "../config/notifications.js";
 import { createNotificationsBatch, type InsertNotificationParams } from "./notifications.js";
 import { EMAIL_AUDIENCE_BATCH, EMAIL_LEASE_MS, EMAIL_POLICIES } from "../config/email-delivery.js";
